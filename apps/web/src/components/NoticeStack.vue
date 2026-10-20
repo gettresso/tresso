@@ -46,6 +46,7 @@ onBeforeUnmount(() => clearInterval(timer))
   max-width: min(480px, calc(100vw - 48px));
 }
 .notice {
+  animation: rise-in var(--motion-base) var(--ease-out);
   display: flex;
   align-items: center;
   gap: 12px;

@@ -42,6 +42,7 @@ const savedText = computed(() =>
 
 <style scoped>
 .compose {
+  animation: rise-in var(--motion-base) var(--ease-out);
   position: fixed;
   right: 24px;
   bottom: 0;

@@ -3,18 +3,13 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { SCAN_TEXT, searchDay, searchFilters, withSearchFilter, type SearchAttachment, type SearchFilterName, type SearchHit, type SyncedFolder } from '@tresso/core'
 import { fileSize, shortTime } from '@/mail/format'
-import { useAuthStore } from '@/stores/auth'
-import { useBatchesStore } from '@/stores/batches'
 import { useMailStore } from '@/stores/mail'
 import { useSearchStore } from '@/stores/search'
 import AppIcon from '@/components/AppIcon.vue'
 import HighlightText from '@/components/HighlightText.vue'
-import MailboxSidebar from '@/components/MailboxSidebar.vue'
 import SearchField from '@/components/SearchField.vue'
 
-const auth = useAuthStore()
 const mail = useMailStore()
-const batches = useBatchesStore()
 const search = useSearchStore()
 const route = useRoute()
 const router = useRouter()
@@ -106,23 +101,6 @@ function threadLink(hit: SearchHit) {
 
 <template>
   <div class="shell">
-    <details class="mailboxes" open>
-      <summary class="mailboxes-toggle">Mailboxes</summary>
-      <MailboxSidebar
-        :display-name="auth.me?.displayName ?? ''"
-        :email="auth.me?.email ?? ''"
-        :accounts="mail.accounts"
-        :unread-counts="mail.unreadCounts"
-        :mailbox="null"
-        :smart-inboxes="mail.smartInboxes"
-        :smart-inbox-counts="mail.smartInboxCounts"
-        :smart-inbox="null"
-        :batches="false"
-        :next-batch="batches.nextBatchLabel"
-        :live="mail.live"
-        @sign-out="auth.signOut()"
-      />
-    </details>
 
     <main class="main">
       <section class="results" aria-label="Search results">
@@ -233,17 +211,8 @@ function threadLink(hit: SearchHit) {
 <style scoped>
 .shell {
   display: grid;
-  grid-template-columns: minmax(220px, 272px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
-  min-height: 0;
-}
-.mailboxes {
-  display: contents;
-}
-.mailboxes-toggle {
-  display: none;
-}
-.mailboxes > :deep(nav) {
   min-height: 0;
 }
 .main {
@@ -520,20 +489,6 @@ h2 {
 }
 
 @media (max-width: 760px) {
-  .shell {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .mailboxes {
-    display: block;
-    border-bottom: 1px solid var(--line);
-  }
-  .mailboxes-toggle {
-    display: block;
-    padding: 12px 16px;
-    font-weight: 600;
-    cursor: pointer;
-  }
   .main {
     padding: 0;
   }

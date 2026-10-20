@@ -94,7 +94,6 @@ async function toggle(todo: Todo): Promise<void> {
 <template>
   <main class="todos" :class="{ 'with-detail': selected !== null }">
     <div class="list-column">
-      <RouterLink :to="{ name: 'unified' }" class="back">← Back to mail</RouterLink>
       <header class="header">
         <h1>Todos</h1>
         <p class="lead">
@@ -187,12 +186,6 @@ async function toggle(todo: Todo): Promise<void> {
   position: sticky;
   top: 24px;
   align-self: start;
-}
-.back {
-  color: var(--ink-2);
-  text-decoration: none;
-  font-weight: 600;
-  font-size: 13px;
 }
 .header h1 {
   margin: 0 0 4px;

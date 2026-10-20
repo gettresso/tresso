@@ -1,20 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, shallowRef, watch } from 'vue'
 import { RouterLink, useRoute, type RouteLocationRaw } from 'vue-router'
 import { unsubscribeOffer, type UnsubscribeOffer } from '@tresso/core'
-import { useAuthStore } from '@/stores/auth'
 import { useBatchesStore } from '@/stores/batches'
 import { useMailStore } from '@/stores/mail'
 import { useSelectionStore } from '@/stores/selection'
 import CleanupPanel from '@/components/CleanupPanel.vue'
 import ConversationList from '@/components/ConversationList.vue'
-import MailboxSidebar from '@/components/MailboxSidebar.vue'
 import ReadingPane from '@/components/ReadingPane.vue'
 import SmartInboxManage from '@/components/SmartInboxManage.vue'
 import UnsubscribeAction from '@/components/UnsubscribeAction.vue'
 import MiniAgenda from '@/components/calendar/MiniAgenda.vue'
 
-const auth = useAuthStore()
 const mail = useMailStore()
 const route = useRoute()
 const batches = useBatchesStore()
@@ -82,8 +79,6 @@ watch(
   { immediate: true },
 )
 onBeforeUnmount(() => selection.clear())
-// The sidebar and the batches say when the next batch comes.
-onMounted(() => void batches.load())
 
 /**
  * What each batch conversation on screen offers to unsubscribe from. Only the listed conversations' messages are read,
@@ -109,31 +104,10 @@ watch(
   },
   { immediate: true },
 )
-
-function signOut(): void {
-  void auth.signOut()
-}
 </script>
 
 <template>
   <div class="shell" :class="{ reading: threadId !== null }">
-    <details class="mailboxes" open>
-      <summary class="mailboxes-toggle">Mailboxes</summary>
-      <MailboxSidebar
-        :display-name="auth.me?.displayName ?? ''"
-        :email="auth.me?.email ?? ''"
-        :accounts="mail.accounts"
-        :unread-counts="mail.unreadCounts"
-        :mailbox="mail.mailbox"
-        :smart-inboxes="mail.smartInboxes"
-        :smart-inbox-counts="mail.smartInboxCounts"
-        :smart-inbox="mail.smartInbox"
-        :batches="mail.batches"
-        :next-batch="batches.nextBatchLabel"
-        :live="mail.live"
-        @sign-out="signOut"
-      />
-    </details>
 
     <SmartInboxManage v-if="wide === 'smart-inbox-manage' && smartInboxId" class="wide" :smart-inbox-id="smartInboxId" />
     <CleanupPanel v-else-if="wide === 'cleanup'" class="wide" />
@@ -174,20 +148,13 @@ function signOut(): void {
 <style scoped>
 .shell {
   display: grid;
-  grid-template-columns: minmax(220px, 272px) minmax(360px, 520px) minmax(0, 1fr);
+  grid-template-columns: minmax(360px, 520px) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
-.mailboxes {
-  display: contents;
-}
-.mailboxes-toggle {
-  display: none;
-}
 .conversations,
 .reading-pane,
-.wide,
-.mailboxes > :deep(nav) {
+.wide {
   min-height: 0;
 }
 .next-batch {
@@ -203,7 +170,7 @@ function signOut(): void {
   text-decoration: none;
 }
 .wide {
-  grid-column: 2 / -1;
+  grid-column: 1 / -1;
 }
 .placeholder {
   display: flex;
@@ -215,31 +182,11 @@ function signOut(): void {
 
 @media (max-width: 1100px) {
   .shell {
-    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
   .shell.reading .conversations,
   .shell:not(.reading) .reading-pane {
     display: none;
-  }
-}
-
-@media (max-width: 760px) {
-  .shell {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .wide {
-    grid-column: 1 / -1;
-  }
-  .mailboxes {
-    display: block;
-    border-bottom: 1px solid var(--line);
-  }
-  .mailboxes-toggle {
-    display: block;
-    padding: 12px 16px;
-    font-weight: 600;
-    cursor: pointer;
   }
 }
 </style>

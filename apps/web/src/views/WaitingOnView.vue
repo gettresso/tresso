@@ -9,19 +9,14 @@ import { errorMessage } from '@/api/errors'
 import { dayValue, pickedDue } from '@/forms/handOver'
 import { provideRequiredFields } from '@/forms/required'
 import { dueLabel, senderName, shortDue } from '@/mail/format'
-import { useAuthStore } from '@/stores/auth'
-import { useBatchesStore } from '@/stores/batches'
 import { useHandOversStore } from '@/stores/handOvers'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import FieldLabel from '@/forms/FieldLabel.vue'
-import MailboxSidebar from '@/components/MailboxSidebar.vue'
 
 /** Closed hand-overs listed below the open ones; older ones stay out of the way. */
 const CLOSED_SHOWN = 20
 
-const auth = useAuthStore()
-const batches = useBatchesStore()
 const mail = useMailStore()
 const handOvers = useHandOversStore()
 const route = useRoute()
@@ -184,24 +179,6 @@ const minDay = dayValue(new Date())
 
 <template>
   <div class="shell">
-    <details class="mailboxes" open>
-      <summary class="mailboxes-toggle">Mailboxes</summary>
-      <MailboxSidebar
-        :display-name="auth.me?.displayName ?? ''"
-        :email="auth.me?.email ?? ''"
-        :accounts="mail.accounts"
-        :unread-counts="mail.unreadCounts"
-        :mailbox="mail.mailbox"
-        :smart-inboxes="mail.smartInboxes"
-        :smart-inbox-counts="mail.smartInboxCounts"
-        :smart-inbox="mail.smartInbox"
-        :live="mail.live"
-        :batches="false"
-        :next-batch="batches.nextBatchLabel"
-        page="waiting"
-        @sign-out="auth.signOut()"
-      />
-    </details>
 
     <main class="main">
       <section class="panel waiting" aria-labelledby="waiting-title">
@@ -301,17 +278,8 @@ const minDay = dayValue(new Date())
 <style scoped>
 .shell {
   display: grid;
-  grid-template-columns: minmax(220px, 272px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
-  min-height: 0;
-}
-.mailboxes {
-  display: contents;
-}
-.mailboxes-toggle {
-  display: none;
-}
-.mailboxes > :deep(nav) {
   min-height: 0;
 }
 .main {
@@ -602,20 +570,6 @@ kbd {
 }
 
 @media (max-width: 760px) {
-  .shell {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .mailboxes {
-    display: block;
-    border-bottom: 1px solid var(--line);
-  }
-  .mailboxes-toggle {
-    display: block;
-    padding: 12px 16px;
-    font-weight: 600;
-    cursor: pointer;
-  }
   .main {
     padding: 16px;
   }

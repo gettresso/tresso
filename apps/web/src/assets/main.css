@@ -29,6 +29,11 @@
   --radius-card: 10px;
   --radius-panel: 14px;
 
+  /* Motion: short and decelerating, so a change lands at once and settles. Only opacity and transform move. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+
   color-scheme: light dark;
 }
 
@@ -113,6 +118,19 @@ button {
   font-weight: 600;
   font-size: 13px;
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    opacity var(--motion-fast) ease,
+    transform var(--motion-fast) var(--ease-out);
+}
+
+.button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.button-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 86%, var(--surface));
 }
 
 .button-primary {
@@ -147,6 +165,11 @@ button {
   color: var(--ink);
   font: 400 14px var(--font-ui);
   min-width: 0;
+  transition: border-color var(--motion-fast) ease;
+}
+.field input:hover,
+.field select:hover {
+  border-color: var(--ink-3);
 }
 .field input[aria-invalid='true'] {
   border-color: var(--danger);
@@ -164,6 +187,9 @@ button {
   background: var(--focus);
   color: #fff;
 }
+.button-accent:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--focus) 88%, var(--ink));
+}
 .button-danger {
   background: transparent;
   color: var(--danger);
@@ -172,4 +198,56 @@ button {
 .button:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+/* A screen that replaces another; the old one goes at once, so nothing waits on it. */
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Menus and suggestion lists open from where they were asked for. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* Windows and notices that arrive from the bottom edge. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Movement is left out when asked; fades stay, so changes still read as changes. */
+@media (prefers-reduced-motion: reduce) {
+  .button:active:not(:disabled) {
+    transform: none;
+  }
+  @keyframes screen-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes rise-in {
+    from {
+      opacity: 0;
+    }
+  }
 }

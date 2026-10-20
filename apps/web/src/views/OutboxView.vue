@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { RouterLink } from 'vue-router'
 import type { SyncedOutgoingMessage } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { useComposeStore } from '@/stores/compose'
@@ -52,7 +51,6 @@ async function edit(message: SyncedOutgoingMessage): Promise<void> {
 
 <template>
   <main class="outbox">
-    <RouterLink :to="{ name: 'unified' }" class="back">← Back to mail</RouterLink>
     <h1>Outbox</h1>
     <p class="lead">Mail that is scheduled, on its way, or could not be sent.</p>
     <p v-if="mail.outbox.length === 0" class="lead">Nothing waiting.</p>
@@ -82,14 +80,8 @@ async function edit(message: SyncedOutgoingMessage): Promise<void> {
   margin: 0 auto;
   padding: 32px 24px;
 }
-.back {
-  color: var(--ink-2);
-  text-decoration: none;
-  font-weight: 600;
-  font-size: 13px;
-}
 h1 {
-  margin: 12px 0 4px;
+  margin: 0 0 4px;
   font: 700 28px/34px var(--font-display);
 }
 .lead {

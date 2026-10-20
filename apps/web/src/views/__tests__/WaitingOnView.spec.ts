@@ -107,7 +107,6 @@ describe('WaitingOnView', () => {
     expect(rows[2]!.get('.name').text()).toBe('tom@company.example')
     expect(rows[0]!.get('a').attributes('href')).toBe('/inbox/t-late')
     expect(wrapper.findAll('.waiting .rows')[1]!.text()).toContain('Replied')
-    expect(wrapper.get('a[aria-current="page"]').text()).toContain('Waiting on')
     wrapper.unmount()
   })
 

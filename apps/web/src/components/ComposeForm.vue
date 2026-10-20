@@ -375,6 +375,8 @@ kbd {
   position: relative;
 }
 .menu {
+  transform-origin: bottom left;
+  animation: pop-in var(--motion-fast) var(--ease-out);
   position: absolute;
   bottom: calc(100% + 6px);
   left: 0;

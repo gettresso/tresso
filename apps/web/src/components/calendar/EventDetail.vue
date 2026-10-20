@@ -116,6 +116,7 @@ function initials(name: string | null, address: string): string {
 
 <style scoped>
 .detail {
+  animation: fade-in var(--motion-base) ease-out;
   display: flex;
   flex-direction: column;
   gap: 10px;

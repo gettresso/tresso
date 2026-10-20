@@ -5,7 +5,6 @@ import { RouterLink, RouterView } from 'vue-router'
 <template>
   <div class="settings">
     <nav class="nav" aria-label="Settings">
-      <RouterLink :to="{ name: 'unified' }" class="back">← Back to mail</RouterLink>
       <h1>Settings</h1>
       <RouterLink :to="{ name: 'settings-accounts' }" class="item">Accounts</RouterLink>
       <RouterLink :to="{ name: 'settings-signatures' }" class="item">Signatures</RouterLink>
@@ -33,15 +32,8 @@ import { RouterLink, RouterView } from 'vue-router'
   gap: 4px;
   padding: 20px 12px;
 }
-.back {
-  padding: 6px 10px;
-  color: var(--ink-2);
-  text-decoration: none;
-  font-weight: 600;
-  font-size: 13px;
-}
 h1 {
-  margin: 12px 10px 12px;
+  margin: 0 10px 12px;
   font: 700 28px/34px var(--font-display);
 }
 .item {
@@ -53,6 +45,12 @@ h1 {
   color: var(--ink);
   text-decoration: none;
   font-weight: 500;
+  transition:
+    background-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
+}
+.item:hover {
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
 }
 .item.router-link-active {
   background: var(--surface);

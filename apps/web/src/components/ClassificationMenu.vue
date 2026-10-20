@@ -215,6 +215,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
   white-space: nowrap;
 }
 .menu {
+  transform-origin: top right;
+  animation: pop-in var(--motion-fast) var(--ease-out);
   position: absolute;
   top: 32px;
   right: 0;

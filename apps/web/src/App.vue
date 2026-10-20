@@ -86,6 +86,7 @@ watch(
 
 <style scoped>
 .problem {
+  animation: fade-in var(--motion-base) ease-out;
   position: fixed;
   left: 50%;
   bottom: 16px;

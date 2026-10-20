@@ -2,7 +2,6 @@
 import { ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import TressoMark from '@/components/TressoMark.vue'
-import MailView from '@/views/MailView.vue'
 
 const auth = useAuthStore()
 const signInError = ref<string | null>(null)
@@ -18,8 +17,7 @@ async function signIn(): Promise<void> {
 </script>
 
 <template>
-  <MailView v-if="auth.isAuthenticated" />
-  <main v-else class="welcome">
+  <main class="welcome">
     <TressoMark :size="56" />
     <h1>Every email is something to do, to hand over, or to know.</h1>
     <template v-if="auth.awaitingBrowser">

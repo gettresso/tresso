@@ -10,6 +10,7 @@ import { useBriefStore } from '@/stores/brief'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
 import { useTodosStore } from '@/stores/todos'
+import type { SidebarPage } from '@/components/sidebarPage'
 
 const props = defineProps<{
   displayName: string
@@ -27,7 +28,7 @@ const props = defineProps<{
   nextBatch: string | null
   live: boolean
   /** A page of its own on screen instead of a list of mail. */
-  page?: 'waiting' | 'brief'
+  page?: SidebarPage
 }>()
 const emit = defineEmits<{ signOut: [] }>()
 
@@ -86,7 +87,7 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
         <span v-if="briefIsNew" class="new">New</span>
         <span v-if="briefLeft > 0" class="count">{{ briefLeft }}<span class="visually-hidden"> to note</span></span>
       </RouterLink>
-      <RouterLink :to="{ name: 'todos' }" class="item">
+      <RouterLink :to="{ name: 'todos' }" class="item" :aria-current="page === 'todos' ? 'page' : undefined">
         <AppIcon name="todo" />
         <span class="label">Todos</span>
         <span v-if="todos.openCount > 0" class="count">{{ todos.openCount }}<span class="visually-hidden"> open</span></span>
@@ -98,23 +99,23 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
           >{{ waitingCount }}<span class="visually-hidden">{{ overdueCount > 0 ? `, ${overdueCount} past due` : ' waiting' }}</span></span
         >
       </RouterLink>
-      <RouterLink :to="{ name: 'calendar' }" class="item">
+      <RouterLink :to="{ name: 'calendar' }" class="item" :aria-current="page === 'calendar' ? 'page' : undefined">
         <AppIcon name="calendar" />
         <span class="label">Calendar</span>
       </RouterLink>
-      <RouterLink :to="{ name: 'triage' }" class="item">
+      <RouterLink :to="{ name: 'triage' }" class="item" :aria-current="page === 'triage' ? 'page' : undefined">
         <AppIcon name="triage" />
         <span class="label">Triage</span>
       </RouterLink>
-      <RouterLink :to="{ name: 'drafts' }" class="item">
+      <RouterLink :to="{ name: 'drafts' }" class="item" :aria-current="page === 'drafts' ? 'page' : undefined">
         <AppIcon name="draft" />
         <span class="label">Drafts</span>
       </RouterLink>
-      <RouterLink :to="{ name: 'cleanup' }" class="item">
+      <RouterLink :to="{ name: 'cleanup' }" class="item" :aria-current="page === 'cleanup' ? 'page' : undefined">
         <AppIcon name="archive" />
         <span class="label">Clean up</span>
       </RouterLink>
-      <RouterLink v-if="outboxCount > 0" :to="{ name: 'outbox' }" class="item">
+      <RouterLink v-if="outboxCount > 0" :to="{ name: 'outbox' }" class="item" :aria-current="page === 'outbox' ? 'page' : undefined">
         <AppIcon name="outbox" />
         <span class="label">Outbox</span>
         <span class="count" :class="{ failed: failedCount > 0 }">{{ outboxCount }}</span>
@@ -161,7 +162,10 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
       <RouterLink :to="{ name: 'settings-accounts-new' }" class="add">+ Add account</RouterLink>
     </div>
 
-    <RouterLink :to="{ name: 'settings-accounts' }" class="item settings">Settings</RouterLink>
+    <RouterLink :to="{ name: 'settings-accounts' }" class="item settings" :aria-current="page === 'settings' ? 'page' : undefined">
+      <AppIcon name="settings" />
+      <span class="label">Settings</span>
+    </RouterLink>
 
     <p class="live" :class="{ on: live }" role="status">{{ live ? 'Up to date' : 'Connecting…' }}</p>
   </nav>
@@ -251,6 +255,9 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
   color: var(--ink);
   font-weight: 500;
   text-decoration: none;
+  transition:
+    background-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease;
 }
 .item:hover {
   background: color-mix(in srgb, var(--surface) 60%, transparent);
@@ -290,6 +297,8 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
 }
 .add {
   display: flex;
+  border-radius: var(--radius-control);
+  transition: color var(--motion-fast) ease;
   align-items: center;
   height: 32px;
   padding: 0 10px;
@@ -297,6 +306,9 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
+}
+.add:hover {
+  color: var(--ink);
 }
 .settings {
   margin-top: auto;
@@ -316,6 +328,9 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
   border-radius: 999px;
   background: var(--ink-3);
   vertical-align: middle;
+}
+.live::before {
+  transition: background-color var(--motion-base) ease;
 }
 .live.on::before {
   background: var(--know);

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   editScopes,
   formatDate,
@@ -297,7 +297,6 @@ function pickDay(day: number): void {
 
     <main class="main" aria-labelledby="calendar-title">
       <header class="toolbar">
-        <RouterLink :to="{ name: 'unified' }" class="button button-quiet icon" aria-label="Back to mail"><AppIcon name="back" /></RouterLink>
         <button type="button" class="button button-quiet" @click="today">Today <kbd>T</kbd></button>
         <button type="button" class="button button-quiet icon" aria-label="Previous" @click="step(-1)"><AppIcon name="back" :size="16" /></button>
         <button type="button" class="button button-quiet icon" aria-label="Next" @click="step(1)"><AppIcon name="next" :size="16" /></button>

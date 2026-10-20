@@ -39,6 +39,7 @@ const paths = {
   plus: ['M12 5v14', 'M5 12h14'],
   next: ['M9 6l6 6-6 6'],
   triage: ['M4 6h16', 'M4 12h9', 'M4 18h9', 'M15 15l2.5 2.5L21 13'],
+  settings: ['M4 6h9', 'M17 6h3', 'M13 4v4', 'M4 12h3', 'M11 12h9', 'M7 10v4', 'M4 18h11', 'M19 18h1', 'M15 16v4'],
 } as const
 
 defineProps<{ name: keyof typeof paths; size?: number; label?: string }>()

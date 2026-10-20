@@ -178,6 +178,8 @@ function paste(event: ClipboardEvent): void {
   font: inherit;
 }
 .suggestions {
+  transform-origin: top left;
+  animation: pop-in var(--motion-fast) var(--ease-out);
   position: absolute;
   z-index: 10;
   top: 100%;

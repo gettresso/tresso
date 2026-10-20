@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
 import { errorMessage } from '@/api/errors'
 import type { Draft } from '@/mail/db'
 import { senderName, shortTime } from '@/mail/format'
@@ -40,7 +39,6 @@ async function remove(draft: Draft): Promise<void> {
 
 <template>
   <main class="drafts">
-    <RouterLink :to="{ name: 'unified' }" class="back">← Back to mail</RouterLink>
     <h1>Drafts</h1>
     <p class="lead">Messages you started, on every device and in each account's Drafts folder.</p>
     <p v-if="drafts.length === 0" class="lead">No drafts.</p>
@@ -67,14 +65,8 @@ async function remove(draft: Draft): Promise<void> {
   margin: 0 auto;
   padding: 32px 24px;
 }
-.back {
-  color: var(--ink-2);
-  text-decoration: none;
-  font-weight: 600;
-  font-size: 13px;
-}
 h1 {
-  margin: 12px 0 4px;
+  margin: 0 0 4px;
   font: 700 28px/34px var(--font-display);
 }
 .lead {

@@ -5,19 +5,14 @@ import { briefProgress, briefSender, groupBrief, threadsToNote, type BriefEntry,
 import { shortTime } from '@/mail/format'
 import { useBriefActions } from '@/mail/useBriefActions'
 import { shortcutAllowed } from '@/mail/useMessageActions'
-import { useAuthStore } from '@/stores/auth'
-import { useBatchesStore } from '@/stores/batches'
 import { useBriefStore } from '@/stores/brief'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
-import MailboxSidebar from '@/components/MailboxSidebar.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 
-const auth = useAuthStore()
 const mail = useMailStore()
 // The sidebar names the next batch once the mail view loaded it; the brief does not ask for it again.
-const batches = useBatchesStore()
 const brief = useBriefStore()
 const compose = useComposeStore()
 const route = useRoute()
@@ -152,24 +147,6 @@ function briefLabel(createdAt: string): string {
 
 <template>
   <div class="shell">
-    <details class="mailboxes" open>
-      <summary class="mailboxes-toggle">Mailboxes</summary>
-      <MailboxSidebar
-        :display-name="auth.me?.displayName ?? ''"
-        :email="auth.me?.email ?? ''"
-        :accounts="mail.accounts"
-        :unread-counts="mail.unreadCounts"
-        :mailbox="null"
-        :smart-inboxes="mail.smartInboxes"
-        :smart-inbox-counts="mail.smartInboxCounts"
-        :smart-inbox="null"
-        :batches="false"
-        :next-batch="batches.nextBatchLabel"
-        page="brief"
-        :live="mail.live"
-        @sign-out="auth.signOut()"
-      />
-    </details>
 
     <main class="main">
       <section class="panel" aria-labelledby="brief-title">
@@ -275,15 +252,9 @@ function briefLabel(createdAt: string): string {
 <style scoped>
 .shell {
   display: grid;
-  grid-template-columns: minmax(220px, 272px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
-}
-.mailboxes {
-  display: contents;
-}
-.mailboxes-toggle {
-  display: none;
 }
 .main {
   min-width: 0;
@@ -544,20 +515,6 @@ h1 {
 }
 
 @media (max-width: 760px) {
-  .shell {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .mailboxes {
-    display: block;
-    border-bottom: 1px solid var(--line);
-  }
-  .mailboxes-toggle {
-    display: block;
-    padding: 12px 16px;
-    font-weight: 600;
-    cursor: pointer;
-  }
   .main {
     padding: 0;
   }

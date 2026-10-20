@@ -161,6 +161,7 @@ onMounted(async () => {
 
 <style scoped>
 .backdrop {
+  animation: fade-in var(--motion-base) ease-out;
   position: fixed;
   inset: 0;
   z-index: 30;
@@ -172,6 +173,7 @@ onMounted(async () => {
   overflow-y: auto;
 }
 .dialog {
+  animation: pop-in var(--motion-base) var(--ease-out);
   width: min(560px, 100%);
   border-radius: 14px;
   background: var(--surface);

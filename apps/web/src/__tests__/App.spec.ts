@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import App from '../App.vue'
 import { useMailStore } from '../stores/mail'
-import HomeView from '../views/HomeView.vue'
+import AppShell from '../views/AppShell.vue'
 
 describe('App', () => {
   beforeEach(() => {
@@ -13,7 +13,7 @@ describe('App', () => {
   })
 
   it('offers sign in when signed out', async () => {
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: HomeView }] })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
     await router.push('/')
     await router.isReady()
 
@@ -24,7 +24,7 @@ describe('App', () => {
   })
 
   it('says to reload, with a button that does, once another tab moved to a newer Tresso', async () => {
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: HomeView }] })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
     await router.push('/')
     await router.isReady()
     const reload = vi.fn<() => void>()

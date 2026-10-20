@@ -232,6 +232,7 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
+  transition: background-color var(--motion-fast) ease;
 }
 .extra {
   flex-basis: 100%;
