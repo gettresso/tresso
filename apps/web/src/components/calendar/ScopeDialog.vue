@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { SCOPE_LABELS, scopeHint, type EditScope } from '@tresso/core'
+import { backdropClose } from '@/components/backdropClose'
 
 /** Asks which events of a series a deletion applies to. */
 const props = defineProps<{ scopes: EditScope[]; title: string; busy: boolean; notifyCount: number }>()
@@ -11,10 +12,12 @@ const notify = ref(true)
 const dialog = ref<HTMLDialogElement | null>(null)
 
 onMounted(() => dialog.value?.showModal?.())
+// A click on the backdrop cancels, like Escape.
+const backdrop = backdropClose(() => emit('cancel'))
 </script>
 
 <template>
-  <dialog ref="dialog" class="scope-dialog" aria-labelledby="scope-title" @cancel.prevent="emit('cancel')">
+  <dialog ref="dialog" class="scope-dialog" aria-labelledby="scope-title" @cancel.prevent="emit('cancel')" @pointerdown="backdrop.onPointerdown" @click="backdrop.onClick">
     <form method="dialog" @submit.prevent="emit('confirm', scope, notify)">
       <h2 id="scope-title">{{ title }}</h2>
       <fieldset v-if="scopes.length > 0">
