@@ -3,23 +3,41 @@
 {% block title %}Sign in{% endblock %}
 
 {% block body %}
-    <main class="login">
-        <h1>Sign in</h1>
+    <main class="page">
+        <div class="brand">
+            <svg class="mark" width="32" height="32" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="3" y="4" width="8.5" height="5" rx="2.5" class="do"/>
+                <rect x="12.5" y="4" width="8.5" height="5" rx="2.5" class="delegate"/>
+                <rect x="9.5" y="10.5" width="5" height="10" rx="2.5" class="know"/>
+            </svg>
+            Tresso
+        </div>
 
-        {% if error %}
-            <p class="error" role="alert">{{ error.messageKey|trans(error.messageData, 'security') }}</p>
-        {% endif %}
+        <section class="card" aria-labelledby="sign-in-title">
+            <h1 id="sign-in-title">Sign in</h1>
+            <p class="lead">Every email is something to do, to hand over, or to know.</p>
 
-        <form method="post" action="{{ path('app_login') }}">
-            <label for="username">Email</label>
-            <input type="email" id="username" name="_username" value="{{ last_username }}" autocomplete="email" required autofocus>
+            {% if error %}
+                <p class="error" role="alert">{{ error.messageKey|trans(error.messageData, 'security') }}</p>
+            {% endif %}
 
-            <label for="password">Password</label>
-            <input type="password" id="password" name="_password" autocomplete="current-password" required>
+            <form class="form" method="post" action="{{ path('app_login') }}">
+                <label class="field" for="username">
+                    Email
+                    <input type="email" id="username" name="_username" value="{{ last_username }}" autocomplete="email" required autofocus>
+                </label>
 
-            <input type="hidden" name="_csrf_token" value="{{ csrf_token('authenticate') }}">
+                <label class="field" for="password">
+                    Password
+                    <input type="password" id="password" name="_password" autocomplete="current-password" required>
+                </label>
 
-            <button type="submit">Sign in</button>
-        </form>
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token('authenticate') }}">
+
+                <button type="submit" class="button">Sign in</button>
+            </form>
+        </section>
+
+        <p class="footnote">After signing in you go back to the Tresso app you came from.</p>
     </main>
 {% endblock %}

@@ -36,6 +36,25 @@ final class SignInFlowTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(401);
     }
 
+    public function testTheSignInPageCarriesTressosLookAndItsFilesExist(): void
+    {
+        $crawler = $this->client->request('GET', '/login');
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('h1', 'Sign in');
+        $public = self::string(static::getContainer()->getParameter('kernel.project_dir')).'/public';
+        foreach (['link[rel="stylesheet"]' => 'href', 'link[rel="icon"]' => 'href'] as $selector => $attribute) {
+            $path = self::string($crawler->filter($selector)->attr($attribute));
+            self::assertFileExists($public.$path, $selector.' points at a file the server has.');
+        }
+        $css = self::string(file_get_contents($public.'/auth/auth.css'));
+        preg_match_all("~url\\('([^']+)'\\)~", $css, $fonts);
+        self::assertNotEmpty($fonts[1]);
+        foreach ($fonts[1] as $font) {
+            self::assertFileExists($public.'/auth/'.$font);
+        }
+    }
+
     public function testWebAppSignsInAndReadsMe(): void
     {
         $verifier = bin2hex(random_bytes(32));
@@ -142,5 +161,12 @@ final class SignInFlowTest extends DatabaseTestCase
         \assert(\is_array($decoded));
 
         return $decoded;
+    }
+
+    private static function string(mixed $value): string
+    {
+        self::assertIsString($value);
+
+        return $value;
     }
 }
