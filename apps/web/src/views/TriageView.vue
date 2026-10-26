@@ -1,15 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { classificationReasonText, type TriageDecision } from '@tresso/core'
+import { classificationReasonText, proposedTime, RESPONSE_WORDS, toInstant, type TriageDecision } from '@tresso/core'
+import { errorMessage } from '@/api/errors'
 import { fullTime, senderName } from '@/mail/format'
 import { shortcutAllowed } from '@/mail/useMessageActions'
 import { useTriage } from '@/mail/useTriage'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
+import { useCalendarStore, type MessageInvitation, type Response } from '@/stores/calendar'
 import AppIcon from '@/components/AppIcon.vue'
 import MessageCard from '@/components/MessageCard.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
+import EventEditor, { type EditorTarget } from '@/components/calendar/EventEditor.vue'
+import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const mail = useMailStore()
 const compose = useComposeStore()
@@ -83,6 +88,91 @@ function exit(): void {
   void router.push({ name: 'unified' })
 }
 
+const calendar = useCalendarStore()
+
+/** The invitation the conversation carries (its newest calendar message), answerable from triage. */
+const invitationMessage = computed(() => [...messages.value].reverse().find((message) => message.calendarMethod !== null) ?? null)
+const invitation = ref<MessageInvitation | null>(null)
+watch(
+  invitationMessage,
+  async (message) => {
+    invitation.value = null
+    if (message === null) {
+      return
+    }
+    try {
+      const found = await calendar.invitation(message.id)
+      if (invitationMessage.value?.id === message.id) {
+        invitation.value = found
+      }
+    } catch {
+      // No invitation the API keeps (a counter proposal, say): triage offers the usual choices only.
+    }
+  },
+  { immediate: true },
+)
+const answerable = computed(() => {
+  const value = invitation.value
+  return value !== null && value.canRespond && value.kind !== 'cancelled' && value.kind !== 'reply' && (value.eventId !== null || value.canApply)
+})
+const answering = ref(false)
+
+/**
+ * Answers the invitation and moves on: the email is handled, so it is put away as noted. An update the calendar has
+ * not taken yet is applied first, as the invitation card does. Undo brings the email back; the answer stays sent.
+ */
+async function answer(response: Response): Promise<void> {
+  const message = invitationMessage.value
+  let value = invitation.value
+  if (message === null || value === null || answering.value) {
+    return
+  }
+  answering.value = true
+  try {
+    if (value.canApply) {
+      value = await calendar.applyInvitation(message.id)
+    }
+    if (value.eventId === null) {
+      throw new Error('it is not in your calendar yet')
+    }
+    await calendar.respondTo(value.eventId, response, value.recurrenceId)
+    compose.notify({ text: `${value.summary || 'Invitation'}: ${RESPONSE_WORDS[response]}. Undo brings the email back; the answer stays sent.`, tone: 'info' })
+    triage.decide('know')
+  } catch (e) {
+    compose.notify({ text: `Could not answer the invitation: ${errorMessage(e)}`, tone: 'error' })
+  } finally {
+    answering.value = false
+  }
+}
+
+/** "Add to calendar": the editor, filled in from the email; saving it puts the email away as noted. */
+const adding = ref<EditorTarget | null>(null)
+
+function eventTitle(subject: string): string {
+  return subject.replace(/^\s*((re|fw|fwd|aw|wg)\s*:\s*)+/i, '').replace(/\?+\s*$/, '').trim()
+}
+
+function addToCalendar(): void {
+  const shown = thread.value
+  const last = newest.value
+  if (shown === null || last === null) {
+    return
+  }
+  const zone = calendar.zone
+  const found = proposedTime(`${shown.subject}\n${last.snippet}`, Date.now(), zone)
+  // Without a time in the mail: the next whole hour, to move in the editor.
+  const nextHour = Math.ceil((Date.now() + 1) / 3_600_000) * 3_600_000
+  const start = found === null ? nextHour : toInstant(found.day + (found.minutes ?? 0) * 60_000, zone)
+  const own = new Set(mail.accounts.map((account) => account.emailAddress.toLowerCase()))
+  const attendees = own.has(last.from.address.toLowerCase()) ? [] : [{ address: last.from.address, name: last.from.name, role: 'required' as const }]
+  adding.value = { kind: 'new', start, allDay: found !== null && found.minutes === null, prefill: { summary: eventTitle(shown.subject), attendees } }
+}
+
+function added(): void {
+  adding.value = null
+  triage.decide('know')
+}
+
 function reply(): void {
   if (newest.value !== null) {
     void compose.openReply(newest.value, 'reply')
@@ -95,7 +185,8 @@ const decisions: { decision: TriageDecision; key: string; label: string; detail:
   { decision: 'know', key: 'K', label: 'Just know', detail: 'Marks read, archives', icon: 'know' },
 ]
 
-// D, H, K decide, J skips, R replies, Z undoes, Escape leaves: not while typing, writing, or in a menu or dialog.
+// D, H, K decide, Y, M, N answer an invitation, A adds to the calendar, J skips, R replies, Z undoes, Escape leaves:
+// not while typing, writing, or in a menu or dialog.
 function shortcut(event: KeyboardEvent): void {
   if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized)) {
     return
@@ -107,6 +198,10 @@ function shortcut(event: KeyboardEvent): void {
     h: showing ? () => triage.decide('delegate') : undefined,
     k: showing ? () => triage.decide('know') : undefined,
     j: showing ? triage.skip : undefined,
+    a: showing ? addToCalendar : undefined,
+    y: showing && answerable.value ? () => void answer('accepted') : undefined,
+    m: showing && answerable.value ? () => void answer('tentative') : undefined,
+    n: showing && answerable.value ? () => void answer('declined') : undefined,
     r: showing ? reply : undefined,
     z: triage.undo,
     escape: exit,
@@ -125,7 +220,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
   <div ref="root" class="triage">
     <header class="top">
       <RouterLink :to="{ name: 'unified' }" class="exit" aria-keyshortcuts="Escape">
-        <AppIcon name="back" :size="16" />Exit triage<kbd>Esc</kbd>
+        <AppIcon name="back" :size="16" />Exit triage <KeyShortcut keys="Esc" />
       </RouterLink>
       <div v-if="progress && progress.total > 0" class="progress">
         <div class="bar" role="progressbar" aria-label="Triage progress" aria-valuemin="0" :aria-valuemax="progress.total" :aria-valuenow="thread ? progress.shown - 1 : progress.total">
@@ -156,7 +251,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
         <div class="done-actions">
           <button v-if="more" type="button" class="button button-primary" @click="triage.nextRound()">Start the next round</button>
           <RouterLink :to="{ name: 'unified' }" class="button" :class="more ? 'button-quiet' : 'button-primary'">Back to the inbox</RouterLink>
-          <button v-if="canUndo" type="button" class="button button-quiet" aria-keyshortcuts="Z" @click="triage.undo()">Undo the last one <kbd>Z</kbd></button>
+          <button v-if="canUndo" type="button" class="button button-quiet" aria-keyshortcuts="Z" @click="triage.undo()">Undo the last one <KeyShortcut keys="Z" /></button>
         </div>
       </section>
 
@@ -177,6 +272,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
           <MessageCard v-for="message in messages" :key="message.id" :message="message" :expanded="expanded.has(message.id)" @toggle="toggle(message.id)" />
         </article>
 
+        <section v-if="answerable && invitation" class="answer" aria-labelledby="triage-answer">
+          <span id="triage-answer" class="answer-label"><AppIcon name="calendar" :size="18" />Answer {{ invitation.summary || 'the invitation' }}</span>
+          <ResponseButtons :current="invitation.selfResponse" :busy="answering" shortcuts :label="`Answer ${invitation.summary}`" @respond="answer" />
+        </section>
+
         <div class="decisions" role="group" aria-label="Decide">
           <button
             v-for="item in decisions"
@@ -188,17 +288,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
             @click="triage.decide(item.decision)"
           >
             <span class="decision-label"><AppIcon :name="item.icon" :size="22" />{{ item.label }}</span>
-            <span class="decision-detail">{{ item.detail }} <kbd>{{ item.key }}</kbd></span>
+            <span class="decision-detail">{{ item.detail }} <KeyShortcut :keys="item.key" /></span>
           </button>
         </div>
 
         <div class="more" role="group" aria-label="More">
-          <button type="button" class="hint" aria-keyshortcuts="J" @click="triage.skip()">Skip <kbd>J</kbd></button>
-          <button type="button" class="hint" aria-keyshortcuts="R" @click="reply">Reply <kbd>R</kbd></button>
-          <button type="button" class="hint" :disabled="!canUndo" aria-keyshortcuts="Z" @click="triage.undo()">Undo <kbd>Z</kbd></button>
+          <button type="button" class="hint" aria-keyshortcuts="J" @click="triage.skip()">Skip <KeyShortcut keys="J" /></button>
+          <button type="button" class="hint" aria-keyshortcuts="R" @click="reply">Reply <KeyShortcut keys="R" /></button>
+          <button type="button" class="hint" aria-keyshortcuts="A" @click="addToCalendar"><AppIcon name="calendar" :size="14" />Add to calendar <KeyShortcut keys="A" /></button>
+          <button type="button" class="hint" :disabled="!canUndo" aria-keyshortcuts="Z" @click="triage.undo()">Undo <KeyShortcut keys="Z" /></button>
         </div>
       </div>
     </main>
+    <EventEditor v-if="adding" :target="adding" @close="adding = null" @saved="added" />
   </div>
 </template>
 
@@ -353,6 +455,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
   font-size: 13px;
   color: var(--ink-2);
 }
+.answer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  animation: fade-in var(--motion-base) ease-out;
+}
+.answer-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
 .decisions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -417,6 +537,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
   gap: 8px 20px;
 }
 .hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 0;
   padding: 4px 6px;
   border-radius: var(--radius-control);
@@ -427,13 +550,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
 }
 .hint:hover:not(:disabled) {
   color: var(--ink);
-}
-kbd {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--line);
-  color: var(--ink-2);
-  font: 500 11px var(--font-mono);
 }
 .state {
   align-self: center;
