@@ -6,6 +6,7 @@ import { toTypedSchema } from '@vee-validate/zod'
 import { searchFilters } from '@tresso/core'
 import { searchSchema, type SearchValues } from '@/forms/search'
 import AppIcon from '@/components/AppIcon.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const props = withDefaults(defineProps<{ query?: string; autofocus?: boolean }>(), { query: '', autofocus: false })
 
@@ -81,7 +82,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
     <button v-if="value !== ''" type="button" class="clear" aria-label="Clear search" @click="clear">
       <AppIcon name="close" :size="16" />
     </button>
-    <kbd v-else class="key" aria-hidden="true">/</kbd>
+    <KeyShortcut v-else class="key" aria-hidden="true" keys="/" />
     <span v-if="value !== '' && errors.q" id="mail-search-error" class="visually-hidden" role="alert">{{ errors.q }}</span>
   </form>
 </template>
@@ -120,12 +121,7 @@ input::-webkit-search-cancel-button {
 .filter,
 .key {
   flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--ground);
   color: var(--ink-2);
-  font: 500 12px var(--font-mono);
-  white-space: nowrap;
 }
 .filter {
   max-width: 30%;

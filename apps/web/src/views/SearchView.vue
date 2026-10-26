@@ -483,7 +483,9 @@ h2 {
   line-height: 18px;
   color: var(--ink-2);
 }
-.tip code,
+.tip code {
+  font: 500 12px var(--font-mono);
+}
 
 @media (max-width: 760px) {
   .main {

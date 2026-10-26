@@ -23,10 +23,11 @@ const OPTIONS: { value: Response; label: string; key: string }[] = [
       class="response"
       :class="option.value"
       :aria-pressed="current === option.value ? 'true' : 'false'"
+      :aria-keyshortcuts="shortcuts ? option.key : undefined"
       :disabled="busy"
       @click="emit('respond', option.value)"
     >
-      {{ option.label }}<KeyShortcut v-if="shortcuts" :keys="option.key" />
+      {{ option.label }} <KeyShortcut v-if="shortcuts" :keys="option.key" />
     </button>
   </div>
 </template>
