@@ -29,6 +29,7 @@ import FieldLabel from '@/forms/FieldLabel.vue'
 import { provideRequiredFields } from '@/forms/required'
 import { EVENT_LOCATION_MAX, EVENT_REMINDERS_MAX, EVENT_SUMMARY_MAX, eventSchema, inputFromValues, ruleOf, valuesFromInput, type EventValues } from '@/forms/calendarEvent'
 import AppIcon from '@/components/AppIcon.vue'
+import { backdropClose } from '@/components/backdropClose'
 import { useCalendarStore } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
 import KeyShortcut from '@/components/KeyShortcut.vue'
@@ -288,6 +289,8 @@ function close(): void {
 }
 
 const dialog = ref<HTMLDialogElement | null>(null)
+// A click on the backdrop closes it like Cancel, asking first when there are changes.
+const backdrop = backdropClose(close)
 const titleInput = ref<HTMLInputElement | null>(null)
 onMounted(() => {
   dialog.value?.showModal?.()
@@ -301,7 +304,7 @@ const repeatSummary = computed(() => {
 </script>
 
 <template>
-  <dialog ref="dialog" class="editor" aria-labelledby="editor-title" @cancel.prevent="close">
+  <dialog ref="dialog" class="editor" aria-labelledby="editor-title" @cancel.prevent="close" @pointerdown="backdrop.onPointerdown" @click="backdrop.onClick">
     <form novalidate @submit.prevent="save" @keydown="onKeydown">
       <header class="header">
         <h2 id="editor-title">{{ isNew ? 'New event' : 'Edit event' }}</h2>
