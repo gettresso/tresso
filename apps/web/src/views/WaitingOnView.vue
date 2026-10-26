@@ -179,7 +179,6 @@ const minDay = dayValue(new Date())
 
 <template>
   <div class="shell">
-
     <main class="main">
       <section class="panel waiting" aria-labelledby="waiting-title">
         <header class="head">

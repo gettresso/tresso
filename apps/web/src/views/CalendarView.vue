@@ -537,6 +537,19 @@ kbd {
   opacity: 0.7;
 }
 
+/* Next to the app's sidebar, an open event takes too much of the week below this width: it lies over the week instead. */
+@media (max-width: 1360px) {
+  .calendar-shell.detail {
+    grid-template-columns: 248px minmax(0, 1fr);
+  }
+  .detail-panel {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: 40;
+    box-shadow: var(--raised);
+  }
+}
+
 @media (max-width: 1100px) {
   .calendar-shell,
   .calendar-shell.detail {
@@ -544,11 +557,6 @@ kbd {
   }
   .rail {
     display: none;
-  }
-  .detail-panel {
-    position: fixed;
-    inset: 0 0 0 auto;
-    z-index: 40;
   }
   .pending {
     display: none;

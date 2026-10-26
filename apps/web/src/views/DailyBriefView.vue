@@ -12,7 +12,6 @@ import AppIcon from '@/components/AppIcon.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 
 const mail = useMailStore()
-// The sidebar names the next batch once the mail view loaded it; the brief does not ask for it again.
 const brief = useBriefStore()
 const compose = useComposeStore()
 const route = useRoute()
@@ -147,7 +146,6 @@ function briefLabel(createdAt: string): string {
 
 <template>
   <div class="shell">
-
     <main class="main">
       <section class="panel" aria-labelledby="brief-title">
         <header class="header">

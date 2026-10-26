@@ -101,7 +101,6 @@ function threadLink(hit: SearchHit) {
 
 <template>
   <div class="shell">
-
     <main class="main">
       <section class="results" aria-label="Search results">
         <header class="header">

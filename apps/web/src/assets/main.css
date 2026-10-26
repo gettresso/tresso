@@ -204,7 +204,6 @@ button {
 @keyframes screen-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
   }
 }
 
@@ -234,11 +233,6 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .button:active:not(:disabled) {
     transform: none;
-  }
-  @keyframes screen-in {
-    from {
-      opacity: 0;
-    }
   }
   @keyframes pop-in {
     from {

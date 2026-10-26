@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBatchesStore } from '@/stores/batches'
@@ -16,15 +16,12 @@ const route = useRoute()
 const page = computed(() => sidebarPage(route))
 const inBatches = computed(() => route.name === 'batches' || route.name === 'batches-thread')
 
-// The sidebar says when the next batch comes, on every screen.
-onMounted(() => {
-  if (auth.isAuthenticated) {
-    void batches.load()
-  }
-})
+// The sidebar says when the next batch comes, on every screen. Loading again is free once the schedule is known, so
+// each new screen also retries a load that failed before (say while offline).
 watch(
-  () => auth.isAuthenticated,
-  (authenticated) => authenticated && void batches.load(),
+  [() => auth.isAuthenticated, () => route.fullPath],
+  ([authenticated]) => authenticated && void batches.load(),
+  { immediate: true },
 )
 
 // On a phone the mailboxes fold away above the screen; going somewhere folds them again.
@@ -38,7 +35,11 @@ watch(
     }
   },
 )
-narrow?.addEventListener('change', (query) => (mailboxesOpen.value = !query.matches))
+function widthChanged(query: MediaQueryListEvent): void {
+  mailboxesOpen.value = !query.matches
+}
+narrow?.addEventListener('change', widthChanged)
+onBeforeUnmount(() => narrow?.removeEventListener('change', widthChanged))
 
 function toggled(event: Event): void {
   mailboxesOpen.value = (event.target as HTMLDetailsElement).open
@@ -99,7 +100,10 @@ function toggled(event: Event): void {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* A new screen fades in while the sidebar stays put. Moving within one screen, say between conversations, keeps it. */
+  /*
+   * A new screen fades in while the sidebar stays put. Moving within one screen, say between conversations, keeps it.
+   * Only opacity: a transform here would pin a screen's fixed panels to the screen instead of the window.
+   */
   animation: screen-in var(--motion-base) var(--ease-out);
 }
 
