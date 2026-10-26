@@ -7,6 +7,7 @@ import { useHandOversStore } from '@/stores/handOvers'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import VerdictChip from '@/components/VerdictChip.vue'
+import { useAnchoredMenu } from '@/components/anchoredMenu'
 
 /**
  * The verdict and smart inbox of a conversation, and the menu to change them. A change is remembered for the sender,
@@ -29,6 +30,7 @@ const busy = ref(false)
 const error = ref<string | null>(null)
 const menu = ref<HTMLElement | null>(null)
 const button = ref<HTMLButtonElement | null>(null)
+const { style: menuStyle, above: menuAbove } = useAnchoredMenu(button, menu, open, 'end')
 
 const smartInbox = computed(() => mail.smartInboxes.find((candidate) => candidate.id === props.smartInboxId) ?? null)
 const label = computed(() => {
@@ -138,7 +140,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
       <span v-if="showSmartInbox && smartInbox" class="smart-inbox">{{ smartInbox.name }}</span>
       <AppIcon name="chevron" :size="14" />
     </button>
-    <div v-if="open" ref="menu" class="menu" role="menu" aria-label="Where this belongs" @keydown="keydown">
+    <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" aria-label="Where this belongs" @keydown="keydown">
       <div role="group" aria-label="Verdict" class="group">
         <span class="group-title" aria-hidden="true">Verdict</span>
         <button
@@ -217,21 +219,21 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
 .menu {
   transform-origin: top right;
   animation: pop-in var(--motion-fast) var(--ease-out);
-  position: absolute;
-  top: 32px;
-  right: 0;
-  z-index: 20;
+  z-index: 50;
   display: flex;
   flex-direction: column;
   gap: 4px;
   width: 240px;
-  max-height: 360px;
+  max-height: min(360px, var(--menu-room, 360px));
   overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--surface);
   box-shadow: var(--raised);
+}
+.menu.above {
+  transform-origin: bottom right;
 }
 .group {
   display: flex;
