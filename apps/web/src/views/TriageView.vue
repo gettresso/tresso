@@ -13,6 +13,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import MessageCard from '@/components/MessageCard.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import EventEditor, { type EditorTarget } from '@/components/calendar/EventEditor.vue'
+import { reducedMotion } from '@/components/calendar/genie'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 
@@ -185,20 +186,59 @@ function added(): void {
 }
 
 /**
- * How the card leaves: toward the choice made (do to the left, hand over up, know to the right), down for a skip, and
- * fading for an undo, so each decision is felt as the email going somewhere.
+ * The card goes toward the choice made (do to the left, hand over up, know to the right), down for a skip, and fades for
+ * an undo, so each decision is felt as the email going somewhere. What flies off is a copy: the real card shows the next
+ * email at once, keeps the keyboard focus, and the keys always act on what is on screen.
  */
-const cardMotion = ref('card-skip')
+const CARD_EXITS: Record<string, string> = {
+  do: 'translateX(-32px)',
+  delegate: 'translateY(-24px)',
+  know: 'translateX(32px)',
+  skip: 'translateY(16px)',
+  undo: 'none',
+}
+const card = ref<HTMLElement | null>(null)
+
+function flyOff(exit: keyof typeof CARD_EXITS): void {
+  const shown = card.value
+  if (shown === null || typeof shown.animate !== 'function') {
+    return
+  }
+  const box = shown.getBoundingClientRect()
+  const ghost = shown.cloneNode(true) as HTMLElement
+  ghost.removeAttribute('id')
+  ghost.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'))
+  ghost.setAttribute('aria-hidden', 'true')
+  ghost.inert = true
+  Object.assign(ghost.style, { position: 'fixed', top: `${box.top}px`, left: `${box.left}px`, width: `${box.width}px`, height: `${box.height}px`, margin: '0', pointerEvents: 'none', zIndex: '15' })
+  document.body.append(ghost)
+  const to = reducedMotion() ? 'none' : CARD_EXITS[exit]!
+  const leaving = ghost.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: to }], { duration: 160, easing: 'ease-in', fill: 'forwards' })
+  leaving.onfinish = () => ghost.remove()
+  leaving.oncancel = () => ghost.remove()
+}
+
+// The next email rises into the card's place as the old one flies off.
+watch(
+  () => thread.value?.id,
+  (next, previous) => {
+    if (next !== undefined && previous !== undefined && next !== previous && !reducedMotion()) {
+      card.value?.animate?.([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 200, delay: 60, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', fill: 'backwards' })
+    }
+  },
+  { flush: 'post' },
+)
+
 function decide(decision: TriageDecision): void {
-  cardMotion.value = `card-${decision}`
+  flyOff(decision)
   triage.decide(decision)
 }
 function skip(): void {
-  cardMotion.value = 'card-skip'
+  flyOff('skip')
   triage.skip()
 }
 function undo(): void {
-  cardMotion.value = 'card-undo'
+  flyOff('undo')
   triage.undo()
 }
 
@@ -270,10 +310,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
     <p class="visually-hidden" role="status">{{ announcement }}</p>
 
     <main class="stage">
-      <Transition :name="cardMotion" mode="out-in">
-      <p v-if="!progress" key="loading" class="state">Loading your mail…</p>
+      <p v-if="!progress" class="state">Loading your mail…</p>
 
-      <section v-else-if="current === null" key="done" class="state done" aria-labelledby="triage-done">
+      <section v-else-if="current === null" class="state done" aria-labelledby="triage-done">
         <h1 id="triage-done" ref="doneTitle" tabindex="-1">{{ progress.total === 0 ? 'Nothing to triage' : more ? 'Round done' : 'All triaged' }}</h1>
         <p v-if="progress.total === 0">Every email in your inboxes already has a place.</p>
         <p v-else>
@@ -287,10 +326,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
         </div>
       </section>
 
-      <p v-else-if="!thread || !newest" key="next" class="state next">Loading the next email…</p>
+      <p v-else-if="!thread || !newest" class="state next">Loading the next email…</p>
 
-      <div v-else :key="thread.id" class="column">
-        <article class="card" aria-labelledby="triage-subject">
+      <div v-else class="column">
+        <article ref="card" class="card" aria-labelledby="triage-subject">
           <div class="who">
             <SenderAvatar :sender="newest.from" :size="40" />
             <span class="from">
@@ -332,7 +371,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
           <button type="button" class="hint" :disabled="!canUndo" aria-keyshortcuts="Z" @click="undo()">Undo <KeyShortcut keys="Z" /></button>
         </div>
       </div>
-      </Transition>
     </main>
     <Transition name="layer"><EventEditor v-if="adding" :target="adding" @close="adding = null" @saved="added" /></Transition>
   </div>
@@ -631,84 +669,5 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
 /* The next email usually loads at once: its placeholder only shows when it takes a moment. */
 .state.next {
   animation: fade-in var(--motion-base) 160ms both;
-}
-.card-do-enter-active,
-.card-delegate-enter-active,
-.card-know-enter-active,
-.card-skip-enter-active,
-.card-undo-enter-active {
-  animation: card-in var(--motion-base) var(--ease-out);
-}
-.card-do-leave-active {
-  animation: card-out-left var(--motion-fast) ease-in forwards;
-}
-.card-delegate-leave-active {
-  animation: card-out-up var(--motion-fast) ease-in forwards;
-}
-.card-know-leave-active {
-  animation: card-out-right var(--motion-fast) ease-in forwards;
-}
-.card-skip-leave-active {
-  animation: card-out-down var(--motion-fast) ease-in forwards;
-}
-.card-undo-leave-active {
-  animation: fade-out var(--motion-fast) ease-in forwards;
-}
-@keyframes card-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-}
-@keyframes card-out-left {
-  to {
-    opacity: 0;
-    transform: translateX(-32px);
-  }
-}
-@keyframes card-out-up {
-  to {
-    opacity: 0;
-    transform: translateY(-24px);
-  }
-}
-@keyframes card-out-right {
-  to {
-    opacity: 0;
-    transform: translateX(32px);
-  }
-}
-@keyframes card-out-down {
-  to {
-    opacity: 0;
-    transform: translateY(16px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  @keyframes card-in {
-    from {
-      opacity: 0;
-    }
-  }
-  @keyframes card-out-left {
-    to {
-      opacity: 0;
-    }
-  }
-  @keyframes card-out-up {
-    to {
-      opacity: 0;
-    }
-  }
-  @keyframes card-out-right {
-    to {
-      opacity: 0;
-    }
-  }
-  @keyframes card-out-down {
-    to {
-      opacity: 0;
-    }
-  }
 }
 </style>

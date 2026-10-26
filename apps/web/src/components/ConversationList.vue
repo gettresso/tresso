@@ -16,6 +16,8 @@ import { collapseLeave, expandEnter } from '@/components/listMotion'
 
 const props = defineProps<{
   title: string
+  /** Which list this is; a new one starts fresh, without rows animating across the switch. Falls back to the title. */
+  listKey?: string
   conversations: Conversation[]
   selectedThreadId: string | null
   hasMore: boolean
@@ -120,7 +122,7 @@ const days = computed(() => {
     </header>
 
     <!-- A list of its own (another inbox) starts fresh: no rows animate in or out across the switch. -->
-    <div :key="title" class="scroll">
+    <div :key="listKey ?? title" class="scroll">
       <Transition name="bar">
         <BulkBar v-if="selection.active" :conversations="conversations" />
       </Transition>

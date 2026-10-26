@@ -71,6 +71,8 @@ export const useMailStore = defineStore('mail', () => {
   const allFolders = ref<SyncedFolder[]>([])
   const signatures = ref<SyncedSignature[]>([])
   const conversations = ref<Conversation[]>([])
+  /** Which list `conversations` is: it changes in the same tick as the rows, so the screen can tell a new list from a changed one. */
+  const listKey = ref('')
   const unreadCounts = ref<Map<string, number>>(new Map())
   /** Outgoing mail that is scheduled, on its way or failed. */
   const outbox = ref<SyncedOutgoingMessage[]>([])
@@ -388,6 +390,7 @@ export const useMailStore = defineStore('mail', () => {
     if (database === null) {
       return
     }
+    const listed = JSON.stringify(scope.value)
     const [nextAccounts, nextFolders, nextSignatures, nextConversations, nextCounts, nextOutbox, nextSmartInboxes, nextSmartCounts, nextTodos, nextUnsubscriptions, nextHandOvers, nextBriefs, nextCalendars] = await Promise.all([
       database.mailAccounts(),
       database.folders(),
@@ -418,6 +421,7 @@ export const useMailStore = defineStore('mail', () => {
     signatures.value = nextSignatures
     hasMore.value = nextConversations.length > listLimit.value
     conversations.value = nextConversations.slice(0, listLimit.value)
+    listKey.value = listed
     unreadCounts.value = nextCounts
     unsubscriptions.value = nextUnsubscriptions
   }
@@ -737,6 +741,7 @@ export const useMailStore = defineStore('mail', () => {
 
   return {
     accounts,
+    listKey,
     allFolders,
     signatures,
     conversations,

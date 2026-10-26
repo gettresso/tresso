@@ -1,11 +1,13 @@
 import { reducedMotion } from '@/components/calendar/genie'
 
 const EASE = 'cubic-bezier(0.23, 1, 0.32, 1)'
-/** More rows than this arriving at once (a page of older mail, a first sync) just appear: a wave would be noise. */
+/** More rows than this moving at once (a page of older mail, a bulk archive) just appear or go: a wave would be noise. */
 const MOST_AT_ONCE = 4
 
-let entering = 0
-let resetQueued = false
+type Move = { element: HTMLElement; done: () => void; shift: number }
+let leaving: Move[] = []
+let entering: Move[] = []
+let queued = false
 
 /** The box around the content, which folds along with the height (or a padded row would stop at its padding). */
 function box(element: HTMLElement): Keyframe {
@@ -14,19 +16,7 @@ function box(element: HTMLElement): Keyframe {
 }
 const FOLDED: Keyframe = { paddingTop: '0px', paddingBottom: '0px', marginTop: '0px', marginBottom: '0px' }
 
-function animatable(element: Element): element is HTMLElement {
-  return element instanceof HTMLElement && typeof element.animate === 'function' && !reducedMotion()
-}
-
-/**
- * For <TransitionGroup :css="false">: a row that leaves fades and folds shut, so the rows below glide up into its place
- * instead of jumping.
- */
-export function collapseLeave(element: Element, done: () => void, shift = 12): void {
-  if (!animatable(element)) {
-    done()
-    return
-  }
+function fold({ element, done, shift }: Move): void {
   const height = element.offsetHeight
   const open = box(element)
   element.style.overflow = 'hidden'
@@ -43,20 +33,7 @@ export function collapseLeave(element: Element, done: () => void, shift = 12): v
   folding.oncancel = done
 }
 
-/** A row that arrives (new mail) opens up and fades in; many at once just appear. */
-export function expandEnter(element: Element, done: () => void): void {
-  entering += 1
-  if (!resetQueued) {
-    resetQueued = true
-    queueMicrotask(() => {
-      entering = 0
-      resetQueued = false
-    })
-  }
-  if (!animatable(element) || entering > MOST_AT_ONCE) {
-    done()
-    return
-  }
+function unfold({ element, done }: Move): void {
   const height = element.offsetHeight
   const open = box(element)
   element.style.overflow = 'hidden'
@@ -74,4 +51,58 @@ export function expandEnter(element: Element, done: () => void): void {
   }
   opening.onfinish = finish
   opening.oncancel = finish
+}
+
+function run(moves: Move[], animate: (move: Move) => void): void {
+  const moving = !reducedMotion() && moves.length <= MOST_AT_ONCE
+  for (const move of moves) {
+    if (moving && typeof move.element.animate === 'function') {
+      animate(move)
+    } else {
+      move.done()
+    }
+  }
+}
+
+/**
+ * The rows that start to move in one tick are judged together: a few fold, many (a bulk archive, a page of older mail)
+ * all just go or appear, so a big change is never a wave of rows nor half animated.
+ */
+function queue(): void {
+  if (queued) {
+    return
+  }
+  queued = true
+  queueMicrotask(() => {
+    queued = false
+    const going = leaving
+    const coming = entering
+    leaving = []
+    entering = []
+    run(going, fold)
+    run(coming, unfold)
+  })
+}
+
+/**
+ * For <TransitionGroup :css="false">: a row that leaves fades and folds shut, so the rows below glide up into its place
+ * instead of jumping.
+ */
+export function collapseLeave(element: Element, done: () => void, shift = 12): void {
+  if (!(element instanceof HTMLElement)) {
+    done()
+    return
+  }
+  leaving.push({ element, done, shift })
+  queue()
+}
+
+/** For <TransitionGroup :css="false">: a row that arrives (new mail) opens up and fades in. */
+export function expandEnter(element: Element, done: () => void): void {
+  if (!(element instanceof HTMLElement)) {
+    done()
+    return
+  }
+  entering.push({ element, done, shift: 0 })
+  queue()
 }

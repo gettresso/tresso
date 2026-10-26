@@ -115,6 +115,7 @@ watch(
       <ConversationList
         class="conversations"
         :title="title"
+        :list-key="mail.listKey"
         :conversations="mail.conversations"
         :selected-thread-id="threadId"
         :has-more="mail.hasMore"

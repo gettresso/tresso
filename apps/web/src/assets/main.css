@@ -321,18 +321,23 @@ button {
  */
 html .layer-leave-active.layer-leave-active {
   animation: layer-out var(--motion-fast) ease-in forwards;
+  /* On its way out it takes no clicks: a double click must not choose twice. */
+  pointer-events: none;
 }
 html .layer-leave-active.layer-leave-active::backdrop {
   animation: fade-out var(--motion-fast) ease-in forwards;
 }
 html .fade-leave-active.fade-leave-active {
   animation: fade-out 100ms ease-in forwards;
+  pointer-events: none;
 }
 html .sink-leave-active.sink-leave-active {
   animation: sink-out var(--motion-fast) ease-in forwards;
+  pointer-events: none;
 }
 html .panel-leave-active.panel-leave-active {
   animation: slide-out-right var(--motion-fast) ease-in forwards;
+  pointer-events: none;
 }
 /* A native modal dialog fades its backdrop in with it. */
 dialog[open]::backdrop {

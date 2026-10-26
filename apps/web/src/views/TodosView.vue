@@ -139,7 +139,7 @@ async function toggle(todo: Todo): Promise<void> {
               :aria-label="`${todo.completedAt === null ? 'Complete' : 'Reopen'} ${todo.title}`"
               @change="toggle(todo)"
             />
-            <RouterLink :to="{ name: 'todo', params: { todoId: todo.id } }" class="title">{{ todo.title }}</RouterLink>
+            <RouterLink :to="{ name: 'todo', params: { todoId: todo.id } }" class="title"><span class="title-text">{{ todo.title }}</span></RouterLink>
             <span class="source">
               <RouterLink v-if="emailOf(todo)" :to="{ name: 'unified-thread', params: { threadId: emailOf(todo)!.threadId } }" class="email">
                 <AppIcon name="mail" :size="14" /> {{ senderName(emailOf(todo)!.from) }}
@@ -288,7 +288,7 @@ async function toggle(todo: Todo): Promise<void> {
   width: 18px;
   height: 18px;
   margin: 0;
-  border: 2px solid var(--line-strong);
+  border: 2px solid var(--ink-3);
   border-radius: 5px;
   background: var(--surface);
   cursor: pointer;
@@ -301,8 +301,8 @@ async function toggle(todo: Todo): Promise<void> {
   width: 9px;
   height: 5px;
   margin-top: -2px;
-  border-left: 2px solid #fff;
-  border-bottom: 2px solid #fff;
+  border-left: 2px solid var(--surface);
+  border-bottom: 2px solid var(--surface);
   transform: rotate(-45deg);
   clip-path: inset(0 100% 0 0);
   transition: clip-path 200ms var(--ease-out) 60ms;
@@ -315,7 +315,7 @@ async function toggle(todo: Todo): Promise<void> {
   clip-path: inset(0 0 0 0);
 }
 .check:hover:not(:checked) {
-  border-color: var(--ink-3);
+  border-color: var(--ink-2);
 }
 .title {
   overflow: hidden;
@@ -325,16 +325,25 @@ async function toggle(todo: Todo): Promise<void> {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* Done: a line runs through the title as it greys out. */
-.title {
+/* Done: a line runs through the title's words (not the space after them) as it greys out. */
+.title-text {
   background: linear-gradient(currentcolor, currentcolor) 0 55% / 0% 1px no-repeat;
+  box-decoration-break: clone;
   transition:
     background-size 240ms var(--ease-out),
     color var(--motion-base) ease;
 }
 .row.done .title {
   color: var(--ink-3);
+}
+.row.done .title-text {
   background-size: 100% 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .check::after,
+  .title-text {
+    transition: none;
+  }
 }
 .source {
   color: var(--ink-2);

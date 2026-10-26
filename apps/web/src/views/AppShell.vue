@@ -30,28 +30,37 @@ const narrow = typeof window.matchMedia === 'function' ? window.matchMedia('(max
 const mailboxesOpen = ref(narrow === null || !narrow.matches)
 const mailboxes = ref<HTMLDetailsElement | null>(null)
 
-/** Folds the mailboxes open or shut on a phone, with their height easing instead of the screen jumping. */
+/** Where the fold is heading; a second tap while it moves turns it around. */
+const folding = ref<{ open: boolean; animation: Animation } | null>(null)
+
+/** Folds the mailboxes open or shut on a phone, with their height (and padding) easing instead of the screen jumping. */
 async function fold(open: boolean): Promise<void> {
+  folding.value?.animation.cancel()
+  folding.value = null
   const list = mailboxes.value?.querySelector<HTMLElement>('nav')
   if (list === null || list === undefined || typeof list.animate !== 'function' || reducedMotion() || !narrow?.matches) {
     mailboxesOpen.value = open
     return
   }
-  const options = { duration: 220, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' }
-  if (open) {
-    mailboxesOpen.value = true
-    await nextTick()
-    list.animate([{ height: '0px', opacity: 0 }, { height: `${list.offsetHeight}px`, opacity: 1 }], options)
-    return
+  mailboxesOpen.value = true
+  await nextTick()
+  const style = getComputedStyle(list)
+  const shown = { height: `${list.offsetHeight}px`, paddingTop: style.paddingTop, paddingBottom: style.paddingBottom, opacity: 1 }
+  const hidden = { height: '0px', paddingTop: '0px', paddingBottom: '0px', opacity: 0 }
+  list.style.overflow = 'hidden'
+  const animation = list.animate(open ? [hidden, shown] : [shown, hidden], { duration: 220, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' })
+  folding.value = { open, animation }
+  animation.onfinish = () => {
+    list.style.overflow = ''
+    folding.value = null
+    mailboxesOpen.value = open
   }
-  const shutting = list.animate([{ height: `${list.offsetHeight}px`, opacity: 1 }, { height: '0px', opacity: 0 }], options)
-  shutting.onfinish = () => (mailboxesOpen.value = false)
 }
 
 function summaryClick(event: MouseEvent): void {
   if (narrow?.matches) {
     event.preventDefault()
-    void fold(!mailboxesOpen.value)
+    void fold(!(folding.value?.open ?? mailboxesOpen.value))
   }
 }
 

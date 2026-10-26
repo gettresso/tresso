@@ -272,7 +272,8 @@ const save = handleSubmit(async (current) => {
     const target = occurrence.value === null ? null : { occurrence: occurrence.value, scope: occurrence.value.recurring ? scope.value : 'all' }
     const input = target === null ? edited : inputForScope(target.occurrence, before, edited, target.scope)
     const saved = await calendar.save(input, target, notify.value)
-    const landingAt = props.landing === undefined || reducedMotion() ? null : await props.landing(saved)
+    // Only a new event flies into its place: an edited one is already on screen at its old time until the copy catches up.
+    const landingAt = props.landing === undefined || props.target.kind !== 'new' || reducedMotion() ? null : await props.landing(saved)
     if (landingAt !== null && dialog.value !== null) {
       await genie(dialog.value, landingAt)
     }
@@ -293,6 +294,10 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 function close(): void {
+  // While saving (and flying into the saved event) the editor is on its way out: Escape or a click beside it waits.
+  if (saving.value) {
+    return
+  }
   if (meta.value.dirty && !window.confirm('Discard the changes to this event?')) {
     return
   }
