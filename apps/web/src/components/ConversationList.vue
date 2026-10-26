@@ -12,6 +12,7 @@ import ClassificationMenu from '@/components/ClassificationMenu.vue'
 import MenuButton from '@/components/MenuButton.vue'
 import SearchField from '@/components/SearchField.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
+import { collapseLeave, expandEnter } from '@/components/listMotion'
 
 const props = defineProps<{
   title: string
@@ -118,10 +119,14 @@ const days = computed(() => {
       <SearchField />
     </header>
 
-    <div class="scroll">
-      <BulkBar v-if="selection.active" :conversations="conversations" />
+    <!-- A list of its own (another inbox) starts fresh: no rows animate in or out across the switch. -->
+    <div :key="title" class="scroll">
+      <Transition name="bar">
+        <BulkBar v-if="selection.active" :conversations="conversations" />
+      </Transition>
       <section v-for="day in days" :key="day.key" :aria-label="day.label">
         <h2 class="day">{{ day.label }}</h2>
+        <TransitionGroup :css="false" @enter="expandEnter" @leave="collapseLeave">
         <div
           v-for="conversation in day.conversations"
           :key="conversation.threadId"
@@ -168,6 +173,7 @@ const days = computed(() => {
           />
           <div v-if="$slots.extra" class="extra"><slot name="extra" :conversation="conversation" /></div>
         </div>
+        </TransitionGroup>
       </section>
 
       <p v-if="conversations.length === 0 && !loading && !hasAccounts" class="empty">
@@ -368,5 +374,11 @@ h1 {
 .more {
   display: flex;
   margin: 12px auto 0;
+}
+.bar-enter-active {
+  animation: slide-down-in var(--motion-base) var(--ease-out);
+}
+.bar-leave-active {
+  animation: fade-out 100ms ease-in forwards;
 }
 </style>

@@ -71,8 +71,8 @@ watch(
 <template>
   <RouterView />
   <template v-if="auth.isAuthenticated">
-    <ComposeWindow v-if="compose.draft" />
-    <HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" />
+    <Transition name="sink"><ComposeWindow v-if="compose.draft" /></Transition>
+    <Transition name="layer"><HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" /></Transition>
     <NoticeStack />
   </template>
   <p v-if="mail.updatedElsewhere" class="problem" role="alert">

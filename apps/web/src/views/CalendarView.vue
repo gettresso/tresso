@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   editScopes,
@@ -15,6 +15,7 @@ import {
   wallParts,
   type EditScope,
   type Occurrence,
+  type SyncedCalendarEvent,
   type TodoBlock,
 } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
@@ -28,6 +29,7 @@ import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import ScopeDialog from '@/components/calendar/ScopeDialog.vue'
 import TimeGrid from '@/components/calendar/TimeGrid.vue'
 import TodoBlockDetail from '@/components/calendar/TodoBlockDetail.vue'
+import { inView, reducedMotion } from '@/components/calendar/genie'
 import { useCalendarStore, type CalendarViewKind, type Response } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
 import { useTodosStore } from '@/stores/todos'
@@ -184,7 +186,39 @@ async function edit(): Promise<void> {
     actionError.value = errorMessage(error)
   }
 }
-function saved(): void {
+// Moving to the next or previous period slides the days in from that side; switching views fades. The grid stays the
+// same element (and keeps its scroll), it only moves for a moment.
+watch(
+  () => [calendar.view, calendar.anchor] as const,
+  async ([view, anchor], [oldView, oldAnchor]) => {
+    if (reducedMotion()) return
+    await nextTick()
+    const body = shell.value?.querySelector<HTMLElement>('.main > .view')
+    const keyframes =
+      view !== oldView ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: `translateX(${anchor > oldAnchor ? 16 : -16}px)` }, { opacity: 1, transform: 'none' }]
+    body?.animate?.(keyframes, { duration: 180, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' })
+  },
+)
+
+/** Whether the editor flew into the saved event, which then needs no closing animation. */
+const landed = ref(false)
+const shell = ref<HTMLElement | null>(null)
+
+/** The saved event on screen, once the copy has it (a few frames at most); null when it is not in view. */
+async function landing(event: SyncedCalendarEvent): Promise<HTMLElement | null> {
+  for (let frame = 0; frame < 24; frame++) {
+    await nextTick()
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    const shown = [...(shell.value?.querySelectorAll<HTMLElement>(`[data-key^="${CSS.escape(event.id)}:"]`) ?? [])]
+    if (shown.length > 0) {
+      return shown.find(inView) ?? null
+    }
+  }
+  return null
+}
+
+function saved(didLand: boolean): void {
+  landed.value = didLand
   status.value = 'Event saved.'
   editor.value = null
 }
@@ -281,7 +315,7 @@ function pickDay(day: number): void {
 </script>
 
 <template>
-  <div class="calendar-shell" :class="{ detail: selected !== null || selectedTodo !== null }">
+  <div ref="shell" class="calendar-shell" :class="{ detail: selected !== null || selectedTodo !== null }">
     <CalendarRail
       class="rail"
       :anchor="calendar.anchor"
@@ -376,45 +410,50 @@ function pickDay(day: number): void {
       <p class="visually-hidden" role="status" aria-live="polite">{{ status }}</p>
     </main>
 
-    <EventDetail
-      v-if="selected"
-      class="detail-panel"
-      :occurrence="selected"
-      :calendar="calendar.calendar(selected.event.calendarId)"
-      :zone="calendar.zone"
-      :now="calendar.now"
-      :busy="busy"
-      :error="actionError"
-      @close="closeDetail"
-      @edit="edit"
-      @delete="deleteSelected"
-      @respond="(response, onlyThis) => respond(selected!, response, onlyThis)"
-    />
+    <Transition name="panel">
+      <EventDetail
+        v-if="selected"
+        class="detail-panel"
+        :occurrence="selected"
+        :calendar="calendar.calendar(selected.event.calendarId)"
+        :zone="calendar.zone"
+        :now="calendar.now"
+        :busy="busy"
+        :error="actionError"
+        @close="closeDetail"
+        @edit="edit"
+        @delete="deleteSelected"
+        @respond="(response, onlyThis) => respond(selected!, response, onlyThis)"
+      />
+      <TodoBlockDetail
+        v-else-if="selectedTodo"
+        class="detail-panel"
+        :block="selectedTodo"
+        :zone="calendar.zone"
+        :now="calendar.now"
+        :busy="busy"
+        :error="actionError"
+        @close="closeDetail"
+        @plan="onTodo('plan')"
+        @unplan="onTodo('unplan')"
+        @done="onTodo('done')"
+      />
+    </Transition>
 
-    <TodoBlockDetail
-      v-else-if="selectedTodo"
-      class="detail-panel"
-      :block="selectedTodo"
-      :zone="calendar.zone"
-      :now="calendar.now"
-      :busy="busy"
-      :error="actionError"
-      @close="closeDetail"
-      @plan="onTodo('plan')"
-      @unplan="onTodo('unplan')"
-      @done="onTodo('done')"
-    />
-
-    <EventEditor v-if="editor" :target="editor" @close="editor = null" @saved="saved" />
-    <ScopeDialog
-      v-if="deleting"
-      :scopes="deleteScopes"
-      :title="`Delete ${deleting.event.summary || 'this event'}?`"
-      :busy="busy"
-      :notify-count="deleting.event.attendees.length"
-      @confirm="confirmDelete"
-      @cancel="deleting = null"
-    />
+    <Transition :name="landed ? 'landed' : 'layer'" @after-leave="landed = false">
+      <EventEditor v-if="editor" :target="editor" :landing="landing" @close="editor = null" @saved="saved" />
+    </Transition>
+    <Transition name="layer">
+      <ScopeDialog
+        v-if="deleting"
+        :scopes="deleteScopes"
+        :title="`Delete ${deleting.event.summary || 'this event'}?`"
+        :busy="busy"
+        :notify-count="deleting.event.attendees.length"
+        @confirm="confirmDelete"
+        @cancel="deleting = null"
+      />
+    </Transition>
   </div>
 </template>
 

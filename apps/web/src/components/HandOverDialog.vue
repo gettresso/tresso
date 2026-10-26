@@ -286,4 +286,11 @@ textarea {
   justify-content: flex-end;
   gap: 8px;
 }
+/* Leaving: the backdrop fades while the dialog shrinks away inside it. */
+.backdrop.layer-leave-active {
+  animation: fade-out var(--motion-fast) ease-in forwards;
+}
+.layer-leave-active .dialog {
+  animation: layer-out var(--motion-fast) ease-in forwards;
+}
 </style>

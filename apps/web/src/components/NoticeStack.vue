@@ -1,16 +1,22 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
 import { useComposeStore } from '@/stores/compose'
+import { collapseLeave } from '@/components/listMotion'
 
 const compose = useComposeStore()
 const now = ref(Date.now())
 const timer = setInterval(() => (now.value = Date.now()), 250)
 onBeforeUnmount(() => clearInterval(timer))
+
+/** A notice that goes slides back toward the edge it came from and folds shut, so the ones above settle down. */
+function leave(element: Element, done: () => void): void {
+  collapseLeave(element, done, -16)
+}
 </script>
 
 <template>
-  <div class="notices" aria-live="polite">
-    <div v-if="compose.undoable" class="notice">
+  <TransitionGroup tag="div" class="notices" aria-live="polite" :css="false" @leave="leave">
+    <div v-if="compose.undoable" key="undo" class="notice">
       <span>Sending in {{ Math.max(0, Math.ceil((compose.undoable.until - now) / 1000)) }} s</span>
       <button type="button" class="action" @click="compose.undo()">Undo</button>
     </div>
@@ -31,7 +37,7 @@ onBeforeUnmount(() => clearInterval(timer))
       </button>
       <button type="button" class="close" aria-label="Dismiss" @click="compose.dismiss(notice.id)">×</button>
     </div>
-  </div>
+  </TransitionGroup>
 </template>
 
 <style scoped>

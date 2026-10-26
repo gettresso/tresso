@@ -15,6 +15,7 @@ import { useTodosStore } from '@/stores/todos'
 import AppIcon from '@/components/AppIcon.vue'
 import TodoDetail from '@/components/TodoDetail.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import { collapseLeave, expandEnter } from '@/components/listMotion'
 
 provideRequiredFields(quickAddSchema)
 
@@ -129,7 +130,7 @@ async function toggle(todo: Todo): Promise<void> {
 
       <section v-for="group in groups" :key="group.section" class="group" :aria-labelledby="`todos-${group.section}`">
         <h2 :id="`todos-${group.section}`" class="group-title">{{ group.label }} <span class="group-count">{{ group.todos.length }}</span></h2>
-        <ul class="rows">
+        <TransitionGroup tag="ul" class="rows" :css="false" @enter="expandEnter" @leave="collapseLeave">
           <li v-for="todo in group.todos" :key="todo.id" class="row" :class="{ done: todo.completedAt !== null, current: todo.id === selectedId }">
             <input
               type="checkbox"
@@ -151,7 +152,7 @@ async function toggle(todo: Todo): Promise<void> {
               <AppIcon name="clock" :size="14" /> {{ dueLabel(todo, now) }}
             </span>
           </li>
-        </ul>
+        </TransitionGroup>
       </section>
     </div>
 
@@ -278,12 +279,43 @@ async function toggle(todo: Todo): Promise<void> {
   background: var(--selected);
   box-shadow: inset 0 0 0 1.5px var(--do);
 }
+/* A drawn check: the box fills and the tick draws itself from left to right. */
 .check {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
   width: 18px;
   height: 18px;
   margin: 0;
-  accent-color: var(--do);
+  border: 2px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
+}
+.check::after {
+  content: '';
+  width: 9px;
+  height: 5px;
+  margin-top: -2px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg);
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 200ms var(--ease-out) 60ms;
+}
+.check:checked {
+  border-color: var(--do);
+  background: var(--do);
+}
+.check:checked::after {
+  clip-path: inset(0 0 0 0);
+}
+.check:hover:not(:checked) {
+  border-color: var(--ink-3);
 }
 .title {
   overflow: hidden;
@@ -293,9 +325,16 @@ async function toggle(todo: Todo): Promise<void> {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* Done: a line runs through the title as it greys out. */
+.title {
+  background: linear-gradient(currentcolor, currentcolor) 0 55% / 0% 1px no-repeat;
+  transition:
+    background-size 240ms var(--ease-out),
+    color var(--motion-base) ease;
+}
 .row.done .title {
   color: var(--ink-3);
-  text-decoration: line-through;
+  background-size: 100% 1px;
 }
 .source {
   color: var(--ink-2);

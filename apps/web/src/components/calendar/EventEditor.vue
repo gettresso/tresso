@@ -23,6 +23,7 @@ import {
   type NotificationChannel,
   type Occurrence,
   type RepeatPreset,
+  type SyncedCalendarEvent,
 } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
 import FieldLabel from '@/forms/FieldLabel.vue'
@@ -30,6 +31,7 @@ import { provideRequiredFields } from '@/forms/required'
 import { EVENT_LOCATION_MAX, EVENT_REMINDERS_MAX, EVENT_SUMMARY_MAX, eventSchema, inputFromValues, ruleOf, valuesFromInput, type EventValues } from '@/forms/calendarEvent'
 import AppIcon from '@/components/AppIcon.vue'
 import { backdropClose } from '@/components/backdropClose'
+import { genie, reducedMotion } from '@/components/calendar/genie'
 import { useCalendarStore } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
 import KeyShortcut from '@/components/KeyShortcut.vue'
@@ -46,8 +48,13 @@ export interface EventPrefill {
 /** What the editor opens on: a new event at a time, or an occurrence to change. */
 export type EditorTarget = { kind: 'new'; start: number; allDay: boolean; prefill?: EventPrefill } | { kind: 'edit'; occurrence: Occurrence }
 
-const props = defineProps<{ target: EditorTarget }>()
-const emit = defineEmits<{ close: []; saved: [] }>()
+const props = defineProps<{
+  target: EditorTarget
+  /** Where the saved event shows on screen, for the editor to land in (the calendar); null when it is not in view. */
+  landing?: (event: SyncedCalendarEvent) => Promise<HTMLElement | null>
+}>()
+/** Saved: `landed` when the editor already flew into the event, so it needs no closing animation of its own. */
+const emit = defineEmits<{ close: []; saved: [landed: boolean] }>()
 
 provideRequiredFields(eventSchema)
 
@@ -264,8 +271,12 @@ const save = handleSubmit(async (current) => {
     const edited = inputFromValues(current, { status: before.status, url: before.url })
     const target = occurrence.value === null ? null : { occurrence: occurrence.value, scope: occurrence.value.recurring ? scope.value : 'all' }
     const input = target === null ? edited : inputForScope(target.occurrence, before, edited, target.scope)
-    await calendar.save(input, target, notify.value)
-    emit('saved')
+    const saved = await calendar.save(input, target, notify.value)
+    const landingAt = props.landing === undefined || reducedMotion() ? null : await props.landing(saved)
+    if (landingAt !== null && dialog.value !== null) {
+      await genie(dialog.value, landingAt)
+    }
+    emit('saved', landingAt !== null)
   } catch (e) {
     error.value = errorMessage(e)
     if (e instanceof ApiError) setErrors(formErrors(e.violations))
@@ -492,6 +503,7 @@ const repeatSummary = computed(() => {
 
 <style scoped>
 .editor {
+  animation: pop-in var(--motion-base) var(--ease-out);
   width: min(680px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   padding: 0;
