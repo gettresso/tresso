@@ -5,9 +5,11 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import type { ChangePage, HandedOver, SyncedHandOver, SyncedMessage, SyncedSmartInbox, SyncedThread } from '@tresso/core'
 import { deleteMailDatabase } from '@/mail/db'
+import { useCalendarStore } from '@/stores/calendar'
 import { useComposeStore } from '@/stores/compose'
 import { useHandOversStore } from '@/stores/handOvers'
 import { useMailStore } from '@/stores/mail'
+import EventEditor from '@/components/calendar/EventEditor.vue'
 import TriageView from '../TriageView.vue'
 
 const USER = 'triage-user'
@@ -89,6 +91,8 @@ describe('TriageView', () => {
   let placements: number
   /** Whether the next todo request finds one already (another email of the conversation has an open todo). */
   let todoExists: boolean
+  /** What the newest email (m1) carries besides the defaults: a text, a calendar invitation. */
+  let firstMessage: Partial<SyncedMessage>
 
   beforeEach(async () => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
@@ -104,6 +108,7 @@ describe('TriageView', () => {
     releaseStatus = 204
     placements = 0
     todoExists = false
+    firstMessage = {}
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -132,7 +137,7 @@ describe('TriageView', () => {
               folders,
               smartInboxes: [smartInbox('todo', 'todo', 'do', 0), smartInbox('spam', 'spam', 'none', 1), smartInbox('invoices', null, 'know', 2)],
               threads,
-              messages: [message('m1', 't1', 'Charged twice', '2026-10-19T10:00:00Z', false), message('m2', 't2', 'Already placed', '2026-10-19T09:00:00Z', true), message('m3', 't3', 'Lunch', '2026-10-19T08:00:00Z', true)],
+              messages: [{ ...message('m1', 't1', 'Charged twice', '2026-10-19T10:00:00Z', false), ...firstMessage }, message('m2', 't2', 'Already placed', '2026-10-19T09:00:00Z', true), message('m3', 't3', 'Lunch', '2026-10-19T08:00:00Z', true)],
             }),
           )
         }
@@ -169,6 +174,12 @@ describe('TriageView', () => {
       if (url.pathname === '/api/v1/message-actions') {
         return json({ changed: 1 })
       }
+      if (url.pathname === '/api/v1/messages/m1/invitation') {
+        return json(invitationOf())
+      }
+      if (/^\/api\/v1\/calendar-events\/[^/]+\/response$/.test(url.pathname)) {
+        return json({})
+      }
       if (url.pathname.endsWith('/body')) {
         return json({ id: url.pathname.split('/')[4], html: null, text: 'Hello', hasRemoteContent: false, remoteContentLoaded: false, attachments: [] })
       }
@@ -179,6 +190,7 @@ describe('TriageView', () => {
       routes: [
         { path: '/', name: 'unified', component: { template: '<div />' } },
         { path: '/triage', name: 'triage', component: TriageView },
+        { path: '/calendar/:view?/:date?', name: 'calendar', component: { template: '<div />' } },
       ],
     })
     await router.push('/triage')
@@ -244,6 +256,32 @@ describe('TriageView', () => {
     for (let i = 0; i < 6; i++) {
       await flushPromises()
       await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+  }
+
+  function invitationOf() {
+    return {
+      id: 'i1',
+      method: 'REQUEST',
+      kind: 'new',
+      uid: 'u1',
+      recurrenceId: null,
+      sequence: 0,
+      summary: 'Quarterly planning',
+      description: '',
+      location: '',
+      allDay: false,
+      start: { dateTime: '2026-10-28T10:00:00', timeZone: 'Europe/Amsterdam' },
+      end: { dateTime: '2026-10-28T11:00:00', timeZone: 'Europe/Amsterdam' },
+      recurrence: null,
+      organizer: { address: 'lisa@partner.example', name: 'Lisa' },
+      attendees: [],
+      conference: null,
+      eventId: 'e1',
+      selfResponse: 'needs-action',
+      canRespond: true,
+      conflicts: [],
+      canApply: false,
     }
   }
 
@@ -600,5 +638,65 @@ describe('TriageView', () => {
 
     press('Escape')
     await until(() => expect(router.currentRoute.value.name).toBe('unified'))
+  })
+
+  it('answers an invitation with Y and puts the email away, the answer sent', async () => {
+    firstMessage = { calendarMethod: 'REQUEST' }
+    const wrapper = await mountView()
+    await until(() => expect(wrapper.find('.answer').exists()).toBe(true))
+    expect(wrapper.get('.answer-label').text()).toContain('Quarterly planning')
+
+    press('y')
+    await until(() => expect(subject(wrapper)).toBe('Lunch'))
+    await until(() => expect(requests).toHaveLength(3))
+
+    expect(requests[0]).toMatchObject({ method: 'POST', path: '/api/v1/calendar-events/e1/response', body: { response: 'accepted' } })
+    expect(bodies().slice(1)).toEqual([
+      { messageIds: ['m1'], action: 'archive' },
+      { messageIds: ['m1'], action: 'markRead' },
+    ])
+    expect(useComposeStore().notices.map((notice) => notice.text)).toContain('Quarterly planning: Going. Undo brings the email back; the answer stays sent.')
+  })
+
+  it('offers no answer for an email without an invitation, and leaves Y alone there', async () => {
+    const wrapper = await mountView()
+    press('y')
+    await settle()
+
+    expect(wrapper.find('.answer').exists()).toBe(false)
+    expect(subject(wrapper)).toBe('Charged twice')
+    expect(requests).toEqual([])
+  })
+
+  it('adds an email that proposes a time to the calendar, filled in, and puts it away once saved', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    // Monday 26 October 2026, 15:04 in Amsterdam.
+    vi.setSystemTime(new Date('2026-10-26T14:04:00Z'))
+    firstMessage = { subject: 'Re: Lunch on Thursday?', snippet: 'Hey Kim, lunch on Thursday at 12:30? The usual place.' }
+    threads = [{ ...invoice, subject: 'Re: Lunch on Thursday?' }, decided, lunch]
+    try {
+      const wrapper = await mountView()
+      useCalendarStore().zone = 'Europe/Amsterdam'
+
+      press('a')
+      await until(() => expect(wrapper.findComponent(EventEditor).exists()).toBe(true))
+      const target = wrapper.findComponent(EventEditor).props('target')
+      expect(target).toMatchObject({
+        kind: 'new',
+        allDay: false,
+        prefill: { summary: 'Lunch on Thursday', attendees: [{ address: 'm1@partner.example', name: 'Sender m1', role: 'required' }] },
+      })
+      expect(target.kind === 'new' && new Date(target.start).toISOString()).toBe('2026-10-29T11:30:00.000Z')
+
+      wrapper.findComponent(EventEditor).vm.$emit('saved')
+      await until(() => expect(subject(wrapper)).toBe('Lunch'))
+      await until(() => expect(requests).toHaveLength(2))
+      expect(bodies()).toEqual([
+        { messageIds: ['m1'], action: 'archive' },
+        { messageIds: ['m1'], action: 'markRead' },
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -17,6 +17,7 @@ import {
   scopeHint,
   toWall,
   zoneLabel,
+  type AttendeeInput,
   type EditScope,
   type EventInput,
   type NotificationChannel,
@@ -30,9 +31,17 @@ import { EVENT_LOCATION_MAX, EVENT_REMINDERS_MAX, EVENT_SUMMARY_MAX, eventSchema
 import AppIcon from '@/components/AppIcon.vue'
 import { useCalendarStore } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
+import KeyShortcut from '@/components/KeyShortcut.vue'
+
+/** A new event can start filled in, say from an email that proposes a time. */
+export interface EventPrefill {
+  summary?: string
+  description?: string
+  attendees?: AttendeeInput[]
+}
 
 /** What the editor opens on: a new event at a time, or an occurrence to change. */
-export type EditorTarget = { kind: 'new'; start: number; allDay: boolean } | { kind: 'edit'; occurrence: Occurrence }
+export type EditorTarget = { kind: 'new'; start: number; allDay: boolean; prefill?: EventPrefill } | { kind: 'edit'; occurrence: Occurrence }
 
 const props = defineProps<{ target: EditorTarget }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
@@ -53,10 +62,11 @@ function initial(): EventInput {
   const zone = calendar.zone
   const wall = toWall(props.target.start, zone)
   const calendarId = calendar.newEventCalendar?.id ?? writable.value[0]?.id ?? ''
-  if (props.target.allDay) {
-    return blank(calendarId, { date: formatDate(wall) }, { date: formatDate(wall + 86_400_000) })
-  }
-  return blank(calendarId, { dateTime: formatDateTime(wall), timeZone: zone }, { dateTime: formatDateTime(wall + 3_600_000), timeZone: zone })
+  const input = props.target.allDay
+    ? blank(calendarId, { date: formatDate(wall) }, { date: formatDate(wall + 86_400_000) })
+    : blank(calendarId, { dateTime: formatDateTime(wall), timeZone: zone }, { dateTime: formatDateTime(wall + 3_600_000), timeZone: zone })
+  const prefill = props.target.prefill ?? {}
+  return { ...input, summary: prefill.summary ?? '', description: prefill.description ?? '', attendees: prefill.attendees ?? [] }
 }
 
 function blank(calendarId: string, start: EventInput['start'], end: EventInput['end']): EventInput {
@@ -282,7 +292,6 @@ onMounted(() => {
   titleInput.value?.focus()
 })
 
-const shortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd Enter' : 'Ctrl Enter'
 const repeatSummary = computed(() => {
   const rule = ruleOf(values as EventValues)
   return rule === null ? null : describeRule(rule)
@@ -296,7 +305,7 @@ const repeatSummary = computed(() => {
         <h2 id="editor-title">{{ isNew ? 'New event' : 'Edit event' }}</h2>
         <span class="spacer" />
         <button type="button" class="button button-quiet" @click="close">Cancel</button>
-        <button type="submit" class="button button-primary" :disabled="saving">{{ saveLabel }} <kbd>{{ shortcut }}</kbd></button>
+        <button type="submit" class="button button-primary" :disabled="saving">{{ saveLabel }} <KeyShortcut keys="Mod+Enter" /></button>
       </header>
 
       <div class="fields">
