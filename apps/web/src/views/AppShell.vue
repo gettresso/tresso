@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBatchesStore } from '@/stores/batches'
@@ -7,6 +7,7 @@ import { useMailStore } from '@/stores/mail'
 import MailboxSidebar from '@/components/MailboxSidebar.vue'
 import { sidebarPage } from '@/components/sidebarPage'
 import SignInView from '@/views/SignInView.vue'
+import { reducedMotion } from '@/components/calendar/genie'
 
 const auth = useAuthStore()
 const mail = useMailStore()
@@ -27,11 +28,38 @@ watch(
 // On a phone the mailboxes fold away above the screen; going somewhere folds them again.
 const narrow = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 760px)') : null
 const mailboxesOpen = ref(narrow === null || !narrow.matches)
+const mailboxes = ref<HTMLDetailsElement | null>(null)
+
+/** Folds the mailboxes open or shut on a phone, with their height easing instead of the screen jumping. */
+async function fold(open: boolean): Promise<void> {
+  const list = mailboxes.value?.querySelector<HTMLElement>('nav')
+  if (list === null || list === undefined || typeof list.animate !== 'function' || reducedMotion() || !narrow?.matches) {
+    mailboxesOpen.value = open
+    return
+  }
+  const options = { duration: 220, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' }
+  if (open) {
+    mailboxesOpen.value = true
+    await nextTick()
+    list.animate([{ height: '0px', opacity: 0 }, { height: `${list.offsetHeight}px`, opacity: 1 }], options)
+    return
+  }
+  const shutting = list.animate([{ height: `${list.offsetHeight}px`, opacity: 1 }, { height: '0px', opacity: 0 }], options)
+  shutting.onfinish = () => (mailboxesOpen.value = false)
+}
+
+function summaryClick(event: MouseEvent): void {
+  if (narrow?.matches) {
+    event.preventDefault()
+    void fold(!mailboxesOpen.value)
+  }
+}
+
 watch(
   () => route.fullPath,
   () => {
-    if (narrow?.matches) {
-      mailboxesOpen.value = false
+    if (narrow?.matches && mailboxesOpen.value) {
+      void fold(false)
     }
   },
 )
@@ -48,8 +76,8 @@ function toggled(event: Event): void {
 
 <template>
   <div v-if="auth.isAuthenticated" class="app">
-    <details class="mailboxes" :open="mailboxesOpen" @toggle="toggled">
-      <summary class="mailboxes-toggle">Mailboxes</summary>
+    <details ref="mailboxes" class="mailboxes" :open="mailboxesOpen" @toggle="toggled">
+      <summary class="mailboxes-toggle" @click="summaryClick">Mailboxes</summary>
       <MailboxSidebar
         :display-name="auth.me?.displayName ?? ''"
         :email="auth.me?.email ?? ''"

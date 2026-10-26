@@ -1,12 +1,33 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useComposeStore } from '@/stores/compose'
 import ComposeForm from '@/components/ComposeForm.vue'
 
 const compose = useComposeStore()
+// The window keeps showing its draft while it animates away after the store let go of it (sent, closed, discarded).
+const draft = shallowRef(compose.draft)
+watch(
+  () => compose.draft,
+  (next) => {
+    if (next !== null) {
+      draft.value = next
+    }
+  },
+)
+
+// Minimizing and expanding settle with a short rise, so the window does not just jump to its new size.
+const root = ref<HTMLElement | null>(null)
+watch(
+  () => compose.minimized,
+  () => {
+    if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      root.value?.animate?.([{ opacity: 0.7, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], { duration: 180, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' })
+    }
+  },
+)
 
 const title = computed(() => {
-  switch (compose.draft?.kind) {
+  switch (draft.value?.kind) {
     case 'reply':
     case 'replyAll':
       return 'Reply'
@@ -22,7 +43,7 @@ const savedText = computed(() =>
 </script>
 
 <template>
-  <section v-if="compose.draft" class="compose" :class="{ minimized: compose.minimized }" role="dialog" :aria-label="title" @keydown.esc="compose.close()">
+  <section v-if="draft" ref="root" class="compose" :class="{ minimized: compose.minimized }" role="dialog" :aria-label="title" @keydown.esc="compose.close()">
     <header class="bar">
       <h2>{{ title }}</h2>
       <span class="saved" aria-live="polite">{{ savedText }}</span>
@@ -36,7 +57,7 @@ const savedText = computed(() =>
       <button type="button" class="button button-quiet" @click="compose.resolveConflict('theirs')">Use the other version</button>
       <button type="button" class="button button-primary" @click="compose.resolveConflict('mine')">Keep this one</button>
     </div>
-    <ComposeForm v-show="!compose.minimized" :key="`${compose.draft.id}:${compose.revision}`" :draft="compose.draft" />
+    <ComposeForm v-show="!compose.minimized" :key="`${draft.id}:${compose.revision}`" :draft="draft" />
   </section>
 </template>
 

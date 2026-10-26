@@ -176,6 +176,7 @@ function openItem(item: Occurrence | TodoBlock): void {
               :class="{ ...itemLook(item.occurrence).state, filled: inAllDayRow(item.occurrence), selected: item.occurrence.key === selectedKey }"
               :style="itemLook(item.occurrence).color"
               data-occurrence=""
+              :data-key="item.occurrence.key"
               data-cell-item=""
               tabindex="-1"
               :aria-label="itemLook(item.occurrence).label"

@@ -99,19 +99,21 @@ function paste(event: ClipboardEvent): void {
           @paste="paste"
           @blur="commit"
         />
-        <ul v-if="open" :id="`${id}-list`" class="suggestions" role="listbox">
-          <li
-            v-for="(contact, index) in suggestions"
-            :id="`${id}-option-${index}`"
-            :key="contact.key"
-            role="option"
-            :aria-selected="index === active"
-            @mousedown.prevent="add([{ address: contact.address, name: contact.name }])"
-          >
-            <span class="name">{{ contact.name || contact.address }}</span>
-            <span v-if="contact.name" class="address">{{ contact.address }}</span>
-          </li>
-        </ul>
+        <Transition name="fade">
+          <ul v-if="open" :id="`${id}-list`" class="suggestions" role="listbox">
+            <li
+              v-for="(contact, index) in suggestions"
+              :id="`${id}-option-${index}`"
+              :key="contact.key"
+              role="option"
+              :aria-selected="index === active"
+              @mousedown.prevent="add([{ address: contact.address, name: contact.name }])"
+            >
+              <span class="name">{{ contact.name || contact.address }}</span>
+              <span v-if="contact.name" class="address">{{ contact.address }}</span>
+            </li>
+          </ul>
+        </Transition>
       </div>
     </div>
     <small v-if="props.error" class="error">{{ props.error }}</small>

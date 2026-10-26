@@ -88,9 +88,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
     <button ref="button" type="button" class="tool" :disabled="props.disabled || items.length === 0" aria-haspopup="menu" :aria-expanded="open" @click="open ? close() : show()">
       <AppIcon v-if="icon" :name="icon" /> {{ label }}
     </button>
-    <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" :aria-label="menuLabel" @keydown="keydown">
-      <button v-for="item in items" :key="item.id" type="button" role="menuitem" tabindex="-1" class="item" @click="choose(item.id)">{{ item.label }}</button>
-    </div>
+    <Transition name="fade">
+      <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" :aria-label="menuLabel" @keydown="keydown">
+        <button v-for="item in items" :key="item.id" type="button" role="menuitem" tabindex="-1" class="item" @click="choose(item.id)">{{ item.label }}</button>
+      </div>
+    </Transition>
   </div>
 </template>
 

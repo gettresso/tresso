@@ -81,7 +81,7 @@ function sub(day: CalendarDay): string {
               <span class="chip" :class="{ pending: occurrence.conflict }">{{ occurrence.conflict ? 'Conflict' : 'Planned' }}</span>
             </button>
           </li>
-          <li v-else class="row" :class="{ past: occurrence.end <= now }" :style="calendarColor(calendars(occurrence.event.calendarId))">
+          <li v-else class="row" :class="{ past: occurrence.end <= now }" :style="calendarColor(calendars(occurrence.event.calendarId))" :data-key="occurrence.key">
             <button
               type="button"
               class="open"

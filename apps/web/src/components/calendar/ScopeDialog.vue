@@ -44,6 +44,7 @@ const backdrop = backdropClose(() => emit('cancel'))
 
 <style scoped>
 .scope-dialog {
+  animation: pop-in var(--motion-base) var(--ease-out);
   width: min(420px, calc(100vw - 32px));
   padding: 20px;
   border: 1px solid var(--line);

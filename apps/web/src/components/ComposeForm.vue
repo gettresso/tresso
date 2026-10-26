@@ -230,18 +230,20 @@ function keydown(event: KeyboardEvent): void {
       <button type="submit" class="button button-primary" :disabled="compose.sending"><AppIcon name="outbox" :size="15" />Send <KeyShortcut keys="Mod+Enter" /></button>
       <div class="later">
         <button type="button" class="button button-quiet" :aria-expanded="laterOpen" @click="laterOpen = !laterOpen"><AppIcon name="clock" :size="16" />Send later<AppIcon name="chevron" :size="14" class="chevron" :class="{ open: laterOpen }" /></button>
-        <div v-if="laterOpen" class="menu" role="menu">
-          <button v-for="option in laterOptions" :key="option.label" type="button" role="menuitem" @click="sendLater(option.time)">
-            <span>{{ option.label }}</span>
-            <span class="when">{{ option.time.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' }) }}</span>
-          </button>
-          <div class="custom">
-            <label for="compose-later">Pick date and time</label>
-            <input id="compose-later" v-model="customTime" type="datetime-local" />
-            <small v-if="timeError" class="field-error">{{ timeError }}</small>
-            <button type="button" class="button button-quiet" @click="sendCustom">Schedule</button>
+        <Transition name="fade">
+          <div v-if="laterOpen" class="menu" role="menu">
+            <button v-for="option in laterOptions" :key="option.label" type="button" role="menuitem" @click="sendLater(option.time)">
+              <span>{{ option.label }}</span>
+              <span class="when">{{ option.time.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' }) }}</span>
+            </button>
+            <div class="custom">
+              <label for="compose-later">Pick date and time</label>
+              <input id="compose-later" v-model="customTime" type="datetime-local" />
+              <small v-if="timeError" class="field-error">{{ timeError }}</small>
+              <button type="button" class="button button-quiet" @click="sendCustom">Schedule</button>
+            </div>
           </div>
-        </div>
+        </Transition>
       </div>
       <button type="button" class="button button-quiet" @click="fileInput?.click()"><AppIcon name="attachment" :size="16" />Attach files</button>
       <input ref="fileInput" class="file-input" type="file" multiple tabindex="-1" aria-hidden="true" @change="pickFiles" />

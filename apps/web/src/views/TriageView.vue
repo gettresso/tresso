@@ -140,7 +140,7 @@ async function answer(response: Response): Promise<void> {
     await calendar.respondTo(value.eventId, response, value.recurrenceId)
     compose.notify({ text: `${value.summary || 'Invitation'}: ${RESPONSE_WORDS[response]}. Undo brings the email back; the answer stays sent.`, tone: 'info' })
     if (thread.value?.id === answered) {
-      triage.decide('know')
+      decide('know')
     }
   } catch (e) {
     compose.notify({ text: `Could not answer the invitation: ${errorMessage(e)}`, tone: 'error' })
@@ -179,9 +179,27 @@ function addToCalendar(): void {
 function added(): void {
   adding.value = null
   if (thread.value?.id === addingFor) {
-    triage.decide('know')
+    decide('know')
   }
   addingFor = null
+}
+
+/**
+ * How the card leaves: toward the choice made (do to the left, hand over up, know to the right), down for a skip, and
+ * fading for an undo, so each decision is felt as the email going somewhere.
+ */
+const cardMotion = ref('card-skip')
+function decide(decision: TriageDecision): void {
+  cardMotion.value = `card-${decision}`
+  triage.decide(decision)
+}
+function skip(): void {
+  cardMotion.value = 'card-skip'
+  triage.skip()
+}
+function undo(): void {
+  cardMotion.value = 'card-undo'
+  triage.undo()
 }
 
 function reply(): void {
@@ -207,16 +225,16 @@ function shortcut(event: KeyboardEvent): void {
   // While an invitation answer goes out, deciding waits: it would put away the email that comes next.
   const deciding = showing && !answering.value
   const keys: Record<string, (() => void) | undefined> = {
-    d: deciding ? () => triage.decide('do') : undefined,
-    h: deciding ? () => triage.decide('delegate') : undefined,
-    k: deciding ? () => triage.decide('know') : undefined,
-    j: deciding ? triage.skip : undefined,
+    d: deciding ? () => decide('do') : undefined,
+    h: deciding ? () => decide('delegate') : undefined,
+    k: deciding ? () => decide('know') : undefined,
+    j: deciding ? skip : undefined,
     a: deciding && !answerable.value ? addToCalendar : undefined,
     y: showing && answerable.value ? () => void answer('accepted') : undefined,
     m: showing && answerable.value ? () => void answer('tentative') : undefined,
     n: showing && answerable.value ? () => void answer('declined') : undefined,
     r: showing ? reply : undefined,
-    z: answering.value ? undefined : triage.undo,
+    z: answering.value ? undefined : undo,
     escape: exit,
   }
   const run = keys[event.key.toLowerCase()]
@@ -252,9 +270,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
     <p class="visually-hidden" role="status">{{ announcement }}</p>
 
     <main class="stage">
-      <p v-if="!progress" class="state">Loading your mail…</p>
+      <Transition :name="cardMotion" mode="out-in">
+      <p v-if="!progress" key="loading" class="state">Loading your mail…</p>
 
-      <section v-else-if="current === null" class="state done" aria-labelledby="triage-done">
+      <section v-else-if="current === null" key="done" class="state done" aria-labelledby="triage-done">
         <h1 id="triage-done" ref="doneTitle" tabindex="-1">{{ progress.total === 0 ? 'Nothing to triage' : more ? 'Round done' : 'All triaged' }}</h1>
         <p v-if="progress.total === 0">Every email in your inboxes already has a place.</p>
         <p v-else>
@@ -264,13 +283,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
         <div class="done-actions">
           <button v-if="more" type="button" class="button button-primary" @click="triage.nextRound()">Start the next round</button>
           <RouterLink :to="{ name: 'unified' }" class="button" :class="more ? 'button-quiet' : 'button-primary'">Back to the inbox</RouterLink>
-          <button v-if="canUndo" type="button" class="button button-quiet" aria-keyshortcuts="Z" @click="triage.undo()">Undo the last one <KeyShortcut keys="Z" /></button>
+          <button v-if="canUndo" type="button" class="button button-quiet" aria-keyshortcuts="Z" @click="undo()">Undo the last one <KeyShortcut keys="Z" /></button>
         </div>
       </section>
 
-      <p v-else-if="!thread || !newest" class="state">Loading the next email…</p>
+      <p v-else-if="!thread || !newest" key="next" class="state next">Loading the next email…</p>
 
-      <div v-else class="column">
+      <div v-else :key="thread.id" class="column">
         <article class="card" aria-labelledby="triage-subject">
           <div class="who">
             <SenderAvatar :sender="newest.from" :size="40" />
@@ -299,7 +318,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
             :class="item.decision"
             :aria-keyshortcuts="item.key"
             :disabled="answering"
-            @click="triage.decide(item.decision)"
+            @click="decide(item.decision)"
           >
             <span class="decision-label"><AppIcon :name="item.icon" :size="22" />{{ item.label }}</span>
             <span class="decision-detail">{{ item.detail }} <KeyShortcut :keys="item.key" /></span>
@@ -307,14 +326,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
         </div>
 
         <div class="more" role="group" aria-label="More">
-          <button type="button" class="hint" aria-keyshortcuts="J" :disabled="answering" @click="triage.skip()">Skip <KeyShortcut keys="J" /></button>
+          <button type="button" class="hint" aria-keyshortcuts="J" :disabled="answering" @click="skip()">Skip <KeyShortcut keys="J" /></button>
           <button type="button" class="hint" aria-keyshortcuts="R" @click="reply">Reply <KeyShortcut keys="R" /></button>
           <button v-if="!answerable" type="button" class="hint" aria-keyshortcuts="A" :disabled="answering" @click="addToCalendar"><AppIcon name="calendar" :size="14" />Add to calendar <KeyShortcut keys="A" /></button>
-          <button type="button" class="hint" :disabled="!canUndo" aria-keyshortcuts="Z" @click="triage.undo()">Undo <KeyShortcut keys="Z" /></button>
+          <button type="button" class="hint" :disabled="!canUndo" aria-keyshortcuts="Z" @click="undo()">Undo <KeyShortcut keys="Z" /></button>
         </div>
       </div>
+      </Transition>
     </main>
-    <EventEditor v-if="adding" :target="adding" @close="adding = null" @saved="added" />
+    <Transition name="layer"><EventEditor v-if="adding" :target="adding" @close="adding = null" @saved="added" /></Transition>
   </div>
 </template>
 
@@ -606,6 +626,89 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
 @media (prefers-reduced-motion: reduce) {
   .fill {
     transition: none;
+  }
+}
+/* The next email usually loads at once: its placeholder only shows when it takes a moment. */
+.state.next {
+  animation: fade-in var(--motion-base) 160ms both;
+}
+.card-do-enter-active,
+.card-delegate-enter-active,
+.card-know-enter-active,
+.card-skip-enter-active,
+.card-undo-enter-active {
+  animation: card-in var(--motion-base) var(--ease-out);
+}
+.card-do-leave-active {
+  animation: card-out-left var(--motion-fast) ease-in forwards;
+}
+.card-delegate-leave-active {
+  animation: card-out-up var(--motion-fast) ease-in forwards;
+}
+.card-know-leave-active {
+  animation: card-out-right var(--motion-fast) ease-in forwards;
+}
+.card-skip-leave-active {
+  animation: card-out-down var(--motion-fast) ease-in forwards;
+}
+.card-undo-leave-active {
+  animation: fade-out var(--motion-fast) ease-in forwards;
+}
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes card-out-left {
+  to {
+    opacity: 0;
+    transform: translateX(-32px);
+  }
+}
+@keyframes card-out-up {
+  to {
+    opacity: 0;
+    transform: translateY(-24px);
+  }
+}
+@keyframes card-out-right {
+  to {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+}
+@keyframes card-out-down {
+  to {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes card-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes card-out-left {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes card-out-up {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes card-out-right {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes card-out-down {
+    to {
+      opacity: 0;
+    }
   }
 }
 </style>

@@ -12,6 +12,7 @@ import { useMailStore } from '@/stores/mail'
 import { useTodosStore } from '@/stores/todos'
 import type { SidebarPage } from '@/components/sidebarPage'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import TickCount from '@/components/TickCount.vue'
 
 const props = defineProps<{
   displayName: string
@@ -80,24 +81,24 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
       <RouterLink :to="{ name: 'unified' }" class="item" :aria-current="inList && mailbox === null && smartInbox === null && !batches ? 'page' : undefined">
         <AppIcon name="inbox" />
         <span class="label">Unified Inbox</span>
-        <span v-if="totalUnread > 0" class="count">{{ totalUnread }}<span class="visually-hidden"> unread</span></span>
+        <span v-if="totalUnread > 0" class="count"><TickCount :value="totalUnread" /><span class="visually-hidden"> unread</span></span>
       </RouterLink>
       <RouterLink :to="{ name: 'brief' }" class="item" :aria-current="page === 'brief' ? 'page' : undefined">
         <AppIcon name="know" />
         <span class="label">Daily brief</span>
         <span v-if="briefIsNew" class="new">New</span>
-        <span v-if="briefLeft > 0" class="count">{{ briefLeft }}<span class="visually-hidden"> to note</span></span>
+        <span v-if="briefLeft > 0" class="count"><TickCount :value="briefLeft" /><span class="visually-hidden"> to note</span></span>
       </RouterLink>
       <RouterLink :to="{ name: 'todos' }" class="item" :aria-current="page === 'todos' ? 'page' : undefined">
         <AppIcon name="todo" />
         <span class="label">Todos</span>
-        <span v-if="todos.openCount > 0" class="count">{{ todos.openCount }}<span class="visually-hidden"> open</span></span>
+        <span v-if="todos.openCount > 0" class="count"><TickCount :value="todos.openCount" /><span class="visually-hidden"> open</span></span>
       </RouterLink>
       <RouterLink :to="{ name: 'waiting' }" class="item" :aria-current="page === 'waiting' ? 'page' : undefined">
         <AppIcon name="delegate" />
         <span class="label">Waiting on</span>
         <span v-if="waitingCount > 0" class="count" :class="{ failed: overdueCount > 0 }"
-          >{{ waitingCount }}<span class="visually-hidden">{{ overdueCount > 0 ? `, ${overdueCount} past due` : ' waiting' }}</span></span
+          ><TickCount :value="waitingCount" /><span class="visually-hidden">{{ overdueCount > 0 ? `, ${overdueCount} past due` : ' waiting' }}</span></span
         >
       </RouterLink>
       <RouterLink :to="{ name: 'calendar' }" class="item" :aria-current="page === 'calendar' ? 'page' : undefined">
@@ -119,7 +120,7 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
       <RouterLink v-if="outboxCount > 0" :to="{ name: 'outbox' }" class="item" :aria-current="page === 'outbox' ? 'page' : undefined">
         <AppIcon name="outbox" />
         <span class="label">Outbox</span>
-        <span class="count" :class="{ failed: failedCount > 0 }">{{ outboxCount }}</span>
+        <span class="count" :class="{ failed: failedCount > 0 }"><TickCount :value="outboxCount" /></span>
       </RouterLink>
     </div>
 
@@ -134,7 +135,7 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
       >
         <SmartInboxMark :smart-inbox="item" />
         <span class="label">{{ item.name }}</span>
-        <span v-if="(smartInboxCounts.get(item.id) ?? 0) > 0" class="count">{{ smartInboxCounts.get(item.id) }}<span class="visually-hidden"> unread</span></span>
+        <span v-if="(smartInboxCounts.get(item.id) ?? 0) > 0" class="count"><TickCount :value="smartInboxCounts.get(item.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
       </RouterLink>
       <RouterLink :to="{ name: 'batches' }" class="item smart" :aria-current="batches ? 'page' : undefined">
         <AppIcon name="clock" :size="20" class="batches-icon" />
@@ -158,7 +159,7 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
           <span class="account-name">{{ account.displayName }}</span>
           <span class="account-address">{{ statusText[account.status] ?? account.emailAddress }}</span>
         </span>
-        <span v-if="(unreadCounts.get(account.id) ?? 0) > 0" class="count">{{ unreadCounts.get(account.id) }}<span class="visually-hidden"> unread</span></span>
+        <span v-if="(unreadCounts.get(account.id) ?? 0) > 0" class="count"><TickCount :value="unreadCounts.get(account.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
       </RouterLink>
       <RouterLink :to="{ name: 'settings-accounts-new' }" class="add">+ Add account</RouterLink>
     </div>

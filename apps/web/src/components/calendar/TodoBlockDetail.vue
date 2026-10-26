@@ -46,7 +46,7 @@ const when = computed(() => `${longDate(toWall(props.block.start, props.zone), t
 
 <style scoped>
 .detail {
-  animation: fade-in var(--motion-base) ease-out;
+  animation: slide-in-right var(--motion-base) var(--ease-out);
   display: flex;
   flex-direction: column;
   gap: 10px;

@@ -275,3 +275,94 @@ button {
   font: 500 11px/1 var(--font-ui);
   opacity: 0.6;
 }
+
+/*
+ * Leaving: layers go a little faster than they came, so closing never feels like waiting. Vue's <Transition> adds
+ * these classes; "layer" for dialogs and windows, "fade" for menus and lists that open from a button.
+ */
+@keyframes layer-out {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes sink-out {
+  to {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+@keyframes slide-out-right {
+  to {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+@keyframes slide-down-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+/*
+ * The leaving classes are written heavier than one class: a component's own scoped entrance (".menu[data-v]",
+ * ".editor[data-v]") would otherwise outweigh them and play its entrance again instead of the exit.
+ */
+html .layer-leave-active.layer-leave-active {
+  animation: layer-out var(--motion-fast) ease-in forwards;
+}
+html .layer-leave-active.layer-leave-active::backdrop {
+  animation: fade-out var(--motion-fast) ease-in forwards;
+}
+html .fade-leave-active.fade-leave-active {
+  animation: fade-out 100ms ease-in forwards;
+}
+html .sink-leave-active.sink-leave-active {
+  animation: sink-out var(--motion-fast) ease-in forwards;
+}
+html .panel-leave-active.panel-leave-active {
+  animation: slide-out-right var(--motion-fast) ease-in forwards;
+}
+/* A native modal dialog fades its backdrop in with it. */
+dialog[open]::backdrop {
+  animation: fade-in var(--motion-base) ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes layer-out {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes sink-out {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes slide-in-right {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes slide-out-right {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes slide-down-in {
+    from {
+      opacity: 0;
+    }
+  }
+}
