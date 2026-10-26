@@ -290,7 +290,6 @@ onBeforeUnmount(() => {
   background: var(--surface);
 }
 .inner {
-  max-width: 860px;
   padding: 24px 40px 32px;
 }
 .actions {

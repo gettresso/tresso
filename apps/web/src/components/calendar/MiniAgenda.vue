@@ -52,6 +52,12 @@ const groups = computed(() => {
 })
 const invitations = computed(() => upcoming.value.filter((occurrence) => occurrence.event.selfResponse === 'needs-action' && occurrence.end > now.value).slice(0, 3))
 
+/** The month and day on the invitation's date tile, in the user's zone. */
+function dateTile(occurrence: Occurrence): { month: string; day: number } {
+  const wall = new Date(toWall(occurrence.start, calendar.zone))
+  return { month: wall.toLocaleDateString(undefined, { month: 'short', timeZone: 'UTC' }), day: wall.getUTCDate() }
+}
+
 async function respond(occurrence: Occurrence, response: Response): Promise<void> {
   busy.value = true
   error.value = null
@@ -99,13 +105,18 @@ async function respond(occurrence: Occurrence, response: Response): Promise<void
 
     <section v-if="invitations.length > 0" class="invitations" aria-labelledby="mini-invitations-title">
       <h3 id="mini-invitations-title">Invitations to answer</h3>
-      <div v-for="occurrence in invitations" :key="occurrence.key" class="invite">
-        <p class="title">{{ occurrence.event.summary || 'Untitled event' }}</p>
-        <p class="meta">
-          {{ occurrenceWhen(occurrence, calendar.zone, today) }}<template v-if="occurrence.event.organizer">, from {{ occurrence.event.organizer.name || occurrence.event.organizer.address }}</template>
-        </p>
-        <ResponseButtons :current="occurrence.event.selfResponse" :busy="busy" :label="`Answer ${occurrence.event.summary}`" @respond="(r) => respond(occurrence, r)" />
-      </div>
+      <article v-for="occurrence in invitations" :key="occurrence.key" class="invite" :style="calendarColor(calendar.calendar(occurrence.event.calendarId))">
+        <span class="date" aria-hidden="true">
+          <span class="month">{{ dateTile(occurrence).month }}</span>
+          <span class="day-number">{{ dateTile(occurrence).day }}</span>
+        </span>
+        <div class="invite-body">
+          <p class="invite-title">{{ occurrence.event.summary || 'Untitled event' }}</p>
+          <p class="meta">{{ occurrenceWhen(occurrence, calendar.zone, today) }}</p>
+          <p v-if="occurrence.event.organizer" class="meta">From {{ occurrence.event.organizer.name || occurrence.event.organizer.address }}</p>
+          <ResponseButtons class="answer" :current="occurrence.event.selfResponse" :busy="busy" :label="`Answer ${occurrence.event.summary}`" @respond="(r) => respond(occurrence, r)" />
+        </div>
+      </article>
     </section>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
   </aside>
@@ -115,10 +126,10 @@ async function respond(occurrence: Occurrence, response: Response): Promise<void
 .mini-agenda {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
   width: 100%;
-  max-width: 420px;
-  padding: 24px;
+  max-width: 520px;
+  padding: 40px 32px;
 }
 .head {
   display: flex;
@@ -198,11 +209,60 @@ ul {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.invite {
+.invitations {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
+  gap: 8px;
+}
+.invite {
+  display: flex;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgb(22 24 29 / 4%);
+}
+.date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  width: 48px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  text-align: center;
+}
+.month {
+  align-self: stretch;
+  padding: 2px 0;
+  background: var(--cal);
+  color: #fff;
+  font: 700 11px/16px var(--font-ui);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.day-number {
+  padding: 2px 0 4px;
+  font: 700 20px/26px var(--font-display);
+}
+.invite-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.invite-title {
+  font: 700 15px/20px var(--font-display);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.answer {
+  align-self: flex-start;
+  margin-top: 10px;
 }
 .empty {
   color: var(--ink-3);

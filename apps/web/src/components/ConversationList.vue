@@ -126,7 +126,7 @@ const days = computed(() => {
           v-for="conversation in day.conversations"
           :key="conversation.threadId"
           class="row"
-          :class="{ unread: conversation.unreadCount > 0, checked: selection.has(conversation.threadId) }"
+          :class="{ unread: conversation.unreadCount > 0, checked: selection.has(conversation.threadId), selected: conversation.threadId === selectedThreadId }"
         >
           <button
             type="button"
@@ -245,6 +245,15 @@ h1 {
 .row.checked {
   background: var(--ground);
 }
+/* The open conversation: the whole row, checkbox to chevron, with the accent along its left edge. */
+.row.selected {
+  background: var(--selected);
+  box-shadow: inset 3px 0 0 var(--focus);
+}
+/* Keyboard focus on the row's link outlines the whole row, not just the text in the middle. */
+.row:has(.link:focus-visible) {
+  box-shadow: inset 0 0 0 2px var(--focus);
+}
 .check {
   display: flex;
   align-items: center;
@@ -286,9 +295,8 @@ h1 {
   flex-shrink: 0;
   margin: 34px 12px 0 -12px;
 }
-.link[aria-current='true'] {
-  background: var(--selected);
-  box-shadow: inset 3px 0 0 var(--focus);
+.link:focus-visible {
+  outline: none;
 }
 .dot {
   width: 8px;

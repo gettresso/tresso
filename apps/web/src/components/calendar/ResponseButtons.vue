@@ -31,28 +31,55 @@ const OPTIONS: { value: Response; label: string; key: string }[] = [
 </template>
 
 <style scoped>
+/* One segmented control: calm until answered, then the answer takes its colour (yes green, maybe neutral, no red). */
 .responses {
-  display: flex;
-  gap: 6px;
+  display: inline-flex;
   flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius-control) + 2px);
+  background: var(--ground);
 }
 .response {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  height: 32px;
+  min-width: 72px;
+  height: 30px;
   padding: 0 12px;
-  border: 1px solid var(--line-strong);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--surface);
-  color: var(--ink);
+  background: transparent;
+  color: var(--ink-2);
   font: 600 13px var(--font-ui);
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    transform var(--motion-fast) var(--ease-out);
+}
+.response:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--ink);
+}
+.response:active:not(:disabled) {
+  transform: scale(0.97);
 }
 .response[aria-pressed='true'] {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--surface);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgb(22 24 29 / 8%);
+}
+.response.accepted[aria-pressed='true'] {
+  background: var(--know-soft);
+  color: var(--know);
+}
+.response.declined[aria-pressed='true'] {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .response:disabled {
   opacity: 0.55;
@@ -61,5 +88,10 @@ const OPTIONS: { value: Response; label: string; key: string }[] = [
 kbd {
   font: 500 11px var(--font-mono);
   opacity: 0.7;
+}
+@media (prefers-reduced-motion: reduce) {
+  .response:active:not(:disabled) {
+    transform: none;
+  }
 }
 </style>

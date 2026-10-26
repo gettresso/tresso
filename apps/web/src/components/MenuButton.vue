@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
+import { useAnchoredMenu } from '@/components/anchoredMenu'
 
 export interface MenuItem {
   id: string
@@ -14,6 +15,7 @@ const emit = defineEmits<{ choose: [id: string] }>()
 const open = ref(false)
 const menu = ref<HTMLElement | null>(null)
 const button = ref<HTMLButtonElement | null>(null)
+const { style: menuStyle, above: menuAbove } = useAnchoredMenu(button, menu, open)
 
 defineExpose({ open })
 
@@ -86,7 +88,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
     <button ref="button" type="button" class="tool" :disabled="props.disabled || items.length === 0" aria-haspopup="menu" :aria-expanded="open" @click="open ? close() : show()">
       <AppIcon v-if="icon" :name="icon" /> {{ label }}
     </button>
-    <div v-if="open" ref="menu" class="menu" role="menu" :aria-label="menuLabel" @keydown="keydown">
+    <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" :aria-label="menuLabel" @keydown="keydown">
       <button v-for="item in items" :key="item.id" type="button" role="menuitem" tabindex="-1" class="item" @click="choose(item.id)">{{ item.label }}</button>
     </div>
   </div>
@@ -126,20 +128,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
 .menu {
   transform-origin: top left;
   animation: pop-in var(--motion-fast) var(--ease-out);
-  position: absolute;
-  top: 40px;
-  left: 0;
-  z-index: 10;
+  z-index: 50;
   display: flex;
   flex-direction: column;
   min-width: 200px;
-  max-height: 320px;
+  max-height: min(320px, var(--menu-room, 320px));
   overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--surface);
   box-shadow: var(--raised);
+}
+.menu.above {
+  transform-origin: bottom left;
 }
 .item {
   padding: 8px 12px;

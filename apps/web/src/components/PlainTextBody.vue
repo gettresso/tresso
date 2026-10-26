@@ -36,7 +36,6 @@ const parts = computed(() => {
 
 <style scoped>
 .plain {
-  max-width: 680px;
   font-size: 16px;
   line-height: 26px;
   white-space: pre-wrap;
