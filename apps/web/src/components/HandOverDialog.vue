@@ -10,6 +10,7 @@ import { provideRequiredFields } from '@/forms/required'
 import { dueLabel, senderName } from '@/mail/format'
 import { useHandOversStore } from '@/stores/handOvers'
 import RecipientField from '@/components/RecipientField.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 /** Hands a conversation over: forwarded to one person with a note, and waited on until the due date. */
 const props = defineProps<{ message: SyncedMessage }>()
@@ -151,7 +152,7 @@ onMounted(async () => {
         </div>
 
         <footer class="actions">
-          <button type="button" class="button button-quiet" :disabled="submitting" @click="cancel">Cancel <kbd>Esc</kbd></button>
+          <button type="button" class="button button-quiet" :disabled="submitting" @click="cancel">Cancel <KeyShortcut keys="Esc" /></button>
           <button type="submit" class="button button-primary" :disabled="submitting">{{ submitting ? 'Handing over…' : submitText }}</button>
         </footer>
       </form>
@@ -284,13 +285,5 @@ textarea {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-kbd {
-  font: 500 11px var(--font-mono);
-  margin-left: 6px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--ground);
-  color: var(--ink-2);
 }
 </style>

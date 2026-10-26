@@ -245,3 +245,33 @@ button {
     }
   }
 }
+
+/* Keycaps (KeyShortcut): tinted from the text colour, so they read on a dark primary button and a quiet one alike. */
+.shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 2px;
+  font: inherit;
+}
+.shortcut-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentcolor 14%, transparent);
+  font: 600 11px/1 var(--font-ui);
+  letter-spacing: 0.01em;
+}
+/* ⌘ ⇧ ⌥ are drawn by the system font, at a size where they read as well as the letters next to them. */
+.shortcut-key.symbol {
+  padding: 0 4px;
+  font: 500 13px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+.shortcut-plus {
+  font: 500 11px/1 var(--font-ui);
+  opacity: 0.6;
+}

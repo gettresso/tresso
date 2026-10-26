@@ -67,13 +67,16 @@ function applyLink(): void {
 
 defineExpose({ focus: () => editor.value?.commands.focus('start') })
 onBeforeUnmount(() => editor.value?.destroy())
+
+/** The modifier the toolbar's tips name: ⌘ on a Mac, Ctrl elsewhere. */
+const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'
 </script>
 
 <template>
   <div class="editor">
     <div v-if="editor" class="toolbar" role="toolbar" aria-label="Formatting">
-      <button type="button" :aria-pressed="editor.isActive('bold')" title="Bold (Cmd B)" @click="editor.chain().focus().toggleBold().run()"><b>B</b></button>
-      <button type="button" :aria-pressed="editor.isActive('italic')" title="Italic (Cmd I)" @click="editor.chain().focus().toggleItalic().run()"><i>I</i></button>
+      <button type="button" :aria-pressed="editor.isActive('bold')" :title="`Bold (${mod}+B)`" @click="editor.chain().focus().toggleBold().run()"><b>B</b></button>
+      <button type="button" :aria-pressed="editor.isActive('italic')" :title="`Italic (${mod}+I)`" @click="editor.chain().focus().toggleItalic().run()"><i>I</i></button>
       <button type="button" :aria-pressed="editor.isActive('bulletList')" title="Bulleted list" @click="editor.chain().focus().toggleBulletList().run()">• List</button>
       <button type="button" :aria-pressed="editor.isActive('orderedList')" title="Numbered list" @click="editor.chain().focus().toggleOrderedList().run()">1. List</button>
       <button type="button" :aria-pressed="editor.isActive('blockquote')" title="Quote" @click="editor.chain().focus().toggleBlockquote().run()">Quote</button>

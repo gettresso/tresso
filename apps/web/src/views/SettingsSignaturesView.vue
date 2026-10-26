@@ -10,6 +10,7 @@ import { signatureSchema, type SignatureValues } from '@/forms/signatures'
 import { useMailStore } from '@/stores/mail'
 import { useSignaturesStore } from '@/stores/signatures'
 import SignaturePreview from '@/components/SignaturePreview.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const NEW = 'new'
 
@@ -55,7 +56,6 @@ const size = computed(() => {
   return bytes === 1 ? '1 byte' : `${bytes} bytes`
 })
 
-const shortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd S' : 'Ctrl S'
 
 const defaultForError = computed(() => Object.entries(errors.value).find(([path]) => path.startsWith('defaultFor'))?.[1] ?? null)
 
@@ -291,7 +291,7 @@ function saveShortcut(event: KeyboardEvent): void {
           <span class="spacer" />
           <button type="button" class="button button-quiet" :disabled="saving || !dirty" @click="reset">Discard changes</button>
           <button type="submit" class="button button-primary" :disabled="saving">
-            Save signature <kbd>{{ shortcut }}</kbd>
+            Save signature <KeyShortcut keys="Mod+S" />
           </button>
         </div>
 
@@ -514,12 +514,6 @@ legend {
 }
 .spacer {
   flex: 1;
-}
-kbd {
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: rgb(255 255 255 / 18%);
-  font: 500 11px var(--font-mono);
 }
 .done {
   margin: 0;

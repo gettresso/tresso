@@ -17,6 +17,7 @@ import { calendarColor, joinLabel } from '@/calendar/look'
 import AppIcon from '@/components/AppIcon.vue'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import type { Response } from '@/stores/calendar'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const props = defineProps<{
   occurrence: Occurrence
@@ -108,7 +109,7 @@ function initials(name: string | null, address: string): string {
     <p v-if="error" class="error" role="alert">{{ error }}</p>
 
     <footer v-if="editable" class="actions">
-      <button type="button" class="button button-primary" :disabled="busy" @click="emit('edit')">Edit <kbd>E</kbd></button>
+      <button type="button" class="button button-primary" :disabled="busy" @click="emit('edit')">Edit <KeyShortcut keys="E" /></button>
       <button type="button" class="button button-quiet" :disabled="busy" @click="emit('delete')"><AppIcon name="trash" :size="15" /> Delete</button>
     </footer>
   </aside>

@@ -14,6 +14,7 @@ import { useMailStore } from '@/stores/mail'
 import { useTodosStore } from '@/stores/todos'
 import AppIcon from '@/components/AppIcon.vue'
 import TodoDetail from '@/components/TodoDetail.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 provideRequiredFields(quickAddSchema)
 
@@ -114,7 +115,7 @@ async function toggle(todo: Todo): Promise<void> {
             :aria-invalid="errors.text ? 'true' : undefined"
           />
           <span v-if="previewDue" class="due"><AppIcon name="clock" :size="14" /> {{ previewDue }}</span>
-          <button type="submit" class="button button-primary" :disabled="adding">Add <kbd>Enter</kbd></button>
+          <button type="submit" class="button button-primary" :disabled="adding">Add <KeyShortcut keys="Enter" /></button>
         </div>
         <small id="quick-add-hint" class="hint">
           <template v-if="preview && preview.dueDate === null">No date found, it goes to Later.</template>
@@ -235,12 +236,6 @@ async function toggle(todo: Todo): Promise<void> {
   margin: 0;
   font-weight: 500;
   color: var(--danger);
-}
-kbd {
-  font: 500 11px var(--font-mono);
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--surface) 25%, transparent);
 }
 .group {
   display: flex;
