@@ -35,9 +35,11 @@ const folding = ref<{ open: boolean; animation: Animation } | null>(null)
 
 /** Folds the mailboxes open or shut on a phone, with their height (and padding) easing instead of the screen jumping. */
 async function fold(open: boolean): Promise<void> {
+  const list = mailboxes.value?.querySelector<HTMLElement>('nav')
+  // Turning around mid-fold starts from where the list is now, not from a full end.
+  const from = folding.value === null || list === null || list === undefined ? null : { height: `${list.offsetHeight}px`, opacity: Number(getComputedStyle(list).opacity) }
   folding.value?.animation.cancel()
   folding.value = null
-  const list = mailboxes.value?.querySelector<HTMLElement>('nav')
   if (list === null || list === undefined || typeof list.animate !== 'function' || reducedMotion() || !narrow?.matches) {
     mailboxesOpen.value = open
     return
@@ -48,7 +50,8 @@ async function fold(open: boolean): Promise<void> {
   const shown = { height: `${list.offsetHeight}px`, paddingTop: style.paddingTop, paddingBottom: style.paddingBottom, opacity: 1 }
   const hidden = { height: '0px', paddingTop: '0px', paddingBottom: '0px', opacity: 0 }
   list.style.overflow = 'hidden'
-  const animation = list.animate(open ? [hidden, shown] : [shown, hidden], { duration: 220, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' })
+  const start = from === null ? (open ? hidden : shown) : { ...(open ? hidden : shown), ...from }
+  const animation = list.animate([start, open ? shown : hidden], { duration: 220, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' })
   folding.value = { open, animation }
   animation.onfinish = () => {
     list.style.overflow = ''

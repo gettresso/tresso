@@ -132,6 +132,8 @@ const [travelMinutes] = defineField('travelMinutes')
 const isNew = computed(() => props.target.kind === 'new')
 const occurrence = computed(() => (props.target.kind === 'edit' ? props.target.occurrence : null))
 const saving = ref(false)
+/** Saved, and flying into its place in the calendar. */
+const flying = ref(false)
 const error = ref<string | null>(null)
 const notify = ref(props.target.kind === 'new' ? (props.target.prefill?.notify ?? true) : true)
 
@@ -275,6 +277,7 @@ const save = handleSubmit(async (current) => {
     // Only a new event flies into its place: an edited one is already on screen at its old time until the copy catches up.
     const landingAt = props.landing === undefined || props.target.kind !== 'new' || reducedMotion() ? null : await props.landing(saved)
     if (landingAt !== null && dialog.value !== null) {
+      flying.value = true
       await genie(dialog.value, landingAt)
     }
     emit('saved', landingAt !== null)
@@ -294,8 +297,8 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 function close(): void {
-  // While saving (and flying into the saved event) the editor is on its way out: Escape or a click beside it waits.
-  if (saving.value) {
+  // While it flies into the saved event the editor is already on its way out: Escape or a click beside it waits.
+  if (flying.value) {
     return
   }
   if (meta.value.dirty && !window.confirm('Discard the changes to this event?')) {
