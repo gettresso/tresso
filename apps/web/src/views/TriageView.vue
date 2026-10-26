@@ -14,6 +14,7 @@ import MessageCard from '@/components/MessageCard.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import EventEditor, { type EditorTarget } from '@/components/calendar/EventEditor.vue'
 import { reducedMotion } from '@/components/calendar/genie'
+import { cardGhost } from '@/components/cardGhost'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 
@@ -204,13 +205,7 @@ function flyOff(exit: keyof typeof CARD_EXITS): void {
   if (shown === null || typeof shown.animate !== 'function') {
     return
   }
-  const box = shown.getBoundingClientRect()
-  const ghost = shown.cloneNode(true) as HTMLElement
-  ghost.removeAttribute('id')
-  ghost.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'))
-  ghost.setAttribute('aria-hidden', 'true')
-  ghost.inert = true
-  Object.assign(ghost.style, { position: 'fixed', top: `${box.top}px`, left: `${box.left}px`, width: `${box.width}px`, height: `${box.height}px`, margin: '0', pointerEvents: 'none', zIndex: '15' })
+  const ghost = cardGhost(shown)
   document.body.append(ghost)
   const to = reducedMotion() ? 'none' : CARD_EXITS[exit]!
   const leaving = ghost.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: to }], { duration: 160, easing: 'ease-in', fill: 'forwards' })

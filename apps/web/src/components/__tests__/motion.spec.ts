@@ -117,3 +117,23 @@ describe('TickCount', () => {
     expect(wrapper.text()).toBe('4')
   })
 })
+
+describe('cardGhost', () => {
+  it('copies a card without its email frames, ids or focusable life', async () => {
+    const { cardGhost } = await import('@/components/cardGhost')
+    const card = document.createElement('article')
+    card.id = 'card'
+    card.innerHTML = '<h1 id="triage-subject">Lunch</h1><iframe srcdoc="<img src=https://tracker.example/pixel>"></iframe>'
+    document.body.append(card)
+
+    const ghost = cardGhost(card)
+
+    expect(ghost.querySelector('iframe')).toBeNull()
+    expect(ghost.innerHTML).not.toContain('tracker.example')
+    expect(ghost.querySelector('[id]')).toBeNull()
+    expect(ghost.id).toBe('')
+    expect(ghost.getAttribute('aria-hidden')).toBe('true')
+    expect(ghost.inert).toBe(true)
+    expect(ghost.textContent).toBe('Lunch')
+  })
+})
