@@ -200,15 +200,20 @@ watch(
   },
 )
 
+/** The detail panel keeps its column while it slides away, so the grid does not jump under it. */
+const panelLeaving = ref(false)
+
 /** Whether the editor flew into the saved event, which then needs no closing animation. */
 const landed = ref(false)
 const shell = ref<HTMLElement | null>(null)
 
 /** The saved event on screen, once the copy has it (a few frames at most); null when it is not in view. */
 async function landing(event: SyncedCalendarEvent): Promise<HTMLElement | null> {
-  for (let frame = 0; frame < 24; frame++) {
+  // Up to about half a second, by the clock: frames pause in a background tab, and the editor must not wait for them.
+  const until = Date.now() + 500
+  while (Date.now() < until) {
     await nextTick()
-    await new Promise((resolve) => requestAnimationFrame(resolve))
+    await new Promise((resolve) => setTimeout(resolve, 16))
     const shown = [...(shell.value?.querySelectorAll<HTMLElement>(`[data-key^="${CSS.escape(event.id)}:"]`) ?? [])]
     if (shown.length > 0) {
       return shown.find(inView) ?? null
@@ -315,7 +320,7 @@ function pickDay(day: number): void {
 </script>
 
 <template>
-  <div ref="shell" class="calendar-shell" :class="{ detail: selected !== null || selectedTodo !== null }">
+  <div ref="shell" class="calendar-shell" :class="{ detail: selected !== null || selectedTodo !== null || panelLeaving }">
     <CalendarRail
       class="rail"
       :anchor="calendar.anchor"
@@ -410,7 +415,7 @@ function pickDay(day: number): void {
       <p class="visually-hidden" role="status" aria-live="polite">{{ status }}</p>
     </main>
 
-    <Transition name="panel">
+    <Transition name="panel" mode="out-in" @before-leave="panelLeaving = true" @after-leave="panelLeaving = false">
       <EventDetail
         v-if="selected"
         class="detail-panel"
@@ -440,7 +445,7 @@ function pickDay(day: number): void {
       />
     </Transition>
 
-    <Transition :name="landed ? 'landed' : 'layer'" @after-leave="landed = false">
+    <Transition name="layer" :css="!landed" @after-leave="landed = false">
       <EventEditor v-if="editor" :target="editor" :landing="landing" @close="editor = null" @saved="saved" />
     </Transition>
     <Transition name="layer">

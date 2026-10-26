@@ -71,19 +71,37 @@ describe('list motion', () => {
 
     collapseLeave(row, done)
     await Promise.resolve()
+    await Promise.resolve()
 
     expect(calls[0]!.keyframes[calls[0]!.keyframes.length - 1]).toMatchObject({ height: '0px', opacity: 0 })
     expect(done).toHaveBeenCalledOnce()
   })
 
-  it('lets a whole page of rows just appear, only a few at once open up', () => {
-    const rows = Array.from({ length: 6 }, () => document.createElement('div'))
-    const counts = rows.map((row) => animatable(row))
+  it('judges the rows that move together: a few open up, a whole page just appears', async () => {
+    const few = Array.from({ length: 3 }, () => document.createElement('div'))
+    const fewCalls = few.map((row) => animatable(row))
+    few.forEach((row) => expandEnter(row, () => undefined))
+    await Promise.resolve()
+    expect(fewCalls.map((calls) => calls.length)).toEqual([1, 1, 1])
+
+    const page = Array.from({ length: 6 }, () => document.createElement('div'))
+    const pageCalls = page.map((row) => animatable(row))
     const done = vi.fn<() => void>()
+    page.forEach((row) => expandEnter(row, done))
+    await Promise.resolve()
+    expect(pageCalls.map((calls) => calls.length)).toEqual([0, 0, 0, 0, 0, 0])
+    expect(done).toHaveBeenCalledTimes(6)
+  })
 
-    rows.forEach((row) => expandEnter(row, done))
+  it('lets a bulk archive just go instead of folding a hundred rows', async () => {
+    const rows = Array.from({ length: 100 }, () => document.createElement('div'))
+    const calls = rows.map((row) => animatable(row))
+    const done = vi.fn<() => void>()
+    rows.forEach((row) => collapseLeave(row, done))
+    await Promise.resolve()
 
-    expect(counts.map((calls) => calls.length)).toEqual([1, 1, 1, 1, 0, 0])
+    expect(calls.every((call) => call.length === 0)).toBe(true)
+    expect(done).toHaveBeenCalledTimes(100)
   })
 })
 
