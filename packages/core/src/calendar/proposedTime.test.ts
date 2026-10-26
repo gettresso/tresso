@@ -82,4 +82,21 @@ describe('proposedTime', () => {
   it('finds the next leap day for 29 February', () => {
     expect(read('Lunch 29 feb')).toEqual({ date: '2028-02-29', time: null })
   })
+
+  it('cuts a quote only at its header, not at a sentence that says someone wrote something', () => {
+    expect(read('Can we meet on Friday at 14:00? Jan wrote the agenda already.')).toEqual({ date: '2026-10-30', time: '14:00' })
+    expect(read('Zullen we op vrijdag om 14:00 afspreken? Piet schreef al een opzet.')).toEqual({ date: '2026-10-30', time: '14:00' })
+  })
+
+  it('reads Dutch hours the way business mail means them', () => {
+    expect(read('Om 4 uur bij mij?')).toEqual({ date: '2026-10-26', time: '16:00' })
+    expect(read('Morgen 15u?')).toEqual({ date: '2026-10-27', time: '15:00' })
+    expect(read('Ik stuur 2 u toe')).toBeNull()
+  })
+
+  it('keeps a bare hour that a day follows, and a weekday gone by proposes nothing', () => {
+    expect(read('Meet at 4 tomorrow')).toEqual({ date: '2026-10-27', time: '16:00' })
+    expect(read('Kun je om 10 morgen?')).toEqual({ date: '2026-10-27', time: '10:00' })
+    expect(read('As discussed last Monday')).toBeNull()
+  })
 })

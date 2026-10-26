@@ -216,7 +216,7 @@ function shortcut(event: KeyboardEvent): void {
     m: showing && answerable.value ? () => void answer('tentative') : undefined,
     n: showing && answerable.value ? () => void answer('declined') : undefined,
     r: showing ? reply : undefined,
-    z: triage.undo,
+    z: answering.value ? undefined : triage.undo,
     escape: exit,
   }
   const run = keys[event.key.toLowerCase()]

@@ -79,7 +79,8 @@ const YEAR = `(?:,?${GAP}(\\d{4}))?`
 /** Day patterns, most specific first: a date wins over a weekday, a weekday over today or tomorrow. */
 const DATE_DAY_FIRST = new RegExp(`\\b${DAY_NUMBER}${GAP}(?:of${GAP})?(${monthNames})\\b\\.?${YEAR}`, 'i')
 const DATE_MONTH_FIRST = new RegExp(`\\b(${monthNames})\\.?${GAP}${DAY_NUMBER}${YEAR}`, 'i')
-const WEEKDAY = new RegExp(`\\b(?:next${GAP}|volgende${GAP})?(${weekdayNames})\\b`, 'i')
+// "Last Monday" and "vorige maandag" were, so they propose nothing.
+const WEEKDAY = new RegExp(`\\b(?:(last|vorige|afgelopen)${GAP}|next${GAP}|volgende${GAP})?(${weekdayNames})\\b`, 'i')
 // "Goede morgen" is a greeting, not tomorrow.
 const RELATIVE_DAY = /(?<!goede[ \t])\b(today|vandaag|tonight|vanavond|tomorrow|overmorgen|morgen)\b/i
 
@@ -92,13 +93,14 @@ const TIMES: { pattern: RegExp; hour: number; minute?: number; suffix?: number; 
   { pattern: /(?<![\d.])(\d{1,2})\.([0-5]\d)[ \t]*(?:uur|u)\b/i, hour: 1, minute: 2 },
   // 3pm, 3 p.m. (not "3 Amsterdam offices"), 15u, 15 uur.
   { pattern: /(?<![\d.:])(\d{1,2})[ \t]*(a\.?m\.?|p\.?m\.?)(?![a-z])/i, hour: 1, suffix: 2 },
-  { pattern: /(?<![\d.:])(\d{1,2})[ \t]*(?:uur|u)\b/i, hour: 1 },
+  // 15u written together, or 3 uur; "2 u toe" (Dutch "you") is no time.
+  { pattern: /(?<![\d.:])(\d{1,2})(?:u|[ \t]*uur)\b/i, hour: 1, bare: true },
   // "at 3", "om 3 uur" end the phrase; "at 3 options", "om 3 redenen" do not.
-  { pattern: /\b(?:at|om)[ \t]+(\d{1,2})(?=[ \t]*(?:[.,!?;)]|$|o'?clock\b))/im, hour: 1, bare: true },
+  { pattern: new RegExp(`\\b(?:at|om)[ \\t]+(\\d{1,2})(?=[ \\t]*(?:[.,!?;)]|$|o'?clock\\b|(?:today|tomorrow|tonight|vandaag|morgen|overmorgen|vanavond|${weekdayNames})\\b))`, 'im'), hour: 1, bare: true },
 ]
 
 /** Where the quoted part of a reply starts: "On ... wrote:", "Op ... schreef", "> ", a forwarded header. */
-const QUOTE = /\b(?:On|Op)\b[^\n]{0,160}?\b(?:wrote|schreef)\b|(?:^|\n)[ \t]*>|-{2,}[ \t]*(?:Original|Oorspronkelijk)|(?:^|\n)[ \t]*(?:From|Van|Sent|Verzonden):[ \t]/i
+const QUOTE = /\b(?:On|Op)\b[^\n]{0,160}?\b(?:wrote|schreef)[^\n:]{0,40}:|(?:^|\n)[ \t]*>|-{2,}[ \t]*(?:Original|Oorspronkelijk)|(?:^|\n)[ \t]*(?:From|Van|Sent|Verzonden):[ \t]/i
 
 function ownText(text: string): string {
   const quote = QUOTE.exec(text)
@@ -120,7 +122,7 @@ function timeIn(text: string): number | null {
     } else if (suffix === 'am' && hour === 12) {
       hour = 0
     } else if (time.bare === true && hour >= 1 && hour <= 7) {
-      // "Meet at 3" is in the afternoon.
+      // "Meet at 3", "om 3 uur" are in the afternoon.
       hour += 12
     }
     if (hour > 23 || minute > 59) {
@@ -164,7 +166,10 @@ function dayIn(text: string, today: number): number | null | undefined {
   }
   const weekday = WEEKDAY.exec(text)
   if (weekday !== null) {
-    const ahead = ((WEEKDAYS[weekday[1]!.toLowerCase()] ?? 0) - weekdayOf(today) + 7) % 7
+    if (weekday[1] !== undefined) {
+      return null
+    }
+    const ahead = ((WEEKDAYS[weekday[2]!.toLowerCase()] ?? 0) - weekdayOf(today) + 7) % 7
     return addDays(today, ahead === 0 ? 7 : ahead)
   }
   const relative = RELATIVE_DAY.exec(text)
