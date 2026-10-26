@@ -60,10 +60,9 @@ async function remove(draft: Draft): Promise<void> {
 </template>
 
 <style scoped>
+/* Full width, so the whole screen scrolls; the padding keeps the content in a centred 760px column. */
 .drafts {
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 32px 24px;
+  padding: 32px max(24px, calc((100% - 760px) / 2));
 }
 h1 {
   margin: 0 0 4px;
