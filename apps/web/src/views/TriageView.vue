@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { classificationReasonText, proposedTime, RESPONSE_WORDS, toInstant, type TriageDecision } from '@tresso/core'
+import { classificationReasonText, proposedTime, RESPONSE_WORDS, toInstant, toWall, type TriageDecision } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { fullTime, senderName } from '@/mail/format'
 import { shortcutAllowed } from '@/mail/useMessageActions'
@@ -123,10 +123,12 @@ const answering = ref(false)
  */
 async function answer(response: Response): Promise<void> {
   const message = invitationMessage.value
+  const answered = thread.value?.id ?? null
   let value = invitation.value
-  if (message === null || value === null || answering.value) {
+  if (message === null || value === null || answered === null || answering.value) {
     return
   }
+  // Deciding waits while the answer goes out (the keys and buttons are held), and only ever puts away this email.
   answering.value = true
   try {
     if (value.canApply) {
@@ -137,7 +139,9 @@ async function answer(response: Response): Promise<void> {
     }
     await calendar.respondTo(value.eventId, response, value.recurrenceId)
     compose.notify({ text: `${value.summary || 'Invitation'}: ${RESPONSE_WORDS[response]}. Undo brings the email back; the answer stays sent.`, tone: 'info' })
-    triage.decide('know')
+    if (thread.value?.id === answered) {
+      triage.decide('know')
+    }
   } catch (e) {
     compose.notify({ text: `Could not answer the invitation: ${errorMessage(e)}`, tone: 'error' })
   } finally {
@@ -147,6 +151,7 @@ async function answer(response: Response): Promise<void> {
 
 /** "Add to calendar": the editor, filled in from the email; saving it puts the email away as noted. */
 const adding = ref<EditorTarget | null>(null)
+let addingFor: string | null = null
 
 function eventTitle(subject: string): string {
   return subject.replace(/^\s*((re|fw|fwd|aw|wg)\s*:\s*)+/i, '').replace(/\?+\s*$/, '').trim()
@@ -155,22 +160,28 @@ function eventTitle(subject: string): string {
 function addToCalendar(): void {
   const shown = thread.value
   const last = newest.value
-  if (shown === null || last === null) {
+  // An invitation is answered (Y, M, N), not copied into a second event of its own.
+  if (shown === null || last === null || answerable.value) {
     return
   }
   const zone = calendar.zone
   const found = proposedTime(`${shown.subject}\n${last.snippet}`, Date.now(), zone)
-  // Without a time in the mail: the next whole hour, to move in the editor.
-  const nextHour = Math.ceil((Date.now() + 1) / 3_600_000) * 3_600_000
+  // Without a time in the mail: the next whole hour on the user's clock, to move in the editor.
+  const nextHour = toInstant(Math.ceil((toWall(Date.now(), zone) + 1) / 3_600_000) * 3_600_000, zone)
   const start = found === null ? nextHour : toInstant(found.day + (found.minutes ?? 0) * 60_000, zone)
+  addingFor = shown.id
   const own = new Set(mail.accounts.map((account) => account.emailAddress.toLowerCase()))
   const attendees = own.has(last.from.address.toLowerCase()) ? [] : [{ address: last.from.address, name: last.from.name, role: 'required' as const }]
-  adding.value = { kind: 'new', start, allDay: found !== null && found.minutes === null, prefill: { summary: eventTitle(shown.subject), attendees } }
+  // The sender is noted as a guest, but not invited unless the user ticks it: this is a note in their own calendar.
+  adding.value = { kind: 'new', start, allDay: found !== null && found.minutes === null, prefill: { summary: eventTitle(shown.subject), attendees, notify: false } }
 }
 
 function added(): void {
   adding.value = null
-  triage.decide('know')
+  if (thread.value?.id === addingFor) {
+    triage.decide('know')
+  }
+  addingFor = null
 }
 
 function reply(): void {
@@ -193,12 +204,14 @@ function shortcut(event: KeyboardEvent): void {
   }
   // Only for the email on screen: while the next one still loads, deciding keys wait for it to show.
   const showing = thread.value !== null
+  // While an invitation answer goes out, deciding waits: it would put away the email that comes next.
+  const deciding = showing && !answering.value
   const keys: Record<string, (() => void) | undefined> = {
-    d: showing ? () => triage.decide('do') : undefined,
-    h: showing ? () => triage.decide('delegate') : undefined,
-    k: showing ? () => triage.decide('know') : undefined,
-    j: showing ? triage.skip : undefined,
-    a: showing ? addToCalendar : undefined,
+    d: deciding ? () => triage.decide('do') : undefined,
+    h: deciding ? () => triage.decide('delegate') : undefined,
+    k: deciding ? () => triage.decide('know') : undefined,
+    j: deciding ? triage.skip : undefined,
+    a: deciding && !answerable.value ? addToCalendar : undefined,
     y: showing && answerable.value ? () => void answer('accepted') : undefined,
     m: showing && answerable.value ? () => void answer('tentative') : undefined,
     n: showing && answerable.value ? () => void answer('declined') : undefined,
@@ -285,6 +298,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
             class="decision"
             :class="item.decision"
             :aria-keyshortcuts="item.key"
+            :disabled="answering"
             @click="triage.decide(item.decision)"
           >
             <span class="decision-label"><AppIcon :name="item.icon" :size="22" />{{ item.label }}</span>
@@ -293,9 +307,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
         </div>
 
         <div class="more" role="group" aria-label="More">
-          <button type="button" class="hint" aria-keyshortcuts="J" @click="triage.skip()">Skip <KeyShortcut keys="J" /></button>
+          <button type="button" class="hint" aria-keyshortcuts="J" :disabled="answering" @click="triage.skip()">Skip <KeyShortcut keys="J" /></button>
           <button type="button" class="hint" aria-keyshortcuts="R" @click="reply">Reply <KeyShortcut keys="R" /></button>
-          <button type="button" class="hint" aria-keyshortcuts="A" @click="addToCalendar"><AppIcon name="calendar" :size="14" />Add to calendar <KeyShortcut keys="A" /></button>
+          <button v-if="!answerable" type="button" class="hint" aria-keyshortcuts="A" :disabled="answering" @click="addToCalendar"><AppIcon name="calendar" :size="14" />Add to calendar <KeyShortcut keys="A" /></button>
           <button type="button" class="hint" :disabled="!canUndo" aria-keyshortcuts="Z" @click="triage.undo()">Undo <KeyShortcut keys="Z" /></button>
         </div>
       </div>

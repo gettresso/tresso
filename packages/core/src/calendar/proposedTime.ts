@@ -69,79 +69,130 @@ const RELATIVE: Record<string, number> = { today: 0, vandaag: 0, tonight: 0, van
 
 const weekdayNames = Object.keys(WEEKDAYS).sort((a, b) => b.length - a.length).join('|')
 const monthNames = Object.keys(MONTHS).sort((a, b) => b.length - a.length).join('|')
-const relativeNames = Object.keys(RELATIVE).sort((a, b) => b.length - a.length).join('|')
 
-const DAY_PATTERN = new RegExp(
-  [
-    `\\b(?<relative>${relativeNames})\\b`,
-    `\\b(?:next\\s+|volgende\\s+)?(?<weekday>${weekdayNames})\\b\\.?`,
-    `\\b(?<dateDay>\\d{1,2})(?:st|nd|rd|th|e)?\\s+(?:of\\s+)?(?<dateMonth>${monthNames})\\b\\.?`,
-    `\\b(?<monthFirst>${monthNames})\\.?\\s+(?<monthFirstDay>\\d{1,2})(?:st|nd|rd|th)?\\b`,
-  ].join('|'),
-  'i',
-)
+// Within one line only (a signature's "Jan" above a phone number is no date), and a day number that is not part of a
+// longer number (06-1234, 12.50).
+const GAP = '[ \\t]+'
+const DAY_NUMBER = '(\\d{1,2})(?:st|nd|rd|th|e)?(?![\\d\\-./]\\d|\\d)'
+const YEAR = `(?:,?${GAP}(\\d{4}))?`
 
-// "at 12:30", "om 15.00", "12:30", "3pm", "3 p.m.", "15u", "15 uur"; a bare number is a time only with at/om before it.
-const TIME_PATTERN =
-  /\b(?:(?<clockHour>\d{1,2})[:.](?<clockMinute>[0-5]\d)\s*(?<clockSuffix>a\.?m\.?|p\.?m\.?)?|(?<suffixHour>\d{1,2})\s*(?<suffix>a\.?m\.?|p\.?m\.?|u\b|uur\b)|(?:at|om)\s+(?<bareHour>\d{1,2})\b(?![:.]\d))/i
+/** Day patterns, most specific first: a date wins over a weekday, a weekday over today or tomorrow. */
+const DATE_DAY_FIRST = new RegExp(`\\b${DAY_NUMBER}${GAP}(?:of${GAP})?(${monthNames})\\b\\.?${YEAR}`, 'i')
+const DATE_MONTH_FIRST = new RegExp(`\\b(${monthNames})\\.?${GAP}${DAY_NUMBER}${YEAR}`, 'i')
+const WEEKDAY = new RegExp(`\\b(?:next${GAP}|volgende${GAP})?(${weekdayNames})\\b`, 'i')
+// "Goede morgen" is a greeting, not tomorrow.
+const RELATIVE_DAY = /(?<!goede[ \t])\b(today|vandaag|tonight|vanavond|tomorrow|overmorgen|morgen)\b/i
 
-function minutesOf(groups: Record<string, string | undefined>): number | null {
-  const suffix = (groups.clockSuffix ?? groups.suffix ?? '').toLowerCase().replace(/\./g, '')
-  const hourText = groups.clockHour ?? groups.suffixHour ?? groups.bareHour
-  if (hourText === undefined) {
+/** Time patterns: a clock time, an hour with am/pm or "uur", or a bare hour right after at/om that ends the phrase. */
+const TIMES: { pattern: RegExp; hour: number; minute?: number; suffix?: number; bare?: boolean }[] = [
+  // 12:30, 4:30 pm; not inside 10:00:00 or a longer number.
+  { pattern: /(?<![\d.:])(\d{1,2}):([0-5]\d)(?![\d:])(?:[ \t]*(a\.?m\.?|p\.?m\.?)(?![a-z]))?/i, hour: 1, minute: 2, suffix: 3 },
+  // 15.00 only where it is plainly a time: after at/om/around, or before uur/u (12.50 euro, version 2.10 are no times).
+  { pattern: /\b(?:at|om|around|rond|vanaf|from)[ \t]+(\d{1,2})\.([0-5]\d)(?![\d.])/i, hour: 1, minute: 2 },
+  { pattern: /(?<![\d.])(\d{1,2})\.([0-5]\d)[ \t]*(?:uur|u)\b/i, hour: 1, minute: 2 },
+  // 3pm, 3 p.m. (not "3 Amsterdam offices"), 15u, 15 uur.
+  { pattern: /(?<![\d.:])(\d{1,2})[ \t]*(a\.?m\.?|p\.?m\.?)(?![a-z])/i, hour: 1, suffix: 2 },
+  { pattern: /(?<![\d.:])(\d{1,2})[ \t]*(?:uur|u)\b/i, hour: 1 },
+  // "at 3", "om 3 uur" end the phrase; "at 3 options", "om 3 redenen" do not.
+  { pattern: /\b(?:at|om)[ \t]+(\d{1,2})(?=[ \t]*(?:[.,!?;)]|$|o'?clock\b))/im, hour: 1, bare: true },
+]
+
+/** Where the quoted part of a reply starts: "On ... wrote:", "Op ... schreef", "> ", a forwarded header. */
+const QUOTE = /\b(?:On|Op)\b[^\n]{0,160}?\b(?:wrote|schreef)\b|(?:^|\n)[ \t]*>|-{2,}[ \t]*(?:Original|Oorspronkelijk)|(?:^|\n)[ \t]*(?:From|Van|Sent|Verzonden):[ \t]/i
+
+function ownText(text: string): string {
+  const quote = QUOTE.exec(text)
+  return quote === null ? text : text.slice(0, quote.index)
+}
+
+function timeIn(text: string): number | null {
+  let best: { index: number; minutes: number } | null = null
+  for (const time of TIMES) {
+    const match = time.pattern.exec(text)
+    if (match === null || (best !== null && match.index >= best.index)) {
+      continue
+    }
+    let hour = Number(match[time.hour])
+    const minute = time.minute === undefined ? 0 : Number(match[time.minute])
+    const suffix = time.suffix === undefined ? '' : (match[time.suffix] ?? '').toLowerCase().replace(/\./g, '')
+    if (suffix === 'pm' && hour < 12) {
+      hour += 12
+    } else if (suffix === 'am' && hour === 12) {
+      hour = 0
+    } else if (time.bare === true && hour >= 1 && hour <= 7) {
+      // "Meet at 3" is in the afternoon.
+      hour += 12
+    }
+    if (hour > 23 || minute > 59) {
+      continue
+    }
+    best = { index: match.index, minutes: hour * 60 + minute }
+  }
+
+  return best?.minutes ?? null
+}
+
+/** The next time a day of a month comes (a leap day may be years away), or that day in the year given. */
+function dateDay(today: number, month: number, date: number, year: string | undefined): number | null {
+  if (month < 1 || date < 1 || date > 31) {
     return null
   }
-  let hour = Number(hourText)
-  const minute = Number(groups.clockMinute ?? 0)
-  if (suffix === 'pm' && hour < 12) {
-    hour += 12
-  } else if (suffix === 'am' && hour === 12) {
-    hour = 0
+  if (year !== undefined) {
+    const day = wallOf({ year: Number(year), month, day: date })
+    // A date in the past (a quoted header, a deadline that was) proposes nothing.
+    return wallParts(day).day === date && day >= today ? day : null
   }
-  if (hour > 23 || minute > 59) {
-    return null
+  const first = wallParts(today).year
+  for (let candidate = first; candidate <= first + 8; candidate++) {
+    const day = wallOf({ year: candidate, month, day: date })
+    if (wallParts(day).day === date && day >= today) {
+      return day
+    }
   }
 
-  return hour * 60 + minute
+  return null
+}
+
+function dayIn(text: string, today: number): number | null | undefined {
+  const dayFirst = DATE_DAY_FIRST.exec(text)
+  const monthFirst = DATE_MONTH_FIRST.exec(text)
+  const date = [dayFirst === null ? null : { index: dayFirst.index, day: Number(dayFirst[1]), month: dayFirst[2]!, year: dayFirst[3] }, monthFirst === null ? null : { index: monthFirst.index, day: Number(monthFirst[2]), month: monthFirst[1]!, year: monthFirst[3] }]
+    .filter((found) => found !== null)
+    .sort((a, b) => a.index - b.index)[0]
+  if (date !== undefined) {
+    return dateDay(today, MONTHS[date.month.toLowerCase()] ?? 0, date.day, date.year)
+  }
+  const weekday = WEEKDAY.exec(text)
+  if (weekday !== null) {
+    const ahead = ((WEEKDAYS[weekday[1]!.toLowerCase()] ?? 0) - weekdayOf(today) + 7) % 7
+    return addDays(today, ahead === 0 ? 7 : ahead)
+  }
+  const relative = RELATIVE_DAY.exec(text)
+  if (relative !== null) {
+    return addDays(today, RELATIVE[relative[1]!.toLowerCase()] ?? 0)
+  }
+
+  // Undefined: the mail names no day at all (null: it names one that proposes nothing, like a date gone by).
+  return undefined
 }
 
 /**
- * The first day (and time) an email proposes, read from its subject and text in English or Dutch, for "Add to
- * calendar". A weekday means the next one after today; a date without a year the next time it comes; a time without a
- * day today when still ahead, otherwise tomorrow. Null when the mail names neither a day nor a time.
+ * The day (and time) an email proposes, read from its subject and its own text (not the quoted reply below it), in
+ * English or Dutch, for "Add to calendar". A date wins over a weekday, a weekday over today or tomorrow. A weekday
+ * means the next one after today; a date without a year the next time it comes, a date in the past nothing; a time
+ * without a day today when still ahead, otherwise tomorrow. Null when the mail proposes neither a day nor a time.
  */
 export function proposedTime(text: string, now: number, zone: string): ProposedTime | null {
+  const own = ownText(text)
   const today = startOfWallDay(toWall(now, zone))
   const nowMinutes = Math.floor((toWall(now, zone) - today) / 60_000)
-  const dayMatch = DAY_PATTERN.exec(text)
-  const timeMatch = TIME_PATTERN.exec(text)
-  const minutes = timeMatch?.groups === undefined ? null : minutesOf(timeMatch.groups)
-  if (dayMatch?.groups === undefined) {
-    if (minutes === null) {
-      return null
-    }
-    return { day: minutes > nowMinutes ? today : addDays(today, 1), minutes }
+  const minutes = timeIn(own)
+  const day = dayIn(own, today)
+  if (day === null) {
+    return null
   }
-
-  const groups = dayMatch.groups
-  let day: number
-  if (groups.relative !== undefined) {
-    day = addDays(today, RELATIVE[groups.relative.toLowerCase()] ?? 0)
-  } else if (groups.weekday !== undefined) {
-    const target = WEEKDAYS[groups.weekday.toLowerCase()] ?? 0
-    const ahead = (target - weekdayOf(today) + 7) % 7
-    day = addDays(today, ahead === 0 ? 7 : ahead)
-  } else {
-    const month = MONTHS[(groups.dateMonth ?? groups.monthFirst ?? '').toLowerCase()] ?? 1
-    const date = Number(groups.dateDay ?? groups.monthFirstDay)
-    const { year } = wallParts(today)
-    day = wallOf({ year, month, day: date })
-    if (day < today) {
-      day = wallOf({ year: year + 1, month, day: date })
-    }
-    if (wallParts(day).day !== date) {
-      return null
-    }
+  if (day === undefined) {
+    return minutes === null ? null : { day: minutes > nowMinutes ? today : addDays(today, 1), minutes }
   }
 
   return { day, minutes }

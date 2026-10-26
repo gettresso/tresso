@@ -38,6 +38,8 @@ export interface EventPrefill {
   summary?: string
   description?: string
   attendees?: AttendeeInput[]
+  /** Whether saving invites the guests; on unless the prefill says otherwise. */
+  notify?: boolean
 }
 
 /** What the editor opens on: a new event at a time, or an occurrence to change. */
@@ -123,7 +125,7 @@ const isNew = computed(() => props.target.kind === 'new')
 const occurrence = computed(() => (props.target.kind === 'edit' ? props.target.occurrence : null))
 const saving = ref(false)
 const error = ref<string | null>(null)
-const notify = ref(true)
+const notify = ref(props.target.kind === 'new' ? (props.target.prefill?.notify ?? true) : true)
 
 /** A start moved keeps the event as long as it was. */
 watch(

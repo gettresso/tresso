@@ -46,4 +46,40 @@ describe('proposedTime', () => {
     expect(read('Meet on 31 November')).toBeNull()
     expect(read('Room 4 at 25:00')).toBeNull()
   })
+
+  it('reads only the email itself, not the reply it quotes', () => {
+    expect(read('Sounds good, see you then. On Fri, 23 Oct 2026 at 09:12, Piet wrote: lunch on Thursday at 12:30?')).toBeNull()
+    expect(read('Prima! Op vr 23 okt. 2026 om 09:12 schreef Piet: zullen we donderdag?')).toBeNull()
+    expect(read('Friday works.\n> Can we meet Thursday at 10:00?')).toEqual({ date: '2026-10-30', time: null })
+  })
+
+  it('takes a date with a year as given, and proposes nothing for one gone by', () => {
+    expect(read('The deadline was 3 March 2025')).toBeNull()
+    expect(read('Launch on 12 January 2027 at 9:00')).toEqual({ date: '2027-01-12', time: '09:00' })
+  })
+
+  it('reads no date from a signature name above a phone number', () => {
+    expect(read('Met vriendelijke groet,\nJan\n06 12345678')).toBeNull()
+    expect(read('Groet, June 06-1234')).toBeNull()
+  })
+
+  it('reads no time from prices, versions, addresses or counts', () => {
+    for (const text of ['That is 12.50 euro', 'Update to version 2.10', 'IP 10.0.1.10', 'Tel. 020 12.34.56', 'Look at 3 options', 'Kijk om 3 redenen', 'We have 3 Amsterdam offices']) {
+      expect(read(text), text).toBeNull()
+    }
+  })
+
+  it('puts a bare hour after at in the afternoon', () => {
+    expect(read('Meet at 4.')).toEqual({ date: '2026-10-26', time: '16:00' })
+    expect(read('Bellen om 9 uur?')).toEqual({ date: '2026-10-27', time: '09:00' })
+  })
+
+  it('prefers a named day over tomorrow, and a greeting is no tomorrow', () => {
+    expect(read('Goede morgen allemaal, kun je vrijdag?')).toEqual({ date: '2026-10-30', time: null })
+    expect(read('Morgen lukt niet, wel donderdag om 14:00')).toEqual({ date: '2026-10-29', time: '14:00' })
+  })
+
+  it('finds the next leap day for 29 February', () => {
+    expect(read('Lunch 29 feb')).toEqual({ date: '2028-02-29', time: null })
+  })
 })

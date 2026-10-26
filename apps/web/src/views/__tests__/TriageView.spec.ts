@@ -93,6 +93,8 @@ describe('TriageView', () => {
   let todoExists: boolean
   /** What the newest email (m1) carries besides the defaults: a text, a calendar invitation. */
   let firstMessage: Partial<SyncedMessage>
+  /** While set, the invitation answer waits for it before the server answers. */
+  let holdResponse: Promise<void> | null
 
   beforeEach(async () => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
@@ -109,6 +111,7 @@ describe('TriageView', () => {
     placements = 0
     todoExists = false
     firstMessage = {}
+    holdResponse = null
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -178,6 +181,9 @@ describe('TriageView', () => {
         return json(invitationOf())
       }
       if (/^\/api\/v1\/calendar-events\/[^/]+\/response$/.test(url.pathname)) {
+        if (holdResponse !== null) {
+          await holdResponse
+        }
         return json({})
       }
       if (url.pathname.endsWith('/body')) {
@@ -684,7 +690,7 @@ describe('TriageView', () => {
       expect(target).toMatchObject({
         kind: 'new',
         allDay: false,
-        prefill: { summary: 'Lunch on Thursday', attendees: [{ address: 'm1@partner.example', name: 'Sender m1', role: 'required' }] },
+        prefill: { summary: 'Lunch on Thursday', attendees: [{ address: 'm1@partner.example', name: 'Sender m1', role: 'required' }], notify: false },
       })
       expect(target.kind === 'new' && new Date(target.start).toISOString()).toBe('2026-10-29T11:30:00.000Z')
 
@@ -698,5 +704,40 @@ describe('TriageView', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('holds the decisions while an answer goes out, so it never puts away the email after it', async () => {
+    firstMessage = { calendarMethod: 'REQUEST' }
+    let release!: () => void
+    holdResponse = new Promise((resolve) => (release = resolve))
+    const wrapper = await mountView()
+    await until(() => expect(wrapper.find('.answer').exists()).toBe(true))
+
+    press('y')
+    await until(() => expect(requests).toHaveLength(1))
+    press('j')
+    press('k')
+    await settle()
+    expect(subject(wrapper)).toBe('Charged twice')
+    expect(wrapper.find('.decision').attributes('disabled')).toBeDefined()
+
+    release()
+    await until(() => expect(subject(wrapper)).toBe('Lunch'))
+    await until(() => expect(requests).toHaveLength(3))
+    expect(bodies().slice(1)).toEqual([
+      { messageIds: ['m1'], action: 'archive' },
+      { messageIds: ['m1'], action: 'markRead' },
+    ])
+  })
+
+  it('answers an invitation instead of copying it: no Add to calendar there', async () => {
+    firstMessage = { calendarMethod: 'REQUEST' }
+    const wrapper = await mountView()
+    await until(() => expect(wrapper.find('.answer').exists()).toBe(true))
+
+    press('a')
+    await settle()
+    expect(wrapper.findComponent(EventEditor).exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Add to calendar')
   })
 })
