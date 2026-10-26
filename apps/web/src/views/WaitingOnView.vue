@@ -13,6 +13,7 @@ import { useHandOversStore } from '@/stores/handOvers'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import FieldLabel from '@/forms/FieldLabel.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 /** Closed hand-overs listed below the open ones; older ones stay out of the way. */
 const CLOSED_SHOWN = 20
@@ -247,7 +248,7 @@ const minDay = dayValue(new Date())
             <small v-if="errors.text" class="error">{{ errors.text }}</small>
             <p v-if="ui.error" class="error" role="alert">{{ ui.error }}</p>
             <div class="buttons">
-              <button type="submit" class="button button-primary" :disabled="sending">{{ sending ? 'Sending…' : 'Send follow-up' }} <kbd>Cmd Enter</kbd></button>
+              <button type="submit" class="button button-primary" :disabled="sending">{{ sending ? 'Sending…' : 'Send follow-up' }} <KeyShortcut keys="Mod+Enter" /></button>
               <button type="button" class="button button-quiet" :disabled="sending" @click="editFirst">Edit first</button>
               <button type="button" class="button button-quiet" :disabled="sending" @click="noLongerWaiting(nudging)">No longer waiting</button>
             </div>
@@ -527,13 +528,6 @@ textarea:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-kbd {
-  font: 500 11px var(--font-mono);
-  margin-left: 6px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--surface) 25%, transparent);
 }
 .error {
   margin: 0;

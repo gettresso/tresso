@@ -13,6 +13,7 @@ import { useBatchesStore } from '@/stores/batches'
 import { useSmartInboxesStore } from '@/stores/smartInboxes'
 import AppIcon from '@/components/AppIcon.vue'
 import SenderListField from '@/components/SenderListField.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 provideRequiredFields(smartInboxSchema)
 
@@ -153,7 +154,6 @@ function remove(): Promise<void> {
   })
 }
 
-const shortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd S' : 'Ctrl S'
 
 function saveShortcut(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
@@ -254,7 +254,7 @@ function saveShortcut(event: KeyboardEvent): void {
 
       <div class="actions">
         <button type="submit" class="button button-primary" :disabled="saving">
-          Save <kbd>{{ shortcut }}</kbd>
+          Save <KeyShortcut keys="Mod+S" />
         </button>
         <RouterLink :to="{ name: 'settings-smart-inboxes' }" class="button button-quiet">Cancel</RouterLink>
         <span class="spacer" />
@@ -466,12 +466,6 @@ textarea[aria-invalid='true'] {
 }
 .spacer {
   flex: 1;
-}
-kbd {
-  font: 500 11px var(--font-mono);
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--surface) 25%, transparent);
 }
 .confirm {
   display: flex;

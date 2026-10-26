@@ -10,6 +10,7 @@ import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const mail = useMailStore()
 const brief = useBriefStore()
@@ -161,7 +162,7 @@ function briefLabel(createdAt: string): string {
           <div v-if="entries.length > 0" class="header-actions">
             <span class="progress" role="status">{{ progressText }}</span>
             <button type="button" class="button button-primary mark-all" :disabled="actions.busy.value || progress.noted === progress.total" @click="noteAll">
-              Mark all noted<kbd>Shift K</kbd>
+              Mark all noted <KeyShortcut keys="Shift+K" />
             </button>
           </div>
         </header>
@@ -313,12 +314,6 @@ h1 {
   padding: 0 16px;
   font-size: 14px;
   gap: 10px;
-}
-.mark-all kbd {
-  font: 500 11px var(--font-mono);
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--surface) 20%, transparent);
 }
 .body {
   display: flex;

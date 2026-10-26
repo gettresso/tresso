@@ -31,6 +31,7 @@ import TodoBlockDetail from '@/components/calendar/TodoBlockDetail.vue'
 import { useCalendarStore, type CalendarViewKind, type Response } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
 import { useTodosStore } from '@/stores/todos'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const calendar = useCalendarStore()
 const mail = useMailStore()
@@ -297,7 +298,7 @@ function pickDay(day: number): void {
 
     <main class="main" aria-labelledby="calendar-title">
       <header class="toolbar">
-        <button type="button" class="button button-quiet" @click="today">Today <kbd>T</kbd></button>
+        <button type="button" class="button button-quiet" @click="today">Today <KeyShortcut keys="T" /></button>
         <button type="button" class="button button-quiet icon" aria-label="Previous" @click="step(-1)"><AppIcon name="back" :size="16" /></button>
         <button type="button" class="button button-quiet icon" aria-label="Next" @click="step(1)"><AppIcon name="next" :size="16" /></button>
         <h1 id="calendar-title">{{ title }} <span v-if="subtitle" class="subtitle">{{ subtitle }}</span></h1>
@@ -307,7 +308,7 @@ function pickDay(day: number): void {
             {{ entry.label }}
           </button>
         </div>
-        <button type="button" class="button button-primary" @click="newEvent()"><AppIcon name="plus" :size="16" /> New event <kbd>N</kbd></button>
+        <button type="button" class="button button-primary" @click="newEvent()"><AppIcon name="plus" :size="16" /> New event <KeyShortcut keys="N" /></button>
       </header>
 
       <p v-if="calendar.notice" class="empty" role="status">{{ calendar.notice }}</p>
@@ -531,10 +532,6 @@ function pickDay(day: number): void {
 .hint {
   font-size: 12px;
   color: var(--ink-2);
-}
-kbd {
-  font: 500 11px var(--font-mono);
-  opacity: 0.7;
 }
 
 /* Next to the app's sidebar, an open event takes too much of the week below this width: it lies over the week instead. */

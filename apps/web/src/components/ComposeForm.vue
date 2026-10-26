@@ -15,6 +15,8 @@ import SignaturePreview from '@/components/SignaturePreview.vue'
 import DraftAttachments from '@/components/DraftAttachments.vue'
 import { RouterLink } from 'vue-router'
 import { sendLaterOptions, type SendLaterKey } from '@tresso/core'
+import AppIcon from '@/components/AppIcon.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const props = defineProps<{ draft: Draft }>()
 
@@ -225,9 +227,9 @@ function keydown(event: KeyboardEvent): void {
     </div>
 
     <footer class="actions">
-      <button type="submit" class="button button-primary" :disabled="compose.sending">Send <kbd>⌘ Enter</kbd></button>
+      <button type="submit" class="button button-primary" :disabled="compose.sending"><AppIcon name="outbox" :size="15" />Send <KeyShortcut keys="Mod+Enter" /></button>
       <div class="later">
-        <button type="button" class="button button-quiet" :aria-expanded="laterOpen" @click="laterOpen = !laterOpen">Send later</button>
+        <button type="button" class="button button-quiet" :aria-expanded="laterOpen" @click="laterOpen = !laterOpen"><AppIcon name="clock" :size="16" />Send later<AppIcon name="chevron" :size="14" class="chevron" :class="{ open: laterOpen }" /></button>
         <div v-if="laterOpen" class="menu" role="menu">
           <button v-for="option in laterOptions" :key="option.label" type="button" role="menuitem" @click="sendLater(option.time)">
             <span>{{ option.label }}</span>
@@ -241,10 +243,10 @@ function keydown(event: KeyboardEvent): void {
           </div>
         </div>
       </div>
-      <button type="button" class="button button-quiet" @click="fileInput?.click()">Attach files</button>
+      <button type="button" class="button button-quiet" @click="fileInput?.click()"><AppIcon name="attachment" :size="16" />Attach files</button>
       <input ref="fileInput" class="file-input" type="file" multiple tabindex="-1" aria-hidden="true" @change="pickFiles" />
       <span class="spacer" />
-      <button type="button" class="button button-quiet" @click="compose.discard()">Discard</button>
+      <button type="button" class="button button-quiet" @click="compose.discard()"><AppIcon name="trash" :size="16" />Discard</button>
     </footer>
   </form>
 </template>
@@ -365,14 +367,15 @@ select,
   gap: 8px;
   padding-top: 8px;
 }
-kbd {
-  font: 500 11px var(--font-mono);
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--surface) 25%, transparent);
-}
 .later {
   position: relative;
+}
+.chevron {
+  margin-left: -2px;
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.chevron.open {
+  transform: rotate(180deg);
 }
 .menu {
   transform-origin: bottom left;

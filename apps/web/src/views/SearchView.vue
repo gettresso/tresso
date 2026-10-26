@@ -8,6 +8,7 @@ import { useSearchStore } from '@/stores/search'
 import AppIcon from '@/components/AppIcon.vue'
 import HighlightText from '@/components/HighlightText.vue'
 import SearchField from '@/components/SearchField.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const mail = useMailStore()
 const search = useSearchStore()
@@ -198,7 +199,7 @@ function threadLink(hit: SearchHit) {
             </section>
             <p class="tip">
               Tip: combine <code>from:anna</code>, <code>has:attachment</code>, <code>in:archive</code> or <code>before:2026-10-01</code>
-              with any words. Press <kbd>/</kbd> to search from anywhere.
+              with any words. Press <KeyShortcut keys="/" /> to search from anywhere.
             </p>
           </aside>
         </div>
@@ -483,9 +484,6 @@ h2 {
   color: var(--ink-2);
 }
 .tip code,
-.tip kbd {
-  font: 500 12px var(--font-mono);
-}
 
 @media (max-width: 760px) {
   .main {

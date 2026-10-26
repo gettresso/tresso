@@ -11,6 +11,7 @@ import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
 import { useTodosStore } from '@/stores/todos'
 import type { SidebarPage } from '@/components/sidebarPage'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const props = defineProps<{
   displayName: string
@@ -73,7 +74,7 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
       <button type="button" class="button button-quiet sign-out" @click="emit('signOut')">Sign out</button>
     </div>
 
-    <button type="button" class="button button-primary compose" @click="compose.openNew()">Compose <kbd>C</kbd></button>
+    <button type="button" class="button button-primary compose" @click="compose.openNew()">Compose <KeyShortcut keys="C" /></button>
 
     <div class="group">
       <RouterLink :to="{ name: 'unified' }" class="item" :aria-current="inList && mailbox === null && smartInbox === null && !batches ? 'page' : undefined">
@@ -214,12 +215,6 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
 .compose {
   height: 40px;
   margin: 0 4px;
-}
-.compose kbd {
-  font: 500 11px var(--font-mono);
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--surface) 25%, transparent);
 }
 .new {
   padding: 1px 6px;

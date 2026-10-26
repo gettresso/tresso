@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ParticipationStatus } from '@tresso/core'
 import type { Response } from '@/stores/calendar'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 /** Accept, Maybe, Decline: the answer to an invitation, with the current one pressed. */
 defineProps<{ current: ParticipationStatus | null; busy?: boolean; label: string; shortcuts?: boolean }>()
@@ -25,7 +26,7 @@ const OPTIONS: { value: Response; label: string; key: string }[] = [
       :disabled="busy"
       @click="emit('respond', option.value)"
     >
-      {{ option.label }}<kbd v-if="shortcuts">{{ option.key }}</kbd>
+      {{ option.label }}<KeyShortcut v-if="shortcuts" :keys="option.key" />
     </button>
   </div>
 </template>
@@ -84,10 +85,6 @@ const OPTIONS: { value: Response; label: string; key: string }[] = [
 .response:disabled {
   opacity: 0.55;
   cursor: default;
-}
-kbd {
-  font: 500 11px var(--font-mono);
-  opacity: 0.7;
 }
 @media (prefers-reduced-motion: reduce) {
   .response:active:not(:disabled) {
