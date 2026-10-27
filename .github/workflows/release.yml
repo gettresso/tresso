@@ -165,7 +165,8 @@ jobs:
                   status=1
                 fi
               done
-              hdiutil detach "${mount}" >/dev/null
+              # Spotlight sometimes still holds the new volume for a moment.
+              hdiutil detach "${mount}" >/dev/null || hdiutil detach -force "${mount}" >/dev/null
               [ "${status}" -eq 0 ] || exit 1
               export COPYFILE_DISABLE=1
               tar -czf "dist/tresso-${NAME}.app.tar.gz" -C "${bundle}/macos" Tresso.app
