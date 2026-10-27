@@ -81,6 +81,22 @@ describe('openMailStore', () => {
     }
   })
 
+  it('deletes the copy it opened, even when the server changed before the sign-out finished', async () => {
+    const before = server.value
+    server.value = 'https://mail.example.com'
+    try {
+      const store = await openMailStore('kim')
+      await store.close()
+      server.value = before
+
+      await deleteMailStore('kim')
+
+      expect(desktop.deleted).toEqual([`${databaseName('kim')}-${serverTag('https://mail.example.com')}`])
+    } finally {
+      server.value = before
+    }
+  })
+
   it('leaves a draft alone that the SQLite copy has already', async () => {
     const old = await IndexedDbMailStore.open('kim')
     await old.saveDraft(draft('d1', { pendingSave: true, subject: 'Old' }))

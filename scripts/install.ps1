@@ -11,6 +11,11 @@
 # the user's own session.
 & {
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 draws a progress bar that slows downloads to a crawl, and older systems offer no TLS 1.2,
+# which GitHub requires. Both last only as long as this block, except the TLS setting, which only adds a protocol.
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$previousEncoding = [Console]::OutputEncoding
 
 # --- presentation: logo, step lines, and a summary box ---------------------------------------
 # The three parts of the Tresso mark (Do, Hand over, Know), in their dark-theme shades so they read on any terminal.
@@ -380,5 +385,10 @@ try {
 }
 catch {
     Write-TressoFailure -Message $_.Exception.Message
+    # A failed install must fail `powershell -c "irm ...|iex"` too, without closing an interactive session.
+    throw 'Tresso was not installed.'
+}
+finally {
+    [Console]::OutputEncoding = $previousEncoding
 }
 }

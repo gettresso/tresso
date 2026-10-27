@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import TressoMark from '@/components/TressoMark.vue'
 import { isDesktop } from '@/platform/desktop'
@@ -60,6 +60,9 @@ async function useServer(): Promise<void> {
     }
   }
 }
+
+// A check that outlives the screen (the user signed in meanwhile) must not switch servers under the new session.
+onBeforeUnmount(() => check?.abort())
 
 function closeServerForm(): void {
   check?.abort()

@@ -553,7 +553,7 @@ install_linux() {
   dir="$(cd "$dir" && pwd)"
   # The launcher entry quotes this path; characters that need escaping there are refused instead.
   case "$dir" in
-    *[\"\`\$\\%]*) die "TRESSO_INSTALL may not contain \", \`, \$, \\ or %: ${dir}" ;;
+    *[\"\`\$\\%]* | *$'\n'*) die "TRESSO_INSTALL may not contain \", \`, \$, \\, % or a line break: ${dir}" ;;
   esac
 
   dest="${dir}/Tresso.AppImage"

@@ -101,20 +101,21 @@ describe('the server the desktop app talks to', () => {
   })
 
   it('gives up on a server that does not answer in time', async () => {
-    const clock = new AbortController()
-    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(clock.signal)
-    vi.stubGlobal(
-      'fetch',
-      vi.fn<typeof globalThis.fetch>((_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)))),
-    )
-    const { reachServer } = await serverModule()
+    vi.useFakeTimers()
+    try {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn<typeof globalThis.fetch>((_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))))),
+      )
+      const { reachServer } = await serverModule()
 
-    const reached = reachServer('https://mail.example.com')
-    clock.abort(new DOMException('The operation timed out.', 'TimeoutError'))
+      const reached = reachServer('https://mail.example.com').catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(10_000)
 
-    await expect(reached).rejects.toThrow('could not reach')
-    expect(timeout).toHaveBeenCalledWith(10_000)
-    timeout.mockRestore()
+      expect(String(await reached)).toContain('could not reach')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stops quietly when the user gives up on the check', async () => {
