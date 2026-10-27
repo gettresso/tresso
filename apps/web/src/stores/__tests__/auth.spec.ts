@@ -39,6 +39,21 @@ vi.mock('@/platform/webPush', () => ({
   },
 }))
 
+// The browser's local storage, kept in memory.
+function memoryStorage(): Storage {
+  const items = new Map<string, string>()
+  return {
+    get length() {
+      return items.size
+    },
+    clear: () => items.clear(),
+    getItem: (key) => items.get(key) ?? null,
+    key: (index) => [...items.keys()][index] ?? null,
+    removeItem: (key) => void items.delete(key),
+    setItem: (key, value) => void items.set(key, value),
+  }
+}
+
 const TOKENS: TokenSet = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
 
 /** Loads the store fresh, so its platform (web or desktop) is read again. */
@@ -69,6 +84,7 @@ describe('auth store', () => {
     desktop.keychain = null
     desktop.keychainFails = false
     desktop.opened = []
+    vi.stubGlobal('localStorage', memoryStorage())
   })
 
   afterEach(() => {
@@ -155,6 +171,29 @@ describe('auth store', () => {
       expect(auth.tokens?.accessToken).toBe('access-2')
       expect(JSON.parse(desktop.keychain!)).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
       expect(sessionStorage.getItem('auth.tokens')).toBeNull()
+    })
+
+    it('signs in to the server the user chose, and exchanges the code there', async () => {
+      stubTokenEndpoint()
+      localStorage.setItem('tresso.server', 'https://mail.example.com')
+      const auth = await authStore()
+
+      const callback = await startSignIn(auth, () => desktop.opened[0]!)
+      expect(new URL(desktop.opened[0]!).origin).toBe('https://mail.example.com')
+      await auth.completeSignIn(callback)
+
+      expect(fetch).toHaveBeenCalledWith('https://mail.example.com/oauth/token', expect.anything())
+    })
+
+    it('refuses a sign-in that was started for another server', async () => {
+      stubTokenEndpoint()
+      const auth = await authStore()
+      const callback = await startSignIn(auth, () => desktop.opened[0]!)
+      const { chooseServer } = await import('@/platform/server')
+      chooseServer('mail.example.com')
+
+      await expect(auth.completeSignIn(callback)).rejects.toThrow('Sign in again.')
+      expect(auth.isAuthenticated).toBe(false)
     })
 
     it('clears the keychain on sign-out', async () => {
