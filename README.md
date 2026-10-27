@@ -1,9 +1,81 @@
-# Tresso
+<div align="center">
 
-[![CI](https://github.com/gettresso/tresso/actions/workflows/ci.yml/badge.svg)](https://github.com/gettresso/tresso/actions/workflows/ci.yml)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+  <img alt="Tresso: every email is something to do, to hand over, or to know" src="assets/banner-light.svg" width="100%">
+</picture>
 
-**One T, three ways out.** Tresso is an email client built around a single idea: every email is something
-to **do**, to **hand over**, or to **know**.
+<br>
+
+<a href="https://github.com/gettresso/tresso/actions/workflows/ci.yml"><img src="https://github.com/gettresso/tresso/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/gettresso/tresso/actions/workflows/release.yml"><img src="https://github.com/gettresso/tresso/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+<a href="https://github.com/gettresso/tresso/releases/latest"><img src="https://img.shields.io/github/v/release/gettresso/tresso?style=flat-square&color=2341D6" alt="Latest release"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-E0701B.svg?style=flat-square" alt="License: AGPL-3.0"></a>
+<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20web%20%7C%20mobile-555555.svg?style=flat-square" alt="macOS, Linux, Windows, web, mobile">
+
+**Tresso** is an open source email client built around a single idea: every email is something to **do**, to **hand over**, or to **know**.<br>
+Repo: [github.com/gettresso/tresso](https://github.com/gettresso/tresso)
+
+[Install](#-install) · [How it works](#-how-it-works) · [Highlights](#-highlights) · [Your own server](#-your-own-server) · [Development](#-development) · [Releases](#-releases)
+
+</div>
+
+<br>
+
+## 📦 Install
+
+The desktop app runs on macOS, Linux and Windows. It signs in to Tresso Cloud, or to [your own server](#-your-own-server).
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://sherin.dev/tresso/install.sh | bash
+```
+
+Pin a release with `bash -s`:
+
+```bash
+curl -fsSL https://sherin.dev/tresso/install.sh | bash -s v0.1.0
+```
+
+On macOS the script puts `Tresso.app` in `/Applications` (or `~/Applications` when that is not writable). On Linux it installs the AppImage in `~/.local/share/tresso`, links `tresso` into `~/.local/bin`, and adds a launcher entry that also opens `tresso://` links, through which sign-in comes back. `TRESSO_VERSION` pins a release like the first argument, and `TRESSO_INSTALL` picks another folder. Run it again to upgrade in place.
+
+### Windows
+
+```powershell
+powershell -c "irm https://sherin.dev/tresso/install.ps1|iex"
+```
+
+The script runs the installer silently for your user: Tresso goes to `%LOCALAPPDATA%\Tresso` and into the Start menu. `$env:TRESSO_VERSION` pins a release (`v0.1.0`). Remove it again under **Settings > Apps**.
+
+Both scripts check the download against `SHA256SUMS` on the GitHub release before they install anything.
+
+<details>
+<summary><b>Published files</b></summary>
+
+<br>
+
+Every [release](https://github.com/gettresso/tresso/releases) has:
+
+| Platform                       | File                                                                 |
+| ------------------------------ | -------------------------------------------------------------------- |
+| macOS (Apple Silicon and Intel) | `tresso-macos-universal.dmg`, `tresso-macos-universal.app.tar.gz`   |
+| Linux x86_64                   | `tresso-linux-x86_64.AppImage`, `tresso-linux-x86_64.deb`            |
+| Linux arm64                    | `tresso-linux-aarch64.AppImage`, `tresso-linux-aarch64.deb`          |
+| Windows x64                    | `tresso-windows-x64-setup.exe`, `tresso-windows-x64.msi`             |
+
+Prereleases (`v1.2.0-beta.1`) ship the Windows setup without the `.msi`, which only takes numeric versions.
+
+The app is not signed with an Apple Developer ID yet. The install script lifts the macOS quarantine for you. When you open the `.dmg` yourself, right-click Tresso and choose **Open** the first time, or run `xattr -dr com.apple.quarantine /Applications/Tresso.app`. The AppImage needs FUSE 2 (`sudo apt install libfuse2`); the `.deb` does not.
+
+</details>
+
+## 🧭 How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works-dark.svg">
+  <img alt="Mail from every account lands in one inbox; triage settles each email with D, H or K into a todo, a hand-over in Waiting on, or the daily brief" src="assets/how-it-works-light.svg" width="100%">
+</picture>
 
 | Verdict | What happens | Done when |
 |---|---|---|
@@ -11,34 +83,45 @@ to **do**, to **hand over**, or to **know**.
 | **Hand over** | It goes to someone else with a note and a due date | They finish it; until then it sits in *Waiting on* |
 | **Know** | It lands in the daily brief | One click on *Noted* |
 
-This repository is the open source edition: a complete, self-hostable email client for one person.
-
-## Highlights
+## ✨ Highlights
 
 - **Unified Inbox** across all your accounts, grouped into smart inboxes (To do, Informational, Notifications,
   Newsletters, Invitations, Spam) plus your own, defined by a name, instructions and sender include/exclude lists.
-- **Built-in todos** that sync across devices and can be created automatically from email.
+- **Built-in todos** that sync across devices, can be created automatically from email, and get time in your calendar.
 - **Triage mode**: one email at a time, settled with D, H or K.
+- **Calendar** next to your mail: invitations answered from the email, events from what an email proposes.
 - **One account, every device**: settings, mail accounts and HTML signatures stay in sync.
-- **Attachment virus scanning** before anything can be opened.
+- **Attachment virus scanning** before anything can be opened, and your mail encrypted at rest per user.
 - **Everywhere**: web, desktop (Tauri) and mobile (Expo), with notifications only for mail that needs you.
 
-## Open source and Tresso Cloud
+## 🔓 Open source and Tresso Cloud
+
+This repository is the open source edition: a complete, self-hostable email client for one person.
 
 Tresso is open core. This repository has everything you need to run Tresso yourself. **Tresso Cloud**, the hosted
 service, adds AI classification and summaries, teams with shared inboxes and delegation, API keys, webhooks and an
 MCP endpoint for other AIs, developer tools, statistics and Year in mail.
 
 Cloud features are add-ons: the open code never depends on them, and you can build your own add-ons the same way.
-See [Open core](docs/ARCHITECTURE.md#open-core).
+See [Open core](docs/ARCHITECTURE.md#open-core). The [roadmap](docs/ROADMAP.md) shows what is delivered and what
+comes next.
 
-## Status
+## 🏠 Your own server
 
-Phase 0 (foundation) is done: the architecture, the Docker stack, the API with its OAuth2 server and domain schema,
-the sync worker that leases accounts, and the web, desktop and mobile shells. Mail sync itself starts in phase 1.
-See the [roadmap](docs/ROADMAP.md).
+The desktop app signs in to Tresso Cloud by default. To use your own server, choose **Use another server** on the
+sign-in screen and enter its address, such as `mail.example.com`. The app checks that the server answers and
+remembers it until you choose again.
 
-## Stack
+Your server needs:
+
+- An `https://` address (plain `http://` only for a server on the same computer).
+- The `desktop` OAuth client, which the API creates on first boot.
+- The desktop app's origins in `CORS_ALLOW_ORIGIN`: `tauri://localhost` and `http://tauri.localhost`, as in the
+  default `apps/api/.env`.
+
+[Getting started](#-getting-started) below runs the whole stack with Docker.
+
+## 🧱 Stack
 
 | Part | Technology |
 |---|---|
@@ -50,7 +133,7 @@ See the [roadmap](docs/ROADMAP.md).
 | Data | PostgreSQL 18, Redis, S3 storage (RustFS locally), Meilisearch |
 | Scanning | ClamAV |
 
-## Repository
+## 📁 Repository
 
 ```
 apps/
@@ -63,9 +146,11 @@ packages/
   core/       Shared TypeScript: domain types, OAuth2 PKCE client
 docker/       Dockerfiles and server config
 docs/         Architecture and roadmap
+scripts/      Install scripts for the desktop app
+assets/       README images
 ```
 
-## Getting started
+## 🚀 Getting started
 
 You need Docker, Node 24 or newer, and Rust for the desktop app. Go and PHP run inside containers.
 
@@ -158,7 +243,7 @@ CLAMAV_HOST=clamav docker compose --profile scan up -d
 After a signature update, or once clamd is back after scans failed, scan attachments again with
 `php bin/console app:attachments:rescan --all` (or `--user=<email>`, optionally `--status=failed`).
 
-## Development
+## 🔧 Development
 
 Create the test database once:
 
@@ -206,12 +291,27 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
   simulator reaches the API on `localhost`; for the Android emulator or a phone set `EXPO_PUBLIC_API_URL` in
   `apps/mobile/.env.local` (`http://10.0.2.2:8080`, or the computer's address on the network).
 
-## Documentation
+## 📤 Releases
+
+Pushing a tag `v<major>.<minor>.<patch>` runs the [release workflow](.github/workflows/release.yml): it builds the
+desktop app for macOS (universal), Linux (x86_64 and arm64) and Windows, writes `SHA256SUMS`, and publishes a GitHub
+release with generated notes. A tag with a suffix (`v1.2.0-beta.1`) becomes a prerelease, which the install scripts
+skip unless you pin it.
+
+```bash
+git tag -s v0.1.0 -m "Tresso 0.1.0" && git push origin v0.1.0
+```
+
+The version comes from the tag, so nothing needs bumping first. A release talks to Tresso Cloud
+(`https://api.tresso.app`) until the user picks another server. A pull request that changes the release, the desktop
+app or the install scripts builds every platform without publishing.
+
+## 📚 Documentation
 
 - [Architecture](docs/ARCHITECTURE.md): components, open core, auth, sync protocol, processing pipeline, scaling
 - [Roadmap](docs/ROADMAP.md): phases from foundation to native apps
 
-## License
+## 📄 License
 
 Tresso is licensed under the [GNU Affero General Public License v3.0](LICENSE). The shared libraries in `packages/`
 are [MIT licensed](packages/core/LICENSE), so you can use them in your own projects.
