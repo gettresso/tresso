@@ -85,12 +85,16 @@ const CHECK_TIMEOUT_MS = 10_000
  * app (CORS) look the same from here, so the message names all three. `signal` lets the user give up on the check.
  */
 export async function reachServer(address: string, signal?: AbortSignal): Promise<void> {
-  const timeout = AbortSignal.timeout(CHECK_TIMEOUT_MS)
+  // One controller for both the user and the clock: AbortSignal.any and .timeout are missing on older macOS WebKit.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS)
+  const giveUp = () => controller.abort()
+  signal?.addEventListener('abort', giveUp, { once: true })
+  if (signal?.aborted === true) {
+    controller.abort()
+  }
   try {
-    await fetch(`${address}/api/v1/me`, {
-      headers: { Accept: 'application/json' },
-      signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
-    })
+    await fetch(`${address}/api/v1/me`, { headers: { Accept: 'application/json' }, signal: controller.signal })
   } catch (error) {
     if (signal?.aborted === true) {
       throw error
@@ -98,6 +102,9 @@ export async function reachServer(address: string, signal?: AbortSignal): Promis
     throw new Error(
       `Tresso could not reach ${address}. Check the address, that the server is up, and that it allows the desktop app (CORS_ALLOW_ORIGIN).`,
     )
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', giveUp)
   }
 }
 
