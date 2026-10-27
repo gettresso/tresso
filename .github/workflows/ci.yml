@@ -184,3 +184,18 @@ jobs:
           workspaces: apps/desktop/src-tauri
       - run: cargo check --locked
       - run: cargo test --locked --lib
+
+  scripts:
+    name: Install scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: ShellCheck
+        run: shellcheck scripts/install.sh
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $issues = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Warning, Error
+          $issues | Format-Table -AutoSize
+          if ($issues) { exit 1 }
