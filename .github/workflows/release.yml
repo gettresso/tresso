@@ -123,6 +123,8 @@ jobs:
           BUNDLES: ${{ matrix.bundles }}
           # No Apple Developer ID yet: an ad-hoc signature, so Apple Silicon runs the app once the quarantine is lifted.
           APPLE_SIGNING_IDENTITY: '-'
+          # Tauri skips the Finder layout of the DMG (background, icon positions) on CI unless told otherwise.
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
         run: |
           set -euo pipefail
           # Windows Installer only takes numeric versions, so a prerelease ships the setup.exe alone.
@@ -153,6 +155,18 @@ jobs:
           case "${NAME}" in
             macos-*)
               cp "$(one "${bundle}"/dmg/*.dmg)" "dist/tresso-${NAME}.dmg"
+              # The DMG must carry its Finder layout: the background and the window settings in .DS_Store.
+              mount="$(mktemp -d)"
+              hdiutil attach -nobrowse -readonly -mountpoint "${mount}" "dist/tresso-${NAME}.dmg" >/dev/null
+              status=0
+              for file in .background/background.tiff .DS_Store Tresso.app Applications; do
+                if [ ! -e "${mount}/${file}" ]; then
+                  echo "The DMG has no ${file}" >&2
+                  status=1
+                fi
+              done
+              hdiutil detach "${mount}" >/dev/null
+              [ "${status}" -eq 0 ] || exit 1
               export COPYFILE_DISABLE=1
               tar -czf "dist/tresso-${NAME}.app.tar.gz" -C "${bundle}/macos" Tresso.app
               ;;

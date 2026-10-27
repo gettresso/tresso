@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Tresso</title>
+  <defs>
+    <!-- The macOS app icon grid: an 824 pt tile in a 1024 pt canvas, with room for the drop shadow. -->
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#ECEFF6"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#C9CFDB" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="do" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3D5AF0"/>
+      <stop offset="1" stop-color="#1F38C4"/>
+    </linearGradient>
+    <linearGradient id="hand" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F28233"/>
+      <stop offset="1" stop-color="#D2620F"/>
+    </linearGradient>
+    <linearGradient id="know" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3DB39A"/>
+      <stop offset="1" stop-color="#268873"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.32"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="drop" filterUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dy="12" result="blur"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.28"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="lift" filterUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="9"/>
+      <feOffset dy="10"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.22"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#lift)"><g transform="translate(224.00 218.00) scale(24)">
+    <rect x="3" y="4" width="8.5" height="5" rx="2.5" fill="url(#do)"/>
+    <rect x="12.5" y="4" width="8.5" height="5" rx="2.5" fill="url(#hand)"/>
+    <rect x="9.5" y="10.5" width="5" height="10" rx="2.5" fill="url(#know)"/>
+    <rect x="3" y="4" width="8.5" height="5" rx="2.5" fill="url(#gloss)"/>
+    <rect x="12.5" y="4" width="8.5" height="5" rx="2.5" fill="url(#gloss)"/>
+    <rect x="9.5" y="10.5" width="5" height="10" rx="2.5" fill="url(#gloss)"/>
+  </g></g>
+</svg>
