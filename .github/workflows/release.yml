@@ -170,6 +170,22 @@ jobs:
           esac
           ls -la dist
 
+      # install.ps1 runs the setup silently and then looks for the app where it should land; check that it does.
+      - name: Install silently (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath dist/tresso-windows-x64-setup.exe -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "the setup stopped with exit code $($process.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'Tresso\tresso-desktop.exe'
+          if (-not (Test-Path $exe)) {
+            Get-ChildItem -Recurse (Join-Path $env:LOCALAPPDATA 'Tresso') -ErrorAction SilentlyContinue | Format-Table FullName
+            throw "the setup did not install $exe"
+          }
+          $scheme = Get-ItemProperty -Path 'HKCU:\Software\Classes\tresso\shell\open\command' -ErrorAction SilentlyContinue
+          if ($null -eq $scheme) { throw 'the setup did not register tresso:// links' }
+          Write-Output "Installed $exe; tresso:// opens $($scheme.'(default)')"
+
       - uses: actions/upload-artifact@v4
         with:
           name: tresso-${{ matrix.name }}
@@ -180,7 +196,8 @@ jobs:
   release:
     name: Publish release
     needs: [version, build]
-    if: github.ref_type == 'tag'
+    # Only a pushed tag publishes; running the workflow by hand on a tag builds without publishing too.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write

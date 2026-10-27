@@ -26,6 +26,7 @@ vi.mock('@/platform/desktopSql', () => ({
 }))
 
 const { deleteMailStore, openMailStore } = await import('../store')
+const { server, serverTag } = await import('@/platform/server')
 
 async function indexedDbExists(userId: string): Promise<boolean> {
   return (await indexedDB.databases()).some((database) => database.name === databaseName(userId))
@@ -62,6 +63,22 @@ describe('openMailStore', () => {
     expect(await store.draft('unsent')).toMatchObject({ pendingSave: true, version: 2 })
     expect(await indexedDbExists('kim')).toBe(false)
     await store.close()
+  })
+
+  it('keeps a separate desktop copy per server, since user ids are only unique per server', async () => {
+    const before = server.value
+    server.value = 'https://mail.example.com'
+    try {
+      const store = await openMailStore('kim')
+      await store.close()
+      await deleteMailStore('kim')
+
+      const name = `${databaseName('kim')}-${serverTag('https://mail.example.com')}`
+      expect(desktop.deleted).toEqual([name])
+      expect(desktop.files.has(databaseName('kim'))).toBe(false)
+    } finally {
+      server.value = before
+    }
   })
 
   it('leaves a draft alone that the SQLite copy has already', async () => {

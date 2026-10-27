@@ -7,16 +7,19 @@
 # to the Start menu and makes it the handler of tresso:// links, through which sign-in comes back.
 #Requires -Version 5.1
 
+# Everything runs in a script block: piped into iex, an exit, a variable or a changed preference would otherwise reach
+# the user's own session.
+& {
 $ErrorActionPreference = 'Stop'
 
 # --- presentation: logo, step lines, and a summary box ---------------------------------------
 # The three parts of the Tresso mark (Do, Hand over, Know), in their dark-theme shades so they read on any terminal.
-$script:Stops = @(@(143, 162, 255), @(242, 154, 85), @(108, 199, 178))
-$script:Accent = '143;162;255'
-$script:Tagline = 'Every email is something to do, to hand over, or to know.'
+$Stops = @(@(143, 162, 255), @(242, 154, 85), @(108, 199, 178))
+$Accent = '143;162;255'
+$Tagline = 'Every email is something to do, to hand over, or to know.'
 # The file stays ASCII so Windows PowerShell 5.1 reads it correctly without a BOM:
 # # = full block, = | a b c d = the double-line box pieces.
-$script:LogoBlock = @(
+$LogoBlock = @(
     '########b######b #######b#######b#######b ######b ',
     'c==##a==d##a==##b##a====d##a====d##a====d##a===##b',
     '   ##|   ######ad#####b  #######b#######b##|   ##|',
@@ -24,7 +27,7 @@ $script:LogoBlock = @(
     '   ##|   ##|  ##|#######b#######|#######|c######ad',
     '   c=d   c=d  c=dc======dc======dc======d c=====d '
 )
-$script:LogoAscii = @(
+$LogoAscii = @(
     ' _____   ____    _____   ____    ____     ___  ',
     '|_   _| |  _ \  | ____| / ___|  / ___|   / _ \ ',
     '  | |   | |_) | |  _|   \___ \  \___ \  | | | |',
@@ -32,40 +35,40 @@ $script:LogoAscii = @(
     '  |_|   |_| \_\ |_____| |____/  |____/   \___/ '
 )
 
-$script:Esc = [char]27
-$script:Vt = $false
+$Esc = [char]27
+$Vt = $false
 try {
-    $script:Vt = [bool]$Host.UI.SupportsVirtualTerminal
+    $Vt = [bool]$Host.UI.SupportsVirtualTerminal
 }
 catch {
-    $script:Vt = $false
+    $Vt = $false
 }
 if (-not [string]::IsNullOrEmpty($env:WT_SESSION) -or $PSVersionTable.PSVersion.Major -ge 7) {
-    $script:Vt = $true
+    $Vt = $true
 }
-$script:Color = $script:Vt -and [string]::IsNullOrEmpty($env:NO_COLOR) -and -not [Console]::IsOutputRedirected
-$script:Unicode = $false
-if ($script:Vt) {
+$Color = $Vt -and [string]::IsNullOrEmpty($env:NO_COLOR) -and -not [Console]::IsOutputRedirected
+$Unicode = $false
+if ($Vt) {
     try {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $script:Unicode = $true
+        $Unicode = $true
     }
     catch {
-        $script:Unicode = $false
+        $Unicode = $false
     }
 }
-$script:LogoBlock = $script:LogoBlock | ForEach-Object {
+$LogoBlock = $LogoBlock | ForEach-Object {
     $_.Replace('#', [char]0x2588).Replace('=', [char]0x2550).Replace('|', [char]0x2551).Replace('a', [char]0x2554).Replace('b', [char]0x2557).Replace('c', [char]0x255A).Replace('d', [char]0x255D)
 }
-if ($script:Unicode) {
-    $script:MarkOk = [string][char]0x2713
-    $script:MarkErr = [string][char]0x2717
-    $script:Box = @([char]0x256D, [char]0x256E, [char]0x2570, [char]0x256F, [char]0x2500, [char]0x2502)
+if ($Unicode) {
+    $MarkOk = [string][char]0x2713
+    $MarkErr = [string][char]0x2717
+    $Box = @([char]0x256D, [char]0x256E, [char]0x2570, [char]0x256F, [char]0x2500, [char]0x2502)
 }
 else {
-    $script:MarkOk = '+'
-    $script:MarkErr = 'x'
-    $script:Box = @('+', '+', '+', '+', '-', '|')
+    $MarkOk = '+'
+    $MarkErr = 'x'
+    $Box = @('+', '+', '+', '+', '-', '|')
 }
 
 function Format-TressoStyle {
@@ -73,20 +76,20 @@ function Format-TressoStyle {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
         [Parameter(Mandatory = $true)][string]$Code
     )
-    if (-not $script:Color -or $Text.Length -eq 0) {
+    if (-not $Color -or $Text.Length -eq 0) {
         return $Text
     }
-    return "$($script:Esc)[$($Code)m$Text$($script:Esc)[0m"
+    return "$($Esc)[$($Code)m$Text$($Esc)[0m"
 }
 
 function Get-TressoGradient {
     param([int]$Column, [int]$Span, [bool]$Shadow)
     $fraction = $Column / [Math]::Max(1, $Span - 1)
     if ($fraction -lt 0.5) {
-        $from = $script:Stops[0]; $to = $script:Stops[1]; $local = $fraction * 2
+        $from = $Stops[0]; $to = $Stops[1]; $local = $fraction * 2
     }
     else {
-        $from = $script:Stops[1]; $to = $script:Stops[2]; $local = ($fraction - 0.5) * 2
+        $from = $Stops[1]; $to = $Stops[2]; $local = ($fraction - 0.5) * 2
     }
     $rgb = 0..2 | ForEach-Object { [int][Math]::Round($from[$_] + ($to[$_] - $from[$_]) * $local) }
     if ($Shadow) {
@@ -99,7 +102,7 @@ function Get-TressoGradient {
 function Write-TressoLogo {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
     param()
-    if ($script:Unicode) { $rows = $script:LogoBlock } else { $rows = $script:LogoAscii }
+    if ($Unicode) { $rows = $LogoBlock } else { $rows = $LogoAscii }
     $span = $rows[0].Length
     $columns = 80
     try {
@@ -111,7 +114,7 @@ function Write-TressoLogo {
     Write-Host ''
     if ($span + 2 -le $columns) {
         foreach ($row in $rows) {
-            if (-not $script:Color) {
+            if (-not $Color) {
                 Write-Host "  $($row.TrimEnd())"
                 continue
             }
@@ -124,19 +127,19 @@ function Write-TressoLogo {
                     [void]$builder.Append(' ')
                     continue
                 }
-                $code = Get-TressoGradient -Column $i -Span $span -Shadow ($script:Unicode -and $ch -ne [char]0x2588)
+                $code = Get-TressoGradient -Column $i -Span $span -Shadow ($Unicode -and $ch -ne [char]0x2588)
                 if ($code -ne $last) {
-                    [void]$builder.Append("$($script:Esc)[$($code)m")
+                    [void]$builder.Append("$($Esc)[$($code)m")
                     $last = $code
                 }
                 [void]$builder.Append($ch)
             }
-            [void]$builder.Append("$($script:Esc)[0m")
+            [void]$builder.Append("$($Esc)[0m")
             Write-Host $builder.ToString()
         }
         Write-Host ''
     }
-    Write-Host "  $(Format-TressoStyle -Text $script:Tagline -Code '1')  $(Format-TressoStyle -Text 'installer' -Code '2')"
+    Write-Host "  $(Format-TressoStyle -Text $Tagline -Code '1')  $(Format-TressoStyle -Text 'installer' -Code '2')"
     Write-Host ''
 }
 
@@ -146,23 +149,23 @@ function Write-TressoStep {
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$Detail
     )
-    $mark = Format-TressoStyle -Text $script:MarkOk -Code '32'
+    $mark = Format-TressoStyle -Text $MarkOk -Code '32'
     Write-Host ("  {0} {1} {2}" -f $mark, $Label.PadRight(10), (Format-TressoStyle -Text $Detail -Code '2'))
 }
 
 function Write-TressoPending {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
     param([Parameter(Mandatory = $true)][string]$Label)
-    if ($script:Color) {
-        Write-Host -NoNewline ("  {0} {1}" -f (Format-TressoStyle -Text '...' -Code "38;2;$($script:Accent)"), $Label)
+    if ($Color) {
+        Write-Host -NoNewline ("  {0} {1}" -f (Format-TressoStyle -Text '...' -Code "38;2;$($Accent)"), $Label)
     }
 }
 
 function Clear-TressoPending {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
     param()
-    if ($script:Color) {
-        Write-Host -NoNewline "`r$($script:Esc)[2K"
+    if ($Color) {
+        Write-Host -NoNewline "`r$($Esc)[2K"
     }
 }
 
@@ -170,7 +173,7 @@ function Write-TressoFailure {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
     param([Parameter(Mandatory = $true)][string]$Message)
     Clear-TressoPending
-    $mark = Format-TressoStyle -Text $script:MarkErr -Code '1;31'
+    $mark = Format-TressoStyle -Text $MarkErr -Code '1;31'
     Write-Host ("  {0} {1}" -f $mark, (Format-TressoStyle -Text $Message -Code '31'))
 }
 
@@ -203,15 +206,15 @@ function Write-TressoSummary {
         Write-Host ''
         return
     }
-    $edge = [string]$script:Box[4] * ($width + 6)
-    $side = Format-TressoStyle -Text ([string]$script:Box[5]) -Code '2'
-    Write-Host ('  ' + (Format-TressoStyle -Text ("$($script:Box[0])$edge$($script:Box[1])") -Code '2'))
+    $edge = [string]$Box[4] * ($width + 6)
+    $side = Format-TressoStyle -Text ([string]$Box[5]) -Code '2'
+    Write-Host ('  ' + (Format-TressoStyle -Text ("$($Box[0])$edge$($Box[1])") -Code '2'))
     Write-Host ("  $side" + (' ' * ($width + 6)) + $side)
     foreach ($line in $Lines) {
         Write-Host ("  $side   " + $line[1] + (' ' * ($width - $line[0].Length)) + "   $side")
     }
     Write-Host ("  $side" + (' ' * ($width + 6)) + $side)
-    Write-Host ('  ' + (Format-TressoStyle -Text ("$($script:Box[2])$edge$($script:Box[3])") -Code '2'))
+    Write-Host ('  ' + (Format-TressoStyle -Text ("$($Box[2])$edge$($Box[3])") -Code '2'))
     Write-Host ''
 }
 
@@ -243,6 +246,30 @@ function Save-TressoFile {
         return
     }
     Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+}
+
+# Where /releases/latest redirects to, with curl.exe when Windows has it and Invoke-WebRequest otherwise.
+function Get-TressoLatestUrl {
+    param([Parameter(Mandatory = $true)][string]$Url)
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($null -ne $curl) {
+        $effective = & curl.exe -fsSL --proto '=https' --tlsv1.2 -o NUL -w '%{url_effective}' $Url
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($effective)) {
+            throw "could not find the latest release at $Url"
+        }
+        return $effective
+    }
+    try {
+        $response = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing
+    }
+    catch {
+        throw "could not find the latest release at $Url"
+    }
+    $final = $response.BaseResponse.ResponseUri
+    if ($null -eq $final) {
+        $final = $response.BaseResponse.RequestMessage.RequestUri
+    }
+    return [string]$final
 }
 
 function Get-TressoChecksum {
@@ -285,10 +312,7 @@ try {
     }
     else {
         $latestUrl = "$github/releases/latest"
-        $effective = & curl.exe -fsSL --proto '=https' --tlsv1.2 -o NUL -w '%{url_effective}' $latestUrl
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($effective)) {
-            throw "could not find the latest release at $latestUrl"
-        }
+        $effective = Get-TressoLatestUrl -Url $latestUrl
         if ($effective -notmatch '/releases/tag/([^/?#]+)$') {
             throw "no release published yet at $latestUrl"
         }
@@ -332,7 +356,7 @@ try {
         }
     }
 
-    $dest = Join-Path $env:LOCALAPPDATA 'Tresso\Tresso.exe'
+    $dest = Join-Path $env:LOCALAPPDATA 'Tresso\tresso-desktop.exe'
     if (-not (Test-Path -Path $dest)) {
         $found = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Tresso') -Filter '*.exe' -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -notlike 'uninstall*' } | Select-Object -First 1
@@ -345,9 +369,9 @@ try {
     Write-TressoStep -Label 'Start menu' -Detail 'Tresso, and the handler of tresso:// links'
 
     $title = "Tresso $($version.TrimStart('v')) is installed"
-    $open = Format-TressoStyle -Text 'Tresso' -Code "1;38;2;$($script:Accent)"
+    $open = Format-TressoStyle -Text 'Tresso' -Code "1;38;2;$($Accent)"
     Write-TressoSummary -Lines @(
-        , @("$($script:MarkOk) $title", "$(Format-TressoStyle -Text $script:MarkOk -Code '1;32') $(Format-TressoStyle -Text $title -Code '1')")
+        , @("$($MarkOk) $title", "$(Format-TressoStyle -Text $MarkOk -Code '1;32') $(Format-TressoStyle -Text $title -Code '1')")
         , @('', '')
         , @("Location  $(Get-TressoDisplayPath -Path $dest)", "$(Format-TressoStyle -Text 'Location' -Code '2')  $(Get-TressoDisplayPath -Path $dest)")
         , @('Open      Tresso from the Start menu', "$(Format-TressoStyle -Text 'Open' -Code '2')      $open from the Start menu")
@@ -356,5 +380,5 @@ try {
 }
 catch {
     Write-TressoFailure -Message $_.Exception.Message
-    exit 1
+}
 }
