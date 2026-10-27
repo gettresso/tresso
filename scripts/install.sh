@@ -555,12 +555,14 @@ launcher_safe() {
 install_linux() {
   local dir="${TRESSO_INSTALL:-"${HOME}/.local/share/tresso"}"
   dir="${dir%/}"
-  # The launcher entry quotes this path, so characters that need escaping there are refused: in what was given (before
-  # $(...) drops a trailing line break) and in the full path a relative one becomes.
+  # A full path without $(...), which would drop a trailing line break from it. The launcher entry quotes this path,
+  # so characters that need escaping there are refused before anything is created.
+  case "$dir" in
+    /*) ;;
+    *) dir="${PWD}/${dir}" ;;
+  esac
   launcher_safe "$dir"
   mkdir -p "$dir" || die "could not create ${dir}"
-  dir="$(CDPATH='' cd "$dir" && pwd)"
-  launcher_safe "$dir"
 
   dest="${dir}/Tresso.AppImage"
   cp "$file" "${dest}.new"
