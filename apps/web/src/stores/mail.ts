@@ -45,7 +45,7 @@ import {
 } from '@tresso/core'
 import { ApiError } from '@/api/errors'
 import type { Contact, Conversation, Draft, ListScope } from '@/mail/db'
-import { deleteMailStore, openMailStore } from '@/mail/store'
+import { deleteMailStore, mailCopyName, openMailStore } from '@/mail/store'
 import type { ClosedElsewhere } from '@/mail/db'
 import { forTheDesktop, mailNotifications, overdueNotifications } from '@/mail/mailNotifications'
 import { notifier } from '@/platform/notifier'
@@ -377,11 +377,13 @@ export const useMailStore = defineStore('mail', () => {
   /** Stops syncing and removes the local copy, so nothing stays behind on a shared computer. */
   async function forget(): Promise<void> {
     const forUserId = userId
+    // Named now: by the time the copy is closed, the user may be signed in to another server under the same id.
+    const name = forUserId === null ? null : mailCopyName(forUserId)
     await stop()
     // A copy still opening (at launch, say) is closed by its start once it sees it was overtaken; only then can it go.
     await Promise.allSettled(openings)
-    if (forUserId !== null) {
-      await deleteMailStore(forUserId)
+    if (forUserId !== null && name !== null) {
+      await deleteMailStore(forUserId, name)
     }
   }
 

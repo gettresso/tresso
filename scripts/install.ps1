@@ -12,10 +12,10 @@
 & {
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 draws a progress bar that slows downloads to a crawl, and older systems offer no TLS 1.2,
-# which GitHub requires. Both last only as long as this block, except the TLS setting, which only adds a protocol.
+# which GitHub requires. The progress setting lasts only as long as this block; the TLS one stays for the session.
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-$previousEncoding = [Console]::OutputEncoding
+$previousEncoding = $null
 
 # --- presentation: logo, step lines, and a summary box ---------------------------------------
 # The three parts of the Tresso mark (Do, Hand over, Know), in their dark-theme shades so they read on any terminal.
@@ -55,7 +55,9 @@ $Color = $Vt -and [string]::IsNullOrEmpty($env:NO_COLOR) -and -not [Console]::Is
 $Unicode = $false
 if ($Vt) {
     try {
+        $before = [Console]::OutputEncoding
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $previousEncoding = $before
         $Unicode = $true
     }
     catch {
@@ -389,6 +391,14 @@ catch {
     throw 'Tresso was not installed.'
 }
 finally {
-    [Console]::OutputEncoding = $previousEncoding
+    # Only when it was changed above: some hosts (the ISE, a process without a console) refuse to set it at all.
+    if ($null -ne $previousEncoding) {
+        try {
+            [Console]::OutputEncoding = $previousEncoding
+        }
+        catch {
+            Write-Verbose 'The console encoding could not be restored.'
+        }
+    }
 }
 }
