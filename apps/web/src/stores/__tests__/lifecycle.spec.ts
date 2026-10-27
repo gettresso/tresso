@@ -19,6 +19,9 @@ const copies = vi.hoisted(() => ({
   deleted: [] as string[],
   holdOpen: new Map<string, Promise<void>>(),
   holdClose: new Map<string, Promise<void>>(),
+  /** The name each user's copy has now; the server chosen on the sign-in screen changes it. */
+  names: new Map<string, string>(),
+  deletedNames: [] as string[],
 }))
 
 vi.mock('@/mail/store', () => ({
@@ -35,9 +38,10 @@ vi.mock('@/mail/store', () => ({
     }
     return store
   },
-  mailCopyName: (userId: string) => `copy-${userId}`,
+  mailCopyName: (userId: string) => copies.names.get(userId) ?? `copy-${userId}`,
   // As the desktop shell does: a copy that is still open cannot be removed.
-  deleteMailStore: async (userId: string) => {
+  deleteMailStore: async (userId: string, name: string) => {
+    copies.deletedNames.push(name)
     const open = copies.opening.filter((id) => id === userId).length - copies.closed.filter((id) => id === userId).length
     if (open > 0) {
       throw new Error('The mail copy is still open.')
@@ -62,6 +66,8 @@ describe('the mail copy across sign-out and sign-in', () => {
     copies.deleted = []
     copies.holdOpen.clear()
     copies.holdClose.clear()
+    copies.names.clear()
+    copies.deletedNames = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -95,6 +101,21 @@ describe('the mail copy across sign-out and sign-in', () => {
     expect(mail.ready).toBe(true)
     await mail.forget()
     expect(copies.deleted).toEqual(['anna', 'ben'])
+  })
+
+  it('removes the copy of the server signed out from, though another server is chosen while it closes', async () => {
+    const mail = useMailStore()
+    copies.names.set('anna', 'copy-anna-cloud')
+    await mail.start('anna')
+    const closing = gate()
+    copies.holdClose.set('anna', closing.passed)
+
+    const forgetting = mail.forget()
+    copies.names.set('anna', 'copy-anna-staging')
+    closing.open()
+    await forgetting
+
+    expect(copies.deletedNames).toEqual(['copy-anna-cloud'])
   })
 
   it('removes a copy that was still opening when the user was signed out', async () => {
