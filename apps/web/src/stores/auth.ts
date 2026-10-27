@@ -57,7 +57,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function signIn(): Promise<void> {
     const pending = await startAuthorization(oauthConfig)
-    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: pending.state, codeVerifier: pending.codeVerifier }))
+    // The server too: the code can only be exchanged where it was issued.
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: pending.state, codeVerifier: pending.codeVerifier, server: config.apiUrl }))
     if (!isDesktop) {
       window.location.assign(pending.url)
       return
@@ -77,8 +78,11 @@ export const useAuthStore = defineStore('auth', () => {
     if (raw === null) {
       throw new Error(isDesktop ? 'No sign-in was started in this window.' : 'No sign-in was started in this tab.')
     }
-    const pending = JSON.parse(raw) as { state: string; codeVerifier: string }
+    const pending = JSON.parse(raw) as { state: string; codeVerifier: string; server?: string }
     awaitingBrowser.value = false
+    if (pending.server !== undefined && pending.server !== config.apiUrl) {
+      throw new Error(`This sign-in was started for ${pending.server}, but Tresso now uses ${config.apiUrl}. Sign in again.`)
+    }
     const code = parseCallback(callbackUrl, pending.state)
     await store(await exchangeCode(oauthConfig, code, pending.codeVerifier))
   }
