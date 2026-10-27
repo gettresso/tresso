@@ -82,6 +82,25 @@ describe('SignInView', () => {
     expect(localStorage.getItem('tresso.server')).toBeNull()
   })
 
+  it('never switches to a server the user cancelled while it was checked', async () => {
+    let answer: (response: Response) => void = () => undefined
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(() => new Promise((resolve) => (answer = resolve))))
+    const view = await signInView()
+
+    await view.get('.server-change').trigger('click')
+    await view.get('input').setValue('mail.example.com')
+    await view.get('form').trigger('submit')
+    expect(view.get('button[type="submit"]').text()).toBe('Checking...')
+    const cancel = view.findAll('button').find((button) => button.text() === 'Cancel')!
+    await cancel.trigger('click')
+    answer(new Response('{}', { status: 401 }))
+    await flushPromises()
+
+    expect(view.get('.server').text()).toContain('localhost:8080')
+    expect(localStorage.getItem('tresso.server')).toBeNull()
+    expect(view.get('button.sign-in').attributes('disabled')).toBeUndefined()
+  })
+
   it('refuses plain http to another computer without asking it', async () => {
     const request = vi.fn<typeof globalThis.fetch>()
     vi.stubGlobal('fetch', request)

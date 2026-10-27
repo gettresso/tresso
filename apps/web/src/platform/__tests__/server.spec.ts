@@ -99,4 +99,44 @@ describe('the server the desktop app talks to', () => {
     await expect(reachServer('https://mail.example.com')).resolves.toBeUndefined()
     expect(request).toHaveBeenCalledWith('https://mail.example.com/api/v1/me', expect.anything())
   })
+
+  it('gives up on a server that does not answer in time', async () => {
+    const clock = new AbortController()
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(clock.signal)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>((_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)))),
+    )
+    const { reachServer } = await serverModule()
+
+    const reached = reachServer('https://mail.example.com')
+    clock.abort(new DOMException('The operation timed out.', 'TimeoutError'))
+
+    await expect(reached).rejects.toThrow('could not reach')
+    expect(timeout).toHaveBeenCalledWith(10_000)
+    timeout.mockRestore()
+  })
+
+  it('stops quietly when the user gives up on the check', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>((_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)))),
+    )
+    const { reachServer } = await serverModule()
+    const controller = new AbortController()
+
+    const reached = reachServer('https://mail.example.com', controller.signal)
+    controller.abort()
+
+    await expect(reached).rejects.not.toThrow('could not reach')
+  })
+
+  it('tags every server but the default, the same way each time', async () => {
+    const { serverTag, defaultServer } = await serverModule()
+
+    expect(serverTag(defaultServer)).toBe('')
+    expect(serverTag('https://mail.example.com')).toMatch(/^[0-9a-f]{8}$/)
+    expect(serverTag('https://mail.example.com')).toBe(serverTag('https://mail.example.com'))
+    expect(serverTag('https://mail.example.com')).not.toBe(serverTag('https://mail.example.org'))
+  })
 })

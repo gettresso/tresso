@@ -77,16 +77,42 @@ export function chooseServer(address: string | null): void {
   server.value = next
 }
 
+/** How long a server gets to answer the check: an address that drops packets would otherwise hang for a minute. */
+const CHECK_TIMEOUT_MS = 10_000
+
 /**
  * Whether a server answers at all. A server that is down, a wrong address and a server that does not allow the desktop
- * app (CORS) look the same from here, so the message names all three.
+ * app (CORS) look the same from here, so the message names all three. `signal` lets the user give up on the check.
  */
-export async function reachServer(address: string): Promise<void> {
+export async function reachServer(address: string, signal?: AbortSignal): Promise<void> {
+  const timeout = AbortSignal.timeout(CHECK_TIMEOUT_MS)
   try {
-    await fetch(`${address}/api/v1/me`, { headers: { Accept: 'application/json' } })
-  } catch {
+    await fetch(`${address}/api/v1/me`, {
+      headers: { Accept: 'application/json' },
+      signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+    })
+  } catch (error) {
+    if (signal?.aborted === true) {
+      throw error
+    }
     throw new Error(
       `Tresso could not reach ${address}. Check the address, that the server is up, and that it allows the desktop app (CORS_ALLOW_ORIGIN).`,
     )
   }
+}
+
+/**
+ * A short, stable tag for a server, for names of things that belong to one server (the local mail copy). The default
+ * server has none, so copies made before servers could be chosen keep their names.
+ */
+export function serverTag(address: string): string {
+  if (address === defaultServer) {
+    return ''
+  }
+  // FNV-1a: names only need to differ between servers, not to be secret.
+  let hash = 0x811c9dc5
+  for (let i = 0; i < address.length; i++) {
+    hash = Math.imul(hash ^ address.charCodeAt(i), 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
 }

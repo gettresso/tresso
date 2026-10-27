@@ -430,7 +430,7 @@ platform() {
       esac
       ;;
     MINGW* | MSYS* | CYGWIN*)
-      die "on Windows, run in PowerShell: irm https://sherin.dev/tresso/install.ps1 | iex"
+      die "on Windows, run: powershell -c \"irm https://sherin.dev/tresso/install.ps1|iex\""
       ;;
     *)
       die "unsupported platform: ${os} ${arch}"
@@ -521,7 +521,7 @@ install_macos() {
   tar -xzf "$file" -C "$extract"
   [ -d "${extract}/Tresso.app" ] || die "the download does not contain Tresso.app"
 
-  if pgrep -xq Tresso 2>/dev/null; then
+  if pgrep -xq tresso-desktop 2>/dev/null; then
     note "Running" "Tresso is open; quit and reopen it to use ${version}"
   fi
 
@@ -551,6 +551,10 @@ install_linux() {
   dir="${dir%/}"
   mkdir -p "$dir" || die "could not create ${dir}"
   dir="$(cd "$dir" && pwd)"
+  # The launcher entry quotes this path; characters that need escaping there are refused instead.
+  case "$dir" in
+    *[\"\`\$\\%]*) die "TRESSO_INSTALL may not contain \", \`, \$, \\ or %: ${dir}" ;;
+  esac
 
   dest="${dir}/Tresso.AppImage"
   cp "$file" "${dest}.new"
@@ -571,6 +575,7 @@ install_linux() {
   local data="${XDG_DATA_HOME:-"${HOME}/.local/share"}"
   local icons="${data}/icons/hicolor/256x256/apps"
   mkdir -p "${data}/applications" "$icons"
+  # The icon is not in SHA256SUMS: a PNG for the launcher, fetched over https from the release's own tag.
   if download "https://raw.githubusercontent.com/${repo}/${version}/apps/desktop/src-tauri/icons/128x128@2x.png" "${tmpdir}/tresso.png"; then
     cp "${tmpdir}/tresso.png" "${icons}/tresso.png"
   else
@@ -586,7 +591,7 @@ Icon=tresso
 Terminal=false
 Categories=Network;Email;Office;
 MimeType=x-scheme-handler/tresso;
-StartupWMClass=tresso
+StartupWMClass=tresso-desktop
 EOF
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${data}/applications" >/dev/null 2>&1 || true
@@ -599,7 +604,7 @@ EOF
 
   # AppImages mount themselves with FUSE 2.
   if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; then
-    note "FUSE" "libfuse2 is missing: install it (sudo apt install libfuse2) or use the .deb from the release"
+    note "FUSE" "libfuse2 is missing: install libfuse2 (libfuse2t64 on Ubuntu 24.04+) or use the .deb from the release"
   fi
 
   open_plain="tresso"

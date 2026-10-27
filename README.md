@@ -66,7 +66,7 @@ Every [release](https://github.com/gettresso/tresso/releases) has:
 
 Prereleases (`v1.2.0-beta.1`) ship the Windows setup without the `.msi`, which only takes numeric versions.
 
-The app is not signed with an Apple Developer ID yet. The install script lifts the macOS quarantine for you. When you open the `.dmg` yourself, right-click Tresso and choose **Open** the first time, or run `xattr -dr com.apple.quarantine /Applications/Tresso.app`. The AppImage needs FUSE 2 (`sudo apt install libfuse2`); the `.deb` does not.
+The app is not signed with an Apple Developer ID yet. The install script lifts the macOS quarantine for you. When you open the `.dmg` yourself, right-click Tresso and choose **Open** the first time, or run `xattr -dr com.apple.quarantine /Applications/Tresso.app`. The AppImage needs FUSE 2 (`libfuse2`, or `libfuse2t64` on Ubuntu 24.04 and later); the `.deb` does not.
 
 </details>
 
@@ -115,9 +115,10 @@ remembers it until you choose again.
 Your server needs:
 
 - An `https://` address (plain `http://` only for a server on the same computer).
-- The `desktop` OAuth client, which the API creates on first boot.
-- The desktop app's origins in `CORS_ALLOW_ORIGIN`: `tauri://localhost` and `http://tauri.localhost`, as in the
-  default `apps/api/.env`.
+- The `desktop` OAuth client, which the API creates when it starts with `RUN_MIGRATIONS=1` (as the Docker stack
+  does).
+- The desktop app's origins, `tauri://localhost` and `http://tauri.localhost`, in `CORS_ALLOW_ORIGIN` for the API
+  (as in the default `apps/api/.env`) and in `MERCURE_CORS_ORIGINS` for live updates (as in `compose.yaml`).
 
 [Getting started](#-getting-started) below runs the whole stack with Docker.
 

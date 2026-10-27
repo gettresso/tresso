@@ -18,6 +18,8 @@ const serverAddress = ref('')
 const serverError = ref<string | null>(null)
 const checkingServer = ref(false)
 const serverInput = ref<HTMLInputElement | null>(null)
+/** The check that is running; closing the form aborts it, so a server the user gave up on is never chosen. */
+let check: AbortController | null = null
 
 async function editServer(): Promise<void> {
   serverAddress.value = onDefault.value ? '' : server.value
@@ -36,19 +38,40 @@ async function useServer(): Promise<void> {
     serverError.value = error instanceof Error ? error.message : String(error)
     return
   }
+  check?.abort()
+  const current = new AbortController()
+  check = current
   checkingServer.value = true
   try {
-    await reachServer(address)
+    await reachServer(address, current.signal)
+    if (current.signal.aborted) {
+      return
+    }
     chooseServer(address)
     editingServer.value = false
   } catch (error) {
-    serverError.value = error instanceof Error ? error.message : String(error)
+    if (!current.signal.aborted) {
+      serverError.value = error instanceof Error ? error.message : String(error)
+    }
   } finally {
-    checkingServer.value = false
+    if (check === current) {
+      check = null
+      checkingServer.value = false
+    }
   }
 }
 
+function closeServerForm(): void {
+  check?.abort()
+  check = null
+  checkingServer.value = false
+  editingServer.value = false
+}
+
 function useDefaultServer(): void {
+  check?.abort()
+  check = null
+  checkingServer.value = false
   serverError.value = null
   try {
     chooseServer(null)
@@ -91,14 +114,14 @@ async function signIn(): Promise<void> {
             spellcheck="false"
             placeholder="mail.example.com"
             :aria-invalid="serverError ? 'true' : undefined"
-            @keydown.esc="editingServer = false"
+            @keydown.esc="closeServerForm"
           />
           <small v-if="serverError" class="error" role="alert">{{ serverError }}</small>
         </label>
         <div class="server-actions">
           <button type="submit" class="button button-primary" :disabled="checkingServer">{{ checkingServer ? 'Checking...' : 'Use this server' }}</button>
           <button v-if="!onDefault" type="button" class="button button-quiet" @click="useDefaultServer">Use {{ defaultName }}</button>
-          <button type="button" class="button button-quiet" @click="editingServer = false">Cancel</button>
+          <button type="button" class="button button-quiet" @click="closeServerForm">Cancel</button>
         </div>
       </form>
       <p v-else class="server">

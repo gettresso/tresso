@@ -2,6 +2,7 @@ import { draftOnlyHere, SqliteMailStore, type MailStore } from '@tresso/core'
 import { databaseName, deleteMailDatabase, IndexedDbMailStore, type ClosedElsewhere } from '@/mail/db'
 import { isDesktop } from '@/platform/desktop'
 import { deleteDesktopSql, openDesktopSql } from '@/platform/desktopSql'
+import { server, serverTag } from '@/platform/server'
 
 /**
  * Opens the user's mail copy: SQLite in the desktop app, IndexedDB in the browser. The first time the desktop app
@@ -12,7 +13,7 @@ export async function openMailStore(userId: string, onClosedElsewhere?: (reason:
   if (!isDesktop) {
     return IndexedDbMailStore.open(userId, onClosedElsewhere)
   }
-  const store = await SqliteMailStore.open(await openDesktopSql(databaseName(userId)))
+  const store = await SqliteMailStore.open(await openDesktopSql(desktopName(userId)))
   try {
     await moveIndexedDbDrafts(userId, store)
   } catch (error) {
@@ -25,10 +26,19 @@ export async function openMailStore(userId: string, onClosedElsewhere?: (reason:
 /** Removes everything stored for a user, e.g. on sign-out. The copy must be closed. */
 export async function deleteMailStore(userId: string): Promise<void> {
   if (isDesktop) {
-    await deleteDesktopSql(databaseName(userId))
+    await deleteDesktopSql(desktopName(userId))
   }
   // In the desktop app too: an old IndexedDB copy may still be there when moving its drafts failed.
   await deleteMailDatabase(userId)
+}
+
+/**
+ * The desktop copy of a user on the server the app talks to now. User ids are only unique per server, and a copy whose
+ * session expired stays on disk, so a copy from another server (a restored backup, a staging clone) is never reused.
+ */
+function desktopName(userId: string): string {
+  const tag = serverTag(server.value)
+  return tag === '' ? databaseName(userId) : `${databaseName(userId)}-${tag}`
 }
 
 async function moveIndexedDbDrafts(userId: string, store: MailStore): Promise<void> {
