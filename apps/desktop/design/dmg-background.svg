@@ -26,10 +26,10 @@
   <circle cx="510" cy="230" r="190" fill="url(#glowKnow)"/>
 
   <text x="330" y="70" text-anchor="middle" font-family="-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="-0.4" fill="#16181D">Drag Tresso to Applications</text>
-  <text x="330" y="96" text-anchor="middle" font-family="-apple-system, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#6B7280">Then open it from Launchpad or Spotlight.</text>
+  <text x="330" y="96" text-anchor="middle" font-family="-apple-system, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="13" fill="#6B7280">Then open it from Spotlight or the Applications folder.</text>
 
   <!-- From the app (centered at 180,200) to Applications (480,200), arcing above the icon labels. -->
   <path d="M 258 186 C 296 140, 364 140, 400 186" fill="none" stroke="url(#arrow)" stroke-width="3.5" stroke-linecap="round" marker-end="url(#head)"/>
 
-  <text x="330" y="368" text-anchor="middle" font-family="-apple-system, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#8A92A0">Every email is something to do, to hand over, or to know.</text>
+  <text x="330" y="340" text-anchor="middle" font-family="-apple-system, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#8A92A0">Every email is something to do, to hand over, or to know.</text>
 </svg>

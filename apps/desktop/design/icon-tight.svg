@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Tresso</title>
+  <defs>
+    <!-- Windows and Linux: the same tile with a narrow margin, so it is as large as other taskbar icons. -->
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#ECEFF6"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#C9CFDB" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="do" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3D5AF0"/>
+      <stop offset="1" stop-color="#1F38C4"/>
+    </linearGradient>
+    <linearGradient id="hand" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F28233"/>
+      <stop offset="1" stop-color="#D2620F"/>
+    </linearGradient>
+    <linearGradient id="know" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3DB39A"/>
+      <stop offset="1" stop-color="#268873"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.32"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="drop" filterUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+      <feOffset dy="8" result="blur"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.28"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="lift" filterUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="9"/>
+      <feOffset dy="10"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.22"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <g filter="url(#drop)">
+    <rect x="40" y="34" width="944" height="944" rx="212" fill="url(#tile)"/>
+    <rect x="41.5" y="35.5" width="941" height="941" rx="210.5" fill="none" stroke="url(#edge)" stroke-width="3"/>
+  </g>
+
+  <!-- The Tresso mark (24-unit grid), scaled by 30 around the tile's center; the shadow is drawn unscaled. -->
+  <g filter="url(#lift)">
+  <g transform="translate(152 138.5) scale(30)">
+    <rect x="3" y="4" width="8.5" height="5" rx="2.5" fill="url(#do)"/>
+    <rect x="12.5" y="4" width="8.5" height="5" rx="2.5" fill="url(#hand)"/>
+    <rect x="9.5" y="10.5" width="5" height="10" rx="2.5" fill="url(#know)"/>
+    <rect x="3" y="4" width="8.5" height="5" rx="2.5" fill="url(#gloss)"/>
+    <rect x="12.5" y="4" width="8.5" height="5" rx="2.5" fill="url(#gloss)"/>
+    <rect x="9.5" y="10.5" width="5" height="10" rx="2.5" fill="url(#gloss)"/>
+  </g>
+  </g>
+</svg>
