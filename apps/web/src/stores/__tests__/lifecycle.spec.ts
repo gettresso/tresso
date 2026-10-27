@@ -35,6 +35,7 @@ vi.mock('@/mail/store', () => ({
     }
     return store
   },
+  mailCopyName: (userId: string) => `copy-${userId}`,
   // As the desktop shell does: a copy that is still open cannot be removed.
   deleteMailStore: async (userId: string) => {
     const open = copies.opening.filter((id) => id === userId).length - copies.closed.filter((id) => id === userId).length

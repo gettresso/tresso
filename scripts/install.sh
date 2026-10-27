@@ -549,12 +549,13 @@ install_macos() {
 install_linux() {
   local dir="${TRESSO_INSTALL:-"${HOME}/.local/share/tresso"}"
   dir="${dir%/}"
-  mkdir -p "$dir" || die "could not create ${dir}"
-  dir="$(cd "$dir" && pwd)"
-  # The launcher entry quotes this path; characters that need escaping there are refused instead.
+  # The launcher entry quotes this path; characters that need escaping there are refused instead (checked before
+  # $(...) below, which would drop a trailing line break).
   case "$dir" in
     *[\"\`\$\\%]* | *$'\n'*) die "TRESSO_INSTALL may not contain \", \`, \$, \\, % or a line break: ${dir}" ;;
   esac
+  mkdir -p "$dir" || die "could not create ${dir}"
+  dir="$(cd "$dir" && pwd)"
 
   dest="${dir}/Tresso.AppImage"
   cp "$file" "${dest}.new"

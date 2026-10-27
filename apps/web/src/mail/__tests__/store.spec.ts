@@ -25,7 +25,7 @@ vi.mock('@/platform/desktopSql', () => ({
   },
 }))
 
-const { deleteMailStore, openMailStore } = await import('../store')
+const { deleteMailStore, mailCopyName, openMailStore } = await import('../store')
 const { server, serverTag } = await import('@/platform/server')
 
 async function indexedDbExists(userId: string): Promise<boolean> {
@@ -92,6 +92,26 @@ describe('openMailStore', () => {
       await deleteMailStore('kim')
 
       expect(desktop.deleted).toEqual([`${databaseName('kim')}-${serverTag('https://mail.example.com')}`])
+    } finally {
+      server.value = before
+    }
+  })
+
+  it('deletes the copy of the server signed out from, while the same id opens one on another server', async () => {
+    const before = server.value
+    server.value = 'https://mail.example.com'
+    try {
+      const first = await openMailStore('kim')
+      const signedOutFrom = mailCopyName('kim')
+      await first.close()
+      server.value = 'https://staging.example.com'
+      const second = await openMailStore('kim')
+
+      await deleteMailStore('kim', signedOutFrom)
+
+      expect(desktop.deleted).toEqual([`${databaseName('kim')}-${serverTag('https://mail.example.com')}`])
+      expect(mailCopyName('kim')).toBe(`${databaseName('kim')}-${serverTag('https://staging.example.com')}`)
+      await second.close()
     } finally {
       server.value = before
     }

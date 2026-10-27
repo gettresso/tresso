@@ -25,11 +25,22 @@ export async function openMailStore(userId: string, onClosedElsewhere?: (reason:
   return store
 }
 
+/**
+ * The name of the user's copy as it is now: on the desktop the one it was opened under, else the one the current
+ * server gives it. A sign-out takes it before waiting for the copy to close, as the user may pick another server
+ * (and sign in there again) meanwhile.
+ */
+export function mailCopyName(userId: string): string {
+  return isDesktop ? (openedNames.get(userId) ?? desktopName(userId)) : databaseName(userId)
+}
+
 /** Removes everything stored for a user, e.g. on sign-out. The copy must be closed. */
-export async function deleteMailStore(userId: string): Promise<void> {
+export async function deleteMailStore(userId: string, name: string = mailCopyName(userId)): Promise<void> {
   if (isDesktop) {
-    await deleteDesktopSql(openedNames.get(userId) ?? desktopName(userId))
-    openedNames.delete(userId)
+    await deleteDesktopSql(name)
+    if (openedNames.get(userId) === name) {
+      openedNames.delete(userId)
+    }
   }
   // In the desktop app too: an old IndexedDB copy may still be there when moving its drafts failed.
   await deleteMailDatabase(userId)
@@ -44,10 +55,7 @@ function desktopName(userId: string): string {
   return tag === '' ? databaseName(userId) : `${databaseName(userId)}-${tag}`
 }
 
-/**
- * The name each user's desktop copy was opened under. A sign-out deletes the copy only once its reads are done, and
- * by then the user may have picked another server on the sign-in screen: the copy keeps the name it was opened with.
- */
+/** The name each user's desktop copy was last opened under: the copy keeps it whatever server is chosen later. */
 const openedNames = new Map<string, string>()
 
 async function moveIndexedDbDrafts(userId: string, store: MailStore): Promise<void> {
