@@ -98,15 +98,12 @@ The app is not signed with an Apple Developer ID yet. The install script lifts t
 
 ## 🔓 Open source and Tresso Cloud
 
-This repository is the open source edition: a complete, self-hostable email client for one person.
+Tresso is fully open source. Everything it does is in this repository, and running it on your own server is free,
+with every feature. What is still on the [roadmap](docs/ROADMAP.md), such as AI with your own key or endpoint, teams
+with shared inboxes, API keys, webhooks and an MCP endpoint, lands here too.
 
-Tresso is open core. This repository has everything you need to run Tresso yourself. **Tresso Cloud**, the hosted
-service, adds AI classification and summaries, teams with shared inboxes and delegation, API keys, webhooks and an
-MCP endpoint for other AIs, developer tools, statistics and Year in mail.
-
-Cloud features are add-ons: the open code never depends on them, and you can build your own add-ons the same way.
-See [Open core](docs/ARCHITECTURE.md#open-core). The [roadmap](docs/ROADMAP.md) shows what is delivered and what
-comes next.
+**Tresso Cloud** is the managed hosting of that same code: a subscription pays for running it for you, with backups
+and support, never for features. See [Self-hosted and Tresso Cloud](docs/ARCHITECTURE.md#self-hosted-and-tresso-cloud).
 
 ## 🏠 Your own server
 
@@ -311,10 +308,11 @@ app or the install scripts builds every platform without publishing.
 
 ## 📚 Documentation
 
-- [Architecture](docs/ARCHITECTURE.md): components, open core, auth, sync protocol, processing pipeline, scaling
+- [Architecture](docs/ARCHITECTURE.md): components, self-hosted and Tresso Cloud, auth, sync protocol, processing
+  pipeline, scaling
 - [Roadmap](docs/ROADMAP.md): phases from foundation to native apps
 
 ## 📄 License
 
-Tresso is licensed under the [GNU Affero General Public License v3.0](LICENSE). The shared libraries in `packages/`
-are [MIT licensed](packages/core/LICENSE), so you can use them in your own projects.
+Tresso is licensed under the [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`): the apps, the
+server and the shared libraries in `packages/`.
