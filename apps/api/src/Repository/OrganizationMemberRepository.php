@@ -21,7 +21,7 @@ class OrganizationMemberRepository extends ServiceEntityRepository
     }
 
     /**
-     * The user's memberships, the personal organization first, then teams by when the user joined.
+     * The user's memberships: their own personal organization first, then the others by when the user joined.
      *
      * @return list<OrganizationMember>
      */
@@ -33,8 +33,8 @@ class OrganizationMemberRepository extends ServiceEntityRepository
             ->join('m.organization', 'o')
             ->where('m.user = :user')
             ->setParameter('user', $user->getId(), 'uuid')
-            ->addSelect('CASE WHEN o.personalOwner IS NULL THEN 1 ELSE 0 END AS HIDDEN teamLast')
-            ->orderBy('teamLast')
+            ->addSelect('CASE WHEN o.personalOwner = :user THEN 0 ELSE 1 END AS HIDDEN ownFirst')
+            ->orderBy('ownFirst')
             ->addOrderBy('m.joinedAt')
             ->addOrderBy('m.id')
             ->getQuery()

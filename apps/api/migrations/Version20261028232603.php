@@ -22,6 +22,8 @@ final class Version20261028232603 extends AbstractMigration
         // this up() migration is auto-generated, please modify it to your needs
         $this->addSql('CREATE TABLE organization (id UUID NOT NULL, name VARCHAR(120) DEFAULT NULL, created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, personal_owner_id UUID DEFAULT NULL, PRIMARY KEY (id))');
         $this->addSql('CREATE UNIQUE INDEX UNIQ_C1EE637CD203BFB0 ON organization (personal_owner_id)');
+        // A team has a name and no personal owner; a personal organization goes by its owner's name.
+        $this->addSql('ALTER TABLE organization ADD CONSTRAINT organization_team_or_personal CHECK ((personal_owner_id IS NULL) <> (name IS NULL))');
         $this->addSql('CREATE TABLE organization_member (id UUID NOT NULL, role VARCHAR(16) NOT NULL, joined_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, organization_id UUID NOT NULL, user_id UUID NOT NULL, PRIMARY KEY (id))');
         $this->addSql('CREATE INDEX IDX_756A2A8DA76ED395 ON organization_member (user_id)');
         $this->addSql('CREATE UNIQUE INDEX UNIQ_756A2A8D32C8A3DEA76ED395 ON organization_member (organization_id, user_id)');
