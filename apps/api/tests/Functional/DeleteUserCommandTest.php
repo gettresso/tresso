@@ -63,6 +63,9 @@ final class DeleteUserCommandTest extends DatabaseTestCase
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM mail_account WHERE id = :id', ['id' => $this->kimAccount]));
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM message WHERE mail_account_id = :id', ['id' => $this->kimAccount]));
         self::assertSame(0, $this->countRows("SELECT COUNT(*) FROM oauth2_access_token WHERE user_identifier = 'kim@example.test'"));
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM organization WHERE personal_owner_id = :id', ['id' => $this->kim->toRfc4122()]));
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM organization_member WHERE user_id = :id', ['id' => $this->kim->toRfc4122()]));
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM organization o JOIN app_user u ON u.id = o.personal_owner_id WHERE u.email = :email', ['email' => 'lisa@example.test']), 'Lisa keeps her organization.');
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM message WHERE mail_account_id = :id', ['id' => $this->lisaAccount]), 'Lisa keeps her mail.');
     }
 
