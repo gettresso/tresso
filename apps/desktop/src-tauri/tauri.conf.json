@@ -7,7 +7,7 @@
     "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev --workspace @tresso/web",
-    "beforeBuildCommand": "npm run build --workspace @tresso/web"
+    "beforeBuildCommand": "node scripts/fetch-sparkle.mjs && npm run build --workspace @tresso/web"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -64,6 +64,15 @@
         "schemes": [
           "tresso"
         ]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENFQUY5OTNBNzZENjhFRjgKUldUNGp0WjJPcG12enU3Rk54b1BXM0wvQWZCaDkxT1NwQUR4TUFRTXNVVzkrMm5pd0V5OXFZOWoK",
+      "endpoints": [
+        "https://github.com/gettresso/tresso/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

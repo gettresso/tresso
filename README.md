@@ -50,6 +50,8 @@ The script runs the installer silently for your user: Tresso goes to `%LOCALAPPD
 
 Both scripts check the download against `SHA256SUMS` on the GitHub release before they install anything.
 
+After that, Tresso keeps itself up to date. On macOS it uses [Sparkle](https://sparkle-project.org): it checks every few hours, and **Tresso > Check for Updates…** asks right away. On Windows and Linux (the AppImage) a card offers the new version. Every update is signed, and the app installs only updates whose signature matches the key built into it. **Settings > Updates** shows your version.
+
 <details>
 <summary><b>Published files</b></summary>
 
@@ -303,7 +305,7 @@ skip unless you pin it.
 git tag -s v0.1.0 -m "Tresso 0.1.0" && git push origin v0.1.0
 ```
 
-The version comes from the tag, so nothing needs bumping first. A release talks to Tresso Cloud
+The version comes from the tag, so nothing needs bumping first. The release also publishes the update feeds that installed apps read from the latest release: `appcast.xml` for Sparkle and `latest.json` for Tauri's updater. Signing the updates needs three repository secrets: `SPARKLE_PRIVATE_KEY` (EdDSA, macOS), and `TAURI_SIGNING_PRIVATE_KEY` with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (Windows, Linux). Their public halves are in `apps/desktop/src-tauri/Info.plist` and `tauri.conf.json`. Losing a private key means installed apps can never update again, so keep a copy somewhere safe. A release talks to Tresso Cloud
 (`https://api.tresso.app`) until the user picks another server. A pull request that changes the release, the desktop
 app or the install scripts builds every platform without publishing.
 
