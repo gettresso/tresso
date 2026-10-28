@@ -7,8 +7,8 @@ namespace App\Notification\Travel;
 use App\Enum\TravelMode;
 
 /**
- * How long it takes to get from a position to a place, for leave-now reminders. The open edition routes with
- * self-hosted OSRM servers and a Nominatim geocoder when they are configured; an add-on may provide another.
+ * How long it takes to get from a position to a place, for leave-now reminders. Tresso routes with self-hosted
+ * OSRM servers and a Nominatim geocoder when they are configured; another estimator may be added.
  */
 interface TravelTimeEstimator
 {

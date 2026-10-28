@@ -7,8 +7,8 @@ namespace App\Calendar\Assistant;
 use App\Entity\CalendarEvent;
 
 /**
- * Prepares the brief for a meeting. The open edition lists the people and the recent conversations with them from mail
- * metadata; Tresso Cloud decorates this service to add an AI summary of the related mail and todos.
+ * Prepares the brief for a meeting. The built-in writer lists the people and the recent conversations with them from
+ * mail metadata; an AI version decorates this service to add a summary of the related mail and todos.
  */
 interface MeetingBriefWriter
 {

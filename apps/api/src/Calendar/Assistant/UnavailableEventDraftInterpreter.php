@@ -8,7 +8,7 @@ use App\Entity\User;
 use Symfony\Component\DependencyInjection\Attribute\AsAlias;
 
 /**
- * The open edition reads no free text: a rule-based reading of dates in every language would guess wrong too often
+ * Tresso reads no free text on its own: a rule-based reading of dates in every language would guess wrong too often
  * to be worth offering, so the capability is off and clients do not show it.
  */
 #[AsAlias(EventDraftInterpreter::class)]

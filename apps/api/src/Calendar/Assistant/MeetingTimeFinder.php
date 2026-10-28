@@ -8,9 +8,9 @@ use App\Calendar\TooManyOccurrences;
 use App\Entity\User;
 
 /**
- * Proposes times for a meeting or a todo. The open edition finds them deterministically in the user's own calendars
- * within their working hours and scheduling preferences ({@see DeterministicMeetingTimeFinder}); another edition may decorate it to add
- * attendees' availability or rank by habits.
+ * Proposes times for a meeting or a todo. The built-in finder finds them deterministically in the user's own
+ * calendars within their working hours and scheduling preferences ({@see DeterministicMeetingTimeFinder}); an AI
+ * version may decorate it to add attendees' availability or rank by habits.
  */
 interface MeetingTimeFinder
 {

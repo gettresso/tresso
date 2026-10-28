@@ -19,7 +19,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 /**
- * The calendar assistant interfaces of the open edition: scheduling preferences, the meeting time finder, event
+ * The built-in calendar assistant: scheduling preferences, the meeting time finder, event
  * drafts and event suggestions from mail. Briefs have their tests with the notifications.
  */
 final class CalendarAssistantTest extends DatabaseTestCase

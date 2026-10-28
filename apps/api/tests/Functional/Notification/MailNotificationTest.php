@@ -343,7 +343,7 @@ final class MailNotificationTest extends DatabaseTestCase
         $message = $entityManager->getRepository(Message::class)->findOneBy(['subject' => 'Weekly deals']) ?? self::fail('No message.');
         $category = $message->getCategory() ?? self::fail('Not classified.');
         self::assertInstanceOf(Category::class, $category);
-        // As an AI classifier (Tresso Cloud) judges it: to hand over.
+        // As an AI classifier judges it: to hand over.
         $entityManager->wrapInTransaction(function () use ($message, $category): void {
             // Advertising waits for a batch; this one's has come.
             $message->release(new \DateTimeImmutable());

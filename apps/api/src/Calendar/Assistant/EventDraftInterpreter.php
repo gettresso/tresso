@@ -7,8 +7,8 @@ namespace App\Calendar\Assistant;
 use App\Entity\User;
 
 /**
- * Turns free text ("lunch with Sam Thursday 12:30 at Café Loos") into an event draft. The open edition has no
- * interpreter ({@see UnavailableEventDraftInterpreter}); another edition decorates it with one.
+ * Turns free text ("lunch with Sam Thursday 12:30 at Café Loos") into an event draft. Tresso has no built-in
+ * interpreter ({@see UnavailableEventDraftInterpreter}); an AI version decorates it with one.
  */
 interface EventDraftInterpreter
 {

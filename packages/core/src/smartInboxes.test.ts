@@ -41,7 +41,7 @@ describe('labels', () => {
     expect(verdictLabel('delegate')).toBe('Hand over')
   })
 
-  it('explain reasons, also ones an add-on made up', () => {
+  it('explain reasons, also ones another classifier made up', () => {
     expect(classificationReasonText('user')).toBe('You put it here.')
     expect(classificationReasonText('ai')).toBe('Classified automatically.')
     expect(classificationReasonText(null)).toBeNull()

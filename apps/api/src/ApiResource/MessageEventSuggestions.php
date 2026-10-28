@@ -15,7 +15,7 @@ use App\State\MessageEventSuggestionsProvider;
 /**
  * Events and deadlines found in a message, to offer next to it: "Add to calendar" for an event (or "Open" when the
  * user's calendar has it, `eventId`), "Make todo" for a deadline. Each event is a draft in the editor's shape; nothing
- * is saved. The open edition finds the events of the message's text/calendar parts and no deadlines;
+ * is saved. The built-in extractor finds the events of the message's text/calendar parts and no deadlines;
  * `GET /api/v1/calendar/capabilities` says whether the text is read too.
  */
 #[ApiResource(
