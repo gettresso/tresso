@@ -18,7 +18,7 @@ final class CreateSmartInbox
     #[Assert\Length(max: Category::NAME_MAX_LENGTH)]
     public string $name = '';
 
-    /** What belongs here, in plain words. AI classifiers read it; the rules do not. */
+    /** What belongs here, in plain words. For the planned AI classification; the rules do not read it. */
     #[Assert\Length(max: Category::INSTRUCTIONS_MAX_LENGTH)]
     public string $instructions = '';
 

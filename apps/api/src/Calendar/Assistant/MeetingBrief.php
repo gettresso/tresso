@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace App\Calendar\Assistant;
 
 /**
- * What to know before a meeting: who comes, the recent conversations with them, and (from an AI version) a summary.
+ * What to know before a meeting: who comes, the recent conversations with them, and a summary once AI summaries
+ * exist.
  *
  * @phpstan-type BriefPerson array{address: string, name: ?string, response: string}
  * @phpstan-type BriefThread array{threadId: string, mailAccountId: string, subject: string, lastMessageAt: string, messageCount: int}
@@ -19,7 +20,7 @@ final readonly class MeetingBrief
     public function __construct(
         public array $people,
         public array $threads,
-        /** A written summary; null when nobody writes one (without an AI version). */
+        /** A written summary; null while nothing writes one (AI summaries are planned). */
         public ?string $summary,
     ) {
     }

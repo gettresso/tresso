@@ -21,6 +21,6 @@ final readonly class UnavailableEventDraftInterpreter implements EventDraftInter
 
     public function interpret(User $user, string $text, \DateTimeZone $zone, \DateTimeImmutable $now): EventDraft
     {
-        throw new AssistantUnavailable('Creating events from text is not available in this edition.');
+        throw new AssistantUnavailable('Creating events from text is not available on this server.');
     }
 }

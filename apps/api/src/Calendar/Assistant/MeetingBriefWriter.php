@@ -8,7 +8,7 @@ use App\Entity\CalendarEvent;
 
 /**
  * Prepares the brief for a meeting. The built-in writer lists the people and the recent conversations with them from
- * mail metadata; an AI version decorates this service to add a summary of the related mail and todos.
+ * mail metadata; planned AI features would decorate this service to add a summary of the related mail and todos.
  */
 interface MeetingBriefWriter
 {
