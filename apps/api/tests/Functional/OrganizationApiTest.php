@@ -6,7 +6,6 @@ namespace App\Tests\Functional;
 
 use App\Entity\User;
 use App\Organization\PersonalOrganizations;
-use Doctrine\DBAL\Exception\DriverException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -84,21 +83,30 @@ final class OrganizationApiTest extends DatabaseTestCase
         self::assertIsString($kimsPersonal);
         $this->connection()->executeStatement(
             "INSERT INTO organization_member (id, role, joined_at, organization_id, user_id)
-             SELECT uuidv7(), 'member', NOW(), :organization, id FROM app_user WHERE email = 'lisa@example.test'",
+             SELECT uuidv7(), 'member', '2020-01-01 09:00:00', :organization, id FROM app_user WHERE email = 'lisa@example.test'",
             ['organization' => $kimsPersonal],
         );
 
         $organizations = $this->organizations('lisa@example.test');
 
-        self::assertSame(['Lisa Bakker', 'Kim Visser'], array_column($organizations, 'name'));
+        self::assertSame(['Lisa Bakker', 'Kim Visser'], array_column($organizations, 'name'), 'Her own comes first, though she joined Kim\'s earlier.');
         self::assertSame([true, false], array_column($organizations, 'personal'));
         self::assertSame(2, $organizations[1]['seats'] ?? null);
     }
 
-    public function testATeamNeedsANameAndAPersonalOrganizationNone(): void
+    public function testATeamNeedsAName(): void
     {
-        $this->expectException(DriverException::class);
-        $this->connection()->executeStatement("INSERT INTO organization (id, name, created_at) VALUES (uuidv7(), NULL, NOW())");
+        $this->expectExceptionMessageMatches('/organization_team_or_personal/');
+        $this->connection()->executeStatement('INSERT INTO organization (id, name, created_at) VALUES (uuidv7(), NULL, NOW())');
+    }
+
+    public function testAPersonalOrganizationHasNoNameOfItsOwn(): void
+    {
+        $this->expectExceptionMessageMatches('/organization_team_or_personal/');
+        $this->connection()->executeStatement(
+            "UPDATE organization SET name = 'Kim Inc.' WHERE personal_owner_id = :user",
+            ['user' => $this->kim->getId()->toRfc4122()],
+        );
     }
 
     public function testCreatingAUserMakesThemOwnerOfTheirPersonalOrganization(): void
