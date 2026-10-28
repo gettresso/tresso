@@ -65,6 +65,14 @@ function leave(element: Element, done: () => void): void {
   backdrop-filter: var(--glass-material);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 14%), 0 12px 32px rgb(22 24 29 / 22%);
 }
+.notice span {
+  flex: 1;
+}
+.notice.error {
+  background: color-mix(in srgb, var(--danger) 88%, transparent);
+  color: #fff;
+}
+/* After the fills above, which they replace when transparency is reduced. */
 @media (prefers-reduced-transparency: reduce) {
   .notice {
     background: var(--ink);
@@ -78,13 +86,6 @@ html.reduce-transparency .notice {
 }
 html.reduce-transparency .notice.error {
   background: var(--danger);
-}
-.notice span {
-  flex: 1;
-}
-.notice.error {
-  background: color-mix(in srgb, var(--danger) 88%, transparent);
-  color: #fff;
 }
 .action {
   border: 0;

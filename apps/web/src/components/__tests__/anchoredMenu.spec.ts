@@ -56,4 +56,25 @@ describe('useAnchoredMenu', () => {
     expect(placement.style.value.left).toBe(`${1000 - 200 - 8}px`)
     wrapper.unmount()
   })
+
+  it('keeps a menu that opens above clear of the macOS title bar strip, which drags the window', async () => {
+    document.documentElement.style.setProperty('--titlebar', '38px')
+    try {
+      // A tall button from 180 down to 780: no room below, so the menu opens above, where the strip ends at 38.
+      const { placement, wrapper } = await openAt(rect(180, 300, 80, 600))
+
+      expect(placement.above.value).toBe(true)
+      expect(placement.style.value).toMatchObject({ top: `${38 + 8}px`, '--menu-room': `${180 - 4 - 38 - 8}px` })
+      wrapper.unmount()
+    } finally {
+      document.documentElement.style.removeProperty('--titlebar')
+    }
+  })
+
+  it('uses the plain window margin where there is no title bar strip', async () => {
+    const { placement, wrapper } = await openAt(rect(180, 300, 80, 600))
+
+    expect(placement.style.value).toMatchObject({ top: `${180 - 4 - 150}px`, '--menu-room': `${180 - 4 - 8}px` })
+    wrapper.unmount()
+  })
 })
