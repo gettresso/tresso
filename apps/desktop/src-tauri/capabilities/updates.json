@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "updates",
+  "description": "Windows and Linux: checking for, downloading and installing a signed update, then relaunching into it (macOS updates through Sparkle instead)",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "windows",
+    "linux"
+  ],
+  "permissions": [
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

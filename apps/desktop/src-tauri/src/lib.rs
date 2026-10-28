@@ -1,6 +1,7 @@
 mod accessibility;
 mod sql;
 mod tokens;
+mod updates;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -8,9 +9,12 @@ pub fn run() {
     .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_notification::init())
+    .plugin(tauri_plugin_process::init())
     .manage(sql::Databases::default())
     .invoke_handler(tauri::generate_handler![
       accessibility::reduce_transparency,
+      updates::update_channel,
+      updates::check_for_updates_natively,
       tokens::load_tokens,
       tokens::save_tokens,
       tokens::clear_tokens,
@@ -25,6 +29,11 @@ pub fn run() {
       sql::sql_delete,
     ])
     .setup(|app| {
+      // macOS updates through Sparkle; Windows and Linux through Tauri's updater, driven by the web client.
+      #[cfg(target_os = "macos")]
+      updates::setup(app)?;
+      #[cfg(not(target_os = "macos"))]
+      app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()

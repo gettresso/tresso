@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the macOS app's Info.plist by Tauri: Sparkle's feed and the key its updates are signed with. -->
+<plist version="1.0">
+<dict>
+  <key>SUFeedURL</key>
+  <string>https://github.com/gettresso/tresso/releases/latest/download/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>Z+ARfFD5EOmEBmAFz+OSPbm8YCi1tf0poh504Ekdr1Y=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>21600</integer>
+  <key>SUVerifyUpdateBeforeExtraction</key>
+  <true/>
+</dict>
+</plist>

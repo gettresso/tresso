@@ -48,6 +48,7 @@ const router = createRouter({
             { path: 'smart-inboxes/:smartInboxId', name: 'settings-smart-inbox', component: () => import('@/views/SettingsSmartInboxEditView.vue') },
             { path: 'notifications', name: 'settings-notifications', component: () => import('@/views/SettingsNotificationsView.vue') },
             { path: 'batches', name: 'settings-batches', component: () => import('@/views/SettingsBatchesView.vue') },
+            { path: 'updates', name: 'settings-updates', component: () => import('@/views/SettingsUpdatesView.vue') },
           ],
         },
       ],

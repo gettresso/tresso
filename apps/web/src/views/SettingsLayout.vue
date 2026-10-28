@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router'
+import { isDesktop } from '@/platform/desktop'
 </script>
 
 <template>
@@ -13,6 +14,7 @@ import { RouterLink, RouterView } from 'vue-router'
       <RouterLink :to="{ name: 'settings-batches' }" class="item">Batched delivery</RouterLink>
       <RouterLink :to="{ name: 'settings-brief' }" class="item">Daily brief</RouterLink>
       <RouterLink :to="{ name: 'settings-calendar' }" class="item">Calendar</RouterLink>
+      <RouterLink v-if="isDesktop" :to="{ name: 'settings-updates' }" class="item">Updates</RouterLink>
     </nav>
     <main class="content">
       <RouterView />

@@ -26,5 +26,13 @@
         }
       }
     ]
+  },
+  "bundle": {
+    "macOS": {
+      "frameworks": [
+        "../.sparkle/Sparkle.framework"
+      ],
+      "hardenedRuntime": false
+    }
   }
 }

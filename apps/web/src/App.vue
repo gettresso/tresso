@@ -9,6 +9,9 @@ import { useMailStore } from '@/stores/mail'
 import { startTimeZoneSync, storedSentZone } from '@/platform/timeZone'
 import { releaseOtherUsersPush } from '@/platform/webPush'
 import NoticeStack from '@/components/NoticeStack.vue'
+import UpdateCard from '@/components/UpdateCard.vue'
+import { useUpdatesStore } from '@/stores/updates'
+import { isDesktop } from '@/platform/desktop'
 import { vibrant } from '@/platform/vibrancy'
 
 const auth = useAuthStore()
@@ -36,6 +39,13 @@ function shortcut(event: KeyboardEvent): void {
   }
 }
 onMounted(() => window.addEventListener('keydown', shortcut))
+
+// The desktop app learns how it updates; release builds then look for new releases on their own (Windows, Linux).
+const updates = useUpdatesStore()
+if (isDesktop) {
+  updates.start(import.meta.env.PROD).catch((cause: unknown) => console.error('Starting the update checks failed', cause))
+}
+onBeforeUnmount(() => updates.stop())
 onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
 
 // Reminders are planned in the zone a device of the user last sent. This one sends its zone the first time and when
@@ -77,6 +87,7 @@ watch(
     <Transition name="sink"><ComposeWindow v-if="compose.draft" /></Transition>
     <Transition name="layer"><HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" /></Transition>
     <NoticeStack />
+    <UpdateCard v-if="isDesktop" />
   </template>
   <p v-if="mail.updatedElsewhere" class="problem" role="alert">
     {{ mail.updatedElsewhere }}
