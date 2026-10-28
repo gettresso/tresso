@@ -11,7 +11,7 @@ import App from './App.vue'
 import router from './router'
 import { config } from './config'
 import { isDesktop, onDeepLinks } from './platform/desktop'
-import { vibrant } from './platform/vibrancy'
+import { followReducedTransparency, vibrant } from './platform/vibrancy'
 import { startNotificationClicks } from './platform/notifier'
 import { onPushClick } from './platform/webPush'
 import { signInRoute } from './platform/signInLinks'
@@ -20,6 +20,7 @@ import { useComposeStore } from './stores/compose'
 
 if (vibrant) {
   document.documentElement.classList.add('vibrant')
+  followReducedTransparency()
 }
 
 const app = createApp(App)

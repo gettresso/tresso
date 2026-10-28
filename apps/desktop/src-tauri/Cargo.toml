@@ -29,6 +29,10 @@ tauri-plugin-notification = "2.7.0"
 keyring = "4.2.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
+# Reads the "Reduce transparency" setting, so the web glass turns solid with the window's vibrancy (accessibility.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
+
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tauri-plugin-single-instance = { version = "2.5.4", features = ["deep-link"] }
 

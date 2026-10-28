@@ -4607,6 +4607,7 @@ version = "0.1.0"
 dependencies = [
  "keyring",
  "log",
+ "objc2-app-kit",
  "rusqlite",
  "rust-ini",
  "serde",

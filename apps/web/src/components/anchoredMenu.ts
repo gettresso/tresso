@@ -13,6 +13,8 @@ export function useAnchoredMenu(button: Ref<HTMLElement | null>, menu: Ref<HTMLE
   const above = ref(false)
 
   function place(): void {
+    // The macOS app's title bar strip (html.vibrant) drags the window, so a menu above its button stays clear of it.
+    const top0 = MARGIN + (Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--titlebar')) || 0)
     const anchor = button.value?.getBoundingClientRect()
     const element = menu.value
     if (anchor === undefined || element === null) {
@@ -21,11 +23,11 @@ export function useAnchoredMenu(button: Ref<HTMLElement | null>, menu: Ref<HTMLE
     const height = element.offsetHeight
     const width = element.offsetWidth
     const below = window.innerHeight - anchor.bottom - GAP - MARGIN
-    above.value = below < height && anchor.top - GAP - MARGIN > below
-    const top = above.value ? Math.max(MARGIN, anchor.top - GAP - height) : anchor.bottom + GAP
+    above.value = below < height && anchor.top - GAP - top0 > below
+    const top = above.value ? Math.max(top0, anchor.top - GAP - height) : anchor.bottom + GAP
     const preferred = align === 'end' ? anchor.right - width : anchor.left
     const left = Math.min(Math.max(MARGIN, preferred), window.innerWidth - width - MARGIN)
-    const room = above.value ? anchor.top - GAP - MARGIN : below
+    const room = above.value ? anchor.top - GAP - top0 : below
     // The menu caps its own height with min(its cap, var(--menu-room)), so it never runs off the window.
     style.value = { position: 'fixed', top: `${top}px`, left: `${left}px`, '--menu-room': `${Math.max(120, room)}px` }
   }

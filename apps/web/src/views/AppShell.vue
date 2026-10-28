@@ -134,12 +134,12 @@ function toggled(event: Event): void {
   backdrop-filter: var(--glass-material);
   box-shadow: inset -1px 0 0 var(--line);
 }
-:global(html.vibrant) .stage {
+html.vibrant .stage {
   background: var(--canvas-light), var(--canvas);
   border-top-left-radius: var(--radius-panel);
   box-shadow: inset 1px 1px 0 var(--line);
 }
-:global(html.vibrant) .mailboxes > :deep(nav) {
+html.vibrant .mailboxes > :deep(nav) {
   background: transparent;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;

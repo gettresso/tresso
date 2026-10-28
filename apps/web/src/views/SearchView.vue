@@ -274,7 +274,7 @@ function threadLink(hit: SearchHit) {
 }
 .chip.on option {
   color: var(--ink);
-  background: var(--surface);
+  background: var(--paper);
 }
 .spacer {
   flex: 1;

@@ -419,7 +419,7 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
 }
 .block.pending,
 .span.pending {
-  background: var(--surface);
+  background: var(--paper);
   border: 1px dashed var(--cal);
   border-left: 3px solid var(--cal);
 }
@@ -431,7 +431,7 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
 /* Planned time whose time was taken: dashed, like an event that still needs an answer. */
 .block.todo.conflict,
 .span.todo.conflict {
-  background: var(--surface);
+  background: var(--paper);
   border: 1px dashed var(--cal);
   border-left: 3px solid var(--cal);
 }

@@ -289,7 +289,7 @@ function openItem(item: Occurrence | TodoBlock): void {
   font-weight: 600;
 }
 .item.pending.filled {
-  background: var(--surface);
+  background: var(--paper);
   border: 1px dashed var(--cal);
 }
 .item.past {

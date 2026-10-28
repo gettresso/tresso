@@ -410,7 +410,7 @@ h1 {
   border-bottom: 0;
 }
 .item.done {
-  background: color-mix(in srgb, var(--ground) 40%, var(--surface));
+  background: var(--ground);
 }
 .text {
   flex: 1 1 360px;
