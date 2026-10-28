@@ -28,18 +28,18 @@ shared libraries. Running it on your own server is free and has every feature.
 | **Self-hosted** | This repository on your own server: accounts, mail, calendar, smart inboxes, the three verdicts, todos, signatures, settings, web, desktop and mobile apps, and every feature still to come | Free |
 | **Tresso Cloud** | The managed hosting of the same code and the same image, run for you with backups and support | A subscription per organization, paying for its members |
 
-A subscription pays for hosting, never for features. The managed service adds only operations around the same code:
-billing turns on with configuration on that server and is off everywhere else, and its infrastructure, secrets and
-runbooks live outside this repository. Features with an outside provider, such as AI, take your own key or endpoint,
-so they work self-hosted too.
+A subscription pays for hosting, never for features. The managed service adds only operations around the same code.
+Billing is planned to live in this repository too, turned on by configuration on that server and off everywhere else;
+its infrastructure, secrets and runbooks live outside this repository. Features with an outside provider, such as AI,
+take your own key or endpoint, so they work self-hosted too.
 
 ### Organizations
 
-Every user owns a personal organization from the moment the account exists; a team is an organization with more
-members. A subscription belongs to an organization and its members are the seats it pays for, so one user with
-several mail accounts pays once. `GET /api/v1/organizations` lists the signed-in user's organizations, the personal
-one first, with their role (`owner`, `admin` or `member`) and the number of seats. A personal organization goes by its
-owner's name and is removed together with them.
+Every user owns a personal organization from the moment the account exists; teams (planned, 3.9) will be organizations
+with more members. A subscription will belong to an organization and its members are the seats it pays for, so one user
+with several mail accounts pays once. `GET /api/v1/organizations` lists the signed-in user's organizations, their own
+personal one first, with their role (`owner`, `admin` or `member`) and the number of seats. A personal organization goes
+by its owner's name and is removed together with them.
 
 ## 2. System overview
 

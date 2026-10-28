@@ -169,3 +169,15 @@ Planned, on top of organizations: teams, shared inboxes, assignments, internal c
   `app:crypto:reencrypt --status` reports nothing left everywhere
 
 Planned: API keys and third-party apps, webhooks, MCP endpoint, developer tools, statistics, Year in mail.
+
+## Phase 5: Tresso Cloud
+
+Managed hosting of this same code, paid per organization member; self-hosting stays free with every feature.
+
+- [x] 5.1 Organizations: a personal organization for every user (new users and, in the migration, existing ones),
+  `GET /api/v1/organizations` with role and seats, removed with the user
+- [ ] 5.2 Billing behind configuration, off by default: Stripe subscriptions per organization with a 14-day trial,
+  webhooks, the API and sync workers refusing an organization without a valid subscription, a payment screen in web
+  and desktop
+- [ ] 5.3 A production image per release on GitHub's container registry and a production compose file, which the
+  managed service runs unchanged
