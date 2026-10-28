@@ -11,8 +11,8 @@ use App\Entity\OrganizationMember;
 use App\State\OrganizationProvider;
 
 /**
- * An organization the signed-in user belongs to: always their personal one, first, and any teams they joined. Like
- * /me, only user tokens qualify.
+ * An organization the signed-in user belongs to: always their own personal one, first, and any others they joined.
+ * Like /me, only user tokens qualify.
  */
 #[ApiResource(
     shortName: 'Organization',
@@ -33,6 +33,7 @@ final readonly class OrganizationResource
         public string $id,
         /** A personal organization goes by its owner's display name. */
         public string $name,
+        /** Whether this is the signed-in user's own personal organization. */
         public bool $personal,
         /** The signed-in user's role: `owner`, `admin` or `member`. */
         public string $role,
@@ -49,7 +50,7 @@ final readonly class OrganizationResource
         return new self(
             $organization->getId()->toRfc4122(),
             $organization->getName(),
-            $organization->isPersonal(),
+            $organization->isPersonalOf($membership->getUser()),
             $membership->getRole()->value,
             $seats,
             $organization->getCreatedAt(),

@@ -9,8 +9,9 @@ use Symfony\Bridge\Doctrine\Types\UuidType;
 use Symfony\Component\Uid\Uuid;
 
 /**
- * The people who share a subscription: a team, or one user on their own. Every user has exactly one personal
- * organization, made with the user and removed with them; its members are the seats it pays for.
+ * The people who share a subscription: a team, or one user on their own. Every user has one personal organization,
+ * made with the user and removed with them; its members are the seats it pays for. A team has a name and no personal
+ * owner, a personal organization the other way round (a check constraint keeps it so).
  */
 #[ORM\Entity]
 class Organization
@@ -56,9 +57,9 @@ class Organization
         return $this->personalOwner?->getDisplayName() ?? (string) $this->name;
     }
 
-    public function isPersonal(): bool
+    public function isPersonalOf(User $user): bool
     {
-        return null !== $this->personalOwner;
+        return null !== $this->personalOwner && $this->personalOwner->getId()->equals($user->getId());
     }
 
     public function getCreatedAt(): \DateTimeImmutable
