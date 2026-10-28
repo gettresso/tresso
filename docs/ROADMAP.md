@@ -1,7 +1,7 @@
 # Roadmap
 
-Each phase ends in something usable. Phases are started one at a time after review. This roadmap covers the open
-edition; where Tresso Cloud adds something in the same phase, it is noted at the end of the phase.
+Each phase ends in something usable. Phases are started one at a time after review. Everything on it comes to
+this repository; what a phase still has planned is noted at its end.
 
 ## Phase 0: Foundation (done)
 
@@ -12,7 +12,8 @@ edition; where Tresso Cloud adds something in the same phase, it is noted at the
 - [x] OAuth2 authorization server skeleton (auth code + PKCE, client credentials)
 - [x] Go sync worker skeleton (OAuth client credentials, lease heartbeat loop)
 - [x] Vue 3 web, Tauri desktop and Expo mobile skeletons
-- [x] Open core split: add-on hooks (`bundles.local.php`, `composer.local.json`), AGPL-3.0 and MIT licenses
+- [x] Open source under `AGPL-3.0-only`, every feature in this repository (the early open core add-on hooks are
+  gone)
 
 ## Phase 1: Read and send mail
 
@@ -77,14 +78,14 @@ Built next to phase 1, each step its own pull request. See "3.13 Calendar" in th
   updates and replies sent by the providers (`notify` and the reply comment on each write); Teams meetings through
   Graph, Google Meet through `conferenceData`, asked for with `conferenceProvider` per calendar; a join link for
   every recognized meeting (`conference.url`; the join buttons themselves come with the calendar views of C4)
-- [x] C6 Calendar assistant interfaces in the open edition with the deterministic meeting time finder: the
+- [x] C6 Calendar assistant interfaces with the deterministic meeting time finder: the
   `EventDraftInterpreter`, `MeetingTimeFinder`, `EventExtractor` and `MeetingBriefWriter` interfaces with their
   capabilities; meeting times from the user's calendars within their working hours, focus blocks, buffer, travel time
   and notice, across time zones and daylight saving, each slot explained, with the same API for planning todos; event
   suggestions from a message's calendar parts
 
-Tresso Cloud: natural language event creation, meeting time suggestions with attendees' availability, events and
-deadlines extracted from mail, meeting briefs.
+Planned, with your own AI key or endpoint: natural language event creation, meeting time suggestions with attendees'
+availability, events and deadlines extracted from mail, meeting briefs.
 
 ## Phase 2: Do, hand over, know
 
@@ -126,7 +127,8 @@ Still to come in this phase:
 
 - Busy hints when picking a due date: choosing a deadline or a time shows how busy each day and hour already is
 
-Tresso Cloud: AI classification with feedback learning, automatic todo extraction, AI summaries in the daily brief.
+Planned, with your own AI key or endpoint: AI classification with feedback learning, automatic todo extraction, AI
+summaries in the daily brief.
 
 ## Phase 3: Native apps
 
@@ -143,7 +145,7 @@ Tresso Cloud: AI classification with feedback learning, automatic todo extractio
   desktop app and browsers once, held in meetings and focus blocks and silent in quiet hours; a tap opens the
   conversation
 
-Tresso Cloud: teams, shared inboxes, assignments, internal comments, delegation rules, workload.
+Planned, on top of organizations: teams, shared inboxes, assignments, internal comments, delegation rules, workload.
 
 ## Phase 4: Safety and housekeeping
 
@@ -166,4 +168,4 @@ Tresso Cloud: teams, shared inboxes, assignments, internal comments, delegation 
   `user.wrapped_data_key`, `message.snippet`, `message_text.text` and `mail_notification.body` once
   `app:crypto:reencrypt --status` reports nothing left everywhere
 
-Tresso Cloud: API keys and third-party apps, webhooks, MCP endpoint, developer tools, statistics, Year in mail.
+Planned: API keys and third-party apps, webhooks, MCP endpoint, developer tools, statistics, Year in mail.

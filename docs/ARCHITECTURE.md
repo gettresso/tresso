@@ -11,40 +11,45 @@ Every message converges on one of three verdicts:
 | Verdict | Created artifact | Resolved when |
 |---|---|---|
 | `do` | Todo linked to the thread (due date extracted when present) | Todo completed, email auto-archives |
-| `delegate` | Handed over with a note and due date: forwarded to someone, or assigned to a teammate in Tresso Cloud; appears in "Waiting on" | The other person completes it or replies |
+| `delegate` | Handed over with a note and due date: forwarded to someone, or later assigned to a teammate; appears in "Waiting on" | The other person completes it or replies |
 | `know` | Entry in the daily brief, one-click "Noted" | Read or acknowledged, email auto-archives |
 
 Categories (built-in: `spam`, `notification`, `advertise`, `todo`, `informational`; plus user-defined) feed the
-verdicts through configurable mappings (e.g. `todo` -> `do`, `informational` -> `know`). The open edition classifies
-with rules; Tresso Cloud adds AI classification.
+verdicts through configurable mappings (e.g. `todo` -> `do`, `informational` -> `know`). Tresso classifies with
+rules; AI classification is planned, with your own key or endpoint.
 
-## Open core
+## Self-hosted and Tresso Cloud
 
-Tresso is open core.
+Everything Tresso does is in this repository, licensed `AGPL-3.0-only`: the apps, the API, the sync workers and the
+shared libraries. Running it on your own server is free and has every feature.
 
-| Edition | What it is | License |
+| | What it is | Costs |
 |---|---|---|
-| **Tresso** (this repository) | A complete, self-hostable email client for one person: accounts, mail, calendar, smart inboxes with rules, the three verdicts, todos, signatures, settings, web, desktop and mobile apps | AGPL-3.0; shared libraries in `packages/` are MIT |
-| **Tresso Cloud** | The hosted service. Adds AI classification and summaries, AI calendar assistance, teams and delegation, API keys, webhooks and MCP, developer tools, statistics and Year in mail | Proprietary, separate repository |
+| **Self-hosted** | This repository on your own server: accounts, mail, calendar, smart inboxes, the three verdicts, todos, signatures, settings, web, desktop and mobile apps, and every feature still to come | Free |
+| **Tresso Cloud** | The managed hosting of the same code and the same image, run for you with backups and support | A subscription per organization, paying for its members |
 
-The open code never depends on Tresso Cloud. Cloud features attach through two generic, git-ignored hooks in the
-API:
+A subscription pays for hosting, never for features. The managed service adds only operations around the same code:
+billing turns on with configuration on that server and is off everywhere else, and its infrastructure, secrets and
+runbooks live outside this repository. Features with an outside provider, such as AI, take your own key or endpoint,
+so they work self-hosted too.
 
-- `config/bundles.local.php`: extra Symfony bundles the Kernel registers when the file exists.
-- `composer.local.json` (used with `COMPOSER=composer.local.json`, own lock file): extra Composer packages.
+### Organizations
 
-New features follow the same rule: the open code defines the interface and a simple implementation (for example
-rule-based classification); an add-on may provide a richer one. Anyone can build their own add-on the same way.
+Every user owns a personal organization from the moment the account exists; a team is an organization with more
+members. A subscription belongs to an organization and its members are the seats it pays for, so one user with
+several mail accounts pays once. `GET /api/v1/organizations` lists the signed-in user's organizations, the personal
+one first, with their role (`owner`, `admin` or `member`) and the number of seats. A personal organization goes by its
+owner's name and is removed together with them.
 
 ## 2. System overview
 
 ```
  ┌──────────── Clients ─────────────┐
- │ Web (Vue 3)  Desktop (Tauri+Vue) │     Add-ons (optional)
- │ Mobile (Expo / React Native)     │   e.g. Tresso Cloud bundle
- └──────────────┬───────────────────┘              │
-                │ OAuth2 (auth code + PKCE)        │ bundles.local.php
-                ▼                                  ▼
+ │ Web (Vue 3)  Desktop (Tauri+Vue) │
+ │ Mobile (Expo / React Native)     │
+ └──────────────┬───────────────────┘
+                │ OAuth2 (auth code + PKCE)
+                ▼
  ┌─────────────────────────────────────────────────────────────┐
  │ API: Symfony 8 on FrankenPHP (worker mode)                  │
  │  - OAuth2 authorization server (league/oauth2-server)       │
@@ -80,7 +85,7 @@ rule-based classification); an add-on may provide a richer one. Anyone can build
 
 - Symfony 8.1, PHP 8.5, FrankenPHP worker mode, Doctrine ORM, PostgreSQL 18.
 - Symfony Messenger with Redis transport for async jobs. Transports are split so slow jobs never block others:
-  `async` (outgoing mail), `search` (indexing) and `scan` (attachment scans), and more from add-ons.
+  `async` (outgoing mail), `search` (indexing) and `scan` (attachment scans), and more where a feature needs its own.
 - Mercure (bundled in FrankenPHP) pushes realtime updates to web and desktop clients.
 - Identifiers: UUIDv7 everywhere (time ordered, index friendly, safe to expose).
 
@@ -93,11 +98,11 @@ Symfony is the single OAuth2 authorization server (`league/oauth2-server-bundle`
 | Web, Desktop, Mobile | Authorization code + PKCE | Public clients, refresh token rotation |
 | Go sync workers | Client credentials | Confidential client, scopes `sync:lease sync:ingest sync:credentials` |
 Only first-party clients are approved automatically. Third-party apps, personal access tokens and MCP clients are
-Tresso Cloud features.
+planned (3.9).
 
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
 `settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
-add-ons.
+the planned features in 3.9.
 
 Users log in with email + password (Argon2id) and, later, Google / Microsoft sign-in as identity providers. (Signing
 in with Google or Microsoft to connect a mail account is separate: see Provider sign-in below.)
@@ -490,7 +495,7 @@ ingest -> thread assignment -> virus scan (attachments) -> classification -> ver
        -> search index -> push notification (only do / delegate)
 ```
 
-Add-ons can hook into each step (Tresso Cloud adds AI classification, assignments and webhooks).
+Planned features hook into these steps: AI classification, assignments to teammates and webhooks (3.9).
 
 ### 3.7 Classification
 
@@ -504,7 +509,7 @@ Add-ons can hook into each step (Tresso Cloud adds AI classification, assignment
   lists. Smart inboxes are in the delta (`smartInboxes`, tombstone type `smartInbox`). Deleting one takes its
   conversations and messages out of it in the same transaction (so clients see them change) and lets classification
   place them again.
-- Classification sits behind `App\Classification\Classifier`. The open edition's `RuleBasedClassifier` decides, in
+- Classification sits behind `App\Classification\Classifier`. The built-in `RuleBasedClassifier` decides, in
   this order: spam that no From-based rule may overrule, because a From address is easy to forge (DMARC failing a
   reject or quarantine policy, which not even the Spam exclude list overrules, and the server's spam verdict on mail
   whose sender did not pass DMARC); a sender rule (a
@@ -517,8 +522,8 @@ Add-ons can hook into each step (Tresso Cloud adds AI classification, assignment
   link, which discussion lists carry too) (informational), an unsubscribe link (advertise), and finally mail from a
   person: something to do (todo) unless the user is only in Cc (informational); Bcc and addresses of the user Tresso
   does not know count as direct. A smart inbox whose exclude list covers the sender is skipped at every step. The
-  verdict is the smart inbox's unless a sender rule sets one. The `instructions` field is for AI classifiers such as
-  the one in Tresso Cloud, which decorates the `Classifier` service and should keep sender rules and lists in charge.
+  verdict is the smart inbox's unless a sender rule sets one. The `instructions` field is for an AI classifier, which
+  decorates the `Classifier` service and should keep sender rules and lists in charge.
 - The sync worker sends the headers the rules read (`headers`) and the junk keyword (`junk`) with each message; the
   API keeps them in `message_signals`, apart from the message row and only for messages that have any. Anyone can
   write an Authentication-Results header, so a DMARC pass counts only when the receiving server surely wrote it: at
@@ -563,7 +568,7 @@ Add-ons can hook into each step (Tresso Cloud adds AI classification, assignment
   from the start.
 - Each conversation carries why it is where it is (`classificationReason`: `user`, `sender_rule`, `include_list`,
   `server_spam`, `authentication_failed`, `automated`, `marketing_sender`, `bulk`, `notification_sender`,
-  `unsubscribe_link`, `mailing_list`, `direct`, `copied`, or a reason of an add-on), which clients explain.
+  `unsubscribe_link`, `mailing_list`, `direct`, `copied`, or a reason of another classifier), which clients explain.
 
 #### Batched delivery
 
@@ -677,7 +682,7 @@ Mail judged `know` asks nothing of the user, so it does not interrupt: once a da
   accounts' addresses, the sign-in address when the chosen account is gone). It goes out at most once: `emailed_at`
   is set under a row lock and committed before the mail is sent, outside any transaction; a refusal by the mail server
   clears it again for Messenger's retry, and a crash in between loses that digest rather than sending it twice.
-- Tresso Cloud adds AI summaries of the brief's conversations; the open edition shows subject and snippet.
+- The brief shows each conversation's subject and snippet; AI summaries are planned (3.9).
 
 ### 3.8 Virus scanning
 
@@ -762,11 +767,11 @@ files attached to drafts (uploads, and files a forward or reply takes along).
   transport (`scan_rescan`), and prints how far it got; `--after=<hash>` continues an interrupted run. Current
   verdicts stay in force until the new one is in.
 
-### 3.9 Tresso Cloud features
+### 3.9 Planned features
 
-Built as add-ons and documented separately: AI classification and summaries, teams and delegation (assignments,
-internal comments, delegation rules), API keys and third-party apps, webhooks, the MCP endpoint, developer tools,
-statistics and Year in mail.
+Not built yet, and coming to this repository like everything else: AI classification and summaries (with your own
+key or endpoint), teams on top of organizations (invites, assignments to teammates, internal comments, delegation
+rules), API keys and third-party apps, webhooks, the MCP endpoint, developer tools, statistics and Year in mail.
 
 ### 3.10 Clients
 
@@ -874,7 +879,7 @@ conversation opened from a notification before the delta brought it shows as loa
 gone only after a pull that completed; when that pull fails (offline) it says it could not be loaded, with Try again
 (the web client does the same).
 
-Shared TypeScript lives in `packages/core` (MIT): domain types, the OAuth flow, and the client side of the sync
+Shared TypeScript lives in `packages/core`: domain types, the OAuth flow, and the client side of the sync
 protocol, so every client syncs the same way:
 
 - `SyncEngine` pulls the delta into a `SyncStore` (each page and its cursor in one transaction). Pulls never overlap;
@@ -1050,8 +1055,8 @@ picks files (device or cloud drive) and photos (HEIC as JPEG), and shows the fil
 
 The calendar lives next to mail, because so much of it arrives by mail: invitations, reschedules, "can we meet
 Thursday", deadlines. It follows the same rules as mail: the server holds the truth, clients keep a local copy
-through the delta, providers are synced by the Go workers, and the open edition is complete on its own while AI
-features attach through interfaces.
+through the delta, providers are synced by the Go workers, and Tresso is complete on its own while AI features
+attach through interfaces.
 
 #### Data model
 
@@ -1420,13 +1425,13 @@ after. Everything lives in `apps/api/src/Notification`.
     travel (`travelMode`: walk, bike, public transport, car), and the reminder moves to the moment to leave. From an
     hour before the start, while no estimate came, the server asks the user's phones for one with a silent push
     (`kind: leave_estimate`, data only, every 15 minutes); without one by shortly before the moment to leave, there
-    is no reminder rather than a guessed one. The open edition geocodes with Nominatim and routes with OSRM, one
+    is no reminder rather than a guessed one. Tresso geocodes with Nominatim and routes with OSRM, one
     server per profile (`ROUTING_OSRM_URL` for the car, `ROUTING_OSRM_BIKE_URL`, `ROUTING_OSRM_FOOT_URL`,
     `GEOCODER_NOMINATIM_URL`); public transport has no estimate there (OSRM has no timetables), so it needs a travel
-    time on the event or an add-on estimator.
-  - **Pre-meeting brief:** for events with other people. At delivery the `MeetingBriefWriter` writes it: the open
-    edition names the people and the recent threads with them (last 60 days, from mail metadata, nothing leaves the
-    server); Tresso Cloud adds an AI summary. `GET /api/v1/calendar-events/{id}/brief` returns the full brief.
+    time on the event or another estimator.
+  - **Pre-meeting brief:** for events with other people. At delivery the `MeetingBriefWriter` writes it: the built-in
+    one names the people and the recent threads with them (last 60 days, from mail metadata, nothing leaves the
+    server); an AI summary is planned. `GET /api/v1/calendar-events/{id}/brief` returns the full brief.
   - **Follow-up nudge:** at the end of a meeting with other people, to write notes: private notes on an event or an
     occurrence (`PUT /api/v1/calendar-events/{id}/note`, in the delta as `eventNotes`, never sent to a provider) and,
     once todos exist (phase 2), todos.
@@ -1568,13 +1573,13 @@ locations of other events (Zoom, Teams, Meet, Webex) are recognized as well, so 
 `conference.url` for the join button. Personal Microsoft accounts and CalDAV or Tresso calendars get no meeting from
 their provider; a link pasted into the event (`conferenceUrl`) works everywhere.
 
-#### AI features (open interfaces, Tresso Cloud implementations)
+#### AI features (interfaces with built-in and planned AI implementations)
 
-The open edition defines the interfaces and, where a deterministic version is useful on its own, implements it.
-Tresso Cloud (`packages/api-bundle` in its repository) replaces them with AI versions by decorating the services;
-`GET /api/v1/calendar/capabilities` tells clients which features are available, so they show only what works.
+Tresso defines the interfaces and, where a deterministic version is useful on its own, implements it. The planned AI
+versions decorate these services, with the server's own AI key or endpoint; `GET /api/v1/calendar/capabilities`
+tells clients which features are available, so they show only what works.
 
-| Interface | Open edition | Tresso Cloud |
+| Interface | Built in | Planned AI version |
 |---|---|---|
 | `EventDraftInterpreter`: free text ("lunch with Sam Thursday 12:30 at Café Loos") to an event draft | none (capability off) | AI interpretation in the user's language and time zone |
 | `MeetingTimeFinder`: proposed slots for a duration, attendees and a window | free/busy of the user's own calendars within working hours | adds attendees' availability where it is known and ranks by preferences and habits |
@@ -1582,19 +1587,19 @@ Tresso Cloud (`packages/api-bundle` in its repository) replaces them with AI ver
 | `MeetingBriefWriter`: a brief before a meeting (who, previous threads, open todos, attachments) | attendees and the recent threads with them, from mail metadata | AI summary of the related mail and todos |
 
 Drafts from these features are never saved by themselves: the client shows them in the event editor or as
-suggestions, and the user saves. Content sent to an AI provider follows Tresso Cloud's data processing terms.
+suggestions, and the user saves. Content goes only to the AI provider the server is configured with.
 
-The interfaces live in `apps/api/src/Calendar/Assistant`, each with its open edition implementation registered as
-the alias another edition decorates:
+The interfaces live in `apps/api/src/Calendar/Assistant`, each with its built-in implementation registered as
+the alias an AI version decorates:
 
 | Call | Purpose |
 |---|---|
-| `GET /api/v1/calendar/capabilities` | `eventDrafts`, `meetingTimes`, `attendeeAvailability`, `eventSuggestions`, `textSuggestions`, `meetingBriefs`, `briefSummaries`: what this server offers. The open edition answers `false` for `eventDrafts`, `attendeeAvailability`, `textSuggestions` and `briefSummaries`. |
+| `GET /api/v1/calendar/capabilities` | `eventDrafts`, `meetingTimes`, `attendeeAvailability`, `eventSuggestions`, `textSuggestions`, `meetingBriefs`, `briefSummaries`: what this server offers. The built-in implementations answer `false` for `eventDrafts`, `attendeeAvailability`, `textSuggestions` and `briefSummaries`. |
 | `GET`/`PATCH /api/v1/calendar/scheduling-preferences` | What the finder keeps free besides the working hours: `bufferMinutes`, `travelMinutes` and `minimumNoticeMinutes` (scopes `settings:read`, `settings:write`; JSON merge patch). |
 | `POST /api/v1/calendar/meeting-times` | Proposed slots for a duration in a window (below). |
 | `POST /api/v1/calendar/event-drafts` | Free text to an event draft; 501 where `eventDrafts` is off. |
-| `GET /api/v1/messages/{id}/event-suggestions` | Events (as drafts in the editor's shape, with the stored event's id when the calendar has it) and deadlines found in a message. The open edition reads the `REQUEST`, `PUBLISH` and `ADD` calendar parts, and finds no deadlines. |
-| `GET /api/v1/calendar-events/{id}/brief` | The pre-meeting brief (see reminders above); `summary` is null in the open edition. |
+| `GET /api/v1/messages/{id}/event-suggestions` | Events (as drafts in the editor's shape, with the stored event's id when the calendar has it) and deadlines found in a message. The built-in one reads the `REQUEST`, `PUBLISH` and `ADD` calendar parts, and finds no deadlines. |
+| `GET /api/v1/calendar-events/{id}/brief` | The pre-meeting brief (see reminders above); `summary` is null until an AI version is configured. |
 
 ##### Meeting time finder
 
@@ -1616,7 +1621,7 @@ planned again. A deadline that has passed, or a duration outside 5 minutes to 24
   that does not name its own travel time, and `minimumNoticeMinutes` (up to 14 days). All are 0 without a row. The
   same row holds `planTodos` (off without a row), the switch that plans todos on their own (see "Todos in the
   calendar" in 3.14).
-- **Busy time** comes from every `BusyTimeSource`: the open edition's reads the user's visible calendars (or the
+- **Busy time** comes from every `BusyTimeSource`: the built-in one reads the user's visible calendars (or the
   `calendarIds` a search names) through the occurrence expander, so recurrence, overrides, exceptions and time zones
   are those of the range endpoint. An occurrence is busy when it is marked busy, not cancelled and not declined;
   tentative and unanswered invitations count. All-day occurrences take their days from midnight to midnight in the
@@ -1626,7 +1631,7 @@ planned again. A deadline that has passed, or a duration outside 5 minutes to 24
   another source (`TodoBusyTimes`): the planned time of open todos, referenced by the todo's id. They are in no
   calendar, so they count whichever calendars a search names. Their label is the todo's title only for a caller with
   the todos read scope; others (an app with calendar access only) see "Planned todo".
-- **Attendees' busy time** comes from every `AttendeeAvailabilitySource`; the open edition has none, so an attendee's
+- **Attendees' busy time** comes from every `AttendeeAvailabilitySource`; Tresso has none built in, so an attendee's
   availability is `unknown` and closes nothing, except for the user's own addresses, which are known. A provider's
   free/busy (Google, Microsoft Graph, CalDAV scheduling) can be added as a source. A source may also give an
   attendee's working hours with their zone; the time outside them is then busy for that attendee.
@@ -1746,8 +1751,8 @@ An open todo with a due date and a duration can hold time in the user's calendar
 ### 3.15 Hand-overs
 
 A conversation judged `delegate` is handed over by forwarding it to one person with a note and a due date, and waited
-on in "Waiting on" until that person replies. Teams and assignments to teammates are Tresso Cloud (3.9); the open
-edition hands over by mail.
+on in "Waiting on" until that person replies. Assignments to teammates are planned (3.9); today a hand-over goes
+by mail.
 
 - **Handing over** goes through the shared compose flow (`HandOverFlow` in `packages/core/src/handOvers.ts`, on a
   composer of its own so it never touches what the user is writing): the newest message from someone else is
