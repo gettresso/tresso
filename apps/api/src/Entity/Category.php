@@ -45,7 +45,10 @@ class Category implements TracksChanges
     #[ORM\Column(length: self::NAME_MAX_LENGTH)]
     private string $name;
 
-    /** Natural-language description the AI uses to recognise this category. */
+    /**
+     * Natural-language description for the planned AI classification to recognise this category; the rules do not
+     * read it.
+     */
     #[ORM\Column(type: Types::TEXT)]
     private string $instructions;
 
