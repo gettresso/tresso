@@ -432,7 +432,7 @@ textarea[aria-invalid='true'] {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--surface);
+  background: var(--paper);
   transition: transform 150ms ease;
 }
 .switch:checked {

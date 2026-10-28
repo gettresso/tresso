@@ -164,13 +164,16 @@ onMounted(async () => {
 .backdrop {
   animation: fade-in var(--motion-base) ease-out;
   position: fixed;
-  inset: 0;
+  /* Below the macOS app's title bar strip, where a press drags the window instead of reaching the dialog. */
+  inset: var(--titlebar, 0px) 0 0;
   z-index: 30;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding: 10vh 16px 16px;
-  background: rgb(22 24 29 / 32%);
+  background: rgb(15 17 21 / 18%);
+  -webkit-backdrop-filter: var(--scrim-blur);
+  backdrop-filter: var(--scrim-blur);
   overflow-y: auto;
 }
 .dialog {

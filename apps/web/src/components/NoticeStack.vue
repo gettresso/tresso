@@ -65,6 +65,20 @@ function leave(element: Element, done: () => void): void {
   backdrop-filter: var(--glass-material);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 14%), 0 12px 32px rgb(22 24 29 / 22%);
 }
+@media (prefers-reduced-transparency: reduce) {
+  .notice {
+    background: var(--ink);
+  }
+  .notice.error {
+    background: var(--danger);
+  }
+}
+html.reduce-transparency .notice {
+  background: var(--ink);
+}
+html.reduce-transparency .notice.error {
+  background: var(--danger);
+}
 .notice span {
   flex: 1;
 }

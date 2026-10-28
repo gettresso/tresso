@@ -296,7 +296,7 @@ async function toggle(todo: Todo): Promise<void> {
   margin: 0;
   border: 2px solid var(--ink-3);
   border-radius: 5px;
-  background: var(--surface);
+  background: var(--paper);
   cursor: pointer;
   transition:
     background-color var(--motion-fast) ease,

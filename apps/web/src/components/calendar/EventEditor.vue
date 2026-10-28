@@ -531,7 +531,8 @@ const repeatSummary = computed(() => {
   gap: 8px;
   padding: 16px 20px;
   border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  /* Solid: the form scrolls under this sticky header. */
+  background: var(--paper);
   z-index: 1;
 }
 h2 {

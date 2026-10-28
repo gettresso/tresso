@@ -119,8 +119,9 @@ function outside(event: MouseEvent): void {
     open.value = false
   }
 }
-onMounted(() => document.addEventListener('mousedown', outside))
-onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
+// In the capture phase: a press on the macOS app's title strip is stopped at the document by Tauri's drag handling.
+onMounted(() => document.addEventListener('mousedown', outside, true))
+onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
 </script>
 
 <template>

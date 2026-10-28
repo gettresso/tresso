@@ -588,7 +588,8 @@ function pickDay(day: number): void {
   }
   .detail-panel {
     position: fixed;
-    inset: 0 0 0 auto;
+    /* Below the macOS app's title bar strip, so the panel's buttons take clicks instead of dragging the window. */
+    inset: var(--titlebar, 0px) 0 0 auto;
     z-index: 40;
     box-shadow: var(--raised);
   }

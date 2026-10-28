@@ -30,6 +30,8 @@
   --glass-edge: inset 0 1px 0 rgb(255 255 255 / 75%), inset 0 0 0 1px rgb(255 255 255 / 35%);
   --raised: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%), 0 12px 32px rgb(22 24 29 / 12%);
   --glass-material: blur(28px) saturate(185%);
+  /* What lies behind a dialog: blurred a little, so the dialog's glass stands out. */
+  --scrim-blur: blur(6px);
   /* The canvas: the verdict colours as soft light, so the glass above it has something to bend. */
   --canvas-light:
     radial-gradient(60vmax 50vmax at 8% 0%, rgb(35 65 214 / 16%), transparent 70%),
@@ -98,7 +100,15 @@
     --surface: var(--paper);
     --glass-material: none;
     --canvas-light: none;
+    --scrim-blur: none;
   }
+}
+/* WebKit has no such media query; the macOS app asks the system and sets this class (platform/vibrancy.ts). */
+html.reduce-transparency {
+  --surface: var(--paper);
+  --glass-material: none;
+  --canvas-light: none;
+  --scrim-blur: none;
 }
 
 *,
@@ -411,8 +421,8 @@ html .panel-leave-active.panel-leave-active {
 /* A native modal dialog fades its backdrop in with it; what lies behind blurs, so the dialog's glass stands out. */
 dialog[open]::backdrop {
   background: rgb(15 17 21 / 18%);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: var(--scrim-blur);
+  backdrop-filter: var(--scrim-blur);
   animation: fade-in var(--motion-base) ease-out;
 }
 

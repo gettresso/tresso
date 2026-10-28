@@ -1,3 +1,4 @@
+mod accessibility;
 mod sql;
 mod tokens;
 
@@ -9,6 +10,7 @@ pub fn run() {
     .plugin(tauri_plugin_notification::init())
     .manage(sql::Databases::default())
     .invoke_handler(tauri::generate_handler![
+      accessibility::reduce_transparency,
       tokens::load_tokens,
       tokens::save_tokens,
       tokens::clear_tokens,
