@@ -1,10 +1,7 @@
 #!/bin/sh
 set -e
 
-# COMPOSER=composer.local.json selects an add-on install (own lock file); the default is composer.json.
-COMPOSER_FILE="${COMPOSER:-composer.json}"
-COMPOSER_LOCK="${COMPOSER_FILE%.json}.lock"
-if [ ! -f vendor/autoload_runtime.php ] || [ ! -f "$COMPOSER_LOCK" ] || [ "$COMPOSER_LOCK" -nt vendor/composer/installed.json ] || [ "$COMPOSER_FILE" -nt "$COMPOSER_LOCK" ]; then
+if [ ! -f vendor/autoload_runtime.php ] || [ ! -f composer.lock ] || [ composer.lock -nt vendor/composer/installed.json ] || [ composer.json -nt composer.lock ]; then
     composer install --prefer-dist --no-progress --no-interaction
 fi
 
