@@ -58,15 +58,18 @@ function leave(element: Element, done: () => void): void {
   gap: 12px;
   padding: 10px 12px 10px 16px;
   border-radius: var(--radius-card);
-  background: var(--ink);
-  color: var(--surface);
-  box-shadow: var(--raised);
+  /* Dark glass: the page shows through, blurred, while the text keeps its contrast. */
+  background: color-mix(in srgb, var(--ink) 82%, transparent);
+  color: var(--paper);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 14%), 0 12px 32px rgb(22 24 29 / 22%);
 }
 .notice span {
   flex: 1;
 }
 .notice.error {
-  background: var(--danger);
+  background: color-mix(in srgb, var(--danger) 88%, transparent);
   color: #fff;
 }
 .action {

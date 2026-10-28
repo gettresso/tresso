@@ -97,6 +97,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   color: var(--ink-2);
 }
 .search:has(input[aria-invalid='true']) {

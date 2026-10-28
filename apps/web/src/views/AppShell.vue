@@ -126,8 +126,23 @@ function toggled(event: Event): void {
 .mailboxes-toggle {
   display: none;
 }
+/* The sidebar is a pane of glass over the canvas; in the macOS app the window's own vibrancy shows through instead. */
 .mailboxes > :deep(nav) {
   min-height: 0;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: inset -1px 0 0 var(--line);
+}
+:global(html.vibrant) .stage {
+  background: var(--canvas-light), var(--canvas);
+  border-top-left-radius: var(--radius-panel);
+  box-shadow: inset 1px 1px 0 var(--line);
+}
+:global(html.vibrant) .mailboxes > :deep(nav) {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .stage {
   display: flex;

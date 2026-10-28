@@ -113,6 +113,9 @@ const groups = computed(() => {
   padding: 16px;
   border-right: 1px solid var(--line);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   overflow-y: auto;
 }
 .mini-head {
@@ -160,7 +163,7 @@ td {
 }
 .day.today {
   background: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
 }
 .group {
   display: flex;

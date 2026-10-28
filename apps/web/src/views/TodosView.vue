@@ -206,6 +206,9 @@ async function toggle(todo: Todo): Promise<void> {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   font-size: 13px;
   font-weight: 600;
 }
@@ -260,6 +263,9 @@ async function toggle(todo: Todo): Promise<void> {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   overflow: hidden;
 }
 .row {
@@ -301,8 +307,8 @@ async function toggle(todo: Todo): Promise<void> {
   width: 9px;
   height: 5px;
   margin-top: -2px;
-  border-left: 2px solid var(--surface);
-  border-bottom: 2px solid var(--surface);
+  border-left: 2px solid var(--paper);
+  border-bottom: 2px solid var(--paper);
   transform: rotate(-45deg);
   clip-path: inset(0 100% 0 0);
   transition: clip-path 200ms var(--ease-out) 60ms;

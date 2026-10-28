@@ -486,6 +486,9 @@ function pickDay(day: number): void {
   padding: 10px 16px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
 }
 .toolbar h1 {
   margin: 0 0 0 8px;

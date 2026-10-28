@@ -1,25 +1,40 @@
 /* Design tokens from the Tresso foundations board. Color is reserved for the three verdicts and for focus. */
 :root {
-  --ground: #f3f4f6;
-  --surface: #ffffff;
-  --line: #e3e5e9;
-  --line-strong: #d5d8de;
+  /*
+   * Glass: panels, menus and dialogs are translucent and blur what lies behind them, over a softly tinted canvas.
+   * --surface and --ground are see-through; --paper is the solid colour for text on dark fills and for edges that
+   * must not let anything through. Mail itself always renders on white paper in its frame.
+   */
+  --canvas: #e9edf6;
+  --paper: #ffffff;
+  --ground: rgb(22 24 29 / 4.5%);
+  --surface: rgb(255 255 255 / 58%);
+  --line: rgb(22 24 29 / 9%);
+  --line-strong: rgb(22 24 29 / 16%);
   --ink: #16181d;
   --ink-2: #4a505c;
   --ink-3: #6b7280;
   --danger: #b42318;
-  --danger-soft: #fdecea;
+  --danger-soft: rgb(180 35 24 / 10%);
   --focus: #2341d6;
   --do: #2341d6;
-  --do-soft: #e8ecfc;
-  --selected: #f5f7fe;
+  --do-soft: rgb(35 65 214 / 11%);
+  --selected: rgb(35 65 214 / 9%);
   --match: #fff1c2;
   --delegate: #a44a06;
-  --delegate-soft: #fceee2;
+  --delegate-soft: rgb(224 112 27 / 13%);
   --know: #256b5d;
-  --know-soft: #e3f2ee;
+  --know-soft: rgb(47 156 134 / 13%);
   --unread: #2341d6;
-  --raised: 0 1px 2px rgb(22 24 29 / 6%), 0 8px 24px rgb(22 24 29 / 10%);
+  /* A lit top edge and a soft shadow: what makes a translucent layer read as glass rather than as a faded panel. */
+  --glass-edge: inset 0 1px 0 rgb(255 255 255 / 75%), inset 0 0 0 1px rgb(255 255 255 / 35%);
+  --raised: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%), 0 12px 32px rgb(22 24 29 / 12%);
+  --glass-material: blur(28px) saturate(185%);
+  /* The canvas: the verdict colours as soft light, so the glass above it has something to bend. */
+  --canvas-light:
+    radial-gradient(60vmax 50vmax at 8% 0%, rgb(35 65 214 / 16%), transparent 70%),
+    radial-gradient(50vmax 45vmax at 100% 10%, rgb(224 112 27 / 13%), transparent 70%),
+    radial-gradient(60vmax 50vmax at 60% 110%, rgb(47 156 134 / 15%), transparent 70%);
 
   --font-display: 'Bricolage Grotesque', system-ui, sans-serif;
   --font-ui: 'Instrument Sans', system-ui, sans-serif;
@@ -39,26 +54,50 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --ground: #0f1115;
-    --surface: #171a20;
-    --line: #2a2f38;
-    --line-strong: #3a3f4a;
+    --canvas: #0b0d12;
+    --paper: #171a20;
+    --ground: rgb(255 255 255 / 5%);
+    --surface: rgb(32 36 45 / 52%);
+    --line: rgb(255 255 255 / 8%);
+    --line-strong: rgb(255 255 255 / 14%);
     --ink: #eceef2;
     --ink-2: #b5bbc6;
     --ink-3: #8a92a0;
     --danger: #f97066;
-    --danger-soft: #3a1d1b;
+    --danger-soft: rgb(249 112 102 / 14%);
     --focus: #8fa2ff;
     --do: #8fa2ff;
-    --do-soft: #1f2645;
-    --selected: #1c2133;
+    --do-soft: rgb(143 162 255 / 15%);
+    --selected: rgb(143 162 255 / 13%);
     --match: #5a4a12;
     --delegate: #f29a55;
-    --delegate-soft: #3a2616;
+    --delegate-soft: rgb(242 154 85 / 15%);
     --know: #6cc7b2;
-    --know-soft: #16302b;
+    --know-soft: rgb(108 199 178 / 15%);
     --unread: #8fa2ff;
-    --raised: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 24px rgb(0 0 0 / 40%);
+    --glass-edge: inset 0 1px 0 rgb(255 255 255 / 12%), inset 0 0 0 1px rgb(255 255 255 / 6%);
+    --raised: var(--glass-edge), 0 1px 2px rgb(0 0 0 / 30%), 0 12px 32px rgb(0 0 0 / 45%);
+    --canvas-light:
+      radial-gradient(60vmax 50vmax at 8% 0%, rgb(143 162 255 / 14%), transparent 70%),
+      radial-gradient(50vmax 45vmax at 100% 10%, rgb(242 154 85 / 9%), transparent 70%),
+      radial-gradient(60vmax 50vmax at 60% 110%, rgb(108 199 178 / 11%), transparent 70%);
+  }
+}
+
+/*
+ * Without blur (an older engine) or when the system asks for less transparency, the glass turns into solid panels:
+ * translucency without blur would only make text harder to read.
+ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --surface: var(--paper);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --surface: var(--paper);
+    --glass-material: none;
+    --canvas-light: none;
   }
 }
 
@@ -72,14 +111,43 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--ground);
+}
+
+body {
+  background: var(--canvas-light), var(--canvas);
+  background-attachment: fixed;
   color: var(--ink);
   font: 400 14px/20px var(--font-ui);
   -webkit-font-smoothing: antialiased;
 }
 
+html {
+  background: var(--canvas);
+}
+
+/*
+ * The macOS app (platform/vibrancy.ts): the window itself is the glass, so the page lets it through and starts below
+ * the title bar strip, where the window buttons sit.
+ */
+html.vibrant {
+  --titlebar: 38px;
+}
+html.vibrant,
+html.vibrant body {
+  background: transparent;
+}
+html.vibrant #app {
+  padding-top: var(--titlebar);
+}
+
 #app {
   height: 100%;
+}
+
+/* A layer of glass: what lies behind it shows through, blurred. Panels add their own background and edge. */
+.glass {
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
 }
 
 a {
@@ -130,12 +198,13 @@ button {
 }
 
 .button-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--ink) 86%, var(--surface));
+  background: color-mix(in srgb, var(--ink) 86%, var(--paper));
 }
 
 .button-primary {
   background: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%), 0 1px 2px rgb(22 24 29 / 12%);
 }
 
 .button-quiet {
@@ -339,8 +408,11 @@ html .panel-leave-active.panel-leave-active {
   animation: slide-out-right var(--motion-fast) ease-in forwards;
   pointer-events: none;
 }
-/* A native modal dialog fades its backdrop in with it. */
+/* A native modal dialog fades its backdrop in with it; what lies behind blurs, so the dialog's glass stands out. */
 dialog[open]::backdrop {
+  background: rgb(15 17 21 / 18%);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   animation: fade-in var(--motion-base) ease-out;
 }
 

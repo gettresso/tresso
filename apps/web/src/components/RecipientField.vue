@@ -192,6 +192,8 @@ function paste(event: ClipboardEvent): void {
   list-style: none;
   border-radius: var(--radius-card);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
 }
 .suggestions li {

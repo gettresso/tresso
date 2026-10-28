@@ -55,6 +55,8 @@ const when = computed(() => `${longDate(toWall(props.block.start, props.zone), t
   padding: 16px;
   border-left: 1px solid var(--line);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
   overflow-y: auto;
 }

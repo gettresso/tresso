@@ -256,6 +256,9 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   min-height: 0;
   height: 100%;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
 }
 .head,
 .all-day {
@@ -275,7 +278,7 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   padding: 0 8px;
   border-radius: 999px;
   background: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
 }
 .dst {
   margin-left: 6px;
@@ -304,7 +307,7 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   padding: 0 8px;
   border: 0;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--cal) 16%, var(--surface));
+  background: color-mix(in srgb, var(--cal) 16%, var(--paper));
   color: color-mix(in srgb, var(--cal) 65%, var(--ink));
   font: 600 12px/24px var(--font-ui);
   text-align: left;
@@ -349,7 +352,7 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   padding: 0 6px;
   border-radius: 999px;
   background: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
   font: 600 11px/18px var(--font-ui);
   z-index: 3;
 }
@@ -358,7 +361,7 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   border-left: 1px solid var(--line);
 }
 .column.weekend {
-  background: color-mix(in srgb, var(--ground) 45%, transparent);
+  background: var(--ground);
 }
 .now {
   position: absolute;
@@ -388,9 +391,9 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   border: 0;
   border-left: 3px solid var(--cal);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--cal) 16%, var(--surface));
+  background: color-mix(in srgb, var(--cal) 16%, var(--paper));
   color: color-mix(in srgb, var(--cal) 65%, var(--ink));
-  outline: 1px solid var(--surface);
+  outline: 1px solid var(--paper);
   text-align: left;
   overflow: hidden;
   cursor: pointer;

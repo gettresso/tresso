@@ -116,6 +116,9 @@ function sub(day: CalendarDay): string {
   overflow-y: auto;
   padding: 8px 24px 24px;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
 }
 .empty {
   color: var(--ink-3);

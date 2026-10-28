@@ -178,6 +178,8 @@ onMounted(async () => {
   width: min(560px, 100%);
   border-radius: 14px;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
 }
 .head {
@@ -238,7 +240,7 @@ textarea {
 .choice.on {
   border-color: var(--ink);
   background: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
 }
 .choice:focus-within {
   outline: 2px solid var(--focus);
@@ -253,7 +255,7 @@ textarea {
   color: var(--ink-2);
 }
 .choice.on .choice-sub {
-  color: color-mix(in srgb, var(--surface) 80%, transparent);
+  color: color-mix(in srgb, var(--paper) 80%, transparent);
 }
 .hint {
   color: var(--ink-2);

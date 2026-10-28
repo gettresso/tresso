@@ -265,6 +265,9 @@ function briefLabel(createdAt: string): string {
   flex: 1;
   min-width: 0;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   border-radius: var(--radius-panel);
   display: flex;
   flex-direction: column;

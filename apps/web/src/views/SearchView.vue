@@ -227,6 +227,9 @@ function threadLink(hit: SearchHit) {
   display: flex;
   flex-direction: column;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   border-radius: var(--radius-panel);
   overflow: hidden;
 }
@@ -267,7 +270,7 @@ function threadLink(hit: SearchHit) {
 .chip.on {
   border-color: var(--ink);
   background: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
 }
 .chip.on option {
   color: var(--ink);

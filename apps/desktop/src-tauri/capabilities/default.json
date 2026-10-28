@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: core APIs, the link the app was opened with, opening web pages in the default browser, and notifications whose click brings the window to the front",
+  "description": "The main window: core APIs, the link the app was opened with, opening web pages in the default browser, and notifications whose click brings the window to the front, and dragging the window by its own title area (the macOS app draws its title bar itself)",
   "windows": [
     "main"
   ],
@@ -15,6 +15,7 @@
     "notification:allow-notify",
     "notification:allow-register-listener",
     "core:window:allow-unminimize",
-    "core:window:allow-set-focus"
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging"
   ]
 }

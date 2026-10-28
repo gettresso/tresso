@@ -250,6 +250,9 @@ function remove(): Promise<void> {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
 }
 .header,
 .actions {
