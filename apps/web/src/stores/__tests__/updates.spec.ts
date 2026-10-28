@@ -5,10 +5,11 @@ type Event = { event: 'Started'; data: { contentLength?: number } } | { event: '
 
 const platform = vi.hoisted(() => ({
   channel: 'tauri' as 'sparkle' | 'tauri' | 'none',
-  found: null as null | { version: string; body?: string; downloadAndInstall: (onEvent: (event: Event) => void) => Promise<void> },
+  found: null as null | { version: string; body?: string; downloadAndInstall: (onEvent: (event: Event) => void) => Promise<void>; close: () => Promise<void> },
   checks: 0,
   nativeChecks: 0,
   restarts: 0,
+  restartFails: false,
   fail: null as Error | null,
 }))
 
@@ -27,13 +28,25 @@ vi.mock('@/platform/updates', () => ({
   },
   restart: async () => {
     platform.restarts += 1
+    if (platform.restartFails) {
+      throw new Error('no permission')
+    }
   },
 }))
 
 const { useUpdatesStore, CHECK_EVERY_MS } = await import('../updates')
 
+const closed: string[] = []
+
 function release(version: string, install: (onEvent: (event: Event) => void) => Promise<void> = async () => undefined) {
-  return { version, body: 'New things', downloadAndInstall: install }
+  return {
+    version,
+    body: 'New things',
+    downloadAndInstall: install,
+    close: async () => {
+      closed.push(version)
+    },
+  }
 }
 
 describe('updates store', () => {
@@ -45,6 +58,8 @@ describe('updates store', () => {
     platform.nativeChecks = 0
     platform.restarts = 0
     platform.fail = null
+    platform.restartFails = false
+    closed.length = 0
   })
 
   afterEach(() => {
@@ -153,5 +168,47 @@ describe('updates store', () => {
 
     await updates.checkNow(true)
     expect(updates.dismissed).toBeNull()
+  })
+
+  it('closes the release a newer check replaces', async () => {
+    platform.found = release('0.3.0')
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    platform.found = release('0.3.1')
+    await updates.checkNow(true)
+
+    expect(closed).toEqual(['0.3.0'])
+    expect(updates.update?.version).toBe('0.3.1')
+  })
+
+  it('tells an installed update apart from a failed one when only the restart fails', async () => {
+    platform.found = release('0.3.0')
+    platform.restartFails = true
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    await updates.install()
+
+    expect(updates.phase).toBe('installing')
+    expect(updates.error).toContain('is installed. Quit and open Tresso')
+  })
+
+  it('lets "Later" put a failed install aside too', async () => {
+    platform.found = release('0.3.0', async () => {
+      throw new Error('disk full')
+    })
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+    await updates.install()
+
+    updates.later()
+
+    expect(updates.phase).toBe('available')
+    expect(updates.error).toBeNull()
+    expect(updates.dismissed).toBe('0.3.0')
   })
 })

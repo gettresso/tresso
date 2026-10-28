@@ -265,7 +265,7 @@ Then run the checks for the part you changed:
 | Sync worker against GreenMail | `docker run --rm --network tresso_default -e GREENMAIL_HOST=greenmail -v "$PWD/apps/sync":/src -w /src golang:1.27 go test -race -tags integration ./...` |
 | Shared core | `npm test --workspace @tresso/core` |
 | Web | `npm run test:unit --workspace @tresso/web` and `npm run type-check --workspace @tresso/web` |
-| Desktop | `cargo check` in `apps/desktop/src-tauri` |
+| Desktop | `cargo check` in `apps/desktop/src-tauri` (on macOS first `node apps/desktop/scripts/fetch-sparkle.mjs`, which the Tauri commands also run) |
 | Mobile | `npx vitest run`, `npx tsc --noEmit` and `npx expo lint` in `apps/mobile` |
 
 Every push and pull request runs all of these in [CI](.github/workflows/ci.yml).
@@ -305,7 +305,7 @@ skip unless you pin it.
 git tag -s v0.1.0 -m "Tresso 0.1.0" && git push origin v0.1.0
 ```
 
-The version comes from the tag, so nothing needs bumping first. The release also publishes the update feeds that installed apps read from the latest release: `appcast.xml` for Sparkle and `latest.json` for Tauri's updater. Signing the updates needs three repository secrets: `SPARKLE_PRIVATE_KEY` (EdDSA, macOS), and `TAURI_SIGNING_PRIVATE_KEY` with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (Windows, Linux). Their public halves are in `apps/desktop/src-tauri/Info.plist` and `tauri.conf.json`. Losing a private key means installed apps can never update again, so keep a copy somewhere safe. A release talks to Tresso Cloud
+The version comes from the tag, so nothing needs bumping first. The release also publishes the update feeds that installed apps read from the latest release: `appcast.xml` for Sparkle and `latest.json` for Tauri's updater. Signing the updates needs three repository secrets: `SPARKLE_PRIVATE_KEY` (EdDSA, macOS), and `TAURI_SIGNING_PRIVATE_KEY` with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (Windows, Linux). Their public halves are in `apps/desktop/src-tauri/Info.plist` and `tauri.conf.json`. The private keys live in 1Password (vault Employee: "Sparkle update signing key (Tresso)" and "Tauri updater signing key (Tresso)"), and the secrets are set from there, for example `op read --no-newline "op://Employee/Sparkle update signing key (Tresso)/password" | gh secret set SPARKLE_PRIVATE_KEY`. Never rotate them: installed apps trust only these keys, so a new key means they can never update again. A release talks to Tresso Cloud
 (`https://api.tresso.app`) until the user picks another server. A pull request that changes the release, the desktop
 app or the install scripts builds every platform without publishing.
 

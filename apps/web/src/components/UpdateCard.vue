@@ -35,7 +35,8 @@ const percent = computed(() => (updates.progress === null ? null : Math.round(up
         >
           <span :class="{ unknown: percent === null }" :style="percent === null ? undefined : { width: `${percent}%` }" />
         </div>
-        <p class="detail">{{ updates.phase === 'installing' ? 'Installing, Tresso restarts in a moment…' : percent === null ? 'Downloading…' : `Downloading… ${percent}%` }}</p>
+        <p v-if="updates.error" class="error" role="alert">{{ updates.error }}</p>
+        <p v-else class="detail">{{ updates.phase === 'installing' ? 'Installing, Tresso restarts in a moment…' : percent === null ? 'Downloading…' : `Downloading… ${percent}%` }}</p>
       </template>
       <template v-else>
         <p v-if="updates.error" class="error" role="alert">{{ updates.error }}</p>
