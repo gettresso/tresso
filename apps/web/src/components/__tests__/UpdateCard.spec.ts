@@ -56,4 +56,17 @@ describe('UpdateCard', () => {
     await card.vm.$nextTick()
     expect(card.find('.update').exists()).toBe(false)
   })
+
+  it('says the update is installed when only the restart failed', () => {
+    const updates = useUpdatesStore()
+    updates.channel = 'tauri'
+    updates.update = release('0.3.0')
+    updates.phase = 'installing'
+    updates.error = 'Tresso 0.3.0 is installed. Quit and open Tresso to start it (no permission).'
+
+    const card = mount(UpdateCard)
+
+    expect(card.get('[role="alert"]').text()).toContain('is installed. Quit and open Tresso')
+    expect(card.text()).not.toContain('restarts in a moment')
+  })
 })

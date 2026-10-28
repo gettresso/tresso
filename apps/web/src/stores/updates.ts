@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import { appVersion, checkNatively, findUpdate, restart, updateChannel, type Update, type UpdateChannel } from '@/platform/updates'
 
@@ -16,7 +16,8 @@ export const useUpdatesStore = defineStore('updates', () => {
   const channel = ref<UpdateChannel>('none')
   const version = ref<string | null>(null)
   const phase = ref<UpdatePhase>('idle')
-  const update = ref<Update | null>(null)
+  // Shallow: the plugin's Update keeps its Rust handle in a private field, which a reactive proxy cannot reach.
+  const update = shallowRef<Update | null>(null)
   /** Downloaded share, 0 to 1, or null while the size is unknown. */
   const progress = ref<number | null>(null)
   const error = ref<string | null>(null)
@@ -67,8 +68,9 @@ export const useUpdatesStore = defineStore('updates', () => {
       }
       phase.value = found === null ? 'latest' : 'available'
     } catch (cause) {
-      // A check in the background that fails (offline, say) stays quiet and is tried again later.
-      phase.value = asked ? 'failed' : update.value === null ? 'idle' : 'available'
+      // A check in the background that fails (offline, say) stays quiet and is tried again later. One the user asked
+      // for says so; a release found before stays on offer, so the card's button still installs rather than checks.
+      phase.value = update.value !== null ? 'available' : asked ? 'failed' : 'idle'
       error.value = asked ? `Checking for updates failed: ${cause instanceof Error ? cause.message : String(cause)}` : null
     }
   }

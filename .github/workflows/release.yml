@@ -134,7 +134,6 @@ jobs:
           echo "TAURI_CONFIG_OVERRIDE=${config}" >> "${GITHUB_ENV}"
           npx tauri build --no-bundle --target "${TARGET}" --config "${config}"
 
-      # Bundling signs the updates; only here do the keys come in, and only where Tauri's updater uses them.
       - name: Bundle
         shell: bash
         working-directory: apps/desktop
@@ -142,33 +141,17 @@ jobs:
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
           TARGET: ${{ matrix.target }}
           BUNDLES: ${{ matrix.bundles }}
-          RUNNER: ${{ runner.os }}
-          TAG: ${{ github.ref_type == 'tag' }}
           # No Apple Developer ID yet: an ad-hoc signature, so Apple Silicon runs the app once the quarantine is lifted.
           APPLE_SIGNING_IDENTITY: '-'
           # Tauri skips the Finder layout of the DMG (background, icon positions) on CI unless told otherwise.
           TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
-          # Windows and Linux updates are signed with this key; the app trusts only its public half (tauri.conf.json).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ runner.os != 'macOS' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ runner.os != 'macOS' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           set -euo pipefail
           # Windows Installer only takes numeric versions, so a prerelease ships the setup.exe alone.
           if [ "${PRERELEASE}" = "true" ]; then
             BUNDLES="${BUNDLES//,msi/}"
           fi
-          config="${TAURI_CONFIG_OVERRIDE}"
-          # Signed update files for Tauri's updater (Windows, Linux; macOS updates through Sparkle). A pull request from a
-          # fork has no secrets, so it bundles without them; a release never does.
-          if [ "${RUNNER}" != "macOS" ]; then
-            if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
-              config="${config%\}},\"bundle\":{\"createUpdaterArtifacts\":true}}"
-            elif [ "${TAG}" = "true" ]; then
-              echo "A release needs TAURI_SIGNING_PRIVATE_KEY to sign its updates." >&2
-              exit 1
-            fi
-          fi
-          npx tauri bundle --target "${TARGET}" --bundles "${BUNDLES}" --config "${config}"
+          npx tauri bundle --target "${TARGET}" --bundles "${BUNDLES}" --config "${TAURI_CONFIG_OVERRIDE}"
 
       - name: Collect files
         shell: bash
@@ -229,17 +212,9 @@ jobs:
             linux-*)
               cp "$(one "${bundle}"/appimage/*.AppImage)" "dist/tresso-${NAME}.AppImage"
               cp "$(one "${bundle}"/deb/*.deb)" "dist/tresso-${NAME}.deb"
-              sig=("${bundle}"/appimage/*.AppImage.sig)
-              if [ "${#sig[@]}" -gt 0 ]; then
-                cp "$(one "${sig[@]}")" "dist/tresso-${NAME}.AppImage.sig"
-              fi
               ;;
             windows-*)
               cp "$(one "${bundle}"/nsis/*-setup.exe)" "dist/tresso-${NAME}-setup.exe"
-              sig=("${bundle}"/nsis/*-setup.exe.sig)
-              if [ "${#sig[@]}" -gt 0 ]; then
-                cp "$(one "${sig[@]}")" "dist/tresso-${NAME}-setup.exe.sig"
-              fi
               msi=("${bundle}"/msi/*.msi)
               if [ "${#msi[@]}" -gt 0 ]; then
                 cp "$(one "${msi[@]}")" "dist/tresso-${NAME}.msi"
@@ -247,6 +222,36 @@ jobs:
               ;;
           esac
           ls -la dist
+
+      # Tauri's updater (Windows, Linux) installs only files signed with this key; the app trusts its public half in
+      # tauri.conf.json. Signed in a step of its own, so no bundling tool ever sees the key. A pull request from a fork
+      # has no secrets and skips it; a release never does.
+      - name: Sign updates (Windows, Linux)
+        if: runner.os != 'macOS'
+        shell: bash
+        working-directory: apps/desktop
+        env:
+          NAME: ${{ matrix.name }}
+          TAG: ${{ github.ref_type == 'tag' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            if [ "${TAG}" = "true" ]; then
+              echo "A release needs TAURI_SIGNING_PRIVATE_KEY to sign its updates." >&2
+              exit 1
+            fi
+            echo "No signing key here (a pull request from a fork): the updates stay unsigned."
+            exit 0
+          fi
+          case "${NAME}" in
+            linux-*) file="../../dist/tresso-${NAME}.AppImage" ;;
+            windows-*) file="../../dist/tresso-${NAME}-setup.exe" ;;
+          esac
+          npx tauri signer sign "${file}" > /dev/null
+          test -s "${file}.sig"
+          ls -la "${file}.sig"
 
       # install.ps1 runs the setup silently and then looks for the app where it should land; check that it does.
       - name: Install silently (Windows)
