@@ -13,8 +13,8 @@ use App\State\MeetingBriefProvider;
 use Symfony\Component\Validator\Constraints as Assert;
 
 /**
- * What to know before a meeting: the people and the recent conversations with them, and a summary when an AI
- * version writes one.
+ * What to know before a meeting: the people and the recent conversations with them, and a summary once a
+ * planned AI feature writes one.
  *
  * @phpstan-import-type BriefPerson from MeetingBrief
  * @phpstan-import-type BriefThread from MeetingBrief

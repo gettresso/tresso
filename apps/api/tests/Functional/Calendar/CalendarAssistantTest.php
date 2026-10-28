@@ -53,7 +53,7 @@ final class CalendarAssistantTest extends DatabaseTestCase
         $this->notificationSettings(['timeZone' => 'Europe/Amsterdam', 'workEnd' => '17:00']);
     }
 
-    public function testCapabilitiesDescribeTheOpenEdition(): void
+    public function testCapabilitiesDescribeTheBuiltInAssistant(): void
     {
         self::assertSame([
             'eventDrafts' => false,
@@ -338,7 +338,7 @@ final class CalendarAssistantTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(403);
     }
 
-    public function testEventDraftsFromTextAreNotInTheOpenEdition(): void
+    public function testEventDraftsFromTextAreNotBuiltIn(): void
     {
         $this->client->jsonRequest('POST', '/api/v1/calendar/event-drafts', ['text' => 'Lunch with Sam Thursday 12:30', 'timeZone' => 'Europe/Amsterdam'], $this->kim);
 

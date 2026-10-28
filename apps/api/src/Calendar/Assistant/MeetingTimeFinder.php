@@ -9,8 +9,8 @@ use App\Entity\User;
 
 /**
  * Proposes times for a meeting or a todo. The built-in finder finds them deterministically in the user's own
- * calendars within their working hours and scheduling preferences ({@see DeterministicMeetingTimeFinder}); an AI
- * version may decorate it to add attendees' availability or rank by habits.
+ * calendars within their working hours and scheduling preferences ({@see DeterministicMeetingTimeFinder}); a planned AI
+ * feature would decorate it to add attendees' availability or rank by habits.
  */
 interface MeetingTimeFinder
 {

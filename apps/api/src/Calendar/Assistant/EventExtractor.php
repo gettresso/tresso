@@ -9,7 +9,7 @@ use App\Entity\User;
 
 /**
  * Finds events and deadlines in a message. The built-in extractor reads the message's text/calendar
- * parts ({@see CalendarPartEventExtractor}); an AI version decorates it to read the text as well.
+ * parts ({@see CalendarPartEventExtractor}); a planned AI feature would decorate it to read the text.
  */
 interface EventExtractor
 {
