@@ -211,4 +211,49 @@ describe('updates store', () => {
     expect(updates.error).toBeNull()
     expect(updates.dismissed).toBe('0.3.0')
   })
+
+  it('calls the release through no proxy: the plugin keeps its handle in a private field', async () => {
+    // Like the plugin's Update (a Resource whose rid is a #private field): a reactive proxy cannot read it.
+    class PrivateRelease {
+      #rid = 7
+      version = '0.3.0'
+      body = ''
+      installedWith: number | null = null
+      closedWith: number | null = null
+      async downloadAndInstall(onEvent: (event: Event) => void): Promise<void> {
+        this.installedWith = this.#rid
+        onEvent({ event: 'Finished' })
+      }
+      async close(): Promise<void> {
+        this.closedWith = this.#rid
+      }
+    }
+    const first = new PrivateRelease()
+    platform.found = first
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    await updates.install()
+    expect(first.installedWith).toBe(7)
+    expect(updates.error).toBeNull()
+
+    platform.found = new PrivateRelease()
+    updates.phase = 'available'
+    await updates.checkNow(true)
+    expect(first.closedWith).toBe(7)
+  })
+
+  it('keeps a known release on offer when a check the user asked for fails', async () => {
+    platform.found = release('0.3.0')
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    platform.fail = new Error('offline')
+    await updates.checkNow(true)
+
+    expect(updates.phase).toBe('available')
+    expect(updates.error).toContain('offline')
+  })
 })
