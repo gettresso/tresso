@@ -71,6 +71,7 @@
       "endpoints": [
         "https://github.com/gettresso/tresso/releases/latest/download/latest.json"
       ],
+      "requireSignedVersion": true,
       "windows": {
         "installMode": "passive"
       }

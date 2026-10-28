@@ -232,6 +232,7 @@ jobs:
         working-directory: apps/desktop
         env:
           NAME: ${{ matrix.name }}
+          VERSION: ${{ needs.version.outputs.version }}
           TAG: ${{ github.ref_type == 'tag' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -249,7 +250,8 @@ jobs:
             linux-*) file="../../dist/tresso-${NAME}.AppImage" ;;
             windows-*) file="../../dist/tresso-${NAME}-setup.exe" ;;
           esac
-          npx tauri signer sign "${file}" > /dev/null
+          # The version goes into the signature, and the app (requireSignedVersion) installs a file only as that version.
+          npx tauri signer sign --app-version "${VERSION}" "${file}" > /dev/null
           test -s "${file}.sig"
           ls -la "${file}.sig"
 
