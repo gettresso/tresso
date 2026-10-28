@@ -164,7 +164,7 @@ export interface SyncedSmartInbox {
   id: string
   builtin: BuiltinCategory | null
   name: string
-  /** What belongs here in plain words, for AI classification (an add-on). */
+  /** What belongs here in plain words, for AI classification. */
   instructions: string
   /** Addresses or `@domain`s whose mail always lands here. */
   includeSenders: string[]

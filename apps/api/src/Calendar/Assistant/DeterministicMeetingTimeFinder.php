@@ -12,7 +12,7 @@ use Symfony\Component\DependencyInjection\Attribute\AsAlias;
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 
 /**
- * The open edition's meeting time finder: the zone and working hours of the user's notification settings (the same
+ * The built-in meeting time finder: the zone and working hours of the user's notification settings (the same
  * ones their reminders keep to), their scheduling preferences, busy time from every {@see BusyTimeSource} and
  * attendees' busy time from every {@see AttendeeAvailabilitySource}, searched by {@see SlotSearch}.
  */

@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace App\Classification;
 
 /**
- * Why mail is in its smart inbox. Clients show it, so they explain the outcome. An add-on classifier may use its own
- * reasons (Tresso Cloud uses `ai`); clients show those as "classified automatically".
+ * Why mail is in its smart inbox. Clients show it, so they explain the outcome. Another classifier may use its own
+ * reasons (an AI classifier would use `ai`); clients show those as "classified automatically".
  */
 final class ClassificationReason
 {

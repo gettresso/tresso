@@ -9,7 +9,7 @@ use Symfony\Component\DependencyInjection\Attribute\AutoconfigureTag;
 
 /**
  * Where the meeting time finder learns when attendees are busy: a provider's free/busy (Google, Microsoft Graph,
- * CalDAV scheduling), or what another edition knows. The open edition has none, so attendees' availability is unknown
+ * CalDAV scheduling), or what an AI version knows. Tresso has none built in, so attendees' availability is unknown
  * and only the user's own time counts.
  */
 #[AutoconfigureTag(self::TAG)]
