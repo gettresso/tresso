@@ -140,41 +140,44 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
       <span v-if="showSmartInbox && smartInbox" class="smart-inbox">{{ smartInbox.name }}</span>
       <AppIcon name="chevron" :size="14" />
     </button>
-    <Transition name="fade">
-      <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" aria-label="Where this belongs" @keydown="keydown">
-        <div role="group" aria-label="Verdict" class="group">
-          <span class="group-title" aria-hidden="true">Verdict</span>
-          <button
-            v-for="option in VERDICTS"
-            :key="option"
-            type="button"
-            role="menuitemradio"
-            tabindex="-1"
-            class="item"
-            :aria-checked="option === verdict"
-            @click="chooseVerdict(option)"
-          >
-            <AppIcon :name="option" :size="16" /> {{ verdictLabel(option) }}
-          </button>
+    <!-- On the body: a glass panel around the button would otherwise become the frame of this fixed menu and cut it off. -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" aria-label="Where this belongs" @keydown="keydown">
+          <div role="group" aria-label="Verdict" class="group">
+            <span class="group-title" aria-hidden="true">Verdict</span>
+            <button
+              v-for="option in VERDICTS"
+              :key="option"
+              type="button"
+              role="menuitemradio"
+              tabindex="-1"
+              class="item"
+              :aria-checked="option === verdict"
+              @click="chooseVerdict(option)"
+            >
+              <AppIcon :name="option" :size="16" /> {{ verdictLabel(option) }}
+            </button>
+          </div>
+          <div role="group" aria-label="Move to smart inbox" class="group">
+            <span class="group-title" aria-hidden="true">Move to</span>
+            <button
+              v-for="candidate in mail.smartInboxes"
+              :key="candidate.id"
+              type="button"
+              role="menuitemradio"
+              tabindex="-1"
+              class="item"
+              :aria-checked="candidate.id === smartInboxId"
+              @click="choose(candidate.id)"
+            >
+              {{ candidate.name }} <span class="item-verdict">{{ verdictLabel(candidate.verdict) }}</span>
+            </button>
+          </div>
+          <p class="note">Tresso remembers this for the sender's next mail.</p>
         </div>
-        <div role="group" aria-label="Move to smart inbox" class="group">
-          <span class="group-title" aria-hidden="true">Move to</span>
-          <button
-            v-for="candidate in mail.smartInboxes"
-            :key="candidate.id"
-            type="button"
-            role="menuitemradio"
-            tabindex="-1"
-            class="item"
-            :aria-checked="candidate.id === smartInboxId"
-            @click="choose(candidate.id)"
-          >
-            {{ candidate.name }} <span class="item-verdict">{{ verdictLabel(candidate.verdict) }}</span>
-          </button>
-        </div>
-        <p class="note">Tresso remembers this for the sender's next mail.</p>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
   </div>
 </template>
@@ -232,6 +235,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
 }
 .menu.above {

@@ -518,6 +518,8 @@ const repeatSummary = computed(() => {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   color: var(--ink);
   box-shadow: var(--raised);
 }
@@ -620,7 +622,7 @@ textarea {
 .segment.on {
   background: var(--ink);
   border-color: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
 }
 .segment:has(input:focus-visible) {
   outline: 2px solid var(--focus);

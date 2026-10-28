@@ -161,7 +161,7 @@ p {
   padding: 12px 14px;
   border-left: 3px solid var(--cal);
   border-radius: var(--radius-card);
-  background: color-mix(in srgb, var(--cal) 12%, var(--surface));
+  background: color-mix(in srgb, var(--cal) 12%, var(--paper));
 }
 .label {
   font: 600 12px var(--font-ui);

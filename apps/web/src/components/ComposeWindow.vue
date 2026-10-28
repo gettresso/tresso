@@ -74,6 +74,8 @@ const savedText = computed(() =>
   max-height: calc(100vh - 48px);
   border-radius: var(--radius-panel) var(--radius-panel) 0 0;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
 }
 .bar {

@@ -474,6 +474,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
   padding: 32px 40px;
   border-radius: var(--radius-panel);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
 }
 .who {
@@ -555,6 +557,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
   border: 1.5px solid currentColor;
   border-radius: var(--radius-panel);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   font: 600 17px var(--font-ui);
   cursor: pointer;
 }

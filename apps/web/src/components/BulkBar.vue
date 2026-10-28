@@ -163,6 +163,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
 }
 .count {
@@ -219,6 +221,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
   background: var(--focus);
 }
 .box.mixed {
-  background: linear-gradient(var(--focus), var(--focus)) center / 8px 2px no-repeat, var(--surface);
+  background: linear-gradient(var(--focus), var(--focus)) center / 8px 2px no-repeat, var(--paper);
 }
 </style>

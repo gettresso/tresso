@@ -211,6 +211,9 @@ function onKeydown(event: KeyboardEvent): void {
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
 }
 .invitation:focus-visible {
   outline: 2px solid var(--focus);

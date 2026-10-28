@@ -54,13 +54,16 @@ h1 {
 }
 .item.router-link-active {
   background: var(--surface);
-  box-shadow: 0 1px 2px rgb(22 24 29 / 6%);
+  box-shadow: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%);
   font-weight: 600;
 }
 .content {
   min-width: 0;
   padding: 32px 40px;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   border-left: 1px solid var(--line);
 }
 @media (max-width: 760px) {

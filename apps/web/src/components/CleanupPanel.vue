@@ -80,6 +80,9 @@ async function clean(suggestion: CleanupSuggestion): Promise<void> {
   flex-direction: column;
   min-height: 0;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   border-left: 1px solid var(--line);
 }
 .header {

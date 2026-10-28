@@ -296,6 +296,9 @@ const minDay = dayValue(new Date())
   box-sizing: border-box;
   border-radius: 14px;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
 }
 .waiting {
   flex: 1.6 1 520px;

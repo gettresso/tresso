@@ -260,7 +260,7 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
 }
 .item[aria-current='page'] {
   background: var(--surface);
-  box-shadow: 0 1px 2px rgb(22 24 29 / 6%);
+  box-shadow: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%);
   font-weight: 600;
 }
 .account {

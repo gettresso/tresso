@@ -194,6 +194,9 @@ const days = computed(() => {
   flex-direction: column;
   min-height: 0;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   border-left: 1px solid var(--line);
   border-right: 1px solid var(--line);
 }
@@ -256,7 +259,7 @@ h1 {
 /* The open conversation: the whole row, checkbox to chevron, with the accent along its left edge. */
 .row.selected {
   background: var(--selected);
-  box-shadow: inset 3px 0 0 var(--focus);
+  box-shadow: inset 3px 0 0 var(--focus), var(--glass-edge);
 }
 /* Keyboard focus on the row's link outlines the whole row, not just the text in the middle. */
 .row:has(.link:focus-visible) {

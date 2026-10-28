@@ -288,6 +288,9 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow-y: auto;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
 }
 .inner {
   padding: 24px 40px 32px;

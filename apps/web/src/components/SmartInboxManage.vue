@@ -224,6 +224,9 @@ async function onSuggestion(item: CleanupSuggestion): Promise<void> {
   flex-direction: column;
   min-height: 0;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   border-left: 1px solid var(--line);
 }
 .header {
@@ -267,6 +270,8 @@ h1 {
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
 }
 .ages {

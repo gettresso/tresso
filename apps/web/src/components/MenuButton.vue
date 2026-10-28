@@ -88,11 +88,14 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
     <button ref="button" type="button" class="tool" :disabled="props.disabled || items.length === 0" aria-haspopup="menu" :aria-expanded="open" @click="open ? close() : show()">
       <AppIcon v-if="icon" :name="icon" /> {{ label }}
     </button>
-    <Transition name="fade">
-      <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" :aria-label="menuLabel" @keydown="keydown">
-        <button v-for="item in items" :key="item.id" type="button" role="menuitem" tabindex="-1" class="item" @click="choose(item.id)">{{ item.label }}</button>
-      </div>
-    </Transition>
+    <!-- On the body: a glass panel around the button would otherwise become the frame of this fixed menu and cut it off. -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" :aria-label="menuLabel" @keydown="keydown">
+          <button v-for="item in items" :key="item.id" type="button" role="menuitem" tabindex="-1" class="item" @click="choose(item.id)">{{ item.label }}</button>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -140,6 +143,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside))
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
   box-shadow: var(--raised);
 }
 .menu.above {

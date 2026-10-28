@@ -9,6 +9,7 @@ import { useMailStore } from '@/stores/mail'
 import { startTimeZoneSync, storedSentZone } from '@/platform/timeZone'
 import { releaseOtherUsersPush } from '@/platform/webPush'
 import NoticeStack from '@/components/NoticeStack.vue'
+import { vibrant } from '@/platform/vibrancy'
 
 const auth = useAuthStore()
 const mail = useMailStore()
@@ -69,6 +70,8 @@ watch(
 </script>
 
 <template>
+  <!-- The macOS app's title bar: the window buttons sit on it, and dragging it moves the window. -->
+  <div v-if="vibrant" class="titlebar" data-tauri-drag-region aria-hidden="true" />
   <RouterView />
   <template v-if="auth.isAuthenticated">
     <Transition name="sink"><ComposeWindow v-if="compose.draft" /></Transition>
@@ -85,6 +88,12 @@ watch(
 </template>
 
 <style scoped>
+.titlebar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 60;
+  height: var(--titlebar);
+}
 .problem {
   animation: fade-in var(--motion-base) ease-out;
   position: fixed;
@@ -95,7 +104,7 @@ watch(
   padding: 10px 16px;
   border-radius: var(--radius-card);
   background: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
   box-shadow: var(--raised);
 }
 .reload {

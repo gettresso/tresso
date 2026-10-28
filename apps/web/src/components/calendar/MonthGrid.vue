@@ -204,6 +204,9 @@ function openItem(item: Occurrence | TodoBlock): void {
   min-height: 0;
   overflow-y: auto;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
 }
 .row {
   display: grid;
@@ -236,7 +239,7 @@ function openItem(item: Occurrence | TodoBlock): void {
   border-left: 1px solid var(--line);
 }
 .cell.outside {
-  background: color-mix(in srgb, var(--ground) 45%, transparent);
+  background: var(--ground);
 }
 .cell.outside .date {
   color: var(--ink-3);
@@ -254,7 +257,7 @@ function openItem(item: Occurrence | TodoBlock): void {
 }
 .cell.today .date {
   background: var(--ink);
-  color: var(--surface);
+  color: var(--paper);
 }
 .items {
   display: flex;
@@ -281,7 +284,7 @@ function openItem(item: Occurrence | TodoBlock): void {
   cursor: pointer;
 }
 .item.filled {
-  background: color-mix(in srgb, var(--cal) 16%, var(--surface));
+  background: color-mix(in srgb, var(--cal) 16%, var(--paper));
   color: color-mix(in srgb, var(--cal) 65%, var(--ink));
   font-weight: 600;
 }

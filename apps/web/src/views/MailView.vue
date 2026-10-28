@@ -178,6 +178,9 @@ watch(
   justify-content: center;
   overflow-y: auto;
   background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  box-shadow: var(--glass-edge);
   color: var(--ink);
 }
 
