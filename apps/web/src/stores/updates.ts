@@ -56,7 +56,12 @@ export const useUpdatesStore = defineStore('updates', () => {
     error.value = null
     try {
       const found = await findUpdate()
+      // Each check holds its release on the Rust side until closed; the one it replaces goes.
+      const previous = update.value
       update.value = found
+      if (previous !== null && previous !== found) {
+        void previous.close().catch(() => undefined)
+      }
       if (found !== null && asked) {
         dismissed.value = null
       }
@@ -90,15 +95,26 @@ export const useUpdatesStore = defineStore('updates', () => {
           phase.value = 'installing'
         }
       })
-      await restart()
     } catch (cause) {
       phase.value = 'failed'
       error.value = `Installing Tresso ${found.version} failed: ${cause instanceof Error ? cause.message : String(cause)}`
+      return
+    }
+    try {
+      await restart()
+    } catch (cause) {
+      // Installed, only the restart did not happen: quitting and opening Tresso finishes it.
+      phase.value = 'installing'
+      error.value = `Tresso ${found.version} is installed. Quit and open Tresso to start it (${cause instanceof Error ? cause.message : String(cause)}).`
     }
   }
 
   function later(): void {
     dismissed.value = update.value?.version ?? null
+    if (phase.value === 'failed') {
+      phase.value = 'available'
+      error.value = null
+    }
   }
 
   return { channel, version, phase, update, progress, error, dismissed, start, stop, checkNow, install, later }

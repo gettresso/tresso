@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev --workspace @tresso/web",
+    "beforeDevCommand": "node scripts/fetch-sparkle.mjs && npm run dev --workspace @tresso/web",
     "beforeBuildCommand": "node scripts/fetch-sparkle.mjs && npm run build --workspace @tresso/web"
   },
   "app": {

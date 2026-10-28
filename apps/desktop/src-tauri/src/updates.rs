@@ -25,16 +25,16 @@ mod sparkle {
     };
     let path = NSString::from_str(&format!("{frameworks}/Sparkle.framework"));
     let Some(bundle) = NSBundle::bundleWithPath(&path) else {
-      log::info!("Sparkle is not bundled; this build does not update itself");
+      eprintln!("Sparkle is not bundled; this build does not update itself");
       return false;
     };
     // SAFETY: loading a framework the app ships, from its own bundle.
     if !unsafe { bundle.load() } {
-      log::error!("Sparkle is bundled but could not be loaded");
+      eprintln!("Sparkle is bundled but could not be loaded");
       return false;
     }
     let Some(class) = AnyClass::get(c"SPUStandardUpdaterController") else {
-      log::error!("Sparkle loaded without SPUStandardUpdaterController");
+      eprintln!("Sparkle loaded without SPUStandardUpdaterController");
       return false;
     };
     let nil: *mut AnyObject = std::ptr::null_mut();
@@ -76,7 +76,8 @@ pub const CHECK_MENU_ID: &str = "check-for-updates";
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
   use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
-  if !sparkle::start() {
+  // A debug bundle (tauri build --debug) would otherwise offer to replace itself with the latest release.
+  if cfg!(debug_assertions) || !sparkle::start() {
     return Ok(());
   }
   let menu = Menu::default(app.handle())?;
@@ -94,8 +95,10 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
   Ok(())
 }
 
-/// How this build updates itself: "sparkle" (macOS), "tauri" (Windows and Linux) or "none" (macOS without Sparkle,
-/// such as a development build). The web client shows its own update card only for "tauri".
+/// How this build updates itself: "sparkle" (macOS), "tauri" (the Windows setup and the Linux AppImage) or "none".
+/// None covers macOS without Sparkle (a development build), and the .deb and .msi: the releases only sign the setup
+/// and the AppImage, so an update would fail on a .deb and install a second copy next to an .msi. Those update by
+/// installing the new release. The web client shows its own update card only for "tauri".
 #[tauri::command]
 pub fn update_channel() -> &'static str {
   #[cfg(target_os = "macos")]
@@ -104,7 +107,11 @@ pub fn update_channel() -> &'static str {
   }
   #[cfg(not(target_os = "macos"))]
   {
-    "tauri"
+    use tauri::utils::{config::BundleType, platform::bundle_type};
+    match bundle_type() {
+      Some(BundleType::AppImage | BundleType::Nsis) => "tauri",
+      _ => "none",
+    }
   }
 }
 

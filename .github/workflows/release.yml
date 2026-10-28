@@ -36,6 +36,9 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      # Sparkle compares CFBundleVersion and cannot order 0.3.0-beta.1 before 0.3.0, so macOS builds carry this run's
+      # number there instead: it only ever goes up. The version users see stays the tag's.
+      build: ${{ github.run_number }}
     steps:
       - id: version
         shell: bash
@@ -113,41 +116,59 @@ jobs:
 
       - run: npm ci
 
+      # Everything that compiles (the web client with its npm packages, the Rust crates) runs without the signing keys.
       - name: Build
         shell: bash
         working-directory: apps/desktop
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          BUILD: ${{ needs.version.outputs.build }}
+          TARGET: ${{ matrix.target }}
+          RUNNER: ${{ runner.os }}
+        run: |
+          set -euo pipefail
+          config="{\"version\":\"${VERSION}\"}"
+          if [ "${RUNNER}" = "macOS" ]; then
+            config="{\"version\":\"${VERSION}\",\"bundle\":{\"macOS\":{\"bundleVersion\":\"${BUILD}\"}}}"
+          fi
+          echo "TAURI_CONFIG_OVERRIDE=${config}" >> "${GITHUB_ENV}"
+          npx tauri build --no-bundle --target "${TARGET}" --config "${config}"
+
+      # Bundling signs the updates; only here do the keys come in, and only where Tauri's updater uses them.
+      - name: Bundle
+        shell: bash
+        working-directory: apps/desktop
+        env:
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
           TARGET: ${{ matrix.target }}
           BUNDLES: ${{ matrix.bundles }}
+          RUNNER: ${{ runner.os }}
+          TAG: ${{ github.ref_type == 'tag' }}
           # No Apple Developer ID yet: an ad-hoc signature, so Apple Silicon runs the app once the quarantine is lifted.
           APPLE_SIGNING_IDENTITY: '-'
           # Tauri skips the Finder layout of the DMG (background, icon positions) on CI unless told otherwise.
           TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
           # Windows and Linux updates are signed with this key; the app trusts only its public half (tauri.conf.json).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          RUNNER: ${{ runner.os }}
-          TAG: ${{ github.ref_type == 'tag' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ runner.os != 'macOS' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ runner.os != 'macOS' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           set -euo pipefail
           # Windows Installer only takes numeric versions, so a prerelease ships the setup.exe alone.
           if [ "${PRERELEASE}" = "true" ]; then
             BUNDLES="${BUNDLES//,msi/}"
           fi
-          config="{\"version\":\"${VERSION}\"}"
+          config="${TAURI_CONFIG_OVERRIDE}"
           # Signed update files for Tauri's updater (Windows, Linux; macOS updates through Sparkle). A pull request from a
-          # fork has no secrets, so it builds without them; a release never does.
+          # fork has no secrets, so it bundles without them; a release never does.
           if [ "${RUNNER}" != "macOS" ]; then
             if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
-              config="{\"version\":\"${VERSION}\",\"bundle\":{\"createUpdaterArtifacts\":true}}"
+              config="${config%\}},\"bundle\":{\"createUpdaterArtifacts\":true}}"
             elif [ "${TAG}" = "true" ]; then
               echo "A release needs TAURI_SIGNING_PRIVATE_KEY to sign its updates." >&2
               exit 1
             fi
           fi
-          npx tauri build --target "${TARGET}" --bundles "${BUNDLES}" --config "${config}"
+          npx tauri bundle --target "${TARGET}" --bundles "${BUNDLES}" --config "${config}"
 
       - name: Collect files
         shell: bash
@@ -196,9 +217,9 @@ jobs:
               # Sparkle's EdDSA signature of the archive, for the appcast the release job writes.
               if [ -n "${SPARKLE_PRIVATE_KEY}" ]; then
                 key="$(mktemp)"
+                trap 'rm -f "${key}"' EXIT
                 printf '%s' "${SPARKLE_PRIVATE_KEY}" > "${key}"
                 apps/desktop/.sparkle/bin/sign_update --ed-key-file "${key}" "dist/tresso-${NAME}.app.tar.gz" > "dist/tresso-${NAME}.app.tar.gz.sparkle"
-                rm -f "${key}"
                 cat "dist/tresso-${NAME}.app.tar.gz.sparkle"
               elif [ "${TAG}" = "true" ]; then
                 echo "A release needs SPARKLE_PRIVATE_KEY to sign its update." >&2
@@ -301,6 +322,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          BUILD: ${{ needs.version.outputs.build }}
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -318,7 +340,7 @@ jobs:
           import datetime, email.utils, json, os, re
           from xml.sax.saxutils import escape, quoteattr
 
-          version, tag, repo = os.environ["VERSION"], os.environ["TAG"], os.environ["REPO"]
+          version, build, tag, repo = os.environ["VERSION"], os.environ["BUILD"], os.environ["TAG"], os.environ["REPO"]
           base = f"https://github.com/{repo}/releases/download/{tag}"
           page = f"https://github.com/{repo}/releases/tag/{tag}"
           notes = open("notes.md").read().strip()
@@ -351,7 +373,7 @@ jobs:
               <item>
                 <title>Tresso {escape(version)}</title>
                 <pubDate>{email.utils.format_datetime(now)}</pubDate>
-                <sparkle:version>{escape(version)}</sparkle:version>
+                <sparkle:version>{escape(build)}</sparkle:version>
                 <sparkle:shortVersionString>{escape(version)}</sparkle:shortVersionString>
                 <sparkle:fullReleaseNotesLink>{escape(page)}</sparkle:fullReleaseNotesLink>
                 <description><![CDATA[<pre style="font: 13px -apple-system, sans-serif; white-space: pre-wrap">{escape(notes)}</pre>]]></description>
@@ -360,7 +382,7 @@ jobs:
             </channel>
           </rss>
           """
-          open("appcast.xml", "w").write("\n".join(line[10:] if line.startswith(" " * 10) else line for line in appcast.splitlines()) + "\n")
+          open("appcast.xml", "w").write(appcast)
           PY
           rm tresso-macos-universal.app.tar.gz.sparkle notes.md
           cat latest.json appcast.xml
