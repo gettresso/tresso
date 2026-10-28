@@ -18,13 +18,6 @@
 /config/jwt/*.pem
 ###< league/oauth2-server-bundle ###
 
-###> tresso/local-extensions ###
-# Optional add-ons (for example Tresso Cloud) are installed locally through these files; never commit them.
-/composer.local.json
-/composer.local.lock
-/config/bundles.local.php
-###< tresso/local-extensions ###
-
 ###> phpstan/phpstan ###
 phpstan.neon
 ###< phpstan/phpstan ###
