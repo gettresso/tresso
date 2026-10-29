@@ -441,9 +441,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # The commits since the previous tag make the release notes.
+          # The commits since the previous tag make the release notes (a full clone has every tag).
           fetch-depth: 0
-          fetch-tags: true
 
       - uses: actions/setup-node@v5
         with:
@@ -487,7 +486,9 @@ jobs:
 
       # A draft first, with every file but the update feeds. The installed apps read the feeds at
       # releases/latest/download, so the release reaches them only once it is published with its feeds, below. A rerun
-      # after a partial upload replaces the files instead of failing.
+      # after a partial upload replaces the files (the notes stay as first written). A rerun after the release went out
+      # stops here, so a published release never changes; image-latest then waits for this job and is skipped too, and
+      # moves the image tags only on a successful run.
       - name: Create the draft release
         shell: bash
         env:
