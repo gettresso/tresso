@@ -56,7 +56,10 @@ jobs:
       # a step below waits until clamd reports a database.
       - name: Start clamd
         working-directory: .
-        run: docker run -d --name clamav -p 3310:3310 -v "$PWD/docker/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.5-debian13-slim
+        # retry.sh: Docker Hub answers "toomanyrequests" now and then.
+        run: |
+          scripts/ci/retry.sh 4 docker pull --quiet clamav/clamav:1.5-debian13-slim
+          docker run -d --name clamav -p 3310:3310 -v "$PWD/docker/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.5-debian13-slim
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.5'
@@ -220,7 +223,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: ShellCheck
-        run: shellcheck scripts/install.sh
+        run: shellcheck scripts/install.sh scripts/ci/retry.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      # The release notes and the update feeds the release workflow writes.
+      - name: Release scripts
+        run: node --test 'scripts/*.test.mjs'
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
