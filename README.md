@@ -107,19 +107,34 @@ and support, never for features. See [Self-hosted and Tresso Cloud](docs/ARCHITE
 
 ## 🏠 Your own server
 
-The desktop app signs in to Tresso Cloud by default. To use your own server, choose **Use another server** on the
-sign-in screen and enter its address, such as `mail.example.com`. The app checks that the server answers and
-remembers it until you choose again.
+Every release publishes the server as images on GitHub's container registry: `ghcr.io/gettresso/tresso-api` (the API
+and its workers), `tresso-sync` (the sync workers) and `tresso-web` (the web client), for amd64 and arm64. Tresso Cloud
+runs the same images. To run them, you need a server with Docker, two DNS names pointing at it (one for the web
+client, one for the API) and ports 80 and 443 open:
 
-Your server needs:
+1. Download [`compose.prod.yaml`](compose.prod.yaml) and [`.env.prod.example`](.env.prod.example) into one folder.
+2. Copy `.env.prod.example` to `.env` and fill it in. Generate every secret (`openssl rand -hex 32`) and keep a copy
+   of `DATA_KEYS` somewhere safe: it encrypts the mail at rest, and losing it loses that mail. The API refuses to
+   start while a secret is missing, too short, or one of the development values in this repository.
+3. Start it:
 
-- An `https://` address (plain `http://` only for a server on the same computer).
-- The `desktop` OAuth client, which the API creates when it starts with `RUN_MIGRATIONS=1` (as the Docker stack
-  does). Elsewhere, run `php bin/console app:oauth:bootstrap-clients` once.
-- The desktop app's origins, `tauri://localhost` and `http://tauri.localhost`, in `CORS_ALLOW_ORIGIN` for the API
-  (as in the default `apps/api/.env`) and in `MERCURE_CORS_ORIGINS` for live updates (as in `compose.yaml`).
+   ```bash
+   docker compose -f compose.prod.yaml --env-file .env up -d
+   ```
 
-[Getting started](#-getting-started) below runs the whole stack with Docker.
+4. Create your account:
+
+   ```bash
+   docker compose -f compose.prod.yaml exec api php bin/console app:user:create you@example.com "Your Name"
+   ```
+
+The stack gets HTTPS certificates by itself, migrates the database on start and runs PostgreSQL, Redis, object
+storage (RustFS), Meilisearch and ClamAV next to Tresso; ClamAV needs about 1.5 GB of RAM. To upgrade, set
+`TRESSO_VERSION` (or keep `latest`) and run `docker compose -f compose.prod.yaml pull` before `up -d`.
+
+In the desktop app, choose **Use another server** on the sign-in screen and enter the API address, such as
+`api.mail.example.com`. The app checks that the server answers and remembers it until you choose again. The web
+client is at your web address.
 
 ## 🧱 Stack
 

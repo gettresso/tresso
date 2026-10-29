@@ -179,5 +179,6 @@ Managed hosting of this same code, paid per organization member; self-hosting st
 - [ ] 5.2 Billing behind configuration, off by default: Stripe subscriptions per organization with a 14-day trial,
   webhooks, the API and sync workers refusing an organization without a valid subscription, a payment screen in web
   and desktop
-- [ ] 5.3 A production image per release on GitHub's container registry and a production compose file, which the
-  managed service runs unchanged
+- [x] 5.3 Production images per release on GitHub's container registry (API and workers, sync workers, web client;
+  amd64 and arm64), a production compose file with automatic HTTPS, and a start that refuses missing or development
+  secrets, which the managed service runs unchanged
