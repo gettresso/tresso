@@ -105,7 +105,7 @@ final readonly class ProductionSettings
         $problems = [];
         foreach (self::ORIGINS as $name) {
             if (!self::isOrigin($this->value($name))) {
-                $problems[] = \sprintf('%s must be an https address without a path or trailing slash, such as https://mail.example.com.', $name);
+                $problems[] = \sprintf('%s must be an https address as a browser writes it (lower case, no path, trailing slash or :443), such as https://mail.example.com.', $name);
             }
         }
 
@@ -116,7 +116,7 @@ final readonly class ProductionSettings
             $origins = CorsOrigins::origins($cors);
             foreach ($origins as $origin) {
                 if (!\in_array($origin, self::DESKTOP_ORIGINS, true) && !self::isOrigin($origin)) {
-                    $problems[] = \sprintf('CORS_ALLOW_ORIGIN lists "%s", which is not an https origin such as https://mail.example.com.', $origin);
+                    $problems[] = \sprintf('CORS_ALLOW_ORIGIN lists "%s", which is not an https origin as a browser writes it, such as https://mail.example.com.', $origin);
                 }
             }
             $web = $this->value('WEB_APP_URL');
@@ -129,18 +129,19 @@ final readonly class ProductionSettings
     }
 
     /**
-     * An https scheme and a host name (as browsers send it in Origin: letters, digits, dots and hyphens; an
-     * international name in its xn-- form), with at most a valid port.
+     * An https origin spelled the way a browser sends it in Origin, since the API and the realtime hub compare it with
+     * that: a lower-case host name (letters, digits, dots and hyphens; an international name in its xn-- form) and at
+     * most a port, without a leading zero and never the default 443.
      */
     private static function isOrigin(string $value): bool
     {
-        if (1 !== preg_match('{^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$}i', $value)) {
+        if (1 !== preg_match('{^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[1-9][0-9]{0,4})?\z}', $value)) {
             return false;
         }
-        // false for a port above 65535; port 0 is no port a browser connects to.
+        // false for a port above 65535.
         $port = parse_url($value, \PHP_URL_PORT);
 
-        return null === $port || (\is_int($port) && $port >= 1);
+        return null === $port || (\is_int($port) && 443 !== $port);
     }
 
     private function secretProblem(string $name, int $length): ?string

@@ -16,7 +16,7 @@ final class CorsOriginsTest extends TestCase
         foreach (['https://mail.example.com', 'tauri://localhost', 'http://tauri.localhost'] as $allowed) {
             self::assertSame(1, preg_match($pattern, $allowed), $allowed);
         }
-        foreach (['https://mailxexample.com', 'https://mail.example.com.evil.com', 'https://evil.mail.example.com', 'http://tauri.localhost.evil.com', 'https://mail.example.com:8443'] as $refused) {
+        foreach (["https://mail.example.com\n", 'https://mailxexample.com', 'https://mail.example.com.evil.com', 'https://evil.mail.example.com', 'http://tauri.localhost.evil.com', 'https://mail.example.com:8443'] as $refused) {
             self::assertSame(0, preg_match($pattern, $refused), $refused);
         }
     }
