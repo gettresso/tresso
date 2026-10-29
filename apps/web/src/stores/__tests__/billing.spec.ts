@@ -144,4 +144,19 @@ describe('auth store and 402', () => {
     await auth.signOut()
     expect(auth.paymentRequired).toBe(false)
   })
+
+  it('does not sign out a newer session for a 401 that answers the previous one', async () => {
+    const auth = useAuthStore()
+    auth.tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+    let answer: (response: Response) => void = () => undefined
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => (answer = resolve))))
+    const request = auth.api('/api/v1/me')
+    await Promise.resolve()
+
+    auth.generation++
+    answer(new Response('{}', { status: 401 }))
+
+    await expect(request).rejects.toMatchObject({ status: 401 })
+    expect(auth.tokens).not.toBeNull()
+  })
 })

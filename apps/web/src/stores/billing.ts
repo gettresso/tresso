@@ -60,7 +60,9 @@ export const useBillingStore = defineStore('billing', () => {
         await openInBrowser(url)
       } else {
         // This page goes away; its buttons stay disabled until it does, so a second click makes no second checkout.
+        // Coming back from Stripe with Back may restore this very page from the browser's cache: enable them again.
         leaving = true
+        window.addEventListener('pageshow', () => (opening.value = false), { once: true })
         window.location.assign(url)
       }
     } catch (cause) {

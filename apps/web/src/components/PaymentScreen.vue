@@ -4,6 +4,7 @@ import { errorMessage } from '@/api/errors'
 import BillingPanel from '@/components/BillingPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useBillingStore } from '@/stores/billing'
+import { vibrant } from '@/platform/vibrancy'
 
 /**
  * Covers the app while the server answers 402: the trial or subscription is over. It shows why, lets an owner or admin
@@ -41,7 +42,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="cover">
+  <div class="cover" data-payment-screen>
+    <!-- The macOS window is dragged by its title bar, which this screen covers. -->
+    <div v-if="vibrant" class="titlebar" data-tauri-drag-region aria-hidden="true" />
     <section class="payment" role="dialog" aria-modal="true" aria-labelledby="payment-title">
       <h1 id="payment-title" ref="heading" tabindex="-1">{{ ownTrialEnded ? 'Your free trial has ended' : 'Your Tresso subscription has ended' }}</h1>
       <p class="lead">
@@ -80,6 +83,11 @@ onMounted(() => {
   border-radius: var(--radius-card);
   background: var(--surface);
   box-shadow: var(--raised);
+}
+.titlebar {
+  position: fixed;
+  inset: 0 0 auto;
+  height: var(--titlebar);
 }
 h1 {
   margin: 0;

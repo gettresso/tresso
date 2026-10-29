@@ -18,9 +18,14 @@ const WAIT_MS = 3000
 let timer: ReturnType<typeof setTimeout> | null = null
 let left = false
 
+/** The organizations that were not paid for when Stripe sent the user back: one of them is what was just bought. */
+let unpaid: Set<string> | null = null
+
 /** Paid for: Stripe reports the subscription as active or trialing. Incomplete (a pending 3D Secure or SEPA) is not. */
 function subscribed(status: BillingStatus): boolean {
-  return status.organizations.some((organization) => organization.canManage && (organization.status === 'active' || organization.status === 'trialing'))
+  const paid = (organization: BillingStatus['organizations'][number]) => organization.status === 'active' || organization.status === 'trialing'
+  unpaid ??= new Set(status.organizations.filter((organization) => organization.canManage && !paid(organization)).map((organization) => organization.id))
+  return status.organizations.some((organization) => paid(organization) && (unpaid!.size === 0 || unpaid!.has(organization.id)))
 }
 
 async function waitForSubscription(tries: number): Promise<void> {
@@ -33,7 +38,11 @@ async function waitForSubscription(tries: number): Promise<void> {
     return
   }
   timer = setTimeout(() => {
-    waitForSubscription(tries - 1).catch((cause: unknown) => (billing.error = errorMessage(cause)))
+    waitForSubscription(tries - 1).catch((cause: unknown) => {
+      if (!left) {
+        billing.error = errorMessage(cause)
+      }
+    })
   }, WAIT_MS)
 }
 
@@ -54,7 +63,9 @@ onMounted(async () => {
       await billing.load()
     }
   } catch (cause) {
-    billing.error = errorMessage(cause)
+    if (!left) {
+      billing.error = errorMessage(cause)
+    }
   }
 })
 

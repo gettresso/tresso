@@ -102,6 +102,8 @@ export const useAuthStore = defineStore('auth', () => {
    * signing in again finds them on; another user signing in here drops them (releaseOtherUsersPush).
    */
   async function endSession(signedOut: boolean): Promise<void> {
+    // First, so nothing still underway (a billing check that would reload the app) acts on the session that ends.
+    generation.value++
     if (signedOut) {
       try {
         await disableWebPush(send)
@@ -110,7 +112,6 @@ export const useAuthStore = defineStore('auth', () => {
         console.error('Telling the server this browser signed out failed', error)
       }
     }
-    generation.value++
     me.value = null
     paymentRequired.value = false
     await store(null)
@@ -145,7 +146,10 @@ export const useAuthStore = defineStore('auth', () => {
 
     const response = await fetch(`${config.apiUrl}${path}`, { ...init, headers })
     if (response.status === 401) {
-      void endSession(false)
+      // Only for this session: a late answer to the previous one must not sign out the user who signed in since.
+      if (session === generation.value) {
+        void endSession(false)
+      }
       throw new ApiError(401, 'Your session has expired. Sign in again.')
     }
     if (response.status === 402 && session === generation.value) {
