@@ -39,4 +39,24 @@ describe('App', () => {
     expect(reload).toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
+
+  it('lets no shortcut act behind the payment screen', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
+    await router.push('/')
+    await router.isReady()
+    const { useAuthStore } = await import('../stores/auth')
+    const auth = useAuthStore()
+    mount(App, { global: { plugins: [router] }, attachTo: document.body })
+    const behind = vi.fn<(event: KeyboardEvent) => void>()
+    window.addEventListener('keydown', behind)
+
+    auth.paymentRequired = true
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }))
+    expect(behind).not.toHaveBeenCalled()
+
+    auth.paymentRequired = false
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }))
+    expect(behind).toHaveBeenCalledOnce()
+    window.removeEventListener('keydown', behind)
+  })
 })

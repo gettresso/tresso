@@ -65,6 +65,17 @@ function shortcut(event: KeyboardEvent): void {
 }
 onMounted(() => window.addEventListener('keydown', shortcut))
 
+// Behind the payment screen no shortcut may act (archive, snooze, triage): keys reach only the screen itself. Inert
+// stops pointers and focus, but window listeners would still see keys sent to the page.
+function blockShortcuts(event: KeyboardEvent): void {
+  const target = event.target as Element | null
+  if (auth.paymentRequired && !(target instanceof Element && target.closest('[data-payment-screen]'))) {
+    event.stopImmediatePropagation()
+  }
+}
+onMounted(() => window.addEventListener('keydown', blockShortcuts, { capture: true }))
+onBeforeUnmount(() => window.removeEventListener('keydown', blockShortcuts, { capture: true }))
+
 // The desktop app learns how it updates; release builds then look for new releases on their own (Windows, Linux).
 const updates = useUpdatesStore()
 if (isDesktop) {
@@ -114,7 +125,7 @@ watch(
   <!-- The macOS app's title bar: the window buttons sit on it, and dragging it moves the window. -->
   <div v-if="vibrant" class="titlebar" data-tauri-drag-region aria-hidden="true" />
   <!-- Behind the payment screen nothing can be reached, by pointer, keyboard or screen reader. -->
-  <div class="app" :inert="auth.paymentRequired">
+  <div class="app-layer" :inert="auth.paymentRequired">
     <RouterView />
     <template v-if="auth.isAuthenticated">
       <Transition name="sink"><ComposeWindow v-if="compose.draft" /></Transition>
@@ -135,7 +146,7 @@ watch(
 
 <style scoped>
 /* Only a wrapper for inert: it takes no box of its own. */
-.app {
+.app-layer {
   display: contents;
 }
 .titlebar {
