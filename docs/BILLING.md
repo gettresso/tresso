@@ -113,7 +113,8 @@ A blocked user gets `402` from every `/api/` call except the ones above (`/api/v
 ```
 
 Signing in and out (`/login`, `/oauth/…`, `/logout`) are outside `/api` and keep working, and so does removing a device
-from the user's push devices when signing out (`POST` and `DELETE` on `/api/v1/notification-devices`), so a device
+from the user's push devices when signing out (`DELETE` on `/api/v1/notification-devices/{id}`, and `POST` on
+`/api/v1/notification-devices`, with which the web client finds its own device first), so a device
 signed out while blocked never gets the user's notifications once they renew. A client that gets `402`
 shows its payment screen: from `GET /api/v1/billing`, the trial's end or the subscription's status, and for an owner or
 admin the buttons that open Checkout or the portal. The server alone decides; a client never unlocks anything itself.
@@ -126,7 +127,7 @@ admin the buttons that open Checkout or the portal. The server alone decides; a 
   address is opened: in the same tab on the web, in the system browser on desktop (Stripe returns to the web address).
   "I have paid, check again" asks the server again; as soon as the server gives access, the app reloads, so everything
   that stopped starts again. Settings has a Subscription page (only where the server bills), which is also where
-  Stripe returns after Checkout: it waits up to 30 seconds for the webhook to show an active subscription. Three days
+  Stripe returns after Checkout: it waits up to 30 seconds for the webhook to show the organization just paid for as active or trialing. Three days
   before the user's own trial ends, a notice gives the end and offers to subscribe. A server without
   `/api/v1/billing` counts as one that does not bill.
 - **Mobile.** A `402` covers the app with a notice that the subscription ended and that it is renewed in Tresso on a
