@@ -1,0 +1,249 @@
+# Tresso on your own server: this file and a .env next to it (start from .env.prod.example), nothing else from the
+# repository. The images are the ones every release publishes; Tresso Cloud runs the same ones.
+#
+#   docker compose -f compose.prod.yaml --env-file .env up -d
+#
+# The proxy gets HTTPS certificates for TRESSO_WEB_URL and TRESSO_API_URL by itself (ports 80 and 443 must reach it).
+
+name: tresso
+
+x-api-env: &api-env
+  APP_ENV: prod
+  APP_SECRET: ${APP_SECRET:?set APP_SECRET}
+  DEFAULT_URI: ${TRESSO_API_URL:?set TRESSO_API_URL}
+  API_PUBLIC_URL: ${TRESSO_API_URL}
+  WEB_APP_URL: ${TRESSO_WEB_URL:?set TRESSO_WEB_URL}
+  NATIVE_REDIRECT_URI: tresso://auth/callback
+  # A regular expression: the web client's origin, with its dots escaped, and the desktop app's own origins.
+  CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:?set CORS_ALLOW_ORIGIN}
+  # Only the proxy in front talks to the API; it tells the API the client's address and scheme.
+  SYMFONY_TRUSTED_PROXIES: private_ranges
+  OAUTH_PASSPHRASE: ${OAUTH_PASSPHRASE:?set OAUTH_PASSPHRASE}
+  OAUTH_ENCRYPTION_KEY: ${OAUTH_ENCRYPTION_KEY:?set OAUTH_ENCRYPTION_KEY}
+  DATA_KEYS: ${DATA_KEYS:?set DATA_KEYS}
+  DATA_KEY_CURRENT: ${DATA_KEY_CURRENT:?set DATA_KEY_CURRENT}
+  DATABASE_URL: postgresql://tresso:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/tresso?serverVersion=18&charset=utf8
+  MESSENGER_TRANSPORT_DSN: redis://redis:6379/messages
+  REDIS_URL: redis://redis:6379
+  MAILER_DSN: ${MAILER_DSN:?set MAILER_DSN}
+  NOTIFICATIONS_FROM: ${NOTIFICATIONS_FROM:?set NOTIFICATIONS_FROM}
+  SYNC_WORKER_CLIENT_SECRET: ${SYNC_WORKER_CLIENT_SECRET:?set SYNC_WORKER_CLIENT_SECRET}
+  MAIL_ALLOW_UNSAFE_SERVERS: "0"
+  MERCURE_PUBLIC_URL: ${TRESSO_API_URL}/.well-known/mercure
+  MERCURE_INTERNAL_URL: http://api/.well-known/mercure
+  MERCURE_PUBLISHER_JWT_KEY: ${MERCURE_PUBLISHER_JWT_KEY:?set MERCURE_PUBLISHER_JWT_KEY}
+  MERCURE_SUBSCRIBER_JWT_KEY: ${MERCURE_SUBSCRIBER_JWT_KEY:?set MERCURE_SUBSCRIBER_JWT_KEY}
+  MERCURE_CORS_ORIGINS: ${TRESSO_WEB_URL} tauri://localhost http://tauri.localhost
+  MEILISEARCH_URL: http://meilisearch:7700
+  MEILISEARCH_KEY: ${MEILISEARCH_KEY:?set MEILISEARCH_KEY}
+  S3_ENDPOINT: http://s3:9000
+  S3_REGION: us-east-1
+  S3_BUCKET: mail
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY}
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: "3310"
+  ATTACHMENTS_REQUIRE_SCAN: ${ATTACHMENTS_REQUIRE_SCAN:-0}
+  # Optional: sign in with Google and Microsoft, push notifications, leave-now travel times.
+  GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+  GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+  MICROSOFT_OAUTH_CLIENT_ID: ${MICROSOFT_OAUTH_CLIENT_ID:-}
+  MICROSOFT_OAUTH_CLIENT_SECRET: ${MICROSOFT_OAUTH_CLIENT_SECRET:-}
+  MICROSOFT_OAUTH_TENANT: ${MICROSOFT_OAUTH_TENANT:-common}
+  WEB_PUSH_PUBLIC_KEY: ${WEB_PUSH_PUBLIC_KEY:-}
+  WEB_PUSH_PRIVATE_KEY: ${WEB_PUSH_PRIVATE_KEY:-}
+  WEB_PUSH_SUBJECT: ${WEB_PUSH_SUBJECT:-}
+  EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN:-}
+  ROUTING_OSRM_URL: ${ROUTING_OSRM_URL:-}
+  ROUTING_OSRM_BIKE_URL: ${ROUTING_OSRM_BIKE_URL:-}
+  ROUTING_OSRM_FOOT_URL: ${ROUTING_OSRM_FOOT_URL:-}
+  GEOCODER_NOMINATIM_URL: ${GEOCODER_NOMINATIM_URL:-}
+
+# Every worker is the API image with another command; they start once the API has migrated the database.
+x-worker: &worker
+  image: ghcr.io/gettresso/tresso-api:${TRESSO_VERSION:-latest}
+  environment: *api-env
+  volumes:
+    - oauth_keys:/app/config/jwt:ro
+  depends_on:
+    api:
+      condition: service_healthy
+  # The base image's check asks the web server, which only the API container runs.
+  healthcheck:
+    disable: true
+  restart: unless-stopped
+
+services:
+  proxy:
+    image: caddy:2.10-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    configs:
+      - source: proxy
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - proxy_data:/data
+      - proxy_config:/config
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/gettresso/tresso-web:${TRESSO_VERSION:-latest}
+    environment:
+      TRESSO_API_URL: ${TRESSO_API_URL}
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/gettresso/tresso-api:${TRESSO_VERSION:-latest}
+    environment:
+      <<: *api-env
+      RUN_MIGRATIONS: "1"
+    volumes:
+      - oauth_keys:/app/config/jwt
+      - mercure_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  # Outgoing mail and the slower jobs each have their own worker, so one never waits behind another (see compose.yaml).
+  messenger:
+    <<: *worker
+    command: ["php", "bin/console", "messenger:consume", "async", "search", "push", "scheduler_notifications", "scheduler_default", "scheduler_batches", "scheduler_daily_brief", "--time-limit=3600", "--memory-limit=256M"]
+
+  classifier:
+    <<: *worker
+    command: ["php", "bin/console", "messenger:consume", "classify", "--time-limit=3600", "--memory-limit=256M"]
+
+  scanner:
+    <<: *worker
+    command: ["php", "bin/console", "messenger:consume", "scan", "scan_rescan", "--time-limit=3600", "--memory-limit=256M"]
+
+  bulk:
+    <<: *worker
+    command: ["php", "bin/console", "messenger:consume", "bulk", "--time-limit=3600", "--memory-limit=256M"]
+
+  reencrypt:
+    <<: *worker
+    command: ["php", "bin/console", "messenger:consume", "reencrypt", "--time-limit=3600", "--memory-limit=256M"]
+
+  sync:
+    image: ghcr.io/gettresso/tresso-sync:${TRESSO_VERSION:-latest}
+    environment:
+      API_URL: http://api
+      OAUTH_TOKEN_URL: http://api/oauth/token
+      OAUTH_CLIENT_ID: sync-worker
+      OAUTH_CLIENT_SECRET: ${SYNC_WORKER_CLIENT_SECRET}
+      S3_ENDPOINT: http://s3:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: mail
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      MAIL_ALLOW_UNSAFE_SERVERS: "0"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: tresso
+      POSTGRES_USER: tresso
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "tresso", "-U", "tresso"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  s3:
+    image: rustfs/rustfs:1.0.3
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY}
+    volumes:
+      - s3_data:/data
+    restart: unless-stopped
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.55
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: ${MEILISEARCH_KEY}
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meili_data:/meili_data
+    restart: unless-stopped
+
+  # ClamAV needs about 1.5 GB of RAM.
+  clamav:
+    image: clamav/clamav:1.5-debian13-slim
+    configs:
+      - source: clamd
+        target: /etc/clamav/clamd.conf
+    volumes:
+      - clamav_data:/var/lib/clamav
+    restart: unless-stopped
+
+configs:
+  proxy:
+    content: |
+      ${TRESSO_WEB_URL} {
+      	encode zstd gzip
+      	reverse_proxy web:80
+      }
+
+      ${TRESSO_API_URL} {
+      	encode zstd gzip
+      	reverse_proxy api:80
+      }
+  # The same settings as docker/clamav/clamd.conf; StreamMaxLength must equal the API's CLAMAV_MAX_SIZE (25 MiB).
+  clamd:
+    content: |
+      LogFile /var/log/clamav/clamd.log
+      LogTime yes
+      LocalSocket /tmp/clamd.sock
+      TCPSocket 3310
+      User clamav
+      StreamMaxLength 25M
+      AlertEncrypted yes
+      AlertExceedsMax yes
+
+volumes:
+  proxy_data:
+  proxy_config:
+  oauth_keys:
+  mercure_data:
+  postgres_data:
+  redis_data:
+  s3_data:
+  meili_data:
+  clamav_data:
