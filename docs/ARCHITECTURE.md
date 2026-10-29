@@ -33,6 +33,18 @@ Billing is planned to live in this repository too, turned on by configuration on
 its infrastructure, secrets and runbooks live outside this repository. Features with an outside provider, such as AI,
 take your own key or endpoint, so they work self-hosted too.
 
+### Deployment
+
+Every release publishes three images on `ghcr.io/gettresso`: `tresso-api` (FrankenPHP; the same image runs the API and,
+with another command, every Messenger worker), `tresso-sync` (the Go sync workers) and `tresso-web` (the web client on
+Caddy), each for amd64 and arm64. Nothing server-specific is built in: the web image renders `/config.js` from
+`TRESSO_API_URL` when it serves it, and the API reads everything from its environment. `compose.prod.yaml` runs them
+with a Caddy proxy that gets the certificates, and with the services they need. Before anything else the API image runs
+`app:settings:check`, which refuses to start while a secret is missing, too short or one of the development values in
+the repository's `.env` files, since a production image would otherwise fall back to those public values. The API
+container (`RUN_MIGRATIONS=1`) then makes the OAuth signing keys once, in a volume, migrates the database and updates
+the first-party OAuth clients; the workers start when it is healthy.
+
 ### Organizations
 
 Every user owns a personal organization from the moment the account exists; teams (planned, 3.9) will be organizations
