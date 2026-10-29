@@ -176,9 +176,12 @@ Managed hosting of this same code, paid per organization member; self-hosting st
 
 - [x] 5.1 Organizations: a personal organization for every user (new users and, in the migration, existing ones),
   `GET /api/v1/organizations` with role and seats, removed with the user
-- [ ] 5.2 Billing behind configuration, off by default: Stripe subscriptions per organization with a 14-day trial,
-  webhooks, the API and sync workers refusing an organization without a valid subscription, a payment screen in web
-  and desktop
+- [x] 5.2 Billing in the API behind configuration, off by default ([Billing](BILLING.md)): Stripe subscriptions per
+  organization with a 14-day trial without a card, Checkout with Stripe Tax and the billing portal, a signed and
+  idempotent webhook with a nightly check, 402 for a user without access, and no sync, notifications or daily brief
+  for them
+- [ ] 5.2b The payment screen in web and desktop (on 402, from `GET /api/v1/billing`), a subscription page in the
+  settings and a notice before the trial ends; mobile names the expired subscription and points to the web
 - [x] 5.3 Production images per release on GitHub's container registry (API and workers, sync workers, web client;
   amd64 and arm64), a production compose file with automatic HTTPS, and a start that refuses missing or development
   secrets, which the managed service runs unchanged

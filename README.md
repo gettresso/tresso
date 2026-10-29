@@ -103,7 +103,8 @@ with every feature. What is still on the [roadmap](docs/ROADMAP.md), such as AI 
 with shared inboxes, API keys, webhooks and an MCP endpoint, lands here too.
 
 **Tresso Cloud** is the managed hosting of that same code: a subscription pays for running it for you, with backups
-and support, never for features. See [Self-hosted and Tresso Cloud](docs/ARCHITECTURE.md#self-hosted-and-tresso-cloud).
+and support, never for features. See [Self-hosted and Tresso Cloud](docs/ARCHITECTURE.md#self-hosted-and-tresso-cloud)
+and [Billing](docs/BILLING.md).
 
 ## 🏠 Your own server
 
@@ -336,6 +337,7 @@ app or the install scripts builds every platform without publishing.
 
 - [Architecture](docs/ARCHITECTURE.md): components, self-hosted and Tresso Cloud, auth, sync protocol, processing
   pipeline, scaling
+- [Billing](docs/BILLING.md): Tresso Cloud's subscriptions, the billing API and Stripe
 - [Roadmap](docs/ROADMAP.md): phases from foundation to native apps
 
 ## 📄 License

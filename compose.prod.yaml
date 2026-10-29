@@ -45,6 +45,12 @@ x-api-env: &api-env
   CLAMAV_HOST: clamav
   CLAMAV_PORT: "3310"
   ATTACHMENTS_REQUIRE_SCAN: ${ATTACHMENTS_REQUIRE_SCAN:-0}
+  # Only Tresso Cloud bills (docs/BILLING.md); a self-hosted server leaves this at 0.
+  TRESSO_BILLING: ${TRESSO_BILLING:-0}
+  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+  STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+  STRIPE_PRICE_MONTHLY: ${STRIPE_PRICE_MONTHLY:-}
+  STRIPE_PRICE_YEARLY: ${STRIPE_PRICE_YEARLY:-}
   # Optional: sign in with Google and Microsoft, push notifications, leave-now travel times.
   GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
   GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
