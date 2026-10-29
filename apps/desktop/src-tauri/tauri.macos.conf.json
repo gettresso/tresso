@@ -32,7 +32,8 @@
       "frameworks": [
         "../.sparkle/Sparkle.framework"
       ],
-      "hardenedRuntime": false
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist"
     }
   }
 }
