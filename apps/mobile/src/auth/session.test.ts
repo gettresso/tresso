@@ -174,4 +174,31 @@ describe('Session', () => {
 
     expect(listener).toHaveBeenCalledOnce()
   })
+
+  it('covers the app on 402 until a served request shows the user may use it again', async () => {
+    const answers = [
+      new Response(JSON.stringify({ title: 'Payment Required', status: 402 }), { status: 402 }),
+      new Response(JSON.stringify({ enabled: true, entitled: false }), { status: 200 }),
+      new Response(JSON.stringify({ id: 'kim' }), { status: 200 }),
+    ]
+    const session = await restored(memoryStore(fresh()), vi.fn<Fetch>(async () => answers.shift()!))
+
+    await expect(session.api('/api/v1/me')).rejects.toMatchObject({ status: 402 })
+    expect(session.snapshot.paymentRequired).toBe(true)
+
+    await session.api('/api/v1/billing')
+    expect(session.snapshot.paymentRequired).toBe(true)
+
+    await session.api('/api/v1/me')
+    expect(session.snapshot.paymentRequired).toBe(false)
+  })
+
+  it('takes the payment notice down on sign-out', async () => {
+    const session = await restored(memoryStore(fresh()), vi.fn<Fetch>(async () => new Response('{}', { status: 402 })))
+    await expect(session.api('/api/v1/me')).rejects.toMatchObject({ status: 402 })
+
+    await session.signOut()
+
+    expect(session.snapshot.paymentRequired).toBe(false)
+  })
 })
