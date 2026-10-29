@@ -381,19 +381,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 1.2.3 always, 1.2 and latest only for a release that is not a prerelease.
+      # Only the exact version here; 1.2 and latest move once the release is published (image-latest below).
       - name: Name the image for both architectures
         shell: bash
         env:
           IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           VERSION: ${{ needs.version.outputs.version }}
-          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          SOURCE: https://github.com/${{ github.repository }}
         run: |
           set -euo pipefail
-          tags=(-t "${IMAGE}:${VERSION}")
-          if [ "${PRERELEASE}" != "true" ]; then
-            tags+=(-t "${IMAGE}:${VERSION%.*}" -t "${IMAGE}:latest")
-          fi
           sources=()
           for digest in digests/*; do
             sources+=("${IMAGE}@sha256:$(basename "${digest}")")
@@ -402,7 +398,12 @@ jobs:
             echo "Expected an amd64 and an arm64 image of ${IMAGE}, found ${#sources[@]}." >&2
             exit 1
           fi
-          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.source=${SOURCE}" \
+            --annotation "index:org.opencontainers.image.version=${VERSION}" \
+            --annotation "index:org.opencontainers.image.licenses=AGPL-3.0-only" \
+            --annotation "index:org.opencontainers.image.description=Tresso ${{ matrix.image }}" \
+            -t "${IMAGE}:${VERSION}" "${sources[@]}"
           docker buildx imagetools inspect "${IMAGE}:${VERSION}"
 
   release:
@@ -534,3 +535,49 @@ jobs:
             artifacts/appcast.xml
             scripts/install.sh
             scripts/install.ps1
+
+  image-latest:
+    name: Move the image tags 1.2 and latest
+    needs: [version, release]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && needs.version.outputs.prerelease != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # All three images move together, and only forward: a fix for an older line (1.1.5 after 1.2.0) keeps 1.2 and
+      # latest where they are, and moves 1.1 only when it is the newest of that line.
+      - name: Move the tags
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          stable=$(git tag --list 'v*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)
+          minor="${VERSION%.*}"
+          newest=$(printf '%s\n' "${stable}" | tail -n 1)
+          newest_of_minor=$(printf '%s\n' "${stable}" | grep -E "^${minor//./\\.}\.[0-9]+$" | tail -n 1)
+          for image in tresso-api tresso-sync tresso-web; do
+            tags=()
+            [ "${VERSION}" = "${newest_of_minor}" ] && tags+=(-t "ghcr.io/${OWNER}/${image}:${minor}")
+            [ "${VERSION}" = "${newest}" ] && tags+=(-t "ghcr.io/${OWNER}/${image}:latest")
+            if [ "${#tags[@]}" -eq 0 ]; then
+              echo "${VERSION} is not the newest release; ${image} keeps its tags."
+              continue
+            fi
+            docker buildx imagetools create "${tags[@]}" "ghcr.io/${OWNER}/${image}:${VERSION}"
+          done
