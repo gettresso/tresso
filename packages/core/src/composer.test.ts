@@ -140,6 +140,49 @@ describe('Composer', () => {
     await expect(composer.saveNow()).rejects.toThrow('could not be saved')
   })
 
+  it('keeps saving what is typed while it saves, rather than calling that a failure', async () => {
+    composer.openNew()
+    composer.update({ subject: 'First' })
+    const id = composer.state.draft!.id
+    const changeDraft = store.changeDraft.bind(store)
+    let typedOnce = false
+    vi.spyOn(store, 'changeDraft').mockImplementation(async (draftId, change) => {
+      if (!typedOnce) {
+        typedOnce = true
+        composer.update({ subject: 'Second' })
+      }
+      return changeDraft(draftId, change)
+    })
+
+    await composer.saveNow()
+
+    expect(await store.draft(id)).toMatchObject({ subject: 'Second' })
+  })
+
+  it('has nothing to save, and so nothing failed, once the copy is gone', async () => {
+    composer.openNew()
+    composer.update({ subject: 'Signed out' })
+    currentStore = null
+
+    await expect(composer.saveNow()).resolves.toBeUndefined()
+  })
+
+  it('does not write back a draft that is being sent', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'Going out' })
+    const id = composer.state.draft!.id
+    let sendNow: (() => void) | null = null
+    sendGate = new Promise<void>((resolve) => (sendNow = resolve))
+    const sending = composer.send()
+    await vi.waitFor(() => expect(composer.unfinished).toBe('sending'))
+
+    const saving = composer.saveNow()
+    sendNow!()
+    await Promise.all([sending, saving])
+
+    expect(await store.draft(id)).toMatchObject({ outgoingId: 'o1', pendingSave: false })
+  })
+
   it('says what a restart would cut short: files on their way, or a message being sent', async () => {
     composer.openNew([{ address: 'anna@example.test', name: null }])
     expect(composer.unfinished).toBeNull()

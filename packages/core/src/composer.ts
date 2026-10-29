@@ -6,6 +6,8 @@ import type { Address, AttachmentAccess, DraftAttachment, MessageAttachment, Mes
 /** Seconds a sent message waits before it goes out, so "Undo" can still stop it. */
 export const UNDO_SECONDS = 5
 const AUTOSAVE_MS = 800
+/** How often saveNow writes edits typed while it saves before it gives up. */
+const SAVE_NOW_ROUNDS = 5
 /** What the API accepts; the web form's schema (apps/web/src/forms/compose.ts) checks the same. */
 export const MAX_RECIPIENTS = 100
 export const MAX_SUBJECT = 998
@@ -108,14 +110,22 @@ export class Composer {
    */
   async saveNow(): Promise<void> {
     this.clearSaveTimer()
-    const draft = this.current.draft
-    if (this.dirty && draft !== null) {
-      void this.saveHere(draft, false)
+    // Typing during a save marks the draft again; a few rounds catch up with that.
+    for (let round = 0; round < SAVE_NOW_ROUNDS; round++) {
+      const draft = this.current.draft
+      // A message being sent writes its draft itself, and a sent draft must not be written back.
+      if (this.dirty && draft !== null && !this.current.sending) {
+        void this.saveHere(draft, false)
+      }
+      const saved = await Promise.all([...this.writes])
+      if (saved.includes(false)) {
+        throw new Error(this.current.error ?? 'The draft could not be saved on this device.')
+      }
+      if (!this.dirty || this.current.draft === null || this.current.sending) {
+        return
+      }
     }
-    const saved = await Promise.all([...this.writes])
-    if (saved.includes(false) || (this.dirty && this.current.draft !== null)) {
-      throw new Error(this.current.error ?? 'The draft could not be saved on this device.')
-    }
+    throw new Error('The draft keeps changing while it is saved.')
   }
 
   /** Writes the draft on this device; resolves whether that worked (true too when there is nowhere to keep it). */
@@ -127,13 +137,12 @@ export class Composer {
   }
 
   private async writeHere(draft: Draft, closing: boolean): Promise<boolean> {
+    if (this.current.draft?.id === draft.id) {
+      this.dirty = false
+    }
     const store = this.storeOfDraft()
     if (store === null) {
       return true
-    }
-    const open = this.current.draft?.id === draft.id
-    if (open) {
-      this.dirty = false
     }
     let isNew = false
     try {
@@ -473,9 +482,15 @@ export class Composer {
       return false
     }
     this.clearSaveTimer()
+    // Nothing writes a draft that is being deleted; kept, its edits are saved again.
+    const dirty = this.dirty
+    this.dirty = false
     try {
       await this.deps.drafts.deleteEverywhere(draft.id)
     } catch (error) {
+      if (this.current.draft?.id === draft.id) {
+        this.dirty ||= dirty
+      }
       const text = `The draft could not be deleted: ${this.deps.explain(error).message}`
       if (this.current.draft?.id === draft.id) {
         this.set({ error: text })
@@ -552,7 +567,9 @@ export class Composer {
     }
     this.set({ sending: true, error: null, violations: {}, unscannedToConfirm: null })
     // The draft goes up first, so the server can take it (and its Drafts folder copy) away when the message is queued.
+    // That writes it on this device too.
     this.clearSaveTimer()
+    this.dirty = false
     try {
       const onServer = await this.deps.drafts.uploadForSending(draft)
       if (!onServer && draft.attachments.length > 0) {
@@ -575,6 +592,10 @@ export class Composer {
       }
       return outgoing
     } catch (error) {
+      if (this.current.draft?.id === draft.id) {
+        // Whether the send got to write the draft here or not, it is written again before a restart.
+        this.dirty = true
+      }
       const { message, violations } = this.deps.explain(error)
       const unscanned = violations.acceptUnscanned
       if (unscanned !== undefined && this.current.draft?.id === draft.id) {
