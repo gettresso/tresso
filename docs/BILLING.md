@@ -91,11 +91,12 @@ the browser:
   returns to `<WEB_APP_URL>/settings/billing`.
 
 Answers: `404` when the server does not bill or the organization is not the user's, `403` for a member who is not an
-owner or admin (or a token without `settings:write`), `409` for a checkout while the organization has a Stripe subscription that is
-not over (trialing, active, past due, unpaid, paused or incomplete, also one Stripe has whose events did not arrive
-yet, which the server then takes over; change plans in the portal instead, or try again when the organization's
-billing changed while the request waited), `422` for a plan the server does not sell or a portal before any subscription, `502`
-when Stripe refused the request (logged on the server) and `503` when Stripe could not be reached.
+owner or admin (or a token without `settings:write`), `409` for a checkout while the organization has a Stripe
+subscription that is not over (trialing, active, past due, unpaid, paused or incomplete, also one Stripe has whose
+events did not arrive yet, which the server then takes over; change plans in the portal instead, or try again when the
+organization's billing changed while the request waited), `422` for a plan the server does not sell or a portal before
+any subscription, `502` when Stripe refused the request (logged on the server) and `503` when Stripe could not be
+reached.
 
 ### Payment required
 
@@ -114,6 +115,19 @@ A blocked user gets `402` from every `/api/` call except the ones above (`/api/v
 Signing in and out (`/login`, `/oauth/…`, `/logout`) are outside `/api` and keep working. A client that gets `402`
 shows its payment screen: from `GET /api/v1/billing`, the trial's end or the subscription's status, and for an owner or
 admin the buttons that open Checkout or the portal. The server alone decides; a client never unlocks anything itself.
+
+## Clients
+
+- **Web and desktop.** A `402` from any request puts up the payment screen over the app. It shows each organization
+  from `GET /api/v1/billing` and, for an owner or admin, the plans (Stripe Checkout) or "Manage subscription" (the
+  portal). The web opens Stripe in the same tab; the desktop app opens it in the system browser, since Stripe returns
+  to the web address. "I have paid, check again" asks the server again and reloads the app once it gives access.
+  Settings has a Subscription page (only where the server bills), which is also where Stripe returns after Checkout:
+  it waits up to 30 seconds for the webhook to show the subscription. Three days before the user's own trial ends, a
+  notice offers to subscribe.
+- **Mobile.** A `402` covers the app with a notice that the subscription ended and that it is renewed in Tresso on a
+  computer or on the web, with "Check again" and "Sign out". The phone app sells nothing and links to no payment
+  page.
 
 ## Stripe
 
@@ -135,9 +149,9 @@ admin the buttons that open Checkout or the portal. The server alone decides; a 
 - **Nightly check.** At 03:17 UTC the server asks Stripe for the subscriptions of every customer it knows and takes over
   the best one (one that pays, then the one it follows, then the newest), in case webhooks were lost; this also finds a
   first checkout none of whose events arrived. Each organization is checked with its row locked, like a webhook. A
-  customer Stripe says it does not have is kept and reported (a wrong
-  key says the same); only `customer.deleted` forgets one. Handled event ids older than 30 days are removed. `php bin/console app:billing:reconcile` does
-  the same by hand.
+  customer Stripe says it does not have is kept and reported (a wrong key says the same); only `customer.deleted`
+  forgets one. Handled event ids older than 30 days are removed. `php bin/console app:billing:reconcile` does the same
+  by hand.
 - **Linking.** Checkout puts the organization id in the subscription's metadata and as `client_reference_id`; the
   customer is made once per organization and kept.
 - **API version.** Requests pin `Stripe-Version: 2025-03-31.basil`.

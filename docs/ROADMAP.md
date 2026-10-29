@@ -180,7 +180,7 @@ Managed hosting of this same code, paid per organization member; self-hosting st
   organization with a 14-day trial without a card, Checkout with Stripe Tax and the billing portal, a signed and
   idempotent webhook with a nightly check, 402 for a user without access, and no sync, notifications or daily brief
   for them
-- [ ] 5.2b The payment screen in web and desktop (on 402, from `GET /api/v1/billing`), a subscription page in the
+- [x] 5.2b The payment screen in web and desktop (on 402, from `GET /api/v1/billing`), a subscription page in the
   settings and a notice before the trial ends; mobile names the expired subscription and points to the web
 - [x] 5.3 Production images per release on GitHub's container registry (API and workers, sync workers, web client;
   amd64 and arm64), a production compose file with automatic HTTPS, and a start that refuses missing or development
