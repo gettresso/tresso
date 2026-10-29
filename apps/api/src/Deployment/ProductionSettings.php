@@ -38,6 +38,9 @@ final readonly class ProductionSettings
     /** Addresses that must be a bare origin: links, OAuth redirects and the realtime hub are built on them. */
     public const array ORIGINS = ['WEB_APP_URL', 'API_PUBLIC_URL'];
 
+    /** The desktop app's own origins (WebKit on macOS and Linux, WebView2 on Windows). */
+    public const array DESKTOP_ORIGINS = ['tauri://localhost', 'http://tauri.localhost'];
+
     /** Placeholder spellings the example settings use. */
     private const string PLACEHOLDER = '/change-?me/i';
 
@@ -101,29 +104,43 @@ final readonly class ProductionSettings
     {
         $problems = [];
         foreach (self::ORIGINS as $name) {
-            $value = $this->value($name);
-            $parts = parse_url($value);
-            if (!\is_array($parts) || 'https' !== ($parts['scheme'] ?? null) || !isset($parts['host'])
-                || isset($parts['path']) || isset($parts['query']) || isset($parts['fragment']) || isset($parts['user'])) {
+            if (!self::isOrigin($this->value($name))) {
                 $problems[] = \sprintf('%s must be an https address without a path or trailing slash, such as https://mail.example.com.', $name);
             }
         }
 
         $cors = $this->value('CORS_ALLOW_ORIGIN');
-        $web = $this->value('WEB_APP_URL');
-        $pattern = '{'.$cors.'}i';
-        if (!str_starts_with($cors, '^') || !str_ends_with($cors, '$')) {
-            $problems[] = 'CORS_ALLOW_ORIGIN must start with ^ and end with $, or other sites that contain the address match too.';
-        } elseif (false === @preg_match($pattern, '')) {
-            $problems[] = 'CORS_ALLOW_ORIGIN is not a valid regular expression.';
-        } elseif ('' !== $web && 1 !== preg_match($pattern, $web)) {
-            $problems[] = 'CORS_ALLOW_ORIGIN does not allow WEB_APP_URL, so the web client cannot call the API.';
-        } elseif ('' !== $web && (1 === preg_match($pattern, 'https://tresso-check.invalid') || 1 === preg_match($pattern, $web.'.tresso-check.invalid'))) {
-            // Every alternative needs its own anchors: ^a|b$ lets any origin ending in b through.
-            $problems[] = 'CORS_ALLOW_ORIGIN also allows other sites; anchor every alternative, such as ^(https://mail\\.example\\.com|tauri://localhost)$.';
+        if (str_starts_with($cors, '^')) {
+            $problems[] = 'CORS_ALLOW_ORIGIN must list origins separated by spaces, not a regular expression.';
+        } else {
+            $origins = CorsOrigins::origins($cors);
+            foreach ($origins as $origin) {
+                if (!\in_array($origin, self::DESKTOP_ORIGINS, true) && !self::isOrigin($origin)) {
+                    $problems[] = \sprintf('CORS_ALLOW_ORIGIN lists "%s", which is not an https origin such as https://mail.example.com.', $origin);
+                }
+            }
+            $web = $this->value('WEB_APP_URL');
+            if (self::isOrigin($web) && !\in_array($web, $origins, true)) {
+                $problems[] = 'CORS_ALLOW_ORIGIN does not list WEB_APP_URL, so the web client cannot call the API.';
+            }
         }
 
         return $problems;
+    }
+
+    /**
+     * An https scheme and a host name (as browsers send it in Origin: letters, digits, dots and hyphens; an
+     * international name in its xn-- form), with at most a valid port.
+     */
+    private static function isOrigin(string $value): bool
+    {
+        if (1 !== preg_match('{^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$}i', $value)) {
+            return false;
+        }
+        // false for a port above 65535; port 0 is no port a browser connects to.
+        $port = parse_url($value, \PHP_URL_PORT);
+
+        return null === $port || (\is_int($port) && $port >= 1);
     }
 
     private function secretProblem(string $name, int $length): ?string

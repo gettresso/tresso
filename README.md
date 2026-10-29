@@ -113,10 +113,10 @@ runs the same images. To run them, you need a server with Docker, two DNS names 
 client, one for the API) and ports 80 and 443 open:
 
 1. Download [`compose.prod.yaml`](compose.prod.yaml) and [`.env.prod.example`](.env.prod.example) into one folder.
-2. Copy `.env.prod.example` to `.env` and fill it in: your two addresses, `CORS_ALLOW_ORIGIN` with your web address
-   in it, and every secret, each generated (`openssl rand -hex 32`). Keep a copy of `DATA_KEYS` somewhere safe: it
-   encrypts the mail at rest, and losing it loses that mail. The API refuses to start while a secret is missing, too
-   short, or one of the development values in this repository, or while an address or `CORS_ALLOW_ORIGIN` is wrong.
+2. Copy `.env.prod.example` to `.env` and fill it in: your two addresses and every secret, each generated
+   (`openssl rand -hex 32`). Keep a copy of `DATA_KEYS` somewhere safe: it encrypts the mail at rest, and losing it
+   loses that mail. The API refuses to start while a secret is missing, too short, or one of the development values in
+   this repository, or while an address is not a plain `https://` address.
 3. Start it:
 
    ```bash
@@ -133,13 +133,15 @@ The stack gets HTTPS certificates by itself, migrates the database on start and 
 storage (RustFS), Meilisearch and ClamAV next to Tresso; ClamAV needs about 1.5 GB of RAM. To upgrade, set
 `TRESSO_VERSION` (or keep `latest`) and run `docker compose -f compose.prod.yaml pull` before `up -d`. Two settings
 only apply the first time: `POSTGRES_PASSWORD` (the database keeps its password) and `OAUTH_PASSPHRASE` (it encrypts
-the OAuth signing key; a new passphrase needs a new key: remove both files from the `oauth_keys` volume and restart,
-which signs everyone out).
+the OAuth signing key; a new passphrase needs a new key: remove both files from the `tresso-server_oauth_keys` volume
+and restart, after which the apps renew their sign-in).
 
 Running the images without this compose file, set the same settings as `compose.prod.yaml` does. Exactly one API
-container needs `RUN_MIGRATIONS=1`: on start it makes the OAuth signing keys, migrates the database and creates the
-OAuth clients, and the workers need its keys (mount them read-only at `/app/config/jwt`). The desktop app's origins,
-`tauri://localhost` and `http://tauri.localhost`, belong in both `CORS_ALLOW_ORIGIN` and `MERCURE_CORS_ORIGINS`.
+container (running the image's default `frankenphp` command) needs `RUN_MIGRATIONS=1`: on start it makes the OAuth
+signing keys, migrates the database and creates the OAuth clients. Every other container, more API containers and the
+workers, needs those keys too (mount them read-only at `/app/config/jwt`). `CORS_ALLOW_ORIGIN` and
+`MERCURE_CORS_ORIGINS` list the allowed origins separated by spaces: the web address and the desktop app's own,
+`tauri://localhost` and `http://tauri.localhost`.
 
 In the desktop app, choose **Use another server** on the sign-in screen and enter the API address, such as
 `api.mail.example.com`. The app checks that the server answers and remembers it until you choose again. The web

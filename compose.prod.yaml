@@ -15,8 +15,8 @@ x-api-env: &api-env
   API_PUBLIC_URL: ${TRESSO_API_URL}
   WEB_APP_URL: ${TRESSO_WEB_URL:?set TRESSO_WEB_URL}
   NATIVE_REDIRECT_URI: tresso://auth/callback
-  # A regular expression: the web client's origin, with its dots escaped, and the desktop app's own origins.
-  CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:?set CORS_ALLOW_ORIGIN}
+  # The origins that may call the API from a browser: the web client and the desktop app (WebKit and WebView2).
+  CORS_ALLOW_ORIGIN: ${TRESSO_WEB_URL} tauri://localhost http://tauri.localhost
   # Only the proxy in front talks to the API; it tells the API the client's address and scheme.
   SYMFONY_TRUSTED_PROXIES: private_ranges
   OAUTH_PASSPHRASE: ${OAUTH_PASSPHRASE:?set OAUTH_PASSPHRASE}
