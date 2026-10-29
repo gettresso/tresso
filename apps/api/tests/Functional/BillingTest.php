@@ -137,7 +137,8 @@ final class BillingTest extends DatabaseTestCase
         self::assertSame([['price' => 'price_monthly', 'quantity' => '1']], $form['line_items'] ?? null);
         self::assertSame(['enabled' => 'true'], $form['automatic_tax'] ?? null);
         self::assertSame(['metadata' => ['organization_id' => $organizationId]], $form['subscription_data'] ?? null);
-        self::assertStringEndsWith('/settings/billing?checkout=done', \is_string($form['success_url'] ?? null) ? $form['success_url'] : '');
+        self::assertIsString($organizationId);
+        self::assertStringEndsWith('/settings/billing?checkout=done&organization='.$organizationId, \is_string($form['success_url'] ?? null) ? $form['success_url'] : '');
 
         $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $organizationId, 'plan' => 'monthly'], $this->kimHeaders());
         self::assertResponseIsSuccessful();
