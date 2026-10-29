@@ -1,6 +1,7 @@
 export * from './accounts'
 export * from './actions'
 export * from './batches'
+export * from './billing'
 export * from './bulk'
 export * from './brief'
 export * from './compose'
