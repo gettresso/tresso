@@ -1,8 +1,9 @@
 name: Release
 
 # A tag v1.2.3 builds the desktop app for macOS, Linux and Windows and publishes it as a GitHub release, with
-# SHA256SUMS for the install scripts. A pull request that changes the release builds the same files without
-# publishing them, and so does running the workflow by hand.
+# SHA256SUMS for the install scripts, and publishes the server images (API, sync worker, web client) for amd64 and
+# arm64 on ghcr.io. A pull request that changes the release builds the same files and images without publishing
+# them, and so does running the workflow by hand.
 
 on:
   push:
@@ -13,6 +14,8 @@ on:
       - .github/workflows/release.yml
       - apps/desktop/**
       - scripts/install.*
+      - docker/**
+      - .dockerignore
   workflow_dispatch:
 
 permissions:
@@ -278,9 +281,133 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  images:
+    name: Image ${{ matrix.image }} (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [tresso-api, tresso-sync, tresso-web]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            os: ubuntu-24.04-arm
+          - image: tresso-api
+            dockerfile: docker/api/Dockerfile
+          - image: tresso-sync
+            dockerfile: docker/sync/Dockerfile
+          - image: tresso-web
+            dockerfile: docker/web/Dockerfile
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to the container registry
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Each architecture builds natively and is pushed by digest only; the manifest job below names them together.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: prod
+          platforms: linux/${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          outputs: ${{ env.PUBLISH == 'true' && format('type=image,name=ghcr.io/{0}/{1},push-by-digest=true,name-canonical=true,push=true', github.repository_owner, matrix.image) || 'type=cacheonly' }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+      - name: Keep the digest
+        if: env.PUBLISH == 'true'
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          touch "digests/${DIGEST#sha256:}"
+
+      - if: env.PUBLISH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  image-manifests:
+    name: Publish image ${{ matrix.image }}
+    needs: [version, images]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [tresso-api, tresso-sync, tresso-web]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-${{ matrix.image }}-*
+          path: digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 1.2.3 always, 1.2 and latest only for a release that is not a prerelease.
+      - name: Name the image for both architectures
+        shell: bash
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          tags=(-t "${IMAGE}:${VERSION}")
+          if [ "${PRERELEASE}" != "true" ]; then
+            tags+=(-t "${IMAGE}:${VERSION%.*}" -t "${IMAGE}:latest")
+          fi
+          sources=()
+          for digest in digests/*; do
+            sources+=("${IMAGE}@sha256:$(basename "${digest}")")
+          done
+          if [ "${#sources[@]}" -ne 2 ]; then
+            echo "Expected an amd64 and an arm64 image of ${IMAGE}, found ${#sources[@]}." >&2
+            exit 1
+          fi
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+
   release:
     name: Publish release
-    needs: [version, build]
+    needs: [version, build, image-manifests]
     # Only a pushed tag publishes; running the workflow by hand on a tag builds without publishing too.
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest

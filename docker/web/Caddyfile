@@ -1,0 +1,31 @@
+{
+	admin off
+}
+
+:80 {
+	root * /srv
+	encode zstd gzip
+
+	# The API address, from the container's TRESSO_API_URL; never cached, so a changed address applies at once.
+	@config path /config.js
+	templates @config {
+		mime text/javascript application/javascript
+	}
+	header @config Cache-Control "no-store"
+
+	# Hashed build files never change; index.html and the push worker must always be fresh.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	@fresh path / /index.html /push-worker.js
+	header @fresh Cache-Control "no-cache"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+	}
+
+	# The app routes in the browser: unknown paths get index.html.
+	try_files {path} /index.html
+	file_server
+}

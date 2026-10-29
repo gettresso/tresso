@@ -1,0 +1,15 @@
+# Only what the images build from; never local dependencies, caches, keys or environment overrides.
+.git
+.github
+.claude
+**/node_modules
+**/.env.local
+**/.env.*.local
+apps/api/vendor
+apps/api/var
+apps/api/config/jwt/*.pem
+apps/web/dist
+apps/desktop/src-tauri/target
+apps/desktop/.sparkle
+apps/mobile/.expo
+compose.override.yaml
