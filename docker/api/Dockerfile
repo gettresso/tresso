@@ -36,5 +36,9 @@ RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-pr
 COPY apps/api/ ./
 RUN composer dump-autoload --classmap-authoritative --no-dev \
     && composer dump-env prod \
-    && composer run-script --no-dev post-install-cmd
+    && composer run-script --no-dev post-install-cmd \
+    && mkdir -p config/jwt
+COPY docker/api/entrypoint-prod.sh /usr/local/bin/app-entrypoint
+# The same image runs the API (this command) and every worker (messenger:consume with its transports).
+ENTRYPOINT ["app-entrypoint"]
 CMD ["frankenphp", "run", "--config", "/etc/frankenphp/Caddyfile"]
