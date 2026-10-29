@@ -65,11 +65,11 @@ function shortcut(event: KeyboardEvent): void {
 }
 onMounted(() => window.addEventListener('keydown', shortcut))
 
-// Behind the payment screen no shortcut may act (archive, snooze, triage): keys reach only the screen itself. Inert
-// stops pointers and focus, but window listeners would still see keys sent to the page.
+// While the payment screen shows, no key reaches a listener: inert stops pointers and focus, but window shortcuts
+// (archive, snooze, triage, the calendar's) would still see keys, even those sent to the screen. The browser's own
+// handling (Tab, Enter and Space on a button) is not prevented, and the screen itself needs no key listener.
 function blockShortcuts(event: KeyboardEvent): void {
-  const target = event.target as Element | null
-  if (auth.paymentRequired && !(target instanceof Element && target.closest('[data-payment-screen]'))) {
+  if (auth.paymentRequired) {
     event.stopImmediatePropagation()
   }
 }

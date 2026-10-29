@@ -18,14 +18,14 @@ const WAIT_MS = 3000
 let timer: ReturnType<typeof setTimeout> | null = null
 let left = false
 
-/** The organizations that were not paid for when Stripe sent the user back: one of them is what was just bought. */
-let unpaid: Set<string> | null = null
+/** The organization that was just bought, as the address Stripe returns to names it. */
+let bought: string | null = null
 
 /** Paid for: Stripe reports the subscription as active or trialing. Incomplete (a pending 3D Secure or SEPA) is not. */
 function subscribed(status: BillingStatus): boolean {
-  const paid = (organization: BillingStatus['organizations'][number]) => organization.status === 'active' || organization.status === 'trialing'
-  unpaid ??= new Set(status.organizations.filter((organization) => organization.canManage && !paid(organization)).map((organization) => organization.id))
-  return status.organizations.some((organization) => paid(organization) && (unpaid!.size === 0 || unpaid!.has(organization.id)))
+  return status.organizations.some(
+    (organization) => (bought === null ? organization.canManage : organization.id === bought) && (organization.status === 'active' || organization.status === 'trialing'),
+  )
 }
 
 async function waitForSubscription(tries: number): Promise<void> {
@@ -48,6 +48,7 @@ async function waitForSubscription(tries: number): Promise<void> {
 
 onMounted(async () => {
   const checkout = route.query.checkout
+  bought = typeof route.query.organization === 'string' ? route.query.organization : null
   if (checkout !== undefined) {
     // The address is the bookmark Stripe returns to; it should not say "done" again on the next visit.
     void router.replace({ query: {} })
