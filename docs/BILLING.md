@@ -86,7 +86,7 @@ the browser:
 
 - `POST /api/v1/billing/checkout` with `"plan": "monthly" | "yearly"`: Stripe Checkout for that plan, for every
   member. Checkout collects the billing address and VAT id, and Stripe Tax charges the VAT. After paying, Stripe
-  returns to `<WEB_APP_URL>/settings/billing?checkout=done` (or `?checkout=cancelled`).
+  returns to `<WEB_APP_URL>/settings/billing?checkout=done&organization=<id>` (or `?checkout=cancelled`).
 - `POST /api/v1/billing/portal`: Stripe's billing portal, to change the plan or the card, see invoices or cancel. It
   returns to `<WEB_APP_URL>/settings/billing`.
 
@@ -126,10 +126,10 @@ admin the buttons that open Checkout or the portal. The server alone decides; a 
   Checkout) or "Manage subscription" (the portal); others are asked to turn to an owner or admin. Only an `https`
   address is opened: in the same tab on the web, in the system browser on desktop (Stripe returns to the web address).
   "I have paid, check again" asks the server again; as soon as the server gives access, the app reloads, so everything
-  that stopped starts again. Settings has a Subscription page (only where the server bills), which is also where
-  Stripe returns after Checkout: it waits up to 30 seconds for the webhook to show the organization just paid for as active or trialing. Three days
-  before the user's own trial ends, a notice gives the end and offers to subscribe. A server without
-  `/api/v1/billing` counts as one that does not bill.
+  that stopped starts again. Settings has a Subscription page (only where the server bills), which is also where Stripe
+  returns after Checkout (with `?checkout=done&organization=<id>`): it waits up to 30 seconds for the webhook to show
+  that organization as active or trialing. Three days before the user's own trial ends, a notice gives the end and
+  offers to subscribe. A server without `/api/v1/billing` counts as one that does not bill.
 - **Mobile.** A `402` covers the app with a notice that the subscription ended and that it is renewed in Tresso on a
   computer or on the web, with "Check again" and "Sign out". The phone app sells nothing and links to no payment
   page.
