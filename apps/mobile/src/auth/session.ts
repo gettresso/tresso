@@ -13,7 +13,12 @@ export interface SessionState {
   tokens: TokenSet | null
   /** Keeping or forgetting the tokens failed; shown to the user. */
   storageError: string | null
+  /** The server answered 402: the trial or subscription is over, and a notice covers the app until it is renewed. */
+  paymentRequired: boolean
 }
+
+/** Billing paths a blocked user still reaches; an answer from them says nothing about being unblocked. */
+const OPEN_PATHS = ['/api/v1/billing', '/api/v1/server-info']
 
 export class ApiError extends Error {
   constructor(
@@ -32,7 +37,7 @@ export class ApiError extends Error {
  * TypeScript without React Native, so it is tested directly; the screens read it through `AuthProvider`.
  */
 export class Session {
-  private state: SessionState = { tokens: null, storageError: null }
+  private state: SessionState = { tokens: null, storageError: null, paymentRequired: false }
   private readonly listeners = new Set<() => void>()
   /** Refresh tokens rotate: two refreshes with the same one would sign the user out, so they share one request. */
   private refreshing: Promise<string> | null = null
@@ -71,6 +76,7 @@ export class Session {
   async signOut(): Promise<void> {
     this.generation++
     this.refreshing = null
+    this.update({ paymentRequired: false })
     await this.keep(null)
   }
 
@@ -106,6 +112,12 @@ export class Session {
     if (response.status === 401) {
       await this.signOut()
       throw new ApiError(401, 'Your session has expired. Sign in again.')
+    }
+    if (response.status === 402) {
+      this.update({ paymentRequired: true })
+    } else if (response.ok && this.state.paymentRequired && !OPEN_PATHS.some((open) => path.startsWith(open))) {
+      // The server serves this user again (renewed elsewhere): the notice goes.
+      this.update({ paymentRequired: false })
     }
     if (!response.ok) {
       const problem = await problemOf(response)
