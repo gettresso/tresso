@@ -132,6 +132,9 @@ final class ProductionSettingsTest extends TestCase
         yield 'path' => ['https://mail.example.com/tresso'];
         yield 'plain http' => ['http://mail.example.com'];
         yield 'no scheme' => ['mail.example.com'];
+        yield 'default port written out' => ['https://mail.example.com:443'];
+        yield 'leading zero in the port' => ['https://mail.example.com:08443'];
+        yield 'upper case' => ['https://Mail.Example.com'];
     }
 
     #[DataProvider('addressesThatAreNotAnOrigin')]
@@ -140,7 +143,7 @@ final class ProductionSettingsTest extends TestCase
         $settings = [...self::complete(), 'WEB_APP_URL' => $address];
 
         self::assertSame(
-            ['WEB_APP_URL must be an https address without a path or trailing slash, such as https://mail.example.com.'],
+            ['WEB_APP_URL must be an https address as a browser writes it (lower case, no path, trailing slash or :443), such as https://mail.example.com.'],
             new ProductionSettings($settings, self::DEVELOPMENT)->problems(),
         );
     }
@@ -157,8 +160,8 @@ final class ProductionSettingsTest extends TestCase
         );
         self::assertSame(
             [
-                'CORS_ALLOW_ORIGIN lists "https://*.example.com", which is not an https origin such as https://mail.example.com.',
-                'CORS_ALLOW_ORIGIN lists "http://intranet.example", which is not an https origin such as https://mail.example.com.',
+                'CORS_ALLOW_ORIGIN lists "https://*.example.com", which is not an https origin as a browser writes it, such as https://mail.example.com.',
+                'CORS_ALLOW_ORIGIN lists "http://intranet.example", which is not an https origin as a browser writes it, such as https://mail.example.com.',
             ],
             new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => 'https://mail.example.com https://*.example.com http://intranet.example'], self::DEVELOPMENT)->problems(),
         );
@@ -168,7 +171,7 @@ final class ProductionSettingsTest extends TestCase
     {
         foreach (['https://api.mail.example.com/', 'https://api.mail.example.com/x', 'https://api.mail.example.com?x=1', 'https://api.mail.example.com#x', 'https://user@api.mail.example.com', 'https://api.mail.example.com:', 'https://api.mail.example.com:0', 'https://api.mail.example.com:70000'] as $address) {
             self::assertSame(
-                ['API_PUBLIC_URL must be an https address without a path or trailing slash, such as https://mail.example.com.'],
+                ['API_PUBLIC_URL must be an https address as a browser writes it (lower case, no path, trailing slash or :443), such as https://mail.example.com.'],
                 new ProductionSettings([...self::complete(), 'API_PUBLIC_URL' => $address], self::DEVELOPMENT)->problems(),
                 $address,
             );

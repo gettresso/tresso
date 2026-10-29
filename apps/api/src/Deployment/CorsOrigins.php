@@ -30,10 +30,11 @@ final class CorsOrigins implements EnvVarProcessorInterface
         $origins = self::origins($value);
         if ([] === $origins) {
             // Matches no origin at all: an empty list allows none rather than every site.
-            return '^(?!)$';
+            return '^(?!)\z';
         }
 
-        return '^('.implode('|', array_map(static fn (string $origin): string => preg_quote($origin, '{'), $origins)).')$';
+        // \z, not $: a $ would also match before a trailing newline.
+        return '^('.implode('|', array_map(static fn (string $origin): string => preg_quote($origin, '{'), $origins)).')\z';
     }
 
     /** @return list<string> */
