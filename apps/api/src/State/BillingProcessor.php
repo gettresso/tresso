@@ -9,6 +9,7 @@ use ApiPlatform\State\ProcessorInterface;
 use App\ApiResource\BillingPage;
 use App\ApiResource\Input\Billing\BillingCheckoutInput;
 use App\ApiResource\Input\Billing\BillingPortalInput;
+use App\Billing\BillingChanged;
 use App\Billing\BillingSettings;
 use App\Billing\OpenSubscription;
 use App\Billing\Stripe\StripeException;
@@ -72,7 +73,7 @@ final readonly class BillingProcessor implements ProcessorInterface
 
                 try {
                     return new BillingPage($this->subscriptions->checkout($subscription, $user, $price));
-                } catch (OpenSubscription $exception) {
+                } catch (OpenSubscription|BillingChanged $exception) {
                     throw new ConflictHttpException($exception->getMessage(), $exception);
                 }
             }
