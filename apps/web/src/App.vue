@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterView } from 'vue-router'
+import { RouterView, useRouter } from 'vue-router'
 import { errorMessage } from '@/api/errors'
 import { useAuthStore } from '@/stores/auth'
 import { useComposeStore } from '@/stores/compose'
@@ -11,6 +11,8 @@ import { releaseOtherUsersPush } from '@/platform/webPush'
 import NoticeStack from '@/components/NoticeStack.vue'
 import UpdateCard from '@/components/UpdateCard.vue'
 import { useUpdatesStore } from '@/stores/updates'
+import { useBillingStore } from '@/stores/billing'
+import { TRIAL_REMINDER_DAYS, trialDaysLeft, type BillingStatus } from '@tresso/core'
 import { isDesktop } from '@/platform/desktop'
 import { vibrant } from '@/platform/vibrancy'
 
@@ -22,6 +24,28 @@ const handOvers = useHandOversStore()
 // The editor is large; it loads the first time a message is written.
 const ComposeWindow = defineAsyncComponent(() => import('@/components/ComposeWindow.vue'))
 const HandOverDialog = defineAsyncComponent(() => import('@/components/HandOverDialog.vue'))
+const PaymentScreen = defineAsyncComponent(() => import('@/components/PaymentScreen.vue'))
+const billing = useBillingStore()
+const router = useRouter()
+
+/** Reminds an owner a few days before their own trial ends, once per launch. */
+function remindOfTrial(status: BillingStatus): void {
+  const own = status.organizations.find((organization) => organization.personal)
+  if (!status.enabled || own === undefined || own.status !== 'trial' || !own.canManage) {
+    return
+  }
+  const days = trialDaysLeft(own)
+  if (days > 0 && days <= TRIAL_REMINDER_DAYS) {
+    compose.notify(
+      {
+        text: days === 1 ? 'Your free trial ends tomorrow.' : `Your free trial ends in ${days} days.`,
+        tone: 'info',
+        action: { label: 'Subscribe', run: () => void router.push({ name: 'settings-billing' }) },
+      },
+      20_000,
+    )
+  }
+}
 const error = ref<string | null>(null)
 
 /** After another tab moved to a newer Tresso, only a reload brings this tab the code that opens the new copy. */
@@ -60,8 +84,14 @@ watch(
     stopTimeZone?.()
     stopTimeZone = null
     if (!authenticated) {
+      billing.reset()
       return
     }
+    // Where billing stands decides what shows: the payment screen, a trial reminder, the settings page.
+    billing
+      .load()
+      .then(remindOfTrial)
+      .catch((cause: unknown) => console.error('Loading billing failed', cause))
     try {
       await auth.loadMe()
       if (auth.me) {
@@ -88,12 +118,13 @@ watch(
     <Transition name="layer"><HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" /></Transition>
     <NoticeStack />
     <UpdateCard v-if="isDesktop" />
+    <PaymentScreen v-if="auth.paymentRequired" />
   </template>
   <p v-if="mail.updatedElsewhere" class="problem" role="alert">
     {{ mail.updatedElsewhere }}
     <button type="button" class="reload" @click="reload">Reload</button>
   </p>
-  <p v-else-if="error || mail.syncState === 'error'" class="problem" role="alert">
+  <p v-else-if="!auth.paymentRequired && (error || mail.syncState === 'error')" class="problem" role="alert">
     {{ error ?? `Sync stopped: ${mail.syncError}` }}
   </p>
 </template>

@@ -29,6 +29,8 @@ export const useAuthStore = defineStore('auth', () => {
   const awaitingBrowser = ref(false)
   /** Keeping or forgetting the tokens failed, e.g. the keychain refused; shown to the user. */
   const storageError = ref<string | null>(null)
+  /** The server answered 402: the trial or subscription is over, and the payment screen covers the app. */
+  const paymentRequired = ref(false)
 
   async function store(next: TokenSet | null): Promise<void> {
     tokens.value = next
@@ -107,6 +109,7 @@ export const useAuthStore = defineStore('auth', () => {
       }
     }
     me.value = null
+    paymentRequired.value = false
     await store(null)
   }
 
@@ -141,6 +144,9 @@ export const useAuthStore = defineStore('auth', () => {
       void endSession(false)
       throw new ApiError(401, 'Your session has expired. Sign in again.')
     }
+    if (response.status === 402) {
+      paymentRequired.value = true
+    }
     if (!response.ok) {
       throw await ApiError.fromResponse(path, response)
     }
@@ -164,5 +170,5 @@ export const useAuthStore = defineStore('auth', () => {
     me.value = await api<Me>('/api/v1/me')
   }
 
-  return { tokens, me, isAuthenticated, awaitingBrowser, storageError, restore, signIn, completeSignIn, signOut, loadMe, api, send }
+  return { tokens, me, isAuthenticated, awaitingBrowser, storageError, paymentRequired, restore, signIn, completeSignIn, signOut, loadMe, api, send }
 })
