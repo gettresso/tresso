@@ -33,11 +33,14 @@ const RELAUNCH_REQUESTED = 'tresso://update-relaunch-requested'
 
 /**
  * Calls `handler` whenever Sparkle wants to relaunch for an update (macOS); Sparkle then waits for answerRelaunch.
- * Until this runs, Sparkle relaunches without asking, since nobody would answer.
+ * Until this runs, Sparkle relaunches without asking, since nobody would answer. A relaunch Sparkle held while no page
+ * listened (during a reload, say) is handed over at once.
  */
 export async function onRelaunchRequested(handler: () => void): Promise<() => void> {
   const unlisten = await listen(RELAUNCH_REQUESTED, handler)
-  await invoke('update_listening')
+  if (await invoke<boolean>('update_listening')) {
+    handler()
+  }
   return unlisten
 }
 

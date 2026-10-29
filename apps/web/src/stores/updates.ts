@@ -16,6 +16,9 @@ import { useComposeStore } from '@/stores/compose'
 /** How often a running app looks for a new release (Windows and Linux; Sparkle keeps its own schedule on macOS). */
 export const CHECK_EVERY_MS = 6 * 60 * 60 * 1000
 
+/** How long saving the draft before a restart may take; a save that hangs keeps the app from restarting. */
+export const SAVE_TIMEOUT_MS = 10_000
+
 /**
  * `ready`: downloaded, the restart was put off with "Later". `waiting`: the restart waits for files on their way to a
  * draft or a message being sent (`waitingFor`).
@@ -50,6 +53,8 @@ export const useUpdatesStore = defineStore('updates', () => {
   /** Ends the wait of `waiting`: true restarts, false keeps working. */
   let answer: ((restartNow: boolean) => void) | null = null
   let stopListening: (() => void) | null = null
+  /** A restart is being prepared (saving, waiting): a second click or request must not start another one. */
+  let preparing = false
 
   /** `automatic`: look for releases on its own (release builds; a development build is always behind). */
   async function start(automatic: boolean): Promise<void> {
@@ -75,9 +80,14 @@ export const useUpdatesStore = defineStore('updates', () => {
     stopListening = null
   }
 
-  /** While a release is on its way in, a check would only replace it with itself. */
+  /** While a release is on its way in or being installed, a check would get in its way. */
   function busy(): boolean {
-    return phase.value === 'checking' || phase.value === 'downloading' || phase.value === 'ready' || phase.value === 'waiting' || phase.value === 'installing'
+    return preparing || phase.value === 'checking' || phase.value === 'downloading' || phase.value === 'waiting' || phase.value === 'installing'
+  }
+
+  /** The release downloaded and kept with "Later", if it is still the one on offer. */
+  function kept(): Update | null {
+    return downloaded !== null && downloaded === update.value ? downloaded : null
   }
 
   /** Looks for a newer release. `asked`: the user asked, so "up to date" and failures are shown, and "Later" is undone. */
@@ -93,6 +103,18 @@ export const useUpdatesStore = defineStore('updates', () => {
     error.value = null
     try {
       const found = await findUpdate()
+      const have = kept()
+      if (have !== null && (found === null || found.version === have.version)) {
+        // Still the newest: the download stays, and the copy this check holds goes.
+        if (found !== null) {
+          void found.close().catch(() => undefined)
+          if (asked) {
+            dismissed.value = null
+          }
+        }
+        phase.value = 'ready'
+        return
+      }
       // Each check holds its release on the Rust side until closed; the one it replaces goes.
       const previous = update.value
       update.value = found
@@ -109,7 +131,7 @@ export const useUpdatesStore = defineStore('updates', () => {
     } catch (cause) {
       // A check in the background that fails (offline, say) stays quiet and is tried again later. One the user asked
       // for says so; a release found before stays on offer, so the card's button still installs rather than checks.
-      phase.value = update.value !== null ? 'available' : asked ? 'failed' : 'idle'
+      phase.value = kept() !== null ? 'ready' : update.value !== null ? 'available' : asked ? 'failed' : 'idle'
       error.value = asked ? `Checking for updates failed: ${cause instanceof Error ? cause.message : String(cause)}` : null
     }
   }
@@ -120,7 +142,7 @@ export const useUpdatesStore = defineStore('updates', () => {
    */
   async function readyToRestart(): Promise<boolean> {
     const compose = useComposeStore()
-    await compose.saveNow()
+    await saveDraft()
     if (compose.unfinished === null) {
       return true
     }
@@ -150,8 +172,23 @@ export const useUpdatesStore = defineStore('updates', () => {
       return false
     }
     // What the files or the send changed in the draft is saved as well.
-    await compose.saveNow()
+    await saveDraft()
     return true
+  }
+
+  /** Saves the open draft on this device; throws when that fails or hangs, so the restart does not lose the edits. */
+  async function saveDraft(): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        useComposeStore().saveNow(),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('saving it is taking too long')), SAVE_TIMEOUT_MS)
+        }),
+      ])
+    } finally {
+      clearTimeout(timeout)
+    }
   }
 
   /** The user's answer while the restart waits: go now (losing what is still under way), or keep working. */
@@ -159,38 +196,51 @@ export const useUpdatesStore = defineStore('updates', () => {
     answer?.(true)
   }
 
-  /** macOS: Sparkle has the update and wants to relaunch; it waits for this answer. */
+  /**
+   * macOS: Sparkle has the update and wants to relaunch; it waits for this answer. A request while one is prepared is
+   * the same relaunch asked again (the menu item); any other means the earlier relaunch did not happen, so it is asked
+   * anew.
+   */
   async function relaunchForSparkle(): Promise<void> {
-    if (phase.value === 'waiting' || phase.value === 'installing') {
+    if (preparing) {
       return
     }
-    const before = phase.value
+    preparing = true
+    const before = phase.value === 'waiting' ? 'idle' : phase.value
     let proceed = false
+    error.value = null
     try {
       proceed = await readyToRestart()
     } catch (cause) {
-      // Saving failed: the edits are still here, so the relaunch stays held rather than lose them.
-      console.error('Getting ready for the update failed', cause)
-    }
-    if (proceed) {
-      phase.value = 'installing'
+      // The edits are still here: the relaunch stays held rather than lose them, and the card says why.
+      error.value = `The draft could not be saved, so Tresso did not restart for the update: ${cause instanceof Error ? cause.message : String(cause)}`
     }
     try {
-      if (!(await answerRelaunch(proceed)) && proceed) {
-        // Sparkle gave the relaunch up meanwhile (an installer error): it offers the update again on its next check.
-        phase.value = before
-      }
+      // Sparkle quits the app when it goes ahead. When it does not (it gave the relaunch up, or the install fails
+      // later), it asks again with its next offer, and this store is back where it was.
+      await answerRelaunch(proceed)
     } catch (cause) {
-      phase.value = before
       console.error('Answering Sparkle failed', cause)
+    } finally {
+      phase.value = before
+      preparing = false
     }
   }
 
   async function install(): Promise<void> {
     const found = update.value
-    if (found === null || phase.value === 'downloading' || phase.value === 'waiting' || phase.value === 'installing') {
+    if (found === null || preparing || phase.value === 'downloading' || phase.value === 'waiting' || phase.value === 'installing') {
       return
     }
+    preparing = true
+    try {
+      await downloadAndRestart(found)
+    } finally {
+      preparing = false
+    }
+  }
+
+  async function downloadAndRestart(found: Update): Promise<void> {
     error.value = null
     if (downloaded !== found) {
       phase.value = 'downloading'
@@ -247,9 +297,14 @@ export const useUpdatesStore = defineStore('updates', () => {
       answer?.(false)
       return
     }
+    if (channel.value === 'sparkle') {
+      // The card only showed why Sparkle's relaunch is held; "Check for Updates…" offers it again.
+      error.value = null
+      return
+    }
     dismissed.value = update.value?.version ?? null
     if (phase.value === 'failed') {
-      phase.value = downloaded !== null && downloaded === update.value ? 'ready' : 'available'
+      phase.value = kept() !== null ? 'ready' : 'available'
       error.value = null
     }
   }

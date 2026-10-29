@@ -56,8 +56,12 @@ vi.mock('@/stores/compose', async () => {
     unfinished: null as 'files' | 'sending' | null,
     saves: 0,
     saveFails: false,
+    saveHangs: false,
     async saveNow() {
       compose.saves += 1
+      if (compose.saveHangs) {
+        await new Promise(() => undefined)
+      }
       if (compose.saveFails) {
         throw new Error('disk full')
       }
@@ -66,9 +70,9 @@ vi.mock('@/stores/compose', async () => {
   return { useComposeStore: () => compose }
 })
 
-const { useUpdatesStore, CHECK_EVERY_MS } = await import('../updates')
+const { useUpdatesStore, CHECK_EVERY_MS, SAVE_TIMEOUT_MS } = await import('../updates')
 const { useComposeStore } = await import('@/stores/compose')
-const compose = useComposeStore() as unknown as { unfinished: 'files' | 'sending' | null; saves: number; saveFails: boolean }
+const compose = useComposeStore() as unknown as { unfinished: 'files' | 'sending' | null; saves: number; saveFails: boolean; saveHangs: boolean }
 
 const closed: string[] = []
 
@@ -112,6 +116,7 @@ describe('updates store', () => {
     compose.unfinished = null
     compose.saves = 0
     compose.saveFails = false
+    compose.saveHangs = false
   })
 
   afterEach(() => {
@@ -273,9 +278,6 @@ describe('updates store', () => {
     expect(updates.phase).toBe('ready')
     expect(installed).toEqual([])
     expect(platform.restarts).toBe(0)
-    // A check in the background would only replace the download with the same release.
-    await updates.checkNow(false)
-    expect(platform.checks).toBe(1)
 
     compose.unfinished = null
     await updates.install()
@@ -325,7 +327,11 @@ describe('updates store', () => {
 
     await vi.waitFor(() => expect(platform.answers).toEqual([true]))
     expect(compose.saves).toBe(1)
-    expect(updates.phase).toBe('installing')
+    expect(updates.phase).toBe('idle')
+
+    // The install failed after all (a cancelled authorization) and Sparkle offers it again: it is answered again.
+    platform.relaunchRequested?.()
+    await vi.waitFor(() => expect(platform.answers).toEqual([true, true]))
   })
 
   it('holds Sparkle\'s relaunch while files are on their way, and keeps it held after "Later" (macOS)', async () => {
@@ -369,6 +375,77 @@ describe('updates store', () => {
     platform.relaunchRequested?.()
 
     await vi.waitFor(() => expect(platform.answers).toEqual([false]))
+    expect(updates.error).toBe('The draft could not be saved, so Tresso did not restart for the update: disk full')
+    updates.later()
+    expect(updates.error).toBeNull()
+  })
+
+  it('does not restart when saving the draft hangs', async () => {
+    vi.useFakeTimers()
+    platform.found = release('0.3.0')
+    compose.saveHangs = true
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    const installing = updates.install()
+    await vi.advanceTimersByTimeAsync(SAVE_TIMEOUT_MS)
+    await installing
+
+    expect(updates.error).toContain('saving it is taking too long')
+    expect(installed).toEqual([])
+    expect(platform.restarts).toBe(0)
+  })
+
+  it('prepares one restart at a time, so "Later" holds even after a second click', async () => {
+    platform.found = release('0.3.0')
+    compose.unfinished = 'files'
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    const first = updates.install()
+    const second = updates.install()
+    await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+    updates.later()
+    await Promise.all([first, second])
+
+    compose.unfinished = null
+    await vi.waitFor(() => expect(compose.saves).toBe(1))
+    expect(downloads).toEqual(['0.3.0'])
+    expect(installed).toEqual([])
+    expect(platform.restarts).toBe(0)
+    expect(updates.phase).toBe('ready')
+  })
+
+  it('keeps looking for releases while a download waits, keeping it unless a newer one is out', async () => {
+    platform.found = release('0.3.0')
+    compose.unfinished = 'files'
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+    const installing = updates.install()
+    await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+    updates.later()
+    await installing
+
+    // The same release again: the download stays, the check's copy goes.
+    platform.found = release('0.3.0')
+    await updates.checkNow(false)
+    expect(platform.checks).toBe(2)
+    expect(updates.phase).toBe('ready')
+    expect(closed).toEqual(['0.3.0'])
+
+    platform.found = release('0.3.1')
+    await updates.checkNow(false)
+    expect(updates.phase).toBe('available')
+    expect(updates.update?.version).toBe('0.3.1')
+    expect(closed).toEqual(['0.3.0', '0.3.0'])
+
+    compose.unfinished = null
+    await updates.install()
+    expect(downloads).toEqual(['0.3.0', '0.3.1'])
+    expect(installed).toEqual(['0.3.1'])
   })
 
   it('puts a release aside with "Later" until the user checks again', async () => {
@@ -460,7 +537,10 @@ describe('updates store', () => {
     expect(first.installedWith).toBe(7)
     expect(updates.error).toBeNull()
 
-    platform.found = new PrivateRelease()
+    // A newer release replaces it (the same version would keep the download).
+    const second = new PrivateRelease()
+    second.version = '0.3.1'
+    platform.found = second
     updates.phase = 'available'
     await updates.checkNow(true)
     expect(first.closedWith).toBe(7)
