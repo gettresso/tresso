@@ -94,6 +94,7 @@ final readonly class Subscriptions
      * one would charge twice. Two admins at once wait for each other.
      *
      * @throws OpenSubscription
+     * @throws BillingChanged
      */
     public function checkout(Subscription $subscription, User $payer, string $priceId): string
     {
@@ -104,7 +105,7 @@ final readonly class Subscriptions
             $this->lock($subscription);
             // A customer.deleted that came in meanwhile leaves none: the next attempt makes a new one.
             if ($subscription->getStripeCustomerId() !== $customer) {
-                throw new StripeException('The organization\'s Stripe customer changed meanwhile; try again.');
+                throw new BillingChanged('The organization\'s billing changed meanwhile; try again.');
             }
             if ($subscription->hasOpenSubscription()) {
                 return null;
