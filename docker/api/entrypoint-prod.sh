@@ -8,7 +8,8 @@ php bin/console app:settings:check --no-interaction
 if [ "$1" = "frankenphp" ] && [ "${RUN_MIGRATIONS:-0}" = "1" ]; then
     # OAuth2 signing keys, made once and kept in the config/jwt volume. Each file is written next to its place and moved
     # there whole, so a stop halfway never leaves a partial key behind. The private key is encrypted with
-    # OAUTH_PASSPHRASE: changing the passphrase later needs a new key (remove both files), which signs everyone out.
+    # OAUTH_PASSPHRASE: changing the passphrase later needs a new key (remove both files), after which the apps renew
+    # their sign-in.
     if [ ! -f config/jwt/private.pem ]; then
         (
             umask 077

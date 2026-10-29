@@ -137,7 +137,7 @@ final class ProductionSettingsTest extends TestCase
     #[DataProvider('addressesThatAreNotAnOrigin')]
     public function testTheWebAddressMustBeABareHttpsOrigin(string $address): void
     {
-        $settings = [...self::complete(), 'WEB_APP_URL' => $address, 'CORS_ALLOW_ORIGIN' => '^'.preg_quote($address).'$'];
+        $settings = [...self::complete(), 'WEB_APP_URL' => $address];
 
         self::assertSame(
             ['WEB_APP_URL must be an https address without a path or trailing slash, such as https://mail.example.com.'],
@@ -145,40 +145,28 @@ final class ProductionSettingsTest extends TestCase
         );
     }
 
-    public function testCorsMustBeAnchoredAndAllowTheWebClient(): void
+    public function testCorsIsAListOfOriginsThatIncludesTheWebClient(): void
     {
         self::assertSame(
-            ['CORS_ALLOW_ORIGIN must start with ^ and end with $, or other sites that contain the address match too.'],
-            new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => 'https://mail\\.example\\.com'], self::DEVELOPMENT)->problems(),
+            ['CORS_ALLOW_ORIGIN must list origins separated by spaces, not a regular expression.'],
+            new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => '^https://mail\\.example\\.com$'], self::DEVELOPMENT)->problems(),
         );
         self::assertSame(
-            ['CORS_ALLOW_ORIGIN does not allow WEB_APP_URL, so the web client cannot call the API.'],
-            new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => '^https://other\\.example$'], self::DEVELOPMENT)->problems(),
+            ['CORS_ALLOW_ORIGIN does not list WEB_APP_URL, so the web client cannot call the API.'],
+            new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => 'https://other.example tauri://localhost'], self::DEVELOPMENT)->problems(),
         );
-    }
-
-    public function testCorsMayNotAllowOtherSites(): void
-    {
-        foreach (['^.*$', '^https://mail\\.example\\.com|example\\.com$', '^https://mail\\.example\\.com.*$'] as $cors) {
-            self::assertSame(
-                ['CORS_ALLOW_ORIGIN also allows other sites; anchor every alternative, such as ^(https://mail\\.example\\.com|tauri://localhost)$.'],
-                new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => $cors], self::DEVELOPMENT)->problems(),
-                $cors,
-            );
-        }
-    }
-
-    public function testAnInvalidCorsExpressionIsNamed(): void
-    {
         self::assertSame(
-            ['CORS_ALLOW_ORIGIN is not a valid regular expression.'],
-            new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => '^(https://mail$'], self::DEVELOPMENT)->problems(),
+            [
+                'CORS_ALLOW_ORIGIN lists "https://*.example.com", which is not an https origin such as https://mail.example.com.',
+                'CORS_ALLOW_ORIGIN lists "http://intranet.example", which is not an https origin such as https://mail.example.com.',
+            ],
+            new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => 'https://mail.example.com https://*.example.com http://intranet.example'], self::DEVELOPMENT)->problems(),
         );
     }
 
     public function testTheApiAddressMustBeABareHttpsOriginToo(): void
     {
-        foreach (['https://api.mail.example.com/', 'https://api.mail.example.com?x=1', 'https://api.mail.example.com#x', 'https://user@api.mail.example.com'] as $address) {
+        foreach (['https://api.mail.example.com/', 'https://api.mail.example.com/x', 'https://api.mail.example.com?x=1', 'https://api.mail.example.com#x', 'https://user@api.mail.example.com', 'https://api.mail.example.com:', 'https://api.mail.example.com:0', 'https://api.mail.example.com:70000'] as $address) {
             self::assertSame(
                 ['API_PUBLIC_URL must be an https address without a path or trailing slash, such as https://mail.example.com.'],
                 new ProductionSettings([...self::complete(), 'API_PUBLIC_URL' => $address], self::DEVELOPMENT)->problems(),
@@ -217,7 +205,7 @@ final class ProductionSettingsTest extends TestCase
             'MAIL_ALLOW_UNSAFE_SERVERS' => '0',
             'WEB_APP_URL' => 'https://mail.example.com',
             'API_PUBLIC_URL' => 'https://api.mail.example.com',
-            'CORS_ALLOW_ORIGIN' => '^(https://mail\\.example\\.com|tauri://localhost|http://tauri\\.localhost)$',
+            'CORS_ALLOW_ORIGIN' => 'https://mail.example.com tauri://localhost http://tauri.localhost',
         ];
     }
 }
