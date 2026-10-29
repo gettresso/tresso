@@ -24,6 +24,12 @@ final readonly class PaymentRequiredListener
     /** Paths a blocked user can still reach. */
     public const array OPEN = ['/api/v1/billing', '/api/v1/billing/checkout', '/api/v1/billing/portal', '/api/v1/server-info'];
 
+    /**
+     * Signing out removes the device from the user's push devices (the web client finds its own by registering it
+     * again first): that stays open, or a device signed out while blocked would get their notifications once renewed.
+     */
+    private const string SIGN_OUT_DEVICE = '{^/api/v1/notification-devices(/[^/]+)?$}';
+
     public function __construct(
         private Security $security,
         private Entitlements $entitlements,
@@ -40,6 +46,10 @@ final readonly class PaymentRequiredListener
         // Decoded as the router and access_control decode it, so /%61pi/... cannot slip past as something else.
         $path = rawurldecode($event->getRequest()->getPathInfo());
         if (!str_starts_with($path, '/api/') || \in_array(rtrim($path, '/'), self::OPEN, true)) {
+            return;
+        }
+        $method = $event->getRequest()->getMethod();
+        if (('DELETE' === $method || 'POST' === $method) && 1 === preg_match(self::SIGN_OUT_DEVICE, $path) && !str_ends_with($path, '/web-push-key')) {
             return;
         }
         $user = $this->security->getUser();

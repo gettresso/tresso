@@ -175,6 +175,20 @@ final class BillingTest extends DatabaseTestCase
         }
     }
 
+    public function testABlockedUserCanStillRemoveADeviceWhenSigningOut(): void
+    {
+        $headers = $this->userHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $this->client->jsonRequest('POST', '/api/v1/notification-devices', ['kind' => 'expo', 'endpoint' => 'ExponentPushToken[kim-phone]', 'name' => 'Kim\'s phone'], $headers);
+        self::assertResponseIsSuccessful();
+        $device = $this->responseString('id');
+        $this->endTrial();
+
+        $this->client->request('GET', '/api/v1/notification-devices', server: $headers);
+        self::assertResponseStatusCodeSame(402, 'Listing devices is not part of signing out.');
+        $this->client->request('DELETE', '/api/v1/notification-devices/'.$device, server: $headers);
+        self::assertResponseStatusCodeSame(204);
+    }
+
     public function testPayingAndManagingNeedTheSettingsScopes(): void
     {
         $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
