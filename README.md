@@ -113,9 +113,10 @@ runs the same images. To run them, you need a server with Docker, two DNS names 
 client, one for the API) and ports 80 and 443 open:
 
 1. Download [`compose.prod.yaml`](compose.prod.yaml) and [`.env.prod.example`](.env.prod.example) into one folder.
-2. Copy `.env.prod.example` to `.env` and fill it in. Generate every secret (`openssl rand -hex 32`) and keep a copy
-   of `DATA_KEYS` somewhere safe: it encrypts the mail at rest, and losing it loses that mail. The API refuses to
-   start while a secret is missing, too short, or one of the development values in this repository.
+2. Copy `.env.prod.example` to `.env` and fill it in: your two addresses, `CORS_ALLOW_ORIGIN` with your web address
+   in it, and every secret, each generated (`openssl rand -hex 32`). Keep a copy of `DATA_KEYS` somewhere safe: it
+   encrypts the mail at rest, and losing it loses that mail. The API refuses to start while a secret is missing, too
+   short, or one of the development values in this repository, or while an address or `CORS_ALLOW_ORIGIN` is wrong.
 3. Start it:
 
    ```bash
@@ -130,7 +131,14 @@ client, one for the API) and ports 80 and 443 open:
 
 The stack gets HTTPS certificates by itself, migrates the database on start and runs PostgreSQL, Redis, object
 storage (RustFS), Meilisearch and ClamAV next to Tresso; ClamAV needs about 1.5 GB of RAM. To upgrade, set
-`TRESSO_VERSION` (or keep `latest`) and run `docker compose -f compose.prod.yaml pull` before `up -d`.
+`TRESSO_VERSION` (or keep `latest`) and run `docker compose -f compose.prod.yaml pull` before `up -d`. Two settings
+only apply the first time: `POSTGRES_PASSWORD` (the database keeps its password) and `OAUTH_PASSPHRASE` (it encrypts
+the OAuth signing key; a new one needs a new key, which signs everyone out).
+
+Running the images without this compose file, set the same settings as `compose.prod.yaml` does. The API container
+needs `RUN_MIGRATIONS=1` to migrate and create the OAuth clients (or run `php bin/console app:oauth:bootstrap-clients`
+once), and the desktop app's origins, `tauri://localhost` and `http://tauri.localhost`, belong in both
+`CORS_ALLOW_ORIGIN` and `MERCURE_CORS_ORIGINS`.
 
 In the desktop app, choose **Use another server** on the sign-in screen and enter the API address, such as
 `api.mail.example.com`. The app checks that the server answers and remembers it until you choose again. The web
