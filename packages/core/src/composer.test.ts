@@ -96,14 +96,13 @@ describe('Composer', () => {
     composer.openNew()
     composer.update({ subject: 'Before the update' })
     const id = composer.state.draft!.id
-    api.offline = true
 
     await composer.saveNow()
 
     expect(await store.draft(id)).toMatchObject({ subject: 'Before the update', pendingSave: true })
-    // The timer is gone: nothing saves the same edits a second time.
+    // The upload is left for after the restart, and the timer is gone: nothing saves the same edits again.
     await vi.advanceTimersByTimeAsync(1000)
-    expect(api.calls.filter((call) => call === `create ${id}`)).toHaveLength(1)
+    expect(api.calls).toEqual([])
   })
 
   it('waits for a save that is already under way', async () => {
@@ -116,6 +115,29 @@ describe('Composer', () => {
     await composer.saveNow()
 
     expect(await store.draft(id)).toMatchObject({ subject: 'Typed' })
+  })
+
+  it('refuses a restart when the draft cannot be saved, and saves it again on the next try', async () => {
+    composer.openNew()
+    composer.update({ subject: 'Not lost' })
+    const id = composer.state.draft!.id
+    vi.spyOn(store, 'changeDraft').mockRejectedValueOnce(new Error('disk full'))
+
+    await expect(composer.saveNow()).rejects.toThrow('The draft could not be saved: disk full')
+    expect(await store.draft(id)).toBeNull()
+
+    // Nothing was typed since: the edits that failed are written now.
+    await composer.saveNow()
+    expect(await store.draft(id)).toMatchObject({ subject: 'Not lost' })
+  })
+
+  it('refuses a restart when the save of a draft put away failed', async () => {
+    composer.openNew()
+    composer.update({ subject: 'Put away' })
+    vi.spyOn(store, 'changeDraft').mockRejectedValueOnce(new Error('disk full'))
+    composer.close()
+
+    await expect(composer.saveNow()).rejects.toThrow('could not be saved')
   })
 
   it('says what a restart would cut short: files on their way, or a message being sent', async () => {

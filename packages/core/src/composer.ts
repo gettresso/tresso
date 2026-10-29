@@ -82,8 +82,10 @@ export class Composer {
   /** Files on their way to a draft, by a number of their own, so switching drafts never loses or mixes them up. */
   private readonly onTheirWay = new Map<number, { draftId: string; name: string }>()
   private nextFile = 0
-  /** Saves on this device that are under way, so a restart can wait for them (saveNow). */
-  private readonly writes = new Set<Promise<unknown>>()
+  /** Saves on this device that are under way, each resolving whether it worked, so a restart can wait for them. */
+  private readonly writes = new Set<Promise<boolean>>()
+  /** The open draft has edits that are not written on this device yet, or whose write failed. */
+  private dirty = false
 
   constructor(private readonly deps: ComposerDeps) {}
 
@@ -101,21 +103,64 @@ export class Composer {
 
   /**
    * Saves the open draft on this device at once, rather than when typing stops, and waits for saves under way, so a
-   * restart loses no edits. The upload is left for later: the draft stays marked as not on the server.
+   * restart loses no edits. The upload is left for later: the draft stays marked as not on the server. Throws when a
+   * save failed, so the caller does not go ahead and lose those edits.
    */
   async saveNow(): Promise<void> {
-    if (this.saveTimer !== null) {
-      this.clearSaveTimer()
-      void this.save()
+    this.clearSaveTimer()
+    const draft = this.current.draft
+    if (this.dirty && draft !== null) {
+      void this.saveHere(draft, false)
     }
-    await Promise.allSettled([...this.writes])
+    const saved = await Promise.all([...this.writes])
+    if (saved.includes(false) || (this.dirty && this.current.draft !== null)) {
+      throw new Error(this.current.error ?? 'The draft could not be saved on this device.')
+    }
   }
 
-  private track<T>(write: Promise<T>): Promise<T> {
+  /** Writes the draft on this device; resolves whether that worked (true too when there is nowhere to keep it). */
+  private saveHere(draft: Draft, closing: boolean): Promise<boolean> {
+    const write = this.writeHere(draft, closing)
     this.writes.add(write)
-    const done = (): void => void this.writes.delete(write)
-    write.then(done, done)
+    void write.then(() => this.writes.delete(write))
     return write
+  }
+
+  private async writeHere(draft: Draft, closing: boolean): Promise<boolean> {
+    const store = this.storeOfDraft()
+    if (store === null) {
+      return true
+    }
+    const open = this.current.draft?.id === draft.id
+    if (open) {
+      this.dirty = false
+    }
+    let isNew = false
+    try {
+      // Kept as one step, so what an upload or a file learned meanwhile is not written over.
+      await store.changeDraft(draft.id, (stored) => {
+        isNew = stored === null
+        return withEdits(stored, draft)
+      })
+    } catch (error) {
+      if (error instanceof CopyClosingError) {
+        // Signed out meanwhile: the copy is going, and the draft with it.
+        return true
+      }
+      if (this.current.draft?.id === draft.id) {
+        this.dirty = true
+        this.set({ error: `The draft could not be saved: ${this.deps.explain(error).message}` })
+      }
+      return false
+    }
+    // Lists only need to know of a new draft and of one put away; every pause in typing would be too often.
+    if (isNew || closing) {
+      this.deps.changed?.()
+    }
+    if (this.current.draft?.id === draft.id) {
+      this.set({ savedAt: Date.now() })
+    }
+    return true
   }
 
   subscribe(listener: () => void): () => void {
@@ -144,11 +189,12 @@ export class Composer {
       // No copy is open (signed out): there is nowhere to keep a draft.
       return
     }
-    // A save that was still waiting for typing to stop is made before the other draft takes its place.
-    if (this.saveTimer !== null) {
+    // A save that was still waiting for typing to stop (or failed) is made before the other draft takes its place.
+    if (this.saveTimer !== null || this.dirty) {
       this.clearSaveTimer()
       void this.save(this.current.draft)
     }
+    this.dirty = false
     this.openedIn = store
     this.set({ draft: plain(draft), revision: this.current.revision + 1, error: null, violations: {}, savedAt: null, conflict: draft.remoteVersion !== null, attaching: this.attachingTo(draft.id) })
   }
@@ -170,6 +216,7 @@ export class Composer {
       this.undoTimer = null
     }
     this.openedIn = null
+    this.dirty = false
     this.onTheirWay.clear()
     this.set({ draft: null, savedAt: null, sending: false, error: null, violations: {}, conflict: false, undoable: null, attaching: [] })
   }
@@ -364,6 +411,7 @@ export class Composer {
       return
     }
     this.set({ draft: { ...draft, ...plain(changes), pendingSave: true, updatedAt: Date.now() } })
+    this.dirty = true
     this.clearSaveTimer()
     this.saveTimer = setTimeout(() => void this.save(), this.deps.autosaveMs ?? AUTOSAVE_MS)
   }
@@ -377,35 +425,8 @@ export class Composer {
 
   /** Saves on this device at once and uploads, so the draft is on every device and in the Drafts folder. */
   async save(draft: Draft | null = this.current.draft, closing = false): Promise<void> {
-    const store = this.storeOfDraft()
-    if (draft === null || store === null) {
+    if (draft === null || this.storeOfDraft() === null || !(await this.saveHere(draft, closing))) {
       return
-    }
-    let isNew = false
-    try {
-      // Kept as one step, so what an upload or a file learned meanwhile is not written over.
-      await this.track(
-        store.changeDraft(draft.id, (stored) => {
-          isNew = stored === null
-          return withEdits(stored, draft)
-        }),
-      )
-    } catch (error) {
-      if (error instanceof CopyClosingError) {
-        // Signed out meanwhile: the copy is going, and the draft with it.
-        return
-      }
-      if (this.current.draft?.id === draft.id) {
-        this.set({ error: `The draft could not be saved: ${this.deps.explain(error).message}` })
-      }
-      return
-    }
-    // Lists only need to know of a new draft and of one put away; every pause in typing would be too often.
-    if (isNew || closing) {
-      this.deps.changed?.()
-    }
-    if (this.current.draft?.id === draft.id) {
-      this.set({ savedAt: Date.now() })
     }
     try {
       await this.deps.drafts.upload(draft.id)
@@ -478,6 +499,7 @@ export class Composer {
     }
     this.clearSaveTimer()
     const closing = this.current.draft
+    this.dirty = false
     this.set({ draft: null, conflict: false })
     void this.save(closing, true)
   }
