@@ -5,7 +5,8 @@
 #
 # The proxy gets HTTPS certificates for TRESSO_WEB_URL and TRESSO_API_URL by itself (ports 80 and 443 must reach it).
 
-name: tresso
+# Its own project name, so it never takes over the development stack's containers or volumes on the same machine.
+name: tresso-server
 
 x-api-env: &api-env
   APP_ENV: prod
