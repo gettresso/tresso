@@ -92,6 +92,30 @@ describe('UpdateCard', () => {
     expect(later).toHaveBeenCalledOnce()
   })
 
+  it('shows the release notes without their Markdown', () => {
+    const updates = useUpdatesStore()
+    updates.channel = 'tauri'
+    updates.update = { version: '0.3.0', body: "## What's new\n\n- **New:** Billing per organization\n- **Fixed:** A stuck key" } as Update
+    updates.phase = 'available'
+
+    const card = mount(UpdateCard)
+
+    expect(card.get('.notes').text()).toBe('- New: Billing per organization\n- Fixed: A stuck key')
+  })
+
+  it('says why Sparkle did not restart when the draft could not be saved, with a way to try again', async () => {
+    const updates = useUpdatesStore()
+    updates.channel = 'sparkle'
+    updates.error = 'The draft could not be saved, so Tresso did not restart for the update: disk full'
+    const checkNow = vi.spyOn(updates, 'checkNow').mockResolvedValue(undefined)
+
+    const card = mount(UpdateCard)
+
+    expect(card.get('[role="alert"]').text()).toContain('disk full')
+    await card.get('button.button-primary').trigger('click')
+    expect(checkNow).toHaveBeenCalledWith(true)
+  })
+
   it('says the update is installed when only the restart failed', () => {
     const updates = useUpdatesStore()
     updates.channel = 'tauri'

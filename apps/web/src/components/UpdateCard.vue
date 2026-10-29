@@ -9,9 +9,14 @@ import { useUpdatesStore } from '@/stores/updates'
 const updates = useUpdatesStore()
 
 const waiting = computed(() => updates.phase === 'waiting')
+/** macOS: Sparkle's relaunch is held because the draft could not be saved. */
+const held = computed(() => updates.channel === 'sparkle' && updates.error !== null)
 const shown = computed(() => {
   if (waiting.value) {
     return updates.channel !== 'none'
+  }
+  if (held.value) {
+    return true
   }
   const found = updates.update
   if (updates.channel !== 'tauri' || found === null) {
@@ -24,7 +29,7 @@ const shown = computed(() => {
 })
 const title = computed(() => {
   const found = updates.update?.version
-  if (waiting.value || updates.phase === 'ready') {
+  if (waiting.value || held.value || updates.phase === 'ready') {
     return found === undefined || updates.channel !== 'tauri' ? 'The update is ready' : `Tresso ${found} is ready`
   }
   return `Tresso ${found ?? ''} is available`
@@ -33,6 +38,15 @@ const waitingText = computed(() =>
   updates.waitingFor === 'sending'
     ? 'Tresso restarts once your message is on its way.'
     : 'Tresso restarts once your files are attached, so they are not lost.',
+)
+/** The release notes as plain text: the feed has them as Markdown, under a "What's new" heading. */
+const notes = computed(() =>
+  (updates.update?.body ?? '')
+    .split('\n')
+    .filter((line) => !line.startsWith('#'))
+    .join('\n')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .trim(),
 )
 const percent = computed(() => (updates.progress === null ? null : Math.round(updates.progress * 100)))
 </script>
@@ -48,9 +62,16 @@ const percent = computed(() => (updates.progress === null ? null : Math.round(up
           <button type="button" class="button button-quiet" @click="updates.later()">Later</button>
         </div>
       </template>
+      <template v-else-if="held">
+        <p class="error" role="alert">{{ updates.error }}</p>
+        <div class="actions">
+          <button type="button" class="button button-primary" @click="updates.checkNow(true)">Try again</button>
+          <button type="button" class="button button-quiet" @click="updates.later()">Later</button>
+        </div>
+      </template>
       <template v-else-if="updates.update">
         <p v-if="updates.version" class="detail">You have {{ updates.version }}.</p>
-        <p v-if="updates.update.body" class="notes">{{ updates.update.body }}</p>
+        <p v-if="notes" class="notes">{{ notes }}</p>
         <template v-if="updates.phase === 'downloading' || updates.phase === 'installing'">
           <div
             class="bar"

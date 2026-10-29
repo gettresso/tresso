@@ -45,7 +45,7 @@ const status = computed(() => {
         <button
           type="button"
           class="button button-primary"
-          :disabled="updates.phase === 'checking' || updates.phase === 'downloading' || updates.phase === 'ready' || updates.phase === 'waiting' || updates.phase === 'installing'"
+          :disabled="updates.phase === 'checking' || updates.phase === 'downloading' || updates.phase === 'waiting' || updates.phase === 'installing'"
           @click="updates.checkNow(true)"
         >
           Check for updates
