@@ -8,7 +8,9 @@ function required(name: string, value: string | undefined): string {
   return value
 }
 
-required('VITE_API_URL', import.meta.env.VITE_API_URL)
+if (defaultServer === '') {
+  throw new Error('Missing the server address: set VITE_API_URL for the build, or TRESSO_API_URL for the web image')
+}
 
 // The desktop app is its own OAuth client: it cannot receive a redirect to a web page, so the authorization server
 // sends the browser to `tresso://auth/callback` and the shell hands that link to the app. It talks to the server the

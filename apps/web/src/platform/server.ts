@@ -53,8 +53,17 @@ function stored(fallback: string): string {
   }
 }
 
-/** The server the build points at: the hosted Tresso in a release, the local stack in development. */
-export const defaultServer = trimSlash(import.meta.env.VITE_API_URL ?? '')
+/** The API address the web image was started with, when it was; the build's own address otherwise. */
+function configuredServer(): string {
+  const runtime = typeof window === 'undefined' ? undefined : window.tressoConfig?.apiUrl
+  return typeof runtime === 'string' && runtime.trim() !== '' ? runtime.trim() : (import.meta.env.VITE_API_URL ?? '')
+}
+
+/**
+ * The server this client points at: the one a self-hosted web image was started with, else the build's (the hosted
+ * Tresso in a release, the local stack in development).
+ */
+export const defaultServer = trimSlash(configuredServer())
 
 /**
  * The server the desktop app talks to: the default until the user picks their own at sign-in. The web client is

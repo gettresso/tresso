@@ -11,5 +11,10 @@ interface ImportMeta {
   readonly env: ImportMetaEnv
 }
 
+/** Set by public/config.js, which the web image renders when it starts. */
+interface Window {
+  tressoConfig?: { apiUrl?: string }
+}
+
 /** The push worker: a plain script in public/, which its tests load in a fake service worker scope. */
 declare module '*/public/push-worker.js'
