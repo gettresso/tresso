@@ -137,7 +137,7 @@ final class ProductionSettingsTest extends TestCase
     #[DataProvider('addressesThatAreNotAnOrigin')]
     public function testTheWebAddressMustBeABareHttpsOrigin(string $address): void
     {
-        $settings = [...self::complete(), 'WEB_APP_URL' => $address, 'CORS_ALLOW_ORIGIN' => '^.+$'];
+        $settings = [...self::complete(), 'WEB_APP_URL' => $address, 'CORS_ALLOW_ORIGIN' => '^'.preg_quote($address).'$'];
 
         self::assertSame(
             ['WEB_APP_URL must be an https address without a path or trailing slash, such as https://mail.example.com.'],
@@ -155,6 +155,37 @@ final class ProductionSettingsTest extends TestCase
             ['CORS_ALLOW_ORIGIN does not allow WEB_APP_URL, so the web client cannot call the API.'],
             new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => '^https://other\\.example$'], self::DEVELOPMENT)->problems(),
         );
+    }
+
+    public function testCorsMayNotAllowOtherSites(): void
+    {
+        foreach (['^.*$', '^https://mail\\.example\\.com|example\\.com$', '^https://mail\\.example\\.com.*$'] as $cors) {
+            self::assertSame(
+                ['CORS_ALLOW_ORIGIN also allows other sites; anchor every alternative, such as ^(https://mail\\.example\\.com|tauri://localhost)$.'],
+                new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => $cors], self::DEVELOPMENT)->problems(),
+                $cors,
+            );
+        }
+    }
+
+    public function testAnInvalidCorsExpressionIsNamed(): void
+    {
+        self::assertSame(
+            ['CORS_ALLOW_ORIGIN is not a valid regular expression.'],
+            new ProductionSettings([...self::complete(), 'CORS_ALLOW_ORIGIN' => '^(https://mail$'], self::DEVELOPMENT)->problems(),
+        );
+    }
+
+    public function testTheApiAddressMustBeABareHttpsOriginToo(): void
+    {
+        foreach (['https://api.mail.example.com/', 'https://api.mail.example.com?x=1', 'https://api.mail.example.com#x', 'https://user@api.mail.example.com'] as $address) {
+            self::assertSame(
+                ['API_PUBLIC_URL must be an https address without a path or trailing slash, such as https://mail.example.com.'],
+                new ProductionSettings([...self::complete(), 'API_PUBLIC_URL' => $address], self::DEVELOPMENT)->problems(),
+                $address,
+            );
+        }
+        self::assertSame([], new ProductionSettings([...self::complete(), 'API_PUBLIC_URL' => 'https://api.mail.example.com:8443'], self::DEVELOPMENT)->problems());
     }
 
     public function testProblemsNeverContainASecret(): void
