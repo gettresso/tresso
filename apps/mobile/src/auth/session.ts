@@ -108,12 +108,15 @@ export class Session {
     headers.set('Authorization', `Bearer ${await this.accessToken()}`)
     headers.set('Accept', 'application/json')
 
+    const generation = this.generation
     const response = await this.fetchImpl(`${this.config.apiUrl.replace(/\/+$/, '')}${path}`, { ...init, headers })
     if (response.status === 401) {
       await this.signOut()
       throw new ApiError(401, 'Your session has expired. Sign in again.')
     }
-    if (response.status === 402) {
+    if (generation !== this.generation) {
+      // Signed out while it was underway: the answer says nothing about the next session.
+    } else if (response.status === 402) {
       this.update({ paymentRequired: true })
     } else if (response.ok && this.state.paymentRequired && !OPEN_PATHS.some((open) => path.startsWith(open))) {
       // The server serves this user again (renewed elsewhere): the notice goes.

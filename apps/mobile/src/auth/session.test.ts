@@ -201,4 +201,17 @@ describe('Session', () => {
 
     expect(session.snapshot.paymentRequired).toBe(false)
   })
+
+  it('ignores a 402 that answers a request from before the sign-out', async () => {
+    let answer: (response: Response) => void = () => undefined
+    const session = await restored(memoryStore(fresh()), vi.fn<Fetch>(() => new Promise<Response>((resolve) => (answer = resolve))))
+    const request = session.api('/api/v1/me')
+    await Promise.resolve()
+
+    await session.signOut()
+    answer(new Response('{}', { status: 402 }))
+
+    await expect(request).rejects.toMatchObject({ status: 402 })
+    expect(session.snapshot.paymentRequired).toBe(false)
+  })
 })

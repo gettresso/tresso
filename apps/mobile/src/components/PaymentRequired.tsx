@@ -1,6 +1,8 @@
-import { useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
+import { useEffect, useState } from 'react'
+import { ActivityIndicator, BackHandler, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useAuth } from '@/auth/AuthProvider'
+import { ApiError } from '@/auth/session'
+import { useNotices } from '@/components/Notices'
 import { useTheme } from '@/theme'
 
 /**
@@ -9,9 +11,16 @@ import { useTheme } from '@/theme'
  */
 export function PaymentRequired() {
   const auth = useAuth()
+  const notices = useNotices()
   const theme = useTheme()
   const [checking, setChecking] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+
+  // Android's back button would act on the screens underneath.
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => true)
+    return () => subscription.remove()
+  }, [])
 
   async function checkAgain(): Promise<void> {
     setChecking(true)
@@ -19,33 +28,49 @@ export function PaymentRequired() {
     try {
       // Any served request clears the notice; a 402 keeps it.
       await auth.session.me()
-    } catch {
-      setMessage('Still not renewed. A payment can take a moment to come through.')
+    } catch (error) {
+      setMessage(
+        error instanceof ApiError && error.status === 402
+          ? 'Still not renewed. A payment can take a moment to come through.'
+          : `The server could not be reached: ${error instanceof Error ? error.message : String(error)}`,
+      )
     } finally {
       setChecking(false)
     }
   }
 
+  function signOut(): void {
+    auth.signOut().catch((error: unknown) => {
+      notices.notify({ text: `Signed out, but this phone may still get your notifications until someone signs in here: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+    })
+  }
+
   return (
-    <View style={[styles.cover, { backgroundColor: theme.ground }]} accessibilityViewIsModal>
+    <View style={[styles.cover, { backgroundColor: theme.ground }]} accessibilityViewIsModal importantForAccessibility="yes">
       <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.line }]}>
         <Text accessibilityRole="header" style={[styles.title, { color: theme.ink }]}>
-          Your Tresso subscription has ended
+          Your Tresso subscription or trial has ended
         </Text>
         <Text style={[styles.body, { color: theme.ink2 }]}>
           Your mail, calendar and todos are kept. Renew the subscription in Tresso on your computer or on the web, then
           come back here.
         </Text>
-        {message !== null && <Text style={[styles.body, { color: theme.ink2 }]}>{message}</Text>}
+        {message !== null && (
+          <Text accessibilityLiveRegion="polite" style={[styles.body, { color: theme.ink2 }]}>
+            {message}
+          </Text>
+        )}
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel="Check again"
+          accessibilityState={{ busy: checking, disabled: checking }}
           disabled={checking}
           onPress={() => void checkAgain()}
           style={[styles.button, { backgroundColor: theme.accent }]}
         >
           {checking ? <ActivityIndicator color={theme.onAccent} /> : <Text style={[styles.buttonText, { color: theme.onAccent }]}>Check again</Text>}
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={() => void auth.signOut().catch(() => undefined)} style={[styles.button, styles.quiet, { borderColor: theme.lineStrong }]}>
+        <Pressable accessibilityRole="button" onPress={signOut} style={[styles.button, styles.quiet, { borderColor: theme.lineStrong }]}>
           <Text style={[styles.buttonText, { color: theme.ink }]}>Sign out</Text>
         </Pressable>
       </View>
