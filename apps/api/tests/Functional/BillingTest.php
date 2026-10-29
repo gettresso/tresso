@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace App\Tests\Functional;
 
 use App\Billing\Stripe\StripeClient;
+use App\Billing\Subscriptions;
 use App\Entity\User;
 use App\Enum\NotificationChannel;
 use App\Notification\NotificationChannelChoice;
 use App\Notification\NotificationDispatcher;
 use App\Tests\Support\MockHttpRouter;
+use Doctrine\DBAL\Exception as DBALException;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\Console\Tester\CommandTester;
 
@@ -222,6 +224,25 @@ final class BillingTest extends DatabaseTestCase
 
         self::assertSame(1, $tester->getStatusCode(), $tester->getDisplay());
         self::assertStringContainsString('0 subscriptions; 2 could not', preg_replace('/\s+/', ' ', $tester->getDisplay()) ?? '');
+    }
+
+    public function testTheNightlyCheckNeverLeavesATransactionOpen(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        $this->connection()->executeStatement("UPDATE billing_subscription SET stripe_customer_id = 'cus_kim' WHERE organization_id = :id", ['id' => $organizationId]);
+        // Seats beyond what the column holds: the flush fails with a database error, not a Stripe one.
+        $this->router()->respond(StripeClient::API.'/subscriptions', (string) json_encode(['data' => [
+            ['id' => 'sub_kim', 'customer' => 'cus_kim', 'status' => 'active', 'items' => ['data' => [['quantity' => 3_000_000_000]]]],
+        ]]));
+        $level = $this->connection()->getTransactionNestingLevel();
+
+        try {
+            static::getContainer()->get(Subscriptions::class)->reconcile();
+            self::fail('The database error is raised.');
+        } catch (DBALException) {
+        }
+
+        self::assertSame($level, $this->connection()->getTransactionNestingLevel());
     }
 
     public function testALateEventAboutAnOldSubscriptionKeepsTheNewOne(): void

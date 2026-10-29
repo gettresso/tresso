@@ -102,6 +102,10 @@ final readonly class Subscriptions
         // null: refused, after taking over the open subscription found at Stripe (committed, not rolled back).
         $url = $this->entityManager->wrapInTransaction(function () use ($subscription, $customer, $priceId): ?string {
             $this->lock($subscription);
+            // A customer.deleted that came in meanwhile leaves none: the next attempt makes a new one.
+            if ($subscription->getStripeCustomerId() !== $customer) {
+                throw new StripeException('The organization\'s Stripe customer changed meanwhile; try again.');
+            }
             if ($subscription->hasOpenSubscription()) {
                 return null;
             }
@@ -224,6 +228,11 @@ final readonly class Subscriptions
                 // Also a customer Stripe says it does not have: a wrong key or account says the same, so only Stripe's
                 // customer.deleted event forgets one.
                 ++$failed;
+            } catch (\Throwable $exception) {
+                // Never leave the transaction open in the long-running worker that runs this.
+                $connection->rollBack();
+
+                throw $exception;
             }
             $this->entityManager->clear();
         }
@@ -259,8 +268,11 @@ final readonly class Subscriptions
     {
         $subscription = $this->entityManager->getRepository(Subscription::class)->findOneBy(['stripeCustomerId' => $customerId]);
         if (null !== $subscription) {
-            $subscription->forgetCustomer($this->now());
-            $this->entityManager->flush();
+            $this->lock($subscription);
+            if ($subscription->getStripeCustomerId() === $customerId) {
+                $subscription->forgetCustomer($this->now());
+                $this->entityManager->flush();
+            }
         }
     }
 
