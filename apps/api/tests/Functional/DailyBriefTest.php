@@ -263,11 +263,18 @@ final class DailyBriefTest extends DatabaseTestCase
         self::assertEquals($first->getCoversUntil(), $second->getCoversFrom());
     }
 
-    public function testASecondSweepTheSameDayMakesNoSecondBrief(): void
+    #[DataProvider('classificationMoments')]
+    public function testASecondSweepTheSameDayMakesNoSecondBrief(string $classifiedAt): void
     {
-        // Both sweeps an hour into the next UTC day, so the test never straddles midnight whenever it runs.
-        $morning = new \DateTimeImmutable('tomorrow 01:00', new \DateTimeZone('UTC'));
         $this->ingestKnowMail();
+        $classified = new \DateTimeImmutable('today '.$classifiedAt, new \DateTimeZone('UTC'));
+        $this->connection()->executeStatement("UPDATE message SET classified_at = :at WHERE subject = 'Release notes'", ['at' => $classified->format('Y-m-d H:i:s')]);
+        // The first brief covers the day before the sweep, so the sweep comes within a day after the mail; at noon, so
+        // neither sweep straddles midnight.
+        $morning = $classified->setTime(12, 0);
+        if ($morning <= $classified) {
+            $morning = $morning->modify('+1 day');
+        }
         self::assertInstanceOf(DailyBrief::class, $this->sweep($morning));
 
         // A sweep that read the row as due before the first one committed claims it after.
@@ -280,6 +287,18 @@ final class DailyBriefTest extends DatabaseTestCase
         self::assertSame(1, $this->rowCount('SELECT COUNT(*) FROM daily_brief'));
         $next = $this->connection()->fetchOne('SELECT next_run_at FROM daily_brief_settings WHERE user_id = :user', ['user' => $this->kimsId()]);
         self::assertSame($morning->modify('+1 day')->setTime(8, 0)->format('Y-m-d H:i:s'), self::text($next), 'The next brief is the next day.');
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function classificationMoments(): iterable
+    {
+        // CI once classified the mail at 00:58 UTC, before the period of a sweep at 01:00 the next day.
+        yield 'in the first hour of the UTC day' => ['00:58:30'];
+        yield 'just before noon' => ['11:59:59'];
+        yield 'at noon' => ['12:00:00'];
+        yield 'just before midnight' => ['23:59:59'];
     }
 
     public function testAnotherUsersMailToKnowNeverEntersThisUsersBrief(): void
