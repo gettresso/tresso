@@ -92,7 +92,8 @@ the browser:
 
 Answers: `404` when the server does not bill or the organization is not the user's, `403` for a member who is not an
 owner or admin (or a token without `settings:write`), `409` for a checkout while the organization has a Stripe subscription that is
-not over (active, past due, unpaid, paused or incomplete; change plans in the portal instead), `422` for a plan the server does not sell or a portal before any subscription, `502`
+not over (active, past due, unpaid, paused or incomplete, also one Stripe has whose events did not arrive yet; change
+plans in the portal instead), `422` for a plan the server does not sell or a portal before any subscription, `502`
 when Stripe refused the request (logged on the server) and `503` when Stripe could not be reached.
 
 ### Payment required
@@ -130,7 +131,8 @@ admin the buttons that open Checkout or the portal. The server alone decides; a 
   - `customer.deleted` forgets the customer and its subscription; a new checkout makes a new customer.
 - **Nightly check.** At 03:17 UTC the server asks Stripe for the subscriptions of every customer it knows and takes over
   the best one (one that pays, then the one it follows, then the newest), in case webhooks were lost; this also finds a
-  first checkout none of whose events arrived. A customer Stripe says it does not have is kept and reported (a wrong
+  first checkout none of whose events arrived. Each organization is checked with its row locked, like a webhook. A
+  customer Stripe says it does not have is kept and reported (a wrong
   key says the same); only `customer.deleted` forgets one. Handled event ids older than 30 days are removed. `php bin/console app:billing:reconcile` does
   the same by hand.
 - **Linking.** Checkout puts the organization id in the subscription's metadata and as `client_reference_id`; the
