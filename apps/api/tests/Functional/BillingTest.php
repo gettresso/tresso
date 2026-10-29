@@ -185,6 +185,13 @@ final class BillingTest extends DatabaseTestCase
 
         $this->client->request('GET', '/api/v1/notification-devices', server: $headers);
         self::assertResponseStatusCodeSame(402, 'Listing devices is not part of signing out.');
+        $this->client->jsonRequest('PATCH', '/api/v1/notification-devices/'.$device, ['name' => 'Renamed'], $headers + ['CONTENT_TYPE' => 'application/merge-patch+json']);
+        self::assertResponseStatusCodeSame(402, 'Changing a device is not part of signing out.');
+
+        // The web client finds its own device by registering it again, then removes it.
+        $this->client->jsonRequest('POST', '/api/v1/notification-devices', ['kind' => 'expo', 'endpoint' => 'ExponentPushToken[kim-phone]', 'name' => 'Kim\'s phone'], $headers);
+        self::assertResponseIsSuccessful();
+        self::assertSame($device, $this->responseString('id'));
         $this->client->request('DELETE', '/api/v1/notification-devices/'.$device, server: $headers);
         self::assertResponseStatusCodeSame(204);
     }
