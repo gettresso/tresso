@@ -12,6 +12,13 @@ pub fn run() {
     .plugin(tauri_plugin_process::init())
     .manage(sql::Databases::default())
     .manage(updates::UpdateListener::default())
+    // A new page in the main window does not listen for Sparkle's relaunch question until it says so (updates.rs).
+    .on_page_load(|webview, payload| {
+      use tauri::Manager;
+      if webview.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
+        webview.state::<updates::UpdateListener>().page_loading();
+      }
+    })
     .invoke_handler(tauri::generate_handler![
       accessibility::reduce_transparency,
       updates::update_channel,
