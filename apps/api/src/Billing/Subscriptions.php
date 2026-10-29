@@ -126,7 +126,8 @@ final readonly class Subscriptions
                 $organization->getId()->toRfc4122(),
                 $priceId,
                 max(1, $this->members->countPerOrganization([$organization->getId()])[$organization->getId()->toRfc4122()] ?? 1),
-                $base.'?checkout=done',
+                // The page Stripe returns to knows which organization was bought, not only that one was.
+                $base.'?checkout=done&organization='.$organization->getId()->toRfc4122(),
                 $base.'?checkout=cancelled',
             );
         });
