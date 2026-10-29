@@ -16,7 +16,11 @@ use App\Entity\OrganizationMember;
 use App\Enum\OrganizationRole;
 use App\Repository\OrganizationMemberRepository;
 use App\Security\CurrentUser;
+use Psr\Log\LoggerInterface;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
@@ -34,6 +38,7 @@ final readonly class BillingProcessor implements ProcessorInterface
         private BillingSettings $settings,
         private Subscriptions $subscriptions,
         private OrganizationMemberRepository $members,
+        private LoggerInterface $logger,
     ) {
     }
 
@@ -55,6 +60,10 @@ final readonly class BillingProcessor implements ProcessorInterface
 
         try {
             if ($data instanceof BillingCheckoutInput) {
+                if ($subscription->isPaying()) {
+                    // A second subscription would charge the organization twice; changing plans is the portal's.
+                    throw new ConflictHttpException('This organization already has a subscription; manage it in the billing portal.');
+                }
                 $price = $this->settings->prices()[$data->plan] ?? null;
                 if (null === $price) {
                     throw new UnprocessableEntityHttpException(\sprintf('This server does not sell the %s plan.', $data->plan));
@@ -68,6 +77,11 @@ final readonly class BillingProcessor implements ProcessorInterface
 
             return new BillingPage($this->subscriptions->portal($subscription, $user));
         } catch (StripeException $exception) {
+            $this->logger->error('Billing for organization {organization} failed at Stripe: {message}', ['organization' => $data->organizationId, 'message' => $exception->getMessage()]);
+            if ($exception->isRefusal()) {
+                throw new HttpException(Response::HTTP_BAD_GATEWAY, 'Stripe refused the request; it has been logged.', $exception);
+            }
+
             throw new ServiceUnavailableHttpException(30, 'Stripe could not be reached; try again.', $exception);
         }
     }

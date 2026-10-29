@@ -96,10 +96,34 @@ class Subscription
         return $this->currentPeriodEnd;
     }
 
-    /** The same rule as {@see \App\Billing\Entitlements}, which asks the database. */
+    /** The same rule as {@see \App\Billing\Entitlements}, which asks the database: within the trial, or paying. */
     public function allowsAccessAt(\DateTimeImmutable $now): bool
     {
-        return SubscriptionStatus::Trial === $this->status ? $now < $this->trialEndsAt : \in_array($this->status, SubscriptionStatus::PAYING, true);
+        return $now < $this->trialEndsAt || $this->isPaying();
+    }
+
+    /** Whether Stripe counts the subscription it last reported: trialing, active, or past due while it retries. */
+    public function isPaying(): bool
+    {
+        return null !== $this->stripeSubscriptionId && \in_array($this->status, SubscriptionStatus::PAYING, true);
+    }
+
+    /** Starts the trial again from now, for organizations made while the server did not bill yet. */
+    public function restartTrial(\DateTimeImmutable $trialEndsAt, \DateTimeImmutable $now): void
+    {
+        $this->trialEndsAt = $trialEndsAt;
+        $this->updatedAt = $now;
+    }
+
+    /** Stripe deleted the customer: what belonged to it is gone, and a new checkout makes a new one. */
+    public function forgetCustomer(\DateTimeImmutable $now): void
+    {
+        $this->stripeCustomerId = null;
+        $this->stripeSubscriptionId = null;
+        $this->status = SubscriptionStatus::Canceled;
+        $this->seats = 0;
+        $this->currentPeriodEnd = null;
+        $this->updatedAt = $now;
     }
 
     public function linkCustomer(string $customerId, \DateTimeImmutable $now): void
@@ -108,14 +132,25 @@ class Subscription
         $this->updatedAt = $now;
     }
 
-    /** Takes over the subscription as Stripe has it now, whatever order its events came in. */
-    public function follow(StripeSubscription $subscription, \DateTimeImmutable $now): void
+    /**
+     * Takes over the subscription as Stripe has it now, whatever order its events came in. Another subscription than
+     * the one followed replaces it only when it pays or the followed one no longer does, so a late event about an old,
+     * canceled subscription never ends the one that replaced it. Returns whether it was taken over.
+     */
+    public function follow(StripeSubscription $subscription, \DateTimeImmutable $now): bool
     {
+        $other = null !== $this->stripeSubscriptionId && $this->stripeSubscriptionId !== $subscription->id;
+        if ($other && $this->isPaying() && !\in_array($subscription->status, SubscriptionStatus::PAYING, true)) {
+            return false;
+        }
+
         $this->stripeSubscriptionId = $subscription->id;
         $this->stripeCustomerId = $subscription->customerId;
         $this->status = $subscription->status;
         $this->seats = $subscription->quantity;
         $this->currentPeriodEnd = $subscription->currentPeriodEnd;
         $this->updatedAt = $now;
+
+        return true;
     }
 }

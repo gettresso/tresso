@@ -28,9 +28,10 @@ final class Version20261029015809 extends AbstractMigration
         $this->addSql('CREATE UNIQUE INDEX UNIQ_16912F2632C8A3DE ON billing_subscription (organization_id)');
         $this->addSql('ALTER TABLE billing_subscription ADD CONSTRAINT FK_16912F2632C8A3DE FOREIGN KEY (organization_id) REFERENCES organization (id) ON DELETE CASCADE NOT DEFERRABLE');
 
-        // Every organization gets its trial from now: on a server that turns billing on later, nobody is blocked at once.
+        // Every organization gets its trial from now (UTC, as every time is stored). A server that turns billing on later
+        // runs app:billing:restart-trials then, so nobody is blocked at once.
         $this->addSql("INSERT INTO billing_subscription (id, organization_id, status, trial_ends_at, seats, updated_at)
-            SELECT uuidv7(), id, 'trial', LOCALTIMESTAMP(0) + INTERVAL '14 days', 0, LOCALTIMESTAMP(0) FROM organization");
+            SELECT uuidv7(), id, 'trial', (now() AT TIME ZONE 'UTC')::timestamp(0) + INTERVAL '14 days', 0, (now() AT TIME ZONE 'UTC')::timestamp(0) FROM organization");
     }
 
     public function down(Schema $schema): void

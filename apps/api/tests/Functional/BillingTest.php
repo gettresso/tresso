@@ -145,14 +145,14 @@ final class BillingTest extends DatabaseTestCase
     {
         $kims = $this->firstOrganization($this->billing())['id'] ?? null;
 
-        $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $kims, 'plan' => 'monthly'], $this->userHeaders('lisa@example.test', []));
+        $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $kims, 'plan' => 'monthly'], $this->userHeaders('lisa@example.test', ['settings:write']));
         self::assertResponseStatusCodeSame(404);
 
         $this->connection()->executeStatement(
             "INSERT INTO organization_member (id, role, joined_at, organization_id, user_id) SELECT uuidv7(), 'member', NOW(), :organization, id FROM app_user WHERE email = 'lisa@example.test'",
             ['organization' => $kims],
         );
-        $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $kims, 'plan' => 'monthly'], $this->userHeaders('lisa@example.test', []));
+        $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $kims, 'plan' => 'monthly'], $this->userHeaders('lisa@example.test', ['settings:write']));
         self::assertResponseStatusCodeSame(403);
 
         $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $kims, 'plan' => 'yearly'], $this->kimHeaders());
@@ -160,6 +160,147 @@ final class BillingTest extends DatabaseTestCase
 
         $this->client->jsonRequest('POST', '/api/v1/billing/portal', ['organizationId' => $kims], $this->kimHeaders());
         self::assertResponseStatusCodeSame(422, 'Nothing to manage before a subscription.');
+    }
+
+    public function testAnEncodedPathIsBlockedToo(): void
+    {
+        $this->endTrial();
+
+        foreach (['/%61pi/v1/me', '/api/v1/%6De', '/api/v1/organization%73'] as $path) {
+            $this->client->request('GET', $path, server: $this->kimHeaders());
+            self::assertResponseStatusCodeSame(402, $path);
+        }
+    }
+
+    public function testPayingAndManagingNeedTheSettingsScopes(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+
+        $this->client->jsonRequest('POST', '/api/v1/billing/portal', ['organizationId' => $organizationId], $this->userHeaders('kim@example.test', ['mail:read']));
+        self::assertResponseStatusCodeSame(403);
+        $this->client->request('GET', '/api/v1/billing', server: $this->userHeaders('kim@example.test', ['mail:read']));
+        self::assertResponseStatusCodeSame(403);
+    }
+
+    public function testASubscribedOrganizationCannotCheckOutTwice(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        self::assertIsString($organizationId);
+        $this->stripeHas('sub_kim', 'active', $organizationId, 1);
+        $this->webhook('evt_1', 'customer.subscription.created', ['id' => 'sub_kim']);
+
+        $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $organizationId, 'plan' => 'monthly'], $this->kimHeaders());
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame([], $this->router()->requestsTo(StripeClient::API.'/checkout/sessions'));
+    }
+
+    public function testALateEventAboutAnOldSubscriptionKeepsTheNewOne(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        self::assertIsString($organizationId);
+        $this->endTrial();
+        $this->stripeHas('sub_new', 'active', $organizationId, 1);
+        $this->webhook('evt_1', 'customer.subscription.created', ['id' => 'sub_new']);
+
+        $this->stripeHas('sub_old', 'canceled', $organizationId, 1);
+        $this->webhook('evt_2', 'customer.subscription.deleted', ['id' => 'sub_old']);
+
+        self::assertResponseIsSuccessful();
+        $organization = $this->firstOrganization($this->billing());
+        self::assertSame('active', $organization['status'] ?? null);
+        $this->client->request('GET', '/api/v1/me', server: $this->kimHeaders());
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testADeletedCustomerIsForgotten(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        self::assertIsString($organizationId);
+        $this->stripeHas('sub_kim', 'active', $organizationId, 1);
+        $this->webhook('evt_1', 'customer.subscription.created', ['id' => 'sub_kim']);
+
+        $this->webhook('evt_2', 'customer.deleted', ['id' => 'cus_kim']);
+
+        self::assertResponseIsSuccessful();
+        self::assertSame([null, null], array_values((array) $this->connection()->fetchAssociative('SELECT stripe_customer_id, stripe_subscription_id FROM billing_subscription WHERE organization_id = :id', ['id' => $organizationId])));
+        $this->client->request('GET', '/api/v1/me', server: $this->kimHeaders());
+        self::assertResponseIsSuccessful('Still within the trial.');
+    }
+
+    public function testAStripeRefusalIsNotCalledUnreachable(): void
+    {
+        $this->router()->respond(StripeClient::API.'/customers', (string) json_encode(['error' => ['message' => 'Invalid API Key provided']]), 401);
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+
+        $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $organizationId, 'plan' => 'monthly'], $this->kimHeaders());
+
+        self::assertResponseStatusCodeSame(502);
+        self::assertStringNotContainsString('sk_test_billingtest', (string) $this->client->getResponse()->getContent());
+    }
+
+    public function testTheTrialGivesAccessEvenAfterACanceledSubscription(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        self::assertIsString($organizationId);
+        $this->stripeHas('sub_kim', 'canceled', $organizationId, 1);
+        $this->webhook('evt_1', 'customer.subscription.deleted', ['id' => 'sub_kim']);
+
+        $this->client->request('GET', '/api/v1/me', server: $this->kimHeaders());
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testATeamThatPaysGivesAccessWhenTheOwnTrialIsOver(): void
+    {
+        $this->endTrial();
+        $team = $this->connection()->fetchOne("INSERT INTO organization (id, name, created_at) VALUES (uuidv7(), 'Support', NOW()) RETURNING id");
+        $this->connection()->executeStatement(
+            "INSERT INTO organization_member (id, role, joined_at, organization_id, user_id) VALUES (uuidv7(), 'member', NOW(), :team, :user)",
+            ['team' => $team, 'user' => $this->kim->getId()->toRfc4122()],
+        );
+        $this->connection()->executeStatement(
+            "INSERT INTO billing_subscription (id, organization_id, status, trial_ends_at, stripe_customer_id, stripe_subscription_id, seats, updated_at)
+             VALUES (uuidv7(), :team, 'active', NOW() - INTERVAL '30 days', 'cus_team', 'sub_team', 3, NOW())",
+            ['team' => $team],
+        );
+
+        $this->client->request('GET', '/api/v1/me', server: $this->kimHeaders());
+        self::assertResponseIsSuccessful();
+        $billing = $this->billing();
+        self::assertTrue($billing['entitled'] ?? null);
+        self::assertSame([false, true], array_column(\is_array($billing['organizations'] ?? null) ? $billing['organizations'] : [], 'entitled'));
+    }
+
+    public function testTheNightlyCheckFindsAFirstCheckoutWhoseEventsWereLost(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        self::assertIsString($organizationId);
+        $this->endTrial();
+        $this->connection()->executeStatement("UPDATE billing_subscription SET stripe_customer_id = 'cus_kim' WHERE organization_id = :id", ['id' => $organizationId]);
+        $this->router()->respond(StripeClient::API.'/subscriptions', (string) json_encode(['data' => [
+            ['id' => 'sub_old', 'customer' => 'cus_kim', 'status' => 'canceled', 'items' => ['data' => [['quantity' => 1]]]],
+            ['id' => 'sub_kim', 'customer' => 'cus_kim', 'status' => 'active', 'items' => ['data' => [['quantity' => 1, 'current_period_end' => 1796083200]]]],
+        ]]));
+
+        $tester = new CommandTester(new Application($this->client->getKernel())->find('app:billing:reconcile'));
+        $tester->execute([]);
+
+        $tester->assertCommandIsSuccessful();
+        self::assertSame(['sub_kim', 'active'], array_values((array) $this->connection()->fetchAssociative('SELECT stripe_subscription_id, status FROM billing_subscription WHERE organization_id = :id', ['id' => $organizationId])));
+        $this->client->request('GET', '/api/v1/me', server: $this->kimHeaders());
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testTurningBillingOnRestartsTheTrials(): void
+    {
+        $this->endTrial();
+
+        $tester = new CommandTester(new Application($this->client->getKernel())->find('app:billing:restart-trials'));
+        $tester->execute([]);
+
+        $tester->assertCommandIsSuccessful();
+        $this->client->request('GET', '/api/v1/me', server: $this->kimHeaders());
+        self::assertResponseIsSuccessful();
     }
 
     public function testTheWebhookTakesTheSubscriptionFromStripe(): void
@@ -242,7 +383,7 @@ final class BillingTest extends DatabaseTestCase
         $this->endTrial();
         self::assertSame(0, $this->leasedAccounts($worker));
 
-        $this->connection()->executeStatement("UPDATE billing_subscription SET status = 'active' WHERE organization_id = (SELECT id FROM organization WHERE personal_owner_id = :user)", ['user' => $this->kim->getId()->toRfc4122()]);
+        $this->connection()->executeStatement("UPDATE billing_subscription SET status = 'active', stripe_subscription_id = 'sub_kim' WHERE organization_id = (SELECT id FROM organization WHERE personal_owner_id = :user)", ['user' => $this->kim->getId()->toRfc4122()]);
         self::assertSame(1, $this->leasedAccounts($worker));
     }
 
@@ -261,8 +402,10 @@ final class BillingTest extends DatabaseTestCase
     {
         $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
         self::assertIsString($organizationId);
-        $this->connection()->executeStatement("UPDATE billing_subscription SET stripe_subscription_id = 'sub_kim', status = 'active' WHERE organization_id = :organization", ['organization' => $organizationId]);
-        $this->stripeHas('sub_kim', 'unpaid', $organizationId, 1);
+        $this->connection()->executeStatement("UPDATE billing_subscription SET stripe_customer_id = 'cus_kim', stripe_subscription_id = 'sub_kim', status = 'active' WHERE organization_id = :organization", ['organization' => $organizationId]);
+        $this->router()->respond(StripeClient::API.'/subscriptions', (string) json_encode(['data' => [
+            ['id' => 'sub_kim', 'customer' => 'cus_kim', 'status' => 'unpaid', 'items' => ['data' => [['quantity' => 1]]]],
+        ]]));
 
         $tester = new CommandTester(new Application($this->client->getKernel())->find('app:billing:reconcile'));
         $tester->execute([]);
@@ -285,7 +428,7 @@ final class BillingTest extends DatabaseTestCase
     /** @return array<string, string> */
     private function kimHeaders(): array
     {
-        return $this->userHeaders('kim@example.test', []);
+        return $this->userHeaders('kim@example.test', ['settings:read', 'settings:write']);
     }
 
     /** @return array<mixed> */
