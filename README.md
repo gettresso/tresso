@@ -50,7 +50,7 @@ The script runs the installer silently for your user: Tresso goes to `%LOCALAPPD
 
 Both scripts check the download against `SHA256SUMS` on the GitHub release before they install anything.
 
-After that, Tresso keeps itself up to date. On macOS it uses [Sparkle](https://sparkle-project.org): it checks every few hours, and **Tresso > Check for Updates…** asks right away. On Windows and Linux (the AppImage) a card offers the new version. Every update is signed, and the app installs only updates whose signature matches the key built into it. **Settings > Updates** shows your version.
+After that, Tresso keeps itself up to date. On macOS it uses [Sparkle](https://sparkle-project.org): it checks every few hours, and **Tresso > Check for Updates…** asks right away. On Windows and Linux (the AppImage) a card offers the new version. Every update is signed, and the app installs only updates whose signature matches the key built into it. Before it restarts into an update, Tresso saves the draft you are writing and waits for files you are attaching and a message being sent. **Settings > Updates** shows your version.
 
 <details>
 <summary><b>Published files</b></summary>
@@ -322,14 +322,15 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
 
 Pushing a tag `v<major>.<minor>.<patch>` runs the [release workflow](.github/workflows/release.yml): it builds the
 desktop app for macOS (universal), Linux (x86_64 and arm64) and Windows, writes `SHA256SUMS`, and publishes a GitHub
-release with generated notes. A tag with a suffix (`v1.2.0-beta.1`) becomes a prerelease, which the install scripts
+release. Its notes list the `feat`, `fix` and `perf` commits since the previous release
+([scripts/release-notes.mjs](scripts/release-notes.mjs)). A tag with a suffix (`v1.2.0-beta.1`) becomes a prerelease, which the install scripts
 skip unless you pin it.
 
 ```bash
 git tag -s v0.1.0 -m "Tresso 0.1.0" && git push origin v0.1.0
 ```
 
-The version comes from the tag, so nothing needs bumping first. The release also publishes the update feeds that installed apps read from the latest release: `appcast.xml` for Sparkle and `latest.json` for Tauri's updater. Signing the updates needs three repository secrets: `SPARKLE_PRIVATE_KEY` (EdDSA, macOS), and `TAURI_SIGNING_PRIVATE_KEY` with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (Windows, Linux). Their public halves are in `apps/desktop/src-tauri/Info.plist` and `tauri.conf.json`. The private keys live in 1Password (vault Employee: "Sparkle update signing key (Tresso)" and "Tauri updater signing key (Tresso)"), and the secrets are set from there, for example `op read --no-newline "op://Employee/Sparkle update signing key (Tresso)/password" | gh secret set SPARKLE_PRIVATE_KEY`. Never rotate them: installed apps trust only these keys, so a new key means they can never update again. A release talks to Tresso Cloud
+The version comes from the tag, so nothing needs bumping first. The release also publishes the update feeds that installed apps read from the latest release: `appcast.xml` for Sparkle and `latest.json` for Tauri's updater ([scripts/update-feeds.mjs](scripts/update-feeds.mjs), which refuses a release with any update unsigned or signed for another version). The release stays a draft until both feeds are uploaded, so no app sees a release without them. Signing the updates needs three repository secrets: `SPARKLE_PRIVATE_KEY` (EdDSA, macOS), and `TAURI_SIGNING_PRIVATE_KEY` with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (Windows, Linux). Their public halves are in `apps/desktop/src-tauri/Info.plist` and `tauri.conf.json`. The private keys live in 1Password (vault Employee: "Sparkle update signing key (Tresso)" and "Tauri updater signing key (Tresso)"), and the secrets are set from there, for example `op read --no-newline "op://Employee/Sparkle update signing key (Tresso)/password" | gh secret set SPARKLE_PRIVATE_KEY`. Never rotate them: installed apps trust only these keys, so a new key means they can never update again. A release talks to Tresso Cloud
 (`https://api.tresso.app`) until the user picks another server. A pull request that changes the release, the desktop
 app or the install scripts builds every platform without publishing.
 
