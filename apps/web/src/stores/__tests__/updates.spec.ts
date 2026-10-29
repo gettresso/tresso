@@ -380,6 +380,30 @@ describe('updates store', () => {
     expect(updates.error).toBeNull()
   })
 
+  it('goes back to the download, saying why, when the save after the wait fails', async () => {
+    platform.found = release('0.3.0')
+    compose.unfinished = 'files'
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    const installing = updates.install()
+    await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+    compose.saveFails = true
+    compose.unfinished = null
+    await installing
+
+    expect(updates.phase).toBe('ready')
+    expect(updates.waitingFor).toBeNull()
+    expect(updates.error).toContain('The draft could not be saved, so Tresso did not restart: disk full')
+    expect(installed).toEqual([])
+
+    // The card's button works again.
+    compose.saveFails = false
+    await updates.install()
+    expect(installed).toEqual(['0.3.0'])
+  })
+
   it('does not restart when saving the draft hangs', async () => {
     vi.useFakeTimers()
     platform.found = release('0.3.0')

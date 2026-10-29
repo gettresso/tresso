@@ -171,8 +171,14 @@ export const useUpdatesStore = defineStore('updates', () => {
       phase.value = before
       return false
     }
-    // What the files or the send changed in the draft is saved as well.
-    await saveDraft()
+    try {
+      // What the files or the send changed in the draft is saved as well.
+      await saveDraft()
+    } catch (cause) {
+      // Not restarting after all: the card goes back to where it was and says why.
+      phase.value = before
+      throw cause
+    }
     return true
   }
 
