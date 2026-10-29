@@ -49,6 +49,7 @@ const router = createRouter({
             { path: 'notifications', name: 'settings-notifications', component: () => import('@/views/SettingsNotificationsView.vue') },
             { path: 'batches', name: 'settings-batches', component: () => import('@/views/SettingsBatchesView.vue') },
             { path: 'updates', name: 'settings-updates', component: () => import('@/views/SettingsUpdatesView.vue') },
+            { path: 'billing', name: 'settings-billing', component: () => import('@/views/SettingsBillingView.vue') },
           ],
         },
       ],
