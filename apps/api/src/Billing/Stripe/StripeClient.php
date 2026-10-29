@@ -31,7 +31,8 @@ final readonly class StripeClient
             'name' => $name,
             'email' => $email,
             'metadata' => ['organization_id' => $organizationId],
-        ], 'customer-'.$organizationId);
+            // The same request repeated (a retry, a double click) makes one customer; other details make another key.
+        ], 'customer-'.$organizationId.'-'.substr(hash('sha256', $name."\n".$email), 0, 16));
 
         return self::id($customer);
     }
@@ -63,6 +64,24 @@ final readonly class StripeClient
     public function createPortalSession(string $customerId, string $returnUrl): string
     {
         return self::url($this->request('POST', '/billing_portal/sessions', ['customer' => $customerId, 'return_url' => $returnUrl]));
+    }
+
+    /**
+     * The customer's subscriptions, newest first, in any status: the nightly check finds a first checkout whose events
+     * were all lost this way.
+     *
+     * @return list<StripeSubscription>
+     */
+    public function subscriptionsOf(string $customerId): array
+    {
+        if (1 !== preg_match('/^cus_[A-Za-z0-9]+$/', $customerId)) {
+            throw new StripeException('That is not a Stripe customer id.');
+        }
+
+        $list = $this->request('GET', '/subscriptions?'.http_build_query(['customer' => $customerId, 'status' => 'all', 'limit' => 10]));
+        $data = \is_array($list['data'] ?? null) ? $list['data'] : [];
+
+        return array_values(array_map(static fn (mixed $object): StripeSubscription => StripeSubscription::fromApi(\is_array($object) ? $object : []), $data));
     }
 
     public function subscription(string $id): StripeSubscription
@@ -106,7 +125,7 @@ final readonly class StripeClient
             $error = \is_array($body['error'] ?? null) ? $body['error'] : [];
             $message = \is_string($error['message'] ?? null) ? $error['message'] : 'no message';
 
-            throw new StripeException(\sprintf('Stripe refused %s %s (%d): %s', $method, $path, $status, $message));
+            throw StripeException::refused($status, \sprintf('Stripe refused %s %s (%d): %s', $method, strtok($path, '?') ?: $path, $status, $message));
         }
 
         return $body;

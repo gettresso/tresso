@@ -37,7 +37,8 @@ final readonly class PaymentRequiredListener
         if (!$event->isMainRequest() || !$this->entitlements->billingEnabled()) {
             return;
         }
-        $path = $event->getRequest()->getPathInfo();
+        // Decoded as the router and access_control decode it, so /%61pi/... cannot slip past as something else.
+        $path = rawurldecode($event->getRequest()->getPathInfo());
         if (!str_starts_with($path, '/api/') || \in_array(rtrim($path, '/'), self::OPEN, true)) {
             return;
         }

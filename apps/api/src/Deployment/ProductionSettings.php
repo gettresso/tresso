@@ -109,7 +109,7 @@ final readonly class ProductionSettings
      */
     private function billingProblems(): array
     {
-        if (!\in_array(strtolower($this->value('TRESSO_BILLING')), ['1', 'true', 'yes', 'on'], true)) {
+        if (!self::isOn($this->value('TRESSO_BILLING'))) {
             return [];
         }
 
@@ -132,6 +132,12 @@ final readonly class ProductionSettings
         }
 
         return $problems;
+    }
+
+    /** Read as Symfony's bool: processor reads it, so the check and the server agree on whether billing is on. */
+    private static function isOn(string $value): bool
+    {
+        return (bool) (filter_var($value, \FILTER_VALIDATE_BOOL) ?: filter_var($value, \FILTER_VALIDATE_INT) ?: filter_var($value, \FILTER_VALIDATE_FLOAT));
     }
 
     /** @return list<string> */

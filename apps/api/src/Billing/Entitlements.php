@@ -10,8 +10,8 @@ use Symfony\Component\Uid\Uuid;
 
 /**
  * Whether a user may use this server: always when it does not bill, otherwise while at least one of their
- * organizations is in its trial or has a subscription Stripe still counts (trialing, active, or past due while Stripe
- * retries the payment). Everything that serves a user asks this: the API, the sync leases and the background jobs.
+ * organizations is within its trial (whatever happened at Stripe meanwhile) or has a subscription Stripe still counts
+ * (trialing, active, or past due while Stripe retries the payment). Everything that serves a user asks this: the API, the sync leases and the background jobs.
  */
 final readonly class Entitlements
 {
@@ -26,8 +26,9 @@ final readonly class Entitlements
                 SELECT 1 FROM organization_member entitled_member
                 JOIN billing_subscription entitled_subscription ON entitled_subscription.organization_id = entitled_member.organization_id
                 WHERE entitled_member.user_id = {$user}
-                  AND ((entitled_subscription.status = 'trial' AND entitled_subscription.trial_ends_at > :entitlement_now)
-                       OR entitled_subscription.status = ANY(CAST(:entitlement_paying AS TEXT[])))
+                  AND (entitled_subscription.trial_ends_at > :entitlement_now
+                       OR (entitled_subscription.stripe_subscription_id IS NOT NULL
+                           AND entitled_subscription.status = ANY(CAST(:entitlement_paying AS TEXT[]))))
             )
             SQL;
     }
