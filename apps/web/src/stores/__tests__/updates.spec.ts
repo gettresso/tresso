@@ -5,12 +5,17 @@ type Event = { event: 'Started'; data: { contentLength?: number } } | { event: '
 
 const platform = vi.hoisted(() => ({
   channel: 'tauri' as 'sparkle' | 'tauri' | 'none',
-  found: null as null | { version: string; body?: string; downloadAndInstall: (onEvent: (event: Event) => void) => Promise<void>; close: () => Promise<void> },
+  found: null as null | { version: string; body?: string; download: (onEvent: (event: Event) => void) => Promise<void>; install: () => Promise<void>; close: () => Promise<void> },
   checks: 0,
   nativeChecks: 0,
   restarts: 0,
   restartFails: false,
   fail: null as Error | null,
+  /** What answerRelaunch was called with (macOS). */
+  answers: [] as boolean[],
+  /** What answerRelaunch resolves: false when Sparkle no longer holds the relaunch. */
+  relaunchHeld: true,
+  relaunchRequested: null as null | (() => void),
 }))
 
 vi.mock('@/platform/updates', () => ({
@@ -26,6 +31,16 @@ vi.mock('@/platform/updates', () => ({
     }
     return platform.found
   },
+  onRelaunchRequested: async (handler: () => void) => {
+    platform.relaunchRequested = handler
+    return () => {
+      platform.relaunchRequested = null
+    }
+  },
+  answerRelaunch: async (proceed: boolean) => {
+    platform.answers.push(proceed)
+    return proceed && platform.relaunchHeld
+  },
   restart: async () => {
     platform.restarts += 1
     if (platform.restartFails) {
@@ -34,15 +49,44 @@ vi.mock('@/platform/updates', () => ({
   },
 }))
 
+// The compose window: what a restart would cut short, and its save of the open draft.
+vi.mock('@/stores/compose', async () => {
+  const { reactive } = await import('vue')
+  const compose = reactive({
+    unfinished: null as 'files' | 'sending' | null,
+    saves: 0,
+    saveFails: false,
+    async saveNow() {
+      compose.saves += 1
+      if (compose.saveFails) {
+        throw new Error('disk full')
+      }
+    },
+  })
+  return { useComposeStore: () => compose }
+})
+
 const { useUpdatesStore, CHECK_EVERY_MS } = await import('../updates')
+const { useComposeStore } = await import('@/stores/compose')
+const compose = useComposeStore() as unknown as { unfinished: 'files' | 'sending' | null; saves: number; saveFails: boolean }
 
 const closed: string[] = []
 
-function release(version: string, install: (onEvent: (event: Event) => void) => Promise<void> = async () => undefined) {
+const installed: string[] = []
+const downloads: string[] = []
+
+function release(version: string, download: (onEvent: (event: Event) => void) => Promise<void> = async () => undefined, install: () => Promise<void> = async () => undefined) {
   return {
     version,
     body: 'New things',
-    downloadAndInstall: install,
+    download: async (onEvent: (event: Event) => void) => {
+      downloads.push(version)
+      await download(onEvent)
+    },
+    install: async () => {
+      await install()
+      installed.push(version)
+    },
     close: async () => {
       closed.push(version)
     },
@@ -59,7 +103,15 @@ describe('updates store', () => {
     platform.restarts = 0
     platform.fail = null
     platform.restartFails = false
+    platform.answers = []
+    platform.relaunchHeld = true
+    platform.relaunchRequested = null
     closed.length = 0
+    installed.length = 0
+    downloads.length = 0
+    compose.unfinished = null
+    compose.saves = 0
+    compose.saveFails = false
   })
 
   afterEach(() => {
@@ -137,10 +189,13 @@ describe('updates store', () => {
 
     expect(seen).toEqual([0, 0.25, 1])
     expect(updates.phase).toBe('installing')
+    // The open draft is saved on this device before the installer runs (Windows quits the app when it starts).
+    expect(compose.saves).toBe(1)
+    expect(installed).toEqual(['0.3.0'])
     expect(platform.restarts).toBe(1)
   })
 
-  it('reports a failed install and does not restart', async () => {
+  it('reports a failed download and does not restart', async () => {
     platform.found = release('0.3.0', async () => {
       throw new Error('signature mismatch')
     })
@@ -151,8 +206,169 @@ describe('updates store', () => {
     await updates.install()
 
     expect(updates.phase).toBe('failed')
-    expect(updates.error).toContain('signature mismatch')
+    expect(updates.error).toBe('Downloading Tresso 0.3.0 failed: signature mismatch')
+    expect(installed).toEqual([])
     expect(platform.restarts).toBe(0)
+  })
+
+  it('reports a failed install, and tries the install again without downloading again', async () => {
+    let fails = true
+    platform.found = release('0.3.0', undefined, async () => {
+      if (fails) {
+        throw new Error('access denied')
+      }
+    })
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    await updates.install()
+    expect(updates.phase).toBe('failed')
+    expect(updates.error).toBe('Installing Tresso 0.3.0 failed: access denied')
+    expect(platform.restarts).toBe(0)
+
+    fails = false
+    await updates.install()
+    expect(downloads).toEqual(['0.3.0'])
+    expect(installed).toEqual(['0.3.0'])
+    expect(platform.restarts).toBe(1)
+  })
+
+  it('waits with the restart until the files on their way are attached, then saves again and restarts', async () => {
+    platform.found = release('0.3.0')
+    compose.unfinished = 'files'
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    const installing = updates.install()
+    await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+    expect(updates.waitingFor).toBe('files')
+    expect(installed).toEqual([])
+
+    compose.unfinished = 'sending'
+    await vi.waitFor(() => expect(updates.waitingFor).toBe('sending'))
+    compose.unfinished = null
+    await installing
+
+    // Once before waiting, once for what the files changed in the draft.
+    expect(compose.saves).toBe(2)
+    expect(updates.waitingFor).toBeNull()
+    expect(installed).toEqual(['0.3.0'])
+    expect(platform.restarts).toBe(1)
+  })
+
+  it('lets "Later" keep working while the restart waits, and installs the download it has on the next try', async () => {
+    platform.found = release('0.3.0')
+    compose.unfinished = 'files'
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    const installing = updates.install()
+    await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+    updates.later()
+    await installing
+
+    expect(updates.phase).toBe('ready')
+    expect(installed).toEqual([])
+    expect(platform.restarts).toBe(0)
+    // A check in the background would only replace the download with the same release.
+    await updates.checkNow(false)
+    expect(platform.checks).toBe(1)
+
+    compose.unfinished = null
+    await updates.install()
+    expect(downloads).toEqual(['0.3.0'])
+    expect(installed).toEqual(['0.3.0'])
+    expect(platform.restarts).toBe(1)
+  })
+
+  it('restarts at once with "Restart now", leaving what is still under way', async () => {
+    platform.found = release('0.3.0')
+    compose.unfinished = 'sending'
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    const installing = updates.install()
+    await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+    updates.restartNow()
+    await installing
+
+    expect(installed).toEqual(['0.3.0'])
+    expect(platform.restarts).toBe(1)
+  })
+
+  it('does not restart when the draft cannot be saved', async () => {
+    platform.found = release('0.3.0')
+    compose.saveFails = true
+    const updates = useUpdatesStore()
+    await updates.start(false)
+    await updates.checkNow(true)
+
+    await updates.install()
+
+    expect(updates.phase).toBe('ready')
+    expect(updates.error).toContain('The draft could not be saved, so Tresso did not restart: disk full')
+    expect(installed).toEqual([])
+    expect(platform.restarts).toBe(0)
+  })
+
+  it('lets Sparkle relaunch once the draft is saved (macOS)', async () => {
+    platform.channel = 'sparkle'
+    const updates = useUpdatesStore()
+    await updates.start(true)
+    expect(platform.relaunchRequested).not.toBeNull()
+
+    platform.relaunchRequested?.()
+
+    await vi.waitFor(() => expect(platform.answers).toEqual([true]))
+    expect(compose.saves).toBe(1)
+    expect(updates.phase).toBe('installing')
+  })
+
+  it('holds Sparkle\'s relaunch while files are on their way, and keeps it held after "Later" (macOS)', async () => {
+    platform.channel = 'sparkle'
+    compose.unfinished = 'files'
+    const updates = useUpdatesStore()
+    await updates.start(true)
+
+    platform.relaunchRequested?.()
+    await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+    // A second request while it waits (the menu item) does not ask twice.
+    platform.relaunchRequested?.()
+    updates.later()
+
+    await vi.waitFor(() => expect(platform.answers).toEqual([false]))
+    expect(updates.phase).toBe('idle')
+
+    compose.unfinished = null
+    platform.relaunchRequested?.()
+    await vi.waitFor(() => expect(platform.answers).toEqual([false, true]))
+  })
+
+  it('goes back when Sparkle gave the relaunch up meanwhile (macOS)', async () => {
+    platform.channel = 'sparkle'
+    platform.relaunchHeld = false
+    const updates = useUpdatesStore()
+    await updates.start(true)
+
+    platform.relaunchRequested?.()
+
+    await vi.waitFor(() => expect(platform.answers).toEqual([true]))
+    await vi.waitFor(() => expect(updates.phase).toBe('idle'))
+  })
+
+  it('keeps Sparkle\'s relaunch held when the draft cannot be saved (macOS)', async () => {
+    platform.channel = 'sparkle'
+    compose.saveFails = true
+    const updates = useUpdatesStore()
+    await updates.start(true)
+
+    platform.relaunchRequested?.()
+
+    await vi.waitFor(() => expect(platform.answers).toEqual([false]))
   })
 
   it('puts a release aside with "Later" until the user checks again', async () => {
@@ -193,10 +409,11 @@ describe('updates store', () => {
     await updates.install()
 
     expect(updates.phase).toBe('installing')
+    expect(installed).toEqual(['0.3.0'])
     expect(updates.error).toContain('is installed. Quit and open Tresso')
   })
 
-  it('lets "Later" put a failed install aside too', async () => {
+  it('lets "Later" put a failed download aside too', async () => {
     platform.found = release('0.3.0', async () => {
       throw new Error('disk full')
     })
@@ -218,11 +435,15 @@ describe('updates store', () => {
       #rid = 7
       version = '0.3.0'
       body = ''
+      downloadedWith: number | null = null
       installedWith: number | null = null
       closedWith: number | null = null
-      async downloadAndInstall(onEvent: (event: Event) => void): Promise<void> {
-        this.installedWith = this.#rid
+      async download(onEvent: (event: Event) => void): Promise<void> {
+        this.downloadedWith = this.#rid
         onEvent({ event: 'Finished' })
+      }
+      async install(): Promise<void> {
+        this.installedWith = this.#rid
       }
       async close(): Promise<void> {
         this.closedWith = this.#rid
@@ -235,6 +456,7 @@ describe('updates store', () => {
     await updates.checkNow(true)
 
     await updates.install()
+    expect(first.downloadedWith).toBe(7)
     expect(first.installedWith).toBe(7)
     expect(updates.error).toBeNull()
 

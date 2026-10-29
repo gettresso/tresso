@@ -2,10 +2,17 @@
 import { computed } from 'vue'
 import { useUpdatesStore } from '@/stores/updates'
 
-/** Windows and Linux: a newer release, offered where it does not get in the way (macOS shows Sparkle's window). */
+/**
+ * Windows and Linux: a newer release, offered where it does not get in the way (macOS shows Sparkle's window). On
+ * every desktop it also says when the restart into an update waits for files on their way or a message being sent.
+ */
 const updates = useUpdatesStore()
 
+const waiting = computed(() => updates.phase === 'waiting')
 const shown = computed(() => {
+  if (waiting.value) {
+    return updates.channel !== 'none'
+  }
   const found = updates.update
   if (updates.channel !== 'tauri' || found === null) {
     return false
@@ -13,37 +20,60 @@ const shown = computed(() => {
   if (updates.phase === 'downloading' || updates.phase === 'installing' || updates.phase === 'failed') {
     return true
   }
-  return updates.phase === 'available' && updates.dismissed !== found.version
+  return (updates.phase === 'available' || updates.phase === 'ready') && updates.dismissed !== found.version
 })
+const title = computed(() => {
+  const found = updates.update?.version
+  if (waiting.value || updates.phase === 'ready') {
+    return found === undefined || updates.channel !== 'tauri' ? 'The update is ready' : `Tresso ${found} is ready`
+  }
+  return `Tresso ${found ?? ''} is available`
+})
+const waitingText = computed(() =>
+  updates.waitingFor === 'sending'
+    ? 'Tresso restarts once your message is on its way.'
+    : 'Tresso restarts once your files are attached, so they are not lost.',
+)
 const percent = computed(() => (updates.progress === null ? null : Math.round(updates.progress * 100)))
 </script>
 
 <template>
   <Transition name="fade">
-    <aside v-if="shown && updates.update" class="update" role="status" aria-live="polite" aria-labelledby="update-title">
-      <p id="update-title" class="title">Tresso {{ updates.update.version }} is available</p>
-      <p v-if="updates.version" class="detail">You have {{ updates.version }}.</p>
-      <p v-if="updates.update.body" class="notes">{{ updates.update.body }}</p>
-      <template v-if="updates.phase === 'downloading' || updates.phase === 'installing'">
-        <div
-          class="bar"
-          role="progressbar"
-          :aria-valuenow="percent ?? undefined"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          :aria-label="updates.phase === 'installing' ? 'Installing' : 'Downloading'"
-        >
-          <span :class="{ unknown: percent === null }" :style="percent === null ? undefined : { width: `${percent}%` }" />
-        </div>
-        <p v-if="updates.error" class="error" role="alert">{{ updates.error }}</p>
-        <p v-else class="detail">{{ updates.phase === 'installing' ? 'Installing, Tresso restarts in a moment…' : percent === null ? 'Downloading…' : `Downloading… ${percent}%` }}</p>
-      </template>
-      <template v-else>
-        <p v-if="updates.error" class="error" role="alert">{{ updates.error }}</p>
+    <aside v-if="shown" class="update" role="status" aria-live="polite" aria-labelledby="update-title">
+      <p id="update-title" class="title">{{ title }}</p>
+      <template v-if="waiting">
+        <p class="detail">{{ waitingText }}</p>
         <div class="actions">
-          <button type="button" class="button button-primary" @click="updates.install()">{{ updates.phase === 'failed' ? 'Try again' : 'Install and relaunch' }}</button>
+          <button type="button" class="button button-quiet" @click="updates.restartNow()">Restart now</button>
           <button type="button" class="button button-quiet" @click="updates.later()">Later</button>
         </div>
+      </template>
+      <template v-else-if="updates.update">
+        <p v-if="updates.version" class="detail">You have {{ updates.version }}.</p>
+        <p v-if="updates.update.body" class="notes">{{ updates.update.body }}</p>
+        <template v-if="updates.phase === 'downloading' || updates.phase === 'installing'">
+          <div
+            class="bar"
+            role="progressbar"
+            :aria-valuenow="percent ?? undefined"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="updates.phase === 'installing' ? 'Installing' : 'Downloading'"
+          >
+            <span :class="{ unknown: percent === null }" :style="percent === null ? undefined : { width: `${percent}%` }" />
+          </div>
+          <p v-if="updates.error" class="error" role="alert">{{ updates.error }}</p>
+          <p v-else class="detail">{{ updates.phase === 'installing' ? 'Installing, Tresso restarts in a moment…' : percent === null ? 'Downloading…' : `Downloading… ${percent}%` }}</p>
+        </template>
+        <template v-else>
+          <p v-if="updates.error" class="error" role="alert">{{ updates.error }}</p>
+          <div class="actions">
+            <button type="button" class="button button-primary" @click="updates.install()">
+              {{ updates.phase === 'failed' ? 'Try again' : updates.phase === 'ready' ? 'Restart to update' : 'Install and relaunch' }}
+            </button>
+            <button type="button" class="button button-quiet" @click="updates.later()">Later</button>
+          </div>
+        </template>
       </template>
     </aside>
   </Transition>
