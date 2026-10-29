@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App;
 
+use App\Billing\ReconcileSubscriptions;
 use App\Scan\SweepPendingScans;
 use App\Storage\SweepReencryption;
 use Symfony\Component\Scheduler\Attribute\AsSchedule;
@@ -28,6 +29,7 @@ final readonly class Schedule implements ScheduleProviderInterface
             ->stateful($this->cache)
             ->processOnlyLastMissedRun(true)
             ->add(RecurringMessage::every('5 minutes', new SweepPendingScans()))
-            ->add(RecurringMessage::every('1 hour', new SweepReencryption()));
+            ->add(RecurringMessage::every('1 hour', new SweepReencryption()))
+            ->add(RecurringMessage::cron('17 3 * * *', new ReconcileSubscriptions()));
     }
 }

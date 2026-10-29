@@ -179,6 +179,28 @@ final class ProductionSettingsTest extends TestCase
         self::assertSame([], new ProductionSettings([...self::complete(), 'API_PUBLIC_URL' => 'https://api.mail.example.com:8443'], self::DEVELOPMENT)->problems());
     }
 
+    public function testBillingNeedsStripeKeysAndAPrice(): void
+    {
+        self::assertSame([
+            'STRIPE_SECRET_KEY must be a Stripe secret or restricted key (sk_live_, sk_test_, rk_live_ or rk_test_).',
+            'STRIPE_WEBHOOK_SECRET must be the signing secret (whsec_) of the webhook endpoint.',
+            'Billing needs STRIPE_PRICE_MONTHLY, STRIPE_PRICE_YEARLY or both.',
+        ], new ProductionSettings([...self::complete(), 'TRESSO_BILLING' => '1', 'STRIPE_SECRET_KEY' => 'pk_live_abc'], self::DEVELOPMENT)->problems());
+
+        self::assertSame([], new ProductionSettings([
+            ...self::complete(),
+            'TRESSO_BILLING' => '1',
+            'STRIPE_SECRET_KEY' => 'sk_live_'.str_repeat('a', 24),
+            'STRIPE_WEBHOOK_SECRET' => 'whsec_'.str_repeat('b', 24),
+            'STRIPE_PRICE_YEARLY' => 'price_1Abc',
+        ], self::DEVELOPMENT)->problems());
+    }
+
+    public function testWithoutBillingStripeIsNotNeeded(): void
+    {
+        self::assertSame([], new ProductionSettings([...self::complete(), 'TRESSO_BILLING' => '0'], self::DEVELOPMENT)->problems());
+    }
+
     public function testProblemsNeverContainASecret(): void
     {
         $settings = [...self::complete(), 'S3_SECRET_KEY' => 'short-secret'];

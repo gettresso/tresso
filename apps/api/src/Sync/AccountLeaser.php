@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Sync;
 
 use App\Enum\MailAccountStatus;
+use App\Billing\Entitlements;
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\ParameterType;
 
 /**
  * Hands out mail accounts to sync workers.
@@ -18,8 +20,10 @@ final readonly class AccountLeaser
 {
     public const int LEASE_SECONDS = 90;
 
-    public function __construct(private Connection $connection)
-    {
+    public function __construct(
+        private Connection $connection,
+        private Entitlements $entitlements,
+    ) {
     }
 
     /**
@@ -30,12 +34,13 @@ final readonly class AccountLeaser
         return $this->connection->transactional(function (Connection $connection) use ($workerId, $capacity): array {
             /** @var list<array{id: string, email_address: string, provider: string, lease_expires_at: string}> $rows */
             $rows = $connection->fetchAllAssociative(
-                <<<'SQL'
+                \sprintf(<<<'SQL'
                     WITH claimable AS (
                         SELECT id
                         FROM mail_account
                         WHERE status IN (:active, :error)
                           AND (leased_by = :worker OR lease_expires_at IS NULL OR lease_expires_at < now())
+                          AND (NOT :billing OR %s)
                         ORDER BY (leased_by = :worker) DESC NULLS LAST, last_synced_at ASC NULLS FIRST
                         LIMIT :capacity
                         FOR UPDATE SKIP LOCKED
@@ -46,7 +51,7 @@ final readonly class AccountLeaser
                     FROM claimable
                     WHERE account.id = claimable.id
                     RETURNING account.id, account.email_address, account.provider, account.lease_expires_at
-                    SQL,
+                    SQL, Entitlements::condition('mail_account.owner_id')),
                 [
                     'active' => MailAccountStatus::Active->value,
                     // A sync problem is temporary: such accounts keep being retried. Paused accounts and refused
@@ -55,7 +60,11 @@ final readonly class AccountLeaser
                     'worker' => $workerId,
                     'capacity' => $capacity,
                     'seconds' => self::LEASE_SECONDS,
+                    // On a server that bills, accounts of users without a trial or subscription are not synced.
+                    'billing' => $this->entitlements->billingEnabled(),
+                    ...$this->entitlements->parameters(),
                 ],
+                ['billing' => ParameterType::BOOLEAN],
             );
 
             // Accounts this worker held but no longer got back (paused, deleted, over capacity) are released.

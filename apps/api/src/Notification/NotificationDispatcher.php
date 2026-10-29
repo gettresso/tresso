@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Notification;
 
+use App\Billing\Entitlements;
 use App\Calendar\SelfAddresses;
 use App\Entity\NotificationDelivery;
 use App\Entity\NotificationDevice;
@@ -53,6 +54,7 @@ final readonly class NotificationDispatcher
         private EmailNotifier $email,
         private SelfAddresses $selfAddresses,
         private LoggerInterface $logger,
+        private Entitlements $entitlements,
     ) {
     }
 
@@ -101,7 +103,8 @@ final readonly class NotificationDispatcher
      */
     public function claim(User $user, string $deliveryKey, NotificationChannelChoice $choice, bool $newTargets): array
     {
-        if ($choice->isEmpty()) {
+        // A user whose trial or subscription ended gets nothing, on any channel, until they pay again.
+        if ($choice->isEmpty() || !$this->entitlements->allows($user->getId())) {
             return [];
         }
         $targets = [];

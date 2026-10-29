@@ -18,6 +18,10 @@ security:
         oauth_token:
             pattern: ^/oauth/token$
             security: false
+        # Stripe signs its webhook; the controller checks that signature instead of a session or token.
+        stripe_webhook:
+            pattern: ^/billing/stripe/webhook$
+            security: false
         # Attachment content behind signed, expiring URLs (rendered mail cannot send access tokens).
         content:
             pattern: ^/content/
@@ -44,6 +48,8 @@ security:
         # Google and Microsoft redirect here after a sign-in; the browser session ties it to the user who started it.
         - { path: ^/connect/, roles: ROLE_USER }
         - { path: ^/internal/, roles: IS_AUTHENTICATED_FULLY }
+        # What this server is: open before sign-in.
+        - { path: ^/api/v1/server-info$, roles: PUBLIC_ACCESS }
         - { path: ^/api/, roles: IS_AUTHENTICATED_FULLY }
 
 when@test:
