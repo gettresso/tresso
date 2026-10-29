@@ -248,7 +248,7 @@ function keydown(event: KeyboardEvent): void {
       <button type="button" class="button button-quiet" @click="fileInput?.click()"><AppIcon name="attachment" :size="16" />Attach files</button>
       <input ref="fileInput" class="file-input" type="file" multiple tabindex="-1" aria-hidden="true" @change="pickFiles" />
       <span class="spacer" />
-      <button type="button" class="button button-quiet" @click="compose.discard()"><AppIcon name="trash" :size="16" />Discard</button>
+      <button type="button" class="button button-quiet" :disabled="compose.sending" @click="compose.discard()"><AppIcon name="trash" :size="16" />Discard</button>
     </footer>
   </form>
 </template>

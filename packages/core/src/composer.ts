@@ -521,7 +521,8 @@ export class Composer {
    */
   async discard(): Promise<boolean> {
     const draft = this.current.draft
-    if (draft === null || this.storeOfDraft() === null) {
+    // A draft being sent settles first: deleting it meanwhile would race the send for the same draft.
+    if (draft === null || this.storeOfDraft() === null || this.current.sending || this.held.has(draft.id)) {
       return false
     }
     this.clearSaveTimer()

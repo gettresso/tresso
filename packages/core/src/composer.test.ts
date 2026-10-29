@@ -236,6 +236,19 @@ describe('Composer', () => {
     expect(composer.unfinished).toBeNull()
   })
 
+  it('does not delete a draft while it is being sent', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    let sendNow: (() => void) | null = null
+    sendGate = new Promise<void>((resolve) => (sendNow = resolve))
+    const sending = composer.send()
+    await vi.waitFor(() => expect(composer.unfinished).toBe('sending'))
+
+    expect(await composer.discard()).toBe(false)
+    sendNow!()
+    await sending
+    expect(api.calls.some((call) => call.startsWith('remove'))).toBe(false)
+  })
+
   it('saves a draft put away during its send once the send fails', async () => {
     composer.openNew([{ address: 'anna@example.test', name: null }])
     composer.update({ subject: 'Going out' })
