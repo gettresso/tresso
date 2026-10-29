@@ -63,6 +63,23 @@ describe('the server the desktop app talks to', () => {
     expect(server.value).toBe(defaultServer)
   })
 
+  it('uses the server the web image was started with over the build', async () => {
+    vi.stubGlobal('tressoConfig', { apiUrl: ' https://api.mail.example.com/ ' })
+
+    const { server, defaultServer } = await serverModule()
+
+    expect(defaultServer).toBe('https://api.mail.example.com')
+    expect(server.value).toBe(defaultServer)
+  })
+
+  it('keeps the build server when the web image was started without one', async () => {
+    vi.stubGlobal('tressoConfig', { apiUrl: '' })
+
+    const { defaultServer } = await serverModule()
+
+    expect(defaultServer).toBe('http://localhost:8080')
+  })
+
   it('keeps a chosen server for the next launch, and forgets it on going back to the default', async () => {
     const first = await serverModule()
     first.chooseServer('mail.example.com')
