@@ -82,11 +82,40 @@ export class Composer {
   /** Files on their way to a draft, by a number of their own, so switching drafts never loses or mixes them up. */
   private readonly onTheirWay = new Map<number, { draftId: string; name: string }>()
   private nextFile = 0
+  /** Saves on this device that are under way, so a restart can wait for them (saveNow). */
+  private readonly writes = new Set<Promise<unknown>>()
 
   constructor(private readonly deps: ComposerDeps) {}
 
   get state(): ComposerState {
     return this.current
+  }
+
+  /**
+   * What quitting now would cut short: files on their way to any draft (their contents are only in memory), or a
+   * message being handed to the server. Null when the app can go.
+   */
+  get unfinished(): 'files' | 'sending' | null {
+    return this.onTheirWay.size > 0 ? 'files' : this.current.sending ? 'sending' : null
+  }
+
+  /**
+   * Saves the open draft on this device at once, rather than when typing stops, and waits for saves under way, so a
+   * restart loses no edits. The upload is left for later: the draft stays marked as not on the server.
+   */
+  async saveNow(): Promise<void> {
+    if (this.saveTimer !== null) {
+      this.clearSaveTimer()
+      void this.save()
+    }
+    await Promise.allSettled([...this.writes])
+  }
+
+  private track<T>(write: Promise<T>): Promise<T> {
+    this.writes.add(write)
+    const done = (): void => void this.writes.delete(write)
+    write.then(done, done)
+    return write
   }
 
   subscribe(listener: () => void): () => void {
@@ -355,10 +384,12 @@ export class Composer {
     let isNew = false
     try {
       // Kept as one step, so what an upload or a file learned meanwhile is not written over.
-      await store.changeDraft(draft.id, (stored) => {
-        isNew = stored === null
-        return withEdits(stored, draft)
-      })
+      await this.track(
+        store.changeDraft(draft.id, (stored) => {
+          isNew = stored === null
+          return withEdits(stored, draft)
+        }),
+      )
     } catch (error) {
       if (error instanceof CopyClosingError) {
         // Signed out meanwhile: the copy is going, and the draft with it.
