@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { hasSubscription } from '@tresso/core'
+import type { BillingStatus } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import BillingPanel from '@/components/BillingPanel.vue'
 import { useBillingStore } from '@/stores/billing'
@@ -16,11 +16,20 @@ const notice = ref<string | null>(null)
 const WAIT_TRIES = 10
 const WAIT_MS = 3000
 let timer: ReturnType<typeof setTimeout> | null = null
+let left = false
+
+/** Paid for: Stripe reports the subscription as active or trialing. Incomplete (a pending 3D Secure or SEPA) is not. */
+function subscribed(status: BillingStatus): boolean {
+  return status.organizations.some((organization) => organization.canManage && (organization.status === 'active' || organization.status === 'trialing'))
+}
 
 async function waitForSubscription(tries: number): Promise<void> {
   const status = await billing.load()
-  if (status.organizations.some((organization) => organization.canManage && hasSubscription(organization)) || tries <= 1) {
-    notice.value = status.entitled ? 'Thank you, you are subscribed.' : 'The payment is still being processed. This page shows it once Stripe confirms.'
+  if (left) {
+    return
+  }
+  if (subscribed(status) || tries <= 1) {
+    notice.value = subscribed(status) ? 'Thank you, you are subscribed.' : 'The payment is still being processed. This page shows it once Stripe confirms.'
     return
   }
   timer = setTimeout(() => {
@@ -50,6 +59,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  left = true
   if (timer !== null) {
     clearTimeout(timer)
   }

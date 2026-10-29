@@ -34,6 +34,7 @@ function seats(organization: BillingOrganization): string | null {
             Manage subscription
           </button>
         </template>
+        <p v-else-if="plans.length === 0" class="hint">This server offers no plan to subscribe to yet.</p>
         <template v-else>
           <button
             v-for="(plan, index) in plans"

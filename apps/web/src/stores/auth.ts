@@ -31,6 +31,8 @@ export const useAuthStore = defineStore('auth', () => {
   const storageError = ref<string | null>(null)
   /** The server answered 402: the trial or subscription is over, and the payment screen covers the app. */
   const paymentRequired = ref(false)
+  /** Goes up on every sign-out, so an answer to a request from before cannot change the next session. */
+  const generation = ref(0)
 
   async function store(next: TokenSet | null): Promise<void> {
     tokens.value = next
@@ -108,6 +110,7 @@ export const useAuthStore = defineStore('auth', () => {
         console.error('Telling the server this browser signed out failed', error)
       }
     }
+    generation.value++
     me.value = null
     paymentRequired.value = false
     await store(null)
@@ -135,6 +138,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const session = generation.value
     const headers = new Headers(init.headers)
     headers.set('Authorization', `Bearer ${await accessToken()}`)
     headers.set('Accept', 'application/json')
@@ -144,7 +148,7 @@ export const useAuthStore = defineStore('auth', () => {
       void endSession(false)
       throw new ApiError(401, 'Your session has expired. Sign in again.')
     }
-    if (response.status === 402) {
+    if (response.status === 402 && session === generation.value) {
       paymentRequired.value = true
     }
     if (!response.ok) {
@@ -170,5 +174,5 @@ export const useAuthStore = defineStore('auth', () => {
     me.value = await api<Me>('/api/v1/me')
   }
 
-  return { tokens, me, isAuthenticated, awaitingBrowser, storageError, paymentRequired, restore, signIn, completeSignIn, signOut, loadMe, api, send }
+  return { tokens, me, isAuthenticated, awaitingBrowser, storageError, paymentRequired, generation, restore, signIn, completeSignIn, signOut, loadMe, api, send }
 })

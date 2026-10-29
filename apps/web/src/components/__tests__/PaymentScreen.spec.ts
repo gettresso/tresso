@@ -36,7 +36,7 @@ describe('PaymentScreen', () => {
     const screen = mount(PaymentScreen)
     await flushPromises()
 
-    expect(screen.text()).toContain('Your Tresso subscription has ended')
+    expect(screen.text()).toContain('Your free trial has ended')
     expect(screen.text()).toContain('The free trial has ended.')
     expect(screen.text()).toContain('Ask an owner or admin of Support to renew it.')
     const buttons = screen.findAll('button').map((button) => button.text())
@@ -46,27 +46,35 @@ describe('PaymentScreen', () => {
     expect(open).toHaveBeenCalledWith('org-1', { plan: 'yearly' })
   })
 
-  it('reloads the app once the payment came through, and says so when it did not yet', async () => {
+  it('asks again, and says so when the payment did not come through yet', async () => {
     const billing = useBillingStore()
-    const reload = vi.fn<() => void>()
-    vi.stubGlobal('location', { ...window.location, reload })
     const load = vi.spyOn(billing, 'load').mockImplementation(async () => {
       billing.status = ENDED
       return ENDED
     })
     const screen = mount(PaymentScreen)
     await flushPromises()
-    const checkAgain = screen.findAll('button').find((button) => button.text() === 'I have paid, check again')!
 
-    await checkAgain.trigger('click')
+    await screen.findAll('button').find((button) => button.text() === 'I have paid, check again')!.trigger('click')
     await flushPromises()
+
+    expect(load).toHaveBeenCalledTimes(2)
     expect(screen.text()).toContain('Still not subscribed.')
-    expect(reload).not.toHaveBeenCalled()
+  })
 
-    load.mockResolvedValueOnce({ ...ENDED, entitled: true })
-    await checkAgain.trigger('click')
+  it('names an ended trial, and explains a billing status that could not be loaded', async () => {
+    const billing = useBillingStore()
+    vi.spyOn(billing, 'load').mockRejectedValueOnce(new Error('Failed to fetch'))
+
+    const screen = mount(PaymentScreen, { attachTo: document.body })
     await flushPromises()
-    expect(reload).toHaveBeenCalled()
+    expect(screen.text()).toContain('Failed to fetch')
+    expect(document.activeElement?.id).toBe('payment-title')
+
+    billing.status = ENDED
+    await flushPromises()
+    expect(screen.text()).toContain('Your free trial has ended')
+    screen.unmount()
   })
 
   it('signs out', async () => {

@@ -36,9 +36,10 @@ function remindOfTrial(status: BillingStatus): void {
   }
   const days = trialDaysLeft(own)
   if (days > 0 && days <= TRIAL_REMINDER_DAYS) {
+    const end = new Date(own.trialEndsAt).toLocaleString(undefined, { weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' })
     compose.notify(
       {
-        text: days === 1 ? 'Your free trial ends tomorrow.' : `Your free trial ends in ${days} days.`,
+        text: `Your free trial ends on ${end}.`,
         tone: 'info',
         action: { label: 'Subscribe', run: () => void router.push({ name: 'settings-billing' }) },
       },
@@ -57,7 +58,7 @@ function reload(): void {
 function shortcut(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null
   const typing = target !== null && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
-  if (!typing && auth.isAuthenticated && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'c' && compose.draft === null && handOvers.handingOver === null) {
+  if (!typing && auth.isAuthenticated && !auth.paymentRequired && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'c' && compose.draft === null && handOvers.handingOver === null) {
     event.preventDefault()
     compose.openNew()
   }
@@ -112,14 +113,17 @@ watch(
 <template>
   <!-- The macOS app's title bar: the window buttons sit on it, and dragging it moves the window. -->
   <div v-if="vibrant" class="titlebar" data-tauri-drag-region aria-hidden="true" />
-  <RouterView />
-  <template v-if="auth.isAuthenticated">
-    <Transition name="sink"><ComposeWindow v-if="compose.draft" /></Transition>
-    <Transition name="layer"><HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" /></Transition>
-    <NoticeStack />
-    <UpdateCard v-if="isDesktop" />
-    <PaymentScreen v-if="auth.paymentRequired" />
-  </template>
+  <!-- Behind the payment screen nothing can be reached, by pointer, keyboard or screen reader. -->
+  <div class="app" :inert="auth.paymentRequired">
+    <RouterView />
+    <template v-if="auth.isAuthenticated">
+      <Transition name="sink"><ComposeWindow v-if="compose.draft" /></Transition>
+      <Transition name="layer"><HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" /></Transition>
+      <NoticeStack />
+      <UpdateCard v-if="isDesktop" />
+    </template>
+  </div>
+  <PaymentScreen v-if="auth.isAuthenticated && auth.paymentRequired" />
   <p v-if="mail.updatedElsewhere" class="problem" role="alert">
     {{ mail.updatedElsewhere }}
     <button type="button" class="reload" @click="reload">Reload</button>
@@ -130,6 +134,10 @@ watch(
 </template>
 
 <style scoped>
+/* Only a wrapper for inert: it takes no box of its own. */
+.app {
+  display: contents;
+}
 .titlebar {
   position: fixed;
   inset: 0 0 auto;

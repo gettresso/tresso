@@ -77,6 +77,24 @@ describe('SettingsBillingView', () => {
     expect(view.text()).toContain('Manage subscription')
   })
 
+  it('does not thank for a payment that is still incomplete, and stops looking once the page is left', async () => {
+    vi.useFakeTimers()
+    route.query = { checkout: 'done' }
+    const incomplete: BillingStatus = { ...TRIAL, organizations: [{ ...TRIAL.organizations[0]!, status: 'incomplete' }] }
+    const load = stubLoad(incomplete, incomplete, incomplete)
+
+    const view = mount(SettingsBillingView)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+    expect(view.text()).not.toContain('Thank you')
+    expect(load).toHaveBeenCalledTimes(2)
+
+    view.unmount()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
   it('says a cancelled checkout charged nothing', async () => {
     route.query = { checkout: 'cancelled' }
     stubLoad(TRIAL)
