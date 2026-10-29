@@ -112,19 +112,23 @@ A blocked user gets `402` from every `/api/` call except the ones above (`/api/v
 }
 ```
 
-Signing in and out (`/login`, `/oauth/…`, `/logout`) are outside `/api` and keep working. A client that gets `402`
+Signing in and out (`/login`, `/oauth/…`, `/logout`) are outside `/api` and keep working, and so does removing a device
+from the user's push devices when signing out (`POST` and `DELETE` on `/api/v1/notification-devices`), so a device
+signed out while blocked never gets the user's notifications once they renew. A client that gets `402`
 shows its payment screen: from `GET /api/v1/billing`, the trial's end or the subscription's status, and for an owner or
 admin the buttons that open Checkout or the portal. The server alone decides; a client never unlocks anything itself.
 
 ## Clients
 
-- **Web and desktop.** A `402` from any request puts up the payment screen over the app. It shows each organization
-  from `GET /api/v1/billing` and, for an owner or admin, the plans (Stripe Checkout) or "Manage subscription" (the
-  portal). The web opens Stripe in the same tab; the desktop app opens it in the system browser, since Stripe returns
-  to the web address. "I have paid, check again" asks the server again and reloads the app once it gives access.
-  Settings has a Subscription page (only where the server bills), which is also where Stripe returns after Checkout:
-  it waits up to 30 seconds for the webhook to show the subscription. Three days before the user's own trial ends, a
-  notice offers to subscribe.
+- **Web and desktop.** A `402` from any request puts up the payment screen over the app, which cannot be reached
+  underneath. It shows each organization from `GET /api/v1/billing` and, for an owner or admin, the plans (Stripe
+  Checkout) or "Manage subscription" (the portal); others are asked to turn to an owner or admin. Only an `https`
+  address is opened: in the same tab on the web, in the system browser on desktop (Stripe returns to the web address).
+  "I have paid, check again" asks the server again; as soon as the server gives access, the app reloads, so everything
+  that stopped starts again. Settings has a Subscription page (only where the server bills), which is also where
+  Stripe returns after Checkout: it waits up to 30 seconds for the webhook to show an active subscription. Three days
+  before the user's own trial ends, a notice gives the end and offers to subscribe. A server without
+  `/api/v1/billing` counts as one that does not bill.
 - **Mobile.** A `402` covers the app with a notice that the subscription ended and that it is renewed in Tresso on a
   computer or on the web, with "Check again" and "Sign out". The phone app sells nothing and links to no payment
   page.
