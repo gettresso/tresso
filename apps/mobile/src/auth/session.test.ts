@@ -214,4 +214,20 @@ describe('Session', () => {
     await expect(request).rejects.toMatchObject({ status: 402 })
     expect(session.snapshot.paymentRequired).toBe(false)
   })
+
+  it('does not sign out a newer session for a 401 that answers the previous one', async () => {
+    let answer: (response: Response) => void = () => undefined
+    const store = memoryStore(fresh())
+    const session = await restored(store, vi.fn<Fetch>(() => new Promise<Response>((resolve) => (answer = resolve))))
+    const request = session.api('/api/v1/me')
+    await Promise.resolve()
+
+    await session.signOut()
+    store.saved = fresh('access-2')
+    await session.restore()
+    answer(new Response('{}', { status: 401 }))
+
+    await expect(request).rejects.toMatchObject({ status: 401 })
+    expect(session.snapshot.tokens?.accessToken).toBe('access-2')
+  })
 })

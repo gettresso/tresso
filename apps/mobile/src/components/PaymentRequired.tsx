@@ -14,6 +14,7 @@ export function PaymentRequired() {
   const notices = useNotices()
   const theme = useTheme()
   const [checking, setChecking] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
   // Android's back button would act on the screens underneath.
@@ -40,9 +41,13 @@ export function PaymentRequired() {
   }
 
   function signOut(): void {
-    auth.signOut().catch((error: unknown) => {
-      notices.notify({ text: `Signed out, but this phone may still get your notifications until someone signs in here: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
-    })
+    setSigningOut(true)
+    auth
+      .signOut()
+      .catch((error: unknown) => {
+        notices.notify({ text: `Signed out, but this phone may still get your notifications until someone signs in here: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+      })
+      .finally(() => setSigningOut(false))
   }
 
   return (
@@ -70,7 +75,13 @@ export function PaymentRequired() {
         >
           {checking ? <ActivityIndicator color={theme.onAccent} /> : <Text style={[styles.buttonText, { color: theme.onAccent }]}>Check again</Text>}
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={signOut} style={[styles.button, styles.quiet, { borderColor: theme.lineStrong }]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ busy: signingOut, disabled: signingOut }}
+          disabled={signingOut}
+          onPress={signOut}
+          style={[styles.button, styles.quiet, { borderColor: theme.lineStrong }]}
+        >
           <Text style={[styles.buttonText, { color: theme.ink }]}>Sign out</Text>
         </Pressable>
       </View>

@@ -111,7 +111,10 @@ export class Session {
     const generation = this.generation
     const response = await this.fetchImpl(`${this.config.apiUrl.replace(/\/+$/, '')}${path}`, { ...init, headers })
     if (response.status === 401) {
-      await this.signOut()
+      // Only for this session: a late answer to the previous one must not sign out the user who signed in since.
+      if (generation === this.generation) {
+        await this.signOut()
+      }
       throw new ApiError(401, 'Your session has expired. Sign in again.')
     }
     if (generation !== this.generation) {
