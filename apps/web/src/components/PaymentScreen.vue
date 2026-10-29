@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { errorMessage } from '@/api/errors'
 import BillingPanel from '@/components/BillingPanel.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -14,18 +14,17 @@ const auth = useAuthStore()
 const billing = useBillingStore()
 const checking = ref(false)
 const stillBlocked = ref(false)
+const heading = ref<HTMLElement | null>(null)
+
+const ownTrialEnded = computed(() => billing.status?.organizations.find((organization) => organization.personal)?.status === 'trial')
+const canManage = computed(() => billing.status?.organizations.some((organization) => organization.canManage) ?? true)
 
 async function checkAgain(): Promise<void> {
   checking.value = true
   stillBlocked.value = false
   try {
-    const status = await billing.load()
-    if (status.entitled) {
-      // Everything that stopped (sync, the mail copy) starts again cleanly.
-      window.location.reload()
-      return
-    }
-    stillBlocked.value = true
+    // Once the server gives access again, the store reloads the app.
+    stillBlocked.value = !(await billing.load()).entitled
   } catch (cause) {
     billing.error = errorMessage(cause)
   } finally {
@@ -34,6 +33,7 @@ async function checkAgain(): Promise<void> {
 }
 
 onMounted(() => {
+  heading.value?.focus()
   billing.load().catch((cause: unknown) => {
     billing.error = errorMessage(cause)
   })
@@ -43,10 +43,14 @@ onMounted(() => {
 <template>
   <div class="cover">
     <section class="payment" role="dialog" aria-modal="true" aria-labelledby="payment-title">
-      <h1 id="payment-title">Your Tresso subscription has ended</h1>
-      <p class="lead">Your mail, calendar and todos are kept. Subscribe to pick up where you left off.</p>
+      <h1 id="payment-title" ref="heading" tabindex="-1">{{ ownTrialEnded ? 'Your free trial has ended' : 'Your Tresso subscription has ended' }}</h1>
+      <p class="lead">
+        Your mail, calendar and todos are kept.
+        {{ canManage ? 'Subscribe to pick up where you left off.' : 'Ask an owner or admin of your organization to renew it.' }}
+      </p>
       <BillingPanel v-if="billing.status" />
-      <p v-else-if="!billing.error" class="hint">Loading…</p>
+      <p v-else-if="billing.error" class="form-error" role="alert">{{ billing.error }}</p>
+      <p v-else class="hint">Loading…</p>
       <p v-if="stillBlocked" class="hint" role="status">Still not subscribed. A payment can take a moment to come through.</p>
       <div class="footer">
         <button type="button" class="button button-quiet" :disabled="checking" @click="checkAgain">I have paid, check again</button>
@@ -79,6 +83,7 @@ onMounted(() => {
 }
 h1 {
   margin: 0;
+  outline: none;
   font: 700 24px/30px var(--font-display);
 }
 .lead,

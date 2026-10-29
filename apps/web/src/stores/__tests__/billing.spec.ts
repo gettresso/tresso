@@ -38,18 +38,61 @@ describe('billing store', () => {
     vi.unstubAllGlobals()
   })
 
-  it('clears the payment screen once the server says the user may use it again', async () => {
+  it('reloads the app once the server gives a blocked user access again', async () => {
     const auth = useAuthStore()
     auth.paymentRequired = true
+    const reload = vi.fn<() => void>()
+    vi.stubGlobal('location', { ...window.location, reload })
     vi.spyOn(auth, 'api').mockResolvedValueOnce(BLOCKED).mockResolvedValueOnce({ ...BLOCKED, entitled: true })
     const billing = useBillingStore()
 
     await billing.load()
-    expect(auth.paymentRequired).toBe(true)
+    expect(reload).not.toHaveBeenCalled()
 
     await billing.load()
-    expect(auth.paymentRequired).toBe(false)
+    expect(reload).toHaveBeenCalledOnce()
     expect(billing.status?.entitled).toBe(true)
+  })
+
+  it('takes a server without billing for one that does not bill', async () => {
+    const auth = useAuthStore()
+    const { ApiError } = await import('@/api/errors')
+    vi.spyOn(auth, 'api').mockRejectedValue(new ApiError(404, 'Not Found'))
+    const billing = useBillingStore()
+
+    expect((await billing.load()).enabled).toBe(false)
+    expect(billing.status?.enabled).toBe(false)
+  })
+
+  it('keeps no answer that arrives after a sign-out', async () => {
+    const auth = useAuthStore()
+    let answer: (status: BillingStatus) => void = () => undefined
+    vi.spyOn(auth, 'api').mockReturnValue(new Promise((resolve) => (answer = resolve as (status: BillingStatus) => void)) as never)
+    const billing = useBillingStore()
+    const loading = billing.load()
+
+    auth.generation++
+    answer(BLOCKED)
+    await loading
+
+    expect(billing.status).toBeNull()
+  })
+
+  it('opens only an https page, and keeps its buttons off while the web page leaves', async () => {
+    const auth = useAuthStore()
+    const send = vi.spyOn(auth, 'send').mockResolvedValueOnce({ url: 'javascript:alert(1)' })
+    const assign = vi.fn<(url: string) => void>()
+    vi.stubGlobal('location', { ...window.location, assign })
+    const billing = useBillingStore()
+
+    await billing.open('org-1', { plan: 'monthly' })
+    expect(assign).not.toHaveBeenCalled()
+    expect(billing.error).toContain('not a secure web address')
+
+    send.mockResolvedValueOnce({ url: 'https://checkout.stripe.com/c/pay/cs_1' })
+    await billing.open('org-1', { plan: 'monthly' })
+    expect(assign).toHaveBeenCalledWith('https://checkout.stripe.com/c/pay/cs_1')
+    expect(billing.opening).toBe(true)
   })
 
   it('opens Checkout here on the web, and in the system browser on desktop', async () => {
