@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import UpdateCard from '@/components/UpdateCard.vue'
@@ -55,6 +55,41 @@ describe('UpdateCard', () => {
     updates.dismissed = '0.3.0'
     await card.vm.$nextTick()
     expect(card.find('.update').exists()).toBe(false)
+  })
+
+  it('offers the restart for a download put off with "Later"', () => {
+    const updates = useUpdatesStore()
+    updates.channel = 'tauri'
+    updates.update = release('0.3.0')
+    updates.phase = 'ready'
+
+    const card = mount(UpdateCard)
+
+    expect(card.text()).toContain('Tresso 0.3.0 is ready')
+    expect(card.get('button.button-primary').text()).toBe('Restart to update')
+  })
+
+  it('says what the restart waits for, on macOS too, with a way to go now or later', async () => {
+    const updates = useUpdatesStore()
+    updates.channel = 'sparkle'
+    updates.phase = 'waiting'
+    updates.waitingFor = 'files'
+    const restartNow = vi.spyOn(updates, 'restartNow').mockImplementation(() => undefined)
+    const later = vi.spyOn(updates, 'later').mockImplementation(() => undefined)
+
+    const card = mount(UpdateCard)
+
+    expect(card.text()).toContain('The update is ready')
+    expect(card.text()).toContain('Tresso restarts once your files are attached, so they are not lost.')
+    updates.waitingFor = 'sending'
+    await card.vm.$nextTick()
+    expect(card.text()).toContain('Tresso restarts once your message is on its way.')
+
+    const [now, notNow] = card.findAll('button')
+    await now!.trigger('click')
+    await notNow!.trigger('click')
+    expect(restartNow).toHaveBeenCalledOnce()
+    expect(later).toHaveBeenCalledOnce()
   })
 
   it('says the update is installed when only the restart failed', () => {

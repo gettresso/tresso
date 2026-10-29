@@ -51,8 +51,11 @@ export const useComposeStore = defineStore('compose', () => {
 
   // The composer's state, for templates; replaced whole on every change, so a shallow ref is enough.
   const state = shallowRef<ComposerState>(composer.state)
+  /** What a restart would cut short (Composer.unfinished), for the update that waits for it. */
+  const unfinished = ref(composer.unfinished)
   composer.subscribe(() => {
     state.value = composer.state
+    unfinished.value = composer.unfinished
   })
 
   const draft = computed(() => state.value.draft)
@@ -159,6 +162,8 @@ export const useComposeStore = defineStore('compose', () => {
     undoable,
     attaching,
     attach,
+    unfinished,
+    saveNow: () => composer.saveNow(),
     removeAttachment: (attachmentId: string) => composer.removeAttachment(attachmentId),
     openAttachment,
     unscannedToConfirm,

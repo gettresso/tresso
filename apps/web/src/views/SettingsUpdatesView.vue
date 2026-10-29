@@ -6,6 +6,9 @@ import { useUpdatesStore } from '@/stores/updates'
 const updates = useUpdatesStore()
 
 const status = computed(() => {
+  if (updates.phase === 'waiting') {
+    return updates.waitingFor === 'sending' ? 'The update is ready. Tresso restarts once your message is on its way.' : 'The update is ready. Tresso restarts once your files are attached.'
+  }
   if (updates.channel === 'sparkle') {
     return 'Tresso checks for updates on its own every few hours. Sparkle asks before it installs anything.'
   }
@@ -18,6 +21,8 @@ const status = computed(() => {
     case 'downloading':
     case 'installing':
       return updates.update ? `Tresso ${updates.update.version} is available.` : null
+    case 'ready':
+      return updates.update ? `Tresso ${updates.update.version} is downloaded. Restart Tresso to start it.` : null
     default:
       return 'Tresso checks for updates on its own every few hours, and asks before it installs one.'
   }
@@ -40,13 +45,13 @@ const status = computed(() => {
         <button
           type="button"
           class="button button-primary"
-          :disabled="updates.phase === 'checking' || updates.phase === 'downloading' || updates.phase === 'installing'"
+          :disabled="updates.phase === 'checking' || updates.phase === 'downloading' || updates.phase === 'ready' || updates.phase === 'waiting' || updates.phase === 'installing'"
           @click="updates.checkNow(true)"
         >
           Check for updates
         </button>
-        <button v-if="updates.channel === 'tauri' && updates.phase === 'available'" type="button" class="button button-quiet" @click="updates.install()">
-          Install and relaunch
+        <button v-if="updates.channel === 'tauri' && (updates.phase === 'available' || updates.phase === 'ready')" type="button" class="button button-quiet" @click="updates.install()">
+          {{ updates.phase === 'ready' ? 'Restart to update' : 'Install and relaunch' }}
         </button>
       </div>
     </template>
