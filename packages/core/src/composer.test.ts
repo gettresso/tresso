@@ -23,6 +23,7 @@ describe('Composer', () => {
   let originalFiles: MessageAttachment[]
   let originalHtml: string
   let sendFails: unknown
+  let sendGate: Promise<void> | null
   let currentStore: SqliteMailStore | null
   let changes: number
   let composer: Composer
@@ -35,6 +36,7 @@ describe('Composer', () => {
     cancelled = []
     notices = []
     sendFails = null
+    sendGate = null
     currentStore = store
     changes = 0
     api = new FakeDraftApi()
@@ -48,6 +50,7 @@ describe('Composer', () => {
       defaultAccount: () => 'work',
       body: async () => ({ html: originalHtml, text: null, attachments: originalFiles }),
       send: async (request) => {
+        await sendGate
         if (sendFails !== null) throw sendFails
         sent.push(request)
         return outgoing('scheduled')
@@ -87,6 +90,61 @@ describe('Composer', () => {
 
     expect(await store.draft(composer.state.draft!.id)).toMatchObject({ subject: 'Hello', version: 1, pendingSave: false })
     expect(composer.state.savedAt).not.toBeNull()
+  })
+
+  it('saves at once for a restart, without waiting for typing to stop or for the upload', async () => {
+    composer.openNew()
+    composer.update({ subject: 'Before the update' })
+    const id = composer.state.draft!.id
+    api.offline = true
+
+    await composer.saveNow()
+
+    expect(await store.draft(id)).toMatchObject({ subject: 'Before the update', pendingSave: true })
+    // The timer is gone: nothing saves the same edits a second time.
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(api.calls.filter((call) => call === `create ${id}`)).toHaveLength(1)
+  })
+
+  it('waits for a save that is already under way', async () => {
+    composer.openNew()
+    composer.update({ subject: 'Typed' })
+    const id = composer.state.draft!.id
+    // The timer fires and the save starts; saveNow comes while it writes.
+    vi.advanceTimersByTime(1000)
+
+    await composer.saveNow()
+
+    expect(await store.draft(id)).toMatchObject({ subject: 'Typed' })
+  })
+
+  it('says what a restart would cut short: files on their way, or a message being sent', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    expect(composer.unfinished).toBeNull()
+    let release: (() => void) | null = null
+    api.duringFile = () => new Promise<void>((resolve) => (release = resolve))
+    const attaching = composer.attach([{ name: 'slow.bin', type: 'application/octet-stream', size: 10, body: 'blob' }])
+    expect(composer.unfinished).toBe('files')
+    await vi.waitFor(() => expect(release).not.toBeNull())
+    // Also while another draft is open: the files are only in memory.
+    composer.openNew()
+    expect(composer.unfinished).toBe('files')
+    api.duringFile = null
+    release!()
+    await attaching
+    expect(composer.unfinished).toBeNull()
+
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    let sendNow: (() => void) | null = null
+    sendGate = new Promise<void>((resolve) => (sendNow = resolve))
+    const listener = vi.fn()
+    composer.subscribe(listener)
+    const sending = composer.send()
+    await vi.waitFor(() => expect(composer.unfinished).toBe('sending'))
+    expect(listener).toHaveBeenCalled()
+    sendNow!()
+    await sending
+    expect(composer.unfinished).toBeNull()
   })
 
   it('refuses to send without an account or recipients, or with a wrong address', async () => {
