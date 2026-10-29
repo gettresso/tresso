@@ -36,7 +36,7 @@ impl UpdateListener {
 
 #[cfg(target_os = "macos")]
 mod sparkle {
-  use std::cell::RefCell;
+  use std::cell::{Cell, RefCell};
 
   use block2::{Block, RcBlock};
   use objc2::rc::{Allocated, Retained};
@@ -60,6 +60,9 @@ mod sparkle {
     static SPARKLE: RefCell<Option<Sparkle>> = const { RefCell::new(None) };
     /// Main thread only: the block Sparkle gave to continue a relaunch it holds back.
     static RELAUNCH: RefCell<Option<RcBlock<dyn Fn()>>> = const { RefCell::new(None) };
+    /// Main thread only: the web client was asked about the held relaunch and has not answered. "Later" answers too,
+    /// so a page that loads again takes over only a question nobody answered, never a relaunch put off on purpose.
+    static ASKED: Cell<bool> = const { Cell::new(false) };
   }
 
   #[doc(hidden)]
@@ -204,6 +207,16 @@ mod sparkle {
     RELAUNCH.with(|slot| slot.borrow().is_some())
   }
 
+  /// Notes that the web client was asked (true) or answered (false).
+  pub fn set_asked(asked: bool) {
+    ASKED.with(|cell| cell.set(asked));
+  }
+
+  /// A held relaunch the web client was asked about and did not answer (main thread).
+  pub fn unanswered() -> bool {
+    ASKED.with(Cell::get) && relaunch_pending()
+  }
+
   /// Lets Sparkle install and relaunch the relaunch it holds back; false when none is held.
   pub fn continue_relaunch() -> bool {
     let install = RELAUNCH.with(|slot| slot.borrow_mut().take());
@@ -227,8 +240,12 @@ pub const CHECK_MENU_ID: &str = "check-for-updates";
 fn request_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
   use tauri::{Emitter, Manager};
 
-  app.state::<UpdateListener>().is_listening()
-    && app.get_webview_window("main").is_some_and(|window| window.emit(UPDATE_RELAUNCH_REQUESTED, ()).is_ok())
+  let asked = app.state::<UpdateListener>().is_listening()
+    && app.get_webview_window("main").is_some_and(|window| window.emit(UPDATE_RELAUNCH_REQUESTED, ()).is_ok());
+  if asked {
+    sparkle::set_asked(true);
+  }
+  asked
 }
 
 /// "Check for Updates…": with an update already downloaded and waiting for the web client, asks it again instead, so
@@ -301,15 +318,16 @@ pub fn check_for_updates_natively<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
   let _ = app;
 }
 
-/// The web client listens for UPDATE_RELAUNCH_REQUESTED from now on. Returns whether Sparkle already holds a relaunch
-/// for it, asked while no page listened (a reload, a provider's sign-in page): the web client then answers that one.
-/// A sync command, so it runs on the main thread, where Sparkle lives.
+/// The web client listens for UPDATE_RELAUNCH_REQUESTED from now on. Returns whether Sparkle holds a relaunch whose
+/// question went unanswered because the page went away (a reload, a provider's sign-in page): the web client then
+/// answers that one. A relaunch put off with "Later" stays held until "Check for Updates…". A sync command, so it runs
+/// on the main thread, where Sparkle lives.
 #[tauri::command]
 pub fn update_listening(listener: tauri::State<'_, UpdateListener>) -> bool {
   listener.0.store(true, Ordering::SeqCst);
   #[cfg(target_os = "macos")]
   {
-    sparkle::on_main_thread() && sparkle::relaunch_pending()
+    sparkle::on_main_thread() && sparkle::unanswered()
   }
   #[cfg(not(target_os = "macos"))]
   {
@@ -324,7 +342,11 @@ pub fn update_listening(listener: tauri::State<'_, UpdateListener>) -> bool {
 pub fn update_relaunch(proceed: bool) -> bool {
   #[cfg(target_os = "macos")]
   {
-    proceed && sparkle::on_main_thread() && sparkle::continue_relaunch()
+    if !sparkle::on_main_thread() {
+      return false;
+    }
+    sparkle::set_asked(false);
+    proceed && sparkle::continue_relaunch()
   }
   #[cfg(not(target_os = "macos"))]
   {
