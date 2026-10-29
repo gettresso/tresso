@@ -36,6 +36,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
 # Loads and drives Sparkle, the macOS updater (updates.rs).
 objc2 = "0.6.5"
+block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSString"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
