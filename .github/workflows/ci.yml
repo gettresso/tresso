@@ -135,6 +135,35 @@ jobs:
           S3_TEST_ACCESS_KEY: ci-access-key
           S3_TEST_SECRET_KEY: ci-secret-key
 
+  images:
+    name: Image ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: tresso-api
+            dockerfile: docker/api/Dockerfile
+          - image: tresso-sync
+            dockerfile: docker/sync/Dockerfile
+          - image: tresso-web
+            dockerfile: docker/web/Dockerfile
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The release publishes these; building them here keeps a change that breaks one from surfacing only at a tag.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: prod
+          platforms: linux/amd64
+          outputs: type=cacheonly
+          cache-from: type=gha,scope=ci-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=ci-${{ matrix.image }}
+
   typescript:
     name: TypeScript (core, web, mobile)
     runs-on: ubuntu-latest
