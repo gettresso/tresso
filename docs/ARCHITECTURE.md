@@ -29,9 +29,10 @@ shared libraries. Running it on your own server is free and has every feature.
 | **Tresso Cloud** | The managed hosting of the same code and the same image, run for you with backups and support | A subscription per organization, paying for its members |
 
 A subscription pays for hosting, never for features. The managed service adds only operations around the same code.
-Billing is planned to live in this repository too, turned on by configuration on that server and off everywhere else;
-its infrastructure, secrets and runbooks live outside this repository. Features with an outside provider, such as AI,
-take your own key or endpoint, so they work self-hosted too.
+Billing lives in this repository too, turned on by configuration on that server (`TRESSO_BILLING`) and off everywhere
+else; its infrastructure, secrets and runbooks live outside this repository. [Billing](BILLING.md) describes the model,
+the API and the Stripe side. Features with an outside provider, such as AI, take your own key or endpoint, so they work
+self-hosted too.
 
 ### Deployment
 
@@ -48,8 +49,8 @@ the first-party OAuth clients; the workers start when it is healthy.
 ### Organizations
 
 Every user owns a personal organization from the moment the account exists; teams (planned, 3.9) will be organizations
-with more members. A subscription will belong to an organization and its members are the seats it pays for, so one user
-with several mail accounts pays once. `GET /api/v1/organizations` lists the signed-in user's organizations, their own
+with more members. A subscription belongs to an organization and its members are the seats it pays for, so one user with
+several mail accounts pays once. `GET /api/v1/organizations` lists the signed-in user's organizations, their own
 personal one first, with their role (`owner`, `admin` or `member`) and the number of seats. A personal organization goes
 by its owner's name and is removed together with them.
 
