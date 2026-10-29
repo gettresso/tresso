@@ -84,8 +84,10 @@ export class Composer {
   /** Files on their way to a draft, by a number of their own, so switching drafts never loses or mixes them up. */
   private readonly onTheirWay = new Map<number, { draftId: string; name: string }>()
   private nextFile = 0
-  /** Saves on this device that are under way, each resolving whether it worked, so a restart can wait for them. */
-  private readonly writes = new Set<Promise<boolean>>()
+  /** Saves on this device that are under way, each resolving to null or why it failed, so a restart can wait for them. */
+  private readonly writes = new Set<Promise<string | null>>()
+  /** The draft being deleted everywhere, which nothing writes meanwhile. */
+  private deleting: string | null = null
   /** The open draft has edits that are not written on this device yet, or whose write failed. */
   private dirty = false
 
@@ -113,36 +115,56 @@ export class Composer {
     // Typing during a save marks the draft again; a few rounds catch up with that.
     for (let round = 0; round < SAVE_NOW_ROUNDS; round++) {
       const draft = this.current.draft
-      // A message being sent writes its draft itself, and a sent draft must not be written back.
-      if (this.dirty && draft !== null && !this.current.sending) {
+      if (this.dirty && draft !== null && !this.holdsWrites()) {
         void this.saveHere(draft, false)
       }
-      const saved = await Promise.all([...this.writes])
-      if (saved.includes(false)) {
-        throw new Error(this.current.error ?? 'The draft could not be saved on this device.')
+      const failed = (await Promise.all([...this.writes])).find((failure) => failure !== null)
+      if (failed !== undefined) {
+        throw new Error(failed)
       }
-      if (!this.dirty || this.current.draft === null || this.current.sending) {
+      if (!this.dirty || this.current.draft === null || this.holdsWrites()) {
         return
       }
     }
     throw new Error('The draft keeps changing while it is saved.')
   }
 
-  /** Writes the draft on this device; resolves whether that worked (true too when there is nowhere to keep it). */
-  private saveHere(draft: Draft, closing: boolean): Promise<boolean> {
+  /**
+   * A message being sent writes its draft itself, and a sent draft must not be written back; nor must a draft being
+   * deleted. Edits made meanwhile are saved once that is over (resumeSaving).
+   */
+  private holdsWrites(): boolean {
+    return this.current.sending || this.deleting !== null
+  }
+
+  private resumeSaving(): void {
+    if (this.dirty && this.current.draft !== null && this.saveTimer === null) {
+      this.saveTimer = setTimeout(() => this.autosave(), this.deps.autosaveMs ?? AUTOSAVE_MS)
+    }
+  }
+
+  private autosave(): void {
+    this.saveTimer = null
+    if (!this.holdsWrites()) {
+      void this.save()
+    }
+  }
+
+  /** Writes the draft on this device; resolves to null when that worked (or there is nowhere to keep it), else why not. */
+  private saveHere(draft: Draft, closing: boolean): Promise<string | null> {
     const write = this.writeHere(draft, closing)
     this.writes.add(write)
     void write.then(() => this.writes.delete(write))
     return write
   }
 
-  private async writeHere(draft: Draft, closing: boolean): Promise<boolean> {
+  private async writeHere(draft: Draft, closing: boolean): Promise<string | null> {
     if (this.current.draft?.id === draft.id) {
       this.dirty = false
     }
     const store = this.storeOfDraft()
     if (store === null) {
-      return true
+      return null
     }
     let isNew = false
     try {
@@ -154,13 +176,14 @@ export class Composer {
     } catch (error) {
       if (error instanceof CopyClosingError) {
         // Signed out meanwhile: the copy is going, and the draft with it.
-        return true
+        return null
       }
+      const failure = `The draft could not be saved: ${this.deps.explain(error).message}`
       if (this.current.draft?.id === draft.id) {
         this.dirty = true
-        this.set({ error: `The draft could not be saved: ${this.deps.explain(error).message}` })
+        this.set({ error: failure })
       }
-      return false
+      return failure
     }
     // Lists only need to know of a new draft and of one put away; every pause in typing would be too often.
     if (isNew || closing) {
@@ -169,7 +192,7 @@ export class Composer {
     if (this.current.draft?.id === draft.id) {
       this.set({ savedAt: Date.now() })
     }
-    return true
+    return null
   }
 
   subscribe(listener: () => void): () => void {
@@ -422,7 +445,7 @@ export class Composer {
     this.set({ draft: { ...draft, ...plain(changes), pendingSave: true, updatedAt: Date.now() } })
     this.dirty = true
     this.clearSaveTimer()
-    this.saveTimer = setTimeout(() => void this.save(), this.deps.autosaveMs ?? AUTOSAVE_MS)
+    this.saveTimer = setTimeout(() => this.autosave(), this.deps.autosaveMs ?? AUTOSAVE_MS)
   }
 
   private clearSaveTimer(): void {
@@ -434,7 +457,7 @@ export class Composer {
 
   /** Saves on this device at once and uploads, so the draft is on every device and in the Drafts folder. */
   async save(draft: Draft | null = this.current.draft, closing = false): Promise<void> {
-    if (draft === null || this.storeOfDraft() === null || !(await this.saveHere(draft, closing))) {
+    if (draft === null || this.storeOfDraft() === null || (await this.saveHere(draft, closing)) !== null) {
       return
     }
     try {
@@ -483,14 +506,12 @@ export class Composer {
     }
     this.clearSaveTimer()
     // Nothing writes a draft that is being deleted; kept, its edits are saved again.
-    const dirty = this.dirty
-    this.dirty = false
+    this.deleting = draft.id
     try {
       await this.deps.drafts.deleteEverywhere(draft.id)
     } catch (error) {
-      if (this.current.draft?.id === draft.id) {
-        this.dirty ||= dirty
-      }
+      this.deleting = null
+      this.resumeSaving()
       const text = `The draft could not be deleted: ${this.deps.explain(error).message}`
       if (this.current.draft?.id === draft.id) {
         this.set({ error: text })
@@ -499,8 +520,10 @@ export class Composer {
       }
       return false
     }
+    this.deleting = null
     this.deps.changed?.()
     if (this.current.draft?.id === draft.id) {
+      this.dirty = false
       this.set({ draft: null, conflict: false })
     }
     return true
@@ -612,6 +635,7 @@ export class Composer {
       return null
     } finally {
       this.set({ sending: false })
+      this.resumeSaving()
     }
   }
 

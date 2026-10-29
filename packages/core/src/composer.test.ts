@@ -183,6 +183,40 @@ describe('Composer', () => {
     expect(await store.draft(id)).toMatchObject({ outgoingId: 'o1', pendingSave: false })
   })
 
+  it('holds autosaves while the message is being sent, and saves edits made meanwhile once a send fails', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'Going out' })
+    const id = composer.state.draft!.id
+    let sendNow: (() => void) | null = null
+    sendGate = new Promise<void>((resolve) => (sendNow = resolve))
+    sendFails = new Error('server down')
+    const sending = composer.send()
+    // The send wrote and uploaded its draft, and now waits for the server.
+    await vi.waitFor(() => expect(api.calls).toContain(`create ${id}`))
+    const changeDraft = vi.spyOn(store, 'changeDraft')
+
+    composer.update({ subject: 'Typed during the send' })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(changeDraft).not.toHaveBeenCalled()
+
+    sendNow!()
+    await sending
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await store.draft(id)).toMatchObject({ subject: 'Typed during the send', outgoingId: null })
+  })
+
+  it('names the failed save, not an unrelated error, when the draft put away could not be saved', async () => {
+    composer.openNew()
+    composer.update({ subject: 'Put away' })
+    vi.spyOn(store, 'changeDraft').mockRejectedValueOnce(new Error('disk full'))
+    composer.close()
+    composer.openNew()
+    await composer.send()
+    expect(composer.state.error).toBe('Add at least one recipient.')
+
+    await expect(composer.saveNow()).rejects.toThrow('The draft could not be saved: disk full')
+  })
+
   it('says what a restart would cut short: files on their way, or a message being sent', async () => {
     composer.openNew([{ address: 'anna@example.test', name: null }])
     expect(composer.unfinished).toBeNull()
