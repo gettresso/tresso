@@ -13,7 +13,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - apps/desktop/**
-      - scripts/install.*
+      - scripts/**
       - docker/**
       - .dockerignore
   workflow_dispatch:
@@ -194,19 +194,36 @@ jobs:
               hdiutil detach "${mount}" >/dev/null || hdiutil detach -force "${mount}" >/dev/null
               [ "${status}" -eq 0 ] || exit 1
               # Sparkle is what updates the app, so a bundle without it would never update again.
-              if [ ! -x "${bundle}/macos/Tresso.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate" ]; then
+              app="${bundle}/macos/Tresso.app"
+              if [ ! -x "${app}/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate" ]; then
                 echo "Tresso.app has no Sparkle.framework" >&2
+                exit 1
+              fi
+              # The app runs with the hardened runtime, and loads the ad-hoc signed Sparkle.framework only because
+              # library validation is off (src-tauri/Entitlements.plist). Without either, it would not start or not
+              # update.
+              codesign --verify --deep --strict "${app}"
+              flags="$(codesign --display --verbose "${app}" 2>&1 | sed -n 's/^CodeDirectory.*flags=\(0x[0-9a-f]*\)(\([^)]*\)).*/\2/p')"
+              case ",${flags}," in
+                *,runtime,*) ;;
+                *) echo "Tresso.app is not signed with the hardened runtime (flags: ${flags})" >&2; exit 1 ;;
+              esac
+              entitlements="$(codesign --display --entitlements - --xml "${app}" 2>/dev/null)"
+              if ! printf '%s' "${entitlements}" | grep -q 'com.apple.security.cs.disable-library-validation'; then
+                echo "Tresso.app lacks the entitlement that lets it load Sparkle.framework" >&2
                 exit 1
               fi
               export COPYFILE_DISABLE=1
               tar -czf "dist/tresso-${NAME}.app.tar.gz" -C "${bundle}/macos" Tresso.app
-              # Sparkle's EdDSA signature of the archive, for the appcast the release job writes.
+              # Sparkle's EdDSA signature of the archive, for the appcast the release job writes, checked right away.
+              # The key goes in on stdin, never to disk.
               if [ -n "${SPARKLE_PRIVATE_KEY}" ]; then
-                key="$(mktemp)"
-                trap 'rm -f "${key}"' EXIT
-                printf '%s' "${SPARKLE_PRIVATE_KEY}" > "${key}"
-                apps/desktop/.sparkle/bin/sign_update --ed-key-file "${key}" "dist/tresso-${NAME}.app.tar.gz" > "dist/tresso-${NAME}.app.tar.gz.sparkle"
-                cat "dist/tresso-${NAME}.app.tar.gz.sparkle"
+                archive="dist/tresso-${NAME}.app.tar.gz"
+                tools=apps/desktop/.sparkle/bin
+                printf '%s' "${SPARKLE_PRIVATE_KEY}" | "${tools}/sign_update" --ed-key-file - "${archive}" > "${archive}.sparkle"
+                signature="$(sed -nE 's/.*sparkle:edSignature="([^"]+)".*/\1/p' "${archive}.sparkle")"
+                printf '%s' "${SPARKLE_PRIVATE_KEY}" | "${tools}/sign_update" --verify --ed-key-file - "${archive}" "${signature}"
+                cat "${archive}.sparkle"
               elif [ "${TAG}" = "true" ]; then
                 echo "A release needs SPARKLE_PRIVATE_KEY to sign its update." >&2
                 exit 1
@@ -256,6 +273,13 @@ jobs:
           # The version goes into the signature, and the app (requireSignedVersion) installs a file only as that version.
           npx tauri signer sign --app-version "${VERSION}" "${file}" > /dev/null
           test -s "${file}.sig"
+          # The trusted comment must carry the version (scripts/update-feeds.mjs checks it again).
+          tab="$(printf '\t')"
+          trusted="$(base64 -d < "${file}.sig" | sed -n 's/^trusted comment: //p')"
+          case "${tab}${trusted}${tab}" in
+            *"${tab}version:${VERSION}${tab}"*) ;;
+            *) echo "The signature of ${file} does not carry version ${VERSION}: ${trusted}" >&2; exit 1 ;;
+          esac
           ls -la "${file}.sig"
 
       # install.ps1 runs the setup silently and then looks for the app where it should land; check that it does.
@@ -416,10 +440,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The commits since the previous tag make the release notes.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
 
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: tresso-*
           merge-multiple: true
 
       - name: Write SHA256SUMS
@@ -428,6 +461,7 @@ jobs:
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           set -euo pipefail
+          cp scripts/install.sh scripts/install.ps1 artifacts/
           cd artifacts
           expected=(
             tresso-macos-universal.dmg
@@ -451,90 +485,103 @@ jobs:
           sha256sum "${expected[@]}" | LC_ALL=C sort -k2 > SHA256SUMS
           cat SHA256SUMS
 
-      # The feeds the installed apps read at releases/latest/download: Sparkle's appcast (macOS) and Tauri's latest.json
-      # (Windows, Linux). A prerelease is never "latest", so it reaches no one who did not ask for it.
-      - name: Write update feeds
+      # A draft first, with every file but the update feeds. The installed apps read the feeds at
+      # releases/latest/download, so the release reaches them only once it is published with its feeds, below. A rerun
+      # after a partial upload replaces the files instead of failing.
+      - name: Create the draft release
         shell: bash
         env:
-          VERSION: ${{ needs.version.outputs.version }}
-          BUILD: ${{ needs.version.outputs.build }}
-          TAG: ${{ github.ref_name }}
-          REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           set -euo pipefail
-          cd artifacts
-          for name in tresso-macos-universal.app.tar.gz.sparkle tresso-linux-x86_64.AppImage.sig tresso-linux-aarch64.AppImage.sig tresso-windows-x64-setup.exe.sig; do
-            if [ ! -s "${name}" ]; then
-              echo "Missing update signature: ${name}" >&2
+          # What's new since the previous release, from the commit subjects. A prerelease counts from the previous tag
+          # of any kind, a release from the previous release, so its notes cover its betas too.
+          if [ "${PRERELEASE}" = "true" ]; then
+            previous="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
+          else
+            previous="$(git tag --list 'v*' --merged "${TAG}^" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          fi
+          range="${previous:+${previous}..}${TAG}"
+          git log --format=%s "${range}" | node scripts/release-notes.mjs > notes.md
+          cat >> notes.md <<'EOF'
+
+          ## Install
+
+          macOS and Linux:
+
+          ```bash
+          curl -fsSL https://sherin.dev/tresso/install.sh | bash
+          ```
+
+          Windows (PowerShell):
+
+          ```powershell
+          powershell -c "irm https://sherin.dev/tresso/install.ps1|iex"
+          ```
+
+          Or download an installer below. Every file is listed in `SHA256SUMS`. The macOS app is not notarized yet: after
+          opening the `.dmg`, use **System Settings > Privacy & Security > Open Anyway** once.
+          EOF
+          cat notes.md
+          # Exactly SHA256SUMS, the files it lists, their updater signatures and the install scripts. The Sparkle
+          # signature only feeds the appcast; anything else here is a mistake.
+          files=(artifacts/SHA256SUMS artifacts/install.sh artifacts/install.ps1)
+          while read -r _ name; do
+            name="${name#\*}"
+            files+=("artifacts/${name}")
+            if [ -f "artifacts/${name}.sig" ]; then
+              files+=("artifacts/${name}.sig")
+            fi
+          done < artifacts/SHA256SUMS
+          for file in artifacts/*; do
+            case " ${files[*]} " in *" ${file} "*) continue ;; esac
+            case "${file}" in
+              *.sparkle) ;;
+              *)
+                echo "Unexpected file, not a release file: ${file}" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            if [ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" != "true" ]; then
+              echo "${TAG} is already published; a rerun does not replace its files." >&2
               exit 1
             fi
-          done
-          gh api "repos/${REPO}/releases/generate-notes" -f tag_name="${TAG}" --jq .body > notes.md
-          python3 - <<'PY'
-          import datetime, email.utils, json, os, re
-          from xml.sax.saxutils import escape, quoteattr
+            gh release upload "${TAG}" "${files[@]}" --clobber
+          else
+            flags=(--draft --verify-tag --title "Tresso ${TAG}" --notes-file notes.md)
+            if [ "${PRERELEASE}" = "true" ]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "${TAG}" "${files[@]}" "${flags[@]}"
+          fi
 
-          version, build, tag, repo = os.environ["VERSION"], os.environ["BUILD"], os.environ["TAG"], os.environ["REPO"]
-          base = f"https://github.com/{repo}/releases/download/{tag}"
-          page = f"https://github.com/{repo}/releases/tag/{tag}"
-          notes = open("notes.md").read().strip()
-          now = datetime.datetime.now(datetime.timezone.utc)
-
-          def sig(name):
-              return open(name).read().strip()
-
-          latest = {
-              "version": version,
-              "notes": notes,
-              "pub_date": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "platforms": {
-                  "linux-x86_64": {"signature": sig("tresso-linux-x86_64.AppImage.sig"), "url": f"{base}/tresso-linux-x86_64.AppImage"},
-                  "linux-aarch64": {"signature": sig("tresso-linux-aarch64.AppImage.sig"), "url": f"{base}/tresso-linux-aarch64.AppImage"},
-                  "windows-x86_64": {"signature": sig("tresso-windows-x64-setup.exe.sig"), "url": f"{base}/tresso-windows-x64-setup.exe"},
-              },
-          }
-          open("latest.json", "w").write(json.dumps(latest, indent=2) + "\n")
-
-          # sign_update prints: sparkle:edSignature="..." length="..."
-          sparkle = sig("tresso-macos-universal.app.tar.gz.sparkle")
-          signature = re.search(r'sparkle:edSignature="([^"]+)"', sparkle).group(1)
-          length = re.search(r'length="(\d+)"', sparkle).group(1)
-          appcast = f"""<?xml version="1.0" encoding="utf-8"?>
-          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-            <channel>
-              <title>Tresso</title>
-              <link>{escape(page)}</link>
-              <item>
-                <title>Tresso {escape(version)}</title>
-                <pubDate>{email.utils.format_datetime(now)}</pubDate>
-                <sparkle:version>{escape(build)}</sparkle:version>
-                <sparkle:shortVersionString>{escape(version)}</sparkle:shortVersionString>
-                <sparkle:fullReleaseNotesLink>{escape(page)}</sparkle:fullReleaseNotesLink>
-                <description><![CDATA[<pre style="font: 13px -apple-system, sans-serif; white-space: pre-wrap">{escape(notes)}</pre>]]></description>
-                <enclosure url={quoteattr(base + "/tresso-macos-universal.app.tar.gz")} sparkle:edSignature={quoteattr(signature)} length={quoteattr(length)} type="application/octet-stream"/>
-              </item>
-            </channel>
-          </rss>
-          """
-          open("appcast.xml", "w").write(appcast)
-          PY
-          rm tresso-macos-universal.app.tar.gz.sparkle notes.md
-          cat latest.json appcast.xml
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Tresso ${{ github.ref_name }}
-          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
-          generate_release_notes: true
-          files: |
-            artifacts/tresso-*
-            artifacts/SHA256SUMS
-            artifacts/latest.json
-            artifacts/appcast.xml
-            scripts/install.sh
-            scripts/install.ps1
+      # The feeds the installed apps read: Sparkle's appcast (macOS) and Tauri's latest.json (Windows, Linux), with the
+      # release notes without the install section, as HTML for Sparkle and as Markdown for the update card. Then the
+      # release and its feeds go live together. A prerelease is never "latest", so it reaches no one who did not ask.
+      - name: Publish the update feeds and the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          BUILD: ${{ needs.version.outputs.build }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          gh release view "${TAG}" --json body --jq .body > body.md
+          awk 'BEGIN { skip = 0 } /^## Install/ { skip = 1; next } /^## / { skip = 0 } !skip' body.md > update-notes.md
+          gh api markdown -f text="$(cat update-notes.md)" -f mode=gfm -f context="${GITHUB_REPOSITORY}" > update-notes.html
+          node scripts/update-feeds.mjs artifacts "${TAG}" "${BUILD}" update-notes.md update-notes.html
+          cat artifacts/latest.json artifacts/appcast.xml
+          gh release upload "${TAG}" artifacts/latest.json artifacts/appcast.xml --clobber
+          if [ "${PRERELEASE}" = "true" ]; then
+            gh release edit "${TAG}" --draft=false --prerelease --latest=false
+          else
+            gh release edit "${TAG}" --draft=false --latest
+          fi
 
   image-latest:
     name: Move the image tags 1.2 and latest
