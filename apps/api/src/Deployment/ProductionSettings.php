@@ -111,10 +111,16 @@ final readonly class ProductionSettings
 
         $cors = $this->value('CORS_ALLOW_ORIGIN');
         $web = $this->value('WEB_APP_URL');
+        $pattern = '{'.$cors.'}i';
         if (!str_starts_with($cors, '^') || !str_ends_with($cors, '$')) {
             $problems[] = 'CORS_ALLOW_ORIGIN must start with ^ and end with $, or other sites that contain the address match too.';
-        } elseif ('' !== $web && 1 !== @preg_match('{'.$cors.'}i', $web)) {
+        } elseif (false === @preg_match($pattern, '')) {
+            $problems[] = 'CORS_ALLOW_ORIGIN is not a valid regular expression.';
+        } elseif ('' !== $web && 1 !== preg_match($pattern, $web)) {
             $problems[] = 'CORS_ALLOW_ORIGIN does not allow WEB_APP_URL, so the web client cannot call the API.';
+        } elseif ('' !== $web && (1 === preg_match($pattern, 'https://tresso-check.invalid') || 1 === preg_match($pattern, $web.'.tresso-check.invalid'))) {
+            // Every alternative needs its own anchors: ^a|b$ lets any origin ending in b through.
+            $problems[] = 'CORS_ALLOW_ORIGIN also allows other sites; anchor every alternative, such as ^(https://mail\\.example\\.com|tauri://localhost)$.';
         }
 
         return $problems;
