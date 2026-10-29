@@ -10,6 +10,7 @@ use App\ApiResource\BillingPage;
 use App\ApiResource\Input\Billing\BillingCheckoutInput;
 use App\ApiResource\Input\Billing\BillingPortalInput;
 use App\Billing\BillingSettings;
+use App\Billing\OpenSubscription;
 use App\Billing\Stripe\StripeException;
 use App\Billing\Subscriptions;
 use App\Entity\OrganizationMember;
@@ -69,7 +70,11 @@ final readonly class BillingProcessor implements ProcessorInterface
                     throw new UnprocessableEntityHttpException(\sprintf('This server does not sell the %s plan.', $data->plan));
                 }
 
-                return new BillingPage($this->subscriptions->checkout($subscription, $user, $price));
+                try {
+                    return new BillingPage($this->subscriptions->checkout($subscription, $user, $price));
+                } catch (OpenSubscription $exception) {
+                    throw new ConflictHttpException($exception->getMessage(), $exception);
+                }
             }
             if (null === $subscription->getStripeCustomerId()) {
                 throw new UnprocessableEntityHttpException('There is no subscription to manage yet; start one first.');

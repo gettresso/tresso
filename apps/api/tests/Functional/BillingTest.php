@@ -114,6 +114,7 @@ final class BillingTest extends DatabaseTestCase
         $router = $this->router();
         $router->respond(StripeClient::API.'/customers', (string) json_encode(['id' => 'cus_kim']));
         $router->respond(StripeClient::API.'/checkout/sessions', (string) json_encode(['id' => 'cs_1', 'url' => 'https://checkout.stripe.com/c/pay/cs_1']));
+        $router->respond(StripeClient::API.'/subscriptions', (string) json_encode(['data' => []]));
         $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
 
         $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $organizationId, 'plan' => 'monthly'], $this->kimHeaders());
@@ -193,6 +194,34 @@ final class BillingTest extends DatabaseTestCase
 
         self::assertResponseStatusCodeSame(409);
         self::assertSame([], $this->router()->requestsTo(StripeClient::API.'/checkout/sessions'));
+    }
+
+    public function testCheckoutIsRefusedWhenStripeAlreadyHasASubscriptionWhoseEventsAreLate(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        self::assertIsString($organizationId);
+        $this->connection()->executeStatement("UPDATE billing_subscription SET stripe_customer_id = 'cus_kim' WHERE organization_id = :id", ['id' => $organizationId]);
+        $this->router()->respond(StripeClient::API.'/subscriptions', (string) json_encode(['data' => [
+            ['id' => 'sub_kim', 'customer' => 'cus_kim', 'status' => 'active', 'metadata' => ['organization_id' => $organizationId], 'items' => ['data' => [['quantity' => 1]]]],
+        ]]));
+
+        $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $organizationId, 'plan' => 'monthly'], $this->kimHeaders());
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame([], $this->router()->requestsTo(StripeClient::API.'/checkout/sessions'));
+        self::assertSame('active', $this->firstOrganization($this->billing())['status'] ?? null, 'It now follows that subscription.');
+    }
+
+    public function testTheNightlyCheckCarriesOnAfterAFailure(): void
+    {
+        $this->connection()->executeStatement("UPDATE billing_subscription SET stripe_customer_id = 'cus_' || replace(organization_id::text, '-', '')");
+        $this->router()->respond(StripeClient::API.'/subscriptions', '', 500);
+
+        $tester = new CommandTester(new Application($this->client->getKernel())->find('app:billing:reconcile'));
+        $tester->execute([]);
+
+        self::assertSame(1, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertStringContainsString('0 subscriptions; 2 could not', preg_replace('/\s+/', ' ', $tester->getDisplay()) ?? '');
     }
 
     public function testALateEventAboutAnOldSubscriptionKeepsTheNewOne(): void

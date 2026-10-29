@@ -88,20 +88,48 @@ final readonly class Subscriptions
         return $restarted;
     }
 
-    /** The Checkout page for the plan's price, for every member of the organization. */
+    /**
+     * The Checkout page for the plan's price, for every member of the organization. Refused while the organization has
+     * a subscription that is not over, here or at Stripe (one whose events have not arrived yet included): a second
+     * one would charge twice. Two admins at once wait for each other.
+     *
+     * @throws OpenSubscription
+     */
     public function checkout(Subscription $subscription, User $payer, string $priceId): string
     {
-        $organization = $subscription->getOrganization();
-        $base = rtrim($this->webAppUrl, '/').'/settings/billing';
+        $customer = $this->customer($subscription, $payer);
 
-        return $this->stripe->createCheckoutSession(
-            $this->customer($subscription, $payer),
-            $organization->getId()->toRfc4122(),
-            $priceId,
-            max(1, $this->members->countPerOrganization([$organization->getId()])[$organization->getId()->toRfc4122()] ?? 1),
-            $base.'?checkout=done',
-            $base.'?checkout=cancelled',
-        );
+        // null: refused, after taking over the open subscription found at Stripe (committed, not rolled back).
+        $url = $this->entityManager->wrapInTransaction(function () use ($subscription, $customer, $priceId): ?string {
+            $this->lock($subscription);
+            if ($subscription->hasOpenSubscription()) {
+                return null;
+            }
+            foreach ($this->stripe->subscriptionsOf($customer) as $existing) {
+                if (!\in_array($existing->status, [SubscriptionStatus::Canceled, SubscriptionStatus::IncompleteExpired], true)) {
+                    $this->take($subscription, $existing);
+
+                    return null;
+                }
+            }
+
+            $organization = $subscription->getOrganization();
+            $base = rtrim($this->webAppUrl, '/').'/settings/billing';
+
+            return $this->stripe->createCheckoutSession(
+                $customer,
+                $organization->getId()->toRfc4122(),
+                $priceId,
+                max(1, $this->members->countPerOrganization([$organization->getId()])[$organization->getId()->toRfc4122()] ?? 1),
+                $base.'?checkout=done',
+                $base.'?checkout=cancelled',
+            );
+        });
+        if (null === $url) {
+            throw new OpenSubscription();
+        }
+
+        return $url;
     }
 
     public function portal(Subscription $subscription, User $payer): string
@@ -176,14 +204,23 @@ final readonly class Subscriptions
         $failed = 0;
         foreach ($ids as $id) {
             $subscription = $this->entityManager->find(Subscription::class, Uuid::fromString($id));
-            $customer = $subscription?->getStripeCustomerId();
-            if (null === $subscription || null === $customer) {
+            if (null === $subscription) {
                 continue;
             }
+            // A transaction per organization that keeps the entity manager open when Stripe fails, so the next one
+            // is still checked (wrapInTransaction would close it). The customer is read after the lock.
+            $connection = $this->entityManager->getConnection();
+            $connection->beginTransaction();
             try {
-                $this->reconcileCustomer($subscription, $customer);
-                ++$followed;
+                $this->lock($subscription);
+                $customer = $subscription->getStripeCustomerId();
+                if (null !== $customer) {
+                    $this->reconcileCustomer($subscription, $customer);
+                    ++$followed;
+                }
+                $connection->commit();
             } catch (StripeException) {
+                $connection->rollBack();
                 // Also a customer Stripe says it does not have: a wrong key or account says the same, so only Stripe's
                 // customer.deleted event forgets one.
                 ++$failed;
@@ -242,7 +279,6 @@ final readonly class Subscriptions
 
         return $this->entityManager->wrapInTransaction(function () use ($subscription, $payer): string {
             $this->lock($subscription);
-            $this->entityManager->refresh($subscription);
             $customer = $subscription->getStripeCustomerId();
             if (null === $customer) {
                 $organization = $subscription->getOrganization();
@@ -256,9 +292,17 @@ final readonly class Subscriptions
         });
     }
 
+    /**
+     * Locks the row until the transaction ends and reads it again, so decisions and the flush start from what the
+     * transaction that held the lock before committed. Only inside a transaction.
+     */
     private function lock(Subscription $subscription): void
     {
+        if (!$this->entityManager->getConnection()->isTransactionActive()) {
+            throw new \LogicException('A subscription is only locked inside a transaction.');
+        }
         $this->entityManager->getConnection()->executeQuery('SELECT id FROM billing_subscription WHERE id = :id FOR UPDATE', ['id' => $subscription->getId()->toRfc4122()]);
+        $this->entityManager->refresh($subscription);
     }
 
     /**
