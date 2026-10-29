@@ -95,6 +95,17 @@ describe('SettingsBillingView', () => {
     expect(load).toHaveBeenCalledTimes(2)
   })
 
+  it('thanks for the organization that was bought, even when another stays unpaid', async () => {
+    route.query = { checkout: 'done', organization: 'org-2' }
+    const team = { ...TRIAL.organizations[0]!, id: 'org-2', name: 'Support', personal: false, status: 'active' as const }
+    stubLoad({ ...TRIAL, organizations: [TRIAL.organizations[0]!, team] })
+
+    const view = mount(SettingsBillingView)
+    await flushPromises()
+
+    expect(view.text()).toContain('Thank you, you are subscribed.')
+  })
+
   it('says a cancelled checkout charged nothing', async () => {
     route.query = { checkout: 'cancelled' }
     stubLoad(TRIAL)
