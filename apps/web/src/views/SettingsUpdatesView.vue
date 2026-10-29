@@ -7,7 +7,11 @@ const updates = useUpdatesStore()
 
 const status = computed(() => {
   if (updates.phase === 'waiting') {
-    return updates.waitingFor === 'sending' ? 'The update is ready. Tresso restarts once your message is on its way.' : 'The update is ready. Tresso restarts once your files are attached.'
+    return updates.waitingFor === 'sending'
+      ? 'The update is ready. Tresso restarts once your message is on its way.'
+      : updates.waitingFor === 'deleting'
+        ? 'The update is ready. Tresso restarts once the draft is deleted.'
+        : 'The update is ready. Tresso restarts once your files are attached.'
   }
   if (updates.channel === 'sparkle') {
     return 'Tresso checks for updates on its own every few hours. Sparkle asks before it installs anything.'

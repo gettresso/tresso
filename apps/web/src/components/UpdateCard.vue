@@ -37,7 +37,9 @@ const title = computed(() => {
 const waitingText = computed(() =>
   updates.waitingFor === 'sending'
     ? 'Tresso restarts once your message is on its way.'
-    : 'Tresso restarts once your files are attached, so they are not lost.',
+    : updates.waitingFor === 'deleting'
+      ? 'Tresso restarts once the draft is deleted.'
+      : 'Tresso restarts once your files are attached, so they are not lost.',
 )
 /** The release notes as plain text: the feed has them as Markdown, under a "What's new" heading. */
 const notes = computed(() =>

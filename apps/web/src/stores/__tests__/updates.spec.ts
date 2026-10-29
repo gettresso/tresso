@@ -53,7 +53,7 @@ vi.mock('@/platform/updates', () => ({
 vi.mock('@/stores/compose', async () => {
   const { reactive } = await import('vue')
   const compose = reactive({
-    unfinished: null as 'files' | 'sending' | null,
+    unfinished: null as 'files' | 'sending' | 'deleting' | null,
     saves: 0,
     saveFails: false,
     saveHangs: false,
@@ -72,7 +72,7 @@ vi.mock('@/stores/compose', async () => {
 
 const { useUpdatesStore, CHECK_EVERY_MS, SAVE_TIMEOUT_MS } = await import('../updates')
 const { useComposeStore } = await import('@/stores/compose')
-const compose = useComposeStore() as unknown as { unfinished: 'files' | 'sending' | null; saves: number; saveFails: boolean; saveHangs: boolean }
+const compose = useComposeStore() as unknown as { unfinished: 'files' | 'sending' | 'deleting' | null; saves: number; saveFails: boolean; saveHangs: boolean }
 
 const closed: string[] = []
 
