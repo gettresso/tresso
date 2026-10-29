@@ -11,10 +11,13 @@ pub fn run() {
     .plugin(tauri_plugin_notification::init())
     .plugin(tauri_plugin_process::init())
     .manage(sql::Databases::default())
+    .manage(updates::UpdateListener::default())
     .invoke_handler(tauri::generate_handler![
       accessibility::reduce_transparency,
       updates::update_channel,
       updates::check_for_updates_natively,
+      updates::update_listening,
+      updates::update_relaunch,
       tokens::load_tokens,
       tokens::save_tokens,
       tokens::clear_tokens,

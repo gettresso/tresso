@@ -2,24 +2,136 @@
 //! EdDSA signature and relaunch. The framework is bundled (tauri.macos.conf.json) and loaded at runtime, so a
 //! development build without it simply has no updater. Windows and Linux update through Tauri's updater plugin, which
 //! the web client drives.
+//!
+//! Before Sparkle relaunches into an update it asks the web client (UPDATE_RELAUNCH_REQUESTED), which saves the open
+//! draft and waits for uploads and a send under way; it then answers with `update_relaunch`. Held back, the relaunch
+//! waits for that answer, and Sparkle still installs the update when the app quits.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Sent to the main window when Sparkle wants to relaunch for an update; the web client answers with
+/// `update_relaunch`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const UPDATE_RELAUNCH_REQUESTED: &str = "tresso://update-relaunch-requested";
+
+/// Whether the web client listens for UPDATE_RELAUNCH_REQUESTED. Until it does (or when it never loads), nobody could
+/// answer, so Sparkle relaunches right away rather than wait forever.
+#[derive(Default)]
+pub struct UpdateListener(AtomicBool);
+
+impl UpdateListener {
+  #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+  fn is_listening(&self) -> bool {
+    self.0.load(Ordering::SeqCst)
+  }
+}
 
 #[cfg(target_os = "macos")]
 mod sparkle {
   use std::cell::RefCell;
 
-  use objc2::rc::Retained;
-  use objc2::runtime::{AnyClass, AnyObject};
-  use objc2::msg_send;
+  use block2::{Block, RcBlock};
+  use objc2::rc::{Allocated, Retained};
+  use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject, NSObjectProtocol};
+  use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
   use objc2_foundation::{NSBundle, NSString};
 
+  /// Asked when Sparkle wants to relaunch: true when the web client was told and answers through
+  /// [`continue_relaunch`].
+  pub type Ask = Box<dyn Fn() -> bool>;
+
+  struct Sparkle {
+    /// The SPUStandardUpdaterController, which lives as long as the app.
+    controller: Retained<AnyObject>,
+    /// Sparkle keeps its delegate weakly: this keeps it alive.
+    _delegate: Retained<Delegate>,
+  }
+
   thread_local! {
-    /// The SPUStandardUpdaterController, which lives as long as the app; only touched on the main thread.
-    static UPDATER: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+    /// Main thread only: the running updater.
+    static SPARKLE: RefCell<Option<Sparkle>> = const { RefCell::new(None) };
+    /// Main thread only: the block Sparkle gave to continue a relaunch it holds back.
+    static RELAUNCH: RefCell<Option<RcBlock<dyn Fn()>>> = const { RefCell::new(None) };
+  }
+
+  #[doc(hidden)]
+  pub struct DelegateIvars {
+    ask: Ask,
+  }
+
+  define_class!(
+    // SAFETY: NSObject has no subclassing requirements and Delegate does not implement Drop.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    // Objective-C class names are global: a plain "Delegate" could clash.
+    #[name = "TressoSparkleUpdaterDelegate"]
+    #[ivars = DelegateIvars]
+    struct Delegate;
+
+    // SAFETY: NSObjectProtocol has no requirements beyond being an NSObject.
+    unsafe impl NSObjectProtocol for Delegate {}
+
+    impl Delegate {
+      /// SPUUpdaterDelegate: holds the relaunch back while the web client gets ready; NO (relaunch now) when nobody
+      /// can answer.
+      // SAFETY: the selector takes the updater, the appcast item and a `void (^)(void)` block, and returns BOOL, as
+      // declared here.
+      #[unsafe(method(updater:shouldPostponeRelaunchForUpdate:untilInvokingBlock:))]
+      fn postpone_relaunch(&self, _updater: &AnyObject, _item: &AnyObject, install: &Block<dyn Fn()>) -> Bool {
+        RELAUNCH.with(|slot| *slot.borrow_mut() = Some(install.copy()));
+        if (self.ivars().ask)() {
+          Bool::YES
+        } else {
+          RELAUNCH.with(|slot| slot.borrow_mut().take());
+          Bool::NO
+        }
+      }
+
+      /// SPUUpdaterDelegate: the update cycle stopped (an installer error, a cancelled authorization). A relaunch held
+      /// from it can no longer continue, so it is forgotten.
+      // SAFETY: the selector takes the updater and an NSError, and returns void.
+      #[unsafe(method(updater:didAbortWithError:))]
+      fn did_abort(&self, _updater: &AnyObject, error: &AnyObject) {
+        // "No new update was found" ends a cycle this way too; it says nothing about an update already held.
+        if !is_no_update_error(error) {
+          RELAUNCH.with(|slot| slot.borrow_mut().take());
+        }
+      }
+    }
+  );
+
+  impl Delegate {
+    fn new(mtm: MainThreadMarker, ask: Ask) -> Retained<Self> {
+      let this = Self::alloc(mtm).set_ivars(DelegateIvars { ask });
+      // SAFETY: NSObject's designated initializer on a freshly allocated instance whose ivars are set.
+      unsafe { msg_send![super(this), init] }
+    }
+  }
+
+  /// Sparkle's "no new update was found" error (SUSparkleErrorDomain, SUNoUpdateError in SUErrors.h).
+  const NO_UPDATE_ERROR: isize = 1001;
+
+  fn is_no_update_error(error: &AnyObject) -> bool {
+    let domain = NSString::from_str("SUSparkleErrorDomain");
+    // SAFETY: `code` is NSError's NSInteger getter and `domain` its NSString getter; isEqualToString: compares two
+    // NSStrings and returns BOOL.
+    unsafe {
+      let code: isize = msg_send![error, code];
+      let error_domain: Retained<NSString> = msg_send![error, domain];
+      code == NO_UPDATE_ERROR && error_domain.isEqualToString(&domain)
+    }
   }
 
   /// Loads Sparkle from the app's Frameworks folder and starts its updater, which then checks on its own schedule
   /// (SUEnableAutomaticChecks in Info.plist). Must run on the main thread. Returns whether Sparkle runs.
-  pub fn start() -> bool {
+  pub fn start(ask: Ask) -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+      eprintln!("Sparkle must start on the main thread");
+      return false;
+    };
+    if running() {
+      return true;
+    }
     let Some(frameworks) = NSBundle::mainBundle().privateFrameworksPath() else {
       return false;
     };
@@ -37,38 +149,78 @@ mod sparkle {
       eprintln!("Sparkle loaded without SPUStandardUpdaterController");
       return false;
     };
-    let nil: *mut AnyObject = std::ptr::null_mut();
-    // SAFETY: -initWithStartingUpdater:updaterDelegate:userDriverDelegate: is Sparkle 2's documented initializer; nil
-    // delegates are allowed. alloc/init returns a +1 reference, which Retained takes over.
+    let delegate = Delegate::new(mtm, ask);
+    let nil: Option<&AnyObject> = None;
+    // SAFETY: -initWithStartingUpdater:updaterDelegate:userDriverDelegate: is Sparkle 2's designated initializer (BOOL,
+    // an SPUUpdaterDelegate, an optional SPUStandardUserDriverDelegate) and returns the controller or nil. The delegate
+    // implements only optional protocol methods, with the signatures Sparkle declares.
     let controller: Option<Retained<AnyObject>> = unsafe {
-      let allocated: *mut AnyObject = msg_send![class, alloc];
-      let initialized: *mut AnyObject = msg_send![allocated, initWithStartingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil];
-      Retained::from_raw(initialized)
+      let allocated: Allocated<AnyObject> = msg_send![class, alloc];
+      msg_send![allocated, initWithStartingUpdater: Bool::YES, updaterDelegate: &*delegate, userDriverDelegate: nil]
     };
-    let started = controller.is_some();
-    UPDATER.with(|updater| *updater.borrow_mut() = controller);
-    started
+    let Some(controller) = controller else {
+      eprintln!("Sparkle's updater controller did not start");
+      return false;
+    };
+    SPARKLE.with(|slot| *slot.borrow_mut() = Some(Sparkle { controller, _delegate: delegate }));
+    true
   }
 
   /// Opens Sparkle's "Check for Updates" window. Must run on the main thread; does nothing without Sparkle.
   pub fn check() {
-    UPDATER.with(|updater| {
-      if let Some(controller) = updater.borrow().as_ref() {
-        let nil: *mut AnyObject = std::ptr::null_mut();
+    SPARKLE.with(|slot| {
+      if let Some(sparkle) = slot.borrow().as_ref() {
+        let nil: Option<&AnyObject> = None;
         // SAFETY: -checkForUpdates: is the IBAction behind Sparkle's own "Check for Updates…" menu item.
-        let _: () = unsafe { msg_send![&**controller, checkForUpdates: nil] };
+        let _: () = unsafe { msg_send![&*sparkle.controller, checkForUpdates: nil] };
       }
     });
   }
 
   pub fn running() -> bool {
-    UPDATER.with(|updater| updater.borrow().is_some())
+    SPARKLE.with(|slot| slot.borrow().is_some())
+  }
+
+  /// True while Sparkle holds a relaunch back for the web client's answer (main thread).
+  pub fn relaunch_pending() -> bool {
+    RELAUNCH.with(|slot| slot.borrow().is_some())
+  }
+
+  /// Lets Sparkle install and relaunch the relaunch it holds back; false when none is held.
+  pub fn continue_relaunch() -> bool {
+    let install = RELAUNCH.with(|slot| slot.borrow_mut().take());
+    match install {
+      Some(install) => {
+        install.call(());
+        true
+      }
+      None => false,
+    }
   }
 }
 
 /// The menu item that asks Sparkle for updates, next to "About Tresso" in the app menu.
 #[cfg(target_os = "macos")]
 pub const CHECK_MENU_ID: &str = "check-for-updates";
+
+/// Asks the web client to get ready for the relaunch Sparkle wants; false when it is not listening, so nobody would
+/// answer.
+#[cfg(target_os = "macos")]
+fn request_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+  use tauri::{Emitter, Manager};
+
+  app.state::<UpdateListener>().is_listening()
+    && app.get_webview_window("main").is_some_and(|window| window.emit(UPDATE_RELAUNCH_REQUESTED, ()).is_ok())
+}
+
+/// "Check for Updates…": with an update already downloaded and waiting for the web client, asks it again instead, so
+/// the update is one click away rather than downloaded twice. Main thread.
+#[cfg(target_os = "macos")]
+fn check_or_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+  if !(sparkle::relaunch_pending() && request_relaunch(app)) {
+    sparkle::check();
+  }
+}
 
 /// Starts Sparkle and adds "Check for Updates…" to the app menu (macOS). Elsewhere the updater plugin is registered
 /// in lib.rs instead.
@@ -77,7 +229,11 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
   use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
   // A debug bundle (tauri build --debug) would otherwise offer to replace itself with the latest release.
-  if cfg!(debug_assertions) || !sparkle::start() {
+  if cfg!(debug_assertions) {
+    return Ok(());
+  }
+  let handle = app.handle().clone();
+  if !sparkle::start(Box::new(move || request_relaunch(&handle))) {
     return Ok(());
   }
   let menu = Menu::default(app.handle())?;
@@ -87,9 +243,9 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     app_menu.insert(&PredefinedMenuItem::separator(app)?, 1)?;
   }
   app.set_menu(menu)?;
-  app.on_menu_event(|_app, event| {
+  app.on_menu_event(|app, event| {
     if event.id() == CHECK_MENU_ID {
-      sparkle::check();
+      check_or_relaunch(app);
     }
   });
   Ok(())
@@ -117,7 +273,31 @@ pub fn update_channel() -> &'static str {
 
 /// Opens Sparkle's check window (macOS), for the button in Settings. A sync command, so it runs on the main thread.
 #[tauri::command]
-pub fn check_for_updates_natively() {
+pub fn check_for_updates_natively<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
   #[cfg(target_os = "macos")]
-  sparkle::check();
+  check_or_relaunch(&app);
+  #[cfg(not(target_os = "macos"))]
+  let _ = app;
+}
+
+/// The web client listens for UPDATE_RELAUNCH_REQUESTED from now on.
+#[tauri::command]
+pub fn update_listening(listener: tauri::State<'_, UpdateListener>) {
+  listener.0.store(true, Ordering::SeqCst);
+}
+
+/// The web client's answer to UPDATE_RELAUNCH_REQUESTED: `proceed` lets Sparkle install and relaunch now; otherwise
+/// the relaunch stays held, for "Check for Updates…" to offer again, and the update installs when the app quits.
+/// Returns whether a relaunch went ahead. A sync command, so it runs on the main thread, where Sparkle lives.
+#[tauri::command]
+pub fn update_relaunch(proceed: bool) -> bool {
+  #[cfg(target_os = "macos")]
+  {
+    proceed && sparkle::continue_relaunch()
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    let _ = proceed;
+    false
+  }
 }
