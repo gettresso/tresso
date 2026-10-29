@@ -84,6 +84,9 @@ describe('UpdateCard', () => {
     updates.waitingFor = 'sending'
     await card.vm.$nextTick()
     expect(card.text()).toContain('Tresso restarts once your message is on its way.')
+    updates.waitingFor = 'deleting'
+    await card.vm.$nextTick()
+    expect(card.text()).toContain('Tresso restarts once the draft is deleted.')
 
     const [now, notNow] = card.findAll('button')
     await now!.trigger('click')

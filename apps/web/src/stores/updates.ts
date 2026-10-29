@@ -21,7 +21,7 @@ export const SAVE_TIMEOUT_MS = 10_000
 
 /**
  * `ready`: downloaded, the restart was put off with "Later". `waiting`: the restart waits for files on their way to a
- * draft or a message being sent (`waitingFor`).
+ * draft, a message being sent or a draft being deleted (`waitingFor`).
  */
 export type UpdatePhase = 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'ready' | 'waiting' | 'installing' | 'failed'
 
@@ -46,7 +46,7 @@ export const useUpdatesStore = defineStore('updates', () => {
   /** The user put this release aside with "Later"; it comes back with the next one or a check of their own. */
   const dismissed = ref<string | null>(null)
   /** What the restart waits for, while `phase` is `waiting`. */
-  const waitingFor = ref<'files' | 'sending' | null>(null)
+  const waitingFor = ref<'files' | 'sending' | 'deleting' | null>(null)
   let timer: ReturnType<typeof setInterval> | null = null
   /** The release whose download is complete (Windows and Linux), so installing it later does not download it again. */
   let downloaded: Update | null = null
