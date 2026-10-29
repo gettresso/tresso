@@ -133,12 +133,13 @@ The stack gets HTTPS certificates by itself, migrates the database on start and 
 storage (RustFS), Meilisearch and ClamAV next to Tresso; ClamAV needs about 1.5 GB of RAM. To upgrade, set
 `TRESSO_VERSION` (or keep `latest`) and run `docker compose -f compose.prod.yaml pull` before `up -d`. Two settings
 only apply the first time: `POSTGRES_PASSWORD` (the database keeps its password) and `OAUTH_PASSPHRASE` (it encrypts
-the OAuth signing key; a new one needs a new key, which signs everyone out).
+the OAuth signing key; a new passphrase needs a new key: remove both files from the `oauth_keys` volume and restart,
+which signs everyone out).
 
-Running the images without this compose file, set the same settings as `compose.prod.yaml` does. The API container
-needs `RUN_MIGRATIONS=1` to migrate and create the OAuth clients (or run `php bin/console app:oauth:bootstrap-clients`
-once), and the desktop app's origins, `tauri://localhost` and `http://tauri.localhost`, belong in both
-`CORS_ALLOW_ORIGIN` and `MERCURE_CORS_ORIGINS`.
+Running the images without this compose file, set the same settings as `compose.prod.yaml` does. Exactly one API
+container needs `RUN_MIGRATIONS=1`: on start it makes the OAuth signing keys, migrates the database and creates the
+OAuth clients, and the workers need its keys (mount them read-only at `/app/config/jwt`). The desktop app's origins,
+`tauri://localhost` and `http://tauri.localhost`, belong in both `CORS_ALLOW_ORIGIN` and `MERCURE_CORS_ORIGINS`.
 
 In the desktop app, choose **Use another server** on the sign-in screen and enter the API address, such as
 `api.mail.example.com`. The app checks that the server answers and remembers it until you choose again. The web
