@@ -29,6 +29,8 @@ final readonly class ProductionSettings
 
     /** Secrets a server may leave empty, but never set to a development value. */
     public const array OPTIONAL_SECRETS = [
+        'STRIPE_SECRET_KEY',
+        'STRIPE_WEBHOOK_SECRET',
         'GOOGLE_OAUTH_CLIENT_SECRET',
         'MICROSOFT_OAUTH_CLIENT_SECRET',
         'WEB_PUSH_PRIVATE_KEY',
@@ -82,7 +84,7 @@ final readonly class ProductionSettings
             }
         }
 
-        $problems = [...$problems, ...$this->dataKeyProblems(), ...$this->originProblems()];
+        $problems = [...$problems, ...$this->dataKeyProblems(), ...$this->originProblems(), ...$this->billingProblems()];
 
         $database = $this->value('DATABASE_URL');
         $password = rawurldecode((string) parse_url($database, \PHP_URL_PASS));
@@ -94,6 +96,39 @@ final readonly class ProductionSettings
 
         if (!\in_array($this->value('MAIL_ALLOW_UNSAFE_SERVERS'), ['', '0'], true)) {
             $problems[] = 'MAIL_ALLOW_UNSAFE_SERVERS must be 0: it would let users point the sync workers at internal services.';
+        }
+
+        return $problems;
+    }
+
+    /**
+     * Billing, when it is on (Tresso Cloud): Stripe keys of the right kind and a price to sell. Test-mode keys are
+     * allowed, for a staging server.
+     *
+     * @return list<string>
+     */
+    private function billingProblems(): array
+    {
+        if (!\in_array(strtolower($this->value('TRESSO_BILLING')), ['1', 'true', 'yes', 'on'], true)) {
+            return [];
+        }
+
+        $problems = [];
+        if (1 !== preg_match('/^(sk|rk)_(live|test)_[A-Za-z0-9]+$/', $this->value('STRIPE_SECRET_KEY'))) {
+            $problems[] = 'STRIPE_SECRET_KEY must be a Stripe secret or restricted key (sk_live_, sk_test_, rk_live_ or rk_test_).';
+        }
+        if (1 !== preg_match('/^whsec_[A-Za-z0-9]+$/', $this->value('STRIPE_WEBHOOK_SECRET'))) {
+            $problems[] = 'STRIPE_WEBHOOK_SECRET must be the signing secret (whsec_) of the webhook endpoint.';
+        }
+        $prices = array_filter([$this->value('STRIPE_PRICE_MONTHLY'), $this->value('STRIPE_PRICE_YEARLY')], static fn (string $price): bool => '' !== $price);
+        if ([] === $prices) {
+            $problems[] = 'Billing needs STRIPE_PRICE_MONTHLY, STRIPE_PRICE_YEARLY or both.';
+        }
+        foreach ($prices as $price) {
+            if (1 !== preg_match('/^price_[A-Za-z0-9]+$/', $price)) {
+                $problems[] = 'STRIPE_PRICE_MONTHLY and STRIPE_PRICE_YEARLY must be Stripe price ids (price_).';
+                break;
+            }
         }
 
         return $problems;

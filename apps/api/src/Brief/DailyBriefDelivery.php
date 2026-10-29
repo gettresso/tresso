@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Brief;
 
+use App\Billing\Entitlements;
 use App\Entity\DailyBrief;
 use App\Entity\NotificationPreferences;
 use App\Enum\NotificationChannel;
@@ -51,6 +52,7 @@ final readonly class DailyBriefDelivery
         #[Autowire(env: 'WEB_APP_URL')]
         private string $webAppUrl,
         private MessageFields $fields,
+        private Entitlements $entitlements,
     ) {
     }
 
@@ -82,6 +84,9 @@ final readonly class DailyBriefDelivery
             return;
         }
         $user = $brief->getOwner();
+        if (!$this->entitlements->allows($user->getId())) {
+            return;
+        }
         $preferences = $this->preferences->forUser($user);
         $choice = self::channelsFor($preferences);
         $sections = $this->sections($brief);
