@@ -228,6 +228,47 @@ final class BillingTest extends DatabaseTestCase
         self::assertResponseIsSuccessful('Still within the trial.');
     }
 
+    public function testALateEventDoesNotLinkADeletedCustomerAgain(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        self::assertIsString($organizationId);
+        $this->stripeHas('sub_kim', 'active', $organizationId, 1);
+        $this->webhook('evt_1', 'customer.subscription.created', ['id' => 'sub_kim']);
+        $this->webhook('evt_2', 'customer.deleted', ['id' => 'cus_kim']);
+
+        $this->stripeHas('sub_kim', 'canceled', $organizationId, 1);
+        $this->webhook('evt_3', 'customer.subscription.deleted', ['id' => 'sub_kim']);
+
+        self::assertResponseIsSuccessful();
+        self::assertSame([null, null], array_values((array) $this->connection()->fetchAssociative('SELECT stripe_customer_id, stripe_subscription_id FROM billing_subscription WHERE organization_id = :id', ['id' => $organizationId])));
+    }
+
+    public function testAnUnpaidOrPausedSubscriptionAlsoBlocksASecondCheckout(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        self::assertIsString($organizationId);
+        foreach (['unpaid', 'paused', 'incomplete'] as $status) {
+            $this->connection()->executeStatement("UPDATE billing_subscription SET stripe_customer_id = 'cus_kim', stripe_subscription_id = 'sub_kim', status = :status WHERE organization_id = :id", ['status' => $status, 'id' => $organizationId]);
+
+            $this->client->jsonRequest('POST', '/api/v1/billing/checkout', ['organizationId' => $organizationId, 'plan' => 'monthly'], $this->kimHeaders());
+
+            self::assertResponseStatusCodeSame(409, $status);
+        }
+    }
+
+    public function testTheNightlyCheckKeepsACustomerStripeSaysItDoesNotHave(): void
+    {
+        $organizationId = $this->firstOrganization($this->billing())['id'] ?? null;
+        $this->connection()->executeStatement("UPDATE billing_subscription SET stripe_customer_id = 'cus_kim', stripe_subscription_id = 'sub_kim', status = 'active' WHERE organization_id = :id", ['id' => $organizationId]);
+        $this->router()->respond(StripeClient::API.'/subscriptions', (string) json_encode(['error' => ['message' => 'No such customer']]), 404);
+
+        $tester = new CommandTester(new Application($this->client->getKernel())->find('app:billing:reconcile'));
+        $tester->execute([]);
+
+        self::assertSame(1, $tester->getStatusCode(), 'Reported as failed.');
+        self::assertSame(['cus_kim', 'sub_kim', 'active'], array_values((array) $this->connection()->fetchAssociative('SELECT stripe_customer_id, stripe_subscription_id, status FROM billing_subscription WHERE organization_id = :id', ['id' => $organizationId])));
+    }
+
     public function testAStripeRefusalIsNotCalledUnreachable(): void
     {
         $this->router()->respond(StripeClient::API.'/customers', (string) json_encode(['error' => ['message' => 'Invalid API Key provided']]), 401);
@@ -329,11 +370,13 @@ final class BillingTest extends DatabaseTestCase
         $this->stripeHas('sub_kim', 'active', $organizationId, 1);
 
         $this->webhook('evt_1', 'invoice.paid', ['id' => 'in_1', 'parent' => ['subscription_details' => ['subscription' => 'sub_kim']]]);
+        $asked = \count($this->router()->requestsTo(StripeClient::API.'/subscriptions/sub_kim'));
         $this->webhook('evt_1', 'invoice.paid', ['id' => 'in_1', 'parent' => ['subscription_details' => ['subscription' => 'sub_kim']]]);
 
         self::assertResponseIsSuccessful();
         self::assertTrue($this->decodedResponse()['duplicate'] ?? null);
-        self::assertCount(1, $this->router()->requestsTo(StripeClient::API.'/subscriptions/sub_kim'));
+        self::assertGreaterThan(0, $asked);
+        self::assertCount($asked, $this->router()->requestsTo(StripeClient::API.'/subscriptions/sub_kim'), 'A repeat asks Stripe nothing.');
     }
 
     public function testAPaymentStripeIsRetryingKeepsAccessAndACanceledOneEndsIt(): void

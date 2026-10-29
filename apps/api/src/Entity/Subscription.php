@@ -96,6 +96,21 @@ class Subscription
         return $this->currentPeriodEnd;
     }
 
+    public function getUpdatedAt(): \DateTimeImmutable
+    {
+        return $this->updatedAt;
+    }
+
+    /**
+     * Whether Stripe has a subscription for it that is not over: a new checkout would add a second one and charge
+     * twice, so changes go through the billing portal instead.
+     */
+    public function hasOpenSubscription(): bool
+    {
+        return null !== $this->stripeSubscriptionId
+            && !\in_array($this->status, [SubscriptionStatus::Canceled, SubscriptionStatus::IncompleteExpired], true);
+    }
+
     /** The same rule as {@see \App\Billing\Entitlements}, which asks the database: within the trial, or paying. */
     public function allowsAccessAt(\DateTimeImmutable $now): bool
     {
@@ -134,13 +149,16 @@ class Subscription
 
     /**
      * Takes over the subscription as Stripe has it now, whatever order its events came in. Another subscription than
-     * the one followed replaces it only when it pays or the followed one no longer does, so a late event about an old,
-     * canceled subscription never ends the one that replaced it. Returns whether it was taken over.
+     * the one followed that does not pay replaces it only when the followed one does not pay either and both belong to
+     * the same customer: a late event about an old, canceled subscription never ends the one that replaced it, nor
+     * links a customer that was deleted again. Returns whether it was taken over.
      */
     public function follow(StripeSubscription $subscription, \DateTimeImmutable $now): bool
     {
-        $other = null !== $this->stripeSubscriptionId && $this->stripeSubscriptionId !== $subscription->id;
-        if ($other && $this->isPaying() && !\in_array($subscription->status, SubscriptionStatus::PAYING, true)) {
+        $other = $this->stripeSubscriptionId !== $subscription->id;
+        $paying = \in_array($subscription->status, SubscriptionStatus::PAYING, true);
+        if ($other && !$paying && ($this->isPaying() || $this->stripeCustomerId !== $subscription->customerId)) {
+            // A late event about an old subscription, or about a customer that was deleted and forgotten.
             return false;
         }
 

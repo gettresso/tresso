@@ -25,14 +25,14 @@ final readonly class StripeClient
     }
 
     /** A customer for an organization, so invoices and the billing portal belong to it. */
-    public function createCustomer(string $organizationId, string $name, string $email): string
+    public function createCustomer(string $organizationId, string $name, string $email, string $attempt): string
     {
         $customer = $this->request('POST', '/customers', [
             'name' => $name,
             'email' => $email,
             'metadata' => ['organization_id' => $organizationId],
             // The same request repeated (a retry, a double click) makes one customer; other details make another key.
-        ], 'customer-'.$organizationId.'-'.substr(hash('sha256', $name."\n".$email), 0, 16));
+        ], 'customer-'.$organizationId.'-'.substr(hash('sha256', $name."\n".$email."\n".$attempt), 0, 16));
 
         return self::id($customer);
     }

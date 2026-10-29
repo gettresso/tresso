@@ -60,7 +60,7 @@ final readonly class BillingProcessor implements ProcessorInterface
 
         try {
             if ($data instanceof BillingCheckoutInput) {
-                if ($subscription->isPaying()) {
+                if ($subscription->hasOpenSubscription()) {
                     // A second subscription would charge the organization twice; changing plans is the portal's.
                     throw new ConflictHttpException('This organization already has a subscription; manage it in the billing portal.');
                 }

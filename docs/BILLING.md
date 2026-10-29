@@ -91,8 +91,8 @@ the browser:
   returns to `<WEB_APP_URL>/settings/billing`.
 
 Answers: `404` when the server does not bill or the organization is not the user's, `403` for a member who is not an
-owner or admin (or a token without `settings:write`), `409` for a checkout while a subscription is running (change
-plans in the portal instead), `422` for a plan the server does not sell or a portal before any subscription, `502`
+owner or admin (or a token without `settings:write`), `409` for a checkout while the organization has a Stripe subscription that is
+not over (active, past due, unpaid, paused or incomplete; change plans in the portal instead), `422` for a plan the server does not sell or a portal before any subscription, `502`
 when Stripe refused the request (logged on the server) and `503` when Stripe could not be reached.
 
 ### Payment required
@@ -122,14 +122,16 @@ admin the buttons that open Checkout or the portal. The server alone decides; a 
     within 5 minutes; anything else gets `400`.
   - Every event id is handled once; a repeat answers `{"received": true, "duplicate": true}`.
   - An event only says which subscription changed: the server then reads that subscription from the Stripe API and
-    takes it over as it is, one event per subscription at a time, so events may come in any order. A subscription
-    that no longer pays never replaces another one that does, so a late event about an old, canceled subscription
-    leaves the one that replaced it alone. If Stripe cannot be asked, the answer is `500` and Stripe sends the event
+    takes it over as it is, with the organization's row locked before Stripe is asked, so events may come in any
+    order and the later one stores the later answer. A subscription that does not pay never replaces another one that
+    does, nor one of another customer, so a late event about an old, canceled subscription, or about a customer that
+    was deleted, changes nothing. If Stripe cannot be asked, the answer is `500` and Stripe sends the event
     again.
   - `customer.deleted` forgets the customer and its subscription; a new checkout makes a new customer.
 - **Nightly check.** At 03:17 UTC the server asks Stripe for the subscriptions of every customer it knows and takes over
-  the best one (one that pays, else the newest), in case webhooks were lost; this also finds a first checkout none of
-  whose events arrived. Handled event ids older than 30 days are removed. `php bin/console app:billing:reconcile` does
+  the best one (one that pays, then the one it follows, then the newest), in case webhooks were lost; this also finds a
+  first checkout none of whose events arrived. A customer Stripe says it does not have is kept and reported (a wrong
+  key says the same); only `customer.deleted` forgets one. Handled event ids older than 30 days are removed. `php bin/console app:billing:reconcile` does
   the same by hand.
 - **Linking.** Checkout puts the organization id in the subscription's metadata and as `client_reference_id`; the
   customer is made once per organization and kept.
@@ -143,7 +145,7 @@ Only the server that bills sets these; the API refuses to start when billing is 
 
 | Setting | Value |
 |---|---|
-| `TRESSO_BILLING` | `1` or `true` turns billing on; `0`, `false` or unset leaves it off |
+| `TRESSO_BILLING` | read as a boolean: `1`, `true`, `yes` or `on` (or any other non-zero number) turn billing on; `0`, `false`, empty or unset leave it off |
 | `STRIPE_SECRET_KEY` | `sk_live_…` or a restricted `rk_live_…` key; `sk_test_…` on a staging server |
 | `STRIPE_WEBHOOK_SECRET` | `whsec_…`, the signing secret of the webhook endpoint above |
 | `STRIPE_PRICE_MONTHLY`, `STRIPE_PRICE_YEARLY` | `price_…`, at least one; a recurring price per seat |
