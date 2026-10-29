@@ -5,7 +5,9 @@
 //!
 //! Before Sparkle relaunches into an update it asks the web client (UPDATE_RELAUNCH_REQUESTED), which saves the open
 //! draft and waits for uploads and a send under way; it then answers with `update_relaunch`. Held back, the relaunch
-//! waits for that answer, and Sparkle still installs the update when the app quits.
+//! waits for that answer, and Sparkle still installs the update when the app quits. Sparkle does not ask when it
+//! resumes an update whose earlier relaunch was put off: it then restarts at once. The drafts are on this device as they
+//! are typed (saved shortly after typing stops), so that loses at most the last moment of typing.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -15,7 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const UPDATE_RELAUNCH_REQUESTED: &str = "tresso://update-relaunch-requested";
 
 /// Whether the web client listens for UPDATE_RELAUNCH_REQUESTED. Until it does (or when it never loads), nobody could
-/// answer, so Sparkle relaunches right away rather than wait forever.
+/// answer, so Sparkle relaunches right away rather than wait forever. Every page load of the main window clears it
+/// (lib.rs): a reload, or a sign-in page of a mail provider, has no listener until the app's page says so again.
 #[derive(Default)]
 pub struct UpdateListener(AtomicBool);
 
@@ -23,6 +26,11 @@ impl UpdateListener {
   #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
   fn is_listening(&self) -> bool {
     self.0.load(Ordering::SeqCst)
+  }
+
+  /// The main window started loading a page.
+  pub fn page_loading(&self) {
+    self.0.store(false, Ordering::SeqCst);
   }
 }
 
@@ -181,6 +189,16 @@ mod sparkle {
     SPARKLE.with(|slot| slot.borrow().is_some())
   }
 
+  /// Sparkle's objects live on the main thread, and so does what this module keeps (thread locals): anywhere else it
+  /// would see no updater and no held relaunch. Sync commands run there; this says so loudly should that change.
+  pub fn on_main_thread() -> bool {
+    let main = MainThreadMarker::new().is_some();
+    if !main {
+      eprintln!("Sparkle was called off the main thread; the call does nothing");
+    }
+    main
+  }
+
   /// True while Sparkle holds a relaunch back for the web client's answer (main thread).
   pub fn relaunch_pending() -> bool {
     RELAUNCH.with(|slot| slot.borrow().is_some())
@@ -217,6 +235,9 @@ fn request_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
 /// the update is one click away rather than downloaded twice. Main thread.
 #[cfg(target_os = "macos")]
 fn check_or_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+  if !sparkle::on_main_thread() {
+    return;
+  }
   if !(sparkle::relaunch_pending() && request_relaunch(app)) {
     sparkle::check();
   }
@@ -280,10 +301,20 @@ pub fn check_for_updates_natively<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
   let _ = app;
 }
 
-/// The web client listens for UPDATE_RELAUNCH_REQUESTED from now on.
+/// The web client listens for UPDATE_RELAUNCH_REQUESTED from now on. Returns whether Sparkle already holds a relaunch
+/// for it, asked while no page listened (a reload, a provider's sign-in page): the web client then answers that one.
+/// A sync command, so it runs on the main thread, where Sparkle lives.
 #[tauri::command]
-pub fn update_listening(listener: tauri::State<'_, UpdateListener>) {
+pub fn update_listening(listener: tauri::State<'_, UpdateListener>) -> bool {
   listener.0.store(true, Ordering::SeqCst);
+  #[cfg(target_os = "macos")]
+  {
+    sparkle::on_main_thread() && sparkle::relaunch_pending()
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    false
+  }
 }
 
 /// The web client's answer to UPDATE_RELAUNCH_REQUESTED: `proceed` lets Sparkle install and relaunch now; otherwise
@@ -293,7 +324,7 @@ pub fn update_listening(listener: tauri::State<'_, UpdateListener>) {
 pub fn update_relaunch(proceed: bool) -> bool {
   #[cfg(target_os = "macos")]
   {
-    proceed && sparkle::continue_relaunch()
+    proceed && sparkle::on_main_thread() && sparkle::continue_relaunch()
   }
   #[cfg(not(target_os = "macos"))]
   {
