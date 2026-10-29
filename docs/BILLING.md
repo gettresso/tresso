@@ -11,21 +11,28 @@ anyone. This document is the contract the API, the web and desktop clients and t
   organizations with more members (see [Architecture](ARCHITECTURE.md#organizations)). A subscription belongs to an
   organization, so one user with several mail accounts pays once.
 - **Seats.** The members of an organization are its seats: Checkout subscribes to the price with the member count as
-  quantity, and the seat count shown is the quantity Stripe reports.
+  quantity, and the seat count shown is the quantity Stripe reports. Until teams exist every organization has one
+  member; updating the quantity when members join or leave comes with teams.
 - **Trial.** Every organization starts with a free trial of 14 days, without a card and without anything at Stripe
-  (status `trial`). On a server that turns billing on later, existing organizations get their 14 days from then.
-- **Access.** A user may use the server while at least one of their organizations gives access:
+  (status `trial`), made together with the organization. A server that turns billing on later runs
+  `php bin/console app:billing:restart-trials` once, which gives every organization without a Stripe subscription 14
+  days from then.
+- **Access.** A user may use the server while at least one of their organizations gives access. An organization gives
+  access until `trialEndsAt`, whatever happens at Stripe meanwhile, and after that by the status of its Stripe
+  subscription:
 
-  | Status | From | Access |
+  | Status | From | Access after the trial |
   |---|---|---|
-  | `trial` | Tresso | until `trialEndsAt` |
+  | `trial` | Tresso | no: the trial is over |
   | `trialing`, `active` | Stripe | yes |
   | `past_due` | Stripe | yes: a payment failed and Stripe is retrying it (its retries and emails run) |
   | `unpaid`, `canceled`, `incomplete`, `incomplete_expired`, `paused` | Stripe | no |
 
-- **Blocked.** Without access, everything stops for that user: the API answers `402`, the sync workers lease none of
-  their accounts (no mail in or out), and no notification or daily brief goes out. Their data stays as it is, and
-  everything resumes as soon as a subscription gives access again.
+- **Blocked.** Without access, everything that serves that user stops: the API answers `402`, the sync workers lease
+  none of their accounts (no mail in or out), and no notification or daily brief goes out. Their data stays as it is,
+  and everything resumes as soon as a subscription gives access again. What still works carries no new data: signing
+  in and out and refreshing tokens (so the app can show the payment screen), a realtime token already issued until it
+  expires (within an hour), and attachment links already handed out until they expire.
 
 ## API
 
@@ -42,7 +49,7 @@ no longer work with the server.
 
 ### Billing status
 
-`GET /api/v1/billing` (signed in, open while blocked):
+`GET /api/v1/billing` (signed in with `settings:read`, open while blocked):
 
 ```json
 {
@@ -74,7 +81,8 @@ no longer work with the server.
 
 ### Paying and managing
 
-Both take `{"organizationId": "…"}` and answer `{"url": "https://…"}`, a Stripe page to open in the browser:
+Both need `settings:write`, take `{"organizationId": "…"}` and answer `{"url": "https://…"}`, a Stripe page to open in
+the browser:
 
 - `POST /api/v1/billing/checkout` with `"plan": "monthly" | "yearly"`: Stripe Checkout for that plan, for every
   member. Checkout collects the billing address and VAT id, and Stripe Tax charges the VAT. After paying, Stripe
@@ -83,8 +91,9 @@ Both take `{"organizationId": "…"}` and answer `{"url": "https://…"}`, a Str
   returns to `<WEB_APP_URL>/settings/billing`.
 
 Answers: `404` when the server does not bill or the organization is not the user's, `403` for a member who is not an
-owner or admin, `422` for a plan the server does not sell or a portal before any subscription, `503` when Stripe
-cannot be reached.
+owner or admin (or a token without `settings:write`), `409` for a checkout while a subscription is running (change
+plans in the portal instead), `422` for a plan the server does not sell or a portal before any subscription, `502`
+when Stripe refused the request (logged on the server) and `503` when Stripe could not be reached.
 
 ### Payment required
 
@@ -108,15 +117,20 @@ admin the buttons that open Checkout or the portal. The server alone decides; a 
 
 - **Webhook.** One endpoint per server, `POST <API_PUBLIC_URL>/billing/stripe/webhook`, with these events:
   `checkout.session.completed`, `customer.subscription.created`, `.updated`, `.deleted`, `.paused`, `.resumed`,
-  `invoice.paid` and `invoice.payment_failed`.
+  `invoice.paid`, `invoice.payment_failed` and `customer.deleted`.
   - The `Stripe-Signature` header must be an HMAC-SHA256 of `timestamp.body` with the endpoint's signing secret, made
     within 5 minutes; anything else gets `400`.
   - Every event id is handled once; a repeat answers `{"received": true, "duplicate": true}`.
   - An event only says which subscription changed: the server then reads that subscription from the Stripe API and
-    takes it over as it is, so events may come in any order. If Stripe cannot be asked, the answer is `500` and Stripe
-    sends the event again.
-- **Nightly check.** At 03:17 UTC the server reads every subscription from Stripe again, in case a webhook was lost.
-  `php bin/console app:billing:reconcile` does the same by hand.
+    takes it over as it is, one event per subscription at a time, so events may come in any order. A subscription
+    that no longer pays never replaces another one that does, so a late event about an old, canceled subscription
+    leaves the one that replaced it alone. If Stripe cannot be asked, the answer is `500` and Stripe sends the event
+    again.
+  - `customer.deleted` forgets the customer and its subscription; a new checkout makes a new customer.
+- **Nightly check.** At 03:17 UTC the server asks Stripe for the subscriptions of every customer it knows and takes over
+  the best one (one that pays, else the newest), in case webhooks were lost; this also finds a first checkout none of
+  whose events arrived. Handled event ids older than 30 days are removed. `php bin/console app:billing:reconcile` does
+  the same by hand.
 - **Linking.** Checkout puts the organization id in the subscription's metadata and as `client_reference_id`; the
   customer is made once per organization and kept.
 - **API version.** Requests pin `Stripe-Version: 2025-03-31.basil`.
@@ -129,7 +143,7 @@ Only the server that bills sets these; the API refuses to start when billing is 
 
 | Setting | Value |
 |---|---|
-| `TRESSO_BILLING` | `1` (anything else, or unset: no billing) |
+| `TRESSO_BILLING` | `1` or `true` turns billing on; `0`, `false` or unset leaves it off |
 | `STRIPE_SECRET_KEY` | `sk_live_…` or a restricted `rk_live_…` key; `sk_test_…` on a staging server |
 | `STRIPE_WEBHOOK_SECRET` | `whsec_…`, the signing secret of the webhook endpoint above |
 | `STRIPE_PRICE_MONTHLY`, `STRIPE_PRICE_YEARLY` | `price_…`, at least one; a recurring price per seat |
