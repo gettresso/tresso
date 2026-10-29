@@ -128,8 +128,6 @@ final readonly class Subscriptions
             }
             $subscriptionId = \in_array($event->type, self::EVENTS, true) ? self::subscriptionOf($event) : null;
             if (null !== $subscriptionId) {
-                // One event at a time per subscription: two in parallel could otherwise store Stripe's older answer last.
-                $this->entityManager->getConnection()->executeQuery('SELECT id FROM billing_subscription WHERE stripe_subscription_id = :id FOR UPDATE', ['id' => $subscriptionId]);
                 $this->follow($subscriptionId);
             }
 
@@ -139,30 +137,34 @@ final readonly class Subscriptions
 
     /**
      * Takes over a subscription as Stripe has it now. It belongs to the organization that already has it, else the one
-     * its metadata names, else the one with its customer; a subscription of nobody here is left alone.
+     * its metadata names, else the one with its customer; a subscription of nobody here is left alone. The row is
+     * locked before Stripe is asked (again), so of two events handled at once the later one stores the later answer.
      */
     public function follow(string $stripeSubscriptionId): ?Subscription
     {
-        $stripe = $this->stripe->subscription($stripeSubscriptionId);
         $repository = $this->entityManager->getRepository(Subscription::class);
-        $subscription = $repository->findOneBy(['stripeSubscriptionId' => $stripe->id]);
-        if (null === $subscription && null !== $stripe->organizationId && Uuid::isValid($stripe->organizationId)) {
-            $subscription = $repository->findOneBy(['organization' => Uuid::fromString($stripe->organizationId)]);
+        $subscription = $repository->findOneBy(['stripeSubscriptionId' => $stripeSubscriptionId]);
+        if (null === $subscription) {
+            $stripe = $this->stripe->subscription($stripeSubscriptionId);
+            if (null !== $stripe->organizationId && Uuid::isValid($stripe->organizationId)) {
+                $subscription = $repository->findOneBy(['organization' => Uuid::fromString($stripe->organizationId)]);
+            }
+            $subscription ??= $repository->findOneBy(['stripeCustomerId' => $stripe->customerId]);
         }
-        $subscription ??= $repository->findOneBy(['stripeCustomerId' => $stripe->customerId]);
         if (null === $subscription) {
             return null;
         }
 
-        $this->take($subscription, $stripe);
+        $this->lock($subscription);
+        $this->take($subscription, $this->stripe->subscription($stripeSubscriptionId));
 
         return $subscription;
     }
 
     /**
      * The nightly check, should webhooks have been lost: every organization with a Stripe customer takes over the
-     * best of its subscriptions there (one that pays, else the newest), which also finds a first checkout whose events
-     * never arrived. Handled event ids older than a month are removed.
+     * best of its subscriptions there (one that pays, then the one it follows, then the newest), which also finds a
+     * first checkout whose events never arrived. Handled event ids older than a month are removed.
      *
      * @return array{followed: int, failed: int}
      */
@@ -181,15 +183,10 @@ final readonly class Subscriptions
             try {
                 $this->reconcileCustomer($subscription, $customer);
                 ++$followed;
-            } catch (StripeException $exception) {
-                // A customer Stripe no longer has was deleted there.
-                if (404 === $exception->status) {
-                    $subscription->forgetCustomer($this->now());
-                    $this->entityManager->flush();
-                    ++$followed;
-                } else {
-                    ++$failed;
-                }
+            } catch (StripeException) {
+                // Also a customer Stripe says it does not have: a wrong key or account says the same, so only Stripe's
+                // customer.deleted event forgets one.
+                ++$failed;
             }
             $this->entityManager->clear();
         }
@@ -236,19 +233,32 @@ final readonly class Subscriptions
         return $this->clock->now()->setTimezone(new \DateTimeZone('UTC'));
     }
 
+    /** The organization's Stripe customer, made once: two admins at once wait for each other and share it. */
     private function customer(Subscription $subscription, User $payer): string
     {
-        $customer = $subscription->getStripeCustomerId();
-        if (null !== $customer) {
-            return $customer;
+        if (null !== $subscription->getStripeCustomerId()) {
+            return $subscription->getStripeCustomerId();
         }
 
-        $organization = $subscription->getOrganization();
-        $customer = $this->stripe->createCustomer($organization->getId()->toRfc4122(), $organization->getName(), $payer->getEmail());
-        $subscription->linkCustomer($customer, $this->now());
-        $this->entityManager->flush();
+        return $this->entityManager->wrapInTransaction(function () use ($subscription, $payer): string {
+            $this->lock($subscription);
+            $this->entityManager->refresh($subscription);
+            $customer = $subscription->getStripeCustomerId();
+            if (null === $customer) {
+                $organization = $subscription->getOrganization();
+                // The key changes once a deleted customer is forgotten, so Stripe never hands that one back.
+                $customer = $this->stripe->createCustomer($organization->getId()->toRfc4122(), $organization->getName(), $payer->getEmail(), $subscription->getUpdatedAt()->format('U'));
+                $subscription->linkCustomer($customer, $this->now());
+                $this->entityManager->flush();
+            }
 
-        return $customer;
+            return $customer;
+        });
+    }
+
+    private function lock(Subscription $subscription): void
+    {
+        $this->entityManager->getConnection()->executeQuery('SELECT id FROM billing_subscription WHERE id = :id FOR UPDATE', ['id' => $subscription->getId()->toRfc4122()]);
     }
 
     /**
