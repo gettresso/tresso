@@ -205,6 +205,57 @@ describe('Composer', () => {
     expect(await store.draft(id)).toMatchObject({ subject: 'Typed during the send', outgoingId: null })
   })
 
+  it('writes nothing of a draft being deleted, while another draft saves as usual', async () => {
+    composer.openNew()
+    composer.update({ subject: 'To be deleted' })
+    const deleted = composer.state.draft!.id
+    await vi.advanceTimersByTimeAsync(1000)
+    const deleteDraft = store.deleteDraft.bind(store)
+    let deleteNow: (() => void) | null = null
+    const gate = new Promise<void>((resolve) => (deleteNow = resolve))
+    vi.spyOn(store, 'deleteDraft').mockImplementation(async (id) => {
+      await gate
+      return deleteDraft(id)
+    })
+    const discarding = composer.discard()
+    await vi.waitFor(() => expect(deleteNow).not.toBeNull())
+    expect(composer.unfinished).toBe('deleting')
+
+    // Typed while it goes, then another draft opened, which saves the first one were it not held.
+    composer.update({ subject: 'Typed during the delete' })
+    composer.openNew()
+    composer.update({ subject: 'Another draft' })
+    const other = composer.state.draft!.id
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await store.draft(other)).toMatchObject({ subject: 'Another draft' })
+
+    deleteNow!()
+    await discarding
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await store.draft(deleted)).toBeNull()
+    expect(composer.unfinished).toBeNull()
+  })
+
+  it('saves a draft put away during its send once the send fails', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'Going out' })
+    const id = composer.state.draft!.id
+    let sendNow: (() => void) | null = null
+    sendGate = new Promise<void>((resolve) => (sendNow = resolve))
+    sendFails = new Error('server down')
+    const sending = composer.send()
+    await vi.waitFor(() => expect(api.calls).toContain(`create ${id}`))
+
+    composer.update({ subject: 'Typed, then put away' })
+    composer.close()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await store.draft(id)).toMatchObject({ subject: 'Going out' })
+
+    sendNow!()
+    await sending
+    await vi.waitFor(async () => expect(await store.draft(id)).toMatchObject({ subject: 'Typed, then put away', outgoingId: null }))
+  })
+
   it('names the failed save, not an unrelated error, when the draft put away could not be saved', async () => {
     composer.openNew()
     composer.update({ subject: 'Put away' })

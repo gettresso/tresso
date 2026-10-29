@@ -86,8 +86,12 @@ export class Composer {
   private nextFile = 0
   /** Saves on this device that are under way, each resolving to null or why it failed, so a restart can wait for them. */
   private readonly writes = new Set<Promise<string | null>>()
-  /** The draft being deleted everywhere, which nothing writes meanwhile. */
-  private deleting: string | null = null
+  /** Drafts being sent or deleted, which nothing writes meanwhile: a sent or deleted draft must not come back. */
+  private readonly held = new Set<string>()
+  /** The last save asked for each held draft, made once it is released and still there. */
+  private readonly heldSaves = new Map<string, { draft: Draft; closing: boolean }>()
+  /** Drafts being deleted everywhere. */
+  private readonly deleting = new Set<string>()
   /** The open draft has edits that are not written on this device yet, or whose write failed. */
   private dirty = false
 
@@ -98,11 +102,11 @@ export class Composer {
   }
 
   /**
-   * What quitting now would cut short: files on their way to any draft (their contents are only in memory), or a
-   * message being handed to the server. Null when the app can go.
+   * What quitting now would cut short: files on their way to any draft (their contents are only in memory), a message
+   * being handed to the server, or a draft being deleted there. Null when the app can go.
    */
-  get unfinished(): 'files' | 'sending' | null {
-    return this.onTheirWay.size > 0 ? 'files' : this.current.sending ? 'sending' : null
+  get unfinished(): 'files' | 'sending' | 'deleting' | null {
+    return this.onTheirWay.size > 0 ? 'files' : this.current.sending ? 'sending' : this.deleting.size > 0 ? 'deleting' : null
   }
 
   /**
@@ -115,26 +119,37 @@ export class Composer {
     // Typing during a save marks the draft again; a few rounds catch up with that.
     for (let round = 0; round < SAVE_NOW_ROUNDS; round++) {
       const draft = this.current.draft
-      if (this.dirty && draft !== null && !this.holdsWrites()) {
+      if (this.dirty && draft !== null && !this.held.has(draft.id)) {
         void this.saveHere(draft, false)
       }
       const failed = (await Promise.all([...this.writes])).find((failure) => failure !== null)
       if (failed !== undefined) {
         throw new Error(failed)
       }
-      if (!this.dirty || this.current.draft === null || this.holdsWrites()) {
+      if (!this.dirty || this.current.draft === null || this.held.has(this.current.draft.id)) {
         return
       }
     }
     throw new Error('The draft keeps changing while it is saved.')
   }
 
+  /** Lets nothing write the draft while it is sent (which writes it itself) or deleted. */
+  private hold(id: string): void {
+    this.held.add(id)
+  }
+
   /**
-   * A message being sent writes its draft itself, and a sent draft must not be written back; nor must a draft being
-   * deleted. Edits made meanwhile are saved once that is over (resumeSaving).
+   * Ends a hold. Unless the draft is `gone` (sent or deleted), what was asked to be saved meanwhile is saved now: the
+   * open draft by its next autosave, with its newest edits, and one put away from the save asked for it.
    */
-  private holdsWrites(): boolean {
-    return this.current.sending || this.deleting !== null
+  private release(id: string, gone: boolean): void {
+    this.held.delete(id)
+    const asked = this.heldSaves.get(id)
+    this.heldSaves.delete(id)
+    if (!gone && asked !== undefined && this.current.draft?.id !== id) {
+      void this.save(asked.draft, asked.closing)
+    }
+    this.resumeSaving()
   }
 
   private resumeSaving(): void {
@@ -145,9 +160,7 @@ export class Composer {
 
   private autosave(): void {
     this.saveTimer = null
-    if (!this.holdsWrites()) {
-      void this.save()
-    }
+    void this.save()
   }
 
   /** Writes the draft on this device; resolves to null when that worked (or there is nowhere to keep it), else why not. */
@@ -249,6 +262,9 @@ export class Composer {
     }
     this.openedIn = null
     this.dirty = false
+    this.held.clear()
+    this.heldSaves.clear()
+    this.deleting.clear()
     this.onTheirWay.clear()
     this.set({ draft: null, savedAt: null, sending: false, error: null, violations: {}, conflict: false, undoable: null, attaching: [] })
   }
@@ -457,6 +473,10 @@ export class Composer {
 
   /** Saves on this device at once and uploads, so the draft is on every device and in the Drafts folder. */
   async save(draft: Draft | null = this.current.draft, closing = false): Promise<void> {
+    if (draft !== null && this.held.has(draft.id)) {
+      this.heldSaves.set(draft.id, { draft, closing })
+      return
+    }
     if (draft === null || this.storeOfDraft() === null || (await this.saveHere(draft, closing)) !== null) {
       return
     }
@@ -505,13 +525,15 @@ export class Composer {
       return false
     }
     this.clearSaveTimer()
-    // Nothing writes a draft that is being deleted; kept, its edits are saved again.
-    this.deleting = draft.id
+    this.hold(draft.id)
+    this.deleting.add(draft.id)
+    this.set({})
     try {
       await this.deps.drafts.deleteEverywhere(draft.id)
     } catch (error) {
-      this.deleting = null
-      this.resumeSaving()
+      this.deleting.delete(draft.id)
+      this.release(draft.id, false)
+      this.set({})
       const text = `The draft could not be deleted: ${this.deps.explain(error).message}`
       if (this.current.draft?.id === draft.id) {
         this.set({ error: text })
@@ -520,12 +542,15 @@ export class Composer {
       }
       return false
     }
-    this.deleting = null
-    this.deps.changed?.()
+    this.deleting.delete(draft.id)
     if (this.current.draft?.id === draft.id) {
       this.dirty = false
       this.set({ draft: null, conflict: false })
+    } else {
+      this.set({})
     }
+    this.release(draft.id, true)
+    this.deps.changed?.()
     return true
   }
 
@@ -593,6 +618,8 @@ export class Composer {
     // That writes it on this device too.
     this.clearSaveTimer()
     this.dirty = false
+    this.hold(draft.id)
+    let sent = false
     try {
       const onServer = await this.deps.drafts.uploadForSending(draft)
       if (!onServer && draft.attachments.length > 0) {
@@ -602,6 +629,7 @@ export class Composer {
       // Worked out after the upload: the undo window is the time between queueing and sending.
       const at = sendAt ?? new Date(Date.now() + this.undoSeconds * 1000)
       const outgoing = await this.deps.send(sendRequest(draft, this.deps.signatures(), at, onServer, acceptUnscanned))
+      sent = true
       await store.changeDraft(draft.id, (stored) => ({ ...(stored ?? draft), outgoingId: outgoing.id, pendingSave: false, updatedAt: Date.now() }))
       this.deps.changed?.()
       if (this.current.draft?.id === draft.id) {
@@ -615,7 +643,7 @@ export class Composer {
       }
       return outgoing
     } catch (error) {
-      if (this.current.draft?.id === draft.id) {
+      if (!sent && this.current.draft?.id === draft.id) {
         // Whether the send got to write the draft here or not, it is written again before a restart.
         this.dirty = true
       }
@@ -635,7 +663,7 @@ export class Composer {
       return null
     } finally {
       this.set({ sending: false })
-      this.resumeSaving()
+      this.release(draft.id, sent)
     }
   }
 
