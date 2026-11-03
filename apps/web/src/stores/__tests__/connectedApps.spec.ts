@@ -7,7 +7,7 @@ import { useConnectedAppsStore } from '../connectedApps'
 const claude: ConnectedApp = {
   id: 'consent-1',
   name: 'Claude',
-  domain: 'claude.ai',
+  domains: ['claude.ai'],
   scopes: ['mail:read', 'todos:read'],
   connectedAt: '2026-11-01T08:00:00+00:00',
   lastUsedAt: '2026-11-03T08:00:00+00:00',
@@ -16,7 +16,7 @@ const claude: ConnectedApp = {
 const inspector: ConnectedApp = {
   id: 'consent-2',
   name: 'MCP Inspector',
-  domain: 'localhost',
+  domains: ['localhost'],
   scopes: ['settings:read'],
   connectedAt: '2026-11-02T08:00:00+00:00',
   lastUsedAt: null,
