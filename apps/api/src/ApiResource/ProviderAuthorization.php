@@ -8,6 +8,7 @@ use ApiPlatform\Metadata\ApiProperty;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Post;
 use App\ApiResource\Input\StartProviderAuthorization;
+use App\Security\FirstPartyClients;
 use App\Security\Scope;
 use App\State\ProviderAuthorizationProcessor;
 
@@ -23,7 +24,7 @@ use App\State\ProviderAuthorizationProcessor;
     operations: [
         new Post(
             uriTemplate: '/provider-authorizations',
-            security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')",
+            security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."') and is_granted('".FirstPartyClients::ATTRIBUTE."')",
             input: StartProviderAuthorization::class,
             read: false,
             processor: ProviderAuthorizationProcessor::class,

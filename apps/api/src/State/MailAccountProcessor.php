@@ -23,8 +23,11 @@ use App\Repository\MailAccountRepository;
 use App\Repository\ProviderGrantRepository;
 use App\Repository\TodoRepository;
 use App\Security\CurrentUser;
+use App\Security\FirstPartyClients;
 use App\Security\Crypto\CredentialVault;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\Validator\ConstraintViolation;
 use Symfony\Component\Validator\ConstraintViolationList;
@@ -32,7 +35,9 @@ use Symfony\Component\Validator\ConstraintViolationList;
 /**
  * Creates, updates and deletes the signed-in user's mail accounts. Passwords go straight into the credential vault.
  * Gmail and Microsoft 365 accounts are created through {@see \App\ProviderAuth\ProviderConnector}; here they can be
- * renamed, paused and removed, and removing the last account of a provider grant also ends the grant.
+ * renamed, paused and removed, and removing the last account of a provider grant also ends the grant. Adding and
+ * removing accounts, and changing how one connects, is for our own apps only (see the resource and
+ * {@see self::assertConnectionChangeAllowed()}).
  *
  * @implements ProcessorInterface<CreateMailAccount|UpdateMailAccount|MailAccountResource, MailAccountResource|null>
  */
@@ -47,6 +52,7 @@ final readonly class MailAccountProcessor implements ProcessorInterface
         private ProviderClient $providerClient,
         private ProviderGrantRepository $grants,
         private TodoRepository $todos,
+        private Security $security,
     ) {
     }
 
@@ -55,8 +61,11 @@ final readonly class MailAccountProcessor implements ProcessorInterface
         // Checked before the transaction: an exception inside it would close the entity manager.
         if ($data instanceof UpdateMailAccount) {
             $account = $this->ownedAccount($this->currentUser->get(), $uriVariables);
+            $this->assertConnectionChangeAllowed($data);
             if (!$account->usesServers()) {
                 $this->assertNoServerChanges($account, $data);
+            } else {
+                $this->assertPasswordForNewServer($account, $data);
             }
         }
 
@@ -181,6 +190,64 @@ final readonly class MailAccountProcessor implements ProcessorInterface
         $this->entityManager->flush();
 
         return MailAccountResource::fromEntity($account);
+    }
+
+    /**
+     * How an account connects (servers, username, password, calendar server) changes only in our own apps: an app that
+     * is not ours, or a personal access token, could otherwise point the account at its own server and have Tresso log
+     * in there. Name, status and other plain settings stay open to every client with settings:write.
+     */
+    private function assertConnectionChangeAllowed(UpdateMailAccount $input): void
+    {
+        $changesConnection = null !== $input->username || null !== $input->password || null !== $input->imap
+            || null !== $input->smtp || null !== $input->calendarUrl;
+        if ($changesConnection && !FirstPartyClients::signedRequest($this->security->getToken())) {
+            throw new AccessDeniedHttpException('Only Tresso\'s own apps can change how a mail account connects.');
+        }
+    }
+
+    /**
+     * The stored password is never sent to a server other than the one it was given for: a new IMAP or SMTP host, a new
+     * username or a calendar server on a new host needs the password again.
+     */
+    private function assertPasswordForNewServer(MailAccount $account, UpdateMailAccount $input): void
+    {
+        if (null !== $input->password) {
+            return;
+        }
+        $changed = [];
+        if (null !== $input->imap && !self::sameHost($input->imap->host, $account->getImap()?->host)) {
+            $changed[] = 'IMAP server';
+        }
+        if (null !== $input->smtp && !self::sameHost($input->smtp->host, $account->getSmtp()?->host)) {
+            $changed[] = 'SMTP server';
+        }
+        if (null !== $input->username && $input->username !== $account->getUsername()) {
+            $changed[] = 'username';
+        }
+        if (null !== $input->calendarUrl && '' !== $input->calendarUrl) {
+            $current = $account->getCalendarServer();
+            if (!self::sameHost((string) parse_url($input->calendarUrl, \PHP_URL_HOST), null === $current ? null : (string) parse_url($current, \PHP_URL_HOST))) {
+                $changed[] = 'calendar server';
+            }
+        }
+        if ([] === $changed) {
+            return;
+        }
+
+        throw new ValidationException(new ConstraintViolationList([new ConstraintViolation(
+            \sprintf('Enter the password again for the new %s: Tresso never sends the saved password to another server or user.', implode(' and ', $changed)),
+            null,
+            [],
+            $input,
+            'password',
+            null,
+        )]));
+    }
+
+    private static function sameHost(string $new, ?string $current): bool
+    {
+        return null !== $current && strtolower(rtrim($new, '.')) === strtolower(rtrim($current, '.'));
     }
 
     /**
