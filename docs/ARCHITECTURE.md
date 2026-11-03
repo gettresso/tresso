@@ -143,8 +143,8 @@ curl -H "Authorization: Bearer $TRESSO_TOKEN" https://tresso.example/api/v1/sign
   access token with those scopes would (`ROLE_OAUTH2_<SCOPE>`), so `is_granted()` and `CurrentUser` work unchanged.
   The security token is an `OAuth2Token` whose client id is `personal-access-token`, which is no OAuth2 client, so
   it never counts as a first-party app or a sync worker. Anything else gets the same 401 as a rejected OAuth2 token.
-  The last use (`last_used_at`) is written at most once a minute per token. The authenticator is meant to be reused on
-  the planned `/mcp` firewall.
+  The last use (`last_used_at`) is written at most once a minute per token. The `mcp` firewall uses the same
+  authenticator (see MCP endpoint below).
 - **Not for realtime.** `GET /api/v1/realtime/token` refuses personal access tokens (403): a Mercure subscriber token
   lives an hour and would outlast revoking the token, and scripts and MCP clients fetch the delta instead. Personal
   access tokens never reach `/internal/` either, since they cannot hold a `sync:*` scope.
@@ -236,6 +236,50 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   the consent and revokes the app's access tokens, refresh tokens and authorization codes for that user in one
   transaction. The web app has this under Settings, Connected apps. Deleting a user deletes their consents (foreign
   key cascade) with their tokens.
+
+#### MCP endpoint
+
+`<API_PUBLIC_URL>/mcp` is an MCP server (Streamable HTTP, `symfony/mcp-bundle` with the official PHP SDK, `mcp/sdk`)
+for Claude, Claude Code and other MCP clients. Its tools change the user's settings; tools for mail, todos and events
+come later. The code is in `App\Mcp`.
+
+- **Signing in.** The firewall `mcp` takes the same tokens as the API: OAuth2 access tokens (an app the user allowed
+  on the consent screen, or one of our own apps) and personal access tokens. A request without a token, or with one
+  that is unknown, revoked or expired, gets a 401 with `WWW-Authenticate: Bearer
+  resource_metadata="<API_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp"` (and `error="invalid_token"` when a
+  token was refused), from where a client finds this authorization server, registers and signs in by itself. A sync
+  worker's token has no user and gets a 403 (`MCP_USER`).
+- **Transport.** POST for messages, DELETE to end a session; GET (a server stream) answers 405, since the server sends
+  nothing unasked. Sessions live in Redis (`cache.mcp_sessions`) for an hour after their last request and belong to
+  the user and app (or personal access token) that started them: another connection that names one gets a 404. Both
+  protocol eras of the SDK are served on the one endpoint. The Host header (and an Origin header from another site)
+  must be the host of `API_PUBLIC_URL`; dev and test also accept `localhost`, `127.0.0.1` and `[::1]` (DNS rebinding,
+  403 otherwise). There is no CORS on `/mcp`: hosted clients call it from their servers and the MCP Inspector through
+  its proxy.
+- **Tools.** Each tool runs the API operations it stands for as sub-requests of the MCP request (`App\Mcp\Api`):
+  the same token, so the same scopes, voters, first-party checks, validation and messages as the REST call, and no
+  tool can do what the API would not do with that token. A refusal comes back as a tool error (`isError`) in the
+  API's words, with each refused field; the answer is the API's JSON as text and as structured content (lists under
+  `items`). Input schemas are written per tool, refuse fields they do not name and carry the MCP annotations
+  (`readOnlyHint`, `destructiveHint`, `idempotentHint`). `tools/list` shows only the tools whose scopes the token
+  holds; calling another one is a tool error that names the missing scope. A resource, `tresso://scopes`, lists the
+  scopes and the tools each one unlocks. Tools come from `App\Mcp\Tool\ToolProvider` services, one per part of the
+  API; more tools are another provider.
+
+| Scope | Tools |
+|---|---|
+| none | `get_me` (who, which scopes, and with `settings:read` the mail accounts), `get_server_info` |
+| `signatures:read` | `list_signatures`, `get_signature` |
+| `signatures:write` | `create_signature`, `update_signature`, `delete_signature`; with `signatures:read`: `set_default_signature` (sets or clears the default of one mail account through the signature's `defaultFor`) |
+| `settings:read` | `list_mail_accounts`, `get_mail_account` (without how the account connects), `list_smart_inboxes`, `get_smart_inbox`, `list_sender_rules`, `get_notification_settings`, `list_notification_devices`, `get_batch_delivery`, `get_daily_brief_settings`, `list_reminder_rules`, `get_reminder_rule`, `get_scheduling_preferences` |
+| `settings:write` | `update_mail_account` (name, pause and resume), `create_smart_inbox`, `update_smart_inbox`, `delete_smart_inbox`, `delete_sender_rule`, `update_notification_settings`, `update_notification_device` (name, on or off), `delete_notification_device`, `create_reminder_rule`, `delete_reminder_rule`, `update_scheduling_preferences`; with `settings:read` (they change part of what the API saves whole, or of a list): `add_smart_inbox_senders`, `remove_smart_inbox_senders`, `update_batch_delivery`, `update_daily_brief_settings`, `update_reminder_rule` |
+| `mail:read` | `get_smart_inbox_senders` (who sends the mail in a smart inbox) |
+| `calendar:read` | `list_calendars`, `get_calendar` |
+| `calendar:write` | `create_calendar`, `update_calendar`, `delete_calendar` |
+
+- **Not tools.** What only our own apps may do (adding or removing mail accounts and how they connect, registering a
+  notification device, personal access tokens, connected apps, billing, realtime) has no tool. The API cannot reorder
+  smart inboxes or give them a color, so neither can a tool.
 
 Users log in with email + password (Argon2id) and, later, Google / Microsoft sign-in as identity providers. (Signing
 in with Google or Microsoft to connect a mail account is separate: see Provider sign-in below.)
@@ -904,8 +948,8 @@ files attached to drafts (uploads, and files a forward or reply takes along).
 
 Not built yet, and coming to this repository like everything else: AI classification and summaries (with your own
 key or endpoint), teams on top of organizations (invites, assignments to teammates, internal comments, delegation
-rules), webhooks, the MCP endpoint (which will accept personal access tokens and the tokens of third-party apps,
-3.2), developer tools, statistics and Year in mail.
+rules), webhooks, MCP tools for mail, todos and events (the endpoint and its settings tools are built, 3.2),
+developer tools, statistics and Year in mail.
 
 ### 3.10 Clients
 

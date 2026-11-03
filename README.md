@@ -100,7 +100,7 @@ The app is not signed with an Apple Developer ID yet. The install script lifts t
 
 Tresso is fully open source. Everything it does is in this repository, and running it on your own server is free,
 with every feature. What is still on the [roadmap](docs/ROADMAP.md), such as AI with your own key or endpoint, teams
-with shared inboxes, API keys, webhooks and an MCP endpoint, lands here too.
+with shared inboxes, webhooks and MCP tools for mail, todos and the calendar, lands here too.
 
 **Tresso Cloud** is the managed hosting of that same code: a subscription pays for running it for you, with backups
 and support, never for features. See [Self-hosted and Tresso Cloud](docs/ARCHITECTURE.md#self-hosted-and-tresso-cloud)
@@ -147,6 +147,41 @@ workers, needs those keys too (mount them read-only at `/app/config/jwt`). `CORS
 In the desktop app, choose **Use another server** on the sign-in screen and enter the API address, such as
 `api.mail.example.com`. The app checks that the server answers and remembers it until you choose again. The web
 client is at your web address.
+
+## 🤖 Use Tresso from Claude and other MCP clients
+
+The API has an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp`, so Claude and other MCP clients can change
+your settings for you: signatures and the default signature of each mail account, smart inboxes and their senders,
+notifications, batches, the daily brief, reminder rules, calendars and more. A client signs in with your consent and
+only gets the permissions you allow; every tool does exactly what the API allows with that permission. Mail, todos and
+events are coming next.
+
+**Tresso Cloud.** In Claude Code:
+
+```bash
+claude mcp add --transport http tresso https://api.gettresso.com/mcp
+```
+
+Then run `/mcp` in Claude Code and choose **Authenticate**: your browser opens Tresso's sign-in and a screen that asks
+which permissions to give. In Claude.ai (or Claude Desktop), add a custom connector under **Settings, Connectors** with
+the URL `https://api.gettresso.com/mcp`. On your own server, use your API address instead, such as
+`https://api.mail.example.com/mcp`.
+
+**Locally** (the development stack below):
+
+```bash
+claude mcp add --transport http tresso http://localhost:8080/mcp
+```
+
+Or skip the sign-in with a personal access token (Settings, Access tokens, with the scopes the tools need):
+
+```bash
+claude mcp add --transport http tresso http://localhost:8080/mcp --header "Authorization: Bearer tresso_pat_..."
+```
+
+Settings, Connected apps lists the apps you allowed and disconnects them. See
+[Authentication and authorization](docs/ARCHITECTURE.md#32-authentication-and-authorization) for the tools and the
+scope each one needs.
 
 ## 🧱 Stack
 

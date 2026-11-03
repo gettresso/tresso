@@ -177,8 +177,13 @@ Planned, on top of organizations: teams, shared inboxes, assignments, internal c
   unused registrations deleted after 30 days), a consent screen that remembers what the user allowed, and Settings,
   Connected apps to see and disconnect them (which revokes their tokens)
 
-Planned: webhooks, MCP endpoint (accepting personal access tokens and third-party apps), developer tools, statistics,
-Year in mail.
+- [x] 4.8 MCP endpoint (`/mcp`, Streamable HTTP) for Claude and other MCP clients, signed in with a personal access
+  token or as a third-party app: tools for the settings (signatures and the default per mail account, mail account
+  names and pausing, smart inboxes and their senders, sender rules, notifications and devices, batches, the daily
+  brief, reminder rules, calendars and scheduling preferences), each running its API operations with the caller's
+  token and listed only with the scopes it needs
+
+Planned: webhooks, MCP tools for mail, todos and events, developer tools, statistics, Year in mail.
 
 ## Phase 5: Tresso Cloud
 
