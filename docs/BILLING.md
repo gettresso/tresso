@@ -105,7 +105,7 @@ A blocked user gets `402` from every `/api/` call except the ones above (`/api/v
 
 ```json
 {
-  "type": "https://tresso.app/errors/payment-required",
+  "type": "https://gettresso.com/errors/payment-required",
   "title": "Payment Required",
   "status": 402,
   "detail": "The trial or subscription has ended. Open billing to subscribe."

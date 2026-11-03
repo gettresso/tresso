@@ -58,7 +58,7 @@ final readonly class PaymentRequiredListener
         }
 
         $event->setResponse(new JsonResponse([
-            'type' => 'https://tresso.app/errors/payment-required',
+            'type' => 'https://gettresso.com/errors/payment-required',
             'title' => 'Payment Required',
             'status' => Response::HTTP_PAYMENT_REQUIRED,
             'detail' => 'The trial or subscription has ended. Open billing to subscribe.',

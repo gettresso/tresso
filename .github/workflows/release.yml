@@ -27,7 +27,7 @@ concurrency:
 
 env:
   # The release talks to the hosted Tresso until the user picks their own server at sign-in.
-  VITE_API_URL: https://api.tresso.app
+  VITE_API_URL: https://api.gettresso.com
   VITE_OAUTH_CLIENT_ID: web
   VITE_DESKTOP_OAUTH_CLIENT_ID: desktop
   VITE_NATIVE_REDIRECT_URI: tresso://auth/callback
