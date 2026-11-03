@@ -17,6 +17,7 @@ const billing = useBillingStore()
       <RouterLink :to="{ name: 'settings-batches' }" class="item">Batched delivery</RouterLink>
       <RouterLink :to="{ name: 'settings-brief' }" class="item">Daily brief</RouterLink>
       <RouterLink :to="{ name: 'settings-calendar' }" class="item">Calendar</RouterLink>
+      <RouterLink :to="{ name: 'settings-access-tokens' }" class="item">Access tokens</RouterLink>
       <RouterLink v-if="isDesktop" :to="{ name: 'settings-updates' }" class="item">Updates</RouterLink>
       <RouterLink v-if="billing.status?.enabled" :to="{ name: 'settings-billing' }" class="item">Subscription</RouterLink>
     </nav>
