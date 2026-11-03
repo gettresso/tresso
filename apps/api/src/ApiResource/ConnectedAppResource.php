@@ -42,6 +42,7 @@ use App\State\ConnectedAppProvider;
 final class ConnectedAppResource
 {
     /**
+     * @param list<string> $domains
      * @param list<string> $scopes
      */
     public function __construct(
@@ -49,8 +50,13 @@ final class ConnectedAppResource
         public string $id,
         /** The name the app gave itself; not checked by anyone. */
         public string $name,
-        /** Where the app sends the user back to, which is checked: the host, `localhost`, or `scheme://host`. */
-        public string $domain,
+        /**
+         * Every place the app may send the user back to, which is what is checked: hosts, a loopback host for an app on
+         * this computer, or an app's reverse-domain scheme.
+         *
+         * @var list<string>
+         */
+        public array $domains,
         public array $scopes,
         /** When the user first allowed the app. */
         public \DateTimeImmutable $connectedAt,
@@ -61,12 +67,10 @@ final class ConnectedAppResource
 
     public static function fromEntity(OAuthConsent $consent): self
     {
-        $redirectUri = $consent->getClient()->getRedirectUris()[0] ?? null;
-
         return new self(
             $consent->getId()->toRfc4122(),
             $consent->getClient()->getName(),
-            null === $redirectUri ? '' : AppAddress::of((string) $redirectUri)->domain,
+            AppAddress::domainsOf($consent->getClient()->getRedirectUris()),
             $consent->getScopes(),
             $consent->getCreatedAt(),
             $consent->getLastUsedAt(),

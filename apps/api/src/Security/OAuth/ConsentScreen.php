@@ -4,15 +4,12 @@ declare(strict_types=1);
 
 namespace App\Security\OAuth;
 
-use App\Entity\OAuthConsent;
 use App\Entity\User;
 use App\Repository\OAuthConsentRepository;
 use App\Security\Scope;
-use Doctrine\ORM\EntityManagerInterface;
 use League\Bundle\OAuth2ServerBundle\Event\AuthorizationRequestResolveEvent;
 use League\Bundle\OAuth2ServerBundle\Model\Client;
 use League\OAuth2\Server\Exception\OAuthServerException;
-use Psr\Clock\ClockInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpFoundation\Response;
@@ -24,7 +21,7 @@ use Twig\Environment;
  * Asks the signed-in user whether an app that is not ours may act for them, on /oauth/authorize.
  *
  * The page posts the answer back to the same URL (so the bundle checks the whole authorization request again), with a
- * CSRF token. Allowing records the scopes ({@see OAuthConsent}); the next request that asks for no more than those is
+ * CSRF token. Allowing records the scopes ({@see Consents}); the next request that asks for no more than those is
  * approved without the page. Denying sends the app `access_denied`.
  *
  * Before anything is shown, the request must only ask for scopes such an app may have, and a `resource` (RFC 8707)
@@ -39,12 +36,11 @@ final readonly class ConsentScreen
 
     public function __construct(
         private RequestStack $requests,
-        private OAuthConsentRepository $consents,
-        private EntityManagerInterface $entityManager,
+        private OAuthConsentRepository $consentRepository,
+        private Consents $consents,
         private CsrfTokenManagerInterface $csrfTokens,
         private Environment $twig,
         private ProtectedResources $resources,
-        private ClockInterface $clock,
     ) {
     }
 
@@ -66,7 +62,7 @@ final readonly class ConsentScreen
         $this->checkScopes($event, $client, $scopes);
         $this->checkResource($event, $client, $request);
 
-        $consent = $this->consents->findOneFor($user, $client->getIdentifier());
+        $consent = $this->consentRepository->findOneFor($user, $client->getIdentifier());
         if (null !== $consent && $consent->covers($scopes)) {
             $event->resolveAuthorization(AuthorizationRequestResolveEvent::AUTHORIZATION_APPROVED);
 
@@ -87,7 +83,7 @@ final readonly class ConsentScreen
         }
 
         match ($request->request->getString('decision')) {
-            self::ALLOW => $this->allow($event, $consent, $user, $client, $scopes),
+            self::ALLOW => $this->allow($event, $user, $client, $scopes),
             self::DENY => $event->resolveAuthorization(AuthorizationRequestResolveEvent::AUTHORIZATION_DENIED),
             default => $event->setResponse($this->page($event, $client, $user, $scopes, 'Choose Allow or Deny.')),
         };
@@ -96,14 +92,9 @@ final readonly class ConsentScreen
     /**
      * @param list<string> $scopes
      */
-    private function allow(AuthorizationRequestResolveEvent $event, ?OAuthConsent $consent, User $user, Client $client, array $scopes): void
+    private function allow(AuthorizationRequestResolveEvent $event, User $user, Client $client, array $scopes): void
     {
-        if (null === $consent) {
-            $this->entityManager->persist(new OAuthConsent($user, $client, $scopes, $this->clock->now()));
-        } else {
-            $consent->allow($scopes);
-        }
-        $this->entityManager->flush();
+        $this->consents->allow($user, $client, $scopes);
         // One answer per page: a second post of the same page needs a new token.
         $this->csrfTokens->refreshToken(self::CSRF_TOKEN_ID);
 

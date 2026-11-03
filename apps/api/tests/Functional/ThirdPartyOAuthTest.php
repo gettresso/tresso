@@ -4,14 +4,21 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
+use App\Controller\ClientRegistrationController;
+use App\Entity\User;
+use App\Repository\UserRepository;
+use App\Security\OAuth\Consents;
 use App\Security\OAuth\ProtectedResources;
 use App\Security\OAuth\PurgeUnusedRegisteredClients;
 use App\Security\OAuth\PurgeUnusedRegisteredClientsHandler;
 use Doctrine\DBAL\ArrayParameterType;
+use League\Bundle\OAuth2ServerBundle\Manager\ClientManagerInterface;
+use League\Bundle\OAuth2ServerBundle\Model\Client;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\DomCrawler\Crawler;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * Apps that are not ours (such as MCP clients): they find this server through its metadata, register themselves,
@@ -20,6 +27,7 @@ use Symfony\Component\DomCrawler\Crawler;
 final class ThirdPartyOAuthTest extends DatabaseTestCase
 {
     use AuthenticatesUsers;
+    use ConnectsThirdPartyApps;
 
     private const string REDIRECT = 'http://127.0.0.1:33418/callback';
     private const array THIRD_PARTY_SCOPES = [
@@ -33,10 +41,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $this->bootstrapOAuthClients();
         $this->createUser('kim@example.test', 'Kim Visser');
         $this->createUser('lisa@example.test', 'Lisa Bakker');
-        // Limits are kept between runs; every test starts with none used.
-        foreach (['127.0.0.1', '203.0.113.7', '203.0.113.8'] as $address) {
-            static::getContainer()->get('limiter.oauth_client_registration')->create($address)->reset();
-        }
+        $this->resetRegistrationLimits('203.0.113.7', '203.0.113.8', '203.0.113.9', '2001:db8:1:2::1');
     }
 
     public function testTheAuthorizationServerDescribesItself(): void
@@ -144,7 +149,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
 
     public function testRegistrationDefaultsToEveryThirdPartyScopeAndBothGrants(): void
     {
-        $registered = $this->register(['client_name' => 'Cursor', 'redirect_uris' => ['cursor://anysphere.cursor-mcp/oauth/callback']]);
+        $registered = $this->register(['client_name' => 'Claude', 'redirect_uris' => ['https://claude.example/api/mcp/auth_callback']]);
 
         self::assertSame(implode(' ', self::THIRD_PARTY_SCOPES), $registered['scope'] ?? null);
         self::assertSame(['authorization_code', 'refresh_token'], $registered['grant_types'] ?? null);
@@ -185,8 +190,20 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'a wildcard' => [$uris('https://*.app.example/callback'), 'invalid_redirect_uri'];
         yield 'credentials in the URI' => [$uris('https://user:pass@app.example/callback'), 'invalid_redirect_uri'];
         yield 'a one-word app scheme' => [$uris('myapp://callback'), 'invalid_redirect_uri'];
+        yield 'a one-word scheme with a dotted host' => [$uris('cursor://anysphere.cursor-mcp/oauth/callback'), 'invalid_redirect_uri'];
+        yield 'a file share' => [$uris('smb://attacker.example/share'), 'invalid_redirect_uri'];
+        yield 'a Windows handler' => [$uris('ms-msdt://a.b/x'), 'invalid_redirect_uri'];
         yield 'a scheme the browser runs' => [$uris('javascript://example.com/%0Aalert(1)'), 'invalid_redirect_uri'];
+        yield 'a data URI' => [$uris('data:text/html,<script>alert(1)</script>'), 'invalid_redirect_uri'];
+        yield 'a file URI' => [$uris('file:///etc/passwd'), 'invalid_redirect_uri'];
         yield 'our own apps\' scheme' => [$uris('tresso://auth.example/callback'), 'invalid_redirect_uri'];
+        yield 'our mobile app\'s scheme' => [$uris('app.tresso.mobile:/callback'), 'invalid_redirect_uri'];
+        yield 'a Tresso domain as a scheme' => [$uris('tresso.app:/cb'), 'invalid_redirect_uri'];
+        yield 'a Tresso domain reversed' => [$uris('com.gettresso:/cb'), 'invalid_redirect_uri'];
+        yield 'a Tresso host' => [$uris('https://api.tresso.app/cb'), 'invalid_redirect_uri'];
+        yield 'a host in another script' => [$uris('https://tréssо.app/cb'), 'invalid_redirect_uri'];
+        yield 'a backslash in the host' => [$uris('https://evil.com\\.tresso.app/cb'), 'invalid_redirect_uri'];
+        yield 'a percent sign in the host' => [$uris('https://tresso.app%40evil.com/cb'), 'invalid_redirect_uri'];
         yield 'a relative URI' => [$uris('/callback'), 'invalid_redirect_uri'];
         yield 'one of them bad' => [$uris(self::REDIRECT, 'http://app.example/callback'), 'invalid_redirect_uri'];
         yield 'no redirect URIs' => [$uris(), 'invalid_redirect_uri'];
@@ -204,7 +221,11 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'no name' => [['client_name' => null], 'invalid_client_metadata'];
         yield 'a blank name' => [['client_name' => '   '], 'invalid_client_metadata'];
         yield 'a name too long' => [['client_name' => str_repeat('a', 101)], 'invalid_client_metadata'];
-        yield 'a name with a line break' => [['client_name' => "Tresso\nOfficial"], 'invalid_client_metadata'];
+        yield 'a name with a line break' => [['client_name' => "Mail\nHelper"], 'invalid_client_metadata'];
+        yield 'a name that reverses text' => [['client_name' => "Mail \u{202E}repleH"], 'invalid_client_metadata'];
+        yield 'a name that says Tresso' => [['client_name' => 'Tresso'], 'invalid_client_metadata'];
+        yield 'a name with Tresso in it' => [['client_name' => 'Official TRESSO helper'], 'invalid_client_metadata'];
+        yield 'a name with Tresso in look-alike letters' => [['client_name' => 'Тrеssо'], 'invalid_client_metadata'];
     }
 
     public function testRefusesABodyThatIsNotJson(): void
@@ -213,6 +234,34 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
 
         self::assertResponseStatusCodeSame(400);
         self::assertSame('invalid_client_metadata', $this->decodedResponse()['error'] ?? null);
+    }
+
+    public function testIpv6AddressesAreLimitedPerNetwork(): void
+    {
+        for ($i = 1; $i <= 60; ++$i) {
+            $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'App '.$i, 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => '2001:db8:1:2::'.dechex($i)]);
+            self::assertResponseStatusCodeSame(201, 'Registration '.$i);
+        }
+
+        $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'Same network', 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => '2001:db8:1:2:ffff:ffff:ffff:ffff']);
+        self::assertResponseStatusCodeSame(429, 'Another address in the same /64 shares the limit.');
+        self::assertSame('2001:db8:1:2::/64', ClientRegistrationController::limitKey('2001:db8:1:2:aaaa::1'));
+        self::assertSame('203.0.113.7', ClientRegistrationController::limitKey('203.0.113.7'));
+    }
+
+    public function testRegistrationIsLimitedInTotal(): void
+    {
+        // In tests the total is 70 an hour (1000 elsewhere).
+        foreach (['203.0.113.7' => 60, '203.0.113.8' => 10] as $address => $count) {
+            for ($i = 1; $i <= $count; ++$i) {
+                $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'App', 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => $address]);
+                self::assertResponseStatusCodeSame(201);
+            }
+        }
+
+        $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'App', 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => '203.0.113.9']);
+        self::assertResponseStatusCodeSame(429);
+        self::assertSame('temporarily_unavailable', $this->decodedResponse()['error'] ?? null);
     }
 
     public function testRegistrationIsLimitedPerAddress(): void
@@ -347,19 +396,95 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
     }
 
-    public function testScopesTheAppMayNotHaveAreRefusedBeforeTheUserIsAsked(): void
+    public function testErrorsBeforeTheUserAllowedTheAppStayOnAPageOfOurOwn(): void
     {
         $clientId = $this->registeredClientId(['scope' => 'mail:read']);
         $this->signIn('kim@example.test');
 
-        foreach (['mail:send' => 'not registered', 'teams:read' => 'reserved', 'sync:credentials' => 'a sync scope'] as $scope => $case) {
+        foreach (['mail:send' => 'not registered', 'teams:read' => 'reserved', 'sync:credentials' => 'a sync scope', 'nonsense' => 'unknown to the server'] as $scope => $case) {
             $this->authorize($clientId, [$scope], $this->verifier(), 'state-4');
 
-            self::assertResponseRedirects(null, null, $case);
-            parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
-            self::assertSame('invalid_scope', $query['error'] ?? null, $case);
-            self::assertSame('state-4', $query['state'] ?? null, $case);
+            self::assertResponseStatusCodeSame(400, $case);
+            self::assertFalse($this->client->getResponse()->headers->has('Location'), $case.': the browser is not sent to the app.');
+            self::assertSelectorTextContains('h1', 'This request cannot be completed');
+            self::assertSelectorTextContains('code', 'invalid_scope');
+            self::assertResponseHeaderSame('X-Frame-Options', 'DENY');
         }
+
+        $this->authorize($clientId, ['mail:read'], $this->verifier(), 'state-5', ['resource' => 'https://evil.example/mcp']);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSelectorTextContains('code', 'invalid_target');
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+    }
+
+    public function testOnceAllowedTheAppGetsItsErrorsByRedirect(): void
+    {
+        $clientId = $this->registeredClientId(['scope' => 'mail:read']);
+        $this->connect('kim@example.test', $clientId, ['mail:read']);
+        $this->signIn('kim@example.test');
+
+        $this->authorize($clientId, ['mail:send'], $this->verifier(), 'state-4');
+
+        self::assertResponseRedirects();
+        parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
+        self::assertSame('invalid_scope', $query['error'] ?? null);
+        self::assertSame('state-4', $query['state'] ?? null);
+    }
+
+    public function testAnUnregisteredRedirectUriIsNeverUsed(): void
+    {
+        $clientId = $this->registeredClientId();
+        $this->signIn('kim@example.test');
+
+        $this->client->request('GET', '/oauth/authorize?'.http_build_query([
+            'response_type' => 'code', 'client_id' => $clientId, 'redirect_uri' => 'https://evil.example/cb', 'scope' => 'mail:read',
+            'state' => 's', 'code_challenge' => $this->challenge($this->verifier()), 'code_challenge_method' => 'S256',
+        ]));
+
+        self::assertResponseStatusCodeSame(401);
+        self::assertSame('invalid_client', $this->decodedResponse()['error'] ?? null);
+        self::assertFalse($this->client->getResponse()->headers->has('Location'));
+    }
+
+    /**
+     * RFC 8252 7.3: on the loopback addresses the port is chosen when the app starts, so any port matches. `localhost`
+     * is a name, not a loopback address, and must match exactly, port included (the bundle's own rule).
+     */
+    public function testOnlyLoopbackAddressesMayChangeTheirPort(): void
+    {
+        $clientId = $this->registeredClientId(['redirect_uris' => ['http://127.0.0.1:1000/cb', 'http://[::1]:1000/cb', 'http://localhost:6274/cb']]);
+        $this->signIn('kim@example.test');
+        $request = fn (string $redirectUri) => $this->client->request('GET', '/oauth/authorize?'.http_build_query([
+            'response_type' => 'code', 'client_id' => $clientId, 'redirect_uri' => $redirectUri, 'scope' => 'mail:read',
+            'state' => 's', 'code_challenge' => $this->challenge($this->verifier()), 'code_challenge_method' => 'S256',
+        ]));
+
+        foreach (['http://127.0.0.1:52813/cb', 'http://[::1]:52813/cb', 'http://localhost:6274/cb'] as $allowed) {
+            $request($allowed);
+            self::assertResponseIsSuccessful($allowed);
+            self::assertSelectorExists('form.decision');
+        }
+
+        $request('http://localhost:9999/cb');
+        self::assertResponseStatusCodeSame(401);
+        self::assertSame('invalid_client', $this->decodedResponse()['error'] ?? null);
+    }
+
+    public function testTheConsentScreenShowsTheNameAsTextAndTheHostInLowerCase(): void
+    {
+        $clientId = $this->registeredClientId(['client_name' => '<img src=x onerror=alert(1)> Helper', 'redirect_uris' => ['https://Claude.Example/cb']]);
+        $this->signIn('kim@example.test');
+
+        $this->client->request('GET', '/oauth/authorize?'.http_build_query([
+            'response_type' => 'code', 'client_id' => $clientId, 'redirect_uri' => 'https://Claude.Example/cb', 'scope' => 'mail:read',
+            'state' => 's', 'code_challenge' => $this->challenge($this->verifier()), 'code_challenge_method' => 'S256',
+        ]));
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorNotExists('img');
+        self::assertSelectorTextContains('h1', 'Allow <img src=x onerror=alert(1)> Helper?');
+        self::assertStringContainsString('&lt;img src=x onerror=alert(1)&gt;', (string) $this->client->getResponse()->getContent());
+        self::assertSelectorTextSame('.address-domain', 'claude.example');
     }
 
     public function testTheResourceParameterMustNameWhatThisServerProtects(): void
@@ -435,15 +560,87 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $apps = $this->decodedResponse();
         self::assertCount(1, $apps);
         self::assertIsArray($apps[0]);
-        self::assertSame(['id', 'name', 'domain', 'scopes', 'connectedAt', 'lastUsedAt'], array_keys($apps[0]));
+        self::assertSame(['id', 'name', 'domains', 'scopes', 'connectedAt', 'lastUsedAt'], array_keys($apps[0]));
         self::assertSame('MCP Inspector', $apps[0]['name']);
-        self::assertSame('127.0.0.1', $apps[0]['domain']);
+        self::assertSame(['127.0.0.1'], $apps[0]['domains']);
         self::assertSame(['signatures:read', 'mail:read'], $apps[0]['scopes']);
         self::assertIsString($apps[0]['connectedAt']);
         self::assertIsString($apps[0]['lastUsedAt']);
 
         $this->client->request('GET', '/api/v1/connected-apps', server: $this->userHeaders('lisa@example.test', ['settings:read']));
         self::assertSame([], $this->decodedResponse());
+    }
+
+    public function testConnectedAppsListEveryPlaceTheAppSendsPeople(): void
+    {
+        $clientId = $this->registeredClientId(['redirect_uris' => [self::REDIRECT, 'https://claude.example/a', 'https://claude.example/b', 'https://other.example/cb', 'com.example.app:/cb']]);
+        $this->connect('kim@example.test', $clientId, ['mail:read']);
+
+        $this->client->request('GET', '/api/v1/connected-apps', server: $this->userHeaders('kim@example.test', ['settings:read']));
+
+        $first = $this->decodedResponse()[0] ?? null;
+        self::assertIsArray($first);
+        self::assertSame(['127.0.0.1', 'claude.example', 'other.example', 'com.example.app'], $first['domains'] ?? null);
+    }
+
+    public function testAPersonalAccessTokenCannotSeeOrDisconnectConnectedApps(): void
+    {
+        $clientId = $this->registeredClientId();
+        $this->connect('kim@example.test', $clientId, ['mail:read']);
+        $consentId = $this->connection()->fetchOne('SELECT id FROM oauth_consent');
+        self::assertIsString($consentId);
+        $pat = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read', 'settings:write']);
+
+        $this->client->request('GET', '/api/v1/connected-apps', server: $pat);
+        self::assertResponseStatusCodeSame(403);
+        $this->client->request('DELETE', '/api/v1/connected-apps/'.$consentId, server: $pat);
+        self::assertResponseStatusCodeSame(403);
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+    }
+
+    public function testNoTokenWithoutAConsentEvenForAnOldRefreshTokenOrCode(): void
+    {
+        $clientId = $this->registeredClientId();
+        $token = $this->connect('kim@example.test', $clientId, ['signatures:read']);
+        $this->signIn('kim@example.test');
+        $verifier = $this->verifier();
+        $this->authorize($clientId, ['signatures:read'], $verifier, 'code');
+        parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
+        $code = $query['code'] ?? null;
+        self::assertIsString($code);
+
+        // As if disconnecting raced with these requests: the consent is gone, the tokens were not revoked yet.
+        $this->connection()->executeStatement('DELETE FROM oauth_consent');
+
+        $this->refresh($clientId, $token['refresh_token']);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_grant', $this->decodedResponse()['error'] ?? null);
+
+        $this->client->request('POST', '/oauth/token', ['grant_type' => 'authorization_code', 'client_id' => $clientId, 'redirect_uri' => self::REDIRECT, 'code' => $code, 'code_verifier' => $verifier]);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_grant', $this->decodedResponse()['error'] ?? null);
+    }
+
+    public function testAllowingTwiceAtOnceKeepsOneConsentWithEveryScope(): void
+    {
+        $clientId = $this->registeredClientId();
+        $user = static::getContainer()->get(UserRepository::class)->findOneBy(['email' => 'kim@example.test']);
+        self::assertInstanceOf(User::class, $user);
+        $client = static::getContainer()->get(ClientManagerInterface::class)->find($clientId);
+        self::assertInstanceOf(Client::class, $client);
+        // The other answer was saved after this one looked and found nothing.
+        $this->connection()->executeStatement(
+            "INSERT INTO oauth_consent (id, user_id, client_id, scopes, created_at) VALUES (:id, :user, :client, '[\"mail:read\"]', NOW())",
+            ['id' => Uuid::v7()->toRfc4122(), 'user' => $user->getId()->toRfc4122(), 'client' => $clientId],
+        );
+
+        $consent = static::getContainer()->get(Consents::class)->allow($user, $client, ['todos:read']);
+
+        self::assertSame(['mail:read', 'todos:read'], $consent->getScopes());
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+        $scopes = $this->connection()->fetchOne('SELECT scopes FROM oauth_consent');
+        self::assertIsString($scopes);
+        self::assertSame(['mail:read', 'todos:read'], json_decode($scopes, true));
     }
 
     public function testDisconnectingRevokesTheAppsTokens(): void
@@ -525,14 +722,22 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $usedLongAgo = $this->registeredClientId();
         $this->connect('kim@example.test', $usedLongAgo, ['mail:read']);
         $unused = $this->registeredClientId();
-        $this->connection()->executeStatement("UPDATE registered_client SET created_at = NOW() - INTERVAL '31 days' WHERE client_id IN (:ids)", ['ids' => [$usedLongAgo, $unused]], ['ids' => ArrayParameterType::STRING]);
+        // Allowed, but the app never fetched its token.
+        $allowedOnly = $this->registeredClientId();
+        $this->signIn('kim@example.test');
+        $this->answer($this->authorize($allowedOnly, ['mail:read'], $this->verifier(), 'allowed'), 'Allow', 'allowed');
+        $old = [$usedLongAgo, $unused, $allowedOnly];
+        $this->connection()->executeStatement("UPDATE registered_client SET created_at = NOW() - INTERVAL '31 days' WHERE client_id IN (:ids)", ['ids' => $old], ['ids' => ArrayParameterType::STRING]);
+        $firstParty = $this->connection()->fetchFirstColumn('SELECT identifier FROM oauth2_client WHERE identifier NOT IN (SELECT client_id FROM registered_client) ORDER BY identifier');
 
         $deleted = static::getContainer()->get(PurgeUnusedRegisteredClientsHandler::class)(new PurgeUnusedRegisteredClients());
 
         self::assertSame(1, $deleted);
-        self::assertEqualsCanonicalizing([$fresh, $usedLongAgo], $this->connection()->fetchFirstColumn('SELECT client_id FROM registered_client'));
+        self::assertEqualsCanonicalizing([$fresh, $usedLongAgo, $allowedOnly], $this->connection()->fetchFirstColumn('SELECT client_id FROM registered_client'));
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth2_client WHERE identifier = :id', ['id' => $unused]));
-        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+        self::assertSame(2, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+        self::assertSame(['desktop', 'mobile', 'sync-worker', 'web'], $firstParty);
+        self::assertSame($firstParty, $this->connection()->fetchFirstColumn('SELECT identifier FROM oauth2_client WHERE identifier NOT IN (SELECT client_id FROM registered_client) ORDER BY identifier'), 'Our own clients are never touched.');
     }
 
     /**
