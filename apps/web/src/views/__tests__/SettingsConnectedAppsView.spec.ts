@@ -15,7 +15,7 @@ function app(id: string, name: string, extra: Partial<ConnectedApp> = {}): Conne
   return {
     id,
     name,
-    domain: 'claude.ai',
+    domains: ['claude.ai'],
     scopes: ['mail:read', 'todos:read'],
     connectedAt: '2026-11-01T08:00:00+00:00',
     lastUsedAt: null,
@@ -33,7 +33,7 @@ describe('SettingsConnectedAppsView', () => {
     setActivePinia(createPinia())
     requests.length = 0
     failDelete = false
-    stored = [app('claude', 'Claude', { lastUsedAt: '2026-11-02T10:00:00+00:00' }), app('inspector', 'MCP Inspector', { domain: 'localhost', scopes: ['settings:read'] })]
+    stored = [app('claude', 'Claude', { lastUsedAt: '2026-11-02T10:00:00+00:00' }), app('inspector', 'MCP Inspector', { domains: ['localhost', 'com.example.inspector'], scopes: ['settings:read'] })]
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -63,7 +63,7 @@ describe('SettingsConnectedAppsView', () => {
     return wrapper
   }
 
-  it('lists the apps with their domain, permissions, since when and last use', async () => {
+  it('lists the apps with every domain, their permissions, since when and last use', async () => {
     const wrapper = await mountView()
 
     const rows = wrapper.findAll('.app')
@@ -73,7 +73,7 @@ describe('SettingsConnectedAppsView', () => {
     expect(rows[0]!.text()).toContain('Read mail, See todos')
     expect(rows[0]!.text()).toContain('Connected')
     expect(rows[0]!.text()).toContain('Last used')
-    expect(rows[1]!.text()).toContain('localhost')
+    expect(rows[1]!.text()).toContain('localhost, com.example.inspector')
     expect(rows[1]!.text()).toContain('See settings')
     expect(rows[1]!.text()).toContain('Never used')
   })
