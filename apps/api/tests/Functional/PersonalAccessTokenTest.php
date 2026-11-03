@@ -6,6 +6,15 @@ namespace App\Tests\Functional;
 
 use App\Security\PersonalAccessToken\PurgeOldPersonalAccessTokens;
 use App\Security\PersonalAccessToken\PurgeOldPersonalAccessTokensHandler;
+use App\Security\Scope;
+use League\Bundle\OAuth2ServerBundle\Event\AuthorizationRequestResolveEvent;
+use League\Bundle\OAuth2ServerBundle\Manager\ClientManagerInterface;
+use League\Bundle\OAuth2ServerBundle\Model\Client;
+use League\Bundle\OAuth2ServerBundle\OAuth2Events;
+use League\Bundle\OAuth2ServerBundle\OAuth2Grants;
+use League\Bundle\OAuth2ServerBundle\ValueObject\Grant;
+use League\Bundle\OAuth2ServerBundle\ValueObject\RedirectUri;
+use League\Bundle\OAuth2ServerBundle\ValueObject\Scope as OAuthScope;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\Console\Tester\CommandTester;
 
@@ -24,7 +33,8 @@ final class PersonalAccessTokenTest extends DatabaseTestCase
         $this->bootstrapOAuthClients();
         $this->createUser('kim@example.test', 'Kim Visser');
         $this->createUser('lisa@example.test', 'Lisa Bakker');
-        $this->kim = $this->userHeaders('kim@example.test', self::SETTINGS);
+        // Every user scope, as the web app asks for: a token can only get what the session has.
+        $this->kim = $this->userHeaders('kim@example.test', array_map(static fn (Scope $scope): string => $scope->value, Scope::userScopes()));
     }
 
     public function testCreateHandsOutTheSecretOnce(): void
@@ -35,6 +45,7 @@ final class PersonalAccessTokenTest extends DatabaseTestCase
         ], $this->kim);
 
         self::assertResponseStatusCodeSame(201);
+        $this->assertNotStored();
         $created = $this->decodedResponse();
         $secret = $created['token'] ?? null;
         self::assertIsString($secret);
@@ -57,6 +68,7 @@ final class PersonalAccessTokenTest extends DatabaseTestCase
 
         $this->client->request('GET', '/api/v1/personal-access-tokens', server: $this->kim);
         self::assertResponseIsSuccessful();
+        $this->assertNotStored();
         $content = (string) $this->client->getResponse()->getContent();
         self::assertStringNotContainsString($secret, $content);
         self::assertStringNotContainsString(hash('sha256', $secret), $content);
@@ -214,10 +226,70 @@ final class PersonalAccessTokenTest extends DatabaseTestCase
         yield 'long name' => [['name' => str_repeat('a', 81)], 'name'];
     }
 
+    public function testATokenGetsNoScopeTheSessionLacks(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Mailer', 'scopes' => ['settings:read', 'mail:send']], $this->userHeaders('kim@example.test', self::SETTINGS));
+
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['scopes[1]'], $this->violationPaths());
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM personal_access_token'));
+
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Mailer', 'scopes' => ['mail:send']], $this->userHeaders('kim@example.test', ['settings:write', 'mail:send']));
+        self::assertResponseStatusCodeSame(201, 'With mail:send in the session, the token may have it.');
+    }
+
+    public function testATokenGetsNoRealtimeToken(): void
+    {
+        $headers = $this->patHeaders($this->createToken(['mail:read']));
+        $this->client->request('GET', '/api/v1/mail-accounts', server: $this->patHeaders($this->createToken(['settings:read'])));
+        self::assertResponseIsSuccessful();
+
+        $this->client->request('GET', '/api/v1/realtime/token', server: $headers);
+
+        self::assertResponseStatusCodeSame(403);
+        self::assertStringNotContainsString('"token"', (string) $this->client->getResponse()->getContent());
+    }
+
+    public function testATokenNeverReachesTheSyncEndpoints(): void
+    {
+        $everything = array_map(static fn (Scope $scope): string => $scope->value, Scope::personalAccessTokenScopes());
+        $headers = $this->patHeaders($this->createToken($everything));
+
+        foreach (['/internal/sync/realtime-token', '/internal/sync/accounts/0190b4a0-0000-7000-8000-000000000000/credentials'] as $path) {
+            $this->client->request('GET', $path, server: $headers);
+            self::assertResponseStatusCodeSame(403, $path);
+        }
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'script', 'capacity' => 1], $headers);
+        self::assertResponseStatusCodeSame(403);
+    }
+
+    public function testOnlyOurOwnAppsManageTokens(): void
+    {
+        $worker = $this->workerHeaders('sync:lease');
+        $thirdParty = $this->thirdPartyHeaders('kim@example.test', self::SETTINGS);
+        $id = $this->tokenId($this->createToken(['mail:read']));
+
+        $this->client->request('GET', '/api/v1/mail-accounts', server: $thirdParty);
+        self::assertResponseIsSuccessful('The third-party token itself is valid.');
+
+        foreach (['sync worker' => $worker, 'third-party app' => $thirdParty] as $caller => $headers) {
+            $this->client->request('GET', '/api/v1/personal-access-tokens', server: $headers);
+            self::assertResponseStatusCodeSame(403, $caller);
+            $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Sneaky', 'scopes' => ['mail:read']], $headers);
+            self::assertResponseStatusCodeSame(403, $caller);
+            $this->client->request('DELETE', '/api/v1/personal-access-tokens/'.$id, server: $headers);
+            self::assertResponseStatusCodeSame(403, $caller);
+        }
+
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM personal_access_token WHERE revoked_at IS NULL'));
+    }
+
     public function testDeletingTheUserDeletesTheirTokens(): void
     {
-        $this->createToken(['signatures:read']);
-        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Lisa', 'scopes' => ['mail:read']], $this->userHeaders('lisa@example.test', self::SETTINGS));
+        $kimsToken = $this->createToken(['signatures:read']);
+        $this->client->request('GET', '/api/v1/signatures', server: $this->patHeaders($kimsToken));
+        self::assertResponseIsSuccessful();
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Lisa', 'scopes' => ['mail:read']], $this->userHeaders('lisa@example.test', [...self::SETTINGS, 'mail:read']));
         self::assertResponseStatusCodeSame(201);
 
         $tester = new CommandTester(new Application($this->client->getKernel())->find('app:users:delete'));
@@ -226,6 +298,9 @@ final class PersonalAccessTokenTest extends DatabaseTestCase
 
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM personal_access_token'), "Only Lisa's token is left.");
         self::assertSame(1, $this->countRows("SELECT COUNT(*) FROM personal_access_token t JOIN app_user u ON u.id = t.owner_id WHERE u.email = 'lisa@example.test'"));
+
+        $this->client->request('GET', '/api/v1/signatures', server: $this->patHeaders($kimsToken));
+        self::assertResponseStatusCodeSame(401);
     }
 
     public function testLastUseIsRecordedAtMostOnceAMinute(): void
@@ -295,6 +370,69 @@ final class PersonalAccessTokenTest extends DatabaseTestCase
         self::assertIsString($id);
 
         return $id;
+    }
+
+    private function assertNotStored(): void
+    {
+        $headers = $this->client->getResponse()->headers;
+        self::assertTrue($headers->hasCacheControlDirective('no-store'), (string) $headers->get('Cache-Control'));
+        self::assertTrue($headers->hasCacheControlDirective('private'));
+        self::assertSame('no-cache', $headers->get('Pragma'));
+    }
+
+    /**
+     * Signs the user in to a client that is not one of our own apps, approved as the planned consent screen would.
+     *
+     * @param list<non-empty-string> $scopes
+     *
+     * @return array<string, string>
+     */
+    private function thirdPartyHeaders(string $email, array $scopes): array
+    {
+        $redirectUri = 'https://third-party.example/callback';
+        $client = new Client('Third-party app', 'third-party', null);
+        $client->setGrants(new Grant(OAuth2Grants::AUTHORIZATION_CODE));
+        $client->setRedirectUris(new RedirectUri($redirectUri));
+        $client->setScopes(...array_map(static fn (string $scope): OAuthScope => new OAuthScope($scope), $scopes));
+        static::getContainer()->get(ClientManagerInterface::class)->save($client);
+        static::getContainer()->get('event_dispatcher')->addListener(
+            OAuth2Events::AUTHORIZATION_REQUEST_RESOLVE,
+            static function (AuthorizationRequestResolveEvent $event): void {
+                if ('third-party' === $event->getClient()->getIdentifier()) {
+                    $event->resolveAuthorization(true);
+                }
+            },
+            100,
+        );
+
+        $verifier = bin2hex(random_bytes(32));
+        $this->client->getCookieJar()->clear();
+        $crawler = $this->client->request('GET', '/login');
+        $this->client->submit($crawler->selectButton('Sign in')->form(['_username' => $email, '_password' => self::DEFAULT_PASSWORD]));
+        $this->client->request('GET', '/oauth/authorize?'.http_build_query([
+            'response_type' => 'code',
+            'client_id' => 'third-party',
+            'redirect_uri' => $redirectUri,
+            'scope' => implode(' ', $scopes),
+            'state' => 'test',
+            'code_challenge' => rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '='),
+            'code_challenge_method' => 'S256',
+        ]));
+        parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
+        $code = $query['code'] ?? null;
+        self::assertIsString($code, 'Authorization did not return a code.');
+
+        $this->client->request('POST', '/oauth/token', [
+            'grant_type' => 'authorization_code',
+            'client_id' => 'third-party',
+            'redirect_uri' => $redirectUri,
+            'code' => $code,
+            'code_verifier' => $verifier,
+        ]);
+        self::assertResponseIsSuccessful();
+        $this->client->getCookieJar()->clear();
+
+        return $this->patHeaders($this->responseString('access_token'));
     }
 
     /** @return array<mixed> */

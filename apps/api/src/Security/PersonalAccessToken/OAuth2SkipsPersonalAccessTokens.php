@@ -26,7 +26,7 @@ final readonly class OAuth2SkipsPersonalAccessTokens implements AuthenticatorInt
 
     public function supports(Request $request): ?bool
     {
-        if (PersonalAccessTokenAuthenticator::presentsPersonalAccessToken($request)) {
+        if (null !== PersonalAccessTokenAuthenticator::secretFrom($request)) {
             return false;
         }
 
