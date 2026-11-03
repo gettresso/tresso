@@ -47,4 +47,16 @@ final class ScopeTest extends TestCase
         ));
         self::assertCount(\count(Scope::cases()), [...Scope::userScopes(), ...Scope::syncScopes()]);
     }
+
+    public function testPersonalAccessTokensGetNoSyncOrReservedScopes(): void
+    {
+        $scopes = array_map(static fn (Scope $s): string => $s->value, Scope::personalAccessTokenScopes());
+
+        self::assertSame([], array_values(array_filter($scopes, static fn (string $scope): bool => str_starts_with($scope, 'sync:'))));
+        self::assertNotContains('teams:read', $scopes);
+        self::assertNotContains('teams:write', $scopes);
+        self::assertNotContains('webhooks:manage', $scopes);
+        self::assertContains('mail:read', $scopes);
+        self::assertContains('settings:write', $scopes);
+    }
 }

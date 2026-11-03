@@ -56,6 +56,20 @@ enum Scope: string
         return array_values(array_filter(self::cases(), static fn (self $scope): bool => !str_starts_with($scope->value, 'sync:')));
     }
 
+    /**
+     * What a personal access token may hold: the user scopes, without those reserved for features not built yet. Never
+     * a sync scope.
+     *
+     * @return list<self>
+     */
+    public static function personalAccessTokenScopes(): array
+    {
+        return array_values(array_filter(
+            self::userScopes(),
+            static fn (self $scope): bool => !\in_array($scope, [self::TeamsRead, self::TeamsWrite, self::WebhooksManage], true),
+        ));
+    }
+
     /** @return list<self> */
     public static function syncScopes(): array
     {
