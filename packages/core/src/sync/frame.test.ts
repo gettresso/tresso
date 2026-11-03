@@ -51,4 +51,12 @@ describe('signatureFrameDocument', () => {
     expect(signatureFrameDocument('<p>Kim</p>', { background: 'light' })).toContain('background:#fff')
     expect(dark).toContain('<body><p>Kim</p></body>')
   })
+
+  it('can leave the background to the screen around the frame', () => {
+    const dark = signatureFrameDocument('<p>Kim</p>', { background: 'dark', transparent: true })
+
+    expect(dark).toContain('<meta name="color-scheme" content="dark">')
+    expect(dark).toContain('background:transparent;color:#F3F4F6')
+    expect(dark).not.toContain('#1B1D22')
+  })
 })
