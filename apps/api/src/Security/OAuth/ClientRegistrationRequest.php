@@ -66,6 +66,9 @@ final readonly class ClientRegistrationRequest
         if (1 === preg_match('/[\p{Cc}\p{Cf}]/u', $name)) {
             throw ClientRegistrationRefused::metadata('client_name cannot contain control or formatting characters.');
         }
+        if (!TressoLookalikes::isLatin($name)) {
+            throw ClientRegistrationRefused::metadata('client_name must be written in Latin letters, digits and punctuation, so people read it as it is.');
+        }
         if ($tresso->namesTresso($name)) {
             throw ClientRegistrationRefused::metadata('client_name cannot name Tresso: only Tresso\'s own apps do.');
         }

@@ -8,6 +8,12 @@ framework:
             limit: 60
             interval: '1 hour'
             cache_pool: cache.rate_limiter_shared
+        # Per IPv6 /48 (a site), on top of the limit per /64.
+        oauth_client_registration_network:
+            policy: sliding_window
+            limit: 200
+            interval: '1 hour'
+            cache_pool: cache.rate_limiter_shared
         # All registrations together, whatever the address: a ceiling for someone with many addresses.
         oauth_client_registration_global:
             policy: sliding_window
@@ -29,7 +35,12 @@ when@prod: *redis_limits
 when@test:
     framework:
         rate_limiter:
-            # Low enough for a test to reach.
+            # Low enough for a test to reach, above the limit per sender (60).
+            oauth_client_registration_network:
+                policy: sliding_window
+                limit: 65
+                interval: '1 hour'
+                cache_pool: cache.rate_limiter_shared
             oauth_client_registration_global:
                 policy: sliding_window
                 limit: 70

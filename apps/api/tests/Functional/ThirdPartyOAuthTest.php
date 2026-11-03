@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
-use App\Controller\ClientRegistrationController;
 use App\Entity\User;
 use App\Repository\UserRepository;
 use App\Security\OAuth\Consents;
 use App\Security\OAuth\ProtectedResources;
 use App\Security\OAuth\PurgeUnusedRegisteredClients;
 use App\Security\OAuth\PurgeUnusedRegisteredClientsHandler;
+use App\Security\OAuth\RegistrationLimits;
 use Doctrine\DBAL\ArrayParameterType;
 use League\Bundle\OAuth2ServerBundle\Manager\ClientManagerInterface;
 use League\Bundle\OAuth2ServerBundle\Model\Client;
@@ -41,7 +41,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $this->bootstrapOAuthClients();
         $this->createUser('kim@example.test', 'Kim Visser');
         $this->createUser('lisa@example.test', 'Lisa Bakker');
-        $this->resetRegistrationLimits('203.0.113.7', '203.0.113.8', '203.0.113.9', '2001:db8:1:2::1');
+        $this->resetRegistrationLimits('203.0.113.7', '203.0.113.8', '203.0.113.9', '2001:db8:1:2::1', '2001:db8:1:3::1', '2001:db8:1:4::1', '2001:db8:2::1');
     }
 
     public function testTheAuthorizationServerDescribesItself(): void
@@ -156,6 +156,13 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertSame('none', $registered['token_endpoint_auth_method'] ?? null);
     }
 
+    public function testNamesThatOnlyLookCloseAreAccepted(): void
+    {
+        foreach (['Fortress Office', 'Trésorerie', 'Café Helper 2', 'Mail assistant (beta)'] as $name) {
+            self::assertSame($name, $this->register(['client_name' => $name, 'redirect_uris' => [self::REDIRECT]])['client_name'] ?? null);
+        }
+    }
+
     public function testAcceptsAReverseDomainScheme(): void
     {
         $registered = $this->register(['client_name' => 'Native app', 'redirect_uris' => ['com.example.app:/oauth2redirect']]);
@@ -204,6 +211,14 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'a host in another script' => [$uris('https://tréssо.app/cb'), 'invalid_redirect_uri'];
         yield 'a backslash in the host' => [$uris('https://evil.com\\.tresso.app/cb'), 'invalid_redirect_uri'];
         yield 'a percent sign in the host' => [$uris('https://tresso.app%40evil.com/cb'), 'invalid_redirect_uri'];
+        yield 'a Tresso label under another domain' => [$uris('https://tresso.app.evil.example/cb'), 'invalid_redirect_uri'];
+        yield 'Tresso inside a label' => [$uris('https://login-tresso.app/cb'), 'invalid_redirect_uri'];
+        yield 'a look-alike Tresso domain' => [$uris('https://gettresso.co/cb'), 'invalid_redirect_uri'];
+        yield 'an Apple system scheme' => [$uris('x-apple.systempreferences:/cb'), 'invalid_redirect_uri'];
+        yield 'a Windows system scheme' => [$uris('microsoft.windows.camera:/cb'), 'invalid_redirect_uri'];
+        yield 'an Apple app scheme' => [$uris('com.apple.mobilesafari:/cb'), 'invalid_redirect_uri'];
+        yield 'a Google app scheme' => [$uris('com.google.android.gm:/cb'), 'invalid_redirect_uri'];
+        yield 'an Android scheme' => [$uris('android.settings:/cb'), 'invalid_redirect_uri'];
         yield 'a relative URI' => [$uris('/callback'), 'invalid_redirect_uri'];
         yield 'one of them bad' => [$uris(self::REDIRECT, 'http://app.example/callback'), 'invalid_redirect_uri'];
         yield 'no redirect URIs' => [$uris(), 'invalid_redirect_uri'];
@@ -226,6 +241,13 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'a name that says Tresso' => [['client_name' => 'Tresso'], 'invalid_client_metadata'];
         yield 'a name with Tresso in it' => [['client_name' => 'Official TRESSO helper'], 'invalid_client_metadata'];
         yield 'a name with Tresso in look-alike letters' => [['client_name' => 'Тrеssо'], 'invalid_client_metadata'];
+        yield 'a name with Cyrillic s' => [['client_name' => 'Treѕѕo'], 'invalid_client_metadata'];
+        yield 'a name in mathematical bold' => [['client_name' => '𝐓𝐫𝐞𝐬𝐬𝐨'], 'invalid_client_metadata'];
+        yield 'a name with a Cherokee T' => [['client_name' => 'Ꭲresso'], 'invalid_client_metadata'];
+        yield 'a name with a zero for an o' => [['client_name' => 'Tress0'], 'invalid_client_metadata'];
+        yield 'a name with z for s' => [['client_name' => 'Trezzo'], 'invalid_client_metadata'];
+        yield 'a name with a long run' => [['client_name' => 'Tressso Mail'], 'invalid_client_metadata'];
+        yield 'a name in another script' => [['client_name' => 'Почта'], 'invalid_client_metadata'];
     }
 
     public function testRefusesABodyThatIsNotJson(): void
@@ -239,14 +261,39 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
     public function testIpv6AddressesAreLimitedPerNetwork(): void
     {
         for ($i = 1; $i <= 60; ++$i) {
-            $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'App '.$i, 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => '2001:db8:1:2::'.dechex($i)]);
+            $this->registerFrom('2001:db8:1:2::'.dechex($i));
             self::assertResponseStatusCodeSame(201, 'Registration '.$i);
         }
 
-        $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'Same network', 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => '2001:db8:1:2:ffff:ffff:ffff:ffff']);
+        $this->registerFrom('2001:db8:1:2:ffff:ffff:ffff:ffff');
         self::assertResponseStatusCodeSame(429, 'Another address in the same /64 shares the limit.');
-        self::assertSame('2001:db8:1:2::/64', ClientRegistrationController::limitKey('2001:db8:1:2:aaaa::1'));
-        self::assertSame('203.0.113.7', ClientRegistrationController::limitKey('203.0.113.7'));
+
+        // In tests a /48 may register 65 an hour (200 elsewhere).
+        for ($i = 1; $i <= 5; ++$i) {
+            $this->registerFrom('2001:db8:1:3::'.dechex($i));
+            self::assertResponseStatusCodeSame(201, 'Another /64 in the /48: registration '.$i);
+        }
+        $this->registerFrom('2001:db8:1:4::1');
+        self::assertResponseStatusCodeSame(429, 'The /48 is full.');
+
+        $this->registerFrom('2001:db8:2::1');
+        self::assertResponseStatusCodeSame(201, 'Another /48 has its own limit.');
+    }
+
+    public function testIpv4MappedAddressesCountAsIpv4(): void
+    {
+        for ($i = 1; $i <= 60; ++$i) {
+            $this->registerFrom('203.0.113.7');
+            self::assertResponseStatusCodeSame(201, 'Registration '.$i);
+        }
+
+        $this->registerFrom('::ffff:203.0.113.7');
+        self::assertResponseStatusCodeSame(429);
+
+        self::assertSame('203.0.113.7', RegistrationLimits::senderKey('::ffff:203.0.113.7'));
+        self::assertNull(RegistrationLimits::networkKey('::ffff:203.0.113.7'));
+        self::assertSame('2001:db8:1:2::/64', RegistrationLimits::senderKey('2001:db8:1:2:aaaa::1'));
+        self::assertSame('2001:db8:1::/48', RegistrationLimits::networkKey('2001:db8:1:2:aaaa::1'));
     }
 
     public function testRegistrationIsLimitedInTotal(): void
@@ -408,8 +455,14 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
             self::assertFalse($this->client->getResponse()->headers->has('Location'), $case.': the browser is not sent to the app.');
             self::assertSelectorTextContains('h1', 'This request cannot be completed');
             self::assertSelectorTextContains('code', 'invalid_scope');
+            self::assertSelectorTextContains('.error', 'The app asked for permissions it cannot have.');
+            self::assertStringNotContainsString($scope, (string) $this->client->getResponse()->getContent(), $case.': nothing from the request is shown.');
             self::assertResponseHeaderSame('X-Frame-Options', 'DENY');
         }
+
+        $this->authorize($clientId, ['Your-account-is-locked.Call-0800-SCAM'], $this->verifier(), 'state-6');
+        self::assertResponseStatusCodeSame(400);
+        self::assertStringNotContainsString('SCAM', (string) $this->client->getResponse()->getContent());
 
         $this->authorize($clientId, ['mail:read'], $this->verifier(), 'state-5', ['resource' => 'https://evil.example/mcp']);
         self::assertResponseStatusCodeSame(400);
@@ -738,6 +791,11 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertSame(2, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
         self::assertSame(['desktop', 'mobile', 'sync-worker', 'web'], $firstParty);
         self::assertSame($firstParty, $this->connection()->fetchFirstColumn('SELECT identifier FROM oauth2_client WHERE identifier NOT IN (SELECT client_id FROM registered_client) ORDER BY identifier'), 'Our own clients are never touched.');
+    }
+
+    private function registerFrom(string $address): void
+    {
+        $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'App', 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => $address]);
     }
 
     /**

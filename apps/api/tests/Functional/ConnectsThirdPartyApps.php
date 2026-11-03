@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
-use App\Controller\ClientRegistrationController;
+use App\Security\OAuth\RegistrationLimits;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 
 /**
@@ -68,11 +68,7 @@ trait ConnectsThirdPartyApps
      */
     protected function resetRegistrationLimits(string ...$addresses): void
     {
-        $container = static::getContainer();
-        foreach (['127.0.0.1', ...$addresses] as $address) {
-            $container->get('limiter.oauth_client_registration')->create(ClientRegistrationController::limitKey($address))->reset();
-        }
-        $container->get('limiter.oauth_client_registration_global')->create('all')->reset();
+        static::getContainer()->get(RegistrationLimits::class)->reset('127.0.0.1', ...$addresses);
     }
 
     /**
