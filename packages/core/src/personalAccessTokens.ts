@@ -49,7 +49,7 @@ export const PERSONAL_ACCESS_TOKEN_SCOPES: readonly PersonalAccessTokenScope[] =
   { value: 'todos:read', label: 'See todos', description: 'See your todos and when they are planned.' },
   { value: 'todos:write', label: 'Change todos', description: 'Add, complete, change and delete todos.' },
   { value: 'calendar:read', label: 'See calendar', description: 'See your calendars and events, with their guests.' },
-  { value: 'calendar:write', label: 'Change calendar', description: 'Add, change and delete events, and answer invitations.' },
+  { value: 'calendar:write', label: 'Change calendar', description: 'Add, change and delete events and set your answers. Telling guests or organizers also needs Send mail.' },
   { value: 'signatures:read', label: 'See signatures', description: 'See your email signatures.' },
   { value: 'signatures:write', label: 'Change signatures', description: 'Add, change and delete email signatures.' },
   { value: 'settings:read', label: 'See settings', description: 'See your mail accounts, smart inboxes and other settings.' },
