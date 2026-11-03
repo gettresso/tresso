@@ -5,8 +5,11 @@ export interface ConnectedApp {
   id: string
   /** The name the app gave itself; nobody checked it. */
   name: string
-  /** Where the app sends the user back to: a host, `localhost`, or `scheme://host` for an app's own scheme. */
-  domain: string
+  /**
+   * Every place the app may send the user back to, which is what is checked: hosts, a loopback host for an app on this
+   * computer, or an app's reverse-domain scheme.
+   */
+  domains: string[]
   scopes: string[]
   /** When the user first allowed the app. */
   connectedAt: string
