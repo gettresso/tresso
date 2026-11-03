@@ -42,12 +42,15 @@ final readonly class TressoLookalikes
         $this->ownScheme = strtolower((string) parse_url($nativeRedirectUri, \PHP_URL_SCHEME));
     }
 
-    /** A Tresso domain or a host under one, or any host with a label that has "tresso" in it. */
+    /**
+     * A Tresso domain or a host under one, or any host with a label that reads "tresso" somewhere, compared as a
+     * skeleton without hyphens: tress0.com, tre55o.com and tres-so.app count.
+     */
     public function isTressoHost(string $host): bool
     {
         $host = rtrim(strtolower($host), '.');
         foreach (explode('.', $host) as $label) {
-            if (str_contains($label, 'tresso')) {
+            if (str_contains(self::collapse((string) preg_replace('/[^\p{L}\p{N}]+/u', '', self::skeleton($label))), 'tresso')) {
                 return true;
             }
         }
@@ -69,12 +72,24 @@ final readonly class TressoLookalikes
     }
 
     /**
-     * Whether a name reads "Tresso": compared as a skeleton (compatibility forms such as 𝐓𝐫𝐞𝐬𝐬𝐨 folded, accents dropped,
+     * Whether a name reads "Tresso", compared as a skeleton (compatibility forms such as 𝐓𝐫𝐞𝐬𝐬𝐨 folded, accents dropped,
      * lower case, digits and letters that look alike merged, long runs shortened), so Tress0, Trezzo or Tréssø count.
+     * It counts inside a word (MyTresso), and across spaces, dots, hyphens and other separators when it starts a word
+     * (T r e s s o, Tres-so), but not when a word only ends on its first letters (Fortress Office).
      */
     public function namesTresso(string $name): bool
     {
-        return str_contains(self::skeleton($name), 'tresso');
+        $words = preg_split('/[^\p{L}\p{N}]+/u', self::skeleton($name), -1, \PREG_SPLIT_NO_EMPTY);
+        if (false === $words) {
+            return false;
+        }
+        foreach ($words as $index => $word) {
+            if (str_contains($word, 'tresso') || str_starts_with(self::collapse(implode('', \array_slice($words, $index))), 'tresso')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -94,15 +109,23 @@ final readonly class TressoLookalikes
         return \is_string($folded) ? $folded : $name;
     }
 
-    private static function skeleton(string $name): string
+    /** Lower-case ASCII with look-alikes merged; separators stay, so callers decide what spans words. */
+    private static function skeleton(string $text): string
     {
-        $ascii = transliterator_transliterate('Latin-ASCII; Lower()', self::fold($name));
-        $skeleton = strtr(false === $ascii ? mb_strtolower(self::fold($name)) : $ascii, [
+        // Latin letters that look like others but that Latin-ASCII keeps or drops.
+        $folded = strtr(self::fold($text), ['ƨ' => 's', 'Ƨ' => 's', 'ſ' => 's', 'ı' => 'l']);
+        $ascii = transliterator_transliterate('Latin-ASCII; Lower()', $folded);
+        $skeleton = strtr(false === $ascii ? mb_strtolower($folded) : $ascii, [
             '0' => 'o', '1' => 'l', 'i' => 'l', '|' => 'l', '!' => 'l', '3' => 'e', '4' => 'a', '@' => 'a',
             '5' => 's', '$' => 's', 'z' => 's', '2' => 's', '7' => 't', '+' => 't', '8' => 'b',
         ]);
 
-        // Three or more of the same letter read like two: Tressso.
-        return (string) preg_replace('/(.)\1{2,}/', '$1$1', $skeleton);
+        return self::collapse($skeleton);
+    }
+
+    /** Three or more of the same letter read like two: Tressso. */
+    private static function collapse(string $text): string
+    {
+        return (string) preg_replace('/(.)\1{2,}/u', '$1$1', $text);
     }
 }

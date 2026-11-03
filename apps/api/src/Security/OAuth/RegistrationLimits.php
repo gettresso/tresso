@@ -9,9 +9,10 @@ use Symfony\Component\RateLimiter\RateLimit;
 use Symfony\Component\RateLimiter\RateLimiterFactoryInterface;
 
 /**
- * How many clients may register: per sender, per IPv6 network and in total. A sender is an IPv4 address (also when it
+ * How many clients may register: per sender, per network and in total. A sender is an IPv4 address (also when it
  * arrives as an IPv4-mapped IPv6 address, `::ffff:a.b.c.d`) or an IPv6 /64, since one network usually gets a whole
- * /64; a /48 is what one site usually gets, so it has a limit of its own.
+ * /64. A network is an IPv4 /24 or an IPv6 /48 (what one site usually gets), so many addresses of one place cannot
+ * use up the total.
  */
 final readonly class RegistrationLimits
 {
@@ -62,12 +63,16 @@ final readonly class RegistrationLimits
         };
     }
 
-    /** The IPv6 /48 of the sender, or null for IPv4. */
+    /** The network of the sender: an IPv4 /24 or an IPv6 /48; null when it is no IP address. */
     public static function networkKey(?string $ip): ?string
     {
         $address = self::parse($ip);
 
-        return null === $address || 4 === \strlen($address) ? null : self::prefix($address, 6).'/48';
+        return match (true) {
+            null === $address => null,
+            4 === \strlen($address) => inet_ntop(substr($address, 0, 3)."\0").'/24',
+            default => self::prefix($address, 6).'/48',
+        };
     }
 
     /** @return list<\Symfony\Component\RateLimiter\LimiterInterface> */

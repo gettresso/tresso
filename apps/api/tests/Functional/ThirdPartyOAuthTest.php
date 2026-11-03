@@ -41,7 +41,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $this->bootstrapOAuthClients();
         $this->createUser('kim@example.test', 'Kim Visser');
         $this->createUser('lisa@example.test', 'Lisa Bakker');
-        $this->resetRegistrationLimits('203.0.113.7', '203.0.113.8', '203.0.113.9', '2001:db8:1:2::1', '2001:db8:1:3::1', '2001:db8:1:4::1', '2001:db8:2::1');
+        $this->resetRegistrationLimits('203.0.113.7', '203.0.113.8', '203.0.113.9', '198.51.100.1', '198.51.100.8', '192.0.2.9', '2001:db8:1:2::1', '2001:db8:1:3::1', '2001:db8:1:4::1', '2001:db8:2::1');
     }
 
     public function testTheAuthorizationServerDescribesItself(): void
@@ -158,7 +158,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
 
     public function testNamesThatOnlyLookCloseAreAccepted(): void
     {
-        foreach (['Fortress Office', 'Trésorerie', 'Café Helper 2', 'Mail assistant (beta)'] as $name) {
+        foreach (['Fortress Office', 'Trésorerie', 'Café Helper 2', 'Mail assistant (beta)', 'Mattress Organizer', 'Fortress-Office'] as $name) {
             self::assertSame($name, $this->register(['client_name' => $name, 'redirect_uris' => [self::REDIRECT]])['client_name'] ?? null);
         }
     }
@@ -214,6 +214,9 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'a Tresso label under another domain' => [$uris('https://tresso.app.evil.example/cb'), 'invalid_redirect_uri'];
         yield 'Tresso inside a label' => [$uris('https://login-tresso.app/cb'), 'invalid_redirect_uri'];
         yield 'a look-alike Tresso domain' => [$uris('https://gettresso.co/cb'), 'invalid_redirect_uri'];
+        yield 'a zero for an o in the host' => [$uris('https://tress0.com/cb'), 'invalid_redirect_uri'];
+        yield 'fives for s in the host' => [$uris('https://tre55o.com/cb'), 'invalid_redirect_uri'];
+        yield 'a hyphen inside Tresso in the host' => [$uris('https://tres-so.app/cb'), 'invalid_redirect_uri'];
         yield 'an Apple system scheme' => [$uris('x-apple.systempreferences:/cb'), 'invalid_redirect_uri'];
         yield 'a Windows system scheme' => [$uris('microsoft.windows.camera:/cb'), 'invalid_redirect_uri'];
         yield 'an Apple app scheme' => [$uris('com.apple.mobilesafari:/cb'), 'invalid_redirect_uri'];
@@ -248,6 +251,16 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'a name with z for s' => [['client_name' => 'Trezzo'], 'invalid_client_metadata'];
         yield 'a name with a long run' => [['client_name' => 'Tressso Mail'], 'invalid_client_metadata'];
         yield 'a name in another script' => [['client_name' => 'Почта'], 'invalid_client_metadata'];
+        yield 'a name with a hair space inside' => [['client_name' => "Tres\u{200A}so"], 'invalid_client_metadata'];
+        yield 'a name with a line separator inside' => [['client_name' => "Tres\u{2028}so"], 'invalid_client_metadata'];
+        yield 'a name with a no-break space inside' => [['client_name' => "Tres\u{00A0}so"], 'invalid_client_metadata'];
+        yield 'a name with no-break spaces only' => [['client_name' => "Mail\u{00A0}helper"], 'invalid_client_metadata'];
+        yield 'a name spelled out' => [['client_name' => 'T r e s s o'], 'invalid_client_metadata'];
+        yield 'a name with dots between the letters' => [['client_name' => 'T.r.e.s.s.o'], 'invalid_client_metadata'];
+        yield 'a name with a hyphen inside' => [['client_name' => 'Tres-so'], 'invalid_client_metadata'];
+        yield 'a name with an underscore inside' => [['client_name' => 'Tres_so'], 'invalid_client_metadata'];
+        yield 'a name with a tone letter for s' => [['client_name' => 'Tresƨo'], 'invalid_client_metadata'];
+        yield 'a name with Tresso inside a word' => [['client_name' => 'MyTresso'], 'invalid_client_metadata'];
     }
 
     public function testRefusesABodyThatIsNotJson(): void
@@ -291,24 +304,42 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(429);
 
         self::assertSame('203.0.113.7', RegistrationLimits::senderKey('::ffff:203.0.113.7'));
-        self::assertNull(RegistrationLimits::networkKey('::ffff:203.0.113.7'));
+        self::assertSame('203.0.113.0/24', RegistrationLimits::networkKey('::ffff:203.0.113.7'));
         self::assertSame('2001:db8:1:2::/64', RegistrationLimits::senderKey('2001:db8:1:2:aaaa::1'));
         self::assertSame('2001:db8:1::/48', RegistrationLimits::networkKey('2001:db8:1:2:aaaa::1'));
     }
 
     public function testRegistrationIsLimitedInTotal(): void
     {
-        // In tests the total is 70 an hour (1000 elsewhere).
-        foreach (['203.0.113.7' => 60, '203.0.113.8' => 10] as $address => $count) {
+        // In tests the total is 70 an hour (5000 elsewhere); addresses in different /24s.
+        foreach (['203.0.113.7' => 60, '198.51.100.8' => 10] as $address => $count) {
             for ($i = 1; $i <= $count; ++$i) {
                 $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'App', 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => $address]);
                 self::assertResponseStatusCodeSame(201);
             }
         }
 
-        $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'App', 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => '203.0.113.9']);
+        $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'App', 'redirect_uris' => [self::REDIRECT]], ['REMOTE_ADDR' => '192.0.2.9']);
         self::assertResponseStatusCodeSame(429);
         self::assertSame('temporarily_unavailable', $this->decodedResponse()['error'] ?? null);
+    }
+
+    public function testIpv4AddressesAreLimitedPerNetwork(): void
+    {
+        for ($i = 1; $i <= 60; ++$i) {
+            $this->registerFrom('203.0.113.7');
+        }
+        // In tests a /24 may register 65 an hour (200 elsewhere).
+        for ($i = 1; $i <= 5; ++$i) {
+            $this->registerFrom('203.0.113.8');
+            self::assertResponseStatusCodeSame(201, 'Another address in the /24: registration '.$i);
+        }
+
+        $this->registerFrom('203.0.113.9');
+        self::assertResponseStatusCodeSame(429, 'The /24 is full.');
+        $this->registerFrom('198.51.100.1');
+        self::assertResponseStatusCodeSame(201, 'Another /24 has its own limit.');
+        self::assertSame('203.0.113.0/24', RegistrationLimits::networkKey('203.0.113.200'));
     }
 
     public function testRegistrationIsLimitedPerAddress(): void
