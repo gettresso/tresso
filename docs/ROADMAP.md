@@ -167,8 +167,13 @@ Planned, on top of organizations: teams, shared inboxes, assignments, internal c
   hand-over notes, event notes and todos sealed, rotating the index key (renaming a user's objects), dropping
   `user.wrapped_data_key`, `message.snippet`, `message_text.text` and `mail_notification.body` once
   `app:crypto:reencrypt --status` reports nothing left everywhere
+- [x] 4.6 Personal access tokens for the API (`tresso_pat_...` as a Bearer token): made, listed and revoked only from
+  our own apps under Settings, Access tokens, with chosen scopes (never sync, teams or webhooks) and a lifetime of 30,
+  90 or 365 days; only a hash is stored, the last use is recorded once a minute, and revoked or expired tokens are
+  deleted after 30 days
 
-Planned: API keys and third-party apps, webhooks, MCP endpoint, developer tools, statistics, Year in mail.
+Planned: third-party apps (a consent screen and dynamic client registration), webhooks, MCP endpoint (accepting
+personal access tokens), developer tools, statistics, Year in mail.
 
 ## Phase 5: Tresso Cloud
 

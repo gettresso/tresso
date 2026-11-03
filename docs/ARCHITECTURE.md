@@ -110,12 +110,45 @@ Symfony is the single OAuth2 authorization server (`league/oauth2-server-bundle`
 |---|---|---|
 | Web, Desktop, Mobile | Authorization code + PKCE | Public clients, refresh token rotation |
 | Go sync workers | Client credentials | Confidential client, scopes `sync:lease sync:ingest sync:credentials` |
-Only first-party clients are approved automatically. Third-party apps, personal access tokens and MCP clients are
-planned (3.9).
+| Scripts and tools of a user | Personal access token | `tresso_pat_...` sent as a Bearer token, see below |
+
+Only first-party clients are approved automatically. Third-party apps and MCP clients are planned (3.9).
 
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
 `settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
 the planned features in 3.9.
+
+#### Personal access tokens
+
+A user makes a personal access token under Settings, Access tokens for their own scripts and tools, and sends it as
+`Authorization: Bearer tresso_pat_...` to the same API the apps use:
+
+```bash
+curl -H "Authorization: Bearer $TRESSO_TOKEN" https://tresso.example/api/v1/signatures
+```
+
+- **Secret.** `tresso_pat_` followed by 32 random bytes in base64url. The API returns it once, in the response to
+  `POST /api/v1/personal-access-tokens`; it stores only its SHA-256 (`personal_access_token.token_hash`, unique) and
+  the first characters (`prefix`, such as `tresso_pat_Xk3f9a`) so the user can tell tokens apart. The name is
+  plaintext like other names users write themselves (3.16).
+- **Scopes.** Chosen per token from the user scopes, without the reserved `teams:*` and `webhooks:manage`; never a
+  `sync:*` scope. Anything else is refused with 422.
+- **Lifetime.** 30, 90 (default) or 365 days, always with an end. Revoking sets `revoked_at`; revoked and expired
+  tokens stay in the list for 30 days, after which a nightly job deletes them. Deleting the user deletes their tokens
+  (foreign key cascade).
+- **Signing in.** `PersonalAccessTokenAuthenticator` on the `api` firewall takes bearer tokens that start with
+  `tresso_pat_`; every OAuth2 authenticator is wrapped so it leaves those alone, and still takes every other bearer
+  token. A known, unrevoked and unexpired token signs in its owner with the roles of its scopes, exactly as an OAuth2
+  access token with those scopes would (`ROLE_OAUTH2_<SCOPE>`), so `is_granted()` and `CurrentUser` work unchanged.
+  The security token is an `OAuth2Token` whose client id is `personal-access-token`, which is no OAuth2 client, so
+  it never counts as a first-party app or a sync worker. Anything else gets the same 401 as a rejected OAuth2 token.
+  The last use (`last_used_at`) is written at most once a minute per token. The authenticator is meant to be reused on
+  the planned `/mcp` firewall.
+- **Managing tokens.** `GET` and `POST /api/v1/personal-access-tokens` and `DELETE
+  /api/v1/personal-access-tokens/{id}` (revoke) need `settings:read` or `settings:write` and an access token of one of
+  our own apps (web, desktop, mobile: the `FIRST_PARTY_CLIENT` check), so a personal access token or, later, a
+  third-party app can never make, see or revoke tokens. Users only see their own tokens; another user's id is a 404.
+  The list never contains a secret or a hash.
 
 Users log in with email + password (Argon2id) and, later, Google / Microsoft sign-in as identity providers. (Signing
 in with Google or Microsoft to connect a mail account is separate: see Provider sign-in below.)
@@ -784,7 +817,8 @@ files attached to drafts (uploads, and files a forward or reply takes along).
 
 Not built yet, and coming to this repository like everything else: AI classification and summaries (with your own
 key or endpoint), teams on top of organizations (invites, assignments to teammates, internal comments, delegation
-rules), API keys and third-party apps, webhooks, the MCP endpoint, developer tools, statistics and Year in mail.
+rules), third-party apps (a consent screen and dynamic client registration), webhooks, the MCP endpoint (which will
+accept personal access tokens, 3.2), developer tools, statistics and Year in mail.
 
 ### 3.10 Clients
 
