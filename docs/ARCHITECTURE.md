@@ -111,8 +111,9 @@ Symfony is the single OAuth2 authorization server (`league/oauth2-server-bundle`
 | Web, Desktop, Mobile | Authorization code + PKCE | Public clients, refresh token rotation |
 | Go sync workers | Client credentials | Confidential client, scopes `sync:lease sync:ingest sync:credentials` |
 | Scripts and tools of a user | Personal access token | `tresso_pat_...` sent as a Bearer token, see below |
+| Third-party apps and MCP clients | Authorization code + PKCE (S256) | Register themselves, consent screen, see below |
 
-Only first-party clients are approved automatically. Third-party apps and MCP clients are planned (3.9).
+Only first-party clients are approved automatically; every other app goes through the consent screen.
 
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
 `settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
@@ -149,11 +150,59 @@ curl -H "Authorization: Bearer $TRESSO_TOKEN" https://tresso.example/api/v1/sign
   access tokens never reach `/internal/` either, since they cannot hold a `sync:*` scope.
 - **Managing tokens.** `GET` and `POST /api/v1/personal-access-tokens` and `DELETE
   /api/v1/personal-access-tokens/{id}` (revoke) need `settings:read` or `settings:write` and an access token of one of
-  our own apps (web, desktop, mobile: the `FIRST_PARTY_CLIENT` check), so a personal access token or, later, a
+  our own apps (web, desktop, mobile: the `FIRST_PARTY_CLIENT` check), so a personal access token or a
   third-party app can never make, see or revoke tokens. A token gets no scope the signed-in session lacks (422).
   Users only see their own tokens; another user's id is a 404. The list never contains a secret or a hash, and every
   response of these endpoints is sent with `Cache-Control: no-store, private` and `Pragma: no-cache`, like
   `/internal/`.
+
+#### Third-party apps and MCP clients
+
+Apps that are not ours, such as Claude, Claude Code, Cursor or the MCP Inspector, find this server, register
+themselves and sign in with the user's consent. `App\Security\OAuth` holds the pieces; everything is addressed from
+`API_PUBLIC_URL`, which is also the issuer.
+
+- **Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414): issuer, authorization, token and
+  registration endpoints, `scopes_supported` (only what such an app may ask for: the user scopes without `teams:*`,
+  `webhooks:manage` and `sync:*`, the same set as a personal access token), response type `code`, grants
+  `authorization_code` and `refresh_token`, PKCE `S256` and token endpoint authentication `none`. There is no
+  `/.well-known/openid-configuration`: this server issues no ID tokens. `GET /.well-known/oauth-protected-resource`
+  and `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728) describe the API and the MCP endpoint
+  (`<API_PUBLIC_URL>/mcp`) with this server as their authorization server. `ProtectedResources` gives the MCP
+  resource, its metadata URL and the `WWW-Authenticate: Bearer resource_metadata="..."` value the MCP endpoint sends
+  with a 401. These documents, registering and the token endpoint answer CORS requests from any origin (without
+  cookies), for clients that run in a browser; the API itself does not.
+- **Registering.** `POST /oauth/register` (RFC 7591) is open to anyone, limited to 60 registrations per IP address per
+  hour (`symfony/rate-limiter`, in Redis; 429 with `Retry-After`). Only public clients: `token_endpoint_auth_method`
+  `none` (or left out), grants `authorization_code` and optionally `refresh_token` (both when left out), response
+  type `code`. `client_name` is required (at most 100 characters, no control characters) and is what the consent
+  screen calls the app. `redirect_uris` is required, at most 10: `https://` anywhere, `http://` only on
+  `127.0.0.1`, `[::1]` or `localhost` (any port), or an app's own scheme when it names the app (reverse-domain such as
+  `com.example.app:/cb`, or one word with a dotted host such as `cursor://anysphere.cursor-mcp/...`); never a
+  fragment, a wildcard, credentials, a scheme a browser handles itself, or the scheme of our own apps. `scope`
+  (optional, every allowed scope when left out) may only hold allowed scopes. `client_uri`, `logo_uri` and other
+  metadata are ignored. Refusals are RFC 7591 errors (`invalid_redirect_uri`, `invalid_client_metadata`). The
+  client is an `oauth2_client` row without a secret and without plain PKCE, marked by a `registered_client` row with
+  `created_at` and `last_used_at` (the last token issued to it). A nightly job deletes registered clients that got no
+  token within 30 days, with everything that cascades from them.
+- **Consent screen.** On `/oauth/authorize`, after signing in, a request from an app that is not ours must ask only
+  for allowed scopes that the client registered (else `invalid_scope` to the app) and, with a `resource` parameter
+  (RFC 8707), name the API or the MCP endpoint (else `invalid_target`); PKCE `S256` is required by the bundle. When
+  the user already allowed every scope asked for, the request is approved at once. Otherwise the page shows the app's
+  name, the host it sends the user back to (the part that is checked), each scope in plain words, the signed-in
+  account and a warning that Tresso has not checked the app. Allow and Deny post back to the same URL with a CSRF
+  token; Deny sends `access_denied`. The page cannot be framed and is not cached. Allowing stores an `oauth_consent`
+  row (user, client, scopes, `created_at`, `last_used_at`); asking for more later shows the page again and adds the
+  new scopes. Tokens are not bound to a resource: the API and the MCP endpoint are one resource server. Access
+  tokens live an hour, refresh tokens 30 days and rotate.
+- **What such an app cannot do.** Manage personal access tokens or connected apps (the `FIRST_PARTY_CLIENT` check),
+  get a realtime token (403, as for personal access tokens), or reach `/internal/`.
+- **Connected apps.** `GET /api/v1/connected-apps` and `DELETE /api/v1/connected-apps/{id}` (`settings:read` /
+  `settings:write` and our own apps only) list and disconnect the user's apps: name, domain, scopes, since and last
+  use (the last token issued for the user, so to within an hour). Another user's id is a 404. Disconnecting deletes
+  the consent and revokes the app's access tokens, refresh tokens and authorization codes for that user in one
+  transaction. The web app has this under Settings, Connected apps. Deleting a user deletes their consents (foreign
+  key cascade) with their tokens.
 
 Users log in with email + password (Argon2id) and, later, Google / Microsoft sign-in as identity providers. (Signing
 in with Google or Microsoft to connect a mail account is separate: see Provider sign-in below.)
@@ -822,8 +871,8 @@ files attached to drafts (uploads, and files a forward or reply takes along).
 
 Not built yet, and coming to this repository like everything else: AI classification and summaries (with your own
 key or endpoint), teams on top of organizations (invites, assignments to teammates, internal comments, delegation
-rules), third-party apps (a consent screen and dynamic client registration), webhooks, the MCP endpoint (which will
-accept personal access tokens, 3.2), developer tools, statistics and Year in mail.
+rules), webhooks, the MCP endpoint (which will accept personal access tokens and the tokens of third-party apps,
+3.2), developer tools, statistics and Year in mail.
 
 ### 3.10 Clients
 
