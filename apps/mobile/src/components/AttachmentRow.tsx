@@ -1,8 +1,9 @@
 import { useMemo } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { fileSize, SCAN_TEXT, type ScanStatus } from '@tresso/core'
 import { Icon } from '@/components/Icon'
 import { useTheme, type Theme } from '@/theme'
+import { LogoLoader } from '@/components/LogoLoader'
 
 interface Props {
   filename: string
@@ -32,7 +33,7 @@ export function AttachmentRow({ filename, size, scanStatus, onOpen, onRemove }: 
         accessibilityHint={onOpen === undefined ? undefined : 'Opens the file'}
         accessibilityState={{ busy: size === null }}
       >
-        {size === null ? <ActivityIndicator size="small" color={theme.ink2} /> : <Icon name="file" size={18} color={blocked ? theme.danger : theme.ink2} />}
+        {size === null ? <LogoLoader size={18} /> : <Icon name="file" size={18} color={blocked ? theme.danger : theme.ink2} />}
         <View style={styles.texts}>
           <Text style={styles.name} numberOfLines={1}>
             {filename}

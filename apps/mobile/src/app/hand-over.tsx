@@ -11,6 +11,7 @@ import { useHandOvers } from '@/handOver/HandOverProvider'
 import { useMail } from '@/mail/MailProvider'
 import { senderName } from '@/mail/format'
 import { useTheme, type Theme } from '@/theme'
+import { LogoLoader } from '@/components/LogoLoader'
 
 const CHOICE_TEXT: Record<DueChoice, string> = { today: 'Today', tomorrow: 'Tomorrow', friday: 'Friday', nextWeek: 'Next week' }
 
@@ -157,6 +158,7 @@ export default function HandOverScreen() {
             </View>
           )}
           <Pressable style={({ pressed }) => [styles.submit, (pressed || busy || message === null) && styles.pressed]} onPress={() => void submit()} disabled={busy || message === null} accessibilityRole="button">
+            {busy && <LogoLoader size={18} color={theme.onAccent} />}
             <Text style={styles.submitLabel}>{busy ? 'Handing over…' : submitText}</Text>
           </Pressable>
         </ScrollView>
@@ -188,7 +190,7 @@ function makeStyles(theme: Theme) {
     unscanned: { gap: 8 },
     anyway: { minHeight: 44, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: theme.lineStrong, alignItems: 'center', justifyContent: 'center' },
     anywayLabel: { color: theme.ink, fontSize: 15, fontWeight: '600' },
-    submit: { minHeight: 48, borderRadius: 999, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center' },
+    submit: { minHeight: 48, borderRadius: 999, backgroundColor: theme.accent, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
     submitLabel: { color: theme.onAccent, fontSize: 16, fontWeight: '600' },
     pressed: { opacity: 0.5 },
   })

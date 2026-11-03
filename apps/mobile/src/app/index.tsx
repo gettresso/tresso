@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'expo-router'
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '@/auth/AuthProvider'
 import { useLatestBrief } from '@/brief/useDailyBrief'
@@ -10,6 +10,7 @@ import { InboxList } from '@/components/InboxList'
 import { useComposer } from '@/compose/ComposerProvider'
 import { useMail } from '@/mail/MailProvider'
 import { useTheme, type Theme } from '@/theme'
+import { LogoLoader } from '@/components/LogoLoader'
 
 export default function Start() {
   const auth = useAuth()
@@ -19,7 +20,7 @@ export default function Start() {
   if (auth.restoring) {
     return (
       <SafeAreaView style={styles.screen}>
-        <ActivityIndicator color={theme.accent} accessibilityLabel="Loading" />
+        <LogoLoader size={40} accessibilityLabel="Loading" />
       </SafeAreaView>
     )
   }
@@ -40,6 +41,7 @@ type Styles = ReturnType<typeof makeStyles>
 
 function SignIn({ styles }: { styles: Styles }) {
   const auth = useAuth()
+  const theme = useTheme()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -67,6 +69,7 @@ function SignIn({ styles }: { styles: Styles }) {
         accessibilityRole="button"
         accessibilityState={{ busy, disabled: busy }}
       >
+        {busy && <LogoLoader size={18} color={theme.onAccent} />}
         <Text style={styles.primaryLabel}>{busy ? 'Signing in…' : 'Sign in'}</Text>
       </Pressable>
       {error !== null && (
@@ -173,7 +176,7 @@ function makeStyles(theme: Theme) {
     content: { alignItems: 'center', gap: 16 },
     title: { color: theme.ink, fontSize: 24, lineHeight: 30, fontWeight: '700', textAlign: 'center' },
     body: { color: theme.ink2, fontSize: 16 },
-    primary: { minHeight: 48, paddingHorizontal: 28, borderRadius: 6, justifyContent: 'center', backgroundColor: theme.accent },
+    primary: { minHeight: 48, paddingHorizontal: 28, borderRadius: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: theme.accent },
     primaryLabel: { color: theme.onAccent, fontSize: 16, fontWeight: '600' },
     secondary: { minHeight: 44, paddingHorizontal: 20, borderRadius: 6, justifyContent: 'center', borderWidth: 1, borderColor: theme.line, backgroundColor: theme.surface },
     secondaryLabel: { color: theme.ink, fontSize: 15, fontWeight: '500' },

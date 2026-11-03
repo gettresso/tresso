@@ -5,6 +5,7 @@ import { briefProgress, briefSender, type BriefEntry } from '@tresso/core'
 import { useLatestBrief, useNoted } from '@/brief/useDailyBrief'
 import { shortTime } from '@/mail/format'
 import { useTheme, type Theme } from '@/theme'
+import { LoadingLine } from '@/components/LogoLoader'
 
 function senderLabel(entry: BriefEntry): string {
   const sender = briefSender(entry.conversation)
@@ -52,9 +53,13 @@ export default function BriefScreen() {
           )
         }
         ListEmptyComponent={
-          <Text style={styles.empty}>
-            {!loaded ? 'Loading…' : view === null ? 'No brief yet. Once a day, mail that is good to know but asks nothing of you comes together here.' : 'Everything in this brief is gone from this phone.'}
-          </Text>
+          !loaded ? (
+            <LoadingLine text="Loading…" style={styles.loading} textStyle={styles.loadingText} />
+          ) : (
+            <Text style={styles.empty}>
+              {view === null ? 'No brief yet. Once a day, mail that is good to know but asks nothing of you comes together here.' : 'Everything in this brief is gone from this phone.'}
+            </Text>
+          )
         }
         renderSectionHeader={({ section }) => <Text style={styles.section}>{section.title}</Text>}
         renderItem={({ item }) => (
@@ -110,5 +115,7 @@ function makeStyles(theme: Theme) {
     noted: { fontSize: 13, fontWeight: '600', color: theme.know },
     moved: { fontSize: 13, fontWeight: '600', color: theme.accent },
     empty: { padding: 20, fontSize: 15, color: theme.ink2 },
+    loading: { padding: 20 },
+    loadingText: { fontSize: 15, color: theme.ink2 },
   })
 }

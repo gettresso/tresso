@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { dueLabel, handOverStatus, openHandOversOf, todoSourceMessage, type SyncedFolder, type SyncedHandOver, type SyncedMessage, type SyncedThread, type SyncedTodo } from '@tresso/core'
@@ -13,6 +13,7 @@ import { initials, senderName, shortTime } from '@/mail/format'
 import { shortDue } from '@/handOver/format'
 import { useHandOvers } from '@/handOver/HandOverProvider'
 import { useTheme, type Theme } from '@/theme'
+import { LogoLoader } from '@/components/LogoLoader'
 
 /** The action bar's height above the safe area. */
 const BAR_HEIGHT = 56
@@ -224,7 +225,7 @@ export default function ThreadScreen() {
     <>
       <Stack.Screen options={{ headerShown: true, title: '', headerBackTitle: 'Inbox' }} />
       <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-        {absent === 'loading' && <ActivityIndicator accessibilityLabel="Loading the conversation" />}
+        {absent === 'loading' && <LogoLoader size={32} style={styles.loading} accessibilityLabel="Loading the conversation" />}
         {absent === 'unreachable' && (
           <View accessibilityRole="alert">
             <Text style={styles.muted}>This conversation could not be loaded: {syncError}. It opens once Tresso can sync again.</Text>
@@ -345,6 +346,7 @@ function makeStyles(theme: Theme) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: theme.surface },
     content: { padding: 20, gap: 16 },
+    loading: { marginTop: 32, alignSelf: 'center' },
     subject: { color: theme.ink, fontSize: 24, lineHeight: 30, fontWeight: '700' },
     replies: { flexDirection: 'row', gap: 8, paddingTop: 4 },
     todoButton: { alignSelf: 'flex-start', minHeight: 40, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: theme.accent, justifyContent: 'center' },

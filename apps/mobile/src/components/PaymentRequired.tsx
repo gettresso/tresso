@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, BackHandler, Pressable, StyleSheet, Text, View } from 'react-native'
+import { BackHandler, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useAuth } from '@/auth/AuthProvider'
 import { ApiError } from '@/auth/session'
 import { useNotices } from '@/components/Notices'
 import { useTheme } from '@/theme'
+import { LogoLoader } from '@/components/LogoLoader'
 
 /**
  * Covers the app while the server answers 402. Subscribing happens in Tresso on a computer or on the web: the phone
@@ -73,7 +74,7 @@ export function PaymentRequired() {
           onPress={() => void checkAgain()}
           style={[styles.button, { backgroundColor: theme.accent }]}
         >
-          {checking ? <ActivityIndicator color={theme.onAccent} /> : <Text style={[styles.buttonText, { color: theme.onAccent }]}>Check again</Text>}
+          {checking ? <LogoLoader size={20} color={theme.onAccent} accessibilityLabel="Checking" /> : <Text style={[styles.buttonText, { color: theme.onAccent }]}>Check again</Text>}
         </Pressable>
         <Pressable
           accessibilityRole="button"

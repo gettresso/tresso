@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import type { MessageAttachment, MessageBody } from '@tresso/core'
 import { AttachmentRow } from '@/components/AttachmentRow'
 import { HtmlFrame } from '@/components/HtmlFrame'
 import { useMail } from '@/mail/MailProvider'
 import { useTheme, type Theme } from '@/theme'
+import { LogoLoader } from '@/components/LogoLoader'
 
 /** One message's body: sanitized HTML in a locked-down web view, or its plain text. */
 export function MessageBodyView({ messageId }: { messageId: string }) {
@@ -54,7 +55,7 @@ export function MessageBodyView({ messageId }: { messageId: string }) {
     return <Text style={styles.error}>{error}</Text>
   }
   if (body === null) {
-    return <ActivityIndicator style={styles.loading} accessibilityLabel="Loading the message" />
+    return <LogoLoader size={24} style={styles.loading} accessibilityLabel="Loading the message" />
   }
 
   // Inline images are part of the text; the rest are files to open.
@@ -100,7 +101,7 @@ function makeStyles(theme: Theme) {
     wrapper: { gap: 8 },
     files: { gap: 8 },
     text: { color: theme.ink, fontSize: 16, lineHeight: 24 },
-    loading: { paddingVertical: 16 },
+    loading: { marginVertical: 16, alignSelf: 'center' },
     error: { color: theme.danger, fontSize: 14 },
     remote: { padding: 10, borderRadius: 6, backgroundColor: theme.ground },
     remoteLabel: { color: theme.accent, fontSize: 14, fontWeight: '600' },

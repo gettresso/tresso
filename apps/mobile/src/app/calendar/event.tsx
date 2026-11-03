@@ -6,6 +6,7 @@ import { tint } from '@/calendar/colors'
 import { useOccurrences, useReaderZone } from '@/calendar/useOccurrences'
 import { useMail } from '@/mail/MailProvider'
 import { useTheme, type Theme } from '@/theme'
+import { LoadingLine } from '@/components/LogoLoader'
 
 const ANSWERS: { value: 'accepted' | 'tentative' | 'declined'; label: string }[] = [
   { value: 'accepted', label: 'Accept' },
@@ -39,7 +40,7 @@ export default function EventScreen() {
     return (
       <View style={styles.screen}>
         <Stack.Screen options={{ headerShown: true, title: 'Event' }} />
-        <Text style={styles.muted}>{loaded ? 'This event is no longer in your calendar.' : 'Loading…'}</Text>
+        {loaded ? <Text style={styles.muted}>This event is no longer in your calendar.</Text> : <LoadingLine text="Loading…" textStyle={styles.muted} />}
       </View>
     )
   }

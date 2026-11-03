@@ -17,6 +17,7 @@ import { isFutureTime } from '@/compose/time'
 import { useNotices } from '@/components/Notices'
 import { useMail } from '@/mail/MailProvider'
 import { useTheme, type Theme } from '@/theme'
+import { LogoLoader } from '@/components/LogoLoader'
 
 const TITLES: Record<Draft['kind'], string> = { new: 'New email', reply: 'Reply', replyAll: 'Reply all', forward: 'Forward' }
 
@@ -250,8 +251,9 @@ export default function ComposeScreen() {
             accessibilityState={{ busy: state.sending, disabled: state.sending }}
             accessibilityLabel={later === null ? 'Send' : `Schedule for ${moment(later)}`}
           >
+            {state.sending && <LogoLoader size={16} color={theme.surface} />}
             <Text style={styles.sendLabel}>{state.sending ? 'Sending…' : later === null ? 'Send' : 'Schedule'}</Text>
-            <Icon name="send" size={16} color={theme.surface} />
+            {!state.sending && <Icon name="send" size={16} color={theme.surface} />}
           </Pressable>
         </View>
 

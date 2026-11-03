@@ -5,6 +5,7 @@ import type { ConversationSummary } from '@tresso/core'
 import { useMail } from '@/mail/MailProvider'
 import { dayLabel, senderName, shortTime } from '@/mail/format'
 import { useTheme, type Theme } from '@/theme'
+import { LoadingLine } from '@/components/LogoLoader'
 
 /** The Unified Inbox: conversations newest first, grouped by day, read from the copy on the device. */
 export function InboxList({ header }: { header: React.ReactElement }) {
@@ -49,7 +50,13 @@ export function InboxList({ header }: { header: React.ReactElement }) {
         </Text>
       )}
       stickySectionHeadersEnabled={false}
-      ListEmptyComponent={<Text style={styles.empty}>{mail.ready ? (mail.syncError ?? 'Nothing in your inbox.') : 'Loading your mail…'}</Text>}
+      ListEmptyComponent={
+        mail.ready ? (
+          <Text style={styles.empty}>{mail.syncError ?? 'Nothing in your inbox.'}</Text>
+        ) : (
+          <LoadingLine text="Loading your mail…" style={styles.loading} textStyle={styles.loadingText} />
+        )
+      }
       renderItem={({ item }) => {
         const unread = item.unreadCount > 0
         return (
@@ -97,5 +104,7 @@ function makeStyles(theme: Theme) {
     subject: { color: theme.ink, fontSize: 15 },
     snippet: { color: theme.ink2, fontSize: 14 },
     empty: { padding: 32, color: theme.ink2, textAlign: 'center' },
+    loading: { padding: 32, justifyContent: 'center' },
+    loadingText: { color: theme.ink2 },
   })
 }

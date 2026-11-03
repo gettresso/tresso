@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Stack, useFocusEffect, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { classificationReasonText, type SyncedSmartInbox, type TriageDecision } from '@tresso/core'
@@ -9,6 +9,7 @@ import { useMail } from '@/mail/MailProvider'
 import { useTriage } from '@/mail/useTriage'
 import { initials, senderName, shortTime } from '@/mail/format'
 import { useTheme, type Theme } from '@/theme'
+import { LoadingLine, LogoLoader } from '@/components/LogoLoader'
 
 /** The decision buttons' height above the safe area, kept clear of notices. */
 const BAR_HEIGHT = 128
@@ -100,16 +101,18 @@ export default function TriageScreen() {
               </View>
               <Text style={styles.position}>{`${conversation === null ? progress.total : progress.shown} of ${progress.total}`}</Text>
             </View>
-            <Text style={styles.counts}>
-              <Text style={[styles.count, { color: theme.do }]}>{progress.counts.do}</Text> do{'   '}
-              <Text style={[styles.count, { color: theme.delegate }]}>{progress.counts.delegate}</Text> handed over{'   '}
-              <Text style={[styles.count, { color: theme.know }]}>{progress.counts.know}</Text> noted
-              {saving ? '   Saving…' : ''}
-            </Text>
+            <View style={styles.countsRow}>
+              <Text style={styles.counts}>
+                <Text style={[styles.count, { color: theme.do }]}>{progress.counts.do}</Text> do{'   '}
+                <Text style={[styles.count, { color: theme.delegate }]}>{progress.counts.delegate}</Text> handed over{'   '}
+                <Text style={[styles.count, { color: theme.know }]}>{progress.counts.know}</Text> noted
+              </Text>
+              {saving && <LoadingLine text="Saving…" size={14} textStyle={styles.counts} />}
+            </View>
           </View>
         )}
 
-        {progress === null && <ActivityIndicator style={styles.loading} color={theme.accent} accessibilityLabel="Loading your mail" />}
+        {progress === null && <LogoLoader size={32} style={styles.loading} accessibilityLabel="Loading your mail" />}
 
         {progress !== null && current === null && (
           <View style={styles.done}>
@@ -138,7 +141,7 @@ export default function TriageScreen() {
         )}
 
         {progress !== null && current !== null && (conversation === null || newest === null) && (
-          <ActivityIndicator style={styles.loading} color={theme.accent} accessibilityLabel="Loading the next email" />
+          <LogoLoader size={32} style={styles.loading} accessibilityLabel="Loading the next email" />
         )}
 
         {conversation !== null && newest !== null && progress !== null && (
@@ -228,9 +231,10 @@ function makeStyles(theme: Theme) {
     bar: { flex: 1, height: 6, borderRadius: 999, backgroundColor: theme.line, overflow: 'hidden' },
     fill: { height: '100%', backgroundColor: theme.ink },
     position: { color: theme.ink2, fontSize: 13, fontWeight: '600' },
+    countsRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
     counts: { color: theme.ink2, fontSize: 13 },
     count: { fontWeight: '600' },
-    loading: { marginTop: 48 },
+    loading: { marginTop: 48, alignSelf: 'center' },
     cardScroll: { flex: 1 },
     card: { margin: 16, padding: 20, gap: 12, borderRadius: 14, backgroundColor: theme.surface },
     who: { flexDirection: 'row', alignItems: 'center', gap: 12 },

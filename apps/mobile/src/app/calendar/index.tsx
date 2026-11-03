@@ -29,6 +29,7 @@ import { useOccurrences, useReaderZone } from '@/calendar/useOccurrences'
 import { useNotices } from '@/components/Notices'
 import { useMail } from '@/mail/MailProvider'
 import { useTheme, type Theme } from '@/theme'
+import { LoadingLine } from '@/components/LogoLoader'
 
 /** 64 px per hour in the day view, as the mobile design has it. */
 const HOUR = 64
@@ -125,7 +126,13 @@ function Agenda(props: {
       sections={sections}
       keyExtractor={(item, index) => `${item.key}:${index}`}
       stickySectionHeadersEnabled
-      ListEmptyComponent={<Text style={styles.empty}>{props.loaded ? `Nothing planned in the next ${AGENDA_DAYS} days.` : 'Loading…'}</Text>}
+      ListEmptyComponent={
+        props.loaded ? (
+          <Text style={styles.empty}>{`Nothing planned in the next ${AGENDA_DAYS} days.`}</Text>
+        ) : (
+          <LoadingLine text="Loading…" style={styles.loading} textStyle={styles.loadingText} />
+        )
+      }
       renderSectionHeader={({ section }) => (
         <View style={styles.sectionHead}>
           <Text style={styles.sectionTitle} accessibilityRole="header">
@@ -388,6 +395,8 @@ function makeStyles(theme: Theme) {
     muted: { fontSize: 13, color: theme.ink2 },
     chip: { fontSize: 12, fontWeight: '600', color: theme.ink2, borderWidth: 1, borderStyle: 'dashed', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
     empty: { padding: 20, fontSize: 15, color: theme.ink2 },
+    loading: { padding: 20 },
+    loadingText: { fontSize: 15, color: theme.ink2 },
     strip: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 8 },
     stripArrow: { width: 28, alignItems: 'center' },
     stripDay: { flex: 1, alignItems: 'center', gap: 4 },

@@ -21,6 +21,10 @@ const light = {
   /** The "know" verdict's color, also used for good news such as "no threats". */
   know: '#256b5d',
   knowSoft: '#e3f2ee',
+  /** The three parts of the logo mark, as drawn in apps/web/src/components/TressoMark.vue. */
+  markDo: '#2341d6',
+  markDelegate: '#e0701b',
+  markKnow: '#2f9c86',
 }
 
 const dark: typeof light = {
@@ -39,6 +43,9 @@ const dark: typeof light = {
   delegateSoft: '#3a2616',
   know: '#6cc7b2',
   knowSoft: '#16302b',
+  markDo: '#8fa2ff',
+  markDelegate: '#f29a55',
+  markKnow: '#6cc7b2',
 }
 
 export type Theme = typeof light
