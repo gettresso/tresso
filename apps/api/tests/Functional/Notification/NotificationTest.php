@@ -41,7 +41,7 @@ final class NotificationTest extends DatabaseTestCase
         parent::setUp();
         $this->bootstrapOAuthClients();
         $this->createUser('kim@example.test', 'Kim');
-        $this->kim = $this->userHeaders('kim@example.test', ['mail:read', 'calendar:read', 'calendar:write', 'settings:read', 'settings:write']);
+        $this->kim = $this->userHeaders('kim@example.test', ['mail:read', 'mail:send', 'calendar:read', 'calendar:write', 'settings:read', 'settings:write']);
         $this->calendarId = $this->localCalendarId($this->kim);
     }
 

@@ -115,7 +115,7 @@ enum Scope: string
             self::TodosRead => 'See your todos and when they are planned.',
             self::TodosWrite => 'Add, complete, change and delete todos.',
             self::CalendarRead => 'See your calendars and events, with their guests.',
-            self::CalendarWrite => 'Add, change and delete events, and answer invitations.',
+            self::CalendarWrite => 'Add, change and delete events and set your answers. Telling guests or organizers also needs Send mail.',
             self::SettingsRead => 'See your mail accounts, smart inboxes and other settings.',
             self::SettingsWrite => 'Change settings such as account names, smart inboxes, rules and notifications. Never how a mail account connects, access tokens or connected apps.',
             self::SignaturesRead => 'See your email signatures.',

@@ -6,6 +6,7 @@ namespace App\Tests\Functional\Calendar;
 
 use App\Entity\Calendar;
 use App\Tests\Functional\AuthenticatesUsers;
+use App\Tests\Functional\ConnectsThirdPartyApps;
 use App\Tests\Functional\DatabaseTestCase;
 use App\Tests\Functional\StoresMail;
 use Doctrine\ORM\EntityManagerInterface;
@@ -13,6 +14,7 @@ use Doctrine\ORM\EntityManagerInterface;
 final class CalendarInvitationTest extends DatabaseTestCase
 {
     use AuthenticatesUsers;
+    use ConnectsThirdPartyApps;
     use StoresMail;
     use CalendarTestHelpers;
 
@@ -145,6 +147,71 @@ final class CalendarInvitationTest extends DatabaseTestCase
             'account' => ['dateTime' => '2026-10-21T14:00:00+00:00'],
             'tresso' => ['dateTime' => '2026-10-21T12:00:00+00:00'],
         ], $starts, 'The update goes to the calendar of the account the mail came to.');
+    }
+
+    public function testSendingInvitationsNeedsMailSend(): void
+    {
+        $calendarOnly = $this->userHeaders('kim@example.test', ['mail:read', 'calendar:read', 'calendar:write']);
+        $calendarId = $this->localCalendarId($this->kim);
+        $withGuest = self::event($calendarId, ['summary' => 'Free text', 'attendees' => [['address' => 'anyone@elsewhere.example']], 'organizerMailAccountId' => $this->accountId]);
+
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', $withGuest, $calendarOnly);
+        self::assertResponseStatusCodeSame(403);
+        self::assertStringContainsString('mail:send', (string) $this->client->getResponse()->getContent());
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM calendar_event'), 'Refused, not saved without telling anyone.');
+
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events?notify=false', $withGuest, $calendarOnly);
+        self::assertResponseStatusCodeSame(201, 'Saying not to tell anyone is fine.');
+        $quiet = self::string($this->decodedResponse()['id']);
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($calendarId, ['summary' => 'Alone']), $calendarOnly);
+        self::assertResponseStatusCodeSame(201, 'Without guests nobody is told.');
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$quiet, self::event($calendarId, ['summary' => 'Changed', 'attendees' => [['address' => 'anyone@elsewhere.example']], 'organizerMailAccountId' => $this->accountId]), $calendarOnly);
+        self::assertResponseStatusCodeSame(403, 'Updating an event with guests tells them.');
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$quiet, self::event($calendarId, ['summary' => 'No guests any more']), $calendarOnly);
+        self::assertResponseStatusCodeSame(403, 'Removing the guests cancels for them.');
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$quiet, server: $calendarOnly);
+        self::assertResponseStatusCodeSame(403, 'Deleting it cancels for them.');
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$quiet.'?notify=false', server: $calendarOnly);
+        self::assertResponseStatusCodeSame(204);
+
+        self::assertSame([], $this->outgoing(), 'Nothing went out.');
+
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', $withGuest, $this->kim);
+        self::assertResponseStatusCodeSame(201, 'Our own apps have mail:send.');
+        self::assertCount(1, $this->outgoing());
+    }
+
+    public function testAnsweringOrApplyingAnInvitationNeedsMailSend(): void
+    {
+        $calendarOnly = $this->userHeaders('kim@example.test', ['mail:read', 'calendar:read', 'calendar:write']);
+        $messageId = $this->receive('Invitation: Budget review', self::invitation('REQUEST', 0, '20261021T140000'));
+        $eventId = self::string($this->getJson('/api/v1/messages/'.$messageId.'/invitation', $this->kim)['eventId']);
+
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events/'.$eventId.'/response', ['response' => 'accepted'], $calendarOnly);
+        self::assertResponseStatusCodeSame(403);
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events/'.$eventId.'/response', ['response' => 'accepted', 'notify' => false], $calendarOnly);
+        self::assertResponseIsSuccessful('Answering without telling the organizer is fine.');
+        self::assertSame([], $this->outgoing());
+
+        $archived = $this->receive('Updated: Budget review', self::invitation('REQUEST', 1, '20261021T160000'), folder: 'Archive');
+        $this->client->request('POST', '/api/v1/messages/'.$archived.'/invitation/apply', server: $calendarOnly);
+        self::assertResponseStatusCodeSame(403);
+        $this->client->request('POST', '/api/v1/messages/'.$archived.'/invitation/apply', server: $this->kim);
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testAnAppThatIsNotOursNeedsMailSendToInvite(): void
+    {
+        $app = $this->thirdPartyHeaders('kim@example.test', ['calendar:read', 'calendar:write']);
+        $pat = $this->personalAccessTokenHeaders('kim@example.test', ['calendar:read', 'calendar:write']);
+        $withGuest = self::event($this->localCalendarId($this->kim), ['attendees' => [['address' => 'anyone@elsewhere.example']], 'organizerMailAccountId' => $this->accountId]);
+
+        foreach (['third-party app' => $app, 'personal access token' => $pat] as $caller => $headers) {
+            $this->client->jsonRequest('POST', '/api/v1/calendar-events', $withGuest, $headers);
+            self::assertResponseStatusCodeSame(403, $caller);
+        }
+        self::assertSame([], $this->outgoing());
     }
 
     public function testCancellationsCancelTheEvent(): void
