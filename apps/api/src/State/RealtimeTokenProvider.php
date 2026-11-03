@@ -9,6 +9,7 @@ use ApiPlatform\State\ProviderInterface;
 use App\ApiResource\RealtimeToken;
 use App\Realtime\MercureTokens;
 use App\Security\CurrentUser;
+use App\Security\FirstPartyClients;
 use App\Security\PersonalAccessToken\PersonalAccessTokenAuthentication;
 use League\Bundle\OAuth2ServerBundle\Security\Authentication\Token\OAuth2Token;
 use Symfony\Bundle\SecurityBundle\Security;
@@ -33,10 +34,13 @@ final readonly class RealtimeTokenProvider implements ProviderInterface
         if (!$authentication instanceof OAuth2Token) {
             throw new AccessDeniedException('This endpoint requires an OAuth2 access token.');
         }
-        // A realtime token outlives a revoked personal access token by up to an hour, and tokens are for scripts and
-        // MCP, which fetch the delta instead.
+        // A realtime token outlives a revoked personal access token or a disconnected app by up to an hour, and those
+        // are for scripts and MCP clients, which fetch the delta instead. Only our own apps subscribe.
         if ($authentication instanceof PersonalAccessTokenAuthentication) {
             throw new AccessDeniedException('Personal access tokens cannot subscribe to realtime updates.');
+        }
+        if (!FirstPartyClients::signedRequest($authentication)) {
+            throw new AccessDeniedException('Only Tresso\'s own apps can subscribe to realtime updates.');
         }
 
         $token = $this->tokens->subscriberToken($user->getId(), $authentication->getOAuthClientId());

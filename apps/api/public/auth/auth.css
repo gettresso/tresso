@@ -185,6 +185,78 @@ body {
   font-weight: 600;
 }
 
+.button-secondary {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.button-secondary:hover {
+  background: var(--ground);
+}
+
+.consent .lead {
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+
+.address {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--ground);
+}
+
+.address-label,
+.address-note {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.address-domain {
+  font: 700 18px/24px var(--font-display);
+  overflow-wrap: anywhere;
+}
+
+.warning {
+  margin: 0 0 16px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.scopes-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scopes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.scopes li {
+  display: flex;
+  flex-direction: column;
+}
+
+.scopes span {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.decision {
+  gap: 0;
+}
+
 .footnote {
   margin: 0;
   max-width: 400px;

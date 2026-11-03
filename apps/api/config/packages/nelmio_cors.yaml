@@ -7,4 +7,13 @@ nelmio_cors:
         expose_headers: ['Link']
         max_age: 3600
     paths:
+        # What an OAuth2 or MCP client running in a browser (such as the MCP Inspector) needs before it has a token:
+        # the metadata, registering itself and the token exchange. Open to every origin, never with cookies.
+        '^/(\.well-known/oauth-|oauth/(register|token)$)':
+            origin_regex: false
+            allow_origin: ['*']
+            allow_methods: ['GET', 'POST', 'OPTIONS']
+            allow_headers: ['Content-Type', 'Authorization', 'MCP-Protocol-Version']
+            allow_credentials: false
+            max_age: 3600
         '^/': null

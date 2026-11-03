@@ -18,6 +18,14 @@ security:
         oauth_token:
             pattern: ^/oauth/token$
             security: false
+        # Apps that are not ours register themselves here (RFC 7591); limited per IP address in the controller.
+        oauth_register:
+            pattern: ^/oauth/register$
+            security: false
+        # Authorization server and protected resource metadata (RFC 8414, RFC 9728): public documents.
+        oauth_metadata:
+            pattern: ^/\.well-known/oauth-
+            security: false
         # Stripe signs its webhook; the controller checks that signature instead of a session or token.
         stripe_webhook:
             pattern: ^/billing/stripe/webhook$
@@ -34,7 +42,8 @@ security:
             oauth2: true
             custom_authenticators:
                 - App\Security\PersonalAccessToken\PersonalAccessTokenAuthenticator
-        # Browser session used only to sign in, approve OAuth2 authorization requests and finish provider sign-ins.
+        # Browser session used only to sign in, approve OAuth2 authorization requests (with the consent screen for apps
+        # that are not ours) and finish provider sign-ins.
         main:
             lazy: true
             provider: app_user_provider
