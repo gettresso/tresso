@@ -31,7 +31,7 @@ final class ProviderCalendarTest extends DatabaseTestCase
         parent::setUp();
         $this->bootstrapOAuthClients();
         $this->createUser('kim@example.test', 'Kim Visser');
-        $this->user = $this->userHeaders('kim@example.test', ['mail:read', 'calendar:read', 'calendar:write', 'settings:read', 'settings:write']);
+        $this->user = $this->userHeaders('kim@example.test', ['mail:read', 'mail:send', 'calendar:read', 'calendar:write', 'settings:read', 'settings:write']);
         $query = $this->start('google', features: ['mail', 'calendar']);
         $this->googleTokens(scope: 'openid '.self::GMAIL_SCOPE.' '.self::GOOGLE_CALENDAR_SCOPES);
         $this->returnFromProvider('google', $query['state']);

@@ -38,7 +38,8 @@ use App\State\MessageInvitationProvider;
         new Post(
             uriTemplate: '/messages/{id}/invitation/apply',
             status: 200,
-            security: "is_granted('".Scope::ROLE_MAIL_READ."') and is_granted('".Scope::ROLE_CALENDAR_WRITE."')",
+            // Saving the event can make a provider that schedules tell others: mail in the user's name.
+            security: "is_granted('".Scope::ROLE_MAIL_READ."') and is_granted('".Scope::ROLE_CALENDAR_WRITE."') and is_granted('".Scope::ROLE_MAIL_SEND."')",
             input: false,
             read: false,
             processor: MessageInvitationProcessor::class,

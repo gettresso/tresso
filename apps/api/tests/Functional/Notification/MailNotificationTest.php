@@ -59,7 +59,7 @@ final class MailNotificationTest extends DatabaseTestCase
         parent::setUp();
         $this->bootstrapOAuthClients();
         $this->createUser('kim@example.test', 'Kim');
-        $this->kim = $this->userHeaders('kim@example.test', ['mail:read', 'mail:write', 'calendar:read', 'calendar:write', 'settings:read', 'settings:write']);
+        $this->kim = $this->userHeaders('kim@example.test', ['mail:read', 'mail:write', 'mail:send', 'calendar:read', 'calendar:write', 'settings:read', 'settings:write']);
 
         $this->client->jsonRequest('POST', '/api/v1/mail-accounts', [
             'emailAddress' => self::ME,
