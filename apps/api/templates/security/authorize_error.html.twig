@@ -17,12 +17,11 @@
             <h1 id="authorize-error-title">This request cannot be completed</h1>
             <p class="lead">The app asked for something Tresso cannot give it, so nothing was shared and you were not sent back to the app.</p>
 
-            <p class="error" role="alert">
-                {{ description ?? 'The request is not valid.' }}
-                {% if hint %}{{ hint }}{% endif %}
-            </p>
+            <p class="error" role="alert">{{ explanation }}</p>
 
-            <p class="footnote">Error code for the app's makers: <code>{{ error }}</code></p>
+            {% if error %}
+                <p class="footnote">Error code for the app's makers: <code>{{ error }}</code></p>
+            {% endif %}
         </section>
 
         <p class="footnote">You can close this page.</p>

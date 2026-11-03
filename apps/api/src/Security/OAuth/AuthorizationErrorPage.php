@@ -24,6 +24,17 @@ use Twig\Environment;
 #[AsEventListener(event: KernelEvents::RESPONSE)]
 final readonly class AuthorizationErrorPage
 {
+    /** What each error means for the user, in our words. */
+    private const array EXPLANATIONS = [
+        'invalid_request' => 'The app sent an incomplete or malformed request.',
+        'invalid_scope' => 'The app asked for permissions it cannot have.',
+        'invalid_target' => 'The app asked for access to something this server does not protect.',
+        'unsupported_response_type' => 'The app asked to sign in in a way this server does not support.',
+        'unauthorized_client' => 'The app may not sign in this way.',
+        'server_error' => 'Something went wrong on our side. Try again later.',
+        'temporarily_unavailable' => 'Signing in to apps is not possible right now. Try again later.',
+    ];
+
     public function __construct(
         private Security $security,
         private OAuthConsentRepository $consents,
@@ -54,12 +65,12 @@ final readonly class AuthorizationErrorPage
             return;
         }
 
-        $description = $query['error_description'] ?? null;
-        $hint = $query['hint'] ?? null;
+        // Only our own words: the description and hint of an error can repeat what the request held (a scope, a URI),
+        // and that text is the app's, not ours.
+        $known = \array_key_exists($error, self::EXPLANATIONS);
         $page = new Response($this->twig->render('security/authorize_error.html.twig', [
-            'error' => $error,
-            'description' => \is_string($description) ? $description : null,
-            'hint' => \is_string($hint) ? $hint : null,
+            'error' => $known ? $error : null,
+            'explanation' => self::EXPLANATIONS[$known ? $error : 'invalid_request'],
         ]), Response::HTTP_BAD_REQUEST);
         $page->headers->set('X-Frame-Options', 'DENY');
         $page->headers->set('Content-Security-Policy', "frame-ancestors 'none'");

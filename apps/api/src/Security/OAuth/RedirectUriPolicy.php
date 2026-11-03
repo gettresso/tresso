@@ -13,8 +13,9 @@ namespace App\Security\OAuth;
  * - an app's own scheme only in reverse-domain form, such as `com.example.app:/callback`.
  *
  * Never a fragment, a wildcard, credentials, a backslash or a percent sign in the host, a scheme a browser or the
- * operating system handles itself, and nothing that looks like Tresso: no Tresso host, and no scheme that is a Tresso
- * domain reversed or names Tresso.
+ * operating system handles itself (`com.apple.*`, `x-apple.*`, `com.microsoft.*`, `microsoft.*`, `ms-*`,
+ * `com.google.*`, `android*`, `windows*`), and nothing that looks like Tresso: no Tresso host, and no host or scheme
+ * with a label that has "tresso" in it.
  */
 final readonly class RedirectUriPolicy
 {
@@ -86,10 +87,34 @@ final readonly class RedirectUriPolicy
         }
     }
 
+    /**
+     * Schemes the operating system handles itself (settings panes, store links, system tools): opening one runs
+     * something of the system rather than the app that registered.
+     */
+    private static function belongsToTheSystem(string $scheme): bool
+    {
+        $labels = explode('.', $scheme);
+        $first = $labels[0];
+        $vendor = $first.'.'.($labels[1] ?? '');
+        if (\in_array($vendor, ['com.apple', 'com.microsoft', 'com.google'], true)) {
+            return true;
+        }
+        foreach (['x-apple', 'microsoft', 'ms-', 'android', 'windows'] as $prefix) {
+            if (str_starts_with($first, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function checkAppScheme(string $scheme): void
     {
         if (1 !== preg_match(self::REVERSE_DOMAIN_SCHEME, $scheme)) {
             throw ClientRegistrationRefused::redirectUri(\sprintf('The scheme "%s" is not allowed: an app\'s own scheme must be a domain it owns, reversed, such as com.example.app:/callback.', $scheme));
+        }
+        if (self::belongsToTheSystem($scheme)) {
+            throw ClientRegistrationRefused::redirectUri(\sprintf('The scheme "%s" belongs to the operating system, not to an app.', $scheme));
         }
         if ($this->tresso->isTressoScheme($scheme)) {
             throw ClientRegistrationRefused::redirectUri(\sprintf('The scheme "%s" names Tresso and is reserved for Tresso\'s own apps.', $scheme));
