@@ -207,7 +207,7 @@ function keydown(event: KeyboardEvent): void {
       </select>
       <RouterLink :to="{ name: 'settings-signatures' }" class="edit">Edit</RouterLink>
     </div>
-    <SignaturePreview v-if="signature" :html="signature.html" background="light" />
+    <SignaturePreview v-if="signature" :html="signature.html" background="app" />
 
     <div v-if="draft.quoteHtml" class="quote">
       <button type="button" class="toggle" :aria-expanded="showQuote" @click="showQuote = !showQuote">

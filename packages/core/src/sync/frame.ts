@@ -29,11 +29,14 @@ export function mailFrameDocument(html: string, options: { apiOrigin: string; al
 /**
  * The document for previewing signature HTML while it is edited, before the API sanitized it. Nothing in it runs and
  * images load only the way the saved signature allows them (https and data); the frame must be sandboxed without
- * allow-scripts. `background` shows how the signature reads in a light or a dark mail client.
+ * allow-scripts. `background` shows how the signature reads in a light or a dark mail client. `transparent` drops
+ * that background so the signature sits on the screen around the frame, as in the compose window.
  */
-export function signatureFrameDocument(html: string, options: { background: 'light' | 'dark' }): string {
+export function signatureFrameDocument(html: string, options: { background: 'light' | 'dark'; transparent?: boolean }): string {
   const policy = ["default-src 'none'", 'img-src https: data:', "style-src 'unsafe-inline'", "form-action 'none'", "base-uri 'none'"].join('; ')
-  const colors = options.background === 'dark' ? 'background:#1B1D22;color:#F3F4F6' : 'background:#fff;color:#16181D'
+  const ink = options.background === 'dark' ? 'color:#F3F4F6' : 'color:#16181D'
+  const ground = options.transparent === true ? 'background:transparent' : options.background === 'dark' ? 'background:#1B1D22' : 'background:#fff'
+  const colors = `${ground};${ink}`
 
   return (
     '<!doctype html><html><head><meta charset="utf-8">' +
