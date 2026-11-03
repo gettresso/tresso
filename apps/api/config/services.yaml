@@ -36,6 +36,11 @@ when@test:
     services:
         App\Tests\Support\RecordingMercureHub:
             public: true
+        # Runs any API operation as an MCP tool would (McpEndpointTest).
+        App\Tests\Support\McpProbeTools:
+            autoconfigure: true
+        App\Tests\Support\FailingApiController:
+            tags: ['controller.service_arguments']
         App\Tests\Support\MockHttpRouter:
             public: true
             autowire: true
