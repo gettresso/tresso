@@ -42,6 +42,14 @@ security:
             oauth2: true
             custom_authenticators:
                 - App\Security\PersonalAccessToken\PersonalAccessTokenAuthenticator
+        # The MCP endpoint: the same tokens as the API. A request without a valid token gets a 401 that points to the
+        # protected resource metadata of /mcp (App\Mcp\Security\McpAuthenticationChallenge).
+        mcp:
+            pattern: ^/mcp$
+            stateless: true
+            oauth2: true
+            custom_authenticators:
+                - App\Security\PersonalAccessToken\PersonalAccessTokenAuthenticator
         # Browser session used only to sign in, approve OAuth2 authorization requests (with the consent screen for apps
         # that are not ours) and finish provider sign-ins.
         main:
@@ -60,6 +68,8 @@ security:
         # Google and Microsoft redirect here after a sign-in; the browser session ties it to the user who started it.
         - { path: ^/connect/, roles: ROLE_USER }
         - { path: ^/internal/, roles: IS_AUTHENTICATED_FULLY }
+        # A user's token (personal access token, our own apps or an app they allowed); never a sync worker's.
+        - { path: ^/mcp$, roles: MCP_USER }
         # What this server is: open before sign-in.
         - { path: ^/api/v1/server-info$, roles: PUBLIC_ACCESS }
         - { path: ^/api/, roles: IS_AUTHENTICATED_FULLY }

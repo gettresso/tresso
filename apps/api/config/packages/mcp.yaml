@@ -1,0 +1,48 @@
+# The MCP endpoint (/mcp, Streamable HTTP): settings tools for Claude and other MCP clients. Every tool runs the API
+# operation it names as a sub-request with the caller's own token (src/Mcp). The firewall `mcp` in security.yaml signs
+# requests in; the SDK's own authorization is not used.
+mcp:
+    servers:
+        default:
+            name: tresso
+            version: 1.0.0
+            description: 'Tresso: change the settings of your mail, such as signatures, smart inboxes and notifications.'
+            website_url: 'https://gettresso.com'
+            instructions: >-
+                Tools for the settings of the user's Tresso mail: signatures and the default signature per mail
+                account, mail accounts (name, pausing), smart inboxes and their senders, sender rules, batches, the
+                daily brief, notifications and devices, reminder rules, calendars and scheduling preferences. Start
+                with get_me to see who you act for and what this connection may do. Every tool acts as the user,
+                with the scopes they allowed this app; ids come from the list_ tools.
+            # One page lists every tool the caller may use (App\Mcp\ListAllowedToolsHandler answers tools/list itself).
+            pagination_limit: 200
+            transports:
+                http: true
+                stdio: false
+            http:
+                path: /mcp
+                # DNS-rebinding protection: the Host (and a cross-origin Origin) must be this server's public host.
+                allowed_hosts: ['%env(key:host:url:API_PUBLIC_URL)%']
+            session:
+                store: cache
+                cache_pool: mcp.session_cache
+                ttl: 3600
+            # The tools come from App\Mcp\ToolLoader. From attributes, only this application's own elements (the scopes
+            # guide, App\Mcp\ScopesResource), never those a bundle might ship.
+            registry:
+                resources: ['App\Mcp\']
+
+when@dev:
+    mcp:
+        servers:
+            default:
+                http:
+                    # Local clients reach the dev stack on loopback, whatever API_PUBLIC_URL says.
+                    allowed_hosts: ['%env(key:host:url:API_PUBLIC_URL)%', 'localhost', '127.0.0.1', '[::1]']
+
+when@test:
+    mcp:
+        servers:
+            default:
+                http:
+                    allowed_hosts: ['%env(key:host:url:API_PUBLIC_URL)%', 'localhost', '127.0.0.1', '[::1]']

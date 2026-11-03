@@ -20,3 +20,13 @@ framework:
                 adapter: cache.adapter.redis
                 provider: '%env(REDIS_URL)%'
 
+            # MCP sessions (config/packages/mcp.yaml); shared by every API instance, expire an hour after their last use.
+            cache.mcp_sessions:
+                adapter: cache.adapter.redis
+                provider: '%env(REDIS_URL)%'
+
+services:
+    # The MCP SDK stores sessions in a PSR-16 cache.
+    mcp.session_cache:
+        class: Symfony\Component\Cache\Psr16Cache
+        arguments: ['@cache.mcp_sessions']
