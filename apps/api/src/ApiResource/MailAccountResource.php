@@ -18,6 +18,7 @@ use App\Enum\CalendarSyncStatus;
 use App\Enum\MailAccountStatus;
 use App\Enum\MailProvider;
 use App\Mail\ServerSettings;
+use App\Security\FirstPartyClients;
 use App\Security\Scope;
 use App\State\MailAccountProcessor;
 use App\State\MailAccountProvider;
@@ -47,7 +48,7 @@ use App\State\MailAccountProvider;
         ),
         new Post(
             uriTemplate: '/mail-accounts',
-            security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')",
+            security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."') and is_granted('".FirstPartyClients::ATTRIBUTE."')",
             input: CreateMailAccount::class,
             read: false,
             processor: MailAccountProcessor::class,
@@ -61,7 +62,7 @@ use App\State\MailAccountProvider;
         ),
         new Delete(
             uriTemplate: '/mail-accounts/{id}',
-            security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')",
+            security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."') and is_granted('".FirstPartyClients::ATTRIBUTE."')",
             provider: MailAccountProvider::class,
             processor: MailAccountProcessor::class,
         ),

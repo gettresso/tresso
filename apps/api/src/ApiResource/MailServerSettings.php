@@ -9,6 +9,7 @@ use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\QueryParameter;
 use App\Mail\ServerSettings;
+use App\Security\FirstPartyClients;
 use App\Security\Scope;
 use App\State\MailServerSettingsProvider;
 use Symfony\Component\Validator\Constraints as Assert;
@@ -26,7 +27,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         new Get(
             uriTemplate: '/mail-server-settings',
             uriVariables: [],
-            security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')",
+            security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."') and is_granted('".FirstPartyClients::ATTRIBUTE."')",
             provider: MailServerSettingsProvider::class,
             normalizationContext: ['skip_null_values' => false],
             parameters: [

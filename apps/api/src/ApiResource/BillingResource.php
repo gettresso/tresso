@@ -10,6 +10,7 @@ use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\Post;
 use App\ApiResource\Input\Billing\BillingCheckoutInput;
 use App\ApiResource\Input\Billing\BillingPortalInput;
+use App\Security\FirstPartyClients;
 use App\Security\Scope;
 use App\State\BillingProcessor;
 use App\State\BillingProvider;
@@ -25,9 +26,9 @@ use App\State\BillingProvider;
     shortName: 'Billing',
     routePrefix: '/api/v1',
     operations: [
-        new Get(uriTemplate: '/billing', uriVariables: [], security: "is_granted('".Scope::ROLE_SETTINGS_READ."')", provider: BillingProvider::class),
-        new Post(uriTemplate: '/billing/checkout', status: 200, security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')", input: BillingCheckoutInput::class, output: BillingPage::class, read: false, processor: BillingProcessor::class),
-        new Post(uriTemplate: '/billing/portal', status: 200, security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')", input: BillingPortalInput::class, output: BillingPage::class, read: false, processor: BillingProcessor::class),
+        new Get(uriTemplate: '/billing', uriVariables: [], security: "is_granted('".Scope::ROLE_SETTINGS_READ."') and is_granted('".FirstPartyClients::ATTRIBUTE."')", provider: BillingProvider::class),
+        new Post(uriTemplate: '/billing/checkout', status: 200, security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."') and is_granted('".FirstPartyClients::ATTRIBUTE."')", input: BillingCheckoutInput::class, output: BillingPage::class, read: false, processor: BillingProcessor::class),
+        new Post(uriTemplate: '/billing/portal', status: 200, security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."') and is_granted('".FirstPartyClients::ATTRIBUTE."')", input: BillingPortalInput::class, output: BillingPage::class, read: false, processor: BillingProcessor::class),
     ],
 )]
 final readonly class BillingResource
