@@ -10,6 +10,7 @@ use App\Tests\Functional\ConnectsThirdPartyApps;
 use App\Tests\Functional\DatabaseTestCase;
 use App\Tests\Functional\StoresMail;
 use Doctrine\ORM\EntityManagerInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 final class CalendarInvitationTest extends DatabaseTestCase
 {
@@ -180,6 +181,52 @@ final class CalendarInvitationTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', '/api/v1/calendar-events', $withGuest, $this->kim);
         self::assertResponseStatusCodeSame(201, 'Our own apps have mail:send.');
         self::assertCount(1, $this->outgoing());
+    }
+
+    /**
+     * A guest on one occurrence of a series is told when the series changes or goes, so changing or deleting the
+     * series needs mail:send too, even though the series itself has no guests.
+     *
+     * @return iterable<string, array{string, string, array<string, mixed>|null}>
+     */
+    public static function seriesChangesThatTellAGuestOfOneOccurrence(): iterable
+    {
+        yield 'deleting the series' => ['DELETE', '', null];
+        yield 'deleting this and following' => ['DELETE', '?scope=following&recurrenceId=20261026T080000Z', null];
+        yield 'moving the series' => ['PUT', '', ['summary' => 'Weekly', 'recurrence' => 'FREQ=WEEKLY;COUNT=4', 'start' => ['dateTime' => '2026-10-19T11:00:00', 'timeZone' => 'Europe/Amsterdam'], 'end' => ['dateTime' => '2026-10-19T11:30:00', 'timeZone' => 'Europe/Amsterdam']]];
+    }
+
+    /**
+     * @param array<string, mixed>|null $body
+     */
+    #[DataProvider('seriesChangesThatTellAGuestOfOneOccurrence')]
+    public function testAGuestOnOneOccurrenceCountsForTheWholeSeries(string $method, string $query, ?array $body): void
+    {
+        $calendarOnly = $this->userHeaders('kim@example.test', ['mail:read', 'calendar:read', 'calendar:write']);
+        $calendarId = $this->localCalendarId($this->kim);
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($calendarId, ['summary' => 'Weekly', 'recurrence' => 'FREQ=WEEKLY;COUNT=4']), $calendarOnly);
+        self::assertResponseStatusCodeSame(201);
+        $seriesId = self::string($this->decodedResponse()['id']);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$seriesId.'?scope=this&recurrenceId=20261026T080000Z&notify=false', self::event($calendarId, [
+            'summary' => 'Weekly, with Anna',
+            'start' => ['dateTime' => '2026-10-26T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-26T09:30:00', 'timeZone' => 'Europe/Amsterdam'],
+            'attendees' => [['address' => 'anna@finance.example']],
+            'organizerMailAccountId' => $this->accountId,
+        ]), $calendarOnly);
+        self::assertResponseIsSuccessful('Adding a guest without telling her is fine.');
+
+        $uri = '/api/v1/calendar-events/'.$seriesId.$query;
+        if (null === $body) {
+            $this->client->request($method, $uri, server: $calendarOnly);
+        } else {
+            $this->client->jsonRequest($method, $uri, self::event($calendarId, $body), $calendarOnly);
+        }
+
+        self::assertResponseStatusCodeSame(403);
+        self::assertStringContainsString('mail:send', (string) $this->client->getResponse()->getContent());
+        self::assertSame([], $this->outgoing(), 'Nothing went out to the guest.');
+        self::assertSame(1, $this->countRows("SELECT COUNT(*) FROM calendar_event WHERE summary = 'Weekly, with Anna'"), 'The change was rolled back.');
     }
 
     public function testAnsweringOrApplyingAnInvitationNeedsMailSend(): void
