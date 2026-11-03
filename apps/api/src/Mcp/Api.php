@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Mcp;
 
+use App\Billing\PaymentWall;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpFoundation\Response;
@@ -14,6 +15,8 @@ use Symfony\Component\HttpKernel\HttpKernelInterface;
  * same scopes, voters, first-party checks, providers, validation and error messages as the REST call, and no way for a
  * tool to do what the API would not do with that token. The firewall does not run again (it only guards the main
  * request, which it already signed in); the sub-request carries the same `Authorization` header for code that reads it.
+ *
+ * A user the {@see PaymentWall} blocks gets the same 402 as over REST, before the operation runs.
  *
  * Answers with the decoded JSON body (an empty array for 204). A 4xx becomes an {@see ApiRefusal} with the API's
  * message and violations; a 5xx is a failure of ours and is thrown as such.
@@ -28,6 +31,7 @@ final readonly class Api
     public function __construct(
         private HttpKernelInterface $httpKernel,
         private RequestStack $requestStack,
+        private PaymentWall $paymentWall,
     ) {
     }
 
@@ -92,6 +96,11 @@ final readonly class Api
         // Paths are written by the tools, with ids checked by ToolArguments::id(); never a way out of the API.
         if (1 !== preg_match('#^(/[a-z0-9-]+)+$#', $path)) {
             throw new \LogicException(\sprintf('"%s" is not an API path an MCP tool may call.', $path));
+        }
+
+        // The payment wall only guards main requests itself; a tool is refused exactly where the REST call would be.
+        if ($this->paymentWall->blocks($method, self::PREFIX.$path)) {
+            throw new ApiRefusal(Response::HTTP_PAYMENT_REQUIRED, PaymentWall::DETAIL);
         }
 
         $main = $this->requestStack->getMainRequest();

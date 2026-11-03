@@ -28,6 +28,7 @@ final class ApiRefusal extends \RuntimeException
     {
         $lines = [match (true) {
             401 === $this->status => 'Not signed in: '.$this->detail,
+            402 === $this->status => 'Payment required: '.$this->detail,
             403 === $this->status => 'Not allowed: '.$this->detail,
             404 === $this->status => 'Not found: nothing with that id exists for this user.',
             409 === $this->status => 'Conflict: '.$this->detail,
