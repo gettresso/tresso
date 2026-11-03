@@ -144,11 +144,16 @@ curl -H "Authorization: Bearer $TRESSO_TOKEN" https://tresso.example/api/v1/sign
   it never counts as a first-party app or a sync worker. Anything else gets the same 401 as a rejected OAuth2 token.
   The last use (`last_used_at`) is written at most once a minute per token. The authenticator is meant to be reused on
   the planned `/mcp` firewall.
+- **Not for realtime.** `GET /api/v1/realtime/token` refuses personal access tokens (403): a Mercure subscriber token
+  lives an hour and would outlast revoking the token, and scripts and MCP clients fetch the delta instead. Personal
+  access tokens never reach `/internal/` either, since they cannot hold a `sync:*` scope.
 - **Managing tokens.** `GET` and `POST /api/v1/personal-access-tokens` and `DELETE
   /api/v1/personal-access-tokens/{id}` (revoke) need `settings:read` or `settings:write` and an access token of one of
   our own apps (web, desktop, mobile: the `FIRST_PARTY_CLIENT` check), so a personal access token or, later, a
-  third-party app can never make, see or revoke tokens. Users only see their own tokens; another user's id is a 404.
-  The list never contains a secret or a hash.
+  third-party app can never make, see or revoke tokens. A token gets no scope the signed-in session lacks (422).
+  Users only see their own tokens; another user's id is a 404. The list never contains a secret or a hash, and every
+  response of these endpoints is sent with `Cache-Control: no-store, private` and `Pragma: no-cache`, like
+  `/internal/`.
 
 Users log in with email + password (Argon2id) and, later, Google / Microsoft sign-in as identity providers. (Signing
 in with Google or Microsoft to connect a mail account is separate: see Provider sign-in below.)
