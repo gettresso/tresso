@@ -18,6 +18,7 @@ import { joinLabel } from '@/calendar/look'
 import AppIcon from '@/components/AppIcon.vue'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import { useCalendarStore, type InvitationConflict, type MessageInvitation, type Response } from '@/stores/calendar'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /** The calendar object a message carries: what it is about, the user's answer, and what else is planned then. */
 const props = defineProps<{ messageId: string }>()
@@ -156,7 +157,7 @@ function onKeydown(event: KeyboardEvent): void {
 
 <template>
   <section v-if="!missing" class="invitation" tabindex="0" aria-labelledby="invitation-title" @keydown="onKeydown">
-    <p v-if="loading" class="state">Loading the invitation…</p>
+    <p v-if="loading" class="state" role="status"><LogoLoader /> Loading the invitation…</p>
     <p v-else-if="invitation === null" class="state error" role="alert">
       The invitation could not be loaded. <button type="button" class="link" @click="load">Try again</button>
     </p>

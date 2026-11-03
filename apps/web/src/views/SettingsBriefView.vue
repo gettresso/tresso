@@ -8,6 +8,7 @@ import FieldLabel from '@/forms/FieldLabel.vue'
 import { briefSettingsSchema, type BriefSettingsValues } from '@/forms/brief'
 import { provideRequiredFields } from '@/forms/required'
 import { useBriefStore } from '@/stores/brief'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 provideRequiredFields(briefSettingsSchema)
 
@@ -90,7 +91,7 @@ const save = handleSubmit(async (current) => {
       </p>
     </header>
 
-    <p v-if="loading" class="state" role="status">Loading…</p>
+    <p v-if="loading" class="state" role="status"><LogoLoader /> Loading…</p>
 
     <template v-else>
       <label class="toggle">
@@ -130,7 +131,7 @@ const save = handleSubmit(async (current) => {
       <p v-if="savedNotice && !meta.dirty" class="saved" role="status">Saved.</p>
 
       <div class="actions">
-        <button type="submit" class="button button-primary" :disabled="saving || !meta.dirty">{{ saving ? 'Saving…' : 'Save' }}</button>
+        <button type="submit" class="button button-primary" :disabled="saving || !meta.dirty"><template v-if="saving"><LogoLoader tone="current" /> Saving…</template><template v-else>Save</template></button>
       </div>
     </template>
   </form>

@@ -11,6 +11,7 @@ import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const mail = useMailStore()
 const brief = useBriefStore()
@@ -174,7 +175,7 @@ function briefLabel(createdAt: string): string {
             <RouterLink :to="{ name: 'settings-brief' }" class="info-link">Brief settings</RouterLink>
           </div>
 
-          <p v-if="!loaded && view === null" class="empty" role="status">Loading the brief…</p>
+          <p v-if="!loaded && view === null" class="empty" role="status"><LogoLoader /> Loading the brief…</p>
           <p v-else-if="view === null && briefId !== null" class="empty">This brief is no longer here. Tresso keeps the last two weeks of briefs.</p>
           <div v-else-if="view === null" class="empty">
             <p>No brief yet. Once a day, mail that is good to know but asks nothing of you is gathered here, so it stays out of the way until then.</p>

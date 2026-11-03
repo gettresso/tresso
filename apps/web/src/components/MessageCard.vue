@@ -10,6 +10,7 @@ import InvitationCard from '@/components/InvitationCard.vue'
 import MessageFrame from '@/components/MessageFrame.vue'
 import PlainTextBody from '@/components/PlainTextBody.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const props = defineProps<{ message: SyncedMessage; expanded: boolean }>()
 const emit = defineEmits<{ toggle: [] }>()
@@ -84,7 +85,7 @@ watch(
 
     <div v-if="expanded" class="content">
       <InvitationCard v-if="message.calendarMethod !== null" :message-id="message.id" />
-      <p v-if="loading && body === null" class="state">Loading message…</p>
+      <p v-if="loading && body === null" class="state" role="status"><LogoLoader /> Loading message…</p>
       <p v-else-if="error" class="state error" role="alert">
         This message could not be loaded. <button type="button" class="link" @click="load(body?.remoteContentLoaded ?? false)">Try again</button>
       </p>

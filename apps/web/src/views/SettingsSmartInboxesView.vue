@@ -9,6 +9,7 @@ import { useSmartInboxesStore } from '@/stores/smartInboxes'
 import AppIcon from '@/components/AppIcon.vue'
 import SmartInboxMark from '@/components/SmartInboxMark.vue'
 import VerdictChip from '@/components/VerdictChip.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const store = useSmartInboxesStore()
 const mail = useMailStore()
@@ -82,7 +83,7 @@ onMounted(() => {
       <RouterLink :to="{ name: 'settings-smart-inbox', params: { smartInboxId: 'new' } }" class="button button-primary">New smart inbox</RouterLink>
     </header>
 
-    <p v-if="!mail.ready" class="state">Loading smart inboxes…</p>
+    <p v-if="!mail.ready" class="state" role="status"><LogoLoader /> Loading smart inboxes…</p>
 
     <table v-else class="table">
       <thead>
@@ -132,7 +133,7 @@ onMounted(() => {
       <h3 id="remembered-title">Remembered senders</h3>
       <p class="hint">When you move a conversation, Tresso remembers it for the sender. Forget one to let the rules decide again.</p>
       <p v-if="rulesError" class="form-error" role="alert">{{ rulesError }}</p>
-      <p v-if="rules === null && !rulesError" class="state">Loading…</p>
+      <p v-if="rules === null && !rulesError" class="state" role="status"><LogoLoader /> Loading…</p>
       <p v-else-if="rules !== null && rules.length === 0" class="state">Nothing remembered yet.</p>
       <ul v-else-if="rules !== null" class="rules">
         <li v-for="rule in rules" :key="rule.id" class="rule">

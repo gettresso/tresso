@@ -6,6 +6,7 @@ import type { SchedulingPreferences, SchedulingPreferencesUpdate } from '@tresso
 import { ApiError, errorMessage } from '@/api/errors'
 import { calendarSettingsSchema, type CalendarSettingsValues } from '@/forms/calendarSettings'
 import { useAuthStore } from '@/stores/auth'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const PATH = '/api/v1/calendar/scheduling-preferences'
 
@@ -57,7 +58,7 @@ const save = handleSubmit(async (current) => {
       <p class="lead">How Tresso uses your calendar for the things you have to do.</p>
     </header>
 
-    <p v-if="loading" class="state" role="status">Loading…</p>
+    <p v-if="loading" class="state" role="status"><LogoLoader /> Loading…</p>
 
     <template v-else>
       <label class="toggle">
@@ -80,7 +81,7 @@ const save = handleSubmit(async (current) => {
       </p>
 
       <div class="actions">
-        <button type="submit" class="button button-primary" :disabled="saving || !meta.dirty">{{ saving ? 'Saving…' : 'Save' }}</button>
+        <button type="submit" class="button button-primary" :disabled="saving || !meta.dirty"><template v-if="saving"><LogoLoader tone="current" /> Saving…</template><template v-else>Save</template></button>
       </div>
     </template>
   </form>

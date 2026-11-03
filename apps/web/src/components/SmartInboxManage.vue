@@ -20,6 +20,7 @@ import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import MenuButton from '@/components/MenuButton.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /**
  * Manages a smart inbox in bulk: everything it lists (or only what is older than an age) and each of its senders,
@@ -164,7 +165,7 @@ async function onSuggestion(item: CleanupSuggestion): Promise<void> {
       </div>
 
       <p v-if="bulk.progress" class="progress" role="status">
-        {{ bulk.progress }}
+        <LogoLoader v-if="bulk.running" /> {{ bulk.progress }}
         <button v-if="bulk.running" type="button" class="button button-quiet stop" @click="bulk.cancel()">Stop</button>
       </p>
 
@@ -175,7 +176,7 @@ async function onSuggestion(item: CleanupSuggestion): Promise<void> {
       </div>
 
       <p v-if="loadError" class="error" role="alert">The senders could not be loaded: {{ loadError }}</p>
-      <p v-else-if="stats === null" class="empty">Counting…</p>
+      <p v-else-if="stats === null" class="empty" role="status"><LogoLoader /> Counting…</p>
       <p v-else-if="stats.senders.length === 0" class="empty">Nothing in this smart inbox.</p>
 
       <div v-else role="table" :aria-label="`Senders of ${name}, most conversations first`" class="table">

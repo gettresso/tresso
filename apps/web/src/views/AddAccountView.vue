@@ -12,6 +12,7 @@ import { useAccountsStore } from '@/stores/accounts'
 import { useAuthStore } from '@/stores/auth'
 import { useMailStore } from '@/stores/mail'
 import ServerFields from '@/components/ServerFields.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 type Step = 'address' | 'settings' | 'connecting'
 
@@ -230,7 +231,7 @@ onBeforeUnmount(() => {
           :disabled="openingProvider !== null"
           @click="signInWith(provider.id)"
         >
-          {{ openingProvider === provider.id ? `Opening ${provider.name}…` : `Sign in with ${provider.name}` }}
+          <template v-if="openingProvider === provider.id"><LogoLoader /> Opening {{ provider.name }}…</template><template v-else>Sign in with {{ provider.name }}</template>
         </button>
         <label class="calendars">
           <input v-model="withCalendars" type="checkbox" />
@@ -253,7 +254,7 @@ onBeforeUnmount(() => {
       </label>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
       <div class="actions">
-        <button type="submit" class="button button-primary" :disabled="busy">{{ busy ? 'Looking up your provider…' : 'Continue' }}</button>
+        <button type="submit" class="button button-primary" :disabled="busy"><template v-if="busy"><LogoLoader tone="current" /> Looking up your provider…</template><template v-else>Continue</template></button>
       </div>
     </form>
 
@@ -319,7 +320,7 @@ onBeforeUnmount(() => {
         </div>
       </template>
       <template v-else>
-        <p class="lead">Signing in and fetching your folders…</p>
+        <p class="lead" role="status"><LogoLoader /> Signing in and fetching your folders…</p>
         <p v-if="waitedTooLong" class="note">
           This takes longer than usual. You can leave this page: the account keeps connecting, and its status shows under Accounts.
         </p>

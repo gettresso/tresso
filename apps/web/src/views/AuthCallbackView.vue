@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -34,6 +35,6 @@ watch(
       Sign-in failed: {{ error }}
       <RouterLink :to="{ name: 'unified' }">Try again</RouterLink>
     </p>
-    <p v-else>Signing you in…</p>
+    <p v-else role="status"><LogoLoader /> Signing you in…</p>
   </main>
 </template>

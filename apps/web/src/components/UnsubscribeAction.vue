@@ -4,6 +4,7 @@ import type { UnsubscribeOffer } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /** One-click unsubscribe for a conversation, as `unsubscribeOffer` describes it: a button, or how far the request got. */
 const props = defineProps<{ offer: UnsubscribeOffer | null }>()
@@ -45,11 +46,11 @@ async function unsubscribe(): Promise<void> {
     </template>
     <template v-else-if="offer.state === 'available'">
       <button type="button" class="button button-quiet action" :disabled="sending" :aria-label="sending ? undefined : `Unsubscribe from ${offer.sender}`" @click="unsubscribe">
-        {{ sending ? 'Unsubscribing…' : 'Unsubscribe' }}
+        <template v-if="sending"><LogoLoader tone="current" /> Unsubscribing…</template><template v-else>Unsubscribe</template>
       </button>
       <small v-if="offer.error && !sending" class="failed">The last attempt failed: {{ offer.error }}</small>
     </template>
-    <span v-else-if="offer.state === 'pending'" class="chip" role="status">Unsubscribing…</span>
+    <span v-else-if="offer.state === 'pending'" class="chip" role="status"><LogoLoader tone="current" /> Unsubscribing…</span>
     <span v-else class="chip done" role="status">Unsubscribed</span>
   </span>
 </template>

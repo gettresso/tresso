@@ -5,6 +5,7 @@ import BillingPanel from '@/components/BillingPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useBillingStore } from '@/stores/billing'
 import { vibrant } from '@/platform/vibrancy'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /**
  * Covers the app while the server answers 402: the trial or subscription is over. It shows why, lets an owner or admin
@@ -53,7 +54,7 @@ onMounted(() => {
       </p>
       <BillingPanel v-if="billing.status" />
       <p v-else-if="billing.error" class="form-error" role="alert">{{ billing.error }}</p>
-      <p v-else class="hint">Loading…</p>
+      <p v-else class="hint" role="status"><LogoLoader /> Loading…</p>
       <p v-if="stillBlocked" class="hint" role="status">Still not subscribed. A payment can take a moment to come through.</p>
       <div class="footer">
         <button type="button" class="button button-quiet" :disabled="checking" @click="checkAgain">I have paid, check again</button>

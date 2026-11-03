@@ -11,6 +11,7 @@ import { dueLabel, senderName } from '@/mail/format'
 import { useHandOversStore } from '@/stores/handOvers'
 import RecipientField from '@/components/RecipientField.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /** Hands a conversation over: forwarded to one person with a note, and waited on until the due date. */
 const props = defineProps<{ message: SyncedMessage }>()
@@ -153,7 +154,7 @@ onMounted(async () => {
 
         <footer class="actions">
           <button type="button" class="button button-quiet" :disabled="submitting" @click="cancel">Cancel <KeyShortcut keys="Esc" /></button>
-          <button type="submit" class="button button-primary" :disabled="submitting">{{ submitting ? 'Handing over…' : submitText }}</button>
+          <button type="submit" class="button button-primary" :disabled="submitting"><template v-if="submitting"><LogoLoader tone="current" /> Handing over…</template><template v-else>{{ submitText }}</template></button>
         </footer>
       </form>
     </section>

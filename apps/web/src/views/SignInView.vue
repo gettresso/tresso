@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import TressoMark from '@/components/TressoMark.vue'
 import { isDesktop } from '@/platform/desktop'
 import { chooseServer, defaultServer, normalizeServer, reachServer, server } from '@/platform/server'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const auth = useAuthStore()
 const signInError = ref<string | null>(null)
@@ -122,7 +123,7 @@ async function signIn(): Promise<void> {
           <small v-if="serverError" class="error" role="alert">{{ serverError }}</small>
         </label>
         <div class="server-actions">
-          <button type="submit" class="button button-primary" :disabled="checkingServer">{{ checkingServer ? 'Checking...' : 'Use this server' }}</button>
+          <button type="submit" class="button button-primary" :disabled="checkingServer"><template v-if="checkingServer"><LogoLoader tone="current" /> Checking...</template><template v-else>Use this server</template></button>
           <button v-if="!onDefault" type="button" class="button button-quiet" @click="useDefaultServer">Use {{ defaultName }}</button>
           <button type="button" class="button button-quiet" @click="closeServerForm">Cancel</button>
         </div>

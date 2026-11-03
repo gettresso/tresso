@@ -17,6 +17,7 @@ import { reducedMotion } from '@/components/calendar/genie'
 import { cardGhost } from '@/components/cardGhost'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const mail = useMailStore()
 const compose = useComposeStore()
@@ -298,14 +299,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
         <span><span class="count do">{{ progress.counts.do }}</span> do</span>
         <span><span class="count delegate">{{ progress.counts.delegate }}</span> handed over</span>
         <span><span class="count know">{{ progress.counts.know }}</span> noted</span>
-        <span v-if="saving" class="saving">Saving…</span>
+        <span v-if="saving" class="saving" role="status"><LogoLoader /> Saving…</span>
       </div>
     </header>
 
     <p class="visually-hidden" role="status">{{ announcement }}</p>
 
     <main class="stage">
-      <p v-if="!progress" class="state">Loading your mail…</p>
+      <p v-if="!progress" class="state" role="status"><LogoLoader /> Loading your mail…</p>
 
       <section v-else-if="current === null" class="state done" aria-labelledby="triage-done">
         <h1 id="triage-done" ref="doneTitle" tabindex="-1">{{ progress.total === 0 ? 'Nothing to triage' : more ? 'Round done' : 'All triaged' }}</h1>
@@ -321,7 +322,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
         </div>
       </section>
 
-      <p v-else-if="!thread || !newest" class="state next">Loading the next email…</p>
+      <p v-else-if="!thread || !newest" class="state next" role="status"><LogoLoader /> Loading the next email…</p>
 
       <div v-else class="column">
         <article ref="card" class="card" aria-labelledby="triage-subject">

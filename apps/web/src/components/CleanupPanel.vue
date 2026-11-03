@@ -6,6 +6,7 @@ import { errorMessage } from '@/api/errors'
 import { useBulkStore } from '@/stores/bulk'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /**
  * What to clean up, from fixed rules over the user's mail: each suggestion says what it found and why, with one button
@@ -48,11 +49,11 @@ async function clean(suggestion: CleanupSuggestion): Promise<void> {
 
     <div class="content">
       <p v-if="bulk.progress" class="progress" role="status">
-        {{ bulk.progress }}
+        <LogoLoader v-if="bulk.running" /> {{ bulk.progress }}
         <button v-if="bulk.running" type="button" class="button button-quiet stop" @click="bulk.cancel()">Stop</button>
       </p>
       <p v-if="loadError" class="error" role="alert">The suggestions could not be loaded: {{ loadError }}</p>
-      <p v-else-if="suggestions === null" class="empty">Looking through your mail…</p>
+      <p v-else-if="suggestions === null" class="empty" role="status"><LogoLoader /> Looking through your mail…</p>
       <p v-else-if="suggestions.length === 0" class="empty">Nothing to clean up right now.</p>
 
       <ul v-else class="cards">

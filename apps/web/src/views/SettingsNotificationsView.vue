@@ -8,6 +8,7 @@ import { mailNotificationPatch, mailNotificationSchema, mailNotificationValues, 
 import { isDesktop } from '@/platform/desktop'
 import { currentSubscription, disableWebPush, enableWebPush, webPushSupported } from '@/platform/webPush'
 import { useAuthStore } from '@/stores/auth'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const CHANNELS: { value: NotificationChannel; label: string; hint: string }[] = [
   { value: 'phone', label: 'Phone', hint: 'The Tresso app on your phone' },
@@ -95,7 +96,7 @@ onMounted(async () => {
       <h2>Notifications</h2>
       <p>Only new mail that needs you, judged Do or Hand over, unread in an inbox. Everything else waits until you look.</p>
     </header>
-    <p v-if="loading" class="state">Loading your settings…</p>
+    <p v-if="loading" class="state" role="status"><LogoLoader /> Loading your settings…</p>
     <form v-else class="mail" aria-label="Mail notifications" novalidate @submit.prevent="save">
       <fieldset class="channels">
         <legend>Notify me of new mail on</legend>

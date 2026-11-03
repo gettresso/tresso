@@ -9,6 +9,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import HighlightText from '@/components/HighlightText.vue'
 import SearchField from '@/components/SearchField.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const mail = useMailStore()
 const search = useSearchStore()
@@ -169,7 +170,7 @@ function threadLink(hit: SearchHit) {
                 </RouterLink>
               </li>
             </ul>
-            <p v-else-if="search.loading" class="empty">Searching…</p>
+            <p v-else-if="search.loading" class="empty" role="status"><LogoLoader /> Searching…</p>
             <p v-else class="empty">No mail matches this search.</p>
             <button v-if="search.page < search.totalPages" type="button" class="button button-quiet more" :disabled="search.loading" @click="search.more()">
               Show more results

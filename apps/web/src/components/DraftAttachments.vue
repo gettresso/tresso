@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { fileSize, SCAN_TEXT, type DraftAttachment } from '@tresso/core'
 import AppIcon from '@/components/AppIcon.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 defineProps<{ attachments: DraftAttachment[]; attaching: string[] }>()
 const emit = defineEmits<{ open: [id: string]; openUnscanned: [id: string]; remove: [id: string] }>()
@@ -48,7 +49,7 @@ function openAnyway(id: string): void {
       </button>
     </li>
     <li v-for="(name, index) in attaching" :key="`attaching-${index}`" class="attachment attaching" aria-busy="true">
-      <span class="icon"><AppIcon name="attachment" /></span>
+      <span class="icon"><LogoLoader /></span>
       <span class="text">
         <span class="name">{{ name }}</span>
         <span class="detail">Attaching…</span>

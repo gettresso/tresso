@@ -4,6 +4,7 @@ import { fileSize, type MessageAttachment, type ScanFailure } from '@tresso/core
 import { errorMessage } from '@/api/errors'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const props = defineProps<{ attachments: MessageAttachment[] }>()
 const mail = useMailStore()
@@ -74,7 +75,7 @@ function notScanned(attachment: MessageAttachment): string {
     <ul v-if="others.length > 0" class="files">
       <li v-for="attachment in others" :key="attachment.id" class="file">
         <span v-if="attachment.scanStatus === 'clean'" class="icon icon-clean"><AppIcon name="shield" /></span>
-        <span v-else-if="attachment.scanStatus === 'pending'" class="icon"><AppIcon name="scanning" /></span>
+        <span v-else-if="attachment.scanStatus === 'pending'" class="icon"><LogoLoader /></span>
         <span v-else class="icon"><AppIcon name="shieldAlert" /></span>
 
         <span class="text">

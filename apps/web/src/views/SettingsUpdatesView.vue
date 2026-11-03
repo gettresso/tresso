@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useUpdatesStore } from '@/stores/updates'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /** The desktop app's version, and a check for a newer one: Sparkle's window on macOS, the update card elsewhere. */
 const updates = useUpdatesStore()
@@ -43,7 +44,7 @@ const status = computed(() => {
       <p class="hint">This build does not update itself. Install a release to get updates.</p>
     </template>
     <template v-else>
-      <p class="hint" role="status">{{ status }}</p>
+      <p class="hint" role="status"><LogoLoader v-if="updates.phase === 'checking' && updates.channel !== 'sparkle'" /> {{ status }}</p>
       <p v-if="updates.error" class="form-error" role="alert">{{ updates.error }}</p>
       <div class="actions">
         <button

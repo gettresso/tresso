@@ -13,6 +13,7 @@ import { useTodosStore } from '@/stores/todos'
 import type { SidebarPage } from '@/components/sidebarPage'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import TickCount from '@/components/TickCount.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const props = defineProps<{
   displayName: string
@@ -169,7 +170,7 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
       <span class="label">Settings</span>
     </RouterLink>
 
-    <p class="live" :class="{ on: live }" role="status">{{ live ? 'Up to date' : 'Connecting…' }}</p>
+    <p class="live" :class="{ on: live }" role="status"><LogoLoader v-if="!live" size="12" class="connecting" />{{ live ? 'Up to date' : 'Connecting…' }}</p>
   </nav>
 </template>
 
@@ -315,20 +316,18 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
   font-size: 12px;
   color: var(--ink-3);
 }
-.live::before {
+.live.on::before {
   content: '';
   display: inline-block;
   width: 6px;
   height: 6px;
   margin-right: 6px;
   border-radius: 999px;
-  background: var(--ink-3);
+  background: var(--know);
   vertical-align: middle;
 }
-.live::before {
-  transition: background-color var(--motion-base) ease;
-}
-.live.on::before {
-  background: var(--know);
+.connecting {
+  margin-right: 6px;
+  vertical-align: -1px;
 }
 </style>

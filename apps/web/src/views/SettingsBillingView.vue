@@ -5,11 +5,13 @@ import type { BillingStatus } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import BillingPanel from '@/components/BillingPanel.vue'
 import { useBillingStore } from '@/stores/billing'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /** The subscription of each of the user's organizations; Stripe Checkout and the portal return here. */
 const billing = useBillingStore()
 const route = useRoute()
 const router = useRouter()
+const CONFIRMING = 'Confirming the payment…'
 const notice = ref<string | null>(null)
 
 /** After Checkout, Stripe's webhook takes a moment: look again a few times until the subscription shows. */
@@ -55,7 +57,7 @@ onMounted(async () => {
   }
   try {
     if (checkout === 'done') {
-      notice.value = 'Confirming the payment…'
+      notice.value = CONFIRMING
       await waitForSubscription(WAIT_TRIES)
     } else {
       if (checkout === 'cancelled') {
@@ -84,7 +86,7 @@ onBeforeUnmount(() => {
       <h2>Subscription</h2>
       <p>Tresso Cloud is paid per member. Everything Tresso does is the same on your own server, for free.</p>
     </header>
-    <p v-if="notice" class="hint" role="status">{{ notice }}</p>
+    <p v-if="notice" class="hint" role="status"><LogoLoader v-if="notice === CONFIRMING" /> {{ notice }}</p>
     <BillingPanel v-if="billing.status?.enabled" />
     <p v-else-if="billing.status" class="hint">This server does not bill: everything is included.</p>
     <p v-else-if="billing.error" class="form-error" role="alert">{{ billing.error }}</p>

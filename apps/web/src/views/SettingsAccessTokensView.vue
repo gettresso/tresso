@@ -18,6 +18,7 @@ import { personalAccessTokenSchema, type PersonalAccessTokenValues } from '@/for
 import { provideRequiredFields } from '@/forms/required'
 import { backdropClose } from '@/components/backdropClose'
 import { usePersonalAccessTokensStore } from '@/stores/personalAccessTokens'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 provideRequiredFields(personalAccessTokenSchema)
 
@@ -182,7 +183,7 @@ function selectSecret(event: FocusEvent): void {
       <button type="button" class="button new" @click="openDialog">New token</button>
     </header>
 
-    <p v-if="loading" class="state" role="status">Loading tokens…</p>
+    <p v-if="loading" class="state" role="status"><LogoLoader /> Loading tokens…</p>
     <p v-else-if="loadError" class="form-error" role="alert">{{ loadError }}</p>
     <p v-else-if="store.tokens.length === 0" class="state">No access tokens yet.</p>
 
@@ -269,7 +270,7 @@ function selectSecret(event: FocusEvent): void {
           <p v-if="createError" class="form-error" role="alert">{{ createError }}</p>
 
           <div class="actions">
-            <button type="submit" class="button button-primary" :disabled="saving">{{ saving ? 'Creating…' : 'Create token' }}</button>
+            <button type="submit" class="button button-primary" :disabled="saving"><template v-if="saving"><LogoLoader tone="current" /> Creating…</template><template v-else>Create token</template></button>
             <button type="button" class="button button-quiet" :disabled="saving" @click="closeDialog">Cancel</button>
           </div>
         </form>

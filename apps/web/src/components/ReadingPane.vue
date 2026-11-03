@@ -16,6 +16,7 @@ import ClassificationMenu from '@/components/ClassificationMenu.vue'
 import MessageCard from '@/components/MessageCard.vue'
 import MenuButton from '@/components/MenuButton.vue'
 import UnsubscribeAction from '@/components/UnsubscribeAction.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const props = defineProps<{ threadId: string; backTo: string }>()
 
@@ -210,7 +211,7 @@ onBeforeUnmount(() => {
       This conversation could not be loaded: {{ mail.syncError }}. It opens once Tresso can sync again.
       <button type="button" class="button button-quiet" @click="mail.syncNow()">Try again</button>
     </p>
-    <p v-else-if="notFound && !missing" class="state" role="status">Loading the conversation…</p>
+    <p v-else-if="notFound && !missing" class="state" role="status"><LogoLoader /> Loading the conversation…</p>
     <p v-if="missing" class="missing">This conversation no longer exists. <RouterLink :to="backTo">Back to the inbox</RouterLink></p>
     <div v-else-if="thread" class="inner">
       <div class="actions" role="group" aria-label="Conversation actions">

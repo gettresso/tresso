@@ -13,6 +13,7 @@ import MenuButton from '@/components/MenuButton.vue'
 import SearchField from '@/components/SearchField.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import { collapseLeave, expandEnter } from '@/components/listMotion'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const props = defineProps<{
   title: string
@@ -182,7 +183,7 @@ const days = computed(() => {
         Connect a mail account to see your mail here. <RouterLink :to="{ name: 'settings-accounts-new' }">Add account</RouterLink>
       </p>
       <p v-else-if="conversations.length === 0 && !loading" class="empty">{{ emptyText ?? 'Nothing in this inbox.' }}</p>
-      <p v-if="conversations.length === 0 && loading" class="empty">Loading your mail…</p>
+      <p v-if="conversations.length === 0 && loading" class="empty" role="status"><LogoLoader /> Loading your mail…</p>
       <button v-if="hasMore" type="button" class="button button-quiet more" @click="emit('showMore')">Show older mail</button>
     </div>
   </section>

@@ -8,6 +8,7 @@ import { providerName, type MailAccount, type OAuthProviderId, type ProviderFeat
 import { ApiError, errorMessage } from '@/api/errors'
 import { providerAccountSchema, type ProviderAccountValues } from '@/forms/accounts'
 import { useAccountsStore } from '@/stores/accounts'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 /** The name of a Gmail or Microsoft 365 account, and signing in with the provider again. */
 const props = defineProps<{ account: MailAccount; provider: OAuthProviderId }>()
@@ -91,7 +92,7 @@ async function signInAgain(features?: ProviderFeature[]): Promise<void> {
       <button type="submit" class="button button-primary" :disabled="saving">Save changes</button>
       <button type="button" class="button button-quiet" :disabled="saving" @click="reset">Undo changes</button>
       <button type="button" class="button button-quiet" :disabled="signingIn" @click="signInAgain()">
-        {{ signingIn ? `Opening ${providerName(provider)}…` : `Sign in with ${providerName(provider)} again` }}
+        <template v-if="signingIn"><LogoLoader /> Opening {{ providerName(provider) }}…</template><template v-else>Sign in with {{ providerName(provider) }} again</template>
       </button>
     </div>
   </form>

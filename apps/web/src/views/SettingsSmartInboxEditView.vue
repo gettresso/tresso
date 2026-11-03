@@ -14,6 +14,7 @@ import { useSmartInboxesStore } from '@/stores/smartInboxes'
 import AppIcon from '@/components/AppIcon.vue'
 import SenderListField from '@/components/SenderListField.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 provideRequiredFields(smartInboxSchema)
 
@@ -177,7 +178,7 @@ function saveShortcut(event: KeyboardEvent): void {
       </span>
     </header>
 
-    <p v-if="!isNew && !mail.ready" class="state">Loading…</p>
+    <p v-if="!isNew && !mail.ready" class="state" role="status"><LogoLoader /> Loading…</p>
 
     <template v-else>
       <label class="field">

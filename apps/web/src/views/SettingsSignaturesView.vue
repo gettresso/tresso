@@ -11,6 +11,7 @@ import { useMailStore } from '@/stores/mail'
 import { useSignaturesStore } from '@/stores/signatures'
 import SignaturePreview from '@/components/SignaturePreview.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const NEW = 'new'
 
@@ -202,7 +203,7 @@ function saveShortcut(event: KeyboardEvent): void {
       <button type="button" class="button new" :disabled="saving" @click="startNew">New signature</button>
     </header>
 
-    <p v-if="!mail.ready" class="state">Loading signatures…</p>
+    <p v-if="!mail.ready" class="state" role="status"><LogoLoader /> Loading signatures…</p>
     <p v-else-if="store.signatures.length === 0 && selectedId !== NEW" class="state">
       No signatures yet. Create one to add it to new messages automatically.
     </p>

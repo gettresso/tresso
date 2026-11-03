@@ -6,6 +6,7 @@ import { errorMessage } from '@/api/errors'
 import { useAccountsStore } from '@/stores/accounts'
 import { useMailStore } from '@/stores/mail'
 import AccountCard from '@/components/AccountCard.vue'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const accounts = useAccountsStore()
 const mail = useMailStore()
@@ -55,7 +56,7 @@ watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.
 
     <p v-if="signInResult" :class="signInResult.ok ? 'done' : 'form-error'" :role="signInResult.ok ? 'status' : 'alert'">{{ signInResult.text }}</p>
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-    <p v-else-if="!accounts.loaded" class="state">Loading accounts…</p>
+    <p v-else-if="!accounts.loaded" class="state" role="status"><LogoLoader /> Loading accounts…</p>
     <p v-else-if="accounts.accounts.length === 0" class="state">No mail accounts yet. Add one to see your mail in Tresso.</p>
 
     <AccountCard v-for="account in accounts.accounts" :key="account.id" :account="account" />

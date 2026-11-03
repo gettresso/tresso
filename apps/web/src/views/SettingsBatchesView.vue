@@ -9,6 +9,7 @@ import { batchScheduleSchema, browserTimeZone, timeZones, type BatchScheduleValu
 import { provideRequiredFields } from '@/forms/required'
 import { useBatchesStore } from '@/stores/batches'
 import { useMailStore } from '@/stores/mail'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 provideRequiredFields(batchScheduleSchema)
 
@@ -110,7 +111,7 @@ const save = handleSubmit(async (current) => {
     <p v-if="batches.schedule === null && batches.error" class="form-error" role="alert">
       {{ batches.error }} <button type="button" class="button button-quiet" @click="batches.reload()">Try again</button>
     </p>
-    <p v-else-if="batches.schedule === null" class="state">Loading…</p>
+    <p v-else-if="batches.schedule === null" class="state" role="status"><LogoLoader /> Loading…</p>
 
     <template v-else>
       <fieldset class="times">

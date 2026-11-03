@@ -4,6 +4,7 @@ import { personalAccessTokenScopeLabel, type ConnectedApp } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { backdropClose } from '@/components/backdropClose'
 import { useConnectedAppsStore } from '@/stores/connectedApps'
+import LogoLoader from '@/components/LogoLoader.vue'
 
 const store = useConnectedAppsStore()
 const loading = ref(true)
@@ -82,7 +83,7 @@ async function disconnect(): Promise<void> {
       </p>
     </header>
 
-    <p v-if="loading" class="state" role="status">Loading apps…</p>
+    <p v-if="loading" class="state" role="status"><LogoLoader /> Loading apps…</p>
     <p v-else-if="loadError" class="form-error" role="alert">{{ loadError }}</p>
     <p v-else-if="store.apps.length === 0" class="state">No connected apps. When an app asks to use your account and you allow it, it shows up here.</p>
 
@@ -118,7 +119,7 @@ async function disconnect(): Promise<void> {
       <p v-if="disconnectError" class="form-error" role="alert">{{ disconnectError }}</p>
       <div class="actions">
         <button type="button" class="button button-danger" :disabled="disconnecting" @click="disconnect">
-          {{ disconnecting ? 'Disconnecting…' : 'Disconnect' }}
+          <template v-if="disconnecting"><LogoLoader tone="current" /> Disconnecting…</template><template v-else>Disconnect</template>
         </button>
         <button type="button" class="button button-quiet" :disabled="disconnecting" @click="close">Keep it</button>
       </div>
