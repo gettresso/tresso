@@ -66,7 +66,15 @@ final readonly class McpSessionOwner implements EventSubscriberInterface
         }
 
         $sessionId = (string) $request->headers->get(StreamableHttpTransport::SESSION_HEADER, '');
+        if ('' === $sessionId) {
+            return;
+        }
+
+        // Session ids are handed out as RFC 9562 text. The SDK would also read the same id written in base58, base32
+        // or binary, which would get around a check of the text form only: anything else is no session of ours.
         if (!Uuid::isValid($sessionId)) {
+            $this->refuse($event, 'MCP session refused: the session id is not written as a UUID.');
+
             return;
         }
 
@@ -81,7 +89,12 @@ final readonly class McpSessionOwner implements EventSubscriberInterface
             return;
         }
 
-        $this->logger->warning('MCP session refused: it was started by another user or app.');
+        $this->refuse($event, 'MCP session refused: it was started by another user or app.');
+    }
+
+    private function refuse(RequestEvent $event, string $reason): void
+    {
+        $this->logger->warning($reason);
         $event->setResponse(new JsonResponse(
             json_encode(Error::forInvalidRequest('Session not found or has expired.'), \JSON_THROW_ON_ERROR),
             Response::HTTP_NOT_FOUND,
