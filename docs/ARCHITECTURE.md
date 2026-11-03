@@ -181,8 +181,9 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   `none` (or left out), grants `authorization_code` and optionally `refresh_token` (both when left out), response
   type `code`. `client_name` is required (at most 100 characters; after NFKC folding only Latin letters and characters
   every script shares; no control or formatting characters such as right-to-left overrides and no spaces but the
-  ordinary one; nothing whose skeleton reads "tresso" inside a word or across separators from the start of a word, so
-  `Tress0`, `Trezzo`, `𝐓𝐫𝐞𝐬𝐬𝐨`, `T r e s s o` and `Tres-so` are refused while `Fortress Office` is not) and is what the consent screen calls the app. `redirect_uris` is required, at most 10, plain ASCII: `https://` on a host of ASCII letters, digits,
+  ordinary one; nothing whose skeleton (look-alikes such as `€`, `°`, `ɵ` and `℮` merged) reads "tresso" inside a
+  word, or across separators unless it starts at least three letters into a word, so `Tress0`, `Tr€sso`,
+  `𝐓𝐫𝐞𝐬𝐬𝐨`, `T r e s s o` and `MyTres so` are refused while `Fortress Office` and `Mattress Sort` are not) and is what the consent screen calls the app. `redirect_uris` is required, at most 10, plain ASCII: `https://` on a host of ASCII letters, digits,
   hyphens and dots (internationalized names as punycode), `http://` only on `127.0.0.1`, `[::1]` or `localhost`, or
   an app's own scheme in reverse-domain form (`com.example.app:/cb`). Never a fragment, a wildcard, credentials, a
   backslash or percent sign in the host, a one-word scheme (`smb:`, `ms-msdt:`, `cursor:`), a scheme of the operating
