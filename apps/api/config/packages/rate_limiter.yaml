@@ -1,0 +1,29 @@
+framework:
+    rate_limiter:
+        # Dynamic client registration (POST /oauth/register) per IP address. Generous, because hosted MCP clients
+        # register from a few shared addresses for all of their users; unused registrations are deleted after 30 days.
+        oauth_client_registration:
+            policy: sliding_window
+            limit: 60
+            interval: '1 hour'
+            cache_pool: cache.rate_limiter_shared
+
+when@dev: &redis_limits
+    framework:
+        cache:
+            pools:
+                # Shared by every API instance, so a limit holds across them.
+                cache.rate_limiter_shared:
+                    adapter: cache.adapter.redis
+                    provider: '%env(REDIS_URL)%'
+
+when@prod: *redis_limits
+
+when@test:
+    framework:
+        cache:
+            pools:
+                # Kept across requests (unlike an array, which is reset after every request), and apart from the
+                # Redis of the running stack. Tests reset the limits they use.
+                cache.rate_limiter_shared:
+                    adapter: cache.adapter.filesystem

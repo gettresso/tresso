@@ -1,0 +1,59 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Allow {{ app_name }}?{% endblock %}
+
+{% block body %}
+    <main class="page">
+        <div class="brand">
+            <svg class="mark" width="32" height="32" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="3" y="4" width="8.5" height="5" rx="2.5" class="do"/>
+                <rect x="12.5" y="4" width="8.5" height="5" rx="2.5" class="delegate"/>
+                <rect x="9.5" y="10.5" width="5" height="10" rx="2.5" class="know"/>
+            </svg>
+            Tresso
+        </div>
+
+        <section class="card consent" aria-labelledby="consent-title">
+            <h1 id="consent-title">Allow {{ app_name }}?</h1>
+            <p class="lead">
+                This app wants to use your Tresso account
+                <strong>{{ email }}</strong>.
+            </p>
+
+            <p class="address">
+                <span class="address-label">It sends you back to</span>
+                <strong class="address-domain">{{ address.domain }}</strong>
+                {% if address.onThisComputer %}
+                    <span class="address-note">An app on this computer.</span>
+                {% endif %}
+            </p>
+
+            <p class="warning">
+                Tresso has not checked this app, and anyone can give an app any name. Only allow it if you started this
+                yourself and trust where it sends you.
+            </p>
+
+            {% if error %}
+                <p class="error" role="alert">{{ error }}</p>
+            {% endif %}
+
+            <h2 class="scopes-title">It will be able to</h2>
+            <ul class="scopes">
+                {% for scope in scopes %}
+                    <li>
+                        <strong>{{ scope.label }}</strong>
+                        <span>{{ scope.description }}</span>
+                    </li>
+                {% endfor %}
+            </ul>
+
+            <form class="form decision" method="post" action="{{ action }}">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token(csrf_token_id) }}">
+                <button type="submit" name="decision" value="allow" class="button">Allow</button>
+                <button type="submit" name="decision" value="deny" class="button button-secondary">Deny</button>
+            </form>
+        </section>
+
+        <p class="footnote">You can disconnect the app any time under Settings, Connected apps.</p>
+    </main>
+{% endblock %}

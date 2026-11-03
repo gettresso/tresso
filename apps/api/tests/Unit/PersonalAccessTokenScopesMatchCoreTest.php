@@ -9,7 +9,7 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * The web client offers the scopes in packages/core (PERSONAL_ACCESS_TOKEN_SCOPES); they must be exactly the ones the
- * API accepts for a personal access token. Needs the whole repository: in the dev container only apps/api is mounted,
+ * API accepts for a personal access token (and for an app that is not ours), named as on the consent screen. Needs the whole repository: in the dev container only apps/api is mounted,
  * so it is skipped there and runs in CI.
  */
 final class PersonalAccessTokenScopesMatchCoreTest extends TestCase
@@ -37,5 +37,24 @@ final class PersonalAccessTokenScopesMatchCoreTest extends TestCase
         sort($offered);
         sort($accepted);
         self::assertSame($accepted, $offered);
+    }
+
+    /** The consent screen (server-side) names scopes the way the web app does. */
+    public function testCoreNamesTheScopesAsTheConsentScreenDoes(): void
+    {
+        $root = \dirname(__DIR__, 4);
+        if (!is_dir($root.self::CORE)) {
+            self::markTestSkipped('packages/core is not next to apps/api here (the dev container mounts apps/api only).');
+        }
+
+        $source = file_get_contents($root.self::FILE);
+        self::assertIsString($source, 'packages/core/src/personalAccessTokens.ts is missing.');
+        preg_match_all("/\\{ value: '([^']+)', label: '([^']+)', description: '([^']+)' \\}/", $source, $entries, \PREG_SET_ORDER);
+        self::assertCount(\count(Scope::personalAccessTokenScopes()), $entries);
+        foreach ($entries as [, $value, $label, $description]) {
+            $scope = Scope::from($value);
+            self::assertSame($scope->label(), $label, $value);
+            self::assertSame($scope->description(), $description, $value);
+        }
     }
 }

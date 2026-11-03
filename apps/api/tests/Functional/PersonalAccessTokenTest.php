@@ -381,7 +381,8 @@ final class PersonalAccessTokenTest extends DatabaseTestCase
     }
 
     /**
-     * Signs the user in to a client that is not one of our own apps, approved as the planned consent screen would.
+     * Signs the user in to a client that is not one of our own apps, approved directly as if the user allowed it on the
+     * consent screen (ThirdPartyOAuthTest goes through the screen itself).
      *
      * @param list<non-empty-string> $scopes
      *
