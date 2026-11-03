@@ -172,8 +172,13 @@ Planned, on top of organizations: teams, shared inboxes, assignments, internal c
   90 or 365 days; only a hash is stored, the last use is recorded once a minute, and revoked or expired tokens are
   deleted after 30 days
 
-Planned: third-party apps (a consent screen and dynamic client registration), webhooks, MCP endpoint (accepting
-personal access tokens), developer tools, statistics, Year in mail.
+- [x] 4.7 Third-party apps and MCP clients: authorization server and protected resource metadata (RFC 8414, RFC 9728,
+  also for the coming `/mcp`), dynamic client registration for public clients (RFC 7591, limited per IP address,
+  unused registrations deleted after 30 days), a consent screen that remembers what the user allowed, and Settings,
+  Connected apps to see and disconnect them (which revokes their tokens)
+
+Planned: webhooks, MCP endpoint (accepting personal access tokens and third-party apps), developer tools, statistics,
+Year in mail.
 
 ## Phase 5: Tresso Cloud
 
