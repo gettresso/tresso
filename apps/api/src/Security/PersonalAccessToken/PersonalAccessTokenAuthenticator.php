@@ -32,22 +32,31 @@ final readonly class PersonalAccessTokenAuthenticator implements AuthenticatorIn
     {
     }
 
-    public static function presentsPersonalAccessToken(Request $request): bool
+    /**
+     * The personal access token secret the request carries, exactly as sent, or null when it carries none. The one
+     * place that decides whether a request is for this authenticator ({@see supports()}) or for OAuth2
+     * ({@see OAuth2SkipsPersonalAccessTokens}).
+     */
+    public static function secretFrom(Request $request): ?string
     {
         $header = (string) $request->headers->get('Authorization', '');
+        if (!str_starts_with($header, self::BEARER)) {
+            return null;
+        }
+        $secret = substr($header, \strlen(self::BEARER));
 
-        return str_starts_with($header, self::BEARER) && PersonalAccessTokens::looksLikeSecret(substr($header, \strlen(self::BEARER)));
+        return PersonalAccessTokens::looksLikeSecret($secret) ? $secret : null;
     }
 
     public function supports(Request $request): bool
     {
-        return self::presentsPersonalAccessToken($request);
+        return null !== self::secretFrom($request);
     }
 
     public function authenticate(Request $request): Passport
     {
-        $secret = trim(substr((string) $request->headers->get('Authorization', ''), \strlen(self::BEARER)));
-        $token = $this->tokens->findUsable($secret);
+        $secret = self::secretFrom($request);
+        $token = null === $secret ? null : $this->tokens->findUsable($secret);
         if (null === $token) {
             throw OAuth2AuthenticationFailedException::create('The resource server rejected the request.');
         }
