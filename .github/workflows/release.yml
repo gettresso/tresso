@@ -629,3 +629,39 @@ jobs:
             fi
             docker buildx imagetools create "${tags[@]}" "ghcr.io/${OWNER}/${image}:${VERSION}"
           done
+
+  cloud:
+    name: Tell Tresso Cloud
+    needs: [version, image-latest]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && needs.version.outputs.prerelease != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Tresso Cloud (gettresso/tresso-internal) deploys the newest stable release when told; a fix for an older line
+      # stays off it, as it stays off the latest image tag. The token may only send this event; without it, Tresso Cloud
+      # is deployed by hand. Forks and self-hosted servers have no such token and skip this.
+      - name: Send the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TRESSO_CLOUD_DISPATCH_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "No TRESSO_CLOUD_DISPATCH_TOKEN: Tresso Cloud is not told about ${VERSION}."
+            exit 0
+          fi
+          newest=$(git tag --list 'v*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          if [ "${VERSION}" != "${newest}" ]; then
+            echo "${VERSION} is not the newest release (${newest}); Tresso Cloud keeps running that."
+            exit 0
+          fi
+          gh api --method POST repos/gettresso/tresso-internal/dispatches \
+            -f event_type=tresso-release -f "client_payload[version]=${VERSION}" >/dev/null
+          echo "Told Tresso Cloud to deploy ${VERSION}."
