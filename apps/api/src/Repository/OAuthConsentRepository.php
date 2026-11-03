@@ -25,6 +25,20 @@ class OAuthConsentRepository extends ServiceEntityRepository
         return $this->findOneBy(['user' => $user, 'client' => $clientIdentifier]);
     }
 
+    /** By the user identifier the OAuth2 server keeps on its tokens (the email address). */
+    public function findOneForUserIdentifier(string $userIdentifier, string $clientIdentifier): ?OAuthConsent
+    {
+        /** @var OAuthConsent|null */
+        return $this->createQueryBuilder('c')
+            ->join('c.user', 'u')
+            ->where('u.email = :email')
+            ->andWhere('c.client = :client')
+            ->setParameter('email', $userIdentifier)
+            ->setParameter('client', $clientIdentifier)
+            ->getQuery()
+            ->getOneOrNullResult();
+    }
+
     /** @return list<OAuthConsent> newest first, with their clients */
     public function findOwnedBy(User $user): array
     {
