@@ -331,7 +331,7 @@ git tag -s v0.1.0 -m "Tresso 0.1.0" && git push origin v0.1.0
 ```
 
 The version comes from the tag, so nothing needs bumping first. The release also publishes the update feeds that installed apps read from the latest release: `appcast.xml` for Sparkle and `latest.json` for Tauri's updater ([scripts/update-feeds.mjs](scripts/update-feeds.mjs), which refuses a release with any update unsigned or signed for another version). The release stays a draft until both feeds are uploaded, so no app sees a release without them. Signing the updates needs three repository secrets: `SPARKLE_PRIVATE_KEY` (EdDSA, macOS), and `TAURI_SIGNING_PRIVATE_KEY` with `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (Windows, Linux). Their public halves are in `apps/desktop/src-tauri/Info.plist` and `tauri.conf.json`. The private keys live in 1Password (vault Employee: "Sparkle update signing key (Tresso)" and "Tauri updater signing key (Tresso)"), and the secrets are set from there, for example `op read --no-newline "op://Employee/Sparkle update signing key (Tresso)/password" | gh secret set SPARKLE_PRIVATE_KEY`. Never rotate them: installed apps trust only these keys, so a new key means they can never update again. A release talks to Tresso Cloud
-(`https://api.tresso.app`) until the user picks another server. A pull request that changes the release, the desktop
+(`https://api.gettresso.com`) until the user picks another server. A pull request that changes the release, the desktop
 app or the install scripts builds every platform without publishing.
 
 ## 📚 Documentation

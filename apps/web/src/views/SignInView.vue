@@ -9,7 +9,7 @@ const auth = useAuthStore()
 const signInError = ref<string | null>(null)
 
 /** The desktop app signs in to the hosted Tresso unless the user names their own server here. */
-const CLOUD_HOST = 'api.tresso.app'
+const CLOUD_HOST = 'api.gettresso.com'
 const onDefault = computed(() => server.value === defaultServer)
 const defaultName = computed(() => (new URL(defaultServer).host === CLOUD_HOST ? 'Tresso Cloud' : new URL(defaultServer).host))
 const serverName = computed(() => (onDefault.value ? defaultName.value : new URL(server.value).host))
