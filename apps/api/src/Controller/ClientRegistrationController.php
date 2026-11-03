@@ -8,6 +8,7 @@ use App\Security\OAuth\ClientRegistration;
 use App\Security\OAuth\ClientRegistrationRefused;
 use App\Security\OAuth\ClientRegistrationRequest;
 use App\Security\OAuth\RedirectUriPolicy;
+use App\Security\OAuth\TressoLookalikes;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\Exception\JsonException;
@@ -18,29 +19,53 @@ use Symfony\Component\RateLimiter\RateLimiterFactoryInterface;
 use Symfony\Component\Routing\Attribute\Route;
 
 /**
- * Dynamic client registration (RFC 7591) for apps that are not ours, such as MCP clients: open to anyone, limited per
- * IP address. The body is client metadata as RFC 7591 defines it, with its own error format (3.2.2), so it is read as
- * plain JSON rather than mapped onto a DTO: unknown fields must be ignored, and every refusal names an RFC error code.
+ * Dynamic client registration (RFC 7591) for apps that are not ours, such as MCP clients: open to anyone, limited
+ * per IPv4 address or IPv6 /64 and in total. The body is client metadata as RFC 7591 defines it, with its own error
+ * format (3.2.2), so it is read as plain JSON rather than mapped onto a DTO: unknown fields must be ignored, and every
+ * refusal names an RFC error code.
  */
 final class ClientRegistrationController extends AbstractController
 {
     public function __construct(
         private readonly ClientRegistration $registration,
         private readonly RedirectUriPolicy $redirectUris,
+        private readonly TressoLookalikes $tresso,
         #[Autowire(service: 'limiter.oauth_client_registration')]
         private readonly RateLimiterFactoryInterface $limiter,
+        #[Autowire(service: 'limiter.oauth_client_registration_global')]
+        private readonly RateLimiterFactoryInterface $globalLimiter,
     ) {
+    }
+
+    /**
+     * What one sender is: an IPv4 address, or the /64 network of an IPv6 address (one network usually gets a whole /64,
+     * so counting single IPv6 addresses would limit nothing).
+     */
+    public static function limitKey(?string $ip): string
+    {
+        if (null === $ip) {
+            return 'unknown';
+        }
+        $packed = filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_IPV6) ? inet_pton($ip) : false;
+        if (false === $packed || 16 !== \strlen($packed)) {
+            return $ip;
+        }
+        $network = inet_ntop(substr($packed, 0, 8).str_repeat("\0", 8));
+
+        return (false === $network ? $ip : $network).'/64';
     }
 
     #[Route('/oauth/register', name: ClientRegistration::ROUTE, methods: ['POST'])]
     public function register(Request $request): JsonResponse
     {
-        $limit = $this->limiter->create($request->getClientIp() ?? 'unknown')->consume();
-        if (!$limit->isAccepted()) {
-            $response = $this->error(Response::HTTP_TOO_MANY_REQUESTS, 'temporarily_unavailable', 'Too many registrations from this address. Try again later.');
-            $response->headers->set('Retry-After', (string) max(1, $limit->getRetryAfter()->getTimestamp() - time()));
+        foreach ([$this->limiter->create(self::limitKey($request->getClientIp())), $this->globalLimiter->create('all')] as $limiter) {
+            $limit = $limiter->consume();
+            if (!$limit->isAccepted()) {
+                $response = $this->error(Response::HTTP_TOO_MANY_REQUESTS, 'temporarily_unavailable', 'Too many registrations. Try again later.');
+                $response->headers->set('Retry-After', (string) max(1, $limit->getRetryAfter()->getTimestamp() - time()));
 
-            return $response;
+                return $response;
+            }
         }
 
         try {
@@ -50,7 +75,7 @@ final class ClientRegistrationController extends AbstractController
         }
 
         try {
-            $registered = $this->registration->register(ClientRegistrationRequest::fromMetadata($metadata, $this->redirectUris));
+            $registered = $this->registration->register(ClientRegistrationRequest::fromMetadata($metadata, $this->redirectUris, $this->tresso));
         } catch (ClientRegistrationRefused $refused) {
             return $this->error(Response::HTTP_BAD_REQUEST, $refused->error, $refused->getMessage());
         }

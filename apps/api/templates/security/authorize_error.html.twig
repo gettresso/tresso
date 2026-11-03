@@ -1,0 +1,30 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}This request cannot be completed{% endblock %}
+
+{% block body %}
+    <main class="page">
+        <div class="brand">
+            <svg class="mark" width="32" height="32" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="3" y="4" width="8.5" height="5" rx="2.5" class="do"/>
+                <rect x="12.5" y="4" width="8.5" height="5" rx="2.5" class="delegate"/>
+                <rect x="9.5" y="10.5" width="5" height="10" rx="2.5" class="know"/>
+            </svg>
+            Tresso
+        </div>
+
+        <section class="card" aria-labelledby="authorize-error-title">
+            <h1 id="authorize-error-title">This request cannot be completed</h1>
+            <p class="lead">The app asked for something Tresso cannot give it, so nothing was shared and you were not sent back to the app.</p>
+
+            <p class="error" role="alert">
+                {{ description ?? 'The request is not valid.' }}
+                {% if hint %}{{ hint }}{% endif %}
+            </p>
+
+            <p class="footnote">Error code for the app's makers: <code>{{ error }}</code></p>
+        </section>
+
+        <p class="footnote">You can close this page.</p>
+    </main>
+{% endblock %}

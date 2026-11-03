@@ -1,10 +1,17 @@
 framework:
     rate_limiter:
-        # Dynamic client registration (POST /oauth/register) per IP address. Generous, because hosted MCP clients
-        # register from a few shared addresses for all of their users; unused registrations are deleted after 30 days.
+        # Dynamic client registration (POST /oauth/register) per IPv4 address or IPv6 /64. Generous, because hosted
+        # MCP clients register from a few shared addresses for all of their users; unused registrations are deleted
+        # after 30 days.
         oauth_client_registration:
             policy: sliding_window
             limit: 60
+            interval: '1 hour'
+            cache_pool: cache.rate_limiter_shared
+        # All registrations together, whatever the address: a ceiling for someone with many addresses.
+        oauth_client_registration_global:
+            policy: sliding_window
+            limit: 1000
             interval: '1 hour'
             cache_pool: cache.rate_limiter_shared
 
@@ -21,6 +28,13 @@ when@prod: *redis_limits
 
 when@test:
     framework:
+        rate_limiter:
+            # Low enough for a test to reach.
+            oauth_client_registration_global:
+                policy: sliding_window
+                limit: 70
+                interval: '1 hour'
+                cache_pool: cache.rate_limiter_shared
         cache:
             pools:
                 # Kept across requests (unlike an array, which is reset after every request), and apart from the

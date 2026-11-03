@@ -32,7 +32,7 @@ final readonly class ClientRegistrationRequest
      *
      * @throws ClientRegistrationRefused
      */
-    public static function fromMetadata(array $metadata, RedirectUriPolicy $redirectUris): self
+    public static function fromMetadata(array $metadata, RedirectUriPolicy $redirectUris, TressoLookalikes $tresso): self
     {
         $method = $metadata['token_endpoint_auth_method'] ?? null;
         if (null !== $method && 'none' !== $method) {
@@ -44,7 +44,7 @@ final readonly class ClientRegistrationRequest
         }
 
         return new self(
-            self::clientName($metadata['client_name'] ?? null),
+            self::clientName($metadata['client_name'] ?? null, $tresso),
             self::redirectUris($metadata['redirect_uris'] ?? null, $redirectUris),
             self::grantTypes($metadata['grant_types'] ?? null),
             self::scopes($metadata['scope'] ?? null),
@@ -52,7 +52,7 @@ final readonly class ClientRegistrationRequest
     }
 
     /** @return non-empty-string */
-    private static function clientName(mixed $name): string
+    private static function clientName(mixed $name, TressoLookalikes $tresso): string
     {
         if (!\is_string($name)) {
             throw ClientRegistrationRefused::metadata('client_name is required: the name people see when they are asked to allow the app.');
@@ -61,8 +61,13 @@ final readonly class ClientRegistrationRequest
         if ('' === $name || mb_strlen($name) > self::MAX_NAME_LENGTH) {
             throw ClientRegistrationRefused::metadata(\sprintf('client_name must be 1 to %d characters long.', self::MAX_NAME_LENGTH));
         }
-        if (1 === preg_match('/[\x00-\x1f\x7f]/u', $name) || false === preg_match('//u', $name)) {
-            throw ClientRegistrationRefused::metadata('client_name cannot contain control characters.');
+        // Control and invisible formatting characters (such as right-to-left overrides) could make the name read as
+        // something else on the consent screen.
+        if (1 === preg_match('/[\p{Cc}\p{Cf}]/u', $name)) {
+            throw ClientRegistrationRefused::metadata('client_name cannot contain control or formatting characters.');
+        }
+        if ($tresso->namesTresso($name)) {
+            throw ClientRegistrationRefused::metadata('client_name cannot name Tresso: only Tresso\'s own apps do.');
         }
 
         return $name;
