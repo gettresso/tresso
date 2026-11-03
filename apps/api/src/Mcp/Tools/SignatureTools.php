@@ -97,7 +97,7 @@ final readonly class SignatureTools implements ToolProvider
             title: 'Set the default signature of a mail account',
             description: 'Makes a signature the one a mail account inserts by default in new messages, or with '
                 .'signatureId null leaves the account without a default signature. Other accounts keep theirs.',
-            scopes: [Scope::SignaturesRead, Scope::SignaturesWrite],
+            scopes: [Scope::SignaturesRead, Scope::SignaturesWrite, Scope::SettingsRead],
             effect: ToolEffect::Update,
             inputSchema: Schema::object([
                 'mailAccountId' => Schema::id('The id of the mail account, from list_mail_accounts or get_me.'),
@@ -109,36 +109,37 @@ final readonly class SignatureTools implements ToolProvider
 
     /**
      * Adds the account to the signature's `defaultFor` (which takes it away from the signature it had), or removes it
-     * from the signature that has it. Both through PATCH /signatures/{id}, the only place the API sets a default.
+     * from the signature that has it. Both through PATCH /signatures/{id}, the only place the API sets a default. The
+     * account is read first (GET /mail-accounts/{id}), so an unknown account or another user's is "not found" either
+     * way, and clearing finds the signature to change from the account itself.
      *
      * @return array<mixed>
      */
     private static function setDefault(ToolArguments $arguments, Api $api): array
     {
-        $account = $arguments->id('mailAccountId');
+        $accountId = $arguments->id('mailAccountId');
+        $account = $api->get('/mail-accounts/'.$accountId);
+        $current = \is_string($account['defaultSignatureId'] ?? null) ? $account['defaultSignatureId'] : null;
 
         if (null !== $arguments->get('signatureId')) {
             $signatureId = $arguments->id('signatureId');
             $signature = $api->get('/signatures/'.$signatureId);
             $defaultFor = self::accountsOf($signature);
-            if (!\in_array($account, $defaultFor, true)) {
-                $signature = $api->patch('/signatures/'.$signatureId, ['defaultFor' => [...$defaultFor, $account]]);
+            if (!\in_array($accountId, $defaultFor, true)) {
+                $signature = $api->patch('/signatures/'.$signatureId, ['defaultFor' => [...$defaultFor, $accountId]]);
             }
 
-            return ['mailAccountId' => $account, 'defaultSignatureId' => $signatureId, 'signature' => $signature];
+            return ['mailAccountId' => $accountId, 'defaultSignatureId' => $signatureId, 'changed' => $current !== $signatureId, 'signature' => $signature];
         }
 
-        $changed = false;
-        foreach ($api->get('/signatures') as $signature) {
-            $defaultFor = self::accountsOf($signature);
-            if (!\in_array($account, $defaultFor, true) || !\is_array($signature) || !\is_string($signature['id'] ?? null)) {
-                continue;
-            }
-            $api->patch('/signatures/'.$signature['id'], ['defaultFor' => array_values(array_diff($defaultFor, [$account]))]);
-            $changed = true;
+        if (null === $current) {
+            return ['mailAccountId' => $accountId, 'defaultSignatureId' => null, 'changed' => false];
         }
 
-        return ['mailAccountId' => $account, 'defaultSignatureId' => null, 'changed' => $changed];
+        $defaultFor = self::accountsOf($api->get('/signatures/'.$current));
+        $api->patch('/signatures/'.$current, ['defaultFor' => array_values(array_diff($defaultFor, [$accountId]))]);
+
+        return ['mailAccountId' => $accountId, 'defaultSignatureId' => null, 'changed' => true];
     }
 
     /**

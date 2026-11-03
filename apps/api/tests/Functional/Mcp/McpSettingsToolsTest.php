@@ -260,27 +260,68 @@ final class McpSettingsToolsTest extends DatabaseTestCase
 
     public function testAnotherUsersSettingsAreOutOfReach(): void
     {
-        $signature = $this->call('create_signature', ['name' => 'Work', 'html' => '<p>Kim</p>'])['id'] ?? null;
-        $smartInbox = $this->call('create_smart_inbox', ['name' => 'Suppliers', 'verdict' => 'know'])['id'] ?? null;
-        self::assertIsString($signature);
-        self::assertIsString($smartInbox);
+        $account = $this->createAccount('kim@company.example');
+        $signature = self::asString($this->call('create_signature', ['name' => 'Work', 'html' => '<p>Kim</p>', 'defaultFor' => [$account]])['id'] ?? null);
+        $smartInbox = self::asString($this->call('create_smart_inbox', ['name' => 'Suppliers', 'verdict' => 'know'])['id'] ?? null);
+        $rule = self::asString($this->call('create_reminder_rule', ['name' => 'Kim\'s rule', 'leaveNow' => true])['id'] ?? null);
+        $this->client->jsonRequest('POST', '/api/v1/notification-devices', ['kind' => 'expo', 'endpoint' => 'ExponentPushToken[kim-phone]', 'name' => 'Phone'], $this->userHeaders('kim@example.test', ['settings:write']));
+        self::assertResponseIsSuccessful();
+        $device = $this->responseString('id');
 
         $lisa = $this->thirdPartyHeaders('lisa@example.test', self::SETTINGS_SCOPES);
         $session = $this->mcpInitialize($lisa);
+        $lisasSignature = self::asString($this->mcpCallOk($lisa, $session, 'create_signature', ['name' => 'Lisa', 'html' => '<p>Lisa</p>'])['id'] ?? null);
 
         foreach ([
             ['get_signature', ['id' => $signature]],
             ['update_signature', ['id' => $signature, 'name' => 'Mine now']],
             ['delete_signature', ['id' => $signature]],
+            ['set_default_signature', ['mailAccountId' => $account, 'signatureId' => null]],
+            ['set_default_signature', ['mailAccountId' => $account, 'signatureId' => $lisasSignature]],
+            ['set_default_signature', ['mailAccountId' => $account, 'signatureId' => $signature]],
+            ['get_mail_account', ['id' => $account]],
+            ['update_mail_account', ['id' => $account, 'displayName' => 'Lisa was here', 'status' => 'paused']],
             ['add_smart_inbox_senders', ['id' => $smartInbox, 'senders' => ['@lisa.example']]],
             ['delete_smart_inbox', ['id' => $smartInbox]],
+            ['update_reminder_rule', ['id' => $rule, 'name' => 'Lisa\'s now']],
+            ['delete_reminder_rule', ['id' => $rule]],
+            ['update_notification_device', ['id' => $device, 'name' => 'Lisa\'s phone', 'enabled' => false]],
+            ['delete_notification_device', ['id' => $device]],
         ] as [$tool, $arguments]) {
             self::assertStringStartsWith('Not found', $this->mcpCallError($lisa, $session, $tool, $arguments), $tool);
         }
 
         self::assertSame('Work', $this->connection()->fetchOne('SELECT name FROM signature WHERE id = ?', [$signature]));
+        self::assertSame($signature, $this->defaultSignatureOf($account));
+        self::assertSame(['kim@company.example', 'active'], array_values((array) $this->connection()->fetchAssociative('SELECT display_name, status FROM mail_account WHERE id = ?', [$account])));
         self::assertSame([], $this->senders($smartInbox, 'include_senders'));
-        self::assertSame([], self::asList($this->mcpCallOk($lisa, $session, 'list_signatures')));
+        self::assertSame('Kim\'s rule', $this->connection()->fetchOne('SELECT name FROM reminder_rule WHERE id = ?', [$rule]));
+        self::assertSame(['Phone', true], array_values((array) $this->connection()->fetchAssociative('SELECT name, enabled FROM notification_device WHERE id = ?', [$device])));
+        self::assertSame(['Lisa'], array_column(self::asList($this->mcpCallOk($lisa, $session, 'list_signatures')), 'name'));
+    }
+
+    public function testClearingTheDefaultOfAnUnknownAccountIsNotFound(): void
+    {
+        $error = $this->mcpCallError($this->headers, $this->session, 'set_default_signature', ['mailAccountId' => '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b', 'signatureId' => null]);
+
+        self::assertStringStartsWith('Not found', $error);
+    }
+
+    public function testBatchTimesNeedTimesAndZoneUntilTheUserChoseThem(): void
+    {
+        foreach ([['timeZone' => 'Europe/Amsterdam'], ['times' => ['08:00']]] as $arguments) {
+            $error = $this->mcpCallError($this->headers, $this->session, 'update_batch_delivery', $arguments);
+            self::assertStringContainsString('Give both times and timeZone', $error);
+        }
+        self::assertFalse($this->call('get_batch_delivery')['configured'] ?? null, 'Nothing was saved as the user\'s choice.');
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM batch_schedule WHERE user_id = :user', ['user' => $this->kim->getId()->toRfc4122()]));
+
+        $this->call('update_batch_delivery', ['times' => ['08:00'], 'timeZone' => 'Europe/Amsterdam']);
+        $this->call('update_batch_delivery', ['timeZone' => 'Europe/Lisbon']);
+
+        $batch = $this->call('get_batch_delivery');
+        self::assertSame(['08:00'], $batch['times'] ?? null, 'Once chosen, the times left out stay.');
+        self::assertSame('Europe/Lisbon', $batch['timeZone'] ?? null);
     }
 
     /**

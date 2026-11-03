@@ -13,6 +13,7 @@ use App\Mcp\Tool\ToolArguments;
 use App\Mcp\Tool\ToolEffect;
 use App\Mcp\Tool\ToolProvider;
 use App\Security\Scope;
+use Mcp\Exception\ToolCallException;
 
 /**
  * When mail that can wait is delivered: the batch times (/api/v1/batch-delivery) and the daily brief
@@ -40,8 +41,10 @@ final readonly class DeliveryTools implements ToolProvider
             name: 'update_batch_delivery',
             title: 'Change batch times',
             description: 'Sets the times of day the user\'s batches go out and/or their time zone; what is left out stays. '
-                .'Mail that waits moves to the new next batch. Which smart inboxes deliver in batches is set per smart '
-                .'inbox (batchDelivery in update_smart_inbox).',
+                .'While the user still has the defaults (configured false in get_batch_delivery), give both: saving '
+                .'one would fix the default of the other as the user\'s choice. Mail that waits moves to the new next '
+                .'batch. Which smart inboxes deliver in batches is set per smart inbox (batchDelivery in '
+                .'update_smart_inbox).',
             scopes: [Scope::SettingsRead, Scope::SettingsWrite],
             effect: ToolEffect::Update,
             inputSchema: Schema::object([
@@ -55,7 +58,19 @@ final readonly class DeliveryTools implements ToolProvider
                 'timeZone' => Schema::string('An IANA time zone, such as Europe/Amsterdam.'),
             ]),
             run: static function (ToolArguments $arguments, Api $api): array {
+                if (!$arguments->has('times') && !$arguments->has('timeZone')) {
+                    throw new ToolCallException('Give times, timeZone or both.');
+                }
                 $current = $api->get('/batch-delivery');
+                // The API saves times and zone together and from then on counts both as chosen: without a choice yet,
+                // filling in the default of the one left out would quietly make it the user's.
+                if (true !== ($current['configured'] ?? null) && !($arguments->has('times') && $arguments->has('timeZone'))) {
+                    throw new ToolCallException(\sprintf(
+                        'The user has not chosen batch times yet (the defaults are %s, %s). Give both times and timeZone, so neither default is saved as their choice.',
+                        implode(' and ', BatchTimes::DEFAULT_TIMES),
+                        BatchTimes::DEFAULT_TIME_ZONE,
+                    ));
+                }
 
                 return $api->put('/batch-delivery', [
                     'times' => $arguments->has('times') ? $arguments->strings('times') : ($current['times'] ?? []),
