@@ -103,13 +103,17 @@ trait TalksMcp
     }
 
     /**
+     * The names tools/list answers, without the test-only probe (tests/Support/McpProbeTools).
+     *
      * @param array<string, string> $headers
      *
      * @return list<string>
      */
     protected function mcpToolNames(array $headers, string $session): array
     {
-        return array_map(static fn (array $tool): string => self::asString($tool['name'] ?? null), $this->mcpTools($headers, $session));
+        $names = array_map(static fn (array $tool): string => self::asString($tool['name'] ?? null), $this->mcpTools($headers, $session));
+
+        return array_values(array_diff($names, ['probe_api_operation']));
     }
 
     /**

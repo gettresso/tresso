@@ -1,0 +1,5 @@
+# Test only: routes of tests/Support, never loaded in dev or prod.
+when@test:
+    test_support:
+        resource: ../../tests/Support/FailingApiController.php
+        type: attribute
