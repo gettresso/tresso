@@ -1,0 +1,323 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Tests\Functional;
+
+use App\Security\PersonalAccessToken\PurgeOldPersonalAccessTokens;
+use App\Security\PersonalAccessToken\PurgeOldPersonalAccessTokensHandler;
+use Symfony\Bundle\FrameworkBundle\Console\Application;
+use Symfony\Component\Console\Tester\CommandTester;
+
+final class PersonalAccessTokenTest extends DatabaseTestCase
+{
+    use AuthenticatesUsers;
+
+    private const array SETTINGS = ['settings:read', 'settings:write'];
+
+    /** @var array<string, string> */
+    private array $kim;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->bootstrapOAuthClients();
+        $this->createUser('kim@example.test', 'Kim Visser');
+        $this->createUser('lisa@example.test', 'Lisa Bakker');
+        $this->kim = $this->userHeaders('kim@example.test', self::SETTINGS);
+    }
+
+    public function testCreateHandsOutTheSecretOnce(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', [
+            'name' => '  Backup script  ',
+            'scopes' => ['signatures:read', 'mail:read'],
+        ], $this->kim);
+
+        self::assertResponseStatusCodeSame(201);
+        $created = $this->decodedResponse();
+        $secret = $created['token'] ?? null;
+        self::assertIsString($secret);
+        self::assertMatchesRegularExpression('/^tresso_pat_[A-Za-z0-9_-]{43}$/', $secret);
+        self::assertSame('Backup script', $created['name'] ?? null);
+        self::assertSame(['signatures:read', 'mail:read'], $created['scopes'] ?? null);
+        $prefix = $created['prefix'] ?? null;
+        self::assertIsString($prefix);
+        self::assertSame(substr($secret, 0, \strlen($prefix)), $prefix);
+        self::assertSame(\strlen('tresso_pat_') + 6, \strlen($prefix));
+        self::assertIsString($created['createdAt'] ?? null);
+        self::assertIsString($created['expiresAt'] ?? null);
+        $days = new \DateTimeImmutable($created['createdAt'])->diff(new \DateTimeImmutable($created['expiresAt']))->days;
+        self::assertSame(90, $days, 'A token lasts 90 days unless asked otherwise.');
+
+        $row = $this->connection()->fetchAssociative('SELECT * FROM personal_access_token WHERE id = :id', ['id' => $created['id'] ?? null]);
+        self::assertIsArray($row);
+        self::assertSame(hash('sha256', $secret), $row['token_hash']);
+        self::assertStringNotContainsString($secret, (string) json_encode($row), 'The secret itself is never stored.');
+
+        $this->client->request('GET', '/api/v1/personal-access-tokens', server: $this->kim);
+        self::assertResponseIsSuccessful();
+        $content = (string) $this->client->getResponse()->getContent();
+        self::assertStringNotContainsString($secret, $content);
+        self::assertStringNotContainsString(hash('sha256', $secret), $content);
+        $listed = $this->decodedResponse();
+        self::assertCount(1, $listed);
+        self::assertIsArray($listed[0]);
+        self::assertArrayNotHasKey('token', $listed[0]);
+        self::assertArrayNotHasKey('tokenHash', $listed[0]);
+        self::assertSame($prefix, $listed[0]['prefix'] ?? null);
+        self::assertArrayHasKey('lastUsedAt', $listed[0]);
+        self::assertNull($listed[0]['lastUsedAt']);
+        self::assertArrayHasKey('revokedAt', $listed[0]);
+        self::assertNull($listed[0]['revokedAt']);
+    }
+
+    public function testLifetimeIsOneOfTheOffered(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Yearly', 'scopes' => ['mail:read'], 'expiresInDays' => 365], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $created = $this->decodedResponse();
+        self::assertIsString($created['createdAt'] ?? null);
+        self::assertIsString($created['expiresAt'] ?? null);
+        self::assertSame(365, new \DateTimeImmutable($created['createdAt'])->diff(new \DateTimeImmutable($created['expiresAt']))->days);
+
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Forever', 'scopes' => ['mail:read'], 'expiresInDays' => 3650], $this->kim);
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['expiresInDays'], $this->violationPaths());
+    }
+
+    public function testTokenWorksWithinItsScopes(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/signatures', ['name' => 'Work', 'html' => '<p>Kim</p>'], $this->userHeaders('kim@example.test', ['signatures:write']));
+        self::assertResponseStatusCodeSame(201);
+        $secret = $this->createToken(['signatures:read']);
+
+        $this->client->request('GET', '/api/v1/signatures', server: $this->patHeaders($secret));
+
+        self::assertResponseIsSuccessful();
+        self::assertSame(['Work'], array_column($this->decodedResponse(), 'name'));
+    }
+
+    public function testTokenIsRefusedOutsideItsScopes(): void
+    {
+        $headers = $this->patHeaders($this->createToken(['signatures:read']));
+
+        $this->client->jsonRequest('POST', '/api/v1/signatures', ['name' => 'Work', 'html' => '<p>Kim</p>'], $headers);
+        self::assertResponseStatusCodeSame(403);
+
+        $this->client->request('GET', '/api/v1/mail-accounts', server: $headers);
+        self::assertResponseStatusCodeSame(403);
+    }
+
+    public function testUnknownRevokedAndExpiredTokensAreRefusedLikeOAuthTokens(): void
+    {
+        $this->client->request('GET', '/api/v1/signatures', server: ['HTTP_AUTHORIZATION' => 'Bearer not-a-real-access-token', 'HTTP_ACCEPT' => 'application/json']);
+        self::assertResponseStatusCodeSame(401);
+        $oauthBody = (string) $this->client->getResponse()->getContent();
+        $oauthChallenge = $this->client->getResponse()->headers->get('WWW-Authenticate');
+        self::assertSame('Bearer', $oauthChallenge);
+
+        $unknown = 'tresso_pat_'.str_repeat('A', 43);
+        $revoked = $this->createToken(['signatures:read']);
+        $this->client->request('DELETE', '/api/v1/personal-access-tokens/'.$this->tokenId($revoked), server: $this->kim);
+        self::assertResponseStatusCodeSame(204);
+        $expired = $this->createToken(['signatures:read']);
+        $this->connection()->executeStatement(
+            "UPDATE personal_access_token SET created_at = NOW() - INTERVAL '91 days', expires_at = NOW() - INTERVAL '1 second' WHERE token_hash = :hash",
+            ['hash' => hash('sha256', $expired)],
+        );
+
+        foreach (['unknown' => $unknown, 'revoked' => $revoked, 'expired' => $expired] as $case => $secret) {
+            $this->client->request('GET', '/api/v1/signatures', server: $this->patHeaders($secret));
+            self::assertResponseStatusCodeSame(401, $case);
+            self::assertSame($oauthBody, (string) $this->client->getResponse()->getContent(), $case);
+            self::assertSame($oauthChallenge, $this->client->getResponse()->headers->get('WWW-Authenticate'), $case);
+        }
+    }
+
+    public function testATokenCannotManageTokens(): void
+    {
+        $secret = $this->createToken(['settings:read', 'settings:write']);
+        $id = $this->tokenId($secret);
+        $headers = $this->patHeaders($secret);
+
+        $this->client->request('GET', '/api/v1/personal-access-tokens', server: $headers);
+        self::assertResponseStatusCodeSame(403);
+
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Another', 'scopes' => ['mail:read']], $headers);
+        self::assertResponseStatusCodeSame(403);
+
+        $this->client->request('DELETE', '/api/v1/personal-access-tokens/'.$id, server: $headers);
+        self::assertResponseStatusCodeSame(403);
+
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM personal_access_token'));
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM personal_access_token WHERE revoked_at IS NOT NULL'));
+
+        $this->client->request('GET', '/api/v1/server-info', server: $headers);
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testOtherUsersCannotSeeOrRevokeTheToken(): void
+    {
+        $secret = $this->createToken(['signatures:read']);
+        $id = $this->tokenId($secret);
+        $lisa = $this->userHeaders('lisa@example.test', self::SETTINGS);
+
+        $this->client->request('GET', '/api/v1/personal-access-tokens', server: $lisa);
+        self::assertResponseIsSuccessful();
+        self::assertSame([], $this->decodedResponse());
+
+        $this->client->request('DELETE', '/api/v1/personal-access-tokens/'.$id, server: $lisa);
+        self::assertResponseStatusCodeSame(404);
+
+        $this->client->request('GET', '/api/v1/signatures', server: $this->patHeaders($secret));
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testRevokingKeepsTheTokenInTheList(): void
+    {
+        $secret = $this->createToken(['signatures:read']);
+        $id = $this->tokenId($secret);
+
+        $this->client->request('DELETE', '/api/v1/personal-access-tokens/'.$id, server: $this->kim);
+        self::assertResponseStatusCodeSame(204);
+        $this->client->request('DELETE', '/api/v1/personal-access-tokens/'.$id, server: $this->kim);
+        self::assertResponseStatusCodeSame(204, 'Revoking twice is not an error.');
+
+        $this->client->request('GET', '/api/v1/personal-access-tokens', server: $this->kim);
+        self::assertIsString($this->firstListed()['revokedAt'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidTokens')]
+    public function testInvalidTokensAreRefused(array $payload, string $propertyPath): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', $payload + ['name' => 'Script', 'scopes' => ['mail:read']], $this->kim);
+
+        self::assertResponseStatusCodeSame(422);
+        self::assertContains($propertyPath, $this->violationPaths());
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM personal_access_token'));
+    }
+
+    /** @return iterable<string, array{array<string, mixed>, string}> */
+    public static function invalidTokens(): iterable
+    {
+        yield 'sync scope' => [['scopes' => ['mail:read', 'sync:lease']], 'scopes[1]'];
+        yield 'sync credentials' => [['scopes' => ['sync:credentials']], 'scopes[0]'];
+        yield 'reserved teams scope' => [['scopes' => ['teams:read']], 'scopes[0]'];
+        yield 'reserved webhooks scope' => [['scopes' => ['webhooks:manage']], 'scopes[0]'];
+        yield 'unknown scope' => [['scopes' => ['everything']], 'scopes[0]'];
+        yield 'no scopes' => [['scopes' => []], 'scopes'];
+        yield 'blank name' => [['name' => '   '], 'name'];
+        yield 'long name' => [['name' => str_repeat('a', 81)], 'name'];
+    }
+
+    public function testDeletingTheUserDeletesTheirTokens(): void
+    {
+        $this->createToken(['signatures:read']);
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Lisa', 'scopes' => ['mail:read']], $this->userHeaders('lisa@example.test', self::SETTINGS));
+        self::assertResponseStatusCodeSame(201);
+
+        $tester = new CommandTester(new Application($this->client->getKernel())->find('app:users:delete'));
+        $tester->execute(['email' => 'kim@example.test', '--force' => true]);
+        $tester->assertCommandIsSuccessful();
+
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM personal_access_token'), "Only Lisa's token is left.");
+        self::assertSame(1, $this->countRows("SELECT COUNT(*) FROM personal_access_token t JOIN app_user u ON u.id = t.owner_id WHERE u.email = 'lisa@example.test'"));
+    }
+
+    public function testLastUseIsRecordedAtMostOnceAMinute(): void
+    {
+        $secret = $this->createToken(['signatures:read']);
+        $hash = hash('sha256', $secret);
+        $lastUsedAt = fn (): mixed => $this->connection()->fetchOne('SELECT last_used_at FROM personal_access_token WHERE token_hash = :hash', ['hash' => $hash]);
+
+        $this->client->request('GET', '/api/v1/signatures', server: $this->patHeaders($secret));
+        self::assertResponseIsSuccessful();
+        self::assertIsString($lastUsedAt());
+
+        $this->connection()->executeStatement("UPDATE personal_access_token SET last_used_at = NOW() - INTERVAL '30 seconds' WHERE token_hash = :hash", ['hash' => $hash]);
+        $recent = $lastUsedAt();
+        $this->client->request('GET', '/api/v1/signatures', server: $this->patHeaders($secret));
+        self::assertResponseIsSuccessful();
+        self::assertSame($recent, $lastUsedAt(), 'Used again within a minute: nothing is written.');
+
+        $this->connection()->executeStatement("UPDATE personal_access_token SET last_used_at = NOW() - INTERVAL '2 minutes' WHERE token_hash = :hash", ['hash' => $hash]);
+        $old = $lastUsedAt();
+        $this->client->request('GET', '/api/v1/signatures', server: $this->patHeaders($secret));
+        self::assertResponseIsSuccessful();
+        $now = $lastUsedAt();
+        self::assertIsString($old);
+        self::assertIsString($now);
+        self::assertGreaterThan(new \DateTimeImmutable($old), new \DateTimeImmutable($now));
+
+        $this->client->request('GET', '/api/v1/personal-access-tokens', server: $this->kim);
+        self::assertIsString($this->firstListed()['lastUsedAt'] ?? null);
+    }
+
+    public function testOldRevokedAndExpiredTokensArePurged(): void
+    {
+        $kept = [$this->createToken(['mail:read']), $this->createToken(['mail:read']), $this->createToken(['mail:read'])];
+        $purged = [$this->createToken(['mail:read']), $this->createToken(['mail:read'])];
+        $set = function (string $secret, string $sql): void {
+            $this->connection()->executeStatement('UPDATE personal_access_token SET '.$sql.' WHERE token_hash = :hash', ['hash' => hash('sha256', $secret)]);
+        };
+        $set($kept[1], "revoked_at = NOW() - INTERVAL '29 days'");
+        $set($kept[2], "created_at = NOW() - INTERVAL '100 days', expires_at = NOW() - INTERVAL '29 days'");
+        $set($purged[0], "revoked_at = NOW() - INTERVAL '31 days'");
+        $set($purged[1], "created_at = NOW() - INTERVAL '200 days', expires_at = NOW() - INTERVAL '31 days'");
+
+        $deleted = static::getContainer()->get(PurgeOldPersonalAccessTokensHandler::class)(new PurgeOldPersonalAccessTokens());
+
+        self::assertSame(2, $deleted);
+        $left = $this->connection()->fetchFirstColumn('SELECT token_hash FROM personal_access_token');
+        self::assertEqualsCanonicalizing(array_map(static fn (string $secret): string => hash('sha256', $secret), $kept), $left);
+    }
+
+    /**
+     * Makes a token for Kim and returns its secret.
+     *
+     * @param list<string> $scopes
+     */
+    private function createToken(array $scopes): string
+    {
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Script', 'scopes' => $scopes], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+
+        return $this->responseString('token');
+    }
+
+    private function tokenId(string $secret): string
+    {
+        $id = $this->connection()->fetchOne('SELECT id FROM personal_access_token WHERE token_hash = :hash', ['hash' => hash('sha256', $secret)]);
+        self::assertIsString($id);
+
+        return $id;
+    }
+
+    /** @return array<mixed> */
+    private function firstListed(): array
+    {
+        $first = $this->decodedResponse()[0] ?? null;
+        self::assertIsArray($first);
+
+        return $first;
+    }
+
+    /** @return list<mixed> */
+    private function violationPaths(): array
+    {
+        $violations = $this->decodedResponse()['violations'] ?? null;
+        self::assertIsArray($violations);
+
+        return array_values(array_map(static fn (mixed $violation): mixed => \is_array($violation) ? ($violation['propertyPath'] ?? null) : null, $violations));
+    }
+
+    /** @return array<string, string> */
+    private function patHeaders(string $secret): array
+    {
+        return ['HTTP_AUTHORIZATION' => 'Bearer '.$secret, 'HTTP_ACCEPT' => 'application/json'];
+    }
+}

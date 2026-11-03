@@ -26,11 +26,14 @@ security:
         content:
             pattern: ^/content/
             security: false
-        # Bearer tokens issued by our own OAuth2 server: clients, sync workers, third parties.
+        # Bearer tokens issued by our own OAuth2 server (clients, sync workers, third parties) and personal access
+        # tokens (`tresso_pat_...`), which the OAuth2 authenticator leaves alone.
         api:
             pattern: ^/(api|internal)/
             stateless: true
             oauth2: true
+            custom_authenticators:
+                - App\Security\PersonalAccessToken\PersonalAccessTokenAuthenticator
         # Browser session used only to sign in, approve OAuth2 authorization requests and finish provider sign-ins.
         main:
             lazy: true

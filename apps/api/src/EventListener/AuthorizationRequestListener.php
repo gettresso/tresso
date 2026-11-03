@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\EventListener;
 
-use App\Command\BootstrapOAuthClientsCommand;
+use App\Security\FirstPartyClients;
 use League\Bundle\OAuth2ServerBundle\Event\AuthorizationRequestResolveEvent;
 use League\Bundle\OAuth2ServerBundle\OAuth2Events;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
@@ -17,16 +17,8 @@ use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 #[AsEventListener(event: OAuth2Events::AUTHORIZATION_REQUEST_RESOLVE)]
 final class AuthorizationRequestListener
 {
-    private const array FIRST_PARTY_CLIENTS = [
-        BootstrapOAuthClientsCommand::WEB,
-        BootstrapOAuthClientsCommand::DESKTOP,
-        BootstrapOAuthClientsCommand::MOBILE,
-    ];
-
     public function __invoke(AuthorizationRequestResolveEvent $event): void
     {
-        $event->resolveAuthorization(
-            \in_array($event->getClient()->getIdentifier(), self::FIRST_PARTY_CLIENTS, true),
-        );
+        $event->resolveAuthorization(FirstPartyClients::isFirstParty($event->getClient()->getIdentifier()));
     }
 }
