@@ -45,6 +45,7 @@ const router = createRouter({
             { path: 'brief', name: 'settings-brief', component: () => import('@/views/SettingsBriefView.vue') },
             { path: 'calendar', name: 'settings-calendar', component: () => import('@/views/SettingsCalendarView.vue') },
             { path: 'access-tokens', name: 'settings-access-tokens', component: () => import('@/views/SettingsAccessTokensView.vue') },
+            { path: 'connected-apps', name: 'settings-connected-apps', component: () => import('@/views/SettingsConnectedAppsView.vue') },
             { path: 'smart-inboxes', name: 'settings-smart-inboxes', component: () => import('@/views/SettingsSmartInboxesView.vue') },
             { path: 'smart-inboxes/:smartInboxId', name: 'settings-smart-inbox', component: () => import('@/views/SettingsSmartInboxEditView.vue') },
             { path: 'notifications', name: 'settings-notifications', component: () => import('@/views/SettingsNotificationsView.vue') },
