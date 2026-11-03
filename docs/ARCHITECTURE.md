@@ -176,16 +176,18 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   with a 401. These documents, registering and the token endpoint answer CORS requests from any origin (without
   cookies), for clients that run in a browser; the API itself does not.
 - **Registering.** `POST /oauth/register` (RFC 7591) is open to anyone, limited to 60 registrations per IPv4 address
-  or IPv6 /64 per hour and 1000 in total per hour (`symfony/rate-limiter`, in Redis; 429 with `Retry-After`). Only public clients: `token_endpoint_auth_method`
+  (also when it arrives IPv4-mapped, `::ffff:a.b.c.d`) or IPv6 /64 per hour, 200 per IPv6 /48 and 1000 in total per
+  hour (`symfony/rate-limiter`, in Redis; 429 with `Retry-After`). Only public clients: `token_endpoint_auth_method`
   `none` (or left out), grants `authorization_code` and optionally `refresh_token` (both when left out), response
-  type `code`. `client_name` is required (at most 100 characters, no control or formatting characters such as
-  right-to-left overrides, and nothing that reads "Tresso", also in look-alike letters) and is what the consent screen
-  calls the app. `redirect_uris` is required, at most 10, plain ASCII: `https://` on a host of ASCII letters, digits,
+  type `code`. `client_name` is required (at most 100 characters; after NFKC folding only Latin letters and characters
+  every script shares; no control or formatting characters such as right-to-left overrides; nothing whose skeleton
+  reads "tresso", so `Tress0`, `Trezzo` and `𝐓𝐫𝐞𝐬𝐬𝐨` are refused) and is what the consent screen calls the app. `redirect_uris` is required, at most 10, plain ASCII: `https://` on a host of ASCII letters, digits,
   hyphens and dots (internationalized names as punycode), `http://` only on `127.0.0.1`, `[::1]` or `localhost`, or
   an app's own scheme in reverse-domain form (`com.example.app:/cb`). Never a fragment, a wildcard, credentials, a
-  backslash or percent sign in the host, a one-word scheme (`smb:`, `ms-msdt:`, `cursor:`), a Tresso host
-  (`tresso.app`, `gettresso.com`, this server's own hosts), or a scheme that names Tresso or is a Tresso domain
-  reversed (`tresso:`, `app.tresso.mobile:`, `com.gettresso:`). The authorization request must use one of the
+  backslash or percent sign in the host, a one-word scheme (`smb:`, `ms-msdt:`, `cursor:`), a scheme of the operating
+  system (`com.apple.*`, `x-apple.*`, `com.microsoft.*`, `microsoft.*`, `ms-*`, `com.google.*`, `android*`,
+  `windows*`), a Tresso host (`tresso.app`, `gettresso.com`, this server's own hosts), or any host or scheme with a
+  label that has "tresso" in it (`login-tresso.app`, `gettresso.co`, `app.tresso.mobile:`). The authorization request must use one of the
   registered URIs exactly, except that the port may differ on `127.0.0.1` and `[::1]` (RFC 8252 7.3); `localhost` is
   matched with its port. `scope`
   (optional, every allowed scope when left out) may only hold allowed scopes. `client_uri`, `logo_uri` and other
@@ -198,7 +200,8 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   for allowed scopes that the client registered (else `invalid_scope`) and, with a `resource` parameter (RFC 8707),
   name the API or the MCP endpoint (else `invalid_target`); PKCE `S256` is required by the bundle. Such errors only go
   back to the app's redirect URI once the user allowed the app; before that the user sees them on a page of ours and
-  the browser goes nowhere, so the endpoint is no open redirect (RFC 9700 4.11.2). When
+  the browser goes nowhere, so the endpoint is no open redirect (RFC 9700 4.11.2). That page explains each error in
+  fixed words of ours and never repeats text from the request. When
   the user already allowed every scope asked for, the request is approved at once. Otherwise the page shows the app's
   name, the host it sends the user back to (the part that is checked), each scope in plain words, the signed-in
   account and a warning that Tresso has not checked the app. Allow and Deny post back to the same URL with a CSRF
@@ -216,6 +219,10 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   batches, the brief, rules, notification and calendar preferences, signatures. Organizations can only be read.
   Whoever changes it, a new IMAP or SMTP host, username or calendar server host needs the password again (422 on
   `password`): the saved password is never sent to another server.
+- **Invitations are mail.** Creating, changing or deleting an event with guests, answering an invitation, and applying
+  calendar mail from a message tell other people by mail (our iTIP mail or the provider's), so they need `mail:send`
+  as well as `calendar:write` (403 otherwise; our own apps have every scope). A client that means to tell nobody
+  passes `notify=false` (or `notify: false` on an answer); the request is never quietly changed into that.
 - **Connected apps.** `GET /api/v1/connected-apps` and `DELETE /api/v1/connected-apps/{id}` (`settings:read` /
   `settings:write` and our own apps only) list and disconnect the user's apps: name, domain, scopes, since and last
   use (the last token issued for the user, so to within an hour); `domains` lists every place the app may send the user
