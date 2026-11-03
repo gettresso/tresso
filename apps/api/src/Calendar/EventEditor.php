@@ -14,6 +14,7 @@ use App\Calendar\ICalendar\Props;
 use App\Calendar\ICalendar\RecurrenceKey;
 use App\Calendar\ICalendar\VTimezoneBuilder;
 use App\Calendar\Scheduling\ItipMailer;
+use App\Calendar\Scheduling\SchedulingPermission;
 use App\Entity\Calendar;
 use App\Entity\CalendarEvent;
 use App\Entity\CalendarObject;
@@ -52,6 +53,7 @@ final readonly class EventEditor
         private CalendarObjectRepository $objects,
         private SelfAddresses $selfAddresses,
         private ItipMailer $mailer,
+        private SchedulingPermission $permission,
     ) {
         Settings::$maxRecurrences = self::MAX_RECURRENCES;
     }
@@ -211,8 +213,14 @@ final readonly class EventEditor
 
         // A provider that schedules sends the reply itself: it gets the comment, and whether to send at all.
         $rows = $this->store->save($object, $vcalendar, notify: $notify, comment: null === $comment || '' === trim($comment) ? null : mb_substr(trim($comment), 0, 500));
+        if ($notify && $calendar->providerSchedules()) {
+            $this->permission->assertMaySend();
+        }
         if ($notify && !$calendar->providerSchedules()) {
             $messages = self::itip(new Broker()->parseEvent(clone $vcalendar, self::hrefs($self), clone $old));
+            if ([] !== $messages) {
+                $this->permission->assertMaySend();
+            }
             foreach ($messages as $message) {
                 if (null !== $comment && '' !== trim($comment)) {
                     foreach (CalendarDocument::events($message->message) as $event) {
@@ -653,9 +661,23 @@ final readonly class EventEditor
         }
     }
 
+    /**
+     * Tells attendees about the organizer's change, after the change was saved in the same transaction: when the
+     * caller may not send mail ({@see SchedulingPermission}) the whole change is refused and rolled back. That looks at
+     * the whole calendar object, the series with every changed occurrence, so a guest added to one occurrence counts
+     * when the series is changed or deleted. A provider that schedules sends the mail itself, for any event that has or
+     * had guests.
+     */
     private function schedule(Calendar $calendar, ?VCalendar $old, ?VCalendar $new, bool $notify): void
     {
-        if (!$notify || $calendar->providerSchedules()) {
+        if (!$notify) {
+            return;
+        }
+        if ($calendar->providerSchedules()) {
+            if (self::hasAttendees($old) || self::hasAttendees($new)) {
+                $this->permission->assertMaySend();
+            }
+
             return;
         }
         $self = $this->selfAddresses->of($calendar->getOwner());
@@ -664,7 +686,25 @@ final readonly class EventEditor
         $messages = self::itip(new Broker()->parseEvent(null === $new ? null : clone $new, self::hrefs($self), null === $old ? null : clone $old));
         // Only the organizer's side: attendees reply through respond(), never as a side effect of editing.
         $organizerMessages = array_values(array_filter($messages, static fn (ItipMessage $message): bool => \in_array($message->method, ['REQUEST', 'CANCEL'], true)));
+        if ([] === $organizerMessages) {
+            return;
+        }
+        $this->permission->assertMaySend();
         $this->mailer->send($calendar->getOwner(), $organizerMessages);
+    }
+
+    private static function hasAttendees(?VCalendar $calendar): bool
+    {
+        if (null === $calendar) {
+            return false;
+        }
+        foreach (CalendarDocument::events($calendar) as $event) {
+            if ([] !== Props::all($event, 'ATTENDEE')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 

@@ -29,14 +29,11 @@ use App\Repository\CalendarEventRepository;
 use App\Repository\CalendarRepository;
 use App\Repository\MailAccountRepository;
 use App\Security\CurrentUser;
-use App\Security\Scope;
 use Doctrine\ORM\EntityManagerInterface;
 use Sabre\VObject\InvalidDataException;
 use Sabre\VObject\Recur\RRuleIterator;
 use Sabre\VObject\Recur\MaxInstancesExceededException;
-use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\RequestStack;
-use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Validator\ConstraintViolation;
@@ -55,7 +52,6 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
         private MailAccountRepository $accounts,
         private CurrentUser $currentUser,
         private RequestStack $requests,
-        private Security $security,
     ) {
     }
 
@@ -66,7 +62,6 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
 
         try {
             if ($data instanceof EventInput && !isset($uriVariables['id'])) {
-                $this->assertMaySendInvitations($notify && [] !== $data->attendees);
                 $calendar = $this->calendar($user, $data->calendarId);
                 $changes = self::changes($data);
                 $organizer = $this->organizer($user, $data->organizerMailAccountId);
@@ -81,7 +76,6 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
             $recurrenceId = $this->query('recurrenceId');
 
             if ($data instanceof EventInput) {
-                $this->assertMaySendInvitations($notify && ([] !== $data->attendees || [] !== $event->getAttendees()));
                 $calendar = $this->calendar($user, $data->calendarId);
                 $changes = self::changes($data);
                 $organizer = $this->organizer($user, $data->organizerMailAccountId);
@@ -92,15 +86,12 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
             }
 
             if ($data instanceof EventResponseInput) {
-                $this->assertMaySendInvitations($data->notify);
-
                 return CalendarEventResource::fromEntity($this->entityManager->wrapInTransaction(
                     fn (): CalendarEvent => $this->editor->respond($event, ParticipationStatus::from($data->response), $data->recurrenceId, $data->comment, $data->notify),
                 ));
             }
 
             if ($operation instanceof DeleteOperationInterface) {
-                $this->assertMaySendInvitations($notify && [] !== $event->getAttendees());
                 $this->entityManager->wrapInTransaction(fn () => $this->editor->delete($event, $scope, $recurrenceId, $notify));
 
                 return null;
@@ -112,18 +103,6 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
         }
 
         throw new \LogicException(\sprintf('Unexpected input for %s.', $operation->getName()));
-    }
-
-    /**
-     * Invitations, updates, cancellations and replies are mail sent in the user's name, by us (iTIP) or by the provider:
-     * they need mail:send, not only calendar:write. Without it the request is refused rather than quietly changed into
-     * one that tells nobody; a client that means to tell nobody says notify=false (or `notify: false` for a reply).
-     */
-    private function assertMaySendInvitations(bool $sendsMail): void
-    {
-        if ($sendsMail && !$this->security->isGranted(Scope::ROLE_MAIL_SEND)) {
-            throw new AccessDeniedHttpException('Telling attendees or the organizer sends mail in your name and needs the mail:send permission. Ask for it, or set notify to false to change only the calendar.');
-        }
     }
 
     private static function changes(EventInput $input): EventChanges
