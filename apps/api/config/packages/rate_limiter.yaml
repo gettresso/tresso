@@ -8,7 +8,7 @@ framework:
             limit: 60
             interval: '1 hour'
             cache_pool: cache.rate_limiter_shared
-        # Per IPv6 /48 (a site), on top of the limit per /64.
+        # Per IPv4 /24 or IPv6 /48 (a site), on top of the limit per sender.
         oauth_client_registration_network:
             policy: sliding_window
             limit: 200
@@ -17,7 +17,7 @@ framework:
         # All registrations together, whatever the address: a ceiling for someone with many addresses.
         oauth_client_registration_global:
             policy: sliding_window
-            limit: 1000
+            limit: 5000
             interval: '1 hour'
             cache_pool: cache.rate_limiter_shared
 

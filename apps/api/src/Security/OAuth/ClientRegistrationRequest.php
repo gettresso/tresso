@@ -66,6 +66,11 @@ final readonly class ClientRegistrationRequest
         if (1 === preg_match('/[\p{Cc}\p{Cf}]/u', $name)) {
             throw ClientRegistrationRefused::metadata('client_name cannot contain control or formatting characters.');
         }
+        // Only the plain space separates words: other spaces (no-break, hair, line and paragraph separators) can hide
+        // a word between its letters.
+        if (1 === preg_match('/\p{Z}/u', str_replace(' ', '', $name))) {
+            throw ClientRegistrationRefused::metadata('client_name can only use ordinary spaces.');
+        }
         if (!TressoLookalikes::isLatin($name)) {
             throw ClientRegistrationRefused::metadata('client_name must be written in Latin letters, digits and punctuation, so people read it as it is.');
         }
