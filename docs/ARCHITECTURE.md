@@ -251,14 +251,17 @@ come later. The code is in `App\Mcp`.
   worker's token has no user and gets a 403 (`MCP_USER`).
 - **Transport.** POST for messages, DELETE to end a session; GET (a server stream) answers 405, since the server sends
   nothing unasked. Sessions live in Redis (`cache.mcp_sessions`) for an hour after their last request and belong to
-  the user and app (or personal access token) that started them: another connection that names one gets a 404. Both
+  the user and app (or personal access token) that started them: another connection that names one gets a 404, and
+  so does a session id written other than as the RFC 9562 text the server hands out (base58, base32). Both
   protocol eras of the SDK are served on the one endpoint. The Host header (and an Origin header from another site)
   must be the host of `API_PUBLIC_URL`; dev and test also accept `localhost`, `127.0.0.1` and `[::1]` (DNS rebinding,
   403 otherwise). There is no CORS on `/mcp`: hosted clients call it from their servers and the MCP Inspector through
   its proxy.
 - **Tools.** Each tool runs the API operations it stands for as sub-requests of the MCP request (`App\Mcp\Api`):
   the same token, so the same scopes, voters, first-party checks, validation and messages as the REST call, and no
-  tool can do what the API would not do with that token. A refusal comes back as a tool error (`isError`) in the
+  tool can do what the API would not do with that token. The payment wall of a server that bills
+  (`App\Billing\PaymentWall`) is asked for every such sub-request too, so a user past the trial gets the 402 message
+  as a tool error wherever REST answers 402. A refusal comes back as a tool error (`isError`) in the
   API's words, with each refused field; the answer is the API's JSON as text and as structured content (lists under
   `items`). Input schemas are written per tool, refuse fields they do not name and carry the MCP annotations
   (`readOnlyHint`, `destructiveHint`, `idempotentHint`). `tools/list` shows only the tools whose scopes the token
@@ -270,13 +273,15 @@ come later. The code is in `App\Mcp`.
 |---|---|
 | none | `get_me` (who, which scopes, and with `settings:read` the mail accounts), `get_server_info` |
 | `signatures:read` | `list_signatures`, `get_signature` |
-| `signatures:write` | `create_signature`, `update_signature`, `delete_signature`; with `signatures:read`: `set_default_signature` (sets or clears the default of one mail account through the signature's `defaultFor`) |
+| `signatures:write` | `create_signature`, `update_signature`, `delete_signature`; with `signatures:read` and `settings:read`: `set_default_signature` (reads the mail account, so an unknown or another user's account is not found, then sets or clears its default through the signature's `defaultFor`) |
 | `settings:read` | `list_mail_accounts`, `get_mail_account` (without how the account connects), `list_smart_inboxes`, `get_smart_inbox`, `list_sender_rules`, `get_notification_settings`, `list_notification_devices`, `get_batch_delivery`, `get_daily_brief_settings`, `list_reminder_rules`, `get_reminder_rule`, `get_scheduling_preferences` |
 | `settings:write` | `update_mail_account` (name, pause and resume), `create_smart_inbox`, `update_smart_inbox`, `delete_smart_inbox`, `delete_sender_rule`, `update_notification_settings`, `update_notification_device` (name, on or off), `delete_notification_device`, `create_reminder_rule`, `delete_reminder_rule`, `update_scheduling_preferences`; with `settings:read` (they change part of what the API saves whole, or of a list): `add_smart_inbox_senders`, `remove_smart_inbox_senders`, `update_batch_delivery`, `update_daily_brief_settings`, `update_reminder_rule` |
 | `mail:read` | `get_smart_inbox_senders` (who sends the mail in a smart inbox) |
 | `calendar:read` | `list_calendars`, `get_calendar` |
 | `calendar:write` | `create_calendar`, `update_calendar`, `delete_calendar` |
 
+- **Partial updates.** `update_batch_delivery` changes only what it is given, but the API saves times and zone
+  together and then counts both as chosen: while the user still has the defaults, the tool asks for both.
 - **Not tools.** What only our own apps may do (adding or removing mail accounts and how they connect, registering a
   notification device, personal access tokens, connected apps, billing, realtime) has no tool. The API cannot reorder
   smart inboxes or give them a color, so neither can a tool.
