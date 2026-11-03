@@ -91,7 +91,7 @@ async function disconnect(): Promise<void> {
         <div class="app-main">
           <div class="app-head">
             <span class="app-name">{{ app.name }}</span>
-            <span class="domain">{{ app.domain }}</span>
+            <span class="domain">{{ app.domains.join(', ') }}</span>
           </div>
           <span class="app-scopes">{{ scopes(app) }}</span>
           <span class="app-meta">Connected {{ day(app.connectedAt) }} · {{ lastUsed(app) }}</span>
