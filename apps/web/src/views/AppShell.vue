@@ -128,6 +128,11 @@ function toggled(event: Event): void {
 }
 /* The sidebar is a pane of glass over the canvas; in the macOS app the window's own vibrancy shows through instead. */
 .mailboxes > :deep(nav) {
+  /*
+   * The details element keeps its own content box even with display: contents, so that box is the grid item and
+   * the nav inside it would stop where its links end. Filling it keeps the glass down to the bottom of the window.
+   */
+  height: 100%;
   min-height: 0;
   background: color-mix(in srgb, var(--surface) 60%, transparent);
   -webkit-backdrop-filter: var(--glass-material);
