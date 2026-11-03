@@ -14,6 +14,7 @@ use App\ApiResource\Input\Notification\RegisterDevice;
 use App\ApiResource\Input\Notification\UpdateDevice;
 use App\Entity\NotificationDevice;
 use App\Enum\DeviceKind;
+use App\Security\FirstPartyClients;
 use App\Security\Scope;
 use App\State\NotificationDeviceProcessor;
 use App\State\NotificationDeviceProvider;
@@ -27,7 +28,7 @@ use App\State\NotificationDeviceProvider;
     normalizationContext: ['skip_null_values' => false],
     operations: [
         new GetCollection(uriTemplate: '/notification-devices', paginationEnabled: false, security: "is_granted('".Scope::ROLE_SETTINGS_READ."')", provider: NotificationDeviceProvider::class),
-        new Post(uriTemplate: '/notification-devices', status: 200, security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')", input: RegisterDevice::class, read: false, processor: NotificationDeviceProcessor::class),
+        new Post(uriTemplate: '/notification-devices', status: 200, security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."') and is_granted('".FirstPartyClients::ATTRIBUTE."')", input: RegisterDevice::class, read: false, processor: NotificationDeviceProcessor::class),
         new Patch(uriTemplate: '/notification-devices/{id}', security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')", input: UpdateDevice::class, provider: NotificationDeviceProvider::class, processor: NotificationDeviceProcessor::class),
         new Delete(uriTemplate: '/notification-devices/{id}', security: "is_granted('".Scope::ROLE_SETTINGS_WRITE."')", provider: NotificationDeviceProvider::class, processor: NotificationDeviceProcessor::class),
     ],
