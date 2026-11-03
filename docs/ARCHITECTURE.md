@@ -148,6 +148,9 @@ curl -H "Authorization: Bearer $TRESSO_TOKEN" https://tresso.example/api/v1/sign
 - **Not for realtime.** `GET /api/v1/realtime/token` refuses personal access tokens (403): a Mercure subscriber token
   lives an hour and would outlast revoking the token, and scripts and MCP clients fetch the delta instead. Personal
   access tokens never reach `/internal/` either, since they cannot hold a `sync:*` scope.
+- **Only in our own apps.** Whatever its scopes, a token cannot add or remove mail accounts, change how one connects,
+  sign in with a mail provider, register a notification device or touch billing; see "Only in our own apps" under
+  third-party apps below.
 - **Managing tokens.** `GET` and `POST /api/v1/personal-access-tokens` and `DELETE
   /api/v1/personal-access-tokens/{id}` (revoke) need `settings:read` or `settings:write` and an access token of one of
   our own apps (web, desktop, mobile: the `FIRST_PARTY_CLIENT` check), so a personal access token or a
@@ -172,34 +175,51 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   resource, its metadata URL and the `WWW-Authenticate: Bearer resource_metadata="..."` value the MCP endpoint sends
   with a 401. These documents, registering and the token endpoint answer CORS requests from any origin (without
   cookies), for clients that run in a browser; the API itself does not.
-- **Registering.** `POST /oauth/register` (RFC 7591) is open to anyone, limited to 60 registrations per IP address per
-  hour (`symfony/rate-limiter`, in Redis; 429 with `Retry-After`). Only public clients: `token_endpoint_auth_method`
+- **Registering.** `POST /oauth/register` (RFC 7591) is open to anyone, limited to 60 registrations per IPv4 address
+  or IPv6 /64 per hour and 1000 in total per hour (`symfony/rate-limiter`, in Redis; 429 with `Retry-After`). Only public clients: `token_endpoint_auth_method`
   `none` (or left out), grants `authorization_code` and optionally `refresh_token` (both when left out), response
-  type `code`. `client_name` is required (at most 100 characters, no control characters) and is what the consent
-  screen calls the app. `redirect_uris` is required, at most 10: `https://` anywhere, `http://` only on
-  `127.0.0.1`, `[::1]` or `localhost` (any port), or an app's own scheme when it names the app (reverse-domain such as
-  `com.example.app:/cb`, or one word with a dotted host such as `cursor://anysphere.cursor-mcp/...`); never a
-  fragment, a wildcard, credentials, a scheme a browser handles itself, or the scheme of our own apps. `scope`
+  type `code`. `client_name` is required (at most 100 characters, no control or formatting characters such as
+  right-to-left overrides, and nothing that reads "Tresso", also in look-alike letters) and is what the consent screen
+  calls the app. `redirect_uris` is required, at most 10, plain ASCII: `https://` on a host of ASCII letters, digits,
+  hyphens and dots (internationalized names as punycode), `http://` only on `127.0.0.1`, `[::1]` or `localhost`, or
+  an app's own scheme in reverse-domain form (`com.example.app:/cb`). Never a fragment, a wildcard, credentials, a
+  backslash or percent sign in the host, a one-word scheme (`smb:`, `ms-msdt:`, `cursor:`), a Tresso host
+  (`tresso.app`, `gettresso.com`, this server's own hosts), or a scheme that names Tresso or is a Tresso domain
+  reversed (`tresso:`, `app.tresso.mobile:`, `com.gettresso:`). The authorization request must use one of the
+  registered URIs exactly, except that the port may differ on `127.0.0.1` and `[::1]` (RFC 8252 7.3); `localhost` is
+  matched with its port. `scope`
   (optional, every allowed scope when left out) may only hold allowed scopes. `client_uri`, `logo_uri` and other
   metadata are ignored. Refusals are RFC 7591 errors (`invalid_redirect_uri`, `invalid_client_metadata`). The
   client is an `oauth2_client` row without a secret and without plain PKCE, marked by a `registered_client` row with
   `created_at` and `last_used_at` (the last token issued to it). A nightly job deletes registered clients that got no
-  token within 30 days, with everything that cascades from them.
+  token within 30 days and that no user allowed, with everything that cascades from them; our own clients have no
+  `registered_client` row and are never touched.
 - **Consent screen.** On `/oauth/authorize`, after signing in, a request from an app that is not ours must ask only
-  for allowed scopes that the client registered (else `invalid_scope` to the app) and, with a `resource` parameter
-  (RFC 8707), name the API or the MCP endpoint (else `invalid_target`); PKCE `S256` is required by the bundle. When
+  for allowed scopes that the client registered (else `invalid_scope`) and, with a `resource` parameter (RFC 8707),
+  name the API or the MCP endpoint (else `invalid_target`); PKCE `S256` is required by the bundle. Such errors only go
+  back to the app's redirect URI once the user allowed the app; before that the user sees them on a page of ours and
+  the browser goes nowhere, so the endpoint is no open redirect (RFC 9700 4.11.2). When
   the user already allowed every scope asked for, the request is approved at once. Otherwise the page shows the app's
   name, the host it sends the user back to (the part that is checked), each scope in plain words, the signed-in
   account and a warning that Tresso has not checked the app. Allow and Deny post back to the same URL with a CSRF
   token; Deny sends `access_denied`. The page cannot be framed and is not cached. Allowing stores an `oauth_consent`
   row (user, client, scopes, `created_at`, `last_used_at`); asking for more later shows the page again and adds the
-  new scopes. Tokens are not bound to a resource: the API and the MCP endpoint are one resource server. Access
-  tokens live an hour, refresh tokens 30 days and rotate.
-- **What such an app cannot do.** Manage personal access tokens or connected apps (the `FIRST_PARTY_CLIENT` check),
-  get a realtime token (403, as for personal access tokens), or reach `/internal/`.
+  new scopes. Two answers at once keep one row with every scope. Tokens are not bound to a resource: the API and the
+  MCP endpoint are one resource server. Access tokens live an hour, refresh tokens 30 days and rotate. Every token
+  for such an app, also for an old authorization code or refresh token, needs a consent that covers its scopes at that
+  moment (`invalid_grant` otherwise), so nothing slips past a disconnect.
+- **Only in our own apps.** With any scope, an app that is not ours and a personal access token cannot (403, the
+  `FIRST_PARTY_CLIENT` check): manage personal access tokens or connected apps; add or remove mail accounts, look up
+  their server settings, or change how one connects (servers, ports, username, password, calendar server); sign in
+  with Google or Microsoft; register a device for notifications; see or change billing; get a realtime token; or
+  reach `/internal/`. Plain settings stay open with `settings:write`: account names and pausing, smart inboxes,
+  batches, the brief, rules, notification and calendar preferences, signatures. Organizations can only be read.
+  Whoever changes it, a new IMAP or SMTP host, username or calendar server host needs the password again (422 on
+  `password`): the saved password is never sent to another server.
 - **Connected apps.** `GET /api/v1/connected-apps` and `DELETE /api/v1/connected-apps/{id}` (`settings:read` /
   `settings:write` and our own apps only) list and disconnect the user's apps: name, domain, scopes, since and last
-  use (the last token issued for the user, so to within an hour). Another user's id is a 404. Disconnecting deletes
+  use (the last token issued for the user, so to within an hour); `domains` lists every place the app may send the user
+  back to. Another user's id is a 404. Disconnecting deletes
   the consent and revokes the app's access tokens, refresh tokens and authorization codes for that user in one
   transaction. The web app has this under Settings, Connected apps. Deleting a user deletes their consents (foreign
   key cascade) with their tokens.
