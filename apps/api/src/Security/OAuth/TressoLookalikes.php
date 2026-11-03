@@ -16,6 +16,9 @@ final readonly class TressoLookalikes
 {
     public const array DOMAINS = ['tresso.app', 'gettresso.com'];
 
+    /** "tresso" in a skeleton; \x01 is a character that reads as e or o. */
+    private const string TRESSO = '/tr[e\x{1}]ss[o\x{1}]/u';
+
     private const array LOOPBACK_HOSTS = ['127.0.0.1', '[::1]', '::1', 'localhost'];
 
     /** @var list<string> */
@@ -50,7 +53,7 @@ final readonly class TressoLookalikes
     {
         $host = rtrim(strtolower($host), '.');
         foreach (explode('.', $host) as $label) {
-            if (str_contains(self::collapse((string) preg_replace('/[^\p{L}\p{N}]+/u', '', self::skeleton($label))), 'tresso')) {
+            if (1 === preg_match(self::TRESSO, self::collapse((string) preg_replace('/[^\p{L}\p{N}\x{1}]+/u', '', self::skeleton($label))))) {
                 return true;
             }
         }
@@ -73,18 +76,42 @@ final readonly class TressoLookalikes
 
     /**
      * Whether a name reads "Tresso", compared as a skeleton (compatibility forms such as 𝐓𝐫𝐞𝐬𝐬𝐨 folded, accents dropped,
-     * lower case, digits and letters that look alike merged, long runs shortened), so Tress0, Trezzo or Tréssø count.
-     * It counts inside a word (MyTresso), and across spaces, dots, hyphens and other separators when it starts a word
-     * (T r e s s o, Tres-so), but not when a word only ends on its first letters (Fortress Office).
+     * lower case, digits and letters that look alike merged, long runs shortened), so Tress0, Trezzo or Tr€sso count.
+     *
+     * Separators do not hide it: the words are read as one. Inside one word it always counts (MyTresso). Across
+     * separators it only does not count when it starts at least three letters into a word, as in Fortress Office or
+     * Mattress Sort, where an ordinary word happens to end on its first letters; xT r e s s o, MyTres so and Mytr ess o
+     * count.
      */
     public function namesTresso(string $name): bool
     {
-        $words = preg_split('/[^\p{L}\p{N}]+/u', self::skeleton($name), -1, \PREG_SPLIT_NO_EMPTY);
+        $words = preg_split('/[^\p{L}\p{N}\x{1}]+/u', self::skeleton($name), -1, \PREG_SPLIT_NO_EMPTY);
         if (false === $words) {
             return false;
         }
+
+        // Every letter of the words read as one, with where it came from; long runs shortened across words too.
+        $letters = [];
         foreach ($words as $index => $word) {
-            if (str_contains($word, 'tresso') || str_starts_with(self::collapse(implode('', \array_slice($words, $index))), 'tresso')) {
+            if (1 === preg_match(self::TRESSO, $word)) {
+                return true;
+            }
+            foreach (mb_str_split($word) as $offset => $letter) {
+                $count = \count($letters);
+                if ($count >= 2 && $letters[$count - 1][0] === $letter && $letters[$count - 2][0] === $letter) {
+                    continue;
+                }
+                $letters[] = [$letter, $index, $offset];
+            }
+        }
+
+        $joined = implode('', array_column($letters, 0));
+        if (false === preg_match_all(self::TRESSO, $joined, $matches, \PREG_OFFSET_CAPTURE)) {
+            return false;
+        }
+        foreach ($matches[0] as [, $byteOffset]) {
+            $at = mb_strlen(substr($joined, 0, $byteOffset));
+            if ($letters[$at][2] < 3) {
                 return true;
             }
         }
@@ -109,11 +136,18 @@ final readonly class TressoLookalikes
         return \is_string($folded) ? $folded : $name;
     }
 
-    /** Lower-case ASCII with look-alikes merged; separators stay, so callers decide what spans words. */
+    /**
+     * Lower-case ASCII with look-alikes merged; separators stay, so callers decide what spans words. A character that
+     * reads as either e or o (℮) becomes \x01, which {@see self::TRESSO} takes for both.
+     */
     private static function skeleton(string $text): string
     {
-        // Latin letters that look like others but that Latin-ASCII keeps or drops.
-        $folded = strtr(self::fold($text), ['ƨ' => 's', 'Ƨ' => 's', 'ſ' => 's', 'ı' => 'l']);
+        // Letters and symbols that look like others but that Latin-ASCII keeps or drops.
+        $folded = strtr(self::fold($text), [
+            'ƨ' => 's', 'Ƨ' => 's', 'ſ' => 's', 'ꜱ' => 's', 'ı' => 'l', 'ʀ' => 'r', 'ᴛ' => 't', 'ᴇ' => 'e', 'ᴏ' => 'o',
+            '€' => 'e', 'ɘ' => 'e', 'ǝ' => 'e', 'Ǝ' => 'e', '°' => 'o', 'ᴑ' => 'o', 'ᴓ' => 'o', 'ɵ' => 'o', 'ɔ' => 'o',
+            'Ɔ' => 'o', '℮' => "\x01",
+        ]);
         $ascii = transliterator_transliterate('Latin-ASCII; Lower()', $folded);
         $skeleton = strtr(false === $ascii ? mb_strtolower($folded) : $ascii, [
             '0' => 'o', '1' => 'l', 'i' => 'l', '|' => 'l', '!' => 'l', '3' => 'e', '4' => 'a', '@' => 'a',

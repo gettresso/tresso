@@ -158,7 +158,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
 
     public function testNamesThatOnlyLookCloseAreAccepted(): void
     {
-        foreach (['Fortress Office', 'Trésorerie', 'Café Helper 2', 'Mail assistant (beta)', 'Mattress Organizer', 'Fortress-Office'] as $name) {
+        foreach (['Fortress Office', 'Trésorerie', 'Café Helper 2', 'Mail assistant (beta)', 'Mattress Organizer', 'Fortress-Office', 'Mattress Sort', 'Tresse Studio'] as $name) {
             self::assertSame($name, $this->register(['client_name' => $name, 'redirect_uris' => [self::REDIRECT]])['client_name'] ?? null);
         }
     }
@@ -261,6 +261,21 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'a name with an underscore inside' => [['client_name' => 'Tres_so'], 'invalid_client_metadata'];
         yield 'a name with a tone letter for s' => [['client_name' => 'Tresƨo'], 'invalid_client_metadata'];
         yield 'a name with Tresso inside a word' => [['client_name' => 'MyTresso'], 'invalid_client_metadata'];
+        yield 'a name like xT r e s s o' => [['client_name' => 'xT r e s s o'], 'invalid_client_metadata'];
+        yield 'a name like xTres so' => [['client_name' => 'xTres so'], 'invalid_client_metadata'];
+        yield 'a name like MyTres so' => [['client_name' => 'MyTres so'], 'invalid_client_metadata'];
+        yield 'a name like ATres-so' => [['client_name' => 'ATres-so'], 'invalid_client_metadata'];
+        yield 'a name like Mytr ess o' => [['client_name' => 'Mytr ess o'], 'invalid_client_metadata'];
+        yield 'a name like Tr€sso' => [['client_name' => 'Tr€sso'], 'invalid_client_metadata'];
+        yield 'a name like Tres s℮' => [['client_name' => 'Tres s℮'], 'invalid_client_metadata'];
+        yield 'a name like Tr℮sso' => [['client_name' => 'Tr℮sso'], 'invalid_client_metadata'];
+        yield 'a name like Tres s°' => [['client_name' => 'Tres s°'], 'invalid_client_metadata'];
+        yield 'a name like Tres sᴑ' => [['client_name' => 'Tres sᴑ'], 'invalid_client_metadata'];
+        yield 'a name like Tres sᴓ' => [['client_name' => 'Tres sᴓ'], 'invalid_client_metadata'];
+        yield 'a name like Tres sɵ' => [['client_name' => 'Tres sɵ'], 'invalid_client_metadata'];
+        yield 'a name like Tres sɔ' => [['client_name' => 'Tres sɔ'], 'invalid_client_metadata'];
+        yield 'a name like Trɘs so' => [['client_name' => 'Trɘs so'], 'invalid_client_metadata'];
+        yield 'a name like Trǝs so' => [['client_name' => 'Trǝs so'], 'invalid_client_metadata'];
     }
 
     public function testRefusesABodyThatIsNotJson(): void
