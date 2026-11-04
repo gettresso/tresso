@@ -12,10 +12,12 @@ use App\ApiResource\ProviderAuthorization;
 use App\Entity\MailAccount;
 use App\Enum\OAuthProvider;
 use App\Enum\ProviderFeature;
+use App\Enum\ProviderReturnTarget;
 use App\ProviderAuth\ProviderConnector;
 use App\ProviderAuth\ProviderSettings;
 use App\Repository\MailAccountRepository;
 use App\Security\CurrentUser;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Validator\ConstraintViolation;
 use Symfony\Component\Validator\ConstraintViolationList;
 
@@ -29,6 +31,8 @@ final readonly class ProviderAuthorizationProcessor implements ProcessorInterfac
         private ProviderSettings $settings,
         private MailAccountRepository $mailAccounts,
         private CurrentUser $currentUser,
+        #[Autowire(env: 'NATIVE_REDIRECT_URI')]
+        private string $nativeRedirectUri,
     ) {
     }
 
@@ -39,6 +43,10 @@ final readonly class ProviderAuthorizationProcessor implements ProcessorInterfac
 
         if (!$this->settings->isConfigured($provider)) {
             throw self::violation($data, 'provider', \sprintf('Signing in with %s is not set up on this server.', $provider->label()), $provider->value);
+        }
+
+        if (ProviderReturnTarget::Native === $data->returnTo && '' === $this->nativeRedirectUri) {
+            throw self::violation($data, 'returnTo', 'This server has no link back to the desktop app (NATIVE_REDIRECT_URI).', $data->returnTo->value);
         }
 
         $mailAccount = null;
@@ -57,7 +65,7 @@ final readonly class ProviderAuthorizationProcessor implements ProcessorInterfac
             throw self::violation($data, 'features', 'Allow calendars for a connected account: name it in mailAccountId, or ask for mail too.', implode(',', array_map(static fn (ProviderFeature $feature): string => $feature->value, $data->features)));
         }
 
-        $started = $this->connector->start($owner, $provider, $data->features, $mailAccount);
+        $started = $this->connector->start($owner, $provider, $data->features, $mailAccount, $data->returnTo);
 
         return new ProviderAuthorization($started['url'], $provider->value, $started['expiresAt']);
     }

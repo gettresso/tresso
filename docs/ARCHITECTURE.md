@@ -320,7 +320,11 @@ signed-in provider account, shared by every feature that uses it: mail, and the 
 Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes to the same grant.
 
 - **Start:** `POST /api/v1/provider-authorizations` (scope `settings:write`) with `{"provider": "google" | "microsoft",
-  "features": ["mail", "calendar"], "mailAccountId": <optional, to sign in again or allow more>}`. Calendars alone
+  "features": ["mail", "calendar"], "mailAccountId": <optional, to sign in again or allow more>, "returnTo": "web" |
+  "native"}`. `returnTo` (default `web`) says which app gets the provider's answer; the URL behind each is the server's
+  own (`WEB_APP_URL`, `NATIVE_REDIRECT_URI`), so a client cannot send the answer anywhere else. The desktop app asks
+  for `native`: it opens the provider in the system browser, as its own sign-in does, because sending its window there
+  ended on the web app, another origin without the desktop app's tokens, and the user looked signed out. Calendars alone
   are only asked for an existing account (`mailAccountId`). The web client asks for calendars only when the user
   chooses to ("Also sync my calendars" on a new sign-in, "Allow calendar access" later): a Microsoft tenant may not
   let its users allow them, and asking would then cost the mail too. Signing in again asks for mail and the API adds
@@ -331,10 +335,12 @@ Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes 
 - **Callback:** the provider redirects the browser to `<API_PUBLIC_URL>/connect/<provider>/callback`. That route is
   public and only passes the answer on: it redirects to the web app (`/settings/accounts/new`, or `/settings/accounts`
   when signing in again) with `provider`, `state` and the provider's `code` or `error`, or straight away with
-  `connectError=expired` for a state it does not know. It does not depend on the API's browser session (the one used
+  `connectError=expired` for a state that expired or that it does not know (an unknown one always to the web app).
+  For `returnTo: native` the same query goes to `NATIVE_REDIRECT_URI` (`tresso://auth/callback`) with that page in
+  `next`; the desktop app opens only those two pages from such a link. It does not depend on the API's browser session (the one used
   to sign in for `/oauth/authorize`): that session ends after 24 idle minutes or a deploy, long before the web app's
   sign-in, and requiring it sent users from the provider to Tresso's sign-in page as if they had been signed out.
-- **Finish:** the web app takes the answer out of its address bar and posts it to `POST /api/v1/provider-connections`
+- **Finish:** the web app (or the desktop app, from the link) takes the answer out of its address bar and posts it to `POST /api/v1/provider-connections`
   (scope `settings:write`, our own apps only) with its access token. That token must belong to the user who started:
   a sign-in link someone else started cannot attach your provider account to their Tresso account. The state works
   once, whatever the outcome. The API redeems the code with the verifier, reads who

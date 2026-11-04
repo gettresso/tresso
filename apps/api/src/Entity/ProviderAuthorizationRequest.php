@@ -6,15 +6,16 @@ namespace App\Entity;
 
 use App\Enum\OAuthProvider;
 use App\Enum\ProviderFeature;
+use App\Enum\ProviderReturnTarget;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
 
 /**
- * A sign-in at a provider that is in progress: created when the user starts it, consumed once by the callback.
+ * A sign-in at a provider that is in progress: created when the user starts it, consumed once when the client hands in
+ * the provider's answer.
  *
- * The OAuth "state" is a random secret only its hash is stored under, bound to the user who started it; the callback
- * also requires that same user to be signed in to the API in that browser. The PKCE verifier stays here and never
- * reaches the browser.
+ * The OAuth "state" is a random secret only its hash is stored under, bound to the user who started it; only that
+ * user's access token can finish it. The PKCE verifier stays here and never reaches the browser.
  */
 #[ORM\Entity]
 #[ORM\Index(columns: ['expires_at'])]
@@ -50,6 +51,10 @@ class ProviderAuthorizationRequest
     #[ORM\Column(length: 36, nullable: true)]
     private ?string $mailAccountId;
 
+    /** Where the callback sends the provider's answer. */
+    #[ORM\Column(length: 16, enumType: ProviderReturnTarget::class, options: ['default' => ProviderReturnTarget::Web->value])]
+    private ProviderReturnTarget $returnTo;
+
     #[ORM\Column]
     private \DateTimeImmutable $expiresAt;
 
@@ -57,7 +62,7 @@ class ProviderAuthorizationRequest
      * @param list<ProviderFeature> $features
      * @param list<string>          $requestedScopes
      */
-    public function __construct(string $state, User $owner, OAuthProvider $provider, array $features, array $requestedScopes, string $codeVerifier, ?string $mailAccountId)
+    public function __construct(string $state, User $owner, OAuthProvider $provider, array $features, array $requestedScopes, string $codeVerifier, ?string $mailAccountId, ProviderReturnTarget $returnTo)
     {
         $this->stateHash = self::hashState($state);
         $this->owner = $owner;
@@ -66,6 +71,7 @@ class ProviderAuthorizationRequest
         $this->requestedScopes = $requestedScopes;
         $this->codeVerifier = $codeVerifier;
         $this->mailAccountId = $mailAccountId;
+        $this->returnTo = $returnTo;
         $this->expiresAt = new \DateTimeImmutable(self::LIFETIME);
     }
 
@@ -104,6 +110,11 @@ class ProviderAuthorizationRequest
     public function getMailAccountId(): ?string
     {
         return $this->mailAccountId;
+    }
+
+    public function getReturnTo(): ProviderReturnTarget
+    {
+        return $this->returnTo;
     }
 
     public function getExpiresAt(): \DateTimeImmutable
