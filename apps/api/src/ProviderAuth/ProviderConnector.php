@@ -124,14 +124,23 @@ final readonly class ProviderConnector
      */
     public function complete(User $user, OAuthProvider $provider, string $state, ?string $code, ?string $error): ConnectOutcome
     {
-        $request = '' !== $state ? $this->consume($state) : null;
+        $request = '' !== $state ? $this->entityManager->find(ProviderAuthorizationRequest::class, ProviderAuthorizationRequest::hashState($state)) : null;
 
         try {
-            if (null === $request || $request->isExpired() || $request->getProvider() !== $provider) {
+            if (null === $request || $request->getProvider() !== $provider) {
                 throw new ConnectFailed(ConnectError::Expired);
             }
+            if ($request->isExpired()) {
+                $this->claim($request);
+
+                throw new ConnectFailed(ConnectError::Expired);
+            }
+            // Checked before the request is used up: someone else handing in the answer must not cancel the sign-in.
             if (!$request->getOwner()->getId()->equals($user->getId())) {
                 throw new ConnectFailed(ConnectError::DifferentUser);
+            }
+            if (!$this->claim($request)) {
+                throw new ConnectFailed(ConnectError::Expired);
             }
             if (null !== $error && '' !== $error) {
                 throw new ConnectFailed('access_denied' === $error ? ConnectError::Denied : ConnectError::Failed, \sprintf('The provider answered %s.', $error));
@@ -149,17 +158,20 @@ final readonly class ProviderConnector
     }
 
     /**
-     * Removes the request, so a state works once.
+     * Deletes the request, so a state works once. False when another request deleted it first: the delete is one
+     * statement, so of two requests handing in the same answer at once only one gets true.
      */
-    private function consume(string $state): ?ProviderAuthorizationRequest
+    private function claim(ProviderAuthorizationRequest $request): bool
     {
-        $request = $this->entityManager->find(ProviderAuthorizationRequest::class, ProviderAuthorizationRequest::hashState($state));
-        if (null !== $request) {
-            $this->entityManager->remove($request);
-            $this->entityManager->flush();
-        }
+        $deleted = $this->entityManager->createQueryBuilder()
+            ->delete(ProviderAuthorizationRequest::class, 'r')
+            ->where('r.stateHash = :hash')
+            ->setParameter('hash', $request->getStateHash())
+            ->getQuery()
+            ->execute();
+        $this->entityManager->detach($request);
 
-        return $request;
+        return 1 === $deleted;
     }
 
     private function connect(ProviderAuthorizationRequest $request, string $code): ConnectOutcome

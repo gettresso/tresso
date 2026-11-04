@@ -205,6 +205,26 @@ final class ProviderConnectTest extends DatabaseTestCase
         self::assertSame(self::WEB.'/settings/accounts/new?provider=google&connectError=different_user', $location);
         self::assertSame(0, $this->entityManager()->getRepository(MailAccount::class)->count([]));
         self::assertSame([], $this->router()->requestsTo(self::GOOGLE_TOKEN));
+
+        $this->returnFromProvider('google', $query['state']);
+
+        self::assertSame('kim@gmail.example', $this->onlyAccount()->getEmailAddress(), 'Mallory handing the answer in first did not cancel Kim\'s sign-in.');
+    }
+
+    public function testAnAnswerIsHandedInOnce(): void
+    {
+        $query = $this->start('google');
+        $this->googleTokens();
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1']);
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+        self::assertResponseStatusCodeSame(200);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame('expired', $this->decodedResponse()['connectError'] ?? null);
+        self::assertCount(1, $this->router()->requestsTo(self::GOOGLE_TOKEN), 'A replayed answer never reaches the provider.');
+        $this->onlyAccount();
     }
 
     /**

@@ -80,6 +80,11 @@ class ProviderAuthorizationRequest
         return hash('sha256', $state);
     }
 
+    public function getStateHash(): string
+    {
+        return $this->stateHash;
+    }
+
     public function getOwner(): User
     {
         return $this->owner;
