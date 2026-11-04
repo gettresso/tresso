@@ -95,14 +95,34 @@ export interface StartProviderAuthorization {
   mailAccountId?: string
 }
 
-/** Send the browser to `authorizationUrl`; it comes back to the web app with `connected` or `connectError`. */
+/**
+ * Send the browser to `authorizationUrl`. It comes back to the web app with the provider's answer in the query (`state`
+ * with `code` or `error`), to hand in with {@link CompleteProviderAuthorization}, or with `connectError=expired` when
+ * the API did not know the sign-in.
+ */
 export interface ProviderAuthorization {
   authorizationUrl: string
   provider: OAuthProviderId
   expiresAt: string
 }
 
-/** Why a provider sign-in failed, from the `connectError` query parameter the API redirects with. */
+/** POST /api/v1/provider-connections: the provider's answer, handed in by the user who started the sign-in. */
+export interface CompleteProviderAuthorization {
+  provider: OAuthProviderId
+  state: string
+  code?: string
+  error?: string
+}
+
+/** What finishing a provider sign-in did: the mail account connected, the grant updated, or why not. */
+export interface ProviderConnection {
+  provider: OAuthProviderId
+  connected: string | null
+  grant: string | null
+  connectError: ProviderConnectError | null
+}
+
+/** Why a provider sign-in failed (`connectError` in a {@link ProviderConnection} or in the query the API redirects with). */
 export type ProviderConnectError =
   | 'denied'
   | 'expired'

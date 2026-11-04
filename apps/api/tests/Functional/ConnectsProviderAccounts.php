@@ -60,26 +60,66 @@ trait ConnectsProviderAccounts
     }
 
     /**
-     * The provider sends the browser back; returns where the API sent it next.
+     * The provider sends the browser back, and the web app finishes the sign-in as the web app does: the callback
+     * passes the answer on (in a browser without an API session, the usual case once that session has ended), and the
+     * web app hands it to the API with its access token. Returns the page the browser landed on, with the outcome the
+     * web app learned there in its query (`connected`, `grant` or `connectError`), the way the web app reads it.
+     *
+     * @param string|null $finishAs whose web app finishes it; null for the signed-in user of the test ($this->user)
      */
-    private function returnFromProvider(string $provider, string $state, string $code = 'code-1', string $signInAs = 'kim@example.test'): string
+    private function returnFromProvider(string $provider, string $state, string $code = 'code-1', ?string $finishAs = null): string
     {
-        $this->signInBrowser($signInAs);
-        $this->client->request('GET', '/connect/'.$provider.'/callback?'.http_build_query(['state' => $state, 'code' => $code, 'scope' => 'ignored']));
+        $headers = null === $finishAs ? $this->user : $this->userHeaders($finishAs, ['settings:read', 'settings:write']);
+
+        $answer = $this->providerRedirect($provider, ['state' => $state, 'code' => $code, 'scope' => 'ignored']);
+        if (!isset($answer['query']['state'])) {
+            return $answer['location'];
+        }
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $headers);
+        self::assertResponseStatusCodeSame(200);
+        $response = $this->decodedResponse();
+        $outcome = [];
+        foreach (['connected', 'grant', 'connectError'] as $key) {
+            if (\is_string($response[$key] ?? null)) {
+                $outcome[$key] = $response[$key];
+            }
+        }
+        $this->entityManager()->clear();
+
+        return $answer['page'].'?'.http_build_query(['provider' => $provider, ...$outcome]);
+    }
+
+    /**
+     * Opens the callback in a browser that is not signed in to the API and returns where it sent the browser.
+     *
+     * @param array<string, string> $query
+     *
+     * @return array{location: string, page: string, query: array<string, string>}
+     */
+    private function providerRedirect(string $provider, array $query): array
+    {
+        $this->client->getCookieJar()->clear();
+        $this->client->request('GET', '/connect/'.$provider.'/callback?'.http_build_query($query));
         self::assertResponseStatusCodeSame(302);
         $location = $this->client->getResponse()->headers->get('Location');
         self::assertIsString($location);
-        $this->entityManager()->clear();
+        parse_str((string) parse_url($location, \PHP_URL_QUERY), $passedOn);
 
-        return $location;
+        /** @var array<string, string> $passedOn */
+        return ['location' => $location, 'page' => explode('?', $location, 2)[0], 'query' => $passedOn];
     }
 
-    /** Signs the browser in to the API session, as the user does before /oauth/authorize. */
-    private function signInBrowser(string $email): void
+    /**
+     * The body the web app posts to /api/v1/provider-connections for what the callback passed on.
+     *
+     * @param array<string, string> $passedOn
+     *
+     * @return array<string, string>
+     */
+    private function connectionInput(array $passedOn): array
     {
-        $this->client->getCookieJar()->clear();
-        $crawler = $this->client->request('GET', '/login');
-        $this->client->submit($crawler->selectButton('Sign in')->form(['_username' => $email, '_password' => self::DEFAULT_PASSWORD]));
+        return array_intersect_key($passedOn, array_flip(['provider', 'state', 'code', 'error']));
     }
 
     /**

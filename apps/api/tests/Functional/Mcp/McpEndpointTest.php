@@ -196,6 +196,7 @@ final class McpEndpointTest extends DatabaseTestCase
             ['GET', '/billing', null],
             ['POST', '/billing/checkout', ['organizationId' => '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b', 'plan' => 'monthly']],
             ['POST', '/provider-authorizations', ['provider' => 'google', 'emailAddress' => 'kim@gmail.example']],
+            ['POST', '/provider-connections', ['provider' => 'google', 'state' => 'a-state', 'code' => 'a-code']],
             ['POST', '/mail-accounts', self::account('kim@other.example')],
             ['PATCH', '/mail-accounts/'.$account, ['password' => 'stolen-elsewhere']],
             ['DELETE', '/mail-accounts/'.$account, null],

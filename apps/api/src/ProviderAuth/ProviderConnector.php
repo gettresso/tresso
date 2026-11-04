@@ -23,10 +23,12 @@ use Psr\Log\LoggerInterface;
  *
  * 1. {@see self::start()}: a signed-in client asks to connect; the API stores the state (hashed) and PKCE verifier
  *    bound to that user and returns the provider's authorization URL. The client sends the browser there.
- * 2. The provider redirects the browser to /connect/<provider>/callback on the API. That route needs the browser's
- *    API session ({@see \App\Controller\ProviderConnectController}), and {@see self::complete()} requires it to be the
- *    user who started: a link someone else started cannot connect your provider account to their Tresso account.
- * 3. The code is redeemed with the verifier, the grant is created or updated, and each feature does its part: for
+ * 2. The provider redirects the browser to /connect/<provider>/callback on the API, which only passes the answer on to
+ *    the web app ({@see self::returnFrom()}). It needs no API browser session: that session lives far shorter than
+ *    the web app's sign-in, so requiring it sent users back from the provider to Tresso's sign-in page.
+ * 3. The web app hands the answer to the API with its own access token ({@see self::complete()}), which must belong to
+ *    the user who started: a link someone else started cannot connect your provider account to their Tresso account.
+ *    The code is redeemed with the verifier, the grant is created or updated, and each feature does its part: for
  *    mail, the Gmail or Microsoft 365 account is created or signed in again.
  */
 final readonly class ProviderConnector
@@ -85,40 +87,58 @@ final readonly class ProviderConnector
     }
 
     /**
-     * Handles the provider's redirect. Never throws for things the user or provider did: the result carries the
-     * outcome for the web app.
+     * Where the provider's redirect sends the browser next: the web app page the sign-in started from, with the
+     * provider's answer (state plus code or error) for the web app to finish with {@see self::complete()}. Writes
+     * nothing and redeems nothing, so it needs no signed-in user; an unknown or expired state ends here.
      *
      * @param array<string, mixed> $query the callback's query parameters
      */
-    public function complete(User $sessionUser, OAuthProvider $provider, array $query): ConnectResult
+    public function returnFrom(OAuthProvider $provider, array $query): ConnectResult
     {
         $state = $query['state'] ?? null;
-        $request = \is_string($state) && '' !== $state ? $this->consume($state) : null;
-        $path = null !== $request?->getMailAccountId() ? self::ACCOUNTS_PATH : self::ADD_PATH;
+        $request = \is_string($state) && '' !== $state ? $this->entityManager->find(ProviderAuthorizationRequest::class, ProviderAuthorizationRequest::hashState($state)) : null;
+        if (!\is_string($state) || null === $request || $request->isExpired() || $request->getProvider() !== $provider) {
+            return new ConnectResult(self::ADD_PATH, ['provider' => $provider->value, 'connectError' => ConnectError::Expired->value]);
+        }
+
+        $answer = ['provider' => $provider->value, 'state' => $state];
+        foreach (['code', 'error'] as $key) {
+            if (\is_string($query[$key] ?? null) && '' !== $query[$key]) {
+                $answer[$key] = $query[$key];
+            }
+        }
+
+        return new ConnectResult(null !== $request->getMailAccountId() ? self::ACCOUNTS_PATH : self::ADD_PATH, $answer);
+    }
+
+    /**
+     * Finishes a sign-in with the provider's answer, for the signed-in user who hands it in. Never throws for things
+     * the user or provider did: the outcome says what happened.
+     */
+    public function complete(User $user, OAuthProvider $provider, string $state, ?string $code, ?string $error): ConnectOutcome
+    {
+        $request = '' !== $state ? $this->consume($state) : null;
 
         try {
             if (null === $request || $request->isExpired() || $request->getProvider() !== $provider) {
                 throw new ConnectFailed(ConnectError::Expired);
             }
-            if (!$request->getOwner()->getId()->equals($sessionUser->getId())) {
+            if (!$request->getOwner()->getId()->equals($user->getId())) {
                 throw new ConnectFailed(ConnectError::DifferentUser);
             }
-            if (isset($query['error'])) {
-                throw new ConnectFailed('access_denied' === $query['error'] ? ConnectError::Denied : ConnectError::Failed, \sprintf('The provider answered %s.', \is_string($query['error']) ? $query['error'] : 'an error'));
+            if (null !== $error && '' !== $error) {
+                throw new ConnectFailed('access_denied' === $error ? ConnectError::Denied : ConnectError::Failed, \sprintf('The provider answered %s.', $error));
             }
-            $code = $query['code'] ?? null;
-            if (!\is_string($code) || '' === $code) {
+            if (null === $code || '' === $code) {
                 throw new ConnectFailed(ConnectError::Failed, 'The provider sent no code.');
             }
 
-            $connected = $this->connect($request, $code);
+            return $this->connect($request, $code);
         } catch (ConnectFailed $e) {
             $this->logger->info('Connecting a provider account failed.', ['provider' => $provider->value, 'error' => $e->error->value, 'reason' => $e->getMessage()]);
 
-            return new ConnectResult($path, ['provider' => $provider->value, 'connectError' => $e->error->value]);
+            return ConnectOutcome::failed($e->error);
         }
-
-        return new ConnectResult($path, ['provider' => $provider->value, ...$connected]);
     }
 
     /**
@@ -135,10 +155,7 @@ final readonly class ProviderConnector
         return $request;
     }
 
-    /**
-     * @return array<string, string> what was connected, for the web app: "connected" is the mail account id
-     */
-    private function connect(ProviderAuthorizationRequest $request, string $code): array
+    private function connect(ProviderAuthorizationRequest $request, string $code): ConnectOutcome
     {
         $provider = $request->getProvider();
         try {
@@ -177,7 +194,7 @@ final readonly class ProviderConnector
         }
 
         // One transaction for the grant and the account, so change numbers for client sync commit in order.
-        return $this->entityManager->wrapInTransaction(function () use ($request, $tokens, $identity, $granted, $grant, $mailAccount, $forMail): array {
+        return $this->entityManager->wrapInTransaction(function () use ($request, $tokens, $identity, $granted, $grant, $mailAccount, $forMail): ConnectOutcome {
             $owner = $request->getOwner();
             $provider = $request->getProvider();
 
@@ -194,7 +211,7 @@ final readonly class ProviderConnector
             $this->entityManager->flush();
 
             if (!$forMail) {
-                return ['grant' => $grant->getId()->toRfc4122()];
+                return ConnectOutcome::grant($grant->getId()->toRfc4122());
             }
 
             if (null === $mailAccount) {
@@ -222,7 +239,7 @@ final readonly class ProviderConnector
                 $this->notifier->outboxDue($mailAccount->getId());
             }
 
-            return ['connected' => $mailAccount->getId()->toRfc4122()];
+            return ConnectOutcome::connected($mailAccount->getId()->toRfc4122());
         });
     }
 

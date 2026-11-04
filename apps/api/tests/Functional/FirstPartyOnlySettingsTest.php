@@ -111,6 +111,8 @@ final class FirstPartyOnlySettingsTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(403);
         $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'google'], $headers);
         self::assertResponseStatusCodeSame(403);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', ['provider' => 'google', 'state' => 'a-state', 'code' => 'a-code'], $headers);
+        self::assertResponseStatusCodeSame(403);
 
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM notification_device'));
         $this->client->request('GET', '/api/v1/notification-devices', server: $headers);
