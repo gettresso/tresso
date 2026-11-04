@@ -33,6 +33,8 @@ const busy = ref(false)
 const error = ref<string | null>(null)
 /** The provider whose sign-in page the browser is about to open. */
 const openingProvider = ref<OAuthProviderId | null>(null)
+/** The desktop app opened the provider's page in the system browser; the answer comes back through a `tresso://` link. */
+const continueInBrowser = ref(false)
 const providersUnavailable = ref(false)
 /** The created account; a second submit fixes it instead of creating another. */
 const accountId = ref<string | null>(null)
@@ -137,13 +139,19 @@ const connect = connectForm.handleSubmit(async (values) => {
 /** Calendars are asked for only when the user chooses to sync them; they can also be allowed later, per account. */
 const withCalendars = ref(false)
 
-/** Leaves for the provider's sign-in page; the API sends the browser back here with the provider's answer. */
+/**
+ * Opens the provider's sign-in page; the API sends the browser back here with the provider's answer. The desktop app
+ * opens it in the system browser and stays on this page, which the answer comes back to.
+ */
 async function signInWith(provider: OAuthProviderId, mailAccountId?: string): Promise<void> {
   openingProvider.value = provider
   error.value = null
   try {
     const features: ProviderFeature[] = mailAccountId === undefined && withCalendars.value ? ['mail', 'calendar'] : ['mail']
-    window.location.assign(await accounts.startProviderSignIn(provider, mailAccountId, features))
+    if ((await accounts.openProviderSignIn(provider, mailAccountId, features)) === 'browser') {
+      openingProvider.value = null
+      continueInBrowser.value = true
+    }
   } catch (e) {
     error.value = errorMessage(e)
     openingProvider.value = null
@@ -156,6 +164,7 @@ async function finishProviderSignIn(): Promise<void> {
   if (query.provider === undefined) return
   // The query holds a one-time code; it leaves the address bar and the history before anything else happens.
   await router.replace({ query: {} })
+  continueInBrowser.value = false
 
   try {
     const result = await accounts.finishProviderSignIn(query)
@@ -175,6 +184,14 @@ async function finishProviderSignIn(): Promise<void> {
     error.value = errorMessage(e)
   }
 }
+
+// The desktop app gets the answer while this page is open: the `tresso://` link changes only the query.
+watch(
+  () => route.query.provider,
+  (provider) => {
+    if (provider !== undefined) void finishProviderSignIn()
+  },
+)
 
 onMounted(async () => {
   await finishProviderSignIn()
@@ -236,6 +253,7 @@ onBeforeUnmount(() => {
         >
           <template v-if="openingProvider === provider.id"><LogoLoader /> Opening {{ provider.name }}…</template><template v-else>Sign in with {{ provider.name }}</template>
         </button>
+        <p v-if="continueInBrowser" class="hint" role="status">Continue in your browser. Tresso shows the account here once you have signed in.</p>
         <label class="calendars">
           <input v-model="withCalendars" type="checkbox" />
           Also sync my calendars
@@ -321,6 +339,7 @@ onBeforeUnmount(() => {
           <button v-else type="button" class="button button-primary" @click="step = 'settings'">Change the settings</button>
           <RouterLink :to="{ name: 'settings-accounts' }" class="button button-quiet">Back to accounts</RouterLink>
         </div>
+        <p v-if="continueInBrowser" class="note" role="status">Continue in your browser. Tresso shows your accounts once you have signed in.</p>
       </template>
       <template v-else>
         <p class="lead" role="status"><LogoLoader /> Signing in and fetching your folders…</p>

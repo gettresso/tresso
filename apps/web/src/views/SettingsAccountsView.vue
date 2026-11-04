@@ -44,6 +44,14 @@ async function readSignInResult(): Promise<void> {
   }
 }
 
+// The desktop app gets the answer while this page is open: the `tresso://` link changes only the query.
+watch(
+  () => route.query.provider,
+  (provider) => {
+    if (provider !== undefined) void readSignInResult().then(load)
+  },
+)
+
 onMounted(async () => {
   await readSignInResult()
   await load()

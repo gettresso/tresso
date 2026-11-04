@@ -12,8 +12,10 @@ import type {
   ProviderConnectError,
   ProviderConnection,
   ProviderFeature,
+  StartProviderAuthorization,
   SuggestedServerSettings,
 } from '@tresso/core'
+import { isDesktop, openInBrowser } from '@/platform/desktop'
 import { useAuthStore } from '@/stores/auth'
 
 /** Mail account settings, read and written through the API (the synced copy has no server settings). */
@@ -66,21 +68,40 @@ export const useAccountsStore = defineStore('accounts', () => {
    * again (after a failed sign-in), or allows more of it (its calendars). The API also asks for what the account
    * allows already, so signing in again for mail keeps the calendars, and nothing is asked for that the user did not
    * choose (a Microsoft tenant may not let its users allow calendars themselves).
+   *
+   * The desktop app asks for the answer to come back through its `tresso://` link: it opens the provider in the
+   * system browser, whose tabs hold none of its tokens, so the web app there could not finish the sign-in.
    */
   async function startProviderSignIn(provider: OAuthProviderId, mailAccountId?: string, features: ProviderFeature[] = ['mail']): Promise<string> {
-    const started = await auth.send<ProviderAuthorization>('POST', '/api/v1/provider-authorizations', {
-      provider,
-      features,
-      ...(mailAccountId === undefined ? {} : { mailAccountId }),
-    })
+    const body: StartProviderAuthorization = { provider, features }
+    if (mailAccountId !== undefined) body.mailAccountId = mailAccountId
+    if (isDesktop) body.returnTo = 'native'
+    const started = await auth.send<ProviderAuthorization>('POST', '/api/v1/provider-authorizations', body)
 
     return started.authorizationUrl
   }
 
   /**
+   * Starts a provider sign-in and opens the provider's page: the web app leaves for it in this tab; the desktop app
+   * opens it in the system browser, as its own sign-in does, and stays where it is until the link brings the answer
+   * back. Leaving the desktop window itself would end on the web app, another origin without the desktop app's tokens.
+   *
+   * @returns `browser` when the page opened in the system browser and this window waits, `left` when this tab leaves
+   */
+  async function openProviderSignIn(provider: OAuthProviderId, mailAccountId?: string, features?: ProviderFeature[]): Promise<'browser' | 'left'> {
+    const url = await startProviderSignIn(provider, mailAccountId, features)
+    if (!isDesktop) {
+      window.location.assign(url)
+      return 'left'
+    }
+    await openInBrowser(url)
+    return 'browser'
+  }
+
+  /**
    * Back from a provider sign-in: the API passed the provider's answer on in the query (`state` with `code` or
    * `error`), which this hands in with the signed-in user's token, so the sign-in does not depend on the API's own
-   * browser session. A query with `connectError` already holds the outcome. Null when the query holds no sign-in.
+   * browser session. In the desktop app the query comes from the `tresso://` link the system browser opened. A query with `connectError` already holds the outcome. Null when the query holds no sign-in.
    */
   async function finishProviderSignIn(query: LocationQuery): Promise<ProviderConnection | null> {
     const { provider, state, code, error, connectError } = query
@@ -101,5 +122,5 @@ export const useAccountsStore = defineStore('accounts', () => {
     return auth.api<SuggestedServerSettings>(`/api/v1/mail-server-settings?${new URLSearchParams({ emailAddress })}`)
   }
 
-  return { accounts, loaded, load, get, create, update, remove, suggest, providers, loadProviders, startProviderSignIn, finishProviderSignIn }
+  return { accounts, loaded, load, get, create, update, remove, suggest, providers, loadProviders, startProviderSignIn, openProviderSignIn, finishProviderSignIn }
 })
