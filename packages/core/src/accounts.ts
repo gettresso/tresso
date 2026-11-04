@@ -93,12 +93,17 @@ export interface StartProviderAuthorization {
   features?: ProviderFeature[]
   /** Signing in again for this account. */
   mailAccountId?: string
+  /**
+   * Where the provider's answer goes: `web` (the default) to the page the sign-in started from, `native` to the
+   * desktop app's own link (NATIVE_REDIRECT_URI), with that page in `next`, for a sign-in opened in the system browser.
+   */
+  returnTo?: 'web' | 'native'
 }
 
 /**
  * Send the browser to `authorizationUrl`. It comes back to the web app with the provider's answer in the query (`state`
  * with `code` or `error`), to hand in with {@link CompleteProviderAuthorization}, or with `connectError=expired` when
- * the API did not know the sign-in.
+ * the API did not know the sign-in. With `returnTo: 'native'` the same query arrives through the desktop app's link.
  */
 export interface ProviderAuthorization {
   authorizationUrl: string

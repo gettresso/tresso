@@ -18,6 +18,8 @@ provideRequiredFields(providerAccountSchema)
 const accounts = useAccountsStore()
 const saving = ref(false)
 const signingIn = ref(false)
+/** The desktop app opened the provider's page in the system browser; the accounts page gets the answer. */
+const continueInBrowser = ref(false)
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 
@@ -52,14 +54,18 @@ const save = handleSubmit(async (values) => {
 })
 
 /**
- * Leaves for the provider's sign-in page; the API sends the browser back to the accounts page. Signing in again asks
- * for mail and whatever the account allows already; allowing calendars adds just them.
+ * Opens the provider's sign-in page; the API sends the browser back to the accounts page (in the desktop app, through
+ * its `tresso://` link, while the page in the system browser is left behind). Signing in again asks for mail and
+ * whatever the account allows already; allowing calendars adds just them.
  */
 async function signInAgain(features?: ProviderFeature[]): Promise<void> {
   signingIn.value = true
   error.value = null
   try {
-    window.location.assign(await accounts.startProviderSignIn(props.provider, props.account.id, features))
+    if ((await accounts.openProviderSignIn(props.provider, props.account.id, features)) === 'browser') {
+      signingIn.value = false
+      continueInBrowser.value = true
+    }
   } catch (e) {
     error.value = errorMessage(e)
     signingIn.value = false
@@ -87,6 +93,7 @@ async function signInAgain(features?: ProviderFeature[]): Promise<void> {
 
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     <p v-if="message" class="done" role="status">{{ message }}</p>
+    <p v-if="continueInBrowser" class="hint" role="status">Continue in your browser. Tresso shows the result here once you have signed in.</p>
 
     <div class="actions">
       <button type="submit" class="button button-primary" :disabled="saving">Save changes</button>
@@ -104,7 +111,8 @@ async function signInAgain(features?: ProviderFeature[]): Promise<void> {
   flex-direction: column;
   gap: 16px;
 }
-.signs-in {
+.signs-in,
+.hint {
   margin: 0;
   color: var(--ink-2);
 }
