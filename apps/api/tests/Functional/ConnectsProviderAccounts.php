@@ -43,12 +43,13 @@ trait ConnectsProviderAccounts
      * Starts a sign-in and returns the query of the authorization URL.
      *
      * @param list<string>|null $features null for the API's default
+     * @param string|null       $returnTo null for the API's default (the web app)
      *
      * @return array<string, string>
      */
-    private function start(string $provider, ?string $mailAccountId = null, ?array $features = null): array
+    private function start(string $provider, ?string $mailAccountId = null, ?array $features = null, ?string $returnTo = null): array
     {
-        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => $provider] + (null === $mailAccountId ? [] : ['mailAccountId' => $mailAccountId]) + (null === $features ? [] : ['features' => $features]), $this->user);
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => $provider] + (null === $mailAccountId ? [] : ['mailAccountId' => $mailAccountId]) + (null === $features ? [] : ['features' => $features]) + (null === $returnTo ? [] : ['returnTo' => $returnTo]), $this->user);
         self::assertResponseStatusCodeSame(201);
         $url = $this->responseString('authorizationUrl');
         self::assertSame($provider, $this->responseString('provider'));

@@ -12,6 +12,7 @@ use App\Enum\CalendarSyncStatus;
 use App\Enum\MailAccountStatus;
 use App\Enum\OAuthProvider;
 use App\Enum\ProviderFeature;
+use App\Enum\ProviderReturnTarget;
 use App\Realtime\RealtimeNotifier;
 use App\Repository\MailAccountRepository;
 use App\Repository\ProviderGrantRepository;
@@ -24,7 +25,7 @@ use Psr\Log\LoggerInterface;
  * 1. {@see self::start()}: a signed-in client asks to connect; the API stores the state (hashed) and PKCE verifier
  *    bound to that user and returns the provider's authorization URL. The client sends the browser there.
  * 2. The provider redirects the browser to /connect/<provider>/callback on the API, which only passes the answer on to
- *    the web app ({@see self::returnFrom()}). It needs no API browser session: that session lives far shorter than
+ *    the web app, or to the desktop app when it started the sign-in ({@see self::returnFrom()}). It needs no API browser session: that session lives far shorter than
  *    the web app's sign-in, so requiring it sent users back from the provider to Tresso's sign-in page.
  * 3. The web app hands the answer to the API with its own access token ({@see self::complete()}), which must belong to
  *    the user who started: a link someone else started cannot connect your provider account to their Tresso account.
@@ -51,10 +52,11 @@ final readonly class ProviderConnector
     /**
      * @param list<ProviderFeature> $features
      * @param MailAccount|null      $mailAccount signing in again for this account
+     * @param ProviderReturnTarget  $returnTo    the app the provider's answer goes back to
      *
      * @return array{url: string, expiresAt: \DateTimeImmutable}
      */
-    public function start(User $owner, OAuthProvider $provider, array $features, ?MailAccount $mailAccount): array
+    public function start(User $owner, OAuthProvider $provider, array $features, ?MailAccount $mailAccount, ProviderReturnTarget $returnTo): array
     {
         if (!$this->settings->isConfigured($provider)) {
             throw new \LogicException(\sprintf('%s sign-in is not configured.', $provider->label()));
@@ -70,7 +72,7 @@ final readonly class ProviderConnector
 
         $state = self::randomToken();
         $verifier = self::randomToken();
-        $request = new ProviderAuthorizationRequest($state, $owner, $provider, $features, $scopes, $verifier, $mailAccount?->getId()->toRfc4122());
+        $request = new ProviderAuthorizationRequest($state, $owner, $provider, $features, $scopes, $verifier, $mailAccount?->getId()->toRfc4122(), $returnTo);
 
         $this->entityManager->createQuery('DELETE FROM '.ProviderAuthorizationRequest::class.' r WHERE r.expiresAt <= :now')
             ->setParameter('now', new \DateTimeImmutable())
@@ -88,8 +90,9 @@ final readonly class ProviderConnector
 
     /**
      * Where the provider's redirect sends the browser next: the web app page the sign-in started from, with the
-     * provider's answer (state plus code or error) for the web app to finish with {@see self::complete()}. Writes
-     * nothing and redeems nothing, so it needs no signed-in user; an unknown or expired state ends here.
+     * provider's answer (state plus code or error) for the client to finish with {@see self::complete()}, in the app
+     * the sign-in was started for. Writes nothing and redeems nothing, so it needs no signed-in user; an expired state
+     * ends here, and an unknown one too, in the web app, since nothing says which app it came from.
      *
      * @param array<string, mixed> $query the callback's query parameters
      */
@@ -97,8 +100,12 @@ final readonly class ProviderConnector
     {
         $state = $query['state'] ?? null;
         $request = \is_string($state) && '' !== $state ? $this->entityManager->find(ProviderAuthorizationRequest::class, ProviderAuthorizationRequest::hashState($state)) : null;
-        if (!\is_string($state) || null === $request || $request->isExpired() || $request->getProvider() !== $provider) {
+        if (!\is_string($state) || null === $request || $request->getProvider() !== $provider) {
             return new ConnectResult(self::ADD_PATH, ['provider' => $provider->value, 'connectError' => ConnectError::Expired->value]);
+        }
+        $path = null !== $request->getMailAccountId() ? self::ACCOUNTS_PATH : self::ADD_PATH;
+        if ($request->isExpired()) {
+            return new ConnectResult($path, ['provider' => $provider->value, 'connectError' => ConnectError::Expired->value], $request->getReturnTo());
         }
 
         $answer = ['provider' => $provider->value, 'state' => $state];
@@ -108,7 +115,7 @@ final readonly class ProviderConnector
             }
         }
 
-        return new ConnectResult(null !== $request->getMailAccountId() ? self::ACCOUNTS_PATH : self::ADD_PATH, $answer);
+        return new ConnectResult($path, $answer, $request->getReturnTo());
     }
 
     /**

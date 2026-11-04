@@ -19,6 +19,7 @@ final class ProviderConnectTest extends DatabaseTestCase
     use ConnectsProviderAccounts;
 
     private const string WEB = 'http://localhost:5173';
+    private const string DESKTOP = 'tresso://auth/callback';
     private const string GOOGLE_REVOKE = 'https://oauth2.googleapis.com/revoke';
 
     protected function setUp(): void
@@ -230,6 +231,69 @@ final class ProviderConnectTest extends DatabaseTestCase
         $account = $this->onlyAccount();
         self::assertSame(['provider' => 'google', 'connected' => $account->getId()->toRfc4122(), 'grant' => null, 'connectError' => null], $this->decodedResponse());
         self::assertSame(0, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]), 'The state works once.');
+    }
+
+    /**
+     * Regression: the desktop app sent its own window to the provider, and the callback then took it to the web app,
+     * another origin without the desktop app's tokens, so the user looked signed out. The desktop app opens the
+     * provider in the system browser instead, and the answer comes back through the desktop app's link.
+     */
+    public function testADesktopSignInReturnsToTheDesktopApp(): void
+    {
+        $query = $this->start('google', returnTo: 'native');
+        $this->googleTokens();
+
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1', 'scope' => 'ignored']);
+
+        self::assertSame(self::DESKTOP.'?'.http_build_query(['next' => '/settings/accounts/new', 'provider' => 'google', 'state' => $query['state'], 'code' => 'code-1']), $answer['location']);
+        self::assertResponseHeaderSame('Referrer-Policy', 'no-referrer');
+        self::assertResponseHeaderSame('Cache-Control', 'no-store, private');
+        self::assertSame([], $this->router()->requestsTo(self::GOOGLE_TOKEN), 'Nothing is redeemed before the desktop app hands the answer in.');
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+
+        self::assertResponseStatusCodeSame(200);
+        $account = $this->onlyAccount();
+        self::assertSame(['provider' => 'google', 'connected' => $account->getId()->toRfc4122(), 'grant' => null, 'connectError' => null], $this->decodedResponse());
+        self::assertSame('kim@gmail.example', $account->getEmailAddress());
+    }
+
+    public function testSigningInAgainFromTheDesktopReturnsToItsAccountsPage(): void
+    {
+        $id = $this->connectGoogle()->getId()->toRfc4122();
+
+        $query = $this->start('google', $id, returnTo: 'native');
+        $this->googleTokens(access: 'google-access-2', refresh: 'google-refresh-2');
+
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-2']);
+        self::assertSame(self::DESKTOP.'?'.http_build_query(['next' => '/settings/accounts', 'provider' => 'google', 'state' => $query['state'], 'code' => 'code-2']), $answer['location']);
+
+        self::assertSame(self::DESKTOP.'?provider=google&connected='.$id, $this->returnFromProvider('google', $query['state'], 'code-2'));
+    }
+
+    public function testAnExpiredDesktopSignInSaysSoInTheDesktopApp(): void
+    {
+        $query = $this->start('google', returnTo: 'native');
+        $this->connection()->executeStatement("UPDATE provider_authorization_request SET expires_at = now() - interval '1 minute'");
+
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1']);
+
+        self::assertSame(self::DESKTOP.'?'.http_build_query(['next' => '/settings/accounts/new', 'provider' => 'google', 'connectError' => 'expired']), $answer['location']);
+        self::assertSame([], $this->router()->requestsTo(self::GOOGLE_TOKEN));
+    }
+
+    public function testTheReturnTargetIsOnlyWebOrNative(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'google', 'returnTo' => 'https://attacker.example/steal'], $this->user);
+        self::assertResponseStatusCodeSame(400);
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'google', 'returnTo' => 'tresso://elsewhere'], $this->user);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame(0, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]));
+
+        $query = $this->start('google', returnTo: 'web');
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1']);
+        self::assertStringStartsWith(self::WEB.'/settings/accounts/new?', $answer['location']);
     }
 
     public function testRefusingAtTheProviderSaysSo(): void

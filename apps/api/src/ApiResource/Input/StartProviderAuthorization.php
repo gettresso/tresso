@@ -6,6 +6,7 @@ namespace App\ApiResource\Input;
 
 use App\Enum\OAuthProvider;
 use App\Enum\ProviderFeature;
+use App\Enum\ProviderReturnTarget;
 use Symfony\Component\Validator\Constraints as Assert;
 
 /**
@@ -28,4 +29,7 @@ final class StartProviderAuthorization
     /** Signing in again for this mail account (after a failed sign-in, or to allow more). */
     #[Assert\Uuid]
     public ?string $mailAccountId = null;
+
+    /** Where the provider's answer goes: the web app, or the desktop app that opened the system browser. */
+    public ProviderReturnTarget $returnTo = ProviderReturnTarget::Web;
 }
