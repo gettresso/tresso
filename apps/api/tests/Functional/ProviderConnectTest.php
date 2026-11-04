@@ -192,40 +192,70 @@ final class ProviderConnectTest extends DatabaseTestCase
         self::assertSame(0, $this->entityManager()->getRepository(MailAccount::class)->count([]));
     }
 
-    public function testTheCallbackNeedsTheBrowserOfTheUserWhoStarted(): void
+    public function testOnlyTheUserWhoStartedCanFinish(): void
     {
         $query = $this->start('google');
         $this->googleTokens();
         $this->createUser('mallory@example.test', 'Mallory');
 
         // Someone else's browser opens the link: the account must not land in Kim's Tresso.
-        $location = $this->returnFromProvider('google', $query['state'], signInAs: 'mallory@example.test');
+        $location = $this->returnFromProvider('google', $query['state'], finishAs: 'mallory@example.test');
 
         self::assertSame(self::WEB.'/settings/accounts/new?provider=google&connectError=different_user', $location);
         self::assertSame(0, $this->entityManager()->getRepository(MailAccount::class)->count([]));
         self::assertSame([], $this->router()->requestsTo(self::GOOGLE_TOKEN));
     }
 
-    public function testASignedOutBrowserSignsInFirst(): void
+    /**
+     * Regression: the callback used to need the API's browser session, which ends long before the web app's sign-in
+     * does. Back from Google or Microsoft, users then landed on Tresso's sign-in page as if they had been signed out.
+     */
+    public function testTheCallbackNeedsNoBrowserSession(): void
     {
         $query = $this->start('google');
-        $this->client->getCookieJar()->clear();
+        $this->googleTokens();
 
-        $this->client->request('GET', '/connect/google/callback?'.http_build_query(['state' => $query['state'], 'code' => 'code-1']));
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1', 'scope' => 'ignored']);
 
-        self::assertResponseRedirects('http://localhost/login');
-        self::assertSame(1, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]), 'The sign-in can still finish after logging in.');
+        self::assertSame(self::WEB.'/settings/accounts/new?'.http_build_query(['provider' => 'google', 'state' => $query['state'], 'code' => 'code-1']), $answer['location'], 'Passed on to the web app, not to the sign-in page.');
+        self::assertResponseHeaderSame('Referrer-Policy', 'no-referrer');
+        self::assertResponseHeaderSame('Cache-Control', 'no-store, private');
+        self::assertSame([], $this->client->getCookieJar()->all(), 'No session is started.');
+        self::assertSame([], $this->router()->requestsTo(self::GOOGLE_TOKEN), 'Nothing is redeemed before the web app hands the answer in.');
+        self::assertSame(1, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]));
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+
+        self::assertResponseStatusCodeSame(200);
+        $account = $this->onlyAccount();
+        self::assertSame(['provider' => 'google', 'connected' => $account->getId()->toRfc4122(), 'grant' => null, 'connectError' => null], $this->decodedResponse());
+        self::assertSame(0, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]), 'The state works once.');
     }
 
     public function testRefusingAtTheProviderSaysSo(): void
     {
         $query = $this->start('google');
 
-        $this->signInBrowser('kim@example.test');
-        $this->client->request('GET', '/connect/google/callback?'.http_build_query(['state' => $query['state'], 'error' => 'access_denied']));
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'error' => 'access_denied', 'error_description' => 'The user said no.']);
+        self::assertSame(self::WEB.'/settings/accounts/new?'.http_build_query(['provider' => 'google', 'state' => $query['state'], 'error' => 'access_denied']), $answer['location']);
 
-        self::assertSame(self::WEB.'/settings/accounts/new?provider=google&connectError=denied', $this->client->getResponse()->headers->get('Location'));
-        self::assertResponseHeaderSame('Referrer-Policy', 'no-referrer');
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame('denied', $this->decodedResponse()['connectError'] ?? null);
+        self::assertSame(0, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]));
+    }
+
+    public function testFinishingValidatesItsInput(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', ['provider' => 'yahoo', 'state' => 'x'], $this->user);
+        self::assertResponseStatusCodeSame(400);
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', ['provider' => 'google', 'state' => ''], $this->user);
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['state'], $this->violationPaths());
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', ['provider' => 'google', 'state' => 'x'], $this->userHeaders('kim@example.test', ['settings:read']));
+        self::assertResponseStatusCodeSame(403);
     }
 
     public function testUntickedMailPermissionIsRefused(): void
@@ -412,7 +442,7 @@ final class ProviderConnectTest extends DatabaseTestCase
         $this->user = $this->userHeaders('lisa@example.test', ['settings:read', 'settings:write']);
         $query = $this->start('google');
         $this->googleTokens(access: 'google-access-lisa', refresh: 'google-refresh-lisa');
-        $this->returnFromProvider('google', $query['state'], 'code-lisa', 'lisa@example.test');
+        $this->returnFromProvider('google', $query['state'], 'code-lisa');
         self::assertSame(2, $this->entityManager()->getRepository(ProviderGrant::class)->count([]));
         $this->router()->respond(self::GOOGLE_REVOKE, '');
 

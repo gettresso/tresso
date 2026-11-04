@@ -75,6 +75,12 @@ describe('AddAccountView', () => {
         if (url.pathname === '/api/v1/provider-authorizations' && method === 'POST') {
           return json({ authorizationUrl: 'https://accounts.google.example/o/oauth2/v2/auth?state=s', provider: 'google', expiresAt: '2026-10-19T08:15:00+00:00' }, 201)
         }
+        if (url.pathname === '/api/v1/provider-connections' && method === 'POST') {
+          const answer = JSON.parse(String(init?.body)) as { provider: string; code?: string }
+          return answer.code === 'code-unticked'
+            ? json({ provider: answer.provider, connected: null, grant: null, connectError: 'scopes_missing' })
+            : json({ provider: answer.provider, connected: 'acc-g', grant: null, connectError: null })
+        }
         if (url.pathname === '/api/v1/mail-accounts/acc-g') {
           return json(gmail)
         }
@@ -185,10 +191,17 @@ describe('AddAccountView', () => {
   it('waits for the account the provider sign-in connected, and offers to sign in again when it fails', async () => {
     const assign = vi.fn<(url: string) => void>()
     vi.stubGlobal('location', { ...window.location, assign })
-    const wrapper = await mountView('/settings/accounts/new?provider=google&connected=acc-g')
+    const wrapper = await mountView('/settings/accounts/new?provider=google&state=state-1&code=code-1')
     const mail = useMailStore()
     await settle()
 
+    // The web app finishes the sign-in with its own token, so it never needs the API's browser session.
+    expect(requests.find((r) => r.path === '/api/v1/provider-connections')).toEqual({
+      method: 'POST',
+      path: '/api/v1/provider-connections',
+      body: { provider: 'google', state: 'state-1', code: 'code-1' },
+    })
+    expect(sessionStorage.getItem('auth.tokens')).not.toBeNull()
     expect(wrapper.text()).toContain('kim@gmail.example')
     expect(wrapper.text()).toContain('Signing in and fetching your folders')
     expect(wrapper.router.currentRoute.value.query).toEqual({})
@@ -206,10 +219,24 @@ describe('AddAccountView', () => {
   })
 
   it('explains a failed provider sign-in', async () => {
-    const wrapper = await mountView('/settings/accounts/new?provider=microsoft&connectError=scopes_missing')
+    const wrapper = await mountView('/settings/accounts/new?provider=microsoft&state=state-1&code=code-unticked')
     await settle()
 
     expect(wrapper.get('[role="alert"]').text()).toBe('Tresso needs permission to read and send your mail. Sign in with Microsoft again and leave those boxes ticked.')
     expect(wrapper.find('input[type="email"]').exists()).toBe(true)
+    expect(wrapper.router.currentRoute.value.query).toEqual({})
+  })
+
+  it('hands a refusal at the provider in, and says an unknown sign-in expired without asking', async () => {
+    const refused = await mountView('/settings/accounts/new?provider=google&state=state-1&error=access_denied')
+    await settle()
+    expect(requests.find((r) => r.path === '/api/v1/provider-connections')?.body).toEqual({ provider: 'google', state: 'state-1', error: 'access_denied' })
+    refused.unmount()
+
+    requests.length = 0
+    const expired = await mountView('/settings/accounts/new?provider=google&connectError=expired')
+    await settle()
+    expect(expired.get('[role="alert"]').text()).toBe('That sign-in took too long or was already used. Try again.')
+    expect(requests.some((r) => r.path === '/api/v1/provider-connections')).toBe(false)
   })
 })

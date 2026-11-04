@@ -13,10 +13,10 @@ use App\Security\Scope;
 use App\State\ProviderAuthorizationProcessor;
 
 /**
- * A started sign-in at Google or Microsoft. The client sends the browser to `authorizationUrl`; after the user
- * allowed access there, the provider returns the browser to the API, which connects the account and redirects to the
- * web app (/settings/accounts/new, or /settings/accounts when signing in again) with `connected=<mail account id>` or
- * `connectError=<code>` in the query. The browser must be signed in to Tresso as the same user.
+ * A started sign-in at Google or Microsoft. The client sends the browser to `authorizationUrl`; afterwards the provider
+ * returns the browser to the API, which passes its answer on to the web app (/settings/accounts/new, or
+ * /settings/accounts when signing in again) as `state` plus `code` or `error` in the query, or straight away
+ * `connectError=expired` for a state it does not know. The web app finishes with {@see ProviderConnection}.
  */
 #[ApiResource(
     shortName: 'ProviderAuthorization',

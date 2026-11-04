@@ -329,16 +329,22 @@ Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes 
   answers the provider's `authorizationUrl`. `GET /api/v1/oauth-providers` lists the providers this server has an
   OAuth app for.
 - **Callback:** the provider redirects the browser to `<API_PUBLIC_URL>/connect/<provider>/callback`. That route is
-  behind the browser session of the API (the one used to sign in for `/oauth/authorize`; a signed-out browser signs
-  in first and comes back), and the session user must be the user who started: a sign-in link someone else started
-  cannot attach your provider account to their Tresso account. The API redeems the code with the verifier, reads who
+  public and only passes the answer on: it redirects to the web app (`/settings/accounts/new`, or `/settings/accounts`
+  when signing in again) with `provider`, `state` and the provider's `code` or `error`, or straight away with
+  `connectError=expired` for a state it does not know. It does not depend on the API's browser session (the one used
+  to sign in for `/oauth/authorize`): that session ends after 24 idle minutes or a deploy, long before the web app's
+  sign-in, and requiring it sent users from the provider to Tresso's sign-in page as if they had been signed out.
+- **Finish:** the web app takes the answer out of its address bar and posts it to `POST /api/v1/provider-connections`
+  (scope `settings:write`, our own apps only) with its access token. That token must belong to the user who started:
+  a sign-in link someone else started cannot attach your provider account to their Tresso account. The state works
+  once, whatever the outcome. The API redeems the code with the verifier, reads who
   signed in (Google: the ID token's `sub` and verified `email`; Microsoft: the ID token's `tid` and `oid`, and the
   mailbox address from Graph `/me`), checks that the mail scopes were granted (users can untick them; calendars left
   unticked are allowed later, and only the calendar status says so),
-  creates or updates the grant and creates the mail account (or signs an existing one in again), then redirects to
-  the web app: `/settings/accounts/new` (or `/settings/accounts` when signing in again) with `connected=<account id>`
-  or `connectError=<code>` (`denied`, `expired`, `different_user`, `scopes_missing`, `wrong_account`,
-  `already_connected`, `unverified_address`, `no_mailbox`, `failed`). ID tokens come straight from the token endpoint
+  creates or updates the grant and creates the mail account (or signs an existing one in again), and answers
+  `{provider, connected: <account id>, grant: <grant id, when only calendars were allowed>, connectError: <code>}`
+  (codes: `denied`, `expired`, `different_user`, `scopes_missing`, `wrong_account`, `already_connected`,
+  `unverified_address`, `no_mailbox`, `failed`). ID tokens come straight from the token endpoint
   over TLS, so their claims are used without a signature check (OpenID Connect Core 3.1.3.7); the audience is checked.
 - **Grants** (`provider_grant`): owner, provider, the provider's stable account id, the scopes the provider confirmed
   (Microsoft's normalized to lowercase without the `https://graph.microsoft.com/` prefix) and the tokens, sealed with

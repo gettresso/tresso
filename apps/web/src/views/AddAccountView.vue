@@ -137,7 +137,7 @@ const connect = connectForm.handleSubmit(async (values) => {
 /** Calendars are asked for only when the user chooses to sync them; they can also be allowed later, per account. */
 const withCalendars = ref(false)
 
-/** Leaves for the provider's sign-in page; the API sends the browser back here with the outcome. */
+/** Leaves for the provider's sign-in page; the API sends the browser back here with the provider's answer. */
 async function signInWith(provider: OAuthProviderId, mailAccountId?: string): Promise<void> {
   openingProvider.value = provider
   error.value = null
@@ -150,19 +150,22 @@ async function signInWith(provider: OAuthProviderId, mailAccountId?: string): Pr
   }
 }
 
-/** Back from a provider sign-in: wait for the connected account, or say why it did not work. */
+/** Back from a provider sign-in: finish it, then wait for the connected account, or say why it did not work. */
 async function finishProviderSignIn(): Promise<void> {
-  const { connected, connectError, provider } = route.query
-  if (typeof connected !== 'string' && typeof connectError !== 'string') return
+  const query = route.query
+  if (query.provider === undefined) return
+  // The query holds a one-time code; it leaves the address bar and the history before anything else happens.
   await router.replace({ query: {} })
 
-  if (typeof connectError === 'string') {
-    error.value = connectErrorMessage(connectError, provider === 'microsoft' ? 'microsoft' : 'google')
-    return
-  }
-  if (typeof connected !== 'string') return
   try {
-    const account = await accounts.get(connected)
+    const result = await accounts.finishProviderSignIn(query)
+    if (result === null) return
+    if (result.connectError !== null) {
+      error.value = connectErrorMessage(result.connectError, result.provider)
+      return
+    }
+    if (result.connected === null) return
+    const account = await accounts.get(result.connected)
     accountId.value = account.id
     current.value = account
     addressForm.setFieldValue('emailAddress', account.emailAddress)

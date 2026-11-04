@@ -1,6 +1,19 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { MailAccount, MailAccountUpdate, NewMailAccount, OAuthProviderId, OAuthProviderInfo, ProviderAuthorization, ProviderFeature, SuggestedServerSettings } from '@tresso/core'
+import type { LocationQuery } from 'vue-router'
+import type {
+  CompleteProviderAuthorization,
+  MailAccount,
+  MailAccountUpdate,
+  NewMailAccount,
+  OAuthProviderId,
+  OAuthProviderInfo,
+  ProviderAuthorization,
+  ProviderConnectError,
+  ProviderConnection,
+  ProviderFeature,
+  SuggestedServerSettings,
+} from '@tresso/core'
 import { useAuthStore } from '@/stores/auth'
 
 /** Mail account settings, read and written through the API (the synced copy has no server settings). */
@@ -48,7 +61,8 @@ export const useAccountsStore = defineStore('accounts', () => {
   }
 
   /**
-   * Starts a sign-in at the provider and returns where to send the browser. With an account id, signs that account in
+   * Starts a sign-in at the provider and returns where to send the browser; it comes back to the page it left, which
+   * finishes with {@link finishProviderSignIn}. With an account id, signs that account in
    * again (after a failed sign-in), or allows more of it (its calendars). The API also asks for what the account
    * allows already, so signing in again for mail keeps the calendars, and nothing is asked for that the user did not
    * choose (a Microsoft tenant may not let its users allow calendars themselves).
@@ -63,9 +77,29 @@ export const useAccountsStore = defineStore('accounts', () => {
     return started.authorizationUrl
   }
 
+  /**
+   * Back from a provider sign-in: the API passed the provider's answer on in the query (`state` with `code` or
+   * `error`), which this hands in with the signed-in user's token, so the sign-in does not depend on the API's own
+   * browser session. A query with `connectError` already holds the outcome. Null when the query holds no sign-in.
+   */
+  async function finishProviderSignIn(query: LocationQuery): Promise<ProviderConnection | null> {
+    const { provider, state, code, error, connectError } = query
+    if (provider !== 'google' && provider !== 'microsoft') return null
+    if (typeof connectError === 'string') {
+      return { provider, connected: null, grant: null, connectError: connectError as ProviderConnectError }
+    }
+    if (typeof state !== 'string') return null
+
+    const answer: CompleteProviderAuthorization = { provider, state }
+    if (typeof code === 'string') answer.code = code
+    if (typeof error === 'string') answer.error = error
+
+    return auth.send<ProviderConnection>('POST', '/api/v1/provider-connections', answer)
+  }
+
   function suggest(emailAddress: string): Promise<SuggestedServerSettings> {
     return auth.api<SuggestedServerSettings>(`/api/v1/mail-server-settings?${new URLSearchParams({ emailAddress })}`)
   }
 
-  return { accounts, loaded, load, get, create, update, remove, suggest, providers, loadProviders, startProviderSignIn }
+  return { accounts, loaded, load, get, create, update, remove, suggest, providers, loadProviders, startProviderSignIn, finishProviderSignIn }
 })

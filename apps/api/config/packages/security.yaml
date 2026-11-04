@@ -50,8 +50,8 @@ security:
             oauth2: true
             custom_authenticators:
                 - App\Security\PersonalAccessToken\PersonalAccessTokenAuthenticator
-        # Browser session used only to sign in, approve OAuth2 authorization requests (with the consent screen for apps
-        # that are not ours) and finish provider sign-ins.
+        # Browser session used only to sign in and approve OAuth2 authorization requests (with the consent screen for
+        # apps that are not ours).
         main:
             lazy: true
             provider: app_user_provider
@@ -65,8 +65,9 @@ security:
     access_control:
         - { path: ^/login$, roles: PUBLIC_ACCESS }
         - { path: ^/oauth/authorize, roles: ROLE_USER }
-        # Google and Microsoft redirect here after a sign-in; the browser session ties it to the user who started it.
-        - { path: ^/connect/, roles: ROLE_USER }
+        # Google and Microsoft redirect here after a sign-in. It only passes their answer on to the web app, which
+        # finishes with its access token (ProviderConnector); the browser session lives too short to rely on here.
+        - { path: ^/connect/, roles: PUBLIC_ACCESS }
         - { path: ^/internal/, roles: IS_AUTHENTICATED_FULLY }
         # A user's token (personal access token, our own apps or an app they allowed); never a sync worker's.
         - { path: ^/mcp$, roles: MCP_USER }

@@ -25,15 +25,23 @@ async function load(): Promise<void> {
   }
 }
 
+/** Finishes the sign-in the provider sent the browser back from, and says how it went. */
 async function readSignInResult(): Promise<void> {
-  const { connected, connectError, provider } = route.query
-  if (typeof connected !== 'string' && typeof connectError !== 'string') return
-  const name = provider === 'microsoft' ? 'microsoft' : 'google'
-  signInResult.value =
-    typeof connectError === 'string'
-      ? { ok: false, text: connectErrorMessage(connectError, name) }
-      : { ok: true, text: `Signed in with ${providerName(name)} again. The account syncs again.` }
+  const query = route.query
+  if (query.provider === undefined) return
+  // The query holds a one-time code; it leaves the address bar and the history before anything else happens.
   await router.replace({ query: {} })
+
+  try {
+    const result = await accounts.finishProviderSignIn(query)
+    if (result?.connectError) {
+      signInResult.value = { ok: false, text: connectErrorMessage(result.connectError, result.provider) }
+    } else if (result?.connected) {
+      signInResult.value = { ok: true, text: `Signed in with ${providerName(result.provider)} again. The account syncs again.` }
+    }
+  } catch (e) {
+    signInResult.value = { ok: false, text: errorMessage(e) }
+  }
 }
 
 onMounted(async () => {
