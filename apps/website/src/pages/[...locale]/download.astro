@@ -1,5 +1,7 @@
 ---
+import CodeBlock from '../../components/CodeBlock.astro';
 import PageHero from '../../components/PageHero.astro';
+import { site } from '../../config/site';
 import { localeStaticPaths, pagePath, t, type Locale } from '../../i18n';
 import Base from '../../layouts/Base.astro';
 
@@ -14,10 +16,21 @@ interface Props {
 const { locale } = Astro.props;
 const d = t(locale);
 const dl = d.download;
+const releasesUrl = site.repoUrl ? `${site.repoUrl}/releases/latest` : null;
 ---
 
 <Base locale={locale} page="download" title={dl.title}>
-  <PageHero eyebrow={dl.eyebrow} title={dl.heroTitle} lead={dl.heroLead} />
+  <PageHero eyebrow={dl.eyebrow} title={dl.heroTitle} lead={dl.heroLead}>
+    {
+      releasesUrl && (
+        <div class="actions">
+          <a class="button button-primary" href={releasesUrl} rel="noopener">
+            {dl.releasesLink}
+          </a>
+        </div>
+      )
+    }
+  </PageHero>
 
   <section class="platforms-section">
     <div class="container">
@@ -29,11 +42,33 @@ const dl = d.download;
                 <h2>{platform.name}</h2>
                 <p>{platform.text}</p>
               </div>
-              <span class="soon">{dl.comingSoon}</span>
+              <span class:list={['availability', { soon: !platform.available }]}>
+                {platform.available ? dl.available : dl.comingSoon}
+              </span>
             </li>
           ))
         }
       </ul>
+    </div>
+  </section>
+
+  <section class="section install" aria-labelledby="install-title">
+    <div class="container">
+      <div class="section-head">
+        <h2 id="install-title">{dl.installTitle}</h2>
+        <p class="lead">{dl.installLead}</p>
+      </div>
+      <div class="commands">
+        <div>
+          <h3>{dl.installMac}</h3>
+          <CodeBlock code={site.installScripts.unix} />
+        </div>
+        <div>
+          <h3>{dl.installWindows}</h3>
+          <CodeBlock code={site.installScripts.windows} />
+        </div>
+      </div>
+      <p class="note">{dl.macNote}</p>
     </div>
   </section>
 
@@ -73,7 +108,7 @@ const dl = d.download;
     font-family: var(--font-text);
     font-size: 1.125rem;
     font-weight: 600;
-    letter-spacing: -0.01em;
+    letter-spacing: 0;
   }
 
   .platform p {
@@ -82,15 +117,21 @@ const dl = d.download;
     font-size: 0.9375rem;
   }
 
-  .soon {
+  .availability {
     flex: none;
     padding: 4px 10px;
-    border: 1px solid var(--line);
     border-radius: 999px;
-    color: var(--ink-3);
-    font-size: 0.8125rem;
+    background: var(--pill-bg);
+    color: var(--pill-fg);
+    font-size: 0.75rem;
     font-weight: 600;
     white-space: nowrap;
+  }
+
+  .availability.soon {
+    border: 1px dashed color-mix(in srgb, var(--line) 50%, var(--ink-3));
+    background: transparent;
+    color: var(--ink-3);
   }
 
   @media (min-width: 720px) {
@@ -103,6 +144,37 @@ const dl = d.download;
     .platforms {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
+  }
+
+  .install {
+    border-top: 1px solid var(--line);
+  }
+
+  .commands {
+    display: grid;
+    gap: 24px;
+  }
+
+  .commands > div {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .commands h3 {
+    font-size: 1rem;
+  }
+
+  @media (min-width: 900px) {
+    .commands {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .note {
+    max-width: 760px;
+    margin-top: 28px;
+    color: var(--ink-2);
   }
 
   .self-host {

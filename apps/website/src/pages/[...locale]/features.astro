@@ -1,5 +1,4 @@
 ---
-import EditionBadge from '../../components/EditionBadge.astro';
 import PageHero from '../../components/PageHero.astro';
 import StatusLabel from '../../components/StatusLabel.astro';
 import type { Status } from '../../i18n/en';
@@ -17,16 +16,11 @@ interface Props {
 const { locale } = Astro.props;
 const d = t(locale);
 const f = d.features;
-const statuses: Status[] = ['available', 'review', 'progress', 'planned'];
+const statuses: Status[] = ['available', 'next', 'planned'];
 ---
 
 <Base locale={locale} page="features" title={f.title}>
   <PageHero eyebrow={f.eyebrow} title={f.heroTitle} lead={f.heroLead}>
-    <p class="legend">
-      <span>{f.legend}</span>
-      <EditionBadge edition="openSource" label={d.editions.openSource} />
-      <EditionBadge edition="cloud" label={d.editions.cloud} />
-    </p>
     <p class="legend">
       <span>{f.statusLegend}</span>
       {statuses.map((status) => <StatusLabel status={status} label={d.statuses[status]} />)}
@@ -41,10 +35,7 @@ const statuses: Status[] = ['available', 'review', 'progress', 'planned'];
           <ul class="items">
             {group.items.map((item) => (
               <li class="item">
-                <div class="item-head">
-                  <h3>{item.title}</h3>
-                  <EditionBadge edition={item.edition} label={d.editions[item.edition]} />
-                </div>
+                <h3>{item.title}</h3>
                 <p>{item.text}</p>
                 <StatusLabel status={item.status} label={d.statuses[item.status]} />
               </li>
@@ -71,7 +62,7 @@ const statuses: Status[] = ['available', 'review', 'progress', 'planned'];
     flex-wrap: wrap;
     align-items: center;
     gap: 8px 12px;
-    margin-top: 16px;
+    margin-top: 28px;
     color: var(--ink-3);
     font-size: 0.875rem;
   }
@@ -98,10 +89,6 @@ const statuses: Status[] = ['available', 'review', 'progress', 'planned'];
     list-style: none;
   }
 
-  .legend:first-of-type {
-    margin-top: 28px;
-  }
-
   .item {
     display: flex;
     flex-direction: column;
@@ -116,12 +103,6 @@ const statuses: Status[] = ['available', 'review', 'progress', 'planned'];
     padding-top: 8px;
   }
 
-  .item-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-  }
 
   .item p {
     color: var(--ink-2);

@@ -1,6 +1,5 @@
 ---
 import PageHero from '../../components/PageHero.astro';
-import StatusLabel from '../../components/StatusLabel.astro';
 import { localeStaticPaths, pagePath, t, type Locale } from '../../i18n';
 import Base from '../../layouts/Base.astro';
 
@@ -15,7 +14,6 @@ interface Props {
 const { locale } = Astro.props;
 const d = t(locale);
 const p = d.pricing;
-const unitLabel = { '': '', perMonth: p.perMonth, perUserMonth: p.perUserMonth };
 ---
 
 <Base locale={locale} page="pricing" title={p.title}>
@@ -27,13 +25,10 @@ const unitLabel = { '': '', perMonth: p.perMonth, perUserMonth: p.perUserMonth }
         {
           p.plans.map((plan) => (
             <li class="plan card">
-              <div class="plan-head">
-                <h2 class="plan-name">{plan.name}</h2>
-                <StatusLabel status={plan.status} label={d.statuses[plan.status]} />
-              </div>
+              <h2 class="plan-name">{plan.name}</h2>
               <p class="price">
                 <span class="amount">{plan.price === 'free' ? p.free : plan.price}</span>
-                {plan.unit && <span class="unit">{unitLabel[plan.unit]}</span>}
+                {plan.price !== 'free' && <span class="unit">{p.perMemberMonth}</span>}
               </p>
               <p class="plan-text">{plan.text}</p>
               <ul class="check-list">
@@ -92,14 +87,6 @@ const unitLabel = { '': '', perMonth: p.perMonth, perUserMonth: p.perUserMonth }
     padding: clamp(24px, 4vw, 32px);
   }
 
-  .plan-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
   .plan-name {
     font-family: var(--font-text);
     font-size: 1.25rem;
@@ -147,9 +134,10 @@ const unitLabel = { '': '', perMonth: p.perMonth, perUserMonth: p.perUserMonth }
     font-size: 0.875rem;
   }
 
-  @media (min-width: 900px) {
+  @media (min-width: 760px) {
     .plans {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      max-width: 880px;
     }
   }
 
