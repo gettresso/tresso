@@ -39,12 +39,11 @@ export const nl: Dict = {
   },
   statuses: {
     available: 'Beschikbaar',
-    next: 'Hierna',
+    next: 'Komt hierna',
     planned: 'Gepland',
   },
   repo: {
     link: 'Bekijk op GitHub',
-    pending: 'De publieke repository gaat open bij de lancering.',
   },
   home: {
     title: 'tresso: elke e-mail is iets om te doen, over te dragen of te weten',
@@ -116,7 +115,7 @@ export const nl: Dict = {
         },
         handOver: {
           happens: 'Het gaat met een notitie en een deadline naar iemand anders en wacht onder Wacht op.',
-          doneWhen: 'Die persoon rondt het af. Tot die tijd houdt tresso het bij en geeft een duwtje.',
+          doneWhen: 'Die persoon rondt het af. Tot die tijd houdt tresso het bij en geeft een seintje.',
         },
         know: {
           happens: 'Het komt in je dagelijkse briefing, samen met alles wat verder het weten waard is.',
@@ -127,7 +126,7 @@ export const nl: Dict = {
     triage: {
       eyebrow: 'Triagemodus',
       title: 'Eén e-mail tegelijk. Eén toets per e-mail.',
-      lead: 'De triagemodus toont één e-mail en wacht op jouw beslissing. Druk op D, H of K en de volgende verschijnt. Een drukke ochtendinbox wordt een paar minuten kiezen.',
+      lead: 'De triagemodus toont één gesprek en wacht op jouw beslissing. Druk op D, H of K en de volgende verschijnt. Een drukke ochtendinbox wordt een paar minuten kiezen.',
       keys: [
         { key: 'D', verdict: 'do' as Verdict },
         { key: 'H', verdict: 'handOver' as Verdict },
@@ -189,7 +188,7 @@ export const nl: Dict = {
         },
         {
           title: 'Agenda inbegrepen',
-          text: 'CalDAV-, Google- en Microsoft-agenda’s met online vergaderingen, uitnodigingen die je beantwoordt vanuit de e-mail en herinneringen op elk apparaat.',
+          text: 'CalDAV-, Google- en Microsoft-agenda’s met online vergaderingen, uitnodigingen die je beantwoordt vanuit de e-mail en herinneringen.',
         },
         {
           title: 'Zoek in alles',
@@ -201,11 +200,11 @@ export const nl: Dict = {
         },
         {
           title: 'Elk apparaat',
-          text: 'Web-, desktop- en mobiele apps. De desktopapp houdt een lokale kopie van je e-mail bij en updatet zichzelf.',
+          text: 'Web- en desktopapps, en een mobiele app die onderweg is naar de stores. De desktopapp houdt een lokale kopie van je e-mail bij en updatet zichzelf.',
         },
       ],
     },
-    editions: {
+    hosting: {
       eyebrow: 'Twee manieren om het te draaien',
       title: 'Dezelfde code, elke functie. Jij kiest wie het draait.',
       lead: 'tresso is volledig open source. Draai het gratis op je eigen server, of laat ons het voor je hosten. Een abonnement betaalt de hosting, nooit functies.',
@@ -265,12 +264,12 @@ export const nl: Dict = {
           },
           {
             title: 'Slimme inboxen',
-            text: 'Te doen, Informatief, Meldingen, Nieuwsbrieven, Uitnodigingen en Spam, plus je eigen: een naam, instructies en lijsten met afzenders om te includeren en te excluderen, gesorteerd op regels.',
+            text: 'Te doen, Informatief, Meldingen, Nieuwsbrieven, Uitnodigingen en Spam, plus je eigen: een naam, instructies en lijsten met afzenders die je wel of juist niet wilt meenemen, gesorteerd op regels.',
             status: 'available' as Status,
           },
           {
             title: 'Triagemodus',
-            text: 'Onbeslist mail één gesprek tegelijk, afgehandeld met D, H of K.',
+            text: 'Onbesliste mail, één gesprek tegelijk, afgehandeld met D, H of K.',
             status: 'available' as Status,
           },
           {
@@ -305,7 +304,7 @@ export const nl: Dict = {
         items: [
           {
             title: 'Ingebouwde todos',
-            text: 'Maak todo vanuit elke e-mail, met een deadline, gesynchroniseerd over je apparaten. Rond de todo af en de e-mail archiveert zichzelf.',
+            text: 'Maak van elke e-mail een todo met een deadline, gesynchroniseerd over je apparaten. Rond de todo af en de e-mail archiveert zichzelf.',
             status: 'available' as Status,
           },
           {
@@ -315,7 +314,7 @@ export const nl: Dict = {
           },
           {
             title: 'Todos in je agenda',
-            text: 'Geef een todo een duur en tresso zoekt in je agenda de tijd ervoor.',
+            text: 'Geef een todo een duur en tresso plant hem in vrije tijd voordat hij af moet zijn, rond je werktijden, focusblokken en reistijd.',
             status: 'available' as Status,
           },
           {
@@ -359,13 +358,8 @@ export const nl: Dict = {
             status: 'available' as Status,
           },
           {
-            title: 'Een tijdstip vinden',
-            text: 'Vergadertijden die passen, over tijdzones heen, met uitleg bij elke suggestie.',
-            status: 'available' as Status,
-          },
-          {
             title: 'Herinneringen',
-            text: 'Meerdere herinneringen per afspraak, stille uren, werktijden en focusblokken.',
+            text: 'Meerdere herinneringen per afspraak, uitgesteld tijdens stille uren. De schermen om ze in te stellen komen hierna.',
             status: 'available' as Status,
           },
           {
@@ -440,7 +434,7 @@ export const nl: Dict = {
           },
           {
             title: 'Mobiele app',
-            text: 'Lees e-mail, handel hem af en schrijf, en bekijk je agenda op je telefoon, met een lokale kopie voor snelheid.',
+            text: 'Lees e-mail, handel hem af en schrijf, en bekijk je agenda op je telefoon, met een lokale kopie voor snelheid. Voorlopig bouw je hem vanuit de repository; releases in de App Store en Google Play komen eraan.',
             status: 'available' as Status,
           },
         ],
@@ -475,7 +469,7 @@ export const nl: Dict = {
         items: [
           {
             title: 'Organisaties',
-            text: 'Elk account heeft een eigen organisatie, de basis voor teams en voor abonnementen.',
+            text: 'Elke gebruiker heeft een eigen organisatie, de basis voor teams en voor abonnementen.',
             status: 'available' as Status,
           },
           {
@@ -509,7 +503,7 @@ export const nl: Dict = {
         text: 'tresso op je eigen server.',
         points: [
           'Elke functie',
-          'Web-, desktop- en mobiele apps',
+          'Web- en desktopapps',
           'Productie-images en een compose-bestand',
           'Je gegevens op je eigen hardware',
           'Ondersteuning door de community op GitHub',
@@ -528,8 +522,8 @@ export const nl: Dict = {
           'Back-ups, updates en support',
           'Betaal en beheer het in de app',
         ],
-        cta: 'Start je gratis proefperiode',
-        target: 'download' as PlanTarget,
+        cta: 'Vraag een account aan',
+        target: 'contact' as PlanTarget,
       },
     ],
     note: 'De prijzen van tresso Cloud zijn nog niet definitief. Belasting wordt berekend bij het afrekenen.',
@@ -541,7 +535,7 @@ export const nl: Dict = {
       },
       {
         q: 'Hoe werkt de proefperiode?',
-        a: 'Elke organisatie krijgt 14 dagen tresso Cloud gratis, zonder kaart. Voordat de proefperiode afloopt vraagt de app je om je te abonneren.',
+        a: 'Elke organisatie krijgt 14 dagen tresso Cloud gratis, zonder kaart. Voordat de proefperiode afloopt vraagt de app je om je te abonneren. Voorlopig worden accounts op tresso Cloud op aanvraag gemaakt: schrijf ons en wij zetten er een voor je klaar.',
       },
       {
         q: 'Wat gebeurt er als een abonnement eindigt?',
@@ -581,7 +575,7 @@ export const nl: Dict = {
       'De mobiele app',
       'E-mail, zoeken, slimme inboxen en de drie oordelen',
       'Todos, Wacht op en de dagelijkse briefing',
-      'Agenda, herinneringen en een tijdstip vinden',
+      'Agenda en herinneringen',
       'Virusscan en versleuteling in rust',
       'Elke functie die nog komt',
     ],

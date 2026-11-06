@@ -1,5 +1,6 @@
 ---
 import PageHero from '../../components/PageHero.astro';
+import { site } from '../../config/site';
 import { localeStaticPaths, pagePath, t, type Locale } from '../../i18n';
 import Base from '../../layouts/Base.astro';
 
@@ -38,7 +39,7 @@ const p = d.pricing;
               </ul>
               <a
                 class:list={['button', plan.target === 'openSource' ? 'button-secondary' : 'button-primary']}
-                href={pagePath(locale, plan.target)}
+                href={plan.target === 'openSource' ? pagePath(locale, 'openSource') : `mailto:${site.contactEmail}`}
               >
                 {plan.cta}
               </a>

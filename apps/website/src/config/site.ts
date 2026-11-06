@@ -4,11 +4,8 @@
 export const site = {
   name: 'tresso',
   url: 'https://gettresso.com',
-  /**
-   * The public repository. Pages link to it, its releases and its self-host files; null would make them say the
-   * repository opens at launch instead.
-   */
-  repoUrl: 'https://github.com/gettresso/tresso' as string | null,
+  /** The public repository. Pages link to it, its releases and its self-host files. */
+  repoUrl: 'https://github.com/gettresso/tresso',
   /** The desktop install commands, as the repository's README gives them. */
   installScripts: {
     unix: 'curl -fsSL https://sherin.dev/tresso/install.sh | bash',

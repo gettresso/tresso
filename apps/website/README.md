@@ -41,6 +41,7 @@ static site to `dist/`.
 ## Hosting
 
 The site is plain static files in `dist/`, so any static host serves it. gettresso.com runs on the Cloudflare Pages
-project `tresso-website`; the project, its domains (gettresso.com and www.gettresso.com) and the DNS records live in
-Terraform in [SherinBloemendaal/dns](https://github.com/SherinBloemendaal/dns). [CI](../../.github/workflows/ci.yml)
-type-checks and builds the site on every push and pull request.
+project `tresso-website`, which is managed outside this repository together with its domains and DNS records.
+[CI](../../.github/workflows/ci.yml) type-checks and builds the site on every push and pull request; deploying from
+this repository needs a job that uploads `apps/website/dist` to that project (`wrangler pages deploy dist
+--project-name tresso-website`) with a `CLOUDFLARE_API_TOKEN` secret that may only edit Pages.

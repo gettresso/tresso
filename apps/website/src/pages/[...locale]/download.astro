@@ -16,20 +16,14 @@ interface Props {
 const { locale } = Astro.props;
 const d = t(locale);
 const dl = d.download;
-const releasesUrl = site.repoUrl ? `${site.repoUrl}/releases/latest` : null;
+const releasesUrl = `${site.repoUrl}/releases/latest`;
 ---
 
 <Base locale={locale} page="download" title={dl.title}>
   <PageHero eyebrow={dl.eyebrow} title={dl.heroTitle} lead={dl.heroLead}>
-    {
-      releasesUrl && (
-        <div class="actions">
-          <a class="button button-primary" href={releasesUrl} rel="noopener">
-            {dl.releasesLink}
-          </a>
-        </div>
-      )
-    }
+    <div class="actions">
+      <a class="button button-primary" href={releasesUrl} rel="noopener">{dl.releasesLink}</a>
+    </div>
   </PageHero>
 
   <section class="platforms-section">

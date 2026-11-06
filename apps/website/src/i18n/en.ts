@@ -7,7 +7,7 @@
  */
 export type Verdict = 'do' | 'handOver' | 'know';
 export type Status = 'available' | 'next' | 'planned';
-export type PlanTarget = 'openSource' | 'download';
+export type PlanTarget = 'openSource' | 'contact';
 
 export const en = {
   langName: 'English',
@@ -46,7 +46,6 @@ export const en = {
   },
   repo: {
     link: 'View on GitHub',
-    pending: 'The public repository opens at launch.',
   },
   home: {
     title: 'tresso: every email is something to do, hand over or know',
@@ -191,7 +190,7 @@ export const en = {
         },
         {
           title: 'Calendar included',
-          text: 'CalDAV, Google and Microsoft calendars with online meetings, invitations answered from the email, and reminders on every device.',
+          text: 'CalDAV, Google and Microsoft calendars with online meetings, invitations answered from the email, and reminders.',
         },
         {
           title: 'Search everything',
@@ -203,11 +202,11 @@ export const en = {
         },
         {
           title: 'Every device',
-          text: 'Web, desktop and mobile apps. The desktop app keeps a local copy of your mail and updates itself.',
+          text: 'Web and desktop apps, and a mobile app on its way to the stores. The desktop app keeps a local copy of your mail and updates itself.',
         },
       ],
     },
-    editions: {
+    hosting: {
       eyebrow: 'Two ways to run it',
       title: 'Same code, every feature. You choose who runs it.',
       lead: 'tresso is fully open source. Run it on your own server for free, or let us host it for you. A subscription pays for hosting, never for features.',
@@ -307,7 +306,7 @@ export const en = {
         items: [
           {
             title: 'Built-in todos',
-            text: 'Make todo from any email, with a due date, synced across devices. Complete the todo and the email archives itself.',
+            text: 'Turn any email into a todo with a due date, synced across devices. Complete the todo and the email archives itself.',
             status: 'available' as Status,
           },
           {
@@ -317,7 +316,7 @@ export const en = {
           },
           {
             title: 'Todos in your calendar',
-            text: 'Give a todo a duration and tresso finds the time for it in your calendar.',
+            text: 'Give a todo a duration and tresso plans it in free time before it is due, around your working hours, focus blocks and travel time.',
             status: 'available' as Status,
           },
           {
@@ -361,13 +360,8 @@ export const en = {
             status: 'available' as Status,
           },
           {
-            title: 'Find a time',
-            text: 'Meeting times that fit, across time zones, with every suggestion explained.',
-            status: 'available' as Status,
-          },
-          {
             title: 'Reminders',
-            text: 'Several reminders per event, quiet hours, working hours and focus blocks.',
+            text: 'Several reminders per event, held during quiet hours. The screens to set them up come next.',
             status: 'available' as Status,
           },
           {
@@ -442,7 +436,7 @@ export const en = {
           },
           {
             title: 'Mobile app',
-            text: 'Read, act on and write mail and see your agenda on the phone, with a local copy for speed.',
+            text: 'Read, act on and write mail and see your agenda on the phone, with a local copy for speed. Built from the repository for now; App Store and Google Play releases are coming.',
             status: 'available' as Status,
           },
         ],
@@ -477,7 +471,7 @@ export const en = {
         items: [
           {
             title: 'Organizations',
-            text: 'Every account has its own organization, the base for teams and for subscriptions.',
+            text: 'Every user has their own organization, the base for teams and for subscriptions.',
             status: 'available' as Status,
           },
           {
@@ -511,7 +505,7 @@ export const en = {
         text: 'tresso on your own server.',
         points: [
           'Every feature',
-          'Web, desktop and mobile apps',
+          'Web and desktop apps',
           'Production images and a compose file',
           'Your data on your own hardware',
           'Community support on GitHub',
@@ -530,8 +524,8 @@ export const en = {
           'Backups, updates and support',
           'Pay and manage it in the app',
         ],
-        cta: 'Start your free trial',
-        target: 'download' as PlanTarget,
+        cta: 'Ask for an account',
+        target: 'contact' as PlanTarget,
       },
     ],
     note: 'Prices of tresso Cloud are not final yet. Taxes are calculated at checkout.',
@@ -543,7 +537,7 @@ export const en = {
       },
       {
         q: 'How does the trial work?',
-        a: 'Every organization gets 14 days of tresso Cloud for free, without a card. Before the trial ends the app asks you to subscribe.',
+        a: 'Every organization on tresso Cloud gets 14 days for free, without a card. Before the trial ends the app asks you to subscribe. For now, accounts on tresso Cloud are made on request: write to us and we set one up.',
       },
       {
         q: 'What happens when a subscription ends?',
@@ -583,7 +577,7 @@ export const en = {
       'The mobile app',
       'Mail, search, smart inboxes and the three verdicts',
       'Todos, Waiting on and the daily brief',
-      'Calendar, reminders and finding a time',
+      'Calendar and reminders',
       'Virus scanning and encryption at rest',
       'Every feature still to come',
     ],
