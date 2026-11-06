@@ -119,7 +119,7 @@ export const nl: Dict = {
         },
         know: {
           happens: 'Het komt in je dagelijkse briefing, samen met alles wat verder het weten waard is.',
-          doneWhen: 'Je klikt op Gezien. Eén klik en de hele briefing is afgehandeld.',
+          doneWhen: 'Je klikt op Noted. Eén klik en de hele briefing is afgehandeld.',
         },
       },
     },
@@ -324,7 +324,7 @@ export const nl: Dict = {
           },
           {
             title: 'Dagelijkse briefing',
-            text: 'Alles wat het weten waard is in één rustig overzicht, één keer per dag op jouw tijdstip. Eén klik op Gezien en het is klaar.',
+            text: 'Alles wat het weten waard is in één rustig overzicht, één keer per dag op jouw tijdstip. Eén klik op Noted en het is klaar.',
             status: 'available' as Status,
           },
           {
@@ -359,7 +359,7 @@ export const nl: Dict = {
           },
           {
             title: 'Herinneringen',
-            text: 'Meerdere herinneringen per afspraak, uitgesteld tijdens stille uren. De schermen om ze in te stellen komen hierna.',
+            text: 'Meerdere herinneringen per afspraak, in te stellen in de afspraakeditor en uitgesteld tijdens je stille uren. Instellingen voor standaardherinneringen en stille uren komen hierna.',
             status: 'available' as Status,
           },
           {
