@@ -32,22 +32,8 @@ const year = new Date().getFullYear();
       <h2>{d.footer.project}</h2>
       <ul>
         <li><a href={pagePath(locale, 'openSource')}>{d.nav.openSource}</a></li>
-        {
-          site.repoUrl && (
-            <>
-              <li>
-                <a href={site.repoUrl} rel="noopener">
-                  GitHub
-                </a>
-              </li>
-              <li>
-                <a href={`${site.repoUrl}/releases`} rel="noopener">
-                  {d.footer.releases}
-                </a>
-              </li>
-            </>
-          )
-        }
+        <li><a href={site.repoUrl} rel="noopener">GitHub</a></li>
+        <li><a href={`${site.repoUrl}/releases`} rel="noopener">{d.footer.releases}</a></li>
       </ul>
     </nav>
 

@@ -112,15 +112,9 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
           ))
         }
       </div>
-      {
-        site.repoUrl && (
-          <p class="more">
-            <a href={site.repoUrl} rel="noopener">
-              {h.progress.more}
-            </a>
-          </p>
-        )
-      }
+      <p class="more">
+        <a href={site.repoUrl} rel="noopener">{h.progress.more}</a>
+      </p>
     </div>
   </section>
 
@@ -146,31 +140,31 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
     </div>
   </section>
 
-  <section class="section" aria-labelledby="editions-title">
+  <section class="section" aria-labelledby="hosting-title">
     <div class="container">
       <div class="section-head">
-        <p class="eyebrow">{h.editions.eyebrow}</p>
-        <h2 id="editions-title">{h.editions.title}</h2>
-        <p class="lead">{h.editions.lead}</p>
+        <p class="eyebrow">{h.hosting.eyebrow}</p>
+        <h2 id="hosting-title">{h.hosting.title}</h2>
+        <p class="lead">{h.hosting.lead}</p>
       </div>
-      <div class="editions">
-        <article class="edition card">
-          <p class="edition-label">{h.editions.selfHosted.label}</p>
-          <h3 class="edition-name">{h.editions.selfHosted.name}</h3>
-          <p class="edition-text">{h.editions.selfHosted.text}</p>
+      <div class="hosting">
+        <article class="hosting-option card">
+          <p class="option-label">{h.hosting.selfHosted.label}</p>
+          <h3 class="option-name">{h.hosting.selfHosted.name}</h3>
+          <p class="option-text">{h.hosting.selfHosted.text}</p>
           <ul class="check-list">
-            {h.editions.selfHosted.points.map((point) => <li>{point}</li>)}
+            {h.hosting.selfHosted.points.map((point) => <li>{point}</li>)}
           </ul>
-          <a class="button button-secondary" href={pagePath(locale, 'openSource')}>{h.editions.selfHosted.cta}</a>
+          <a class="button button-secondary" href={pagePath(locale, 'openSource')}>{h.hosting.selfHosted.cta}</a>
         </article>
-        <article class="edition card">
-          <p class="edition-label">{h.editions.cloud.label}</p>
-          <h3 class="edition-name">{h.editions.cloud.name}</h3>
-          <p class="edition-text">{h.editions.cloud.text}</p>
+        <article class="hosting-option card">
+          <p class="option-label">{h.hosting.cloud.label}</p>
+          <h3 class="option-name">{h.hosting.cloud.name}</h3>
+          <p class="option-text">{h.hosting.cloud.text}</p>
           <ul class="check-list">
-            {h.editions.cloud.points.map((point) => <li>{point}</li>)}
+            {h.hosting.cloud.points.map((point) => <li>{point}</li>)}
           </ul>
-          <a class="button button-primary" href={pagePath(locale, 'pricing')}>{h.editions.cloud.cta}</a>
+          <a class="button button-primary" href={pagePath(locale, 'pricing')}>{h.hosting.cloud.cta}</a>
         </article>
       </div>
     </div>
@@ -315,7 +309,6 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
     color: var(--know-fg);
   }
 
-
   .progress {
     display: grid;
     gap: 16px;
@@ -384,34 +377,34 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
     text-underline-offset: 4px;
   }
 
-  .editions {
+  .hosting {
     display: grid;
     gap: 16px;
   }
 
-  .edition {
+  .hosting-option {
     display: flex;
     flex-direction: column;
     gap: 16px;
     padding: clamp(24px, 4vw, 36px);
   }
 
-  .edition .check-list {
+  .hosting-option .check-list {
     flex: 1;
     margin-bottom: 8px;
   }
 
-  .edition .button {
+  .hosting-option .button {
     align-self: flex-start;
   }
 
-  .edition-label {
+  .option-label {
     color: var(--ink-3);
     font-size: 0.875rem;
     font-weight: 500;
   }
 
-  .edition-name {
+  .option-name {
     margin-top: -8px;
     font-family: var(--font-display);
     font-size: 1.75rem;
@@ -419,12 +412,12 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
     letter-spacing: -0.03em;
   }
 
-  .edition-text {
+  .option-text {
     color: var(--ink-2);
   }
 
   @media (min-width: 860px) {
-    .editions {
+    .hosting {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
