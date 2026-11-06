@@ -361,7 +361,7 @@ export const en = {
           },
           {
             title: 'Reminders',
-            text: 'Several reminders per event, held during quiet hours. The screens to set them up come next.',
+            text: 'Several reminders per event, set in the event editor and held during quiet hours. Settings for default reminders and quiet hours come next.',
             status: 'available' as Status,
           },
           {
