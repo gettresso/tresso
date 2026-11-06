@@ -204,6 +204,7 @@ apps/
   web/        Vue 3 web client
   desktop/    Tauri 2 shell around apps/web
   mobile/     Expo app
+  website/    Marketing site at gettresso.com (Astro)
 packages/
   core/       Shared TypeScript: domain types, OAuth2 PKCE client
 docker/       Dockerfiles and server config
