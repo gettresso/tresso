@@ -197,6 +197,24 @@ jobs:
           npx tsc --noEmit
           npx eslint --max-warnings 0 .
 
+  website:
+    name: Website (Astro)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/website
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/website/package-lock.json
+      # The site has its own lockfile, outside the npm workspaces.
+      - run: npm ci
+      # astro check type-checks the pages and that every locale has the same keys as English; then the static build.
+      - run: npm run build
+
   desktop:
     name: Desktop (Tauri)
     runs-on: ubuntu-latest
