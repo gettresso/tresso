@@ -1,0 +1,464 @@
+---
+import InboxDemo from '../../components/InboxDemo.astro';
+import Mark from '../../components/Mark.astro';
+import StatusLabel from '../../components/StatusLabel.astro';
+import VerdictIcon from '../../components/VerdictIcon.astro';
+import VerdictChip from '../../components/VerdictChip.astro';
+import type { Verdict } from '../../i18n/en';
+import { site } from '../../config/site';
+import { localeStaticPaths, pagePath, t, type Locale } from '../../i18n';
+import Base from '../../layouts/Base.astro';
+
+export function getStaticPaths() {
+  return localeStaticPaths();
+}
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const d = t(locale);
+const h = d.home;
+const verdicts: Verdict[] = ['do', 'handOver', 'know'];
+---
+
+<Base locale={locale} page="home" title={h.title}>
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <p class="hero-status">
+          <Mark size={16} />
+          {h.status}
+        </p>
+        <h1>{h.heroTitle}</h1>
+        <p class="lead">{h.heroLead}</p>
+        <div class="actions">
+          <a class="button button-primary" href={pagePath(locale, 'openSource')}>{h.ctaPrimary}</a>
+          <a class="button button-secondary" href={pagePath(locale, 'features')}>{h.ctaSecondary}</a>
+        </div>
+      </div>
+      <InboxDemo locale={locale} />
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="ways-title">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow">{h.ways.eyebrow}</p>
+        <h2 id="ways-title">{h.ways.title}</h2>
+        <p class="lead">{h.ways.lead}</p>
+      </div>
+      <ol class="ways">
+        {
+          verdicts.map((verdict) => (
+            <li class="way card">
+              <div class="way-head">
+                <Mark size={44} only={verdict} />
+                <VerdictChip verdict={verdict} label={d.verdicts[verdict]} size="l" />
+              </div>
+              <dl>
+                <dt>{h.ways.happens}</dt>
+                <dd>{h.ways.items[verdict].happens}</dd>
+                <dt>{h.ways.doneWhen}</dt>
+                <dd>{h.ways.items[verdict].doneWhen}</dd>
+              </dl>
+            </li>
+          ))
+        }
+      </ol>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="triage-title">
+    <div class="container triage">
+      <div>
+        <p class="eyebrow eyebrow-status">
+          {h.triage.eyebrow}
+          <StatusLabel status={h.triage.status} label={d.statuses[h.triage.status]} />
+        </p>
+        <h2 id="triage-title">{h.triage.title}</h2>
+        <p class="lead">{h.triage.lead}</p>
+      </div>
+      <ul class="keys">
+        {
+          h.triage.keys.map((k) => (
+            <li class:list={['key', `key-${k.verdict}`]}>
+              <VerdictIcon verdict={k.verdict} size={20} />
+              {d.verdicts[k.verdict]}
+              <kbd>{k.key}</kbd>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="progress-title">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow">{h.progress.eyebrow}</p>
+        <h2 id="progress-title">{h.progress.title}</h2>
+        <p class="lead">{h.progress.lead}</p>
+      </div>
+      <div class="progress">
+        {
+          h.progress.columns.map((column) => (
+            <div class="progress-column card">
+              <StatusLabel status={column.status} label={d.statuses[column.status]} />
+              <ul class="check-list">
+                {column.items.map((item) => (
+                  <li>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </div>
+      {
+        site.repoUrl && (
+          <p class="more">
+            <a href={site.repoUrl} rel="noopener">
+              {h.progress.more}
+            </a>
+          </p>
+        )
+      }
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="highlights-title">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow">{h.highlights.eyebrow}</p>
+        <h2 id="highlights-title">{h.highlights.title}</h2>
+      </div>
+      <ul class="highlights">
+        {
+          h.highlights.items.map((item) => (
+            <li>
+              <h3>{item.title}</h3>
+              <p>{item.text}</p>
+            </li>
+          ))
+        }
+      </ul>
+      <p class="more">
+        <a href={pagePath(locale, 'features')}>{h.highlights.more}</a>
+      </p>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="editions-title">
+    <div class="container">
+      <div class="section-head">
+        <p class="eyebrow">{h.editions.eyebrow}</p>
+        <h2 id="editions-title">{h.editions.title}</h2>
+        <p class="lead">{h.editions.lead}</p>
+      </div>
+      <div class="editions">
+        <article class="edition card">
+          <p class="edition-label">{h.editions.openSource.label}</p>
+          <h3 class="edition-name">{h.editions.openSource.name}</h3>
+          <p class="edition-text">{h.editions.openSource.text}</p>
+          <ul class="check-list">
+            {h.editions.openSource.points.map((point) => <li>{point}</li>)}
+          </ul>
+          <a class="button button-secondary" href={pagePath(locale, 'openSource')}>{h.editions.openSource.cta}</a>
+        </article>
+        <article class="edition card">
+          <p class="edition-label">{h.editions.cloud.label}</p>
+          <h3 class="edition-name">{h.editions.cloud.name}</h3>
+          <p class="edition-text">{h.editions.cloud.text}</p>
+          <ul class="check-list">
+            {h.editions.cloud.points.map((point) => <li>{point}</li>)}
+          </ul>
+          <a class="button button-primary" href={pagePath(locale, 'pricing')}>{h.editions.cloud.cta}</a>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section closing" aria-labelledby="closing-title">
+    <div class="container">
+      <Mark size={56} />
+      <h2 id="closing-title">{h.closing.title}</h2>
+      <p class="lead">{h.closing.lead}</p>
+      <div class="actions">
+        <a class="button button-primary" href={pagePath(locale, 'download')}>{h.closing.cta}</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .hero {
+    padding-block: clamp(48px, 9vw, 104px) clamp(64px, 10vw, 120px);
+  }
+
+  .hero-grid {
+    display: grid;
+    gap: 48px;
+    align-items: center;
+  }
+
+  .hero-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 24px;
+    padding: 6px 12px 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+  @media (min-width: 980px) {
+    .hero-grid {
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+      gap: 64px;
+    }
+  }
+
+  .ways {
+    display: grid;
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .way {
+    padding: 24px;
+  }
+
+  .way-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  dl {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+  }
+
+  dt {
+    color: var(--ink-3);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  dt + dd + dt {
+    margin-top: 16px;
+  }
+
+  dd {
+    margin: 0;
+    color: var(--ink-2);
+  }
+
+  @media (min-width: 860px) {
+    .ways {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  .triage {
+    display: grid;
+    gap: 40px;
+    align-items: center;
+  }
+
+  .keys {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .key {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    height: 56px;
+    border: 1.5px solid currentColor;
+    border-radius: var(--radius-m);
+    font-size: 0.9375rem;
+    font-weight: 600;
+  }
+
+  .key kbd {
+    background: var(--surface);
+    color: inherit;
+  }
+
+  .key-do {
+    background: var(--do-bg);
+    color: var(--do-fg);
+  }
+
+  .key-handOver {
+    background: var(--handover-bg);
+    color: var(--handover-fg);
+  }
+
+  .key-know {
+    background: var(--know-bg);
+    color: var(--know-fg);
+  }
+
+  .eyebrow-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+  }
+
+  .eyebrow-status :global(.status) {
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .progress {
+    display: grid;
+    gap: 16px;
+    align-items: start;
+  }
+
+  .progress-column {
+    display: grid;
+    gap: 20px;
+    padding: 28px;
+  }
+
+  .progress-column .check-list {
+    font-size: 0.9375rem;
+  }
+
+  @media (min-width: 900px) {
+    .progress {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 860px) {
+    .triage {
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      gap: 80px;
+    }
+  }
+
+  .highlights {
+    display: grid;
+    gap: 32px 40px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .highlights li {
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+  }
+
+  .highlights p {
+    margin-top: 8px;
+    color: var(--ink-2);
+  }
+
+  @media (min-width: 640px) {
+    .highlights {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 980px) {
+    .highlights {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  .more {
+    margin-top: 40px;
+  }
+
+  .more a {
+    font-weight: 600;
+    text-underline-offset: 4px;
+  }
+
+  .editions {
+    display: grid;
+    gap: 16px;
+  }
+
+  .edition {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: clamp(24px, 4vw, 36px);
+  }
+
+  .edition .check-list {
+    flex: 1;
+    margin-bottom: 8px;
+  }
+
+  .edition .button {
+    align-self: flex-start;
+  }
+
+  .edition-label {
+    color: var(--ink-3);
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+  .edition-name {
+    margin-top: -8px;
+    font-family: var(--font-display);
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+  }
+
+  .edition-text {
+    color: var(--ink-2);
+  }
+
+  @media (min-width: 860px) {
+    .editions {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .closing .container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+
+  .closing h2 {
+    margin-top: 24px;
+  }
+
+  .closing .lead {
+    margin-inline: auto;
+  }
+
+  .closing .actions {
+    justify-content: center;
+  }
+</style>

@@ -1,0 +1,230 @@
+---
+import { locales, pagePath, t, type Locale, type PageKey } from '../i18n';
+import Logo from './Logo.astro';
+
+interface Props {
+  locale: Locale;
+  page: PageKey | null;
+}
+
+const { locale, page } = Astro.props;
+const d = t(locale);
+
+const links: { key: PageKey; label: string }[] = [
+  { key: 'features', label: d.nav.features },
+  { key: 'pricing', label: d.nav.pricing },
+  { key: 'openSource', label: d.nav.openSource },
+  { key: 'download', label: d.nav.download },
+];
+
+const languages = locales.map((code) => ({
+  code,
+  name: t(code).langName,
+  href: pagePath(code, page ?? 'home'),
+}));
+---
+
+<header class="header">
+  <div class="container bar">
+    <Logo href={pagePath(locale, 'home')} label={d.nav.home} />
+
+    <nav class="nav-desktop" aria-label={d.nav.menu}>
+      <ul>
+        {
+          links.map((link) => (
+            <li>
+              <a href={pagePath(locale, link.key)} aria-current={page === link.key ? 'page' : undefined}>
+                {link.label}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+    </nav>
+
+    <div class="end">
+      <ul class="languages" aria-label={d.nav.language}>
+        {
+          languages.map((lang) => (
+            <li>
+              <a
+                href={lang.href}
+                hreflang={lang.code}
+                lang={lang.code}
+                title={lang.name}
+                aria-current={lang.code === locale ? 'true' : undefined}
+              >
+                {lang.code.toUpperCase()}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+
+      <details class="nav-mobile">
+        <summary>
+          <span class="visually-hidden">{d.nav.menu}</span>
+          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M3 6.5h14M3 13.5h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+          </svg>
+        </summary>
+        <nav aria-label={d.nav.menu}>
+          <ul>
+            {
+              links.map((link) => (
+                <li>
+                  <a href={pagePath(locale, link.key)} aria-current={page === link.key ? 'page' : undefined}>
+                    {link.label}
+                  </a>
+                </li>
+              ))
+            }
+          </ul>
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>
+
+<style>
+  .header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    min-height: 64px;
+  }
+
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .nav-desktop {
+    display: none;
+  }
+
+  .nav-desktop ul {
+    display: flex;
+    gap: 4px;
+  }
+
+  .nav-desktop a,
+  .nav-mobile a {
+    display: block;
+    border-radius: var(--radius-s);
+    color: var(--ink-2);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  .nav-desktop a {
+    padding: 8px 12px;
+  }
+
+  .nav-desktop a[aria-current='page'],
+  .nav-mobile a[aria-current='page'] {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .end {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .languages {
+    display: flex;
+    padding: 3px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+  }
+
+  .languages a {
+    display: block;
+    padding: 4px 9px;
+    border-radius: 999px;
+    color: var(--ink-3);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-decoration: none;
+  }
+
+  .languages a[aria-current='true'] {
+    background: var(--ink);
+    color: var(--ground);
+  }
+
+  .nav-mobile {
+    position: relative;
+  }
+
+  .nav-mobile summary {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border-radius: var(--radius-m);
+    color: var(--ink);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .nav-mobile summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .nav-mobile nav {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: min(240px, calc(100vw - 2 * var(--gutter)));
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .nav-mobile nav a {
+    padding: 12px;
+    font-size: 1rem;
+  }
+
+  @media (hover: hover) {
+    .nav-desktop a:hover,
+    .nav-mobile a:hover {
+      background: var(--line);
+      color: var(--ink);
+    }
+
+    .languages a:not([aria-current='true']):hover {
+      color: var(--ink);
+    }
+  }
+
+  @media (min-width: 820px) {
+    .nav-desktop {
+      display: block;
+    }
+
+    .nav-mobile {
+      display: none;
+    }
+  }
+</style>

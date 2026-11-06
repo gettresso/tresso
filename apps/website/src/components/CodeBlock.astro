@@ -1,0 +1,24 @@
+---
+interface Props {
+  code: string;
+}
+
+const { code } = Astro.props;
+---
+
+<pre class="code"><code>{code}</code></pre>
+
+<style>
+  .code {
+    margin: 0;
+    padding: 14px 16px;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-m);
+    background: var(--ground);
+    color: var(--ink);
+    font-size: 0.8125rem;
+    line-height: 1.7;
+    white-space: pre;
+  }
+</style>

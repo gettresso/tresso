@@ -1,0 +1,33 @@
+---
+import Mark from './Mark.astro';
+
+interface Props {
+  href: string;
+  label: string;
+}
+
+const { href, label } = Astro.props;
+---
+
+<a class="logo" href={href} aria-label={label}>
+  <Mark size={28} />
+  <span class="wordmark">tresso</span>
+</a>
+
+<style>
+  .logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink);
+    text-decoration: none;
+  }
+
+  .wordmark {
+    font-family: var(--font-display);
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+</style>

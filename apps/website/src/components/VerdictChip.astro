@@ -1,0 +1,57 @@
+---
+/** A verdict label: always icon plus word, never color alone. */
+import type { Verdict } from '../i18n/en';
+import VerdictIcon from './VerdictIcon.astro';
+
+interface Props {
+  verdict: Verdict;
+  label: string;
+  size?: 'm' | 'l';
+}
+
+const { verdict, label, size = 'm' } = Astro.props;
+---
+
+<span class:list={['chip', `chip-${verdict}`, `chip-${size}`]}>
+  <VerdictIcon verdict={verdict} size={size === 'l' ? 18 : 14} />
+  {label}
+</span>
+
+<style>
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .chip-m {
+    height: 24px;
+    padding: 0 10px;
+    font-size: 0.75rem;
+  }
+
+  .chip-l {
+    padding: 10px 16px;
+    gap: 8px;
+    font-size: 0.9375rem;
+  }
+
+  .chip-do {
+    background: var(--do-bg);
+    color: var(--do-fg);
+  }
+
+  .chip-handOver {
+    background: var(--handover-bg);
+    color: var(--handover-fg);
+  }
+
+  .chip-know {
+    background: var(--know-bg);
+    color: var(--know-fg);
+  }
+</style>

@@ -1,0 +1,77 @@
+---
+import '../styles/global.css';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import { site } from '../config/site';
+import { defaultLocale, locales, pagePath, t, type Locale, type PageKey } from '../i18n';
+
+interface Props {
+  locale: Locale;
+  /** Page key for navigation and alternate links; null for pages outside the sitemap, like 404. */
+  page: PageKey | null;
+  title: string;
+  description?: string;
+}
+
+const { locale, page, title, description } = Astro.props;
+const d = t(locale);
+const metaDescription = description ?? d.meta.description;
+const fullTitle = page === 'home' ? title : `${title} · tresso`;
+const canonical = page ? new URL(pagePath(locale, page), site.url).href : undefined;
+const alternates = page
+  ? locales.map((code) => ({ code, href: new URL(pagePath(code, page), site.url).href }))
+  : [];
+const xDefault = page ? new URL(pagePath(defaultLocale, page), site.url).href : undefined;
+const ogLocale = locale === 'nl' ? 'nl_NL' : 'en_US';
+---
+
+<!doctype html>
+<html lang={locale}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={metaDescription} />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    {canonical && <link rel="canonical" href={canonical} />}
+    {alternates.map((alt) => <link rel="alternate" hreflang={alt.code} href={alt.href} />)}
+    {xDefault && <link rel="alternate" hreflang="x-default" href={xDefault} />}
+    {page === null && <meta name="robots" content="noindex" />}
+    <meta property="og:site_name" content="tresso" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={metaDescription} />
+    <meta property="og:locale" content={ogLocale} />
+    {canonical && <meta property="og:url" content={canonical} />}
+    <link rel="sitemap" href="/sitemap-index.xml" />
+  </head>
+  <body>
+    <a class="skip" href="#main">{d.nav.skip}</a>
+    <Header locale={locale} page={page} />
+    <main id="main">
+      <slot />
+    </main>
+    <Footer locale={locale} />
+  </body>
+</html>
+
+<style>
+  .skip {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 20;
+    padding: 8px 12px;
+    border-radius: var(--radius-s);
+    background: var(--ink);
+    color: var(--ground);
+    transform: translateY(-200%);
+  }
+
+  .skip:focus {
+    transform: none;
+  }
+</style>
