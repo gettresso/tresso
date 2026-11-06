@@ -5,10 +5,15 @@ export const site = {
   name: 'tresso',
   url: 'https://gettresso.com',
   /**
-   * Public repository of the open source edition. Leave null until the repository exists:
-   * pages then say the repository opens at launch instead of linking to a dead URL.
+   * The public repository. Pages link to it, its releases and its self-host files; null would make them say the
+   * repository opens at launch instead.
    */
   repoUrl: 'https://github.com/gettresso/tresso' as string | null,
+  /** The desktop install commands, as the repository's README gives them. */
+  installScripts: {
+    unix: 'curl -fsSL https://sherin.dev/tresso/install.sh | bash',
+    windows: 'powershell -c "irm https://sherin.dev/tresso/install.ps1|iex"',
+  },
   /** Contact address shown in the footer. */
   contactEmail: 'hello@gettresso.com',
 } as const;

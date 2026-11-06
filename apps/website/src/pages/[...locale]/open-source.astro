@@ -16,6 +16,10 @@ interface Props {
 const { locale } = Astro.props;
 const d = t(locale);
 const o = d.openSource;
+/** The files the first self-host step downloads, straight from the default branch. */
+const serverFiles = site.repoUrl
+  ? ['compose.prod.yaml', '.env.prod.example'].map((name) => ({ name, href: `${site.repoUrl}/blob/main/${name}` }))
+  : [];
 ---
 
 <Base locale={locale} page="openSource" title={o.title}>
@@ -33,36 +37,26 @@ const o = d.openSource;
     }
   </PageHero>
 
-  <section class="section" aria-labelledby="licenses-title">
+  <section class="section" aria-labelledby="license-title">
     <div class="container">
-      <h2 id="licenses-title" class="section-title">{o.licenseTitle}</h2>
-      <ul class="licenses">
-        {
-          o.licenses.map((license) => (
-            <li class="card">
-              <h3 class="license-name">{license.name}</h3>
-              <p>{license.text}</p>
-            </li>
-          ))
-        }
-      </ul>
+      <h2 id="license-title" class="section-title">{o.licenseTitle}</h2>
+      <div class="licenses">
+        <div class="card">
+          <h3 class="license-name">{o.licenseName}</h3>
+          <p>{o.licenseText}</p>
+        </div>
+        <div class="card">
+          <h3>{o.cloudTitle}</h3>
+          <p>{o.cloudText}</p>
+        </div>
+      </div>
     </div>
   </section>
 
-  <section class="section">
-    <div class="container compare">
-      <div>
-        <h2 class="section-title small">{o.includedTitle}</h2>
-        <ul class="check-list">{o.included.map((item) => <li>{item}</li>)}</ul>
-      </div>
-      <div>
-        <h2 class="section-title small">{o.cloudTitle}</h2>
-        <ul class="check-list">{o.cloud.map((item) => <li>{item}</li>)}</ul>
-      </div>
-      <div class="addons">
-        <h3>{o.addOnsTitle}</h3>
-        <p>{o.addOnsText}</p>
-      </div>
+  <section class="section" aria-labelledby="included-title">
+    <div class="container">
+      <h2 id="included-title" class="section-title small">{o.includedTitle}</h2>
+      <ul class="check-list included">{o.included.map((item) => <li>{item}</li>)}</ul>
     </div>
   </section>
 
@@ -81,7 +75,19 @@ const o = d.openSource;
               </span>
               <div class="step-body">
                 <h3>{step.title}</h3>
-                <CodeBlock code={step.code} />
+                {step.text && <p class="step-text">{step.text}</p>}
+                {index === 0 && serverFiles.length > 0 && (
+                  <ul class="files">
+                    {serverFiles.map((file) => (
+                      <li>
+                        <a href={file.href} rel="noopener">
+                          <code>{file.name}</code>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {step.code && <CodeBlock code={step.code} />}
               </div>
             </li>
           ))
@@ -127,17 +133,17 @@ const o = d.openSource;
   .licenses {
     display: grid;
     gap: 16px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
   }
 
-  .licenses li {
-    padding: 24px;
+  .licenses .card {
+    padding: 28px;
   }
 
-  .license-name {
+  .licenses h3 {
     margin-bottom: 8px;
+  }
+
+  .licenses .license-name {
     font-family: var(--font-mono);
     font-size: 1rem;
   }
@@ -152,31 +158,6 @@ const o = d.openSource;
     }
   }
 
-  .compare {
-    display: grid;
-    gap: 48px;
-  }
-
-  .addons {
-    padding: 28px;
-    border-radius: var(--radius-l);
-    background: var(--surface);
-  }
-
-  .addons p {
-    margin-top: 8px;
-    color: var(--ink-2);
-  }
-
-  @media (min-width: 860px) {
-    .compare {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .addons {
-      grid-column: 1 / -1;
-    }
-  }
 
   .steps {
     display: grid;
@@ -203,6 +184,34 @@ const o = d.openSource;
     background: var(--surface);
     font-size: 0.875rem;
     font-weight: 600;
+  }
+
+  .included {
+    max-width: 760px;
+  }
+
+  @media (min-width: 760px) {
+    .included {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 32px;
+    }
+  }
+
+  .step-text {
+    color: var(--ink-2);
+  }
+
+  .files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .files a {
+    text-underline-offset: 3px;
   }
 
   .step-body {

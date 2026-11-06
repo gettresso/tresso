@@ -34,11 +34,18 @@ const year = new Date().getFullYear();
         <li><a href={pagePath(locale, 'openSource')}>{d.nav.openSource}</a></li>
         {
           site.repoUrl && (
-            <li>
-              <a href={site.repoUrl} rel="noopener">
-                GitHub
-              </a>
-            </li>
+            <>
+              <li>
+                <a href={site.repoUrl} rel="noopener">
+                  GitHub
+                </a>
+              </li>
+              <li>
+                <a href={`${site.repoUrl}/releases`} rel="noopener">
+                  {d.footer.releases}
+                </a>
+              </li>
+            </>
           )
         }
       </ul>

@@ -34,8 +34,8 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
         <h1>{h.heroTitle}</h1>
         <p class="lead">{h.heroLead}</p>
         <div class="actions">
-          <a class="button button-primary" href={pagePath(locale, 'openSource')}>{h.ctaPrimary}</a>
-          <a class="button button-secondary" href={pagePath(locale, 'features')}>{h.ctaSecondary}</a>
+          <a class="button button-primary" href={pagePath(locale, 'download')}>{h.ctaPrimary}</a>
+          <a class="button button-secondary" href={pagePath(locale, 'openSource')}>{h.ctaSecondary}</a>
         </div>
       </div>
       <InboxDemo locale={locale} />
@@ -73,10 +73,7 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
   <section class="section" aria-labelledby="triage-title">
     <div class="container triage">
       <div>
-        <p class="eyebrow eyebrow-status">
-          {h.triage.eyebrow}
-          <StatusLabel status={h.triage.status} label={d.statuses[h.triage.status]} />
-        </p>
+        <p class="eyebrow">{h.triage.eyebrow}</p>
         <h2 id="triage-title">{h.triage.title}</h2>
         <p class="lead">{h.triage.lead}</p>
       </div>
@@ -158,13 +155,13 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
       </div>
       <div class="editions">
         <article class="edition card">
-          <p class="edition-label">{h.editions.openSource.label}</p>
-          <h3 class="edition-name">{h.editions.openSource.name}</h3>
-          <p class="edition-text">{h.editions.openSource.text}</p>
+          <p class="edition-label">{h.editions.selfHosted.label}</p>
+          <h3 class="edition-name">{h.editions.selfHosted.name}</h3>
+          <p class="edition-text">{h.editions.selfHosted.text}</p>
           <ul class="check-list">
-            {h.editions.openSource.points.map((point) => <li>{point}</li>)}
+            {h.editions.selfHosted.points.map((point) => <li>{point}</li>)}
           </ul>
-          <a class="button button-secondary" href={pagePath(locale, 'openSource')}>{h.editions.openSource.cta}</a>
+          <a class="button button-secondary" href={pagePath(locale, 'openSource')}>{h.editions.selfHosted.cta}</a>
         </article>
         <article class="edition card">
           <p class="edition-label">{h.editions.cloud.label}</p>
@@ -318,17 +315,6 @@ const verdicts: Verdict[] = ['do', 'handOver', 'know'];
     color: var(--know-fg);
   }
 
-  .eyebrow-status {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 16px;
-  }
-
-  .eyebrow-status :global(.status) {
-    text-transform: none;
-    letter-spacing: 0;
-  }
 
   .progress {
     display: grid;
