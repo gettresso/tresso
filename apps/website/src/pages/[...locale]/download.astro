@@ -1,0 +1,111 @@
+---
+import PageHero from '../../components/PageHero.astro';
+import { localeStaticPaths, pagePath, t, type Locale } from '../../i18n';
+import Base from '../../layouts/Base.astro';
+
+export function getStaticPaths() {
+  return localeStaticPaths();
+}
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const d = t(locale);
+const dl = d.download;
+---
+
+<Base locale={locale} page="download" title={dl.title}>
+  <PageHero eyebrow={dl.eyebrow} title={dl.heroTitle} lead={dl.heroLead} />
+
+  <section class="platforms-section">
+    <div class="container">
+      <ul class="platforms">
+        {
+          dl.platforms.map((platform) => (
+            <li class="platform card">
+              <div>
+                <h2>{platform.name}</h2>
+                <p>{platform.text}</p>
+              </div>
+              <span class="soon">{dl.comingSoon}</span>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </section>
+
+  <section class="section self-host">
+    <div class="container">
+      <h2>{dl.selfHostTitle}</h2>
+      <p class="lead">{dl.selfHostText}</p>
+      <div class="actions">
+        <a class="button button-secondary" href={pagePath(locale, 'openSource')}>{dl.selfHostCta}</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .platforms-section {
+    padding-bottom: clamp(64px, 10vw, 112px);
+  }
+
+  .platforms {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .platform {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 20px 22px;
+  }
+
+  .platform h2 {
+    font-family: var(--font-text);
+    font-size: 1.125rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .platform p {
+    margin-top: 2px;
+    color: var(--ink-2);
+    font-size: 0.9375rem;
+  }
+
+  .soon {
+    flex: none;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--ink-3);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  @media (min-width: 720px) {
+    .platforms {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 1000px) {
+    .platforms {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  .self-host {
+    border-top: 1px solid var(--line);
+  }
+</style>

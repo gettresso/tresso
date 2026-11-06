@@ -1,0 +1,54 @@
+---
+/**
+ * The tresso mark: a T built from three separate rounded bars on a 24 grid.
+ * Left bar = Do, right bar = Hand over, stem = Know. Colors follow the theme tokens.
+ */
+import type { Verdict } from '../i18n/en';
+
+interface Props {
+  size?: number;
+  class?: string;
+  label?: string;
+  /** Color only this verdict's bar; the other two are drawn muted. */
+  only?: Verdict;
+}
+
+const { size = 24, class: className, label, only } = Astro.props;
+const muted = (verdict: Verdict) => only !== undefined && only !== verdict;
+---
+
+<svg
+  class:list={['mark', className]}
+  width={size}
+  height={size}
+  viewBox="0 0 24 24"
+  role={label ? 'img' : undefined}
+  aria-label={label}
+  aria-hidden={label ? undefined : 'true'}
+>
+  <rect class:list={['bar-do', { muted: muted('do') }]} x="3" y="4" width="8.5" height="5" rx="2.5"></rect>
+  <rect class:list={['bar-handover', { muted: muted('handOver') }]} x="12.5" y="4" width="8.5" height="5" rx="2.5"></rect>
+  <rect class:list={['bar-know', { muted: muted('know') }]} x="9.5" y="10.5" width="5" height="10" rx="2.5"></rect>
+</svg>
+
+<style>
+  .mark {
+    flex: none;
+  }
+
+  .bar-do {
+    fill: var(--mark-do);
+  }
+
+  .bar-handover {
+    fill: var(--mark-handover);
+  }
+
+  .bar-know {
+    fill: var(--mark-know);
+  }
+
+  .muted {
+    fill: var(--line);
+  }
+</style>

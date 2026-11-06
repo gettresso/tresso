@@ -1,0 +1,186 @@
+---
+import PageHero from '../../components/PageHero.astro';
+import StatusLabel from '../../components/StatusLabel.astro';
+import { localeStaticPaths, pagePath, t, type Locale } from '../../i18n';
+import Base from '../../layouts/Base.astro';
+
+export function getStaticPaths() {
+  return localeStaticPaths();
+}
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const d = t(locale);
+const p = d.pricing;
+const unitLabel = { '': '', perMonth: p.perMonth, perUserMonth: p.perUserMonth };
+---
+
+<Base locale={locale} page="pricing" title={p.title}>
+  <PageHero eyebrow={p.eyebrow} title={p.heroTitle} lead={p.heroLead} />
+
+  <section class="plans-section">
+    <div class="container">
+      <ul class="plans">
+        {
+          p.plans.map((plan) => (
+            <li class="plan card">
+              <div class="plan-head">
+                <h2 class="plan-name">{plan.name}</h2>
+                <StatusLabel status={plan.status} label={d.statuses[plan.status]} />
+              </div>
+              <p class="price">
+                <span class="amount">{plan.price === 'free' ? p.free : plan.price}</span>
+                {plan.unit && <span class="unit">{unitLabel[plan.unit]}</span>}
+              </p>
+              <p class="plan-text">{plan.text}</p>
+              <ul class="check-list">
+                {plan.points.map((point) => (
+                  <li>{point}</li>
+                ))}
+              </ul>
+              <a
+                class:list={['button', plan.target === 'openSource' ? 'button-secondary' : 'button-primary']}
+                href={pagePath(locale, plan.target)}
+              >
+                {plan.cta}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+      <p class="note">{p.note}</p>
+    </div>
+  </section>
+
+  <section class="section faq-section" aria-labelledby="faq-title">
+    <div class="container faq-grid">
+      <h2 id="faq-title">{p.faqTitle}</h2>
+      <dl class="faq">
+        {
+          p.faq.map((item) => (
+            <div>
+              <dt>{item.q}</dt>
+              <dd>{item.a}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .plans-section {
+    padding-bottom: clamp(64px, 10vw, 112px);
+  }
+
+  .plans {
+    display: grid;
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .plan {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: clamp(24px, 4vw, 32px);
+  }
+
+  .plan-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .plan-name {
+    font-family: var(--font-text);
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+
+  .price {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+  }
+
+  .amount {
+    font-family: var(--font-display);
+    font-size: 2.5rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+
+  .unit {
+    color: var(--ink-3);
+    font-size: 0.9375rem;
+  }
+
+  .plan-text {
+    color: var(--ink-2);
+  }
+
+  .plan .check-list {
+    flex: 1;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+  }
+
+  .plan .button {
+    margin-top: 8px;
+  }
+
+  .note {
+    margin-top: 24px;
+    color: var(--ink-3);
+    font-size: 0.875rem;
+  }
+
+  @media (min-width: 900px) {
+    .plans {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  .faq-section {
+    border-top: 1px solid var(--line);
+  }
+
+  .faq-grid {
+    display: grid;
+    gap: 32px;
+  }
+
+  .faq {
+    display: grid;
+    gap: 28px;
+    margin: 0;
+  }
+
+  dt {
+    font-weight: 600;
+  }
+
+  dd {
+    margin: 6px 0 0;
+    color: var(--ink-2);
+  }
+
+  @media (min-width: 980px) {
+    .faq-grid {
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 48px;
+    }
+  }
+</style>

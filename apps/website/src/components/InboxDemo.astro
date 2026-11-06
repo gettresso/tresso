@@ -1,0 +1,190 @@
+---
+/**
+ * Static illustration of a unified inbox, following the message row from the design canvas:
+ * unread is weight plus a dot (never color alone), Know mail shows no dot.
+ */
+import { t, type Locale } from '../i18n';
+import VerdictChip from './VerdictChip.astro';
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const d = t(locale);
+const demo = d.home.demo;
+const keys = d.home.triage.keys;
+---
+
+<figure class="demo card" aria-label={demo.label}>
+  <div class="top">
+    <span class="title">{demo.title}</span>
+    <span class="accounts">{demo.accounts}</span>
+  </div>
+  <ul class="rows">
+    {
+      demo.rows.map((row) => {
+        const unread = row.unread && row.verdict !== 'know';
+        return (
+          <li class:list={['row', { unread }]}>
+            <span class="dot" aria-hidden="true" />
+            {unread && <span class="visually-hidden">{demo.unread}</span>}
+            <span class="from">{row.from}</span>
+            <span class="time">{row.time}</span>
+            <span class="subject">{row.subject}</span>
+            <span class="verdict">
+              <VerdictChip verdict={row.verdict} label={d.verdicts[row.verdict]} />
+              <span class="note">{row.note}</span>
+            </span>
+          </li>
+        );
+      })
+    }
+  </ul>
+  <figcaption class="foot">
+    <span>{demo.keysHint}</span>
+    <span class="keys">
+      {keys.map((k) => <kbd title={d.verdicts[k.verdict]}>{k.key}</kbd>)}
+    </span>
+  </figcaption>
+</figure>
+
+<style>
+  .demo {
+    margin: 0;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+
+  .top,
+  .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 20px;
+  }
+
+  .top {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .title {
+    font-size: 0.9375rem;
+    font-weight: 600;
+  }
+
+  .accounts {
+    color: var(--ink-3);
+    font-size: 0.8125rem;
+  }
+
+  .rows {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+    grid-template-areas:
+      'dot from time'
+      '. subject subject'
+      '. verdict verdict';
+    gap: 2px 14px;
+    align-items: center;
+    padding: 14px 20px;
+    font-size: 0.875rem;
+  }
+
+  .row + .row {
+    border-top: 1px solid var(--line);
+  }
+
+  .dot {
+    grid-area: dot;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+  }
+
+  .unread .dot {
+    background: var(--ink);
+  }
+
+  .from {
+    grid-area: from;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .subject {
+    grid-area: subject;
+    overflow: hidden;
+    color: var(--ink-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .unread .from,
+  .unread .subject {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .time {
+    grid-area: time;
+    color: var(--ink-2);
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .verdict {
+    display: flex;
+    grid-area: verdict;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin-top: 8px;
+  }
+
+  .note {
+    color: var(--ink-3);
+    font-size: 0.75rem;
+  }
+
+  .foot {
+    border-top: 1px solid var(--line);
+    color: var(--ink-3);
+    font-size: 0.8125rem;
+  }
+
+  .keys {
+    display: flex;
+    gap: 6px;
+  }
+
+  @media (min-width: 640px) {
+    .row {
+      grid-template-columns: 8px minmax(0, 1fr) auto auto;
+      grid-template-areas:
+        'dot from verdict time'
+        '. subject verdict time';
+    }
+
+    .verdict {
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+      margin-top: 0;
+    }
+
+    .time {
+      min-width: 64px;
+      text-align: right;
+    }
+  }
+</style>

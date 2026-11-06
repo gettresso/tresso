@@ -1,0 +1,147 @@
+---
+import EditionBadge from '../../components/EditionBadge.astro';
+import PageHero from '../../components/PageHero.astro';
+import StatusLabel from '../../components/StatusLabel.astro';
+import type { Status } from '../../i18n/en';
+import { localeStaticPaths, pagePath, t, type Locale } from '../../i18n';
+import Base from '../../layouts/Base.astro';
+
+export function getStaticPaths() {
+  return localeStaticPaths();
+}
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const d = t(locale);
+const f = d.features;
+const statuses: Status[] = ['available', 'review', 'progress', 'planned'];
+---
+
+<Base locale={locale} page="features" title={f.title}>
+  <PageHero eyebrow={f.eyebrow} title={f.heroTitle} lead={f.heroLead}>
+    <p class="legend">
+      <span>{f.legend}</span>
+      <EditionBadge edition="openSource" label={d.editions.openSource} />
+      <EditionBadge edition="cloud" label={d.editions.cloud} />
+    </p>
+    <p class="legend">
+      <span>{f.statusLegend}</span>
+      {statuses.map((status) => <StatusLabel status={status} label={d.statuses[status]} />)}
+    </p>
+  </PageHero>
+
+  {
+    f.groups.map((group, index) => (
+      <section class="group" aria-labelledby={`group-${index}`}>
+        <div class="container group-grid">
+          <h2 id={`group-${index}`}>{group.title}</h2>
+          <ul class="items">
+            {group.items.map((item) => (
+              <li class="item">
+                <div class="item-head">
+                  <h3>{item.title}</h3>
+                  <EditionBadge edition={item.edition} label={d.editions[item.edition]} />
+                </div>
+                <p>{item.text}</p>
+                <StatusLabel status={item.status} label={d.statuses[item.status]} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+    ))
+  }
+
+  <section class="section closing">
+    <div class="container">
+      <h2>{f.closingTitle}</h2>
+      <div class="actions">
+        <a class="button button-primary" href={pagePath(locale, 'pricing')}>{f.closingCta}</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-top: 16px;
+    color: var(--ink-3);
+    font-size: 0.875rem;
+  }
+
+  .group {
+    padding-block: 48px;
+    border-top: 1px solid var(--line);
+  }
+
+  .group-grid {
+    display: grid;
+    gap: 24px;
+  }
+
+  .group h2 {
+    font-size: clamp(1.5rem, 3vw, 2rem);
+  }
+
+  .items {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .legend:first-of-type {
+    margin-top: 28px;
+  }
+
+  .item {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 24px;
+    border-radius: var(--radius-l);
+    background: var(--surface);
+  }
+
+  .item :global(.status) {
+    margin-top: auto;
+    padding-top: 8px;
+  }
+
+  .item-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .item p {
+    color: var(--ink-2);
+    font-size: 0.9375rem;
+  }
+
+  @media (min-width: 720px) {
+    .items {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 980px) {
+    .group-grid {
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 48px;
+    }
+  }
+
+  .closing {
+    border-top: 1px solid var(--line);
+  }
+</style>

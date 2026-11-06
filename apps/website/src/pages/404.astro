@@ -1,0 +1,31 @@
+---
+import Mark from '../components/Mark.astro';
+import { defaultLocale, pagePath, t } from '../i18n';
+import Base from '../layouts/Base.astro';
+
+const locale = defaultLocale;
+const d = t(locale);
+---
+
+<Base locale={locale} page={null} title={d.notFound.title}>
+  <section class="not-found">
+    <div class="container">
+      <Mark size={56} />
+      <h1>{d.notFound.heading}</h1>
+      <p class="lead">{d.notFound.text}</p>
+      <div class="actions">
+        <a class="button button-primary" href={pagePath(locale, 'home')}>{d.notFound.cta}</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .not-found {
+    padding-block: clamp(80px, 14vw, 160px);
+  }
+
+  h1 {
+    margin-top: 24px;
+  }
+</style>

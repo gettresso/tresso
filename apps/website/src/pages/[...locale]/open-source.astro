@@ -1,0 +1,247 @@
+---
+import CodeBlock from '../../components/CodeBlock.astro';
+import PageHero from '../../components/PageHero.astro';
+import { site } from '../../config/site';
+import { localeStaticPaths, t, type Locale } from '../../i18n';
+import Base from '../../layouts/Base.astro';
+
+export function getStaticPaths() {
+  return localeStaticPaths();
+}
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const d = t(locale);
+const o = d.openSource;
+---
+
+<Base locale={locale} page="openSource" title={o.title}>
+  <PageHero eyebrow={o.eyebrow} title={o.heroTitle} lead={o.heroLead}>
+    {
+      site.repoUrl ? (
+        <div class="actions">
+          <a class="button button-primary" href={site.repoUrl} rel="noopener">
+            {d.repo.link}
+          </a>
+        </div>
+      ) : (
+        <p class="pending">{d.repo.pending}</p>
+      )
+    }
+  </PageHero>
+
+  <section class="section" aria-labelledby="licenses-title">
+    <div class="container">
+      <h2 id="licenses-title" class="section-title">{o.licenseTitle}</h2>
+      <ul class="licenses">
+        {
+          o.licenses.map((license) => (
+            <li class="card">
+              <h3 class="license-name">{license.name}</h3>
+              <p>{license.text}</p>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container compare">
+      <div>
+        <h2 class="section-title small">{o.includedTitle}</h2>
+        <ul class="check-list">{o.included.map((item) => <li>{item}</li>)}</ul>
+      </div>
+      <div>
+        <h2 class="section-title small">{o.cloudTitle}</h2>
+        <ul class="check-list">{o.cloud.map((item) => <li>{item}</li>)}</ul>
+      </div>
+      <div class="addons">
+        <h3>{o.addOnsTitle}</h3>
+        <p>{o.addOnsText}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="quickstart-title">
+    <div class="container">
+      <div class="section-head">
+        <h2 id="quickstart-title">{o.quickstartTitle}</h2>
+        <p class="lead">{o.quickstartLead}</p>
+      </div>
+      <ol class="steps">
+        {
+          o.steps.map((step, index) => (
+            <li>
+              <span class="step-number" aria-hidden="true">
+                {index + 1}
+              </span>
+              <div class="step-body">
+                <h3>{step.title}</h3>
+                <CodeBlock code={step.code} />
+              </div>
+            </li>
+          ))
+        }
+      </ol>
+      <p class="quickstart-note">{o.quickstartNote}</p>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="stack-title">
+    <div class="container">
+      <h2 id="stack-title" class="section-title">{o.stackTitle}</h2>
+      <dl class="stack">
+        {
+          o.stack.map((row) => (
+            <div>
+              <dt>{row.part}</dt>
+              <dd>{row.tech}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .pending {
+    margin-top: 28px;
+    color: var(--ink-3);
+    font-size: 0.9375rem;
+  }
+
+  .section-title {
+    margin-bottom: 32px;
+  }
+
+  .section-title.small {
+    margin-bottom: 20px;
+    font-size: clamp(1.5rem, 3vw, 2rem);
+  }
+
+  .licenses {
+    display: grid;
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .licenses li {
+    padding: 24px;
+  }
+
+  .license-name {
+    margin-bottom: 8px;
+    font-family: var(--font-mono);
+    font-size: 1rem;
+  }
+
+  .licenses p {
+    color: var(--ink-2);
+  }
+
+  @media (min-width: 760px) {
+    .licenses {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .compare {
+    display: grid;
+    gap: 48px;
+  }
+
+  .addons {
+    padding: 28px;
+    border-radius: var(--radius-l);
+    background: var(--surface);
+  }
+
+  .addons p {
+    margin-top: 8px;
+    color: var(--ink-2);
+  }
+
+  @media (min-width: 860px) {
+    .compare {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .addons {
+      grid-column: 1 / -1;
+    }
+  }
+
+  .steps {
+    display: grid;
+    gap: 24px;
+    max-width: 820px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .steps li {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .step-number {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    font-size: 0.875rem;
+    font-weight: 600;
+  }
+
+  .step-body {
+    display: grid;
+    gap: 10px;
+    padding-top: 4px;
+  }
+
+  .quickstart-note {
+    max-width: 820px;
+    margin-top: 28px;
+    color: var(--ink-2);
+  }
+
+  .stack {
+    display: grid;
+    margin: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .stack div {
+    display: grid;
+    gap: 2px 24px;
+    padding-block: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .stack dt {
+    font-weight: 600;
+  }
+
+  .stack dd {
+    margin: 0;
+    color: var(--ink-2);
+  }
+
+  @media (min-width: 640px) {
+    .stack div {
+      grid-template-columns: 200px minmax(0, 1fr);
+    }
+  }
+</style>

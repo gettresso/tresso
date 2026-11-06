@@ -1,0 +1,136 @@
+---
+import { site } from '../config/site';
+import { pagePath, t, type Locale } from '../i18n';
+import Logo from './Logo.astro';
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const d = t(locale);
+const year = new Date().getFullYear();
+---
+
+<footer class="footer">
+  <div class="container grid">
+    <div class="brand">
+      <Logo href={pagePath(locale, 'home')} label={d.nav.home} />
+      <p class="tagline">{d.footer.tagline}</p>
+    </div>
+
+    <nav aria-label={d.footer.product}>
+      <h2>{d.footer.product}</h2>
+      <ul>
+        <li><a href={pagePath(locale, 'features')}>{d.nav.features}</a></li>
+        <li><a href={pagePath(locale, 'pricing')}>{d.nav.pricing}</a></li>
+        <li><a href={pagePath(locale, 'download')}>{d.nav.download}</a></li>
+      </ul>
+    </nav>
+
+    <nav aria-label={d.footer.project}>
+      <h2>{d.footer.project}</h2>
+      <ul>
+        <li><a href={pagePath(locale, 'openSource')}>{d.nav.openSource}</a></li>
+        {
+          site.repoUrl && (
+            <li>
+              <a href={site.repoUrl} rel="noopener">
+                GitHub
+              </a>
+            </li>
+          )
+        }
+      </ul>
+    </nav>
+
+    <div>
+      <h2>{d.footer.contact}</h2>
+      <ul>
+        <li><a href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="container legal">
+    <p>{d.footer.license}</p>
+    <p>© {year} tresso. {d.footer.madeIn}</p>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    padding-block: 56px 32px;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 32px 24px;
+  }
+
+  .brand {
+    grid-column: 1 / -1;
+  }
+
+  .tagline {
+    margin-top: 12px;
+    color: var(--ink-3);
+  }
+
+  h2 {
+    margin-bottom: 12px;
+    color: var(--ink-3);
+    font-family: var(--font-text);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    line-height: 1.4;
+    text-transform: uppercase;
+  }
+
+  ul {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  ul a {
+    color: var(--ink-2);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+
+  @media (hover: hover) {
+    ul a:hover {
+      color: var(--ink);
+      text-decoration: underline;
+    }
+  }
+
+  .legal {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px 24px;
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-3);
+    font-size: 0.875rem;
+  }
+
+  @media (min-width: 820px) {
+    .grid {
+      grid-template-columns: 2fr 1fr 1fr 1fr;
+    }
+
+    .brand {
+      grid-column: auto;
+    }
+  }
+</style>
