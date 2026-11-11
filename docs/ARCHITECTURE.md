@@ -974,7 +974,8 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
     because images inside rendered mail cannot send one). Only plain image types are served inline; everything else
     downloads as `application/octet-stream`. Every response carries `nosniff` and `Content-Security-Policy:
     default-src 'none'; sandbox`. Attachments that are still being scanned or are quarantined have no URL and are
-    never served (see 3.8).
+    never served (see 3.8). A web client that has shown a body for 50 minutes or longer fetches it again on a
+    download, so the file opens through a fresh link rather than an expired one.
   - A part counts as inline when the HTML references its Content-ID; the worker decides this, because mail clients
     disagree on the disposition of embedded images. The Content-ID is kept for every part.
 

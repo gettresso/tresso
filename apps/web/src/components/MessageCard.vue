@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { Address, MessageBody, SyncedMessage } from '@tresso/core'
+import type { Address, MessageAttachment, MessageBody, SyncedMessage } from '@tresso/core'
 import { fullTime, senderName } from '@/mail/format'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
@@ -15,9 +15,17 @@ import LogoLoader from '@/components/LogoLoader.vue'
 const props = defineProps<{ message: SyncedMessage; expanded: boolean }>()
 const emit = defineEmits<{ toggle: [] }>()
 
+/**
+ * How long the body's attachment links are used as they are. The API signs them for an hour
+ * (`AttachmentUrls::LIFETIME`); after this a download asks for the body again, for fresh ones.
+ */
+const LINKS_FRESH_MS = 50 * 60_000
+
 const mail = useMailStore()
 const compose = useComposeStore()
 const body = ref<MessageBody | null>(null)
+/** When the body on screen was fetched: its attachment links expire an hour after. */
+let loadedAt = 0
 const loading = ref(false)
 const error = ref<string | null>(null)
 
@@ -32,12 +40,27 @@ async function load(allowRemoteContent: boolean): Promise<void> {
   loading.value = true
   error.value = null
   try {
+    const requested = Date.now()
     body.value = await mail.body(props.message.id, allowRemoteContent)
+    loadedAt = requested
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
+}
+
+/** Null while the attachment links are still good; else fetches the body again for fresh ones. */
+function renewLinks(): Promise<MessageAttachment[]> | null {
+  if (body.value === null || Date.now() - loadedAt < LINKS_FRESH_MS) {
+    return null
+  }
+  return load(body.value.remoteContentLoaded).then(() => {
+    if (error.value !== null || body.value === null) {
+      throw new Error(error.value ?? 'The message could not be loaded.')
+    }
+    return body.value.attachments
+  })
 }
 
 // A scan verdict changes the message. Reload the body for its attachment states and links when the summary moved,
@@ -106,7 +129,7 @@ watch(
         <PlainTextBody v-else-if="body.text !== null" :text="body.text" />
         <p v-else class="state">This message has no text.</p>
 
-        <AttachmentList :attachments="files" />
+        <AttachmentList :attachments="files" :renew-links="renewLinks" />
 
         <div class="respond">
           <button type="button" class="button button-quiet" @click="compose.openReply(message, 'reply')"><AppIcon name="reply" /> Reply</button>

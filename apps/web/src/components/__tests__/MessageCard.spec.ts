@@ -103,4 +103,55 @@ describe('MessageCard', () => {
 
     expect(load).toHaveBeenCalledTimes(1)
   })
+  it('opens a file through a fresh link once the links of the body on screen may have expired', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const mail = useMailStore()
+    const signed = (url: string): MessageBody => {
+      const clean = body('pending')
+      clean.attachments[0]!.scanStatus = 'clean'
+      clean.attachments[0]!.access = 'allowed'
+      clean.attachments[0]!.url = url
+      return clean
+    }
+    const load = vi.spyOn(mail, 'body').mockResolvedValueOnce(signed('https://api.example.test/a1?signed=morning')).mockResolvedValueOnce(signed('https://api.example.test/a1?signed=afternoon'))
+    const tab = { opener: {}, location: { href: 'about:blank' }, close: vi.fn() }
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+    const wrapper = mount(MessageCard, { props: { message: { ...message, attachmentScan: 'clean' }, expanded: true } })
+    await flushPromises()
+
+    vi.advanceTimersByTime(61 * 60_000)
+    await wrapper.get('a[aria-label="Download invoice.zip"]').trigger('click')
+    await flushPromises()
+
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(open).toHaveBeenCalledWith('about:blank', '_blank')
+    expect(tab.opener).toBeNull()
+    expect(tab.location.href).toBe('https://api.example.test/a1?signed=afternoon')
+    expect(wrapper.get('a[aria-label="Download invoice.zip"]').attributes('href')).toBe('https://api.example.test/a1?signed=afternoon')
+    open.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('lets a fresh link open by itself', async () => {
+    const mail = useMailStore()
+    const clean = body('pending')
+    clean.attachments[0]!.scanStatus = 'clean'
+    clean.attachments[0]!.access = 'allowed'
+    clean.attachments[0]!.url = 'https://api.example.test/a1?signed=now'
+    const load = vi.spyOn(mail, 'body').mockResolvedValue(clean)
+    const open = vi.spyOn(window, 'open')
+    const wrapper = mount(MessageCard, { props: { message: { ...message, attachmentScan: 'clean' }, expanded: true } })
+    await flushPromises()
+
+    const link = wrapper.get('a[aria-label="Download invoice.zip"]')
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+    // jsdom does not navigate; the test only stops it from saying so.
+    link.element.addEventListener('click', (e) => e.preventDefault())
+    link.element.dispatchEvent(event)
+    await flushPromises()
+
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(open).not.toHaveBeenCalled()
+    open.mockRestore()
+  })
 })
