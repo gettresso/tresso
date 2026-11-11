@@ -76,8 +76,6 @@ pub fn run() {
 /// in the desktop app by themselves (macOS and Linux) or a bare one inside it (Windows), so web addresses and mail
 /// links open in the user's browser and mail app, and anything else is refused.
 fn main_window(app: &tauri::App) -> tauri::Result<()> {
-  use tauri::Manager;
-
   let config = app
     .config()
     .app
