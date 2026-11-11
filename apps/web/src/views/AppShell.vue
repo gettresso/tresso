@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
+import { errorMessage } from '@/api/errors'
 import { useAuthStore } from '@/stores/auth'
+import { useComposeStore } from '@/stores/compose'
 import { useBatchesStore } from '@/stores/batches'
 import { useMailStore } from '@/stores/mail'
 import MailboxSidebar from '@/components/MailboxSidebar.vue'
@@ -13,6 +15,16 @@ const auth = useAuthStore()
 const mail = useMailStore()
 const batches = useBatchesStore()
 const route = useRoute()
+const compose = useComposeStore()
+
+/** Signs out; the sidebar's button says it is under way (auth.signingOut), and a failure is said too. */
+async function signOut(): Promise<void> {
+  try {
+    await auth.signOut()
+  } catch (cause) {
+    compose.notify({ text: `Signing out did not finish: ${errorMessage(cause)}. Try again.`, tone: 'error' })
+  }
+}
 
 const page = computed(() => sidebarPage(route))
 const inBatches = computed(() => route.name === 'batches' || route.name === 'batches-thread')
@@ -103,7 +115,7 @@ function toggled(event: Event): void {
         :next-batch="batches.nextBatchLabel"
         :page="page"
         :live="mail.live"
-        @sign-out="auth.signOut()"
+        @sign-out="signOut"
       />
     </details>
     <div class="stage">

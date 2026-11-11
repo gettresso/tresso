@@ -16,6 +16,16 @@ const auth = useAuthStore()
 const billing = useBillingStore()
 const checking = ref(false)
 const stillBlocked = ref(false)
+const signOutError = ref<string | null>(null)
+
+async function signOut(): Promise<void> {
+  signOutError.value = null
+  try {
+    await auth.signOut()
+  } catch (cause) {
+    signOutError.value = `Signing out did not finish: ${errorMessage(cause)}. Try again.`
+  }
+}
 const heading = ref<HTMLElement | null>(null)
 
 const ownTrialEnded = computed(() => billing.status?.organizations.find((organization) => organization.personal)?.status === 'trial')
@@ -56,9 +66,12 @@ onMounted(() => {
       <p v-else-if="billing.error" class="form-error" role="alert">{{ billing.error }}</p>
       <p v-else class="hint" role="status"><LogoLoader /> Loading…</p>
       <p v-if="stillBlocked" class="hint" role="status">Still not subscribed. A payment can take a moment to come through.</p>
+      <p v-if="signOutError" class="form-error" role="alert">{{ signOutError }}</p>
       <div class="footer">
         <button type="button" class="button button-quiet" :disabled="checking" @click="checkAgain">I have paid, check again</button>
-        <button type="button" class="button button-quiet" @click="auth.signOut()">Sign out</button>
+        <button type="button" class="button button-quiet" :disabled="auth.signingOut" :aria-busy="auth.signingOut" @click="signOut">
+          {{ auth.signingOut ? 'Signing out…' : 'Sign out' }}
+        </button>
       </div>
     </section>
   </div>
