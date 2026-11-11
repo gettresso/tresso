@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { MailAccount, SyncedMailAccount } from '@tresso/core'
 import { useMailStore } from '@/stores/mail'
+import { useAuthStore } from '@/stores/auth'
 import AddAccountView from '../AddAccountView.vue'
 
 const created: MailAccount = {
@@ -201,7 +202,7 @@ describe('AddAccountView', () => {
       path: '/api/v1/provider-connections',
       body: { provider: 'google', state: 'state-1', code: 'code-1' },
     })
-    expect(sessionStorage.getItem('auth.tokens')).not.toBeNull()
+    expect(useAuthStore().isAuthenticated).toBe(true)
     expect(wrapper.text()).toContain('kim@gmail.example')
     expect(wrapper.text()).toContain('Signing in and fetching your folders')
     expect(wrapper.router.currentRoute.value.query).toEqual({})

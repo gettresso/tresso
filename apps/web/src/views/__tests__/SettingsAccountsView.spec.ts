@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import SettingsAccountsView from '../SettingsAccountsView.vue'
 
 async function settle(): Promise<void> {
@@ -64,7 +65,7 @@ describe('SettingsAccountsView', () => {
     expect(requests.find((r) => r.path === '/api/v1/provider-connections')?.body).toEqual({ provider: 'microsoft', state: 'state-1', code: 'code-1' })
     expect(wrapper.get('[role="status"]').text()).toBe('Signed in with Microsoft again. The account syncs again.')
     expect(wrapper.router.currentRoute.value.query).toEqual({})
-    expect(sessionStorage.getItem('auth.tokens')).not.toBeNull()
+    expect(useAuthStore().isAuthenticated).toBe(true)
   })
 
   it('says why signing in again did not work', async () => {

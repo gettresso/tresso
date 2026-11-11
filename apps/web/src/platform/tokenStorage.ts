@@ -2,11 +2,81 @@ import type { TokenSet } from '@tresso/core'
 import { clearKeychainTokens, isDesktop, loadKeychainTokens, saveKeychainTokens } from '@/platform/desktop'
 
 const TOKENS_KEY = 'auth.tokens'
+/** The name of the lock every tab of this origin takes around a token refresh. */
+const REFRESH_LOCK = 'tresso.auth.refresh'
 
 /** Where the signed-in user's tokens are kept between page loads or app launches. */
 export interface TokenStorage {
   load(): Promise<TokenSet | null>
   save(tokens: TokenSet | null): Promise<void>
+  /**
+   * The set as it is stored right now, which another tab may have written since this one read it. Undefined where
+   * nothing else writes the store (the desktop app has one window): what this window holds is the latest.
+   */
+  peek(): TokenSet | null | undefined
+}
+
+/** A stored token set, or null for anything else: a corrupt or foreign value means signed out, not a crash. */
+export function parseTokens(raw: string | null): TokenSet | null {
+  if (raw === null) {
+    return null
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+  const { accessToken, refreshToken, expiresAt } = value as Record<string, unknown>
+  if (typeof accessToken !== 'string' || (typeof refreshToken !== 'string' && refreshToken !== null) || typeof expiresAt !== 'number') {
+    return null
+  }
+  return { accessToken, refreshToken, expiresAt }
+}
+
+/** Reads one key; a browser that refuses storage (blocked site data) reads as empty. */
+function readItem(storage: () => Storage, key: string): string | null {
+  try {
+    return storage().getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function removeItem(storage: () => Storage, key: string): void {
+  try {
+    storage().removeItem(key)
+  } catch {
+    // Nothing can be read from a store the browser refuses either.
+  }
+}
+
+/**
+ * The tokens in the browser's localStorage. A tab from before they moved there kept them in sessionStorage: they move
+ * over, and a set already in localStorage (signed in by another tab since) wins over the tab's own.
+ */
+function browserTokens(): TokenSet | null {
+  const kept = readItem(() => localStorage, TOKENS_KEY)
+  const fromTab = readItem(() => sessionStorage, TOKENS_KEY)
+  if (fromTab !== null) {
+    const moved = parseTokens(fromTab)
+    if (kept === null && moved !== null) {
+      try {
+        localStorage.setItem(TOKENS_KEY, JSON.stringify(moved))
+      } catch {
+        // Without localStorage the tab keeps its own set, which still signs it in until it closes.
+        return moved
+      }
+    }
+    removeItem(() => sessionStorage, TOKENS_KEY)
+    if (kept === null) {
+      return moved
+    }
+  }
+  return parseTokens(kept)
 }
 
 /**
@@ -14,32 +84,39 @@ export interface TokenStorage {
  * ask the keychain first, see {@link TokenStorage.load}.
  */
 export function initialTokens(): TokenSet | null {
-  if (isDesktop) {
-    return null
-  }
-  const raw = sessionStorage.getItem(TOKENS_KEY)
-  return raw === null ? null : (JSON.parse(raw) as TokenSet)
+  return isDesktop ? null : browserTokens()
 }
 
-/** The web client: sessionStorage survives a reload but not closing the tab. */
-const sessionTokens: TokenStorage = {
+/**
+ * The web client: localStorage, shared by every tab of the origin and kept when the browser closes, so one sign-in
+ * serves all tabs until the user signs out (one user per browser profile).
+ */
+const browserStorage: TokenStorage = {
   async load() {
-    return initialTokens()
+    return browserTokens()
   },
   async save(tokens) {
     if (tokens === null) {
-      sessionStorage.removeItem(TOKENS_KEY)
+      localStorage.removeItem(TOKENS_KEY)
       return
     }
-    sessionStorage.setItem(TOKENS_KEY, JSON.stringify(tokens))
+    localStorage.setItem(TOKENS_KEY, JSON.stringify(tokens))
+  },
+  peek() {
+    return parseTokens(readItem(() => localStorage, TOKENS_KEY))
   },
 }
 
 /** The desktop app: the OS keychain, so a sign-in lasts across launches without tokens on disk in plain text. */
-const keychainTokens: TokenStorage = {
+const keychainStorage: TokenStorage = {
   async load() {
     const raw = await loadKeychainTokens()
-    return raw === null ? null : (JSON.parse(raw) as TokenSet)
+    const tokens = parseTokens(raw)
+    if (raw !== null && tokens === null) {
+      // Said, not swallowed: the user would otherwise be signed out at launch without a reason.
+      throw new Error('the keychain entry is not a sign-in Tresso can read')
+    }
+    return tokens
   },
   async save(tokens) {
     if (tokens === null) {
@@ -48,6 +125,43 @@ const keychainTokens: TokenStorage = {
     }
     await saveKeychainTokens(JSON.stringify(tokens))
   },
+  peek() {
+    return undefined
+  },
 }
 
-export const tokenStorage: TokenStorage = isDesktop ? keychainTokens : sessionTokens
+export const tokenStorage: TokenStorage = isDesktop ? keychainStorage : browserStorage
+
+/**
+ * Calls back when another tab stores a new token set (a sign-in or a refresh) or removes it (a sign-out), with the
+ * set or null. Returns the function that stops listening. Nothing to hear in the desktop app.
+ */
+export function watchTokens(callback: (tokens: TokenSet | null) => void): () => void {
+  if (isDesktop) {
+    return () => {}
+  }
+  const listener = (event: StorageEvent) => {
+    // A null key is localStorage.clear(), which removes the tokens too.
+    if (event.key !== null && event.key !== TOKENS_KEY) {
+      return
+    }
+    if (event.storageArea !== null && event.storageArea !== localStorage) {
+      return
+    }
+    callback(parseTokens(event.newValue))
+  }
+  window.addEventListener('storage', listener)
+  return () => window.removeEventListener('storage', listener)
+}
+
+/**
+ * Runs a token refresh while no other tab runs one. Refresh tokens rotate: two tabs refreshing with the same one would
+ * leave one of them with a revoked token. Without the Web Locks API (old browsers) it runs at once, which is as safe
+ * as a single tab; the desktop app has one window.
+ */
+export function withRefreshLock<T>(run: () => Promise<T>): Promise<T> {
+  if (isDesktop || typeof navigator === 'undefined' || navigator.locks === undefined) {
+    return run()
+  }
+  return navigator.locks.request(REFRESH_LOCK, run)
+}

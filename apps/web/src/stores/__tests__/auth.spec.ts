@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import type { TokenSet } from '@tresso/core'
+import type { Me, TokenSet } from '@tresso/core'
 
 const desktop = vi.hoisted(() => ({
   isDesktop: false,
@@ -64,6 +64,76 @@ async function authStore() {
   return useAuthStore()
 }
 
+const EXPIRED: TokenSet = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() - 1000 }
+
+/** The browser's Web Locks API for one origin: a request runs once the previous holder of the same name is done. */
+function stubLocks(): void {
+  const held = new Map<string, Promise<unknown>>()
+  const locks = {
+    request: (name: string, run: () => Promise<unknown>) => {
+      const previous = held.get(name) ?? Promise.resolve()
+      const mine = previous.catch(() => undefined).then(run)
+      held.set(name, mine)
+      return mine
+    },
+  }
+  vi.stubGlobal('navigator', { ...navigator, locks })
+}
+
+interface FakeServer {
+  /** Refresh requests, by the refresh token they sent. */
+  refreshes: string[]
+  /** Revocation requests, by the token they sent. */
+  revoked: string[]
+  /** API requests, by the access token they sent. */
+  calls: { path: string; token: string }[]
+}
+
+/**
+ * An authorization server whose refresh tokens rotate (a used one is refused with invalid_grant) and an API that
+ * accepts only the access token issued last, unless `api` says otherwise.
+ */
+function stubServer(options: {
+  refresh?: (refreshToken: string, server: FakeServer) => Response | Promise<Response>
+  api?: (path: string, token: string, server: FakeServer) => Response | Promise<Response>
+} = {}): FakeServer {
+  const server: FakeServer = { refreshes: [], revoked: [], calls: [] }
+  let issued = 1
+  let current = 'refresh-1'
+  let access = 'access-1'
+  const rotate = (refreshToken: string): Response => {
+    if (refreshToken !== current) {
+      return Response.json({ error: 'invalid_grant', error_description: 'The refresh token is invalid.' }, { status: 400 })
+    }
+    issued += 1
+    current = `refresh-${issued}`
+    access = `access-${issued}`
+    return Response.json({ access_token: access, refresh_token: current, expires_in: 3600, token_type: 'Bearer' })
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/oauth/token') {
+        const refreshToken = new URLSearchParams(String(init?.body)).get('refresh_token')!
+        server.refreshes.push(refreshToken)
+        return options.refresh ? options.refresh(refreshToken, server) : rotate(refreshToken)
+      }
+      if (url.pathname === '/oauth/revoke') {
+        server.revoked.push(new URLSearchParams(String(init?.body)).get('token')!)
+        return new Response(null, { status: 200 })
+      }
+      const token = new Headers(init?.headers).get('Authorization')!.replace('Bearer ', '')
+      server.calls.push({ path: url.pathname, token })
+      if (options.api) {
+        return options.api(url.pathname, token, server)
+      }
+      return token === access ? Response.json({ id: 'user-1' }) : Response.json({ title: 'Unauthorized' }, { status: 401 })
+    }),
+  )
+  return server
+}
+
 function stubTokenEndpoint(): void {
   vi.stubGlobal(
     'fetch',
@@ -96,7 +166,9 @@ describe('auth store', () => {
   describe('in the browser', () => {
     it('stops this browser getting the user\'s pushes on sign-out, telling the server while it still can', async () => {
       push.disabled = 0
-      sessionStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      stubServer()
+      vi.stubGlobal('location', { ...window.location, assign: vi.fn<(url: string) => void>() })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
       const auth = await authStore()
 
       await auth.signOut()
@@ -107,23 +179,261 @@ describe('auth store', () => {
 
     it('keeps the pushes when the session expires, as a closed tab does, so signing in again finds them on', async () => {
       push.disabled = 0
-      sessionStorage.setItem('auth.tokens', JSON.stringify({ ...TOKENS, refreshToken: null, expiresAt: Date.now() - 1000 }))
+      localStorage.setItem('auth.tokens', JSON.stringify({ ...TOKENS, refreshToken: null, expiresAt: Date.now() - 1000 }))
       const auth = await authStore()
 
-      await expect(auth.api('/api/v1/me')).rejects.toThrow('Session expired.')
+      await expect(auth.api('/api/v1/me')).rejects.toThrow('Your session has expired.')
 
       await vi.waitFor(() => expect(auth.isAuthenticated).toBe(false))
       expect(push.disabled).toBe(0)
+      expect(auth.sessionEnd).toBe('expired')
     })
 
-    it('keeps the tokens in sessionStorage and forgets them on sign-out', async () => {
-      sessionStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+    it('keeps the tokens in localStorage and forgets them on sign-out', async () => {
+      stubServer()
+      vi.stubGlobal('location', { ...window.location, assign: vi.fn<(url: string) => void>() })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
       const auth = await authStore()
       expect(auth.isAuthenticated).toBe(true)
 
       auth.signOut()
-      await vi.waitFor(() => expect(sessionStorage.getItem('auth.tokens')).toBeNull())
+      await vi.waitFor(() => expect(localStorage.getItem('auth.tokens')).toBeNull())
       expect(auth.isAuthenticated).toBe(false)
+    })
+
+    it('revokes the refresh token, forgets the tokens, and ends the browser session at the sign-in pages', async () => {
+      const server = stubServer()
+      const assign = vi.fn<(url: string) => void>()
+      vi.stubGlobal('location', { ...window.location, assign })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+      const order: string[] = []
+      auth.onSessionEnd((reason) => {
+        order.push(`ended: ${reason}`)
+      })
+
+      await auth.signOut()
+
+      expect(server.revoked).toEqual(['refresh-1'])
+      expect(localStorage.getItem('auth.tokens')).toBeNull()
+      expect(order).toEqual(['ended: signedOut'])
+      expect(assign).toHaveBeenCalledWith('http://localhost:8080/logout')
+      expect(auth.sessionEnd).toBe('signedOut')
+    })
+
+    it('signs out though the server cannot revoke the token', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))))
+      const assign = vi.fn<(url: string) => void>()
+      vi.stubGlobal('location', { ...window.location, assign })
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      await auth.signOut()
+
+      expect(auth.isAuthenticated).toBe(false)
+      expect(localStorage.getItem('auth.tokens')).toBeNull()
+      expect(assign).toHaveBeenCalledOnce()
+    })
+
+    it('refreshes once for requests that all find the token expired, and keeps the user signed in', async () => {
+      const server = stubServer()
+      localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+      const auth = await authStore()
+
+      await Promise.all([auth.api('/api/v1/me'), auth.api('/api/v1/accounts'), auth.api('/api/v1/todos')])
+
+      expect(server.refreshes).toEqual(['refresh-1'])
+      expect(server.calls.map((call) => call.token)).toEqual(['access-2', 'access-2', 'access-2'])
+      expect(auth.isAuthenticated).toBe(true)
+      expect(JSON.parse(localStorage.getItem('auth.tokens')!)).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
+    })
+
+    it('keeps the tokens when the token endpoint cannot be reached, and says it tries again', async () => {
+      const server = stubServer({ refresh: () => Promise.reject(new TypeError('Failed to fetch')) })
+      localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+      const auth = await authStore()
+
+      const failed = auth.api('/api/v1/me')
+
+      await expect(failed).rejects.toMatchObject({ name: 'SignInRenewalError' })
+      await expect(failed).rejects.toThrow('It tries again with the next request.')
+      expect(auth.isAuthenticated).toBe(true)
+      expect(auth.sessionEnd).toBeNull()
+      expect(JSON.parse(localStorage.getItem('auth.tokens')!)).toEqual(EXPIRED)
+      expect(server.calls).toEqual([])
+    })
+
+    it('keeps the tokens when the token endpoint fails with a server error, and refreshes on the next request', async () => {
+      let failing = true
+      const server = stubServer({
+        refresh: () =>
+          failing
+            ? Response.json({ error: 'server_error' }, { status: 503 })
+            : Response.json({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600, token_type: 'Bearer' }),
+        api: () => Response.json({ id: 'user-1' }),
+      })
+      localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+      const auth = await authStore()
+
+      await expect(auth.api('/api/v1/me')).rejects.toMatchObject({ name: 'SignInRenewalError' })
+      expect(auth.isAuthenticated).toBe(true)
+      failing = false
+      await auth.api('/api/v1/me')
+
+      expect(server.refreshes).toEqual(['refresh-1', 'refresh-1'])
+      expect(auth.tokens?.accessToken).toBe('access-2')
+    })
+
+    it('ends the session, without removing the pushes, when the server refuses the refresh token', async () => {
+      push.disabled = 0
+      stubServer({ refresh: () => Response.json({ error: 'invalid_grant' }, { status: 400 }) })
+      localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+      const auth = await authStore()
+
+      await expect(auth.api('/api/v1/me')).rejects.toThrow('Your session has expired.')
+
+      await vi.waitFor(() => expect(auth.isAuthenticated).toBe(false))
+      expect(auth.sessionEnd).toBe('expired')
+      expect(push.disabled).toBe(0)
+      expect(localStorage.getItem('auth.tokens')).toBeNull()
+    })
+
+    it('refreshes and retries once when the API refuses a token that had not expired yet', async () => {
+      const server = stubServer({
+        api: (_path, token) => (token === 'access-2' ? Response.json({ id: 'user-1' }) : Response.json({}, { status: 401 })),
+      })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      await expect(auth.api<Me>('/api/v1/me')).resolves.toEqual({ id: 'user-1' })
+
+      expect(server.refreshes).toEqual(['refresh-1'])
+      expect(server.calls.map((call) => call.token)).toEqual(['access-1', 'access-2'])
+      expect(auth.isAuthenticated).toBe(true)
+    })
+
+    it('ends the session when the API refuses the refreshed token too', async () => {
+      const server = stubServer({ api: () => Response.json({}, { status: 401 }) })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      await expect(auth.api('/api/v1/me')).rejects.toThrow('Your session has expired.')
+
+      expect(server.calls).toHaveLength(2)
+      await vi.waitFor(() => expect(auth.isAuthenticated).toBe(false))
+      expect(auth.sessionEnd).toBe('expired')
+    })
+
+    it('keeps the user signed in when a 401 meets a token endpoint that cannot be reached', async () => {
+      stubServer({ refresh: () => Promise.reject(new TypeError('Failed to fetch')), api: () => Response.json({}, { status: 401 }) })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      await expect(auth.api('/api/v1/me')).rejects.toMatchObject({ name: 'SignInRenewalError' })
+
+      expect(auth.isAuthenticated).toBe(true)
+    })
+
+    it('does not set the user from an answer that arrives after a sign-out', async () => {
+      let answer!: (response: Response) => void
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL) =>
+          String(input).endsWith('/api/v1/me') ? new Promise<Response>((resolve) => (answer = resolve)) : Promise.resolve(new Response(null, { status: 200 })),
+        ),
+      )
+      vi.stubGlobal('location', { ...window.location, assign: vi.fn<(url: string) => void>() })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      const loading = auth.loadMe()
+      await vi.waitFor(() => expect(answer).toBeDefined())
+      await auth.signOut()
+      answer(Response.json({ id: 'user-1' }))
+
+      await expect(loading).rejects.toThrow('Signed out while this request was under way.')
+      expect(auth.me).toBeNull()
+    })
+
+    describe('across tabs', () => {
+      it('refreshes once when two tabs find the shared token expired at the same time, and signs neither out', async () => {
+        stubLocks()
+        const server = stubServer()
+        localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+        const first = await authStore()
+        const second = await authStore()
+
+        await Promise.all([first.api('/api/v1/me'), second.api('/api/v1/me')])
+
+        expect(server.refreshes).toEqual(['refresh-1'])
+        expect(first.isAuthenticated).toBe(true)
+        expect(second.isAuthenticated).toBe(true)
+        expect(second.tokens?.refreshToken).toBe('refresh-2')
+      })
+
+      it('takes the set another tab stored meanwhile when the server refuses the refresh token as used', async () => {
+        const server = stubServer({
+          refresh: () => {
+            // Another tab (a browser without locks) rotated the token first and stored the result.
+            localStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'access-9', refreshToken: 'refresh-9', expiresAt: Date.now() + 3_600_000 }))
+            return Response.json({ error: 'invalid_grant' }, { status: 400 })
+          },
+          api: () => Response.json({ id: 'user-1' }),
+        })
+        localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+        const auth = await authStore()
+
+        await auth.api('/api/v1/me')
+
+        expect(server.calls.map((call) => call.token)).toEqual(['access-9'])
+        expect(auth.isAuthenticated).toBe(true)
+        expect(auth.sessionEnd).toBeNull()
+      })
+
+      it('follows a sign-out in another tab without telling the server again', async () => {
+        push.disabled = 0
+        const server = stubServer()
+        localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+        const auth = await authStore()
+        const ended: string[] = []
+        auth.onSessionEnd((reason) => {
+          ended.push(reason)
+        })
+        const generation = auth.generation
+
+        localStorage.removeItem('auth.tokens')
+        window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
+
+        await vi.waitFor(() => expect(ended).toEqual(['elsewhere']))
+        expect(auth.isAuthenticated).toBe(false)
+        expect(auth.generation).toBe(generation + 1)
+        expect(push.disabled).toBe(0)
+        expect(server.revoked).toEqual([])
+      })
+
+      it('takes a sign-in or refresh from another tab', async () => {
+        stubServer()
+        const auth = await authStore()
+        expect(auth.isAuthenticated).toBe(false)
+
+        window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: JSON.stringify(TOKENS) }))
+
+        expect(auth.tokens).toEqual(TOKENS)
+      })
+
+      it('starts again when another tab signed in as someone else', async () => {
+        stubServer({ api: () => Response.json({ id: 'user-2' }) })
+        const reload = vi.fn<() => void>()
+        vi.stubGlobal('location', { ...window.location, reload })
+        localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+        const auth = await authStore()
+        auth.me = { id: 'user-1' } as Me
+
+        window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: JSON.stringify({ ...TOKENS, accessToken: 'access-2', refreshToken: 'refresh-2' }) }))
+
+        await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce())
+      })
     })
 
     it('signs in by leaving for the authorization page', async () => {
@@ -255,7 +565,46 @@ describe('auth store', () => {
       expect(auth.isAuthenticated).toBe(false)
     })
 
+    it('refreshes once for concurrent requests and keeps the sign-in through a network error', async () => {
+      let offline = true
+      const server = stubServer({
+        refresh: () =>
+          offline
+            ? Promise.reject(new TypeError('Load failed'))
+            : Response.json({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600, token_type: 'Bearer' }),
+        api: () => Response.json({ id: 'user-1' }),
+      })
+      desktop.keychain = JSON.stringify(EXPIRED)
+      const auth = await authStore()
+      await auth.restore()
+
+      await expect(Promise.all([auth.api('/api/v1/me'), auth.api('/api/v1/todos')])).rejects.toMatchObject({ name: 'SignInRenewalError' })
+      expect(auth.isAuthenticated).toBe(true)
+      expect(JSON.parse(desktop.keychain!)).toEqual(EXPIRED)
+      offline = false
+      await Promise.all([auth.api('/api/v1/me'), auth.api('/api/v1/todos')])
+
+      expect(server.refreshes).toEqual(['refresh-1', 'refresh-1'])
+      expect(JSON.parse(desktop.keychain!)).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
+    })
+
+    it('revokes the refresh token on sign-out and stays in the app', async () => {
+      const server = stubServer()
+      const assign = vi.fn<(url: string) => void>()
+      vi.stubGlobal('location', { ...window.location, assign })
+      desktop.keychain = JSON.stringify(TOKENS)
+      const auth = await authStore()
+      await auth.restore()
+
+      await auth.signOut()
+
+      expect(server.revoked).toEqual(['refresh-1'])
+      expect(desktop.keychain).toBeNull()
+      expect(assign).not.toHaveBeenCalled()
+    })
+
     it('clears the keychain on sign-out', async () => {
+      stubServer()
       desktop.keychain = JSON.stringify(TOKENS)
       const auth = await authStore()
       await auth.restore()
@@ -280,6 +629,7 @@ describe('auth store', () => {
     })
 
     it('says so when the sign-in could not be removed from the keychain', async () => {
+      stubServer()
       desktop.keychain = JSON.stringify(TOKENS)
       const auth = await authStore()
       await auth.restore()
