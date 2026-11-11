@@ -486,9 +486,12 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   advances after the API accepted the work it covers, so a crash never skips mail.
 - **Sending:** `POST /api/v1/outgoing-messages` (scope `mail:send`) queues mail from one of the user's accounts, now or
   at a `sendAt` (send later, or a few seconds for undo; cancellable until a worker takes it). A client may choose the
-  message's id (`outgoingId`, a UUIDv7 made when the user hits send, no more than a minute ahead and no older than a
-  day, since workers look for earlier attempts from that time on): a request sent again with the same id, because the
-  answer to the first got lost, returns the message the first one queued instead of sending it twice. The API builds the
+  message's id (`outgoingId`, a UUIDv7 made when the user hits send and reused by every retry of that attempt): a
+  request with the id of a message the user has queued already returns that message, whatever its `sendAt` or the age
+  of the id say by then, so an answer that got lost never sends the mail twice nor refuses a late retry. The checks on
+  the send time, and that the id is no more than five minutes ahead of the server (workers look for earlier attempts
+  from the id's time less five minutes), only apply to a message not queued yet. An old id has no limit: it only makes
+  that look reach further back. The API builds the
   MIME message (In-Reply-To and References for replies, Bcc only on the envelope) and stores it in object storage.
   Once the transaction commits it tells the workers on the Mercure topic `urn:tresso:sync:outbox`; scheduled mail is
   released by a delayed Messenger message, and every heartbeat both releases due mail and lists the leased accounts
