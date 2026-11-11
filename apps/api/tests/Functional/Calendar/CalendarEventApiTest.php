@@ -865,6 +865,27 @@ final class CalendarEventApiTest extends DatabaseTestCase
         );
     }
 
+    public function testASeriesWithARuleSabreCannotExpandShowsAndCanBeEdited(): void
+    {
+        $this->storeIcal('extended@test', [
+            'BEGIN:VEVENT', 'UID:extended@test', 'DTSTAMP:20261019T080000Z', 'DTSTART:20261019T070000Z', 'DURATION:PT30M', 'RRULE:FREQ=WEEKLY;X-FOO=1', 'SUMMARY:Extended', 'END:VEVENT',
+        ]);
+        $occurrences = $this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00');
+        self::assertSame([['Extended', '2026-10-19T07:00:00+00:00', '2026-10-19T07:30:00+00:00']], array_map(static fn (array $o): array => [$o['summary'], \is_array($o['start']) ? $o['start']['dateTime'] : null, \is_array($o['end']) ? $o['end']['dateTime'] : null], $occurrences), 'The server shows its first occurrence.');
+        $seriesId = self::string($occurrences[0]['eventId']);
+        self::assertSame('FREQ=WEEKLY;X-FOO=1', $this->getJson('/api/v1/calendar-events/'.$seriesId, $this->kim)['recurrence'], 'Devices get the rule as written.');
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$seriesId.'?scope=all', self::event($this->calendarId, [
+            'summary' => 'Extended, renamed',
+            'recurrence' => 'FREQ=WEEKLY;X-FOO=1',
+            'start' => ['dateTime' => '2026-10-19T07:00:00', 'timeZone' => 'UTC'],
+            'end' => ['dateTime' => '2026-10-19T07:30:00', 'timeZone' => 'UTC'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+        self::assertSame('Extended, renamed', $this->decodedResponse()['summary']);
+        self::assertSame('FREQ=WEEKLY;X-FOO=1', $this->decodedResponse()['recurrence']);
+    }
+
     public function testManagesLocalCalendars(): void
     {
         $this->client->jsonRequest('POST', '/api/v1/calendars', ['name' => 'Family', 'color' => '#E0457B'], $this->kim);
