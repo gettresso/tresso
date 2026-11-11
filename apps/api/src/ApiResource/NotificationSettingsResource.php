@@ -16,7 +16,9 @@ use App\State\NotificationSettingsProvider;
 
 /**
  * Quiet hours, working hours, focus, travel, snooze choices, the channels per kind of notification and where email
- * notifications go.
+ * notifications go: `effectiveEmailAddress` is where they go now. An address the user does not provably hold waits as
+ * `pendingEmailAddress` until the link mailed to it is used (`pendingEmailAddressSentAt`: when the last one went out,
+ * null when none did); choosing it again sends the link again.
  */
 #[ApiResource(
     shortName: 'NotificationSettings',
@@ -45,6 +47,8 @@ final readonly class NotificationSettingsResource
         public bool $focusDuringBusy,
         public ?string $emailAddress,
         public string $effectiveEmailAddress,
+        public ?string $pendingEmailAddress,
+        public ?string $pendingEmailAddressSentAt,
         public object $channelsByKind,
         public array $workDays,
         public string $workStart,
@@ -61,7 +65,8 @@ final readonly class NotificationSettingsResource
     ) {
     }
 
-    public static function fromEntity(NotificationPreferences $preferences): self
+    /** @param string $effectiveEmailAddress where notification mail goes now (NotificationEmailAddress::effective()) */
+    public static function fromEntity(NotificationPreferences $preferences, string $effectiveEmailAddress): self
     {
         return new self(
             $preferences->getTimeZone(),
@@ -71,7 +76,9 @@ final readonly class NotificationSettingsResource
             $preferences->getQuietEnd(),
             $preferences->isFocusDuringBusy(),
             $preferences->getEmailAddress(),
-            $preferences->getEmailAddress() ?? $preferences->getUser()->getEmail(),
+            $effectiveEmailAddress,
+            $preferences->getPendingEmailAddress(),
+            $preferences->getPendingEmailSentAt()?->format(\DATE_ATOM),
             (object) $preferences->getChannelsByKind(),
             $preferences->getWorkDays(),
             $preferences->getWorkStart(),

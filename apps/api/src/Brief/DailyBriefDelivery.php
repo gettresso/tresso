@@ -179,7 +179,7 @@ final readonly class DailyBriefDelivery
 
         $email = new TemplatedEmail()
             ->from($this->email->sender())
-            ->to($this->dispatcher->emailAddressFor($brief->getOwner()))
+            ->to($this->dispatcher->deliveryAddressFor($brief->getOwner()))
             ->subject(\sprintf('Your daily brief: %d to know', $count))
             ->htmlTemplate('emails/daily_brief.html.twig')
             ->textTemplate('emails/daily_brief.txt.twig')

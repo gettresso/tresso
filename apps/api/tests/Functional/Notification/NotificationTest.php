@@ -17,6 +17,7 @@ use App\Tests\Functional\DatabaseTestCase;
 use App\Tests\Support\MockHttpRouter;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
+use Symfony\Component\Mime\Email;
 use Symfony\Component\Uid\Uuid;
 
 final class NotificationTest extends DatabaseTestCase
@@ -774,16 +775,76 @@ final class NotificationTest extends DatabaseTestCase
         self::assertLessThan($read, $lock);
     }
 
-    public function testEmailNotificationsGoOnlyToTheUsersOwnAddresses(): void
+    public function testAnAddressNobodyConfirmedWaitsForTheLinkMailedToIt(): void
     {
-        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'victim@elsewhere.example'], \JSON_THROW_ON_ERROR));
-        self::assertResponseStatusCodeSame(422);
+        $this->patchSettings(['emailAddress' => 'Somebody@Elsewhere.example']);
+
+        self::assertEmailCount(1);
+        $mail = self::getMailerMessage();
+        self::assertInstanceOf(Email::class, $mail);
+        self::assertSame('somebody@elsewhere.example', $mail->getTo()[0]->getAddress());
+        $settings = $this->getJson('/api/v1/notification-settings', $this->kim);
+        self::assertNull($settings['emailAddress']);
+        self::assertSame('kim@example.test', $settings['effectiveEmailAddress'], 'Nothing goes there before it is confirmed.');
+        self::assertSame('somebody@elsewhere.example', $settings['pendingEmailAddress']);
+        self::assertIsString($settings['pendingEmailAddressSentAt']);
+
+        preg_match('~https?://\S+/notification-address/confirm\?\S+~', (string) $mail->getTextBody(), $match);
+        $link = $match[0] ?? self::fail('The mail has no confirmation link.');
+        $this->client->request('GET', $link);
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('h1', 'Confirm address');
+        self::assertSame('somebody@elsewhere.example', $this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress'], 'Opening the link (as a mail scanner does) confirms nothing.');
+
+        $this->client->request('POST', $link);
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('h1', 'Address confirmed');
+        $settings = $this->getJson('/api/v1/notification-settings', $this->kim);
+        self::assertSame('somebody@elsewhere.example', $settings['effectiveEmailAddress']);
+        self::assertNull($settings['pendingEmailAddress']);
+
+        $this->client->request('POST', $link);
+        self::assertResponseStatusCodeSame(410, 'A link works once.');
+        $this->client->request('POST', str_replace('somebody%40elsewhere.example', 'other%40elsewhere.example', $link));
+        self::assertResponseStatusCodeSame(410, 'A changed link is no link.');
 
         $this->patchSettings(['emailAddress' => 'Kim@Example.test']);
-        self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['emailAddress']);
+        self::assertEmailCount(0, null, 'The sign-in address needs no link.');
+        self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
     }
 
-    public function testOnlyAnAddressAProviderConfirmedReceivesNotifications(): void
+    public function testConfirmationLinksAreLimitedPerDay(): void
+    {
+        for ($mail = 1; $mail <= 5; ++$mail) {
+            $this->patchSettings(['emailAddress' => 'somebody@elsewhere.example']);
+            self::assertEmailCount(1, null, 'Choosing it again sends the link again.');
+        }
+
+        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'another@elsewhere.example'], \JSON_THROW_ON_ERROR));
+
+        self::assertResponseStatusCodeSame(429);
+        self::assertEmailCount(0);
+    }
+
+    public function testAnAddressChosenBeforeConfirmationGetsOneLinkWhenItIsFirstUsed(): void
+    {
+        $this->getJson('/api/v1/notification-settings', $this->kim);
+        $this->connection()->executeStatement("UPDATE notification_preferences SET email_address = 'old@imap.example' WHERE user_id = :user", ['user' => $this->user()->getId()->toRfc4122()]);
+        static::getContainer()->get(EntityManagerInterface::class)->clear();
+        self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
+
+        $dispatcher = static::getContainer()->get(NotificationDispatcher::class);
+        self::assertSame('kim@example.test', $dispatcher->deliveryAddressFor($this->user()));
+        self::assertSame('kim@example.test', $dispatcher->deliveryAddressFor($this->user()), 'Not one mail per notification.');
+
+        self::assertEmailCount(1);
+        $mail = self::getMailerMessage();
+        self::assertInstanceOf(Email::class, $mail);
+        self::assertSame('old@imap.example', $mail->getTo()[0]->getAddress());
+        self::assertSame('old@imap.example', $this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress']);
+    }
+
+    public function testAProviderConfirmedAddressCountsAtOnce(): void
     {
         $victim = $this->imapAccount('victim@elsewhere.example');
         $worker = $this->workerHeaders('sync:lease sync:ingest');
@@ -791,18 +852,25 @@ final class NotificationTest extends DatabaseTestCase
         self::assertResponseIsSuccessful();
         $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$victim.'/status', ['workerId' => 'w1', 'status' => 'active'], $worker);
         self::assertResponseIsSuccessful();
+        $this->patchSettings(['emailAddress' => 'victim@elsewhere.example']);
+        self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress'], 'A synced IMAP account proves a mailbox someone can log in to, not the address typed next to it.');
 
-        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'victim@elsewhere.example'], \JSON_THROW_ON_ERROR));
-        self::assertResponseStatusCodeSame(422, 'A synced IMAP account proves a mailbox someone can log in to, not the address typed next to it.');
-
-        $other = $this->imapAccount('kim@gmail.example');
-        $this->confirmByProvider($other, 'someone-else@gmail.example');
-        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'kim@gmail.example'], \JSON_THROW_ON_ERROR));
-        self::assertResponseStatusCodeSame(422, 'The provider confirmed another address.');
-
-        $this->connection()->executeStatement("UPDATE provider_grant SET email_address = 'Kim@Gmail.example'");
+        $google = $this->imapAccount('kim@gmail.example');
+        $this->confirmByProvider($google, 'someone-else@gmail.example', 'google');
         $this->patchSettings(['emailAddress' => 'kim@gmail.example']);
+        self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress'], 'Google confirmed another address.');
+        $this->connection()->executeStatement("UPDATE provider_grant SET email_address = 'Kim@Gmail.example' WHERE provider = 'google'");
+        $this->patchSettings(['emailAddress' => 'kim@gmail.example']);
+        self::assertEmailCount(0);
         self::assertSame('kim@gmail.example', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
+
+        $microsoft = $this->imapAccount('kim@contoso.example');
+        $this->confirmByProvider($microsoft, 'kim@contoso.example', 'microsoft');
+        $this->patchSettings(['emailAddress' => 'kim@contoso.example']);
+        self::assertSame('kim@gmail.example', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress'], 'A Microsoft address only counts once its mailbox synced; until then the last address stays.');
+        $this->connection()->executeStatement('UPDATE mail_account SET last_synced_at = NOW() WHERE id = :id', ['id' => $microsoft]);
+        $this->patchSettings(['emailAddress' => 'kim@contoso.example']);
+        self::assertSame('kim@contoso.example', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
     }
 
     private function imapAccount(string $address): string
@@ -820,14 +888,14 @@ final class NotificationTest extends DatabaseTestCase
         return $this->responseString('id');
     }
 
-    /** As a Google sign-in leaves it: a grant with the address Google confirmed, which the account uses. */
-    private function confirmByProvider(string $accountId, string $confirmed): void
+    /** As a provider sign-in leaves it: a grant with the address the provider confirmed, which the account uses. */
+    private function confirmByProvider(string $accountId, string $confirmed, string $provider): void
     {
         $grant = Uuid::v7()->toRfc4122();
         $this->connection()->executeStatement(
             "INSERT INTO provider_grant (id, provider, subject, email_address, scopes, encrypted_tokens, created_at, updated_at, owner_id)
-             SELECT :id, 'google', 'subject-1', :address, '[]', 'not-used', NOW(), NOW(), owner_id FROM mail_account WHERE id = :account",
-            ['id' => $grant, 'address' => $confirmed, 'account' => $accountId],
+             SELECT :id, :provider, :subject, :address, '[]', 'not-used', NOW(), NOW(), owner_id FROM mail_account WHERE id = :account",
+            ['id' => $grant, 'provider' => $provider, 'subject' => 'subject-'.$provider, 'address' => $confirmed, 'account' => $accountId],
         );
         $this->connection()->executeStatement('UPDATE mail_account SET provider_grant_id = :grant WHERE id = :account', ['grant' => $grant, 'account' => $accountId]);
     }

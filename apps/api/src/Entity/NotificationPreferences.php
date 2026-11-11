@@ -106,9 +106,25 @@ class NotificationPreferences
     #[ORM\Column(type: Types::JSON)]
     private array $channelsByKind = [];
 
-    /** Where email notifications go; the sign-in address when null. */
+    /**
+     * Where email notifications go; the sign-in address when null. It counts while the address is provable (the
+     * sign-in address, a provider-confirmed account address) or was confirmed by the link mailed to it
+     * ({@see $emailAddressConfirmedAt}); see App\Notification\NotificationEmailAddress.
+     */
     #[ORM\Column(length: 320, nullable: true)]
     private ?string $emailAddress = null;
+
+    /** When the user confirmed {@see $emailAddress} with the link mailed to it; null when it needs no confirmation. */
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $emailAddressConfirmedAt = null;
+
+    /** An address the user chose that waits for its confirmation link; notifications keep going where they went. */
+    #[ORM\Column(length: 320, nullable: true)]
+    private ?string $pendingEmailAddress = null;
+
+    /** When the last confirmation link for {@see $pendingEmailAddress} was mailed; null when none went out yet. */
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $pendingEmailSentAt = null;
 
     /** Notifications are planned up to here; the sweep extends it. */
     #[ORM\Column(nullable: true)]
@@ -334,9 +350,61 @@ class NotificationPreferences
         return $this->emailAddress;
     }
 
-    public function setEmailAddress(?string $emailAddress): void
+    /**
+     * Notifications go here from now on (null: the sign-in address). $confirmedAt is when its link was used, null for
+     * an address that needs none. Any pending address is dropped.
+     */
+    public function setEmailAddress(?string $emailAddress, ?\DateTimeImmutable $confirmedAt = null): void
     {
         $this->emailAddress = null === $emailAddress ? null : mb_strtolower($emailAddress);
+        $this->emailAddressConfirmedAt = null === $emailAddress ? null : $confirmedAt;
+        $this->pendingEmailAddress = null;
+        $this->pendingEmailSentAt = null;
+    }
+
+    public function getEmailAddressConfirmedAt(): ?\DateTimeImmutable
+    {
+        return $this->emailAddressConfirmedAt;
+    }
+
+    public function getPendingEmailAddress(): ?string
+    {
+        return $this->pendingEmailAddress;
+    }
+
+    public function getPendingEmailSentAt(): ?\DateTimeImmutable
+    {
+        return $this->pendingEmailSentAt;
+    }
+
+    /** The user chose an address that needs its confirmation link; where notifications go stays as it is. */
+    public function choosePendingEmailAddress(string $address): void
+    {
+        $address = mb_strtolower($address);
+        if ($address !== $this->pendingEmailAddress) {
+            $this->pendingEmailAddress = $address;
+            $this->pendingEmailSentAt = null;
+        }
+    }
+
+    /**
+     * An address chosen before confirmation existed that needs one: it waits for its link from now on, and
+     * notifications go to the sign-in address until then.
+     */
+    public function moveEmailAddressToPending(): void
+    {
+        if (null === $this->emailAddress) {
+            return;
+        }
+        $this->pendingEmailAddress = $this->emailAddress;
+        $this->pendingEmailSentAt = null;
+        $this->emailAddress = null;
+        $this->emailAddressConfirmedAt = null;
+    }
+
+    public function markConfirmationSent(\DateTimeImmutable $at): void
+    {
+        $this->pendingEmailSentAt = $at;
     }
 
     public function getPlannedUntil(): ?\DateTimeImmutable

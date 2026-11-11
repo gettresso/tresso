@@ -16,7 +16,6 @@ use App\Notification\Channel\PushMessage;
 use App\Notification\Channel\PushResult;
 use App\Notification\Channel\WebPushSender;
 use App\Repository\NotificationDeviceRepository;
-use App\Repository\NotificationPreferencesRepository;
 use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -47,11 +46,10 @@ final readonly class NotificationDispatcher
     public function __construct(
         private EntityManagerInterface $entityManager,
         private NotificationDeviceRepository $devices,
-        private NotificationPreferencesRepository $preferences,
         private WebPushSender $webPush,
         private ExpoPushSender $expo,
         private EmailNotifier $email,
-        private NotificationAddresses $notificationAddresses,
+        private NotificationEmailAddress $emailAddresses,
         private LoggerInterface $logger,
         private Entitlements $entitlements,
     ) {
@@ -113,7 +111,7 @@ final readonly class NotificationDispatcher
             }
         }
         if ($choice->includes(NotificationChannel::Email)) {
-            $targets[] = ['email', null, $this->emailAddressFor($user)];
+            $targets[] = ['email', null, $this->emailAddresses->forDelivery($user)];
         }
 
         $connection = $this->entityManager->getConnection();
@@ -160,14 +158,18 @@ final readonly class NotificationDispatcher
     }
 
     /**
-     * Where the user's notification email goes: the chosen address only while it is still one of the user's own (a
-     * mail account may be gone since), else the sign-in address.
+     * Where the user's notification email goes: the chosen address while it counts (provable or confirmed), else the
+     * sign-in address ({@see NotificationEmailAddress}).
      */
     public function emailAddressFor(User $user): string
     {
-        $chosen = $this->preferences->forUser($user)->getEmailAddress();
+        return $this->emailAddresses->effective($user);
+    }
 
-        return null !== $chosen && \in_array($chosen, $this->notificationAddresses->of($user), true) ? $chosen : $user->getEmail();
+    /** The same, for a mail about to go out: an old unconfirmed choice gets its confirmation link now. */
+    public function deliveryAddressFor(User $user): string
+    {
+        return $this->emailAddresses->forDelivery($user);
     }
 
     private function record(string $deliveryKey, string $target, ?NotificationDevice $device, PushResult $result): void
