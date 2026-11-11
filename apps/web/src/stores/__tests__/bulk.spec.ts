@@ -343,4 +343,33 @@ describe('bulk store', () => {
     expect(vi.getTimerCount()).toBe(0)
     expect(notify).not.toHaveBeenCalled()
   })
+  it("leaves the next session's start alone when a request of the session before answers late", async () => {
+    let answerOld!: (response: Response) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((resolve) => (answerOld = resolve)))
+    const bulk = useBulkStore()
+    const notify = vi.spyOn(useComposeStore(), 'notify')
+    const old = bulk.start({ in: 'inbox', action: 'archive' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    // Signed out and in again (the desktop app does not reload), and the next user starts one of their own.
+    const auth = useAuthStore()
+    const tokens = auth.tokens
+    auth.tokens = null
+    await vi.advanceTimersByTimeAsync(0)
+    auth.tokens = tokens
+    let answerNew!: (response: Response) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((resolve) => (answerNew = resolve)))
+    const next = bulk.start({ in: 'inbox', action: 'markRead' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    answerOld(new Response(JSON.stringify({ detail: 'Gone.' }), { status: 503 }))
+    expect(await old).toBeNull()
+    expect(bulk.busy).toBe(true)
+    expect(bulk.progress).toBe('Starting…')
+    expect(notify).not.toHaveBeenCalled()
+
+    answerNew(new Response(JSON.stringify(state({ status: 'done', changed: 3 })), { status: 202 }))
+    await next
+    expect(bulk.busy).toBe(false)
+  })
 })

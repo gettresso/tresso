@@ -160,6 +160,8 @@ export const useBulkStore = defineStore('bulk', () => {
       return null
     }
     starting.value = true
+    // A sign-out meanwhile starts a new follow session; this one then leaves the flag to it.
+    const signal = stopFollowing.signal
     try {
       const session = auth.generation
       const first = await auth.send<BulkActionState>('POST', '/api/v1/bulk-actions', request)
@@ -167,12 +169,15 @@ export const useBulkStore = defineStore('bulk', () => {
       announce(state, false, folderName)
       return state
     } catch (error) {
-      if (!(error instanceof FollowEnded)) {
+      // Not for a request of a session that ended meanwhile: its failure is no longer anyone's concern.
+      if (!(error instanceof FollowEnded) && signal === stopFollowing.signal) {
         compose.notify({ text: errorMessage(error), tone: 'error' })
       }
       return null
     } finally {
-      starting.value = false
+      if (signal === stopFollowing.signal) {
+        starting.value = false
+      }
     }
   }
 
@@ -183,6 +188,8 @@ export const useBulkStore = defineStore('bulk', () => {
       return null
     }
     starting.value = true
+    // A sign-out meanwhile starts a new follow session; this one then leaves the flag to it.
+    const signal = stopFollowing.signal
     try {
       const session = auth.generation
       const first = await auth.send<BulkActionState>('POST', `/api/v1/bulk-actions/${encodeURIComponent(id)}/undo`, {})
@@ -190,12 +197,14 @@ export const useBulkStore = defineStore('bulk', () => {
       announce(state, true)
       return state
     } catch (error) {
-      if (!(error instanceof FollowEnded)) {
+      if (!(error instanceof FollowEnded) && signal === stopFollowing.signal) {
         compose.notify({ text: `Could not undo: ${errorMessage(error)}`, tone: 'error' })
       }
       return null
     } finally {
-      starting.value = false
+      if (signal === stopFollowing.signal) {
+        starting.value = false
+      }
     }
   }
 
