@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { markHandled, wasHandled } from '@/platform/handledLinks'
 
 /**
  * The bridge to the Tauri desktop shell (`apps/desktop`). The web client runs unchanged inside it; only sign-in and
@@ -38,11 +39,18 @@ export function openInBrowser(url: string): Promise<void> {
 }
 
 /**
- * Calls `handle` with every link the app is opened with: the one that started it, if any, and each one after.
+ * Calls `handle` with every link the app is opened with: the one that started it, if any, and each one after. The
+ * link that started the app is handled once per window, not again after the window reloads.
  */
 export async function onDeepLinks(handle: (url: string) => void): Promise<void> {
-  for (const url of (await getCurrent()) ?? []) {
+  const handleAndRemember = (url: string) => {
+    markHandled(url)
     handle(url)
   }
-  await onOpenUrl((urls) => urls.forEach(handle))
+  for (const url of (await getCurrent()) ?? []) {
+    if (!wasHandled(url)) {
+      handleAndRemember(url)
+    }
+  }
+  await onOpenUrl((urls) => urls.forEach(handleAndRemember))
 }

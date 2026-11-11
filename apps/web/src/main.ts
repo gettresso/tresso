@@ -14,7 +14,7 @@ import { isDesktop, onDeepLinks } from './platform/desktop'
 import { followReducedTransparency, vibrant } from './platform/vibrancy'
 import { startNotificationClicks } from './platform/notifier'
 import { onPushClick } from './platform/webPush'
-import { signInRoute } from './platform/signInLinks'
+import { desktopLinkRoute } from './platform/signInLinks'
 import { useAuthStore } from './stores/auth'
 import { useComposeStore } from './stores/compose'
 
@@ -30,10 +30,11 @@ app.use(router)
 
 // The desktop app reads the previous sign-in from the keychain before the first screen, so it never flashes the
 // sign-in screen, and takes sign-in results from the system browser as `tresso://` links.
-await useAuthStore().restore()
+const auth = useAuthStore()
+await auth.restore()
 if (isDesktop) {
   await onDeepLinks((link) => {
-    const route = signInRoute(link, config.redirectUri)
+    const route = desktopLinkRoute(link, config.redirectUri, auth.hasPendingSignIn())
     if (route !== null) {
       void router.replace(route)
     }

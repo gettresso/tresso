@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { signInRoute } from '../signInLinks'
+import { desktopLinkRoute, signInRoute } from '../signInLinks'
 
 const REDIRECT = 'tresso://auth/callback'
 
@@ -36,5 +36,23 @@ describe('signInRoute', () => {
     expect(signInRoute('tresso://compose?to=kim@example.com', REDIRECT)).toBeNull()
     expect(signInRoute('tresso://auth/callback-other?code=abc', REDIRECT)).toBeNull()
     expect(signInRoute('https://evil.example/auth/callback?code=abc', REDIRECT)).toBeNull()
+  })
+})
+
+describe('desktopLinkRoute', () => {
+  it('routes a sign-in answer to the callback screen while a sign-in is under way', () => {
+    expect(desktopLinkRoute(`${REDIRECT}?code=abc&state=xyz`, REDIRECT, true)).toEqual({ name: 'auth-callback', query: { code: 'abc', state: 'xyz' } })
+  })
+
+  it('ignores a sign-in answer when no sign-in is under way, instead of showing a failed sign-in', () => {
+    expect(desktopLinkRoute(`${REDIRECT}?code=abc&state=xyz`, REDIRECT, false)).toBeNull()
+    expect(desktopLinkRoute(`${REDIRECT}?error=access_denied&state=xyz`, REDIRECT, false)).toBeNull()
+  })
+
+  it('still routes the answer to connecting a mail account, which keeps its own sign-in state', () => {
+    expect(desktopLinkRoute(`${REDIRECT}?next=%2Fsettings%2Faccounts&provider=google&state=xyz&code=abc`, REDIRECT, false)).toEqual({
+      name: 'settings-accounts',
+      query: { provider: 'google', state: 'xyz', code: 'abc' },
+    })
   })
 })
