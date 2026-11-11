@@ -128,8 +128,8 @@ final class CalendarInvitationTest extends DatabaseTestCase
         $crafted = $this->messageId('Crafted');
         $invited = $this->messageId('Invitation: Budget review');
         $sequences = $this->connection()->fetchFirstColumn('SELECT sequence FROM calendar_invitation WHERE message_id = :id', ['id' => $crafted]);
-        self::assertSame($recorded ? [2147483647] : [], array_map(intval(...), $sequences));
-        self::assertSame(1, (int) $this->connection()->fetchOne('SELECT COUNT(*) FROM calendar_invitation WHERE message_id = :id', ['id' => $invited]));
+        self::assertEquals($recorded ? [2147483647] : [], $sequences);
+        self::assertEquals(1, $this->connection()->fetchOne('SELECT COUNT(*) FROM calendar_invitation WHERE message_id = :id', ['id' => $invited]));
         self::assertCount($recorded ? 2 : 1, $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00'));
     }
 
