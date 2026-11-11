@@ -104,12 +104,13 @@ final readonly class MessageIngestor
         $receivedAt = ($input->receivedAt ?? throw new \LogicException('Validation guarantees a received date.'))->setTimezone(new \DateTimeZone('UTC'));
         $references = MessageIds::normalizeList([...$input->references, $input->inReplyTo], $messageId);
 
-        // The people on the other side: the owner's own addresses are on nearly every message and say nothing.
-        $counterparts = array_values(array_filter(
-            array_unique(array_map(static fn (AddressInput $address): string => mb_strtolower($address->address), [$from, ...$input->to, ...$input->cc])),
-            static fn (string $address): bool => !isset($ownAddresses[$address]),
-        ));
-        $thread = $this->threader->threadFor($account, $messageId, $references, $input->subject, $counterparts, array_keys($ownAddresses), $receivedAt);
+        // Who matters for threading without references (see Threader): never the owner's own addresses, which are on
+        // nearly every message. Mail filed in Sent is the user's own whatever its From says (an alias used elsewhere).
+        $sender = mb_strtolower($from->address);
+        $isOwn = isset($ownAddresses[$sender]) || FolderRole::Sent === $folder->getRole();
+        $counterparts = self::others($isOwn ? [...$input->to, ...$input->cc] : [$from, ...$input->to, ...$input->cc], $ownAddresses);
+        $needed = $isOwn ? self::others($input->to, $ownAddresses) : [$sender];
+        $thread = $this->threader->threadFor($account, $messageId, $references, $input->subject, $counterparts, $needed, array_keys($ownAddresses), $receivedAt);
 
         $keyVersion = $input->keyVersion ?? throw new \LogicException('Validation guarantees a key version.');
         $message = new Message($account, $thread, $messageId, $input->subject, $from->address, $from->name, $receivedAt, $input->rawObjectKey, $keyVersion);
@@ -238,6 +239,25 @@ final readonly class MessageIngestor
             return;
         }
         $message->updateFlags($input->flags->seen, $input->flags->flagged, $input->flags->answered, $input->flags->draft);
+    }
+
+    /**
+     * @param list<AddressInput>  $addresses
+     * @param array<string, true> $ownAddresses
+     *
+     * @return list<string> the addresses that are not the owner's, lowercased, once each
+     */
+    private static function others(array $addresses, array $ownAddresses): array
+    {
+        $others = [];
+        foreach ($addresses as $address) {
+            $lower = mb_strtolower($address->address);
+            if (!isset($ownAddresses[$lower])) {
+                $others[$lower] = true;
+            }
+        }
+
+        return array_map(strval(...), array_keys($others));
     }
 
     /**
