@@ -72,4 +72,20 @@ describe('router', () => {
 
     expect(router.currentRoute.value.fullPath).toBe('/')
   })
+  it('shows the Unified Inbox for a path that matches no screen', async () => {
+    useAuthStore().tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+
+    for (const path of ['/nope', '/inbox', '/calender']) {
+      await router.push(path)
+      expect(router.currentRoute.value.name).toBe('unified')
+    }
+  })
+
+  it('shows the first settings page for a settings path that matches none', async () => {
+    useAuthStore().tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+
+    await router.push('/settings/nope')
+
+    expect(router.currentRoute.value.name).toBe('settings-accounts')
+  })
 })
