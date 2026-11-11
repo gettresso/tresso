@@ -1680,7 +1680,10 @@ accepted.
     as before.
   - **A calendar that keeps failing** (for CalDAV accounts as well) is backed off on its own: the wait doubles from
     the sync interval up to 30 minutes, and after three failures in a row the account's calendar status is `error`
-    naming the calendar, repeated after every accepted calendar list (which sets `active`) until it syncs again. The
+    naming the calendar, repeated after every accepted calendar list until it syncs again. After a round in which
+    every calendar was reached and none failed (also when nothing changed), the worker reports `active` once: after
+    it reported a problem, and once after a start, when it does not know what the API shows. An API that does not
+    take `active` (422) is not asked again. The
     other calendars go on at their own pace. A CalDAV session that synced resets the failure count and backoff of the
     account, as the provider syncers do.
   - **Scheduling:** both providers send invitations, updates, cancellations and replies themselves, so the API sends

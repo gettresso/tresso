@@ -5,10 +5,15 @@
 package calfailures
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
+
+	"tresso/sync/internal/api"
 )
 
 // Threshold is how many syncs in a row a calendar may fail before the user is told.
@@ -100,5 +105,36 @@ func (t *Tracker) Detail() (detail string, ok bool) {
 	default:
 		sort.Strings(names)
 		return fmt.Sprintf("%d calendars could not be synced (%q and others); trying again.", len(names), names[0]), true
+	}
+}
+
+// Recovery remembers whether the API was told that the calendars sync again. The API keeps an error status
+// until it hears so (a calendar list does not clear it), so after a round in which every calendar synced the worker
+// reports active: once after it reported a problem, and once after a start, when it does not know what the API
+// shows. An API that does not know the status answers 422; it is not asked again.
+//
+// Problem notes that a problem status was reported; Report sends active (with send) unless the API was told already
+// or does not know the status.
+type Recovery struct {
+	told        bool
+	unsupported bool
+}
+
+func (c *Recovery) Problem() { c.told = false }
+
+func (c *Recovery) Report(send func() error, logger *slog.Logger) {
+	if c.told || c.unsupported {
+		return
+	}
+	err := send()
+	var httpErr *api.HTTPError
+	switch {
+	case errors.As(err, &httpErr) && httpErr.Status == http.StatusUnprocessableEntity:
+		logger.Info("the API takes no active calendar status; not reporting recoveries")
+		c.unsupported = true
+	case err != nil:
+		logger.Warn("reporting that the calendars sync again failed", "error", err)
+	default:
+		c.told = true
 	}
 }

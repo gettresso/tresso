@@ -185,6 +185,7 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 			// The API set the status that asks the user to allow calendars; a new sign-in wakes the syncer.
 			logger.Info("calendar access not allowed yet", "retryIn", s.opts.NotGrantedRetry)
 			status.forget()
+			status.recovery.Problem()
 			wait = s.opts.NotGrantedRetry
 		case s.provider.NotGranted(err):
 			logger.Info("the provider refuses calendar access", "error", err, "retryIn", s.opts.NotGrantedRetry)
@@ -234,6 +235,7 @@ type statusReporter struct {
 	accountID string
 	logger    *slog.Logger
 	last      string
+	recovery  calfailures.Recovery
 }
 
 // report tells the API about a calendar problem once, not on every retry.
@@ -246,6 +248,14 @@ func (r *statusReporter) report(ctx context.Context, status, detail string) {
 		return
 	}
 	r.last = status
+	r.recovery.Problem()
+}
+
+// recovered tells the API, once, that every calendar synced again (see calfailures.Recovery).
+func (r *statusReporter) recovered(ctx context.Context) {
+	r.recovery.Report(func() error {
+		return r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, api.CalendarActive, "", "")
+	}, r.logger)
 }
 
 // forget is for a status someone else reported (or that the calendar list cleared).
@@ -294,6 +304,8 @@ func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan s
 		status.forget()
 		if detail, failing := failing.Detail(); failing {
 			status.report(ctx, api.CalendarError, detail)
+		} else if r.clean {
+			status.recovered(ctx)
 		}
 		select {
 		case <-ctx.Done():
@@ -314,6 +326,8 @@ type run struct {
 	states    map[string]api.CalendarState
 	// failing holds the calendars that failed in this or an earlier session.
 	failing *calfailures.Tracker
+	// clean is set by syncAll when every calendar was synced and none failed.
+	clean bool
 }
 
 func (r *run) syncAll(ctx context.Context) error {
@@ -346,9 +360,16 @@ func (r *run) syncAll(ctx context.Context) error {
 		r.states[state.RemoteID] = state
 	}
 
+	r.clean = false
+	clean := true
+	defer func() { r.clean = clean }()
 	for _, calendar := range calendars {
 		state, ok := r.states[calendar.RemoteID]
-		if !ok || !r.failing.Due(calendar.RemoteID) {
+		if !ok {
+			continue
+		}
+		if !r.failing.Due(calendar.RemoteID) {
+			clean = false // backing off: not reached this round
 			continue
 		}
 		if err := r.syncCalendar(ctx, calendar, state); err != nil {
@@ -359,6 +380,7 @@ func (r *run) syncAll(ctx context.Context) error {
 			// off and, if it keeps failing, named in the status.
 			r.logger.Warn("calendar could not be synced", "calendar", truncate(calendar.RemoteID, 200), "error", err)
 			r.failing.Failed(calendar.RemoteID, calendar.Name)
+			clean = false
 			continue
 		}
 		r.failing.Succeeded(calendar.RemoteID)

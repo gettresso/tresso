@@ -550,8 +550,10 @@ func TestAGoodSessionResetsTheFailureCountAndTheBackoff(t *testing.T) {
 	eventually(t, "eight calendar lists", func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return len(fake.listedAt) >= 8 })
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.statuses) != 0 {
-		t.Errorf("statuses = %v; failures between good sessions are not in a row", fake.statuses)
+	for _, status := range fake.statuses {
+		if status != api.CalendarActive {
+			t.Errorf("statuses = %v; failures between good sessions are not in a row", fake.statuses)
+		}
 	}
 	if wait := fake.listedAt[7].Sub(fake.listedAt[6]); wait > 150*time.Millisecond {
 		t.Errorf("the wait after the fourth failure was %v, want about MinBackoff (50ms)", wait)
@@ -599,5 +601,40 @@ func TestTheUnconfirmedStatusCarriesTheFoundAddress(t *testing.T) {
 		if len(fake.statuses) != 1 || fake.foundURLs[0] != "" {
 			t.Errorf("%s: statuses %v, url %q", refused, fake.statuses, fake.foundURLs)
 		}
+	}
+}
+
+// Fails without the fix: once the broken calendar synced again, nothing told the API, which keeps the error.
+func TestACalDAVRecoveryReportsActiveOnce(t *testing.T) {
+	server := newFakeServer(t, true)
+	server.put(calendarPath+"standup.ics", event("standup", "Standup"))
+	server.broken = true
+	fake := newFakeAPI(server.server.URL + "/dav/")
+	runSyncer(t, fake, Options{Interval: 5 * time.Millisecond, MinBackoff: 5 * time.Millisecond, MaxBackoff: 20 * time.Millisecond, NotFoundRetry: time.Hour})
+
+	active := func() int {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		n := 0
+		for _, status := range fake.statuses {
+			if status == api.CalendarActive {
+				n++
+			}
+		}
+		return n
+	}
+	eventually(t, "the error", func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return len(fake.statuses) > 0 })
+	if active() != 0 {
+		t.Fatal("active was reported while a calendar failed")
+	}
+	server.mu.Lock()
+	server.broken = false
+	server.mu.Unlock()
+	eventually(t, "the recovery", func() bool { return active() == 1 })
+	lists := func() int { fake.mu.Lock(); defer fake.mu.Unlock(); return len(fake.listedAt) }
+	before := lists()
+	eventually(t, "more rounds", func() bool { return lists() > before+5 })
+	if n := active(); n != 1 {
+		t.Errorf("active reported %d times, want once", n)
 	}
 }
