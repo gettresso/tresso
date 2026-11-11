@@ -43,10 +43,20 @@ const zone = readerTimeZone()
 const planned = computed(() => plannedLabel(props.todo, zone, startOfWallDay(toWall(Date.now(), zone))))
 const plannedDay = computed(() => (props.todo.plannedStart === null ? null : formatDate(startOfWallDay(toWall(Date.parse(props.todo.plannedStart), zone)))))
 
-const { defineField, handleSubmit, errors, meta, resetForm, setErrors } = useForm<TodoValues>({
+const { defineField, handleSubmit, errors, meta, values, resetForm, setErrors } = useForm<TodoValues>({
   validationSchema: toTypedSchema(todoSchema),
   initialValues: saved(),
 })
+/**
+ * The values the form was last reset to: what the user changed is told against these, not against the todo as it is
+ * now, so a change made on another device meanwhile is not written back over with the old value.
+ */
+let baseline = saved()
+
+function reset(next: TodoValues): void {
+  resetForm({ values: next })
+  baseline = next
+}
 const [title] = defineField('title')
 const [notes] = defineField('notes')
 const [dueDate] = defineField('dueDate')
@@ -70,30 +80,52 @@ function saved(): TodoValues {
   }
 }
 
-// Another todo resets the form; changes from other devices show while the form has none of its own.
+// Another todo resets the form; changes from other devices show while the form has none of its own. Edits not yet
+// saved when another todo is picked are saved first, so they are not dropped without a word.
 watch(
   () => props.todo,
   (todo, previous) => {
-    if (previous === undefined || previous.id !== todo.id || (!saving.value && !meta.value.dirty)) {
-      resetForm({ values: saved() })
+    const switched = previous !== undefined && previous.id !== todo.id
+    const unsaved = switched && meta.value.dirty ? { todo: previous, current: { ...values } as TodoValues, base: baseline } : null
+    if (previous === undefined || switched || (!saving.value && !meta.value.dirty)) {
+      reset(saved())
       confirmingRemoval.value = false
       error.value = null
+    }
+    if (unsaved !== null) {
+      void keepEdits(unsaved.todo, unsaved.current, unsaved.base)
     }
   },
 )
 
-function changes(current: TodoValues): TodoUpdate {
-  const original = saved()
+/** What the user changed in `current` against the values the form started from. */
+function changes(current: TodoValues, base: TodoValues = baseline): TodoUpdate {
   const changed: TodoUpdate = {}
-  if (current.title !== original.title) changed.title = current.title
-  if (current.notes !== original.notes) changed.notes = current.notes
-  const dueDate = current.dueDate === '' ? null : current.dueDate
-  const dueTime = current.dueTime === '' ? null : current.dueTime
-  if (dueDate !== props.todo.dueDate) changed.dueDate = dueDate
-  if (dueTime !== props.todo.dueTime) changed.dueTime = dueTime
-  if (current.durationMinutes !== original.durationMinutes) changed.durationMinutes = current.durationMinutes === '' ? null : Number(current.durationMinutes)
+  if (current.title !== base.title) changed.title = current.title
+  if (current.notes !== base.notes) changed.notes = current.notes
+  if (current.dueDate !== base.dueDate) changed.dueDate = current.dueDate === '' ? null : current.dueDate
+  if (current.dueTime !== base.dueTime) changed.dueTime = current.dueTime === '' ? null : current.dueTime
+  if (current.durationMinutes !== base.durationMinutes) changed.durationMinutes = current.durationMinutes === '' ? null : Number(current.durationMinutes)
 
   return changed
+}
+
+/** Saves the edits made to a todo the user left for another one; says so on screen when they could not be. */
+async function keepEdits(todo: Todo, current: TodoValues, base: TodoValues): Promise<void> {
+  const checked = todoSchema.safeParse(current)
+  if (!checked.success) {
+    error.value = `Your changes to "${todo.title}" were not saved: ${checked.error.issues[0]?.message ?? 'they are not valid.'}`
+    return
+  }
+  const changed = changes(checked.data, base)
+  if (Object.keys(changed).length === 0) {
+    return
+  }
+  try {
+    await store.update(todo.id, changed)
+  } catch (e) {
+    error.value = `Your changes to "${todo.title}" were not saved: ${errorMessage(e)}`
+  }
 }
 
 async function run(action: () => Promise<void>): Promise<void> {
@@ -115,7 +147,7 @@ const save = handleSubmit((current) =>
     if (Object.keys(changed).length > 0) {
       await store.update(props.todo.id, changed)
     }
-    resetForm({ values: current })
+    reset(current)
   }),
 )
 
