@@ -975,3 +975,18 @@ func TestAGmailPlaceholderIsFiledByItsLabelsAndReplacedLater(t *testing.T) {
 		t.Errorf("pending %v after the replacement", pending)
 	}
 }
+
+// A sender can write X-MS-Exchange-Organization-AuthAs into any mail; Gmail does not strip it, so it is left out.
+func TestGmailMailDoesNotPassOnExchangesAuthAs(t *testing.T) {
+	h := newHarness(t)
+	h.gmail.add("m1", 1000, []byte("From: anna@company.example\r\nX-MS-Exchange-Organization-AuthAs: Internal\r\nMessage-ID: <m1@example.test>\r\nSubject: Hi\r\n\r\nBody\r\n"), "INBOX")
+	h.start(t)
+
+	msg, ok := h.api.Message("INBOX", "m1")
+	if !ok {
+		t.Fatal("not ingested")
+	}
+	if _, sent := msg.Headers["x-ms-exchange-organization-authas"]; sent {
+		t.Errorf("headers %v", msg.Headers)
+	}
+}

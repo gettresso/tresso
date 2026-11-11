@@ -203,7 +203,7 @@ func (s *session) retryPlaceholders(ctx context.Context, run *folderRun) error {
 		if err != nil {
 			return nil, nil, err
 		}
-		msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, item.receivedAt(), item.flags(), s.logger)
+		msg, err := ingestmsg.BuildFromExchange(ctx, s.store, s.account.ID, raw, id, item.receivedAt(), item.flags(), s.logger)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -475,7 +475,7 @@ func (s *session) fetcher(listed map[string]graphMessage, built *providersync.Me
 			if err != nil {
 				return err
 			}
-			msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, item.receivedAt(), item.flags(), s.logger)
+			msg, err := ingestmsg.BuildFromExchange(ctx, s.store, s.account.ID, raw, id, item.receivedAt(), item.flags(), s.logger)
 			if err != nil {
 				return err
 			}

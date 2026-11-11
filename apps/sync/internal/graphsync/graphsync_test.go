@@ -1220,3 +1220,13 @@ func TestAnInterruptedFirstDeltaWalkResumesWhereItStopped(t *testing.T) {
 		t.Errorf("inbox holds %d messages, cursor %+v", len(h.api.UIDs("f-inbox")), h.cursor(t, "f-inbox"))
 	}
 }
+
+func TestGraphMailPassesOnExchangesAuthAs(t *testing.T) {
+	h := newHarness(t)
+	h.graph.add("m1", "f-inbox", 100, []byte("From: anna@company.example\r\nX-MS-Exchange-Organization-AuthAs: Internal\r\nMessage-ID: <m1@example.test>\r\nSubject: Hi\r\n\r\nBody\r\n"))
+	h.start(t)
+
+	if msg, _ := h.api.Message("f-inbox", "m1"); msg.Headers["x-ms-exchange-organization-authas"] != "Internal" {
+		t.Errorf("headers %v", msg.Headers)
+	}
+}

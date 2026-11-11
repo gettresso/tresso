@@ -20,6 +20,17 @@ import (
 // (zero falls back to the Date header, then to now). What the parser could not read as it should (see
 // mimeparse.Message.Problems) is logged.
 func Build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byte, remoteUID string, receivedAt time.Time, flags api.Flags, logger *slog.Logger) (api.Message, error) {
+	return build(ctx, blobs, accountID, raw, remoteUID, receivedAt, flags, logger, false)
+}
+
+// BuildFromExchange is Build for a message Exchange Online took in (a Microsoft account through Graph): it also
+// passes on X-MS-Exchange-Organization-AuthAs, which Exchange writes and strips from mail arriving from outside.
+// Anywhere else a sender could have written it, so Build leaves it out.
+func BuildFromExchange(ctx context.Context, blobs storage.Blobs, accountID string, raw []byte, remoteUID string, receivedAt time.Time, flags api.Flags, logger *slog.Logger) (api.Message, error) {
+	return build(ctx, blobs, accountID, raw, remoteUID, receivedAt, flags, logger, true)
+}
+
+func build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byte, remoteUID string, receivedAt time.Time, flags api.Flags, logger *slog.Logger, exchange bool) (api.Message, error) {
 	writer, err := blobs.Writer(ctx, accountID)
 	if err != nil {
 		return api.Message{}, err
@@ -103,7 +114,7 @@ func Build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byt
 		Snippet:       clean(parsed.Snippet, maxSnippetLength),
 		BodyText:      clean(parsed.BodyText, maxBodyTextLength),
 		Attachments:   attachments,
-		Headers:       signals(parsed.Signals),
+		Headers:       signals(parsed.Signals, exchange),
 		CalendarParts: calendarParts,
 	}
 	if id := clean(parsed.MessageID, maxHeaderLength); id != "" {
@@ -175,12 +186,15 @@ func references(ids []string) []string {
 	return out
 }
 
-func signals(headers map[string]string) map[string]string {
+func signals(headers map[string]string, exchange bool) map[string]string {
 	if len(headers) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(headers))
 	for name, value := range headers {
+		if name == strings.ToLower(mimeparse.ExchangeAuthAs) && !exchange {
+			continue
+		}
 		limit := maxSignalLength
 		if name == "authentication-results" {
 			limit = maxAuthResults
