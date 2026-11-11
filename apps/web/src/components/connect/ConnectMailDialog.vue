@@ -34,7 +34,7 @@ import ConnectManual from './ConnectManual.vue'
 import ConnectPicker from './ConnectPicker.vue'
 import ConnectSuccess from './ConnectSuccess.vue'
 import ProviderMark from './ProviderMark.vue'
-import { announceSignIn, clearAwaiting, isAwaited, listenForSignIns, markAwaiting, stateOf } from './connectChannel'
+import { clearAwaiting, handOver, isAwaited, isCancelled, listenForSignIns, markAwaiting, markCancelled, stateOf, takeNotedOutcome, type HandedOver } from './connectChannel'
 import { PROVIDERS, type ProviderChoice } from './providers'
 
 /**
@@ -47,7 +47,7 @@ import { PROVIDERS, type ProviderChoice } from './providers'
  */
 const emit = defineEmits<{ close: [openAccountId: string | null] }>()
 
-type Step = 'email' | 'detecting' | 'oauth' | 'oauth-waiting' | 'oauth-cancelled' | 'oauth-error' | 'app-password' | 'picker' | 'manual' | 'checking' | 'success'
+type Step = 'email' | 'detecting' | 'oauth' | 'oauth-waiting' | 'oauth-stalled' | 'oauth-cancelled' | 'oauth-error' | 'app-password' | 'picker' | 'manual' | 'checking' | 'success'
 type FormStep = 'app-password' | 'manual'
 
 const EYEBROWS: Record<Step, string> = {
@@ -55,6 +55,7 @@ const EYEBROWS: Record<Step, string> = {
   detecting: 'Step 1 of 3',
   oauth: 'Step 2 of 3',
   'oauth-waiting': 'Step 2 of 3',
+  'oauth-stalled': 'Step 2 of 3',
   'oauth-cancelled': 'Step 2 of 3',
   'oauth-error': 'Step 2 of 3',
   'app-password': 'Step 2 of 3',
@@ -182,7 +183,8 @@ async function detect(): Promise<void> {
   detectStage.value = 1
   let found: SuggestedServerSettings
   try {
-    found = await accounts.suggest(address.value ?? '', signal)
+    // Where the address goes depends on the providers this server signs in with; their list may still be loading.
+    ;[found] = await Promise.all([accounts.suggest(address.value ?? '', signal), providersLoaded])
   } catch (e) {
     if (id !== run) return
     step.value = 'email'
@@ -222,7 +224,8 @@ async function detect(): Promise<void> {
 /** The provider being connected, as found or picked. */
 const choice = ref<ProviderChoice | null>(null)
 const signInProviders = computed(() => accounts.providers.map((provider) => provider.id))
-const providersUnavailable = ref(false)
+/** Settles once the providers are loaded; without the list nothing signs in at a provider's page. */
+let providersLoaded: Promise<void> = Promise.resolve()
 
 /** Sets the provider and fills its forms afresh, so nothing of an earlier address carries over. */
 function choose(next: ProviderChoice): void {
@@ -290,8 +293,36 @@ let pending: PendingSignIn | null = null
 let preparing: Promise<PendingSignIn> | null = null
 /** The sign-in this dialog waits for; answers for any other are not ours (or were cancelled). */
 const awaitedState = ref<string | null>(null)
-/** Sign-ins the user cancelled here; their answer, should it still come back to this page, is dropped. */
-const cancelledStates = new Set<string>()
+/** Why the waiting stopped without an answer: the sign-in expired, or came back in a tab signed out of Tresso. */
+const stalled = ref<'timeout' | 'signed-out'>('timeout')
+let waitTimer: ReturnType<typeof setTimeout> | null = null
+
+function stopWaitTimer(): void {
+  if (waitTimer !== null) clearTimeout(waitTimer)
+  waitTimer = null
+}
+
+/** The waiting ended without a connection: say why, and offer to try again. */
+function stopWaiting(reason: 'timeout' | 'signed-out'): void {
+  stopWaitTimer()
+  if (awaitedState.value !== null) clearAwaiting()
+  awaitedState.value = null
+  pending = null
+  stalled.value = reason
+  step.value = 'oauth-stalled'
+}
+
+/** An outcome the other tab noted while this one was not listening (or before it started to). */
+function readNotedOutcome(): void {
+  const state = awaitedState.value
+  const outcome = state === null ? null : takeNotedOutcome(state)
+  if (outcome !== null) takeOutcome(outcome)
+}
+
+function takeOutcome(outcome: HandedOver): void {
+  if (outcome.kind === 'signed-out') stopWaiting('signed-out')
+  else void applySignIn(outcome.result)
+}
 
 function signInKey(): string {
   return `${oauthProvider.value}|${features.value.join(',')}|${address.value ?? ''}`
@@ -336,6 +367,12 @@ async function openSignIn(fresh = false): Promise<void> {
   busy.value = false
   awaitedState.value = started.state
   if (!isDesktop) markAwaiting(started.state, started.expiresAt)
+  // Once the sign-in expired no answer can connect anything any more.
+  stopWaitTimer()
+  const state = started.state
+  waitTimer = setTimeout(() => {
+    if (awaitedState.value === state) stopWaiting('timeout')
+  }, Math.max(0, started.expiresAt - Date.now()))
   if (isDesktop) {
     await openInBrowser(started.url)
   } else {
@@ -343,11 +380,14 @@ async function openSignIn(fresh = false): Promise<void> {
     window.open(started.url, '_blank', 'noopener')
   }
   if (step.value !== 'oauth-waiting') go('oauth-waiting')
+  readNotedOutcome()
 }
 
+/** Gives up the sign-in waited for: an answer that still comes back, in this tab or another, is not finished. */
 function forgetSignIn(): void {
+  stopWaitTimer()
   if (awaitedState.value !== null) {
-    cancelledStates.add(awaitedState.value)
+    markCancelled(awaitedState.value, pending?.expiresAt ?? Date.now() + 15 * 60_000)
     clearAwaiting()
   }
   awaitedState.value = null
@@ -374,6 +414,7 @@ async function copyApprovalUrl(): Promise<void> {
 
 /** Shows how a provider sign-in ended. */
 async function applySignIn(result: ProviderConnection): Promise<void> {
+  stopWaitTimer()
   if (awaitedState.value !== null) clearAwaiting()
   awaitedState.value = null
   pending = null
@@ -408,14 +449,20 @@ async function finishFromRoute(): Promise<void> {
   const query = route.query
   if (query.adminConsent === 'granted') {
     await router.replace({ query: {} })
-    notice.value = 'Your organization approved Tresso. Enter your work address to connect it.'
+    notice.value = 'If your organization approved Tresso, enter your work address to connect it.'
     return
   }
   if (query.provider === undefined) return
   // The query holds a one-time code; it leaves the address bar and the history before anything else happens.
   await router.replace({ query: {} })
   const state = typeof query.state === 'string' ? query.state : null
-  if (state !== null && cancelledStates.has(state)) return
+  if (state !== null && isCancelled(state)) {
+    // Cancelled while the provider's page was open: nothing is finished, so nothing is connected.
+    choice.value = query.provider === 'google' ? 'google' : 'm365'
+    history.value = ['email']
+    step.value = 'oauth-cancelled'
+    return
+  }
 
   let result: ProviderConnection | null
   try {
@@ -428,7 +475,7 @@ async function finishFromRoute(): Promise<void> {
     return
   }
   if (result === null) return
-  if (!isDesktop && state !== null && isAwaited(state) && (await announceSignIn(state, result))) {
+  if (!isDesktop && state !== null && isAwaited(state) && (await handOver(state, { kind: 'result', result }))) {
     // The tab that started the sign-in shows it; this one was only the provider's way back.
     window.close()
   }
@@ -590,9 +637,20 @@ async function checkAndCreate(input: CheckMailAccount, from: FormStep): Promise<
   } finally {
     busy.value = false
   }
-  if (id !== run) return
-  await pause(ROW_MS)
+  if (id !== run) {
+    // Cancelled (or closed) while the account was being created: it goes again, so cancelling leaves nothing.
+    await removeCancelled(created)
+    return
+  }
   await showConnected(created, { existing: false, refused: false })
+}
+
+async function removeCancelled(account: MailAccount): Promise<void> {
+  try {
+    await accounts.remove(account.id)
+  } catch (e) {
+    formError.value = `The account was created before the cancel arrived and could not be removed: ${errorMessage(e)} Remove it under Settings, Accounts.`
+  }
 }
 
 /** A failed check on the app password step: the provider's servers rarely fail, so one sentence and the detail. */
@@ -731,17 +789,16 @@ watch([step, features, address], () => {
 
 onMounted(async () => {
   dialog.value?.showModal?.()
-  stopListening = listenForSignIns((state, result) => {
+  stopListening = listenForSignIns((state, outcome) => {
     if (state !== awaitedState.value) return false
-    void applySignIn(result)
+    takeOutcome(outcome)
     return true
   })
+  window.addEventListener('focus', readNotedOutcome)
+  // A failed load leaves the list empty: the provider list then says signing in at Google or Microsoft is unavailable.
+  providersLoaded = accounts.loadProviders().catch(() => undefined)
   await finishFromRoute()
-  try {
-    await accounts.loadProviders()
-  } catch {
-    providersUnavailable.value = true
-  }
+  await providersLoaded
   try {
     await accounts.loadServerRules()
   } catch {
@@ -751,7 +808,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopRun()
+  stopWaitTimer()
   stopListening()
+  window.removeEventListener('focus', readNotedOutcome)
 })
 </script>
 
@@ -824,6 +883,10 @@ onBeforeUnmount(() => {
         <button type="button" role="switch" class="cf-switch" :aria-checked="calendars ? 'true' : 'false'" aria-label="Also sync my calendars" @click="calendars = !calendars"><span /></button>
       </div>
       <p v-if="oauthError" class="cf-error" role="alert">{{ oauthError }}</p>
+      <p v-if="oauthError && requested.includes('calendar')" class="cf-note">
+        <span>Did your organization refuse access to your calendars? Then connect your mail only; calendars can follow later.</span>
+        <button type="button" class="button cf-small" :disabled="busy" @click="mailOnly">Connect mail only</button>
+      </p>
       <div class="cf-footer">
         <button type="button" class="button button-quiet" @click="back">Back</button>
         <button type="button" class="button button-primary" :disabled="busy" @click="openSignIn()">
@@ -858,6 +921,32 @@ onBeforeUnmount(() => {
       <div class="cf-footer">
         <button type="button" class="button button-quiet" @click="cancelWaiting">Cancel</button>
         <button type="button" class="button cf-secondary" :disabled="busy" @click="openSignIn()">Open the page again</button>
+      </div>
+    </template>
+
+    <template v-else-if="step === 'oauth-stalled'">
+      <div class="cf-center">
+        <span class="cf-badge neutral" aria-hidden="true"
+          ><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg
+        ></span>
+        <div class="cf-heading narrow">
+          <h1 id="connect-title">{{ stalled === 'signed-out' ? 'Sign-in came back signed out' : 'No answer from ' + description.company }}</h1>
+          <p class="cf-lead">
+            <template v-if="stalled === 'signed-out'"
+              >{{ description.company }}'s page came back in a tab that is not signed in to Tresso, so nothing was connected. Sign in to Tresso in that browser too, then try
+              again.</template
+            >
+            <template v-else
+              >We did not hear back from {{ description.company }}'s page, and the sign-in has expired. Nothing was connected. If you finished signing in, the page may have opened in
+              a browser where you are not signed in to Tresso.</template
+            >
+          </p>
+        </div>
+      </div>
+      <p v-if="oauthError" class="cf-error" role="alert">{{ oauthError }}</p>
+      <div class="cf-footer">
+        <button type="button" class="button button-quiet" @click="toPicker">Choose another provider</button>
+        <button type="button" class="button button-primary" :disabled="busy" @click="openSignIn(true)">Try again</button>
       </div>
     </template>
 
@@ -899,6 +988,10 @@ onBeforeUnmount(() => {
         <span class="cf-url">{{ approvalUrl }}</span>
         <button type="button" class="button cf-small" @click="copyApprovalUrl">{{ copied ? 'Copied' : 'Copy link' }}</button>
       </div>
+      <p v-if="requested.includes('calendar')" class="cf-note">
+        <span>Did your organization refuse access to your calendars? Then connect your mail only; calendars can follow later.</span>
+        <button type="button" class="button cf-small" :disabled="busy" @click="mailOnly">Connect mail only</button>
+      </p>
       <p v-if="oauthError" class="cf-error" role="alert">{{ oauthError }}</p>
       <div class="cf-footer">
         <button type="button" class="button button-quiet" @click="toPicker">Choose another provider</button>
@@ -968,6 +1061,7 @@ onBeforeUnmount(() => {
       :calendar-status-detail="live.calendarStatusDetail"
       :calendar-count="calendarCount"
       :can-allow-calendars="accountServiceProvider(connected) !== null"
+      :calendars-requested="requested.includes('calendar')"
       :calendars-refused="calendarsRefused"
       :name-error="nameError"
       :error="successError"

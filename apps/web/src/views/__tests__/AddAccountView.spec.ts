@@ -57,6 +57,10 @@ describe('connecting a mail account', () => {
   let accounts: Record<string, MailAccount>
   /** While set, checks wait for it: to see the checking step. */
   let holdCheck: Promise<void> | null
+  /** While set, creating an account waits for it. */
+  let holdCreate: Promise<void> | null
+  /** While set, the provider list waits for it. */
+  let holdProviders: Promise<void> | null
   const opened = vi.fn<(url: string, target?: string, features?: string) => null>()
 
   beforeEach(() => {
@@ -74,6 +78,8 @@ describe('connecting a mail account', () => {
     ]
     accounts = { 'acc-g': gmail, 'acc-1': created }
     holdCheck = null
+    holdCreate = null
+    holdProviders = null
     opened.mockReset()
     vi.stubGlobal('open', opened)
     vi.stubGlobal(
@@ -88,7 +94,10 @@ describe('connecting a mail account', () => {
           const address = url.searchParams.get('emailAddress') ?? ''
           return json(suggestions[address] ?? suggestion(address))
         }
-        if (url.pathname === '/api/v1/oauth-providers') return json(providers)
+        if (url.pathname === '/api/v1/oauth-providers') {
+          if (holdProviders) await holdProviders
+          return json(providers)
+        }
         if (url.pathname === '/api/v1/server-info') return json({ product: 'tresso-server', apiVersion: 1, billing: false, trialDays: 0, allowUnencryptedMailServers: false })
         if (url.pathname === '/api/v1/provider-authorizations' && method === 'POST') {
           return json({ authorizationUrl: `https://accounts.google.example/o/oauth2/v2/auth?state=state-${requests.length}`, provider: body.provider, expiresAt: new Date(Date.now() + 900_000).toISOString() }, 201)
@@ -98,7 +107,9 @@ describe('connecting a mail account', () => {
           if (holdCheck) await holdCheck
           return json(checkResult)
         }
+        if (url.pathname.startsWith('/api/v1/mail-accounts/') && method === 'DELETE') return new Response(null, { status: 204 })
         if (url.pathname === '/api/v1/mail-accounts' && method === 'POST') {
+          if (holdCreate) await holdCreate
           accounts['acc-1'] = { ...created, emailAddress: body.emailAddress, displayName: body.displayName, username: body.username, imap: body.imap, smtp: body.smtp }
           return json(accounts['acc-1'], 201)
         }
@@ -311,8 +322,9 @@ describe('connecting a mail account', () => {
     it('says when calendars were not asked for, and turns them on from here', async () => {
       const assign = vi.fn<(url: string) => void>()
       vi.stubGlobal('location', { ...window.location, assign })
+      // What the API answers for a sign-in with calendars switched off: the calendar status is still unknown.
       connected = connection({ requested: ['mail'] })
-      accounts['acc-g'] = { ...gmail, calendarStatus: 'not_granted' }
+      accounts['acc-g'] = { ...gmail, calendarStatus: 'unknown' }
       const wrapper = await mountView('/settings/accounts/new?provider=google&state=state-1&code=code-1')
 
       expect(dialog(wrapper).text()).toContain('Not synced. You can turn this on now or later in Settings.')
@@ -352,6 +364,38 @@ describe('connecting a mail account', () => {
       expect(dialog(wrapper).get('h1').text()).toBe('Your organization has to approve Tresso first')
       expect(dialog(wrapper).get('.cf-url').text()).toBe(approvalUrl)
       expect(button(wrapper, 'Copy link').exists()).toBe(true)
+      expect(button(wrapper, 'Connect mail only').exists()).toBe(true)
+    })
+
+    it('offers mail alone after a failure when calendars were asked for', async () => {
+      connected = connection({ provider: 'microsoft', connected: null, connectError: 'failed' })
+      const wrapper = await mountView('/settings/accounts/new?provider=microsoft&state=state-1&error=server_error')
+
+      expect(dialog(wrapper).get('[role="alert"]').text()).toBe('Connecting to Microsoft failed. Try again in a moment.')
+      expect(button(wrapper, 'Connect mail only').exists()).toBe(true)
+    })
+
+    it('waits for the provider list before it decides where an address goes', async () => {
+      suggestions['kim@gmail.com'] = suggestion('kim@gmail.com', { provider: 'google' })
+      let release: () => void = () => {}
+      holdProviders = new Promise((resolve) => (release = resolve))
+      const wrapper = await mountView()
+      await dialog(wrapper).get('input[type="email"]').setValue('kim@gmail.com')
+      await dialog(wrapper).get('form').trigger('submit')
+      await settle()
+      expect(dialog(wrapper).get('h1').text()).toBe('Finding your provider')
+
+      release()
+      await settle()
+      await vi.advanceTimersByTimeAsync(400)
+      await settle()
+      expect(dialog(wrapper).get('h1').text()).toBe('Open your browser to link your Google account')
+    })
+
+    it('says an approval came back without claiming it', async () => {
+      const wrapper = await mountView('/settings/accounts/new?provider=microsoft&adminConsent=granted')
+
+      expect(dialog(wrapper).text()).toContain('If your organization approved Tresso, enter your work address to connect it.')
     })
 
     it('says other failures on the explanation, not on the address', async () => {
@@ -532,6 +576,25 @@ describe('connecting a mail account', () => {
 
       expect(dialog(wrapper).get('h1').text()).toBe('Set up manually')
       expect(requests.some((r) => r.method === 'POST' && r.path === '/api/v1/mail-accounts')).toBe(false)
+    })
+
+    it('removes an account whose creation was cancelled, so nothing is left behind', async () => {
+      let release: () => void = () => {}
+      holdCreate = new Promise((resolve) => (release = resolve))
+      const wrapper = await mountView()
+      await enterAddress(wrapper, 'kim@fastmail.com')
+      await dialog(wrapper).get('input[type="password"]').setValue('secret')
+      await dialog(wrapper).get('form').trigger('submit')
+      await settle()
+      expect(dialog(wrapper).get('h1').text()).toBe('Connecting kim@fastmail.com')
+
+      await button(wrapper, 'Cancel').trigger('click')
+      release()
+      await settle()
+
+      expect(dialog(wrapper).get('h1').text()).toBe('Set up manually')
+      expect(requests.some((r) => r.method === 'POST' && r.path === '/api/v1/mail-accounts')).toBe(true)
+      expect(requests.find((r) => r.method === 'DELETE')?.path).toBe('/api/v1/mail-accounts/acc-1')
     })
 
     it('creates the account once the check passed, named after the user', async () => {

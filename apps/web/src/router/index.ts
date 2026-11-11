@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { reportSignedOutReturn } from '@/components/connect/connectChannel'
 import AppShell from '@/views/AppShell.vue'
 import MailView from '@/views/MailView.vue'
 
@@ -63,6 +64,9 @@ const router = createRouter({
 // Signed-out visitors land on the sign-in screen.
 router.beforeEach((to) => {
   if (to.matched.some((record) => record.meta.requiresAuth) && !useAuthStore().isAuthenticated) {
+    // A provider's page sent back a tab that is not signed in, which cannot finish connecting the account: the tab
+    // that waits for it is told, instead of waiting until the sign-in expires.
+    if (to.name === 'settings-accounts-new') reportSignedOutReturn(to.query)
     return { name: 'unified' }
   }
   return true

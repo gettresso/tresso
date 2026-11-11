@@ -20,6 +20,8 @@ const props = defineProps<{
   canAllowCalendars: boolean
   /** Calendars were asked for at the provider, and not allowed there. */
   calendarsRefused: boolean
+  /** The sign-in asked for calendars; false when the user switched them off (or for a password account). */
+  calendarsRequested: boolean
   nameError: string | null
   /** Something that went wrong outside the name: allowing calendars, for one. */
   error: string | null
@@ -39,6 +41,10 @@ const calendars = computed<{ text: string; button: string | null }>(() => {
     return count > 0
       ? { text: `${count === 1 ? '1 calendar' : `${count} calendars`} found. They show up in Calendar in a minute.`, button: null }
       : { text: 'Looking for your calendars...', button: null }
+  }
+  // Switched off before signing in: the account has no calendar access, whatever the worker has said so far.
+  if (props.canAllowCalendars && !props.calendarsRequested && (props.calendarStatus === 'unknown' || props.calendarStatus === 'not_granted')) {
+    return { text: 'Not synced. You can turn this on now or later in Settings.', button: 'Turn on' }
   }
   if (props.calendarStatus === 'not_granted' && props.canAllowCalendars) {
     return props.calendarsRefused
