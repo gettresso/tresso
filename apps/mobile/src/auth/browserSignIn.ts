@@ -1,11 +1,9 @@
 import { AuthRequest, Prompt, type AuthRequestConfig, type AuthSessionResult } from 'expo-auth-session'
 import { USER_SCOPES } from '@tresso/core'
 import { config } from '@/config'
+import { authorizationEndpoint } from '@/auth/authorizationEndpoint'
 
-const discovery = {
-  authorizationEndpoint: `${config.apiUrl.replace(/\/+$/, '')}/oauth/authorize`,
-  tokenEndpoint: `${config.apiUrl.replace(/\/+$/, '')}/oauth/token`,
-}
+const TOKEN_ENDPOINT = `${config.apiUrl.replace(/\/+$/, '')}/oauth/token`
 
 export interface AuthorizationCode {
   code: string
@@ -15,12 +13,14 @@ export interface AuthorizationCode {
 /**
  * Opens the authorization page in the system's authentication browser (ASWebAuthenticationSession on iOS, Custom
  * Tabs on Android), so the user's saved passwords and sessions work, and waits for the redirect to
- * `tresso://auth/callback`. Returns null when the user closes the browser. The state is checked by AuthRequest.
+ * `tresso://auth/callback`, at the sign-in address the server names (see authorizationEndpoint). Returns null when the
+ * user closes the browser. The state is checked by AuthRequest.
  * `promptLogin` asks the server for the password again whatever session the browser holds (after a sign-out the
  * user asked for, see `Session.loginRequired`).
  */
 export async function signInInBrowser(options: { promptLogin: boolean }): Promise<AuthorizationCode | null> {
   const request = new AuthRequest(authRequestConfig(options))
+  const discovery = { authorizationEndpoint: await authorizationEndpoint(config.apiUrl), tokenEndpoint: TOKEN_ENDPOINT }
   return authorizationCode(await request.promptAsync(discovery), request.codeVerifier)
 }
 
