@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Notification;
 
 use App\Entity\ScheduledNotification;
+use App\Notification\NotificationAddresses;
 use App\Notification\NotificationDeliverer;
 use App\Notification\NotificationDispatcher;
 use App\Notification\NotificationHandlers;
@@ -912,7 +913,9 @@ final class NotificationTest extends DatabaseTestCase
         $this->patchSettings(['emailAddress' => 'kim@gmail.example']);
         self::assertEmailCount(0);
         $this->connection()->executeStatement("UPDATE mail_account SET email_address = 'renamed@gmail.example' WHERE id = :id", ['id' => $account]);
+        // As in a new request: what the last one loaded and remembered is gone.
         static::getContainer()->get(EntityManagerInterface::class)->clear();
+        static::getContainer()->get(NotificationAddresses::class)->reset();
 
         self::assertSame('kim@example.test', static::getContainer()->get(NotificationDispatcher::class)->deliveryAddressFor($this->user()));
 
