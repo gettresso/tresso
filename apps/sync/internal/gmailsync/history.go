@@ -128,17 +128,22 @@ func (s *session) applyTouched(ctx context.Context, ids []string, mentioned map[
 			adds[folder] = append(adds[folder], api.FlagChange{RemoteUID: id, Flags: flagsOf(current)})
 		}
 		candidates := []string{allMailFolder}
+		hidden := false
 		for labelID := range mentioned[id] {
 			if s.isFolder[labelID] {
 				candidates = append(candidates, labelID)
 			}
-			if hidingLabel(labelID) {
-				// Into or out of Trash or Spam: the message left, or came back to, every other folder.
-				candidates = candidates[:0]
-				for _, f := range s.folders {
-					candidates = append(candidates, f.RemoteName)
+			hidden = hidden || hidingLabel(labelID)
+		}
+		if hidden {
+			// Into or out of Trash or Spam: the message left, or came back to, the other folders. It can only have
+			// been in those of the labels it still has (Gmail keeps a trashed message's labels) and of those history
+			// named (a label taken off). Every other folder never had it, and asking each of them (hundreds of
+			// labels on some accounts) to remove it would cost a request per folder.
+			for _, labelID := range current {
+				if s.isFolder[labelID] {
+					candidates = append(candidates, labelID)
 				}
-				break
 			}
 		}
 		for _, folder := range candidates {

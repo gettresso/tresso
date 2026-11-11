@@ -25,14 +25,15 @@ type API struct {
 	Reauthorize    bool // answer credentials with 409, as when the provider refused to renew
 	Refreshes      int
 
-	reported    []api.Folder
-	Cursors     map[string]*string
-	locations   map[string]map[string]string // folder -> remote uid -> message key
-	messages    map[string]api.Message       // key -> message
-	Deleted     []string                     // keys of deleted messages, in order
-	Statuses    []string                     // "status: detail"
-	ingested    map[string][]string          // remote uids of every MessageBatch, per folder, in arrival order
-	FolderCalls int
+	reported       []api.Folder
+	Cursors        map[string]*string
+	locations      map[string]map[string]string // folder -> remote uid -> message key
+	messages       map[string]api.Message       // key -> message
+	Deleted        []string                     // keys of deleted messages, in order
+	Statuses       []string                     // "status: detail"
+	ingested       map[string][]string          // remote uids of every MessageBatch, per folder, in arrival order
+	FolderCalls    int
+	vanishRequests int // change requests that removed messages (or tried to)
 }
 
 func New() *API {
@@ -145,6 +146,9 @@ func (f *API) Changes(_ context.Context, _ string, batch api.ChangeBatch) (api.C
 		stored.Flags = change.Flags
 		f.messages[key] = stored
 		result.Updated++
+	}
+	if len(batch.Vanished) > 0 {
+		f.vanishRequests++
 	}
 	for _, uid := range batch.Vanished {
 		key, ok := f.location(batch.Folder, uid)
@@ -278,6 +282,13 @@ func (f *API) Ingested(folder string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.ingested[folder])
+}
+
+// VanishRequests returns how many change requests removed messages (or tried to).
+func (f *API) VanishRequests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.vanishRequests
 }
 
 // Calls returns how often Folders was called.
