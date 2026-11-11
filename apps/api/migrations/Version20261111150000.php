@@ -20,9 +20,9 @@ final class Version20261111150000 extends AbstractMigration
     public function up(Schema $schema): void
     {
         // this up() migration is auto-generated, please modify it to your needs
-        $this->addSql('ALTER TABLE bulk_action ADD updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT NULL');
+        // The default serves an API host still on the old code during a rolling deploy, which inserts without it.
+        $this->addSql('ALTER TABLE bulk_action ADD updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL');
         $this->addSql('UPDATE bulk_action SET updated_at = COALESCE(finished_at, created_at)');
-        $this->addSql('ALTER TABLE bulk_action ALTER updated_at SET NOT NULL');
     }
 
     public function down(Schema $schema): void
