@@ -242,15 +242,39 @@ export interface HandOverFlowDeps {
  * leaves, both can be taken back at once. Nudges reply to the delegate in the same conversation.
  */
 export class HandOverFlow {
+  /**
+   * The flow's composer holds one draft at a time, so what uses it (handing over, undoing, taking back) runs one after
+   * another: none of them finds another's draft open after an await.
+   */
+  private queue: Promise<unknown> = Promise.resolve()
+
   constructor(private readonly deps: HandOverFlowDeps) {}
 
+  private inOrder<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task, task)
+    this.queue = run.catch(() => undefined)
+    return run
+  }
+
   /** @throws HandOverError with the reason, after taking back whatever was done already */
-  async handOver(message: SyncedMessage, input: HandOverInput): Promise<HandedOver> {
+  handOver(message: SyncedMessage, input: HandOverInput): Promise<HandedOver> {
+    return this.inOrder(() => this.handOverNow(message, input))
+  }
+
+  private async handOverNow(message: SyncedMessage, input: HandOverInput): Promise<HandedOver> {
     const composer = this.deps.composer
-    await composer.openReply(message, 'forward')
+    try {
+      await composer.openReply(message, 'forward', { strict: true })
+    } catch (error) {
+      // Without the original (and its files) the forward would not be what is handed over: nothing is sent.
+      throw new HandOverError(error instanceof Error ? error.message : this.deps.explain(error).message)
+    }
     const draft = composer.state.draft
     if (draft === null) {
       throw new HandOverError('You were signed out. Sign in again to hand this over.')
+    }
+    if (draft.kind !== 'forward' || draft.inReplyToMessageId !== message.id) {
+      throw new HandOverError('Another message took the place of the forward. Hand it over again.')
     }
     if (composer.state.error !== null) {
       // A file of the original could not go along: rather than forward without it, nothing is sent.
@@ -279,8 +303,14 @@ export class HandOverFlow {
       })
     } catch (error) {
       // Not recorded: the forward is stopped too, so nothing is handed over that "Waiting on" would not show.
-      await this.takeBackForward(forward.id, draft.id).catch(() => undefined)
-      throw new HandOverError(this.deps.explain(error).message)
+      const reason = this.deps.explain(error).message
+      try {
+        await this.takeBackForward(forward.id, draft.id)
+      } catch {
+        const who = input.delegate.name?.trim() || input.delegate.address
+        throw new HandOverError(`${reason} The forward to ${who} could not be stopped and may still be sent, but it is not in "Waiting on".`)
+      }
+      throw new HandOverError(reason)
     }
     await this.deps.sync().catch(() => undefined)
     return { handOver, forwardId: forward.id, draftId: draft.id, until: undoable?.until ?? Date.now() }
@@ -291,7 +321,11 @@ export class HandOverFlow {
    *
    * @throws HandOverError when it is too late or the server cannot be reached
    */
-  async undo(handed: HandedOver): Promise<void> {
+  undo(handed: HandedOver): Promise<void> {
+    return this.inOrder(() => this.undoNow(handed))
+  }
+
+  private async undoNow(handed: HandedOver): Promise<void> {
     try {
       await this.takeBackForward(handed.forwardId, handed.draftId)
     } catch (error) {
@@ -312,7 +346,11 @@ export class HandOverFlow {
    *
    * @throws HandOverError saying the hand-over still stands
    */
-  async takeBack(handed: HandedOver): Promise<'undone' | 'withdrawn'> {
+  takeBack(handed: HandedOver): Promise<'undone' | 'withdrawn'> {
+    return this.inOrder(() => this.takeBackNow(handed))
+  }
+
+  private async takeBackNow(handed: HandedOver): Promise<'undone' | 'withdrawn'> {
     let refused: unknown = null
     try {
       await this.deps.cancel(handed.forwardId)
@@ -338,8 +376,7 @@ export class HandOverFlow {
     } finally {
       await this.deps.sync().catch(() => undefined)
     }
-    await this.deps.composer.openDraft(handed.draftId)
-    await this.deps.composer.discard()
+    await this.discardDraft(handed.draftId)
     return 'undone'
   }
 
@@ -392,8 +429,16 @@ export class HandOverFlow {
   /** Cancels the forward and throws away the draft it came back as. */
   private async takeBackForward(forwardId: string, draftId: string): Promise<void> {
     await this.deps.cancel(forwardId)
-    await this.deps.composer.openDraft(draftId)
-    await this.deps.composer.discard()
+    await this.discardDraft(draftId)
+  }
+
+  /** Throws away this draft, and no other: when it is not in the copy any more, there is nothing to throw away. */
+  private async discardDraft(draftId: string): Promise<void> {
+    const composer = this.deps.composer
+    await composer.openDraft(draftId)
+    if (composer.state.draft?.id === draftId) {
+      await composer.discard()
+    }
   }
 }
 
