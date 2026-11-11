@@ -511,11 +511,14 @@ func (r *run) upload(ctx context.Context, calendar Calendar, state api.CalendarS
 	// sync of this calendar asks for the event again.
 	var transient *FetchError
 	for start := 0; start < len(fetch); start += fetchBatch {
-		objects, err := r.session.Fetch(ctx, calendar, fetch[start:min(start+fetchBatch, len(fetch))])
+		ids := fetch[start:min(start+fetchBatch, len(fetch))]
+		objects, err := r.session.Fetch(ctx, calendar, ids)
 		var skipped *FetchError
 		if errors.As(err, &skipped) {
 			r.logger.Warn("events could not be fetched and were left out", "calendar", truncate(calendar.RemoteID, 200), "transient", skipped.Transient, "permanent", skipped.Permanent, "error", skipped.Err)
-			if skipped.Transient > 0 {
+			// When the provider refused every one of several events it was asked for, that is its own fault rather
+			// than the events': the cursor stays, as for a failure that may pass.
+			if skipped.Transient > 0 || (len(ids) > 1 && len(objects) == 0 && skipped.Permanent == len(ids)) {
 				transient = skipped
 			}
 		} else if err != nil {

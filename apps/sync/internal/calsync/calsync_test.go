@@ -343,3 +343,29 @@ func TestARateLimitOnTheCalendarListIsNoMissingPermission(t *testing.T) {
 		t.Fatalf("an exhausted rate limit is an ordinary failure, retried with backoff: %v", statuses)
 	}
 }
+
+// When the provider refuses every one of several events, the cursor stays: that is the provider's fault, and moving
+// on would leave the events out until each changes.
+func TestTheCursorStaysWhenEveryEventIsRefused(t *testing.T) {
+	provider := &fakeProvider{calendars: calendarsOf("own")}
+	r := &run{
+		syncer:  New(calsynctest.NewAPI("kim@example.com"), provider, netguard.New(true), "w1", quick, slog.New(slog.NewTextHandler(io.Discard, nil))),
+		account: api.Account{ID: "a1"},
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	fake := r.syncer.api.(*calsynctest.API)
+	r.session = fetchSession{fakeSession{provider}, func(ids []string) ([]Object, error) {
+		var skipped *FetchError
+		for range ids {
+			skipped = skipped.Add(errors.New("400"), false)
+		}
+		return nil, skipped
+	}}
+	states, err := fake.Calendars(context.Background(), "a1", api.CalendarList{Calendars: []api.RemoteCalendar{{RemoteID: "own", Name: "own"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.upload(context.Background(), Calendar{RemoteCalendar: api.RemoteCalendar{RemoteID: "own"}}, states[0], nil, []string{"one", "two"}, nil, "c1"); err == nil || fake.Cursor("own") != "" {
+		t.Errorf("upload = %v, cursor %q; want an error and no cursor", err, fake.Cursor("own"))
+	}
+}
