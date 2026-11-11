@@ -331,13 +331,17 @@ select,
   min-width: 0;
   height: 30px;
   border: 0;
-  outline: 0;
   background: transparent;
   color: var(--ink);
   font: inherit;
 }
+/* The subject shows focus with its caret; a select has none, so it keeps the focus ring. */
 .subject {
+  outline: 0;
   font-weight: 600;
+}
+select:focus-visible {
+  border-radius: var(--radius-control);
 }
 .field-error {
   padding: 2px 0 2px 62px;
@@ -386,9 +390,13 @@ select,
 }
 .actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding-top: 8px;
+}
+.actions .button {
+  white-space: nowrap;
 }
 .later {
   position: relative;
@@ -410,6 +418,7 @@ select,
   display: flex;
   flex-direction: column;
   width: 280px;
+  max-width: calc(100vw - 32px);
   padding: 6px;
   border-radius: var(--radius-card);
   background: var(--surface);
@@ -457,5 +466,12 @@ select,
 }
 .spacer {
   flex: 1;
+}
+/* On a phone the footer wraps: the shortcut hint goes (there is no keyboard to press it on) and Discard follows the rest. */
+@media (max-width: 760px) {
+  .actions .shortcut,
+  .actions .spacer {
+    display: none;
+  }
 }
 </style>
