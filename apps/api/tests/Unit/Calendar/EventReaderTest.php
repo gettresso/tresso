@@ -175,8 +175,12 @@ final class EventReaderTest extends TestCase
         yield 'a start with dashes' => [['DTSTART:2026-10-19T09:00:00']];
         yield 'an end with dashes' => [['DTSTART:20261019T090000Z', 'DTEND:2026-10-19T10:00:00']];
         yield 'a duration without P' => [['DTSTART:20261019T090000Z', 'DURATION:1H']];
-        yield 'a frequency sabre does not know' => [['DTSTART:20261019T090000Z', 'RRULE:FREQ=FORTNIGHTLY;COUNT=3']];
-        yield 'a frequency sabre does not know, without an end' => [['DTSTART:20261019T090000Z', 'RRULE:FREQ=FORTNIGHTLY']];
+        yield 'an RRULE without a part' => [['DTSTART:20261019T090000Z', 'RRULE:garbage']];
+        yield 'an end past the year 9999' => [['DTSTART:99991231T230000Z', 'DURATION:P2D']];
+        yield 'a duration PHP cannot hold' => [['DTSTART:20261019T090000Z', 'DURATION:P99999999999999999999D']];
+        yield 'an occurrence in the year 10000 in UTC' => [['DTSTART:20261019T090000Z', 'RECURRENCE-ID;TZID=America/Los_Angeles:99991231T230000']];
+        yield 'a start in the year 0' => [['DTSTART:00000101T000000Z']];
+        yield 'a NUL character' => [['DTSTART:20261019T090000Z', "SUMMARY:Budget\0review"]];
         yield 'an exception date that is not a date' => [['DTSTART:20261019T090000Z', 'RRULE:FREQ=WEEKLY', 'EXDATE:garbage']];
         yield 'a recurrence id that is not a date' => [['DTSTART:20261019T090000Z', 'RECURRENCE-ID:garbage']];
     }
@@ -189,6 +193,29 @@ final class EventReaderTest extends TestCase
     {
         $this->expectException(InvalidCalendarData::class);
         self::read($properties);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function rulesSabreCannotExpand(): iterable
+    {
+        yield 'a frequency sabre does not know' => ['FREQ=FORTNIGHTLY;COUNT=3'];
+        yield 'a frequency sabre does not know, without an end' => ['FREQ=FORTNIGHTLY'];
+        yield 'an extension part' => ['FREQ=WEEKLY;X-FOO=1'];
+        yield 'another calendar scale' => ['RSCALE=CHINESE;FREQ=YEARLY'];
+    }
+
+    /**
+     * Devices expand such rules themselves, so the rule is kept; the series counts as endless for range queries.
+     */
+    #[DataProvider('rulesSabreCannotExpand')]
+    public function testKeepsARuleSabreCannotExpand(string $rule): void
+    {
+        $data = self::read(['DTSTART:20261019T090000Z', 'DURATION:PT30M', 'RRULE:'.$rule]);
+
+        self::assertSame($rule, $data->rrule);
+        self::assertNull($data->seriesEndsAt);
     }
 
     public function testRefusesAUidLongerThanTheColumn(): void

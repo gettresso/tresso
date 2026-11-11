@@ -11,12 +11,10 @@ use App\Enum\ParticipationStatus;
 use App\Enum\Transparency;
 use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Component\VEvent;
-use Sabre\VObject\InvalidDataException;
 use Sabre\VObject\Property;
 use Sabre\VObject\Property\ICalendar\DateTime as DateTimeProperty;
 use Sabre\VObject\Property\ICalendar\Duration as DurationProperty;
 use Sabre\VObject\Recur\MaxInstancesExceededException;
-use Sabre\VObject\Recur\RRuleIterator;
 use Sabre\VObject\TimeZoneUtil;
 
 /**
@@ -44,8 +42,11 @@ final class EventReader
     {
         try {
             return self::readValues($event, $calendar, $selfAddresses);
-        } catch (InvalidDataException $e) {
-            // sabre parses dates, durations and rules only when they are read: a malformed one fails here.
+        } catch (InvalidCalendarData $e) {
+            throw $e;
+        } catch (\Exception $e) {
+            // sabre parses dates and durations only when they are read, and PHP refuses dates and intervals it
+            // cannot hold: whatever fails here makes the event unreadable, never the caller's batch.
             throw new InvalidCalendarData(\sprintf('Event %s has a value that cannot be read: %s', Props::uid($event), $e->getMessage()), previous: $e);
         }
     }
@@ -77,17 +78,23 @@ final class EventReader
             $endsAt = $startsAt;
         }
 
+        if (!self::storable($startsAt) || !self::storable($endsAt) || !self::storableValue($start) || !self::storableValue($end)) {
+            throw new InvalidCalendarData(\sprintf('Event %s lies outside the years 1 to 9999.', $uid));
+        }
+
         $recurrenceKey = CalendarDocument::recurrenceKey($event);
+        if ('' !== $recurrenceKey && !RecurrenceKey::isValid($recurrenceKey)) {
+            throw new InvalidCalendarData(\sprintf('Event %s changes an occurrence outside the years 1 to 9999.', $uid));
+        }
 
         $rrule = '' === $recurrenceKey ? Props::text($event, 'RRULE') : null;
         $rdates = '' === $recurrenceKey ? self::keys($event, 'RDATE') : [];
         $exdates = '' === $recurrenceKey ? self::keys($event, 'EXDATE') : [];
         $recurring = null !== $rrule || [] !== $rdates;
-        if (null !== $rrule) {
-            // Parsed only, not walked: a rule sabre cannot expand (FREQ=FORTNIGHTLY, BYMONTH=13) fails here, so the
-            // event is refused instead of stored with occurrences nobody can compute.
-            new RRuleIterator($rrule, $startsAt);
-        }
+        // A rule sabre cannot expand (FREQ=FORTNIGHTLY, an X- part, RSCALE) is kept as written, for the devices that
+        // expand it themselves; the server shows its first occurrence ({@see Occurrences::starts()}) and the series
+        // counts as endless.
+        $ruleReadable = null === $rrule || Occurrences::ruleReadable($rrule, $startsAt);
         $recurrenceId = Props::get($event, 'RECURRENCE-ID');
         $thisAndFuture = null !== $recurrenceId && 'THISANDFUTURE' === strtoupper(Props::param($recurrenceId, 'RANGE') ?? '');
 
@@ -114,7 +121,7 @@ final class EventReader
             $exdates,
             // An override that changes the future reaches as far as its series does, which only the series knows.
             match (true) {
-                $recurring => self::seriesEnd($event, $endsAt->getTimestamp() - $startsAt->getTimestamp()),
+                $recurring => $ruleReadable ? self::seriesEnd($event, $endsAt->getTimestamp() - $startsAt->getTimestamp()) : null,
                 $thisAndFuture => null,
                 default => $endsAt,
             },
@@ -211,7 +218,24 @@ final class EventReader
             return null;
         }
 
-        return null === $last ? null : $last->setTimezone(new \DateTimeZone('UTC'))->modify(\sprintf('+%d seconds', $lengthSeconds));
+        $end = null === $last ? null : $last->setTimezone(new \DateTimeZone('UTC'))->modify(\sprintf('+%d seconds', $lengthSeconds));
+
+        // Past what the database holds the series counts as endless, which only widens it.
+        return null !== $end && self::storable($end) ? $end : null;
+    }
+
+    /** Whether an instant fits a timestamp column: the years 1 to 9999. */
+    private static function storable(\DateTimeImmutable $instant): bool
+    {
+        $year = (int) $instant->setTimezone(new \DateTimeZone('UTC'))->format('Y');
+
+        return $year >= 1 && $year <= 9999;
+    }
+
+    /** Whether a wall clock value fits its column (Y-m-d or Y-m-d\TH:i:s with a four digit year from 1 on). */
+    private static function storableValue(EventTime $time): bool
+    {
+        return 1 === preg_match('/^(?!0000)\d{4}-\d{2}-\d{2}/', $time->value) && \strlen($time->value) <= 19;
     }
 
 
@@ -224,6 +248,8 @@ final class EventReader
         foreach (Props::dateTimes($event, $name) as $property) {
             array_push($keys, ...RecurrenceKey::allFromProperty($property));
         }
+        // An exception date no occurrence can have (year 10000) matches nothing anyway.
+        $keys = array_filter($keys, RecurrenceKey::isValid(...));
         $keys = array_values(array_unique($keys));
         sort($keys);
 

@@ -6,6 +6,7 @@ namespace App\Calendar\ICalendar;
 
 use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Component\VEvent;
+use Sabre\VObject\InvalidDataException;
 use Sabre\VObject\Recur\MaxInstancesExceededException;
 use Sabre\VObject\Recur\RRuleIterator;
 
@@ -322,6 +323,18 @@ final class Occurrences
         };
     }
 
+    /** Whether sabre can expand the rule (it refuses parts it does not know, such as RSCALE or an X- part). */
+    public static function ruleReadable(string $rule, \DateTimeImmutable $start): bool
+    {
+        try {
+            new RRuleIterator($rule, $start);
+        } catch (InvalidDataException) {
+            return false;
+        }
+
+        return true;
+    }
+
     /**
      * The starts an RRULE gives (the first being DTSTART), from $from on when given. At most MAX_STEPS steps are
      * walked, the skip to $from included: sabre walks there one occurrence at a time, so an hourly series from year 1
@@ -332,7 +345,16 @@ final class Occurrences
      */
     private static function ruleStarts(string $rule, \DateTimeImmutable $first, ?\DateTimeImmutable $from): \Generator
     {
-        $iterator = new RRuleIterator($rule, null === $from ? $first : self::jump($rule, $first, $from));
+        try {
+            $iterator = new RRuleIterator($rule, null === $from ? $first : self::jump($rule, $first, $from));
+        } catch (InvalidDataException) {
+            // A rule sabre cannot expand: the series is its first occurrence here (devices may expand more).
+            if (null === $from || $first >= $from) {
+                yield $first;
+            }
+
+            return;
+        }
         $steps = 0;
         while ($iterator->valid()) {
             if (++$steps > self::MAX_STEPS) {
@@ -442,11 +464,12 @@ final class Occurrences
         $startValue = \DateTimeImmutable::createFromInterface($start->getDateTime($zone));
         $end = Props::dateTime($event, 'DTEND');
         if (null !== $end) {
-            return \DateTimeImmutable::createFromInterface($end->getDateTime($zone));
+            return max($startValue, \DateTimeImmutable::createFromInterface($end->getDateTime($zone)));
         }
         $duration = Props::get($event, 'DURATION');
         if ($duration instanceof \Sabre\VObject\Property\ICalendar\Duration) {
-            return $startValue->add($duration->getDateInterval());
+            // A negative DURATION ends at the start, as the event row reads it.
+            return max($startValue, $startValue->add($duration->getDateInterval()));
         }
 
         return $start->hasTime() ? $startValue : $startValue->modify('+1 day');

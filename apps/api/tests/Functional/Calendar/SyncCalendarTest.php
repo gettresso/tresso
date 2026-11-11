@@ -328,22 +328,38 @@ final class SyncCalendarTest extends DatabaseTestCase
     {
         $home = $this->reportCalendars()[0]['id'];
         $good = self::object('standup@company.example', 'Standup');
+        $replace = static fn (string $uid, string $from, string $to): string => str_replace($from, $to, self::object($uid, 'Bad'));
+        $start = 'DTSTART;TZID=Europe/Amsterdam:20261019T090000';
+        $end = 'DTEND;TZID=Europe/Amsterdam:20261019T091500';
         $bad = [
-            'dashes' => str_replace('DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTSTART:2026-10-19T09:00:00', self::object('dashes@company.example', 'Dashes')),
-            'duration' => str_replace('DTEND;TZID=Europe/Amsterdam:20261019T091500', 'DURATION:1H', self::object('duration@company.example', 'Duration')),
-            'fortnightly' => str_replace('SUMMARY:', "RRULE:FREQ=FORTNIGHTLY;COUNT=3\r\nSUMMARY:", self::object('fortnightly@company.example', 'Fortnightly')),
+            'dashes' => $replace('dashes@company.example', $start, 'DTSTART:2026-10-19T09:00:00'),
+            'duration' => $replace('duration@company.example', $end, 'DURATION:1H'),
             'uid' => self::object(str_repeat('x', 1025), 'Long'),
+            'rule' => $replace('rule@company.example', 'SUMMARY:', "RRULE:garbage\r\nSUMMARY:"),
+            'year10000' => $replace('year10000@company.example', $start."\r\n".$end, "DTSTART:99991231T230000Z\r\nDURATION:P2D"),
+            'interval' => $replace('interval@company.example', $end, 'DURATION:P99999999999999999999D'),
+            'key' => $replace('key@company.example', 'SUMMARY:', "RECURRENCE-ID;TZID=America/Los_Angeles:99991231T230000\r\nSUMMARY:"),
+            'year0' => $replace('year0@company.example', $start."\r\n".$end, 'DTSTART:00000101T000000Z'),
+            'nul' => $replace('nul@company.example', 'SUMMARY:Bad', "SUMMARY:B\0d"),
         ];
-        $changed = [['remoteId' => self::HOME.'standup.ics', 'etag' => '"1"', 'ical' => $good]];
+        // Kept: devices expand the rule themselves, the server shows its first occurrence.
+        $fortnightly = str_replace('SUMMARY:', "RRULE:FREQ=FORTNIGHTLY;COUNT=3\r\nSUMMARY:", self::object('fortnightly@company.example', 'Fortnightly'));
+        $changed = [
+            ['remoteId' => self::HOME.'standup.ics', 'etag' => '"1"', 'ical' => $good],
+            ['remoteId' => self::HOME.'fortnightly.ics', 'etag' => '"1"', 'ical' => $fortnightly],
+        ];
         foreach ($bad as $name => $ical) {
             $changed[] = ['remoteId' => self::HOME.$name.'.ics', 'etag' => '"1"', 'ical' => $ical];
         }
         $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'cursor' => 'sync-token-1', 'changed' => $changed], $this->worker);
 
         self::assertResponseIsSuccessful();
-        self::assertSame(['stored' => 1, 'removed' => 0, 'skipped' => 4], $this->decodedResponse());
+        self::assertSame(['stored' => 2, 'removed' => 0, 'skipped' => \count($bad)], $this->decodedResponse());
         self::assertSame('sync-token-1', $this->reportCalendars()[0]['cursor']);
-        self::assertSame(['Standup'], array_column($this->occurrences($this->kim, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00'), 'summary'));
+        $summaries = array_column($this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00'), 'summary');
+        sort($summaries);
+        self::assertSame(['Fortnightly', 'Standup'], $summaries, 'The rule sabre cannot expand shows its first occurrence.');
+        self::assertSame('FREQ=FORTNIGHTLY;COUNT=3', $this->connection()->fetchOne("SELECT rrule FROM calendar_event WHERE uid = 'fortnightly@company.example'"), 'Devices get the rule as written.');
     }
 
     public function testASequenceLargerThanTheColumnIsStored(): void
