@@ -52,12 +52,28 @@ vi.mock('@/mail/store', () => ({
 
 const { useMailStore } = await import('../mail')
 
+// The browser's local storage, kept in memory.
+function memoryStorage(): Storage {
+  const items = new Map<string, string>()
+  return {
+    get length() {
+      return items.size
+    },
+    clear: () => items.clear(),
+    getItem: (key) => items.get(key) ?? null,
+    key: (index) => [...items.keys()][index] ?? null,
+    removeItem: (key) => void items.delete(key),
+    setItem: (key, value) => void items.set(key, value),
+  }
+}
+
 function page(since: number): ChangePage {
   return { cursor: since, hasMore: false, mailAccounts: [], folders: [], threads: [], messages: [], outgoingMessages: [], signatures: [], drafts: [], smartInboxes: [], calendars: [], calendarEvents: [], notifications: [], eventNotes: [], todos: [], mailNotifications: [], handOvers: [], deleted: [] }
 }
 
 describe('the mail copy across sign-out and sign-in', () => {
   beforeEach(() => {
+    vi.stubGlobal('localStorage', memoryStorage())
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
     setActivePinia(createPinia())
     copies.opening = []
@@ -163,6 +179,62 @@ describe('the mail copy across sign-out and sign-in', () => {
 
     expect(copies.opened).toEqual(['anna'])
     expect(mail.ready).toBe(false)
+  })
+
+  it('keeps the copy, with drafts that never reached the server, when the session expires', async () => {
+    const { useAuthStore } = await import('../auth')
+    const auth = useAuthStore()
+    const mail = useMailStore()
+    await mail.start('anna')
+    // The server no longer accepts the token, and there is no refresh token to renew it with.
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ title: 'Unauthorized' }, { status: 401 })))
+
+    await expect(auth.api('/api/v1/me')).rejects.toThrow('Your session has expired.')
+
+    await vi.waitFor(() => expect(copies.closed).toEqual(['anna']))
+    expect(auth.isAuthenticated).toBe(false)
+    expect(copies.deleted).toEqual([])
+    expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'anna', name: 'copy-anna' }])
+  })
+
+  it('removes the copy when the user signs out', async () => {
+    vi.stubGlobal('location', { ...window.location, assign: vi.fn<(url: string) => void>() })
+    const { useAuthStore } = await import('../auth')
+    const auth = useAuthStore()
+    const mail = useMailStore()
+    await mail.start('anna')
+
+    await auth.signOut()
+
+    expect(copies.deleted).toEqual(['anna'])
+    expect(localStorage.getItem('tresso.mail.copies')).toBeNull()
+  })
+
+  it('keeps the copy of a session that ended in another tab, which removes it itself on a sign-out', async () => {
+    const { useAuthStore } = await import('../auth')
+    const auth = useAuthStore()
+    const mail = useMailStore()
+    await mail.start('anna')
+
+    window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
+
+    await vi.waitFor(() => expect(copies.closed).toEqual(['anna']))
+    expect(auth.isAuthenticated).toBe(false)
+    expect(copies.deleted).toEqual([])
+  })
+
+  it('removes the copy an expired session left behind once another user signs in, and keeps it for the same user', async () => {
+    const mail = useMailStore()
+    await mail.start('anna')
+    await mail.stop()
+    await mail.start('anna')
+    expect(copies.deleted).toEqual([])
+    await mail.stop()
+
+    await mail.start('ben')
+
+    expect(copies.deleted).toEqual(['anna'])
+    expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'ben', name: 'copy-ben' }])
   })
 
   it('closes a copy whose opening was overtaken by another sign-in', async () => {
