@@ -980,11 +980,27 @@ The desktop app runs the web client unchanged; only signing in and keeping the t
 (`apps/web/src/platform/desktop.ts`). It is its own OAuth client (`desktop`) with the redirect URI
 `tresso://auth/callback`: sign-in opens the authorization page in the system browser, where the user's password
 manager and existing sessions work, and the operating system hands the `tresso://` link back to the running app
-(single instance on Windows and Linux), which exchanges the code with its PKCE verifier. Tokens are kept in the OS
-keychain (Keychain, Credential Manager, Secret Service) by Rust commands, never in web storage, and read back before
-the first screen. When the keychain refuses, the app says that the sign-in will not last instead of failing quietly.
-The API and the Mercure hub accept the app's origins (`tauri://localhost`, and `http://tauri.localhost` on Windows),
-and the main window may only open http(s) pages in the browser and read the link it was opened with.
+(single instance on Windows and Linux), which exchanges the code with its PKCE verifier. "Open the browser again"
+opens the same authorization page, so whichever browser tab the user finishes in completes the sign-in, and a link
+whose state is not the pending sign-in's leaves that sign-in pending. The window handles each link once: the link
+that started the app is not handled again after the window reloads (the handled links are kept in sessionStorage),
+and an answer to signing in to Tresso while no sign-in is under way (one finished already, or a stray link) is
+ignored. Tokens are kept in the OS keychain (Keychain, Credential Manager, Secret Service) by Rust commands
+(`apps/desktop/src-tauri/src/tokens.rs`), never in web storage, and read back before the first screen. The Credential
+Manager holds at most 2560 bytes per entry, less than the token set, so on Windows the value is split over several
+entries behind a header entry; a save writes a second set of entries and switches the header last, so a save that is
+cut off leaves the previous sign-in whole, and sign-in values kept as one entry by earlier versions still load. The
+keychain commands run off the main thread (the window keeps drawing while the OS asks the user to unlock the
+keychain), one at a time and in the order the client asked for them; a keychain that was not ready at the first call
+(the Secret Service right after login) is tried again on the next one; and quitting waits up to five seconds for a
+save that is running, so a token set the server just rotated is not lost. When the keychain refuses, the app says
+that the sign-in will not last instead of failing quietly. The API and the Mercure hub accept the app's origins
+(`tauri://localhost`, and `http://tauri.localhost` on Windows), and the main window may only open http(s) pages in the
+browser and read the link it was opened with. A page in the window that asks for a new window (a link in a mail body,
+whose frame sends every link to a new window, or `window.open`) gets none: http, https and mailto links open in the
+user's browser and mail app, anything else is refused. Opening an attachment and joining a meeting call the browser
+directly, since the app has no tabs and must not leave its own page. The window's Content-Security-Policy lets the
+local servers the sign-in screen accepts (`http://localhost`, `http://127.0.0.1`) serve images as well.
 
 The desktop app keeps the mail copy in SQLite instead of the web view's IndexedDB (`apps/web/src/mail/store.ts`
 picks the store). Rust commands (`apps/desktop/src-tauri/src/sql.rs`, rusqlite with SQLite bundled) open one database
