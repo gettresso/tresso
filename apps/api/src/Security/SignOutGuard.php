@@ -61,9 +61,14 @@ final readonly class SignOutGuard
         }
 
         if ($request->isMethod('POST')) {
-            if (!$this->fromTresso($request)) {
-                $event->setResponse($this->page($request, 'This sign-out came from another site, so nothing happened. Sign out here if you meant to.'));
+            if ($this->fromTresso($request)) {
+                return;
             }
+            // Without the session cookie no token can match, and a page here would start a new session whose cookie
+            // replaces the browser's: send it to the sign-out page, a navigation that carries its cookies.
+            $event->setResponse($request->hasPreviousSession()
+                ? $this->page($request, 'This sign-out came from another site, so nothing happened. Sign out here if you meant to.')
+                : new RedirectResponse($request->getBaseUrl().self::PATH, Response::HTTP_SEE_OTHER));
 
             return;
         }
@@ -109,7 +114,8 @@ final readonly class SignOutGuard
      */
     private function fromTresso(Request $request): bool
     {
-        if ($this->csrfTokens->isTokenValid(new CsrfToken(self::CSRF_TOKEN_ID, $request->request->getString('_csrf_token')))) {
+        // Only with a session: reading a token starts one.
+        if ($request->hasPreviousSession() && $this->csrfTokens->isTokenValid(new CsrfToken(self::CSRF_TOKEN_ID, $request->request->getString('_csrf_token')))) {
             return true;
         }
         $origin = $request->headers->get('Origin');

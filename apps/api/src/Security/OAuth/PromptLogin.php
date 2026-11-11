@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Security\OAuth;
 
-use App\Security\SignOutGuard;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -20,12 +19,16 @@ use Symfony\Component\Security\Http\Event\LoginSuccessEvent;
  * first sign-in after the user signed out of them, since they cannot end the browser's sign-in themselves; it is
  * also how someone switches to another account.
  *
- * Before the firewall, a GET of /oauth/authorize with `login` among its `prompt` values ends the browser's sign-in
- * (a new, empty session; the remember-me cookie cleared) and sends the browser to the sign-in page, which brings it
- * back to the same request afterwards. A sign-in on the form marks that one request, by a hash of its query, as
- * answered in the new session; the request then goes on once, as whoever just signed in, and the mark is used up. The
- * mark lives only in the session, so no parameter anyone adds can skip the password. The consent page's POST back to
- * the same address is not asked again: it comes after this sign-in.
+ * Before the firewall, a GET of /oauth/authorize with `login` among its `prompt` values goes to the sign-in page
+ * instead, which brings the browser back to the same request afterwards. A sign-in on the form marks that one request,
+ * by a hash of its query, as answered; the request then goes on once, as whoever just signed in, and the mark is used
+ * up. The mark lives only in the session, so no parameter anyone adds can skip the password.
+ *
+ * Nothing ends the browser's sign-in before someone signs in on the form: a link to such a request on another site
+ * must not sign people out. The form's sign-in replaces it (Symfony renews the session id and cancels the old
+ * remember-me cookie). Until then the browser stays signed in, so `prompt=login` is a request by the app, not a lock:
+ * only the authorization request that carries it waits for the password. The consent page's POST back to the same
+ * address is not asked again: it comes after this sign-in.
  */
 final readonly class PromptLogin
 {
@@ -62,12 +65,10 @@ final readonly class PromptLogin
             return;
         }
 
-        $session->invalidate();
         $session->set(self::PENDING, $key);
         $session->set(self::TARGET_PATH, $request->getUri());
 
         $response = new RedirectResponse($this->urls->generate('app_login', [], UrlGeneratorInterface::ABSOLUTE_URL));
-        $response->headers->clearCookie(SignOutGuard::REMEMBER_ME_COOKIE, '/', null, $request->isSecure(), true, 'lax');
         $response->headers->set('Cache-Control', 'no-store, private');
         $event->setResponse($response);
     }
