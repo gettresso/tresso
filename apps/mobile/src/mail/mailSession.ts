@@ -179,6 +179,7 @@ export class MailSession {
       for (let start = 0; start < messageIds.length; start += MAX_MESSAGES_PER_ACTION) {
         const request: MessageActionRequest = { messageIds: messageIds.slice(start, start + MAX_MESSAGES_PER_ACTION), action, ...target }
         await this.deps.postAction(request)
+        database.acceptAction(appliedFor(applied, new Set(request.messageIds)))
         accepted = start + request.messageIds.length
       }
     } catch (error) {

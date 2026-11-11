@@ -84,6 +84,11 @@ export interface MailStore extends SyncStore {
    */
   revertAction(applied: AppliedAction): Promise<void>
   /**
+   * The server took these messages of an action from {@link applyAction}: what it changed is no longer open, also when
+   * the server changed nothing (the flag had that value already) and so no delta will mention it.
+   */
+  acceptAction(applied: AppliedAction): void
+  /**
    * Every hand-over in "Waiting on" order (see `compareHandOvers`), each with the conversation its message is in
    * now; null when that message is not in the copy.
    */

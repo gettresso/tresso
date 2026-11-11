@@ -159,6 +159,29 @@ export class OpenActions {
     }
   }
 
+  /**
+   * The server took the action that changed `before` into `after`. It may change nothing there (the flag had that
+   * value), so no delta would end it: its part now builds on its result, and the entry goes once nothing is open.
+   */
+  accepted(before: SyncedMessage, after: SyncedMessage): void {
+    for (const { part, read } of PARTS) {
+      if (read(before) === read(after)) {
+        continue
+      }
+      const key = `${before.id} ${part}`
+      const known = this.open.get(key)
+      if (known === undefined) {
+        continue
+      }
+      known.count -= 1
+      if (known.count > 0) {
+        known.before = read(after)
+      } else {
+        this.open.delete(key)
+      }
+    }
+  }
+
   /** The delta brought the message: whatever was open for it, the server's version stays. */
   confirmed(messageId: string): void {
     for (const { part } of PARTS) {

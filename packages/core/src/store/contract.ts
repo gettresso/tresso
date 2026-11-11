@@ -535,6 +535,15 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
       await db.revertAction(unread)
       expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm1')?.flags).toMatchObject({ seen: true })
 
+      // An action the server took without changing anything (no delta follows) is not left open.
+      const first = await db.applyAction(['m2'], 'markRead')
+      const second = await db.applyAction(['m2'], 'markUnread')
+      await db.revertAction(first)
+      db.acceptAction(second)
+      const third = await db.applyAction(['m2'], 'markRead')
+      await db.revertAction(third)
+      expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm2')?.flags).toMatchObject({ seen: false })
+
       const archived = await db.applyAction(['m2'], 'archive')
       const readAgain = await db.applyAction(['m2'], 'markRead')
       await db.revertAction(readAgain)

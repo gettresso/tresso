@@ -472,7 +472,6 @@ export class IndexedDbMailStore implements MailStore {
     }
     const after = actionResult(before, action, { folders, accounts, folderId, fromFolderId })
 
-    before.forEach((message, index) => this.openActions.applied(message, after[index]!))
     const affected = new Set<string>()
     for (const message of after) {
       await tx.objectStore('messages').put(message)
@@ -483,8 +482,14 @@ export class IndexedDbMailStore implements MailStore {
       await refreshConversation(tx, threadId, lists)
     }
     await tx.done
+    // Noted once written: a transaction that failed leaves nothing open.
+    before.forEach((message, index) => this.openActions.applied(message, after[index]!))
 
     return { before, after }
+  }
+
+  acceptAction(applied: AppliedAction): void {
+    applied.before.forEach((message, index) => this.openActions.accepted(message, applied.after[index]!))
   }
 
   /** Puts back what {@link applyAction} changed, part by part (see MailStore.revertAction). */

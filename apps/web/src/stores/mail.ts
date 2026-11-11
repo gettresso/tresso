@@ -771,6 +771,7 @@ export const useMailStore = defineStore('mail', () => {
           request.fromFolderId = target.fromFolderId
         }
         await auth.send<MessageActionResult>('POST', '/api/v1/message-actions', request)
+        database.acceptAction(appliedFor(applied, new Set(request.messageIds)))
         accepted = start + request.messageIds.length
       }
     } catch (error) {
