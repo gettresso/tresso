@@ -6,6 +6,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import SmartInboxMark from '@/components/SmartInboxMark.vue'
 import { briefProgress } from '@tresso/core'
+import { useAuthStore } from '@/stores/auth'
 import { useBriefStore } from '@/stores/brief'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
@@ -37,6 +38,7 @@ const emit = defineEmits<{ signOut: [] }>()
 
 const mail = useMailStore()
 const compose = useComposeStore()
+const auth = useAuthStore()
 const outboxCount = computed(() => mail.outbox.length)
 const todos = useTodosStore()
 const failedCount = computed(() => mail.outbox.filter((message) => message.status === 'failed').length)
@@ -73,7 +75,9 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
         <span class="profile-name">{{ displayName }}</span>
         <span class="profile-detail">{{ accounts.length === 1 ? '1 account' : `${accounts.length} accounts` }}</span>
       </span>
-      <button type="button" class="button button-quiet sign-out" @click="emit('signOut')">Sign out</button>
+      <button type="button" class="button button-quiet sign-out" :disabled="auth.signingOut" :aria-busy="auth.signingOut" @click="emit('signOut')">
+        {{ auth.signingOut ? 'Signing out…' : 'Sign out' }}
+      </button>
     </div>
 
     <button type="button" class="button button-primary compose" @click="compose.openNew()">Compose <KeyShortcut keys="C" /></button>
