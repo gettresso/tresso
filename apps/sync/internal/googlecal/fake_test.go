@@ -34,8 +34,10 @@ type fakeGoogle struct {
 	forbidden bool
 	// refusedCalendars answer 403 for their events, as a calendar shared with the user and taken back does.
 	refusedCalendars map[string]bool
-	// failures answers requests whose method and path end like the key with that status, once each.
+	// failures answers requests whose method and path end like the key with that status, once each; refusals do so
+	// every time.
 	failures map[string]int
+	refusals map[string]int
 	// beforeGet runs, with the fake locked, before every GET, as a change someone makes at Google meanwhile.
 	beforeGet func(path string)
 	// beforeWrite does the same before every other request.
@@ -164,6 +166,13 @@ func (f *fakeGoogle) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if f.beforeWrite != nil && r.Method != http.MethodGet {
 		f.beforeWrite(r.Method, r.URL.Path)
+	}
+	for key, status := range f.refusals {
+		method, suffix, _ := strings.Cut(key, " ")
+		if r.Method == method && strings.HasSuffix(r.URL.Path, suffix) {
+			f.fail(w, status, "badRequest")
+			return
+		}
 	}
 	for key, status := range f.failures {
 		method, suffix, _ := strings.Cut(key, " ")
