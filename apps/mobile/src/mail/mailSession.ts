@@ -258,7 +258,7 @@ export class MailSession {
       return result
     } catch (error) {
       if (previous !== null) {
-        await database.restoreThread(previous, { smartInboxId, verdict })
+        await database.restoreThread(previous)
         this.changed()
       }
       void this.syncNow()
