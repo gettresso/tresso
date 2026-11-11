@@ -22,6 +22,9 @@ use Symfony\Component\Validator\Constraints as Assert;
  * show and clear them; event notes are the user's private notes. A todo whose email is gone changes too, without
  * the link; clients also treat a link to an email they do not have as no link. Mail notifications (new mail that
  * needs the user) come once delivered, from the last week, so the desktop app shows them.
+ *
+ * Each list needs the scope of its own endpoints (SyncChangesProvider::SCOPES); without it the list and its removals
+ * come empty, while the cursor stays the same for every token.
  */
 #[ApiResource(
     shortName: 'SyncChanges',

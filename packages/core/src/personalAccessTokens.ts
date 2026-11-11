@@ -43,12 +43,12 @@ export interface PersonalAccessTokenScope {
 
 /** What a personal access token may hold, mirroring the API (Scope::personalAccessTokenScopes()). */
 export const PERSONAL_ACCESS_TOKEN_SCOPES: readonly PersonalAccessTokenScope[] = [
-  { value: 'mail:read', label: 'Read mail', description: 'Read your messages, conversations and attachments in every account.' },
+  { value: 'mail:read', label: 'Read mail', description: 'Read your messages, conversations, attachments and drafts in every account.' },
   { value: 'mail:write', label: 'Organize mail', description: 'Archive, move, flag, mark as read and delete messages.' },
   { value: 'mail:send', label: 'Send mail', description: 'Send messages from your accounts, in your name.' },
   { value: 'todos:read', label: 'See todos', description: 'See your todos and when they are planned.' },
   { value: 'todos:write', label: 'Change todos', description: 'Add, complete, change and delete todos.' },
-  { value: 'calendar:read', label: 'See calendar', description: 'See your calendars and events, with their guests.' },
+  { value: 'calendar:read', label: 'See calendar', description: 'See your calendars and events, with their guests, your notes and reminders.' },
   { value: 'calendar:write', label: 'Change calendar', description: 'Add, change and delete events and set your answers. Telling guests or organizers also needs Send mail.' },
   { value: 'signatures:read', label: 'See signatures', description: 'See your email signatures.' },
   { value: 'signatures:write', label: 'Change signatures', description: 'Add, change and delete email signatures.' },

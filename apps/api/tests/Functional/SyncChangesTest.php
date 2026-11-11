@@ -10,6 +10,7 @@ use App\Enum\FolderRole;
 use App\Mailbox\MailboxChanges;
 use App\Realtime\RealtimeNotifier;
 use App\Search\SearchIndexScheduler;
+use App\Security\Scope;
 use App\Sync\Change\ChangeSequencer;
 use App\Sync\Ingest\FolderSynchronizer;
 use App\Sync\Ingest\MessageJanitor;
@@ -43,7 +44,7 @@ final class SyncChangesTest extends DatabaseTestCase
         $this->bootstrapOAuthClients();
         $this->createUser('kim@example.test', 'Kim');
         $this->createUser('lisa@example.test', 'Lisa');
-        $this->kim = $this->userHeaders('kim@example.test', ['mail:read', 'settings:read', 'settings:write', 'signatures:write']);
+        $this->kim = $this->userHeaders('kim@example.test', ['mail:read', 'settings:read', 'settings:write', 'signatures:read', 'signatures:write']);
 
         $this->client->jsonRequest('POST', '/api/v1/mail-accounts', [
             'emailAddress' => 'kim@company.example',
@@ -313,7 +314,7 @@ final class SyncChangesTest extends DatabaseTestCase
 
     public function testUsersOnlySeeTheirOwnChanges(): void
     {
-        $lisa = $this->userHeaders('lisa@example.test', ['mail:read']);
+        $lisa = $this->userHeaders('lisa@example.test', ['mail:read', 'calendar:read', 'settings:read']);
 
         $this->client->request('GET', '/api/v1/sync/changes?since=0', server: $lisa);
 
@@ -362,6 +363,45 @@ final class SyncChangesTest extends DatabaseTestCase
         $this->client->request('GET', '/api/v1/sync/changes', server: $this->userHeaders('kim@example.test', ['settings:read']));
 
         self::assertResponseStatusCodeSame(403);
+    }
+
+    /**
+     * A script or another app with only some scopes gets only the lists those scopes cover, as on their own endpoints;
+     * the cursor is the same for every token.
+     */
+    public function testEachListNeedsItsOwnScope(): void
+    {
+        $everything = $this->userHeaders('kim@example.test', array_map(static fn (Scope $scope): string => $scope->value, Scope::personalAccessTokenScopes()));
+        $this->client->jsonRequest('POST', '/api/v1/signatures', ['name' => 'Work', 'html' => '<p>Kim</p>'], $everything);
+        self::assertResponseStatusCodeSame(201);
+        $signatureId = $this->responseString('id');
+        $this->client->jsonRequest('POST', '/api/v1/todos', ['title' => 'Call Anna'], $everything);
+        self::assertResponseStatusCodeSame(201);
+        $ownApp = $this->delta(0, $everything);
+        foreach (['mailAccounts', 'calendars', 'todos', 'signatures', 'smartInboxes'] as $list) {
+            self::assertNotSame([], $ownApp[$list], $list.' reaches our own app.');
+        }
+
+        $mailOnly = $this->delta(0, $this->personalAccessToken($everything, ['mail:read']));
+        self::assertSame($ownApp['cursor'], $mailOnly['cursor']);
+        self::assertSame(array_column($ownApp['mailAccounts'], 'id'), array_column($mailOnly['mailAccounts'], 'id'));
+        self::assertCount(3, $mailOnly['messages']);
+        foreach (['calendars', 'calendarEvents', 'notifications', 'eventNotes', 'todos', 'signatures', 'smartInboxes'] as $list) {
+            self::assertSame([], $mailOnly[$list], $list.' needs its own scope.');
+        }
+
+        $withCalendar = $this->delta(0, $this->personalAccessToken($everything, ['mail:read', 'calendar:read']));
+        self::assertSame(array_column($ownApp['calendars'], 'id'), array_column($withCalendar['calendars'], 'id'));
+        self::assertSame([], $withCalendar['todos']);
+
+        $cursor = $ownApp['cursor'];
+        $this->client->request('DELETE', '/api/v1/signatures/'.$signatureId, server: $everything);
+        self::assertResponseStatusCodeSame(204);
+        $signatures = $this->personalAccessToken($everything, ['mail:read', 'signatures:read']);
+        self::assertContains(['type' => 'signature', 'id' => $signatureId], $this->delta($cursor, $signatures)['deleted']);
+        $after = $this->delta($cursor, $this->personalAccessToken($everything, ['mail:read']));
+        self::assertNotContains(['type' => 'signature', 'id' => $signatureId], $after['deleted'], 'A removal is a change of its own kind.');
+        self::assertGreaterThan($cursor, $after['cursor']);
     }
 
     public function testRejectsInvalidParameters(): void
@@ -496,6 +536,36 @@ final class SyncChangesTest extends DatabaseTestCase
         $cursors[] = $until;
 
         return $cursors;
+    }
+
+    /**
+     * @param array<string, string> $headers
+     *
+     * @return array{cursor: int, mailAccounts: list<array<string, mixed>>, messages: list<array<string, mixed>>, calendars: list<array<string, mixed>>, calendarEvents: list<array<string, mixed>>, notifications: list<array<string, mixed>>, eventNotes: list<array<string, mixed>>, todos: list<array<string, mixed>>, signatures: list<array<string, mixed>>, smartInboxes: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>}
+     */
+    private function delta(int $since, array $headers): array
+    {
+        $this->client->request('GET', \sprintf('/api/v1/sync/changes?since=%d&limit=2000', $since), server: $headers);
+        self::assertResponseIsSuccessful();
+
+        /** @var array{cursor: int, mailAccounts: list<array<string, mixed>>, messages: list<array<string, mixed>>, calendars: list<array<string, mixed>>, calendarEvents: list<array<string, mixed>>, notifications: list<array<string, mixed>>, eventNotes: list<array<string, mixed>>, todos: list<array<string, mixed>>, signatures: list<array<string, mixed>>, smartInboxes: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>} */
+        return $this->decodedResponse();
+    }
+
+    /**
+     * A personal access token with these scopes, made in our own app.
+     *
+     * @param array<string, string> $session
+     * @param list<string>          $scopes
+     *
+     * @return array<string, string>
+     */
+    private function personalAccessToken(array $session, array $scopes): array
+    {
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Script', 'scopes' => $scopes], $session);
+        self::assertResponseStatusCodeSame(201);
+
+        return ['HTTP_AUTHORIZATION' => 'Bearer '.$this->responseString('token'), 'HTTP_ACCEPT' => 'application/json'];
     }
 
     /**
