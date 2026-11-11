@@ -772,6 +772,29 @@ final class CalendarInvitationTest extends DatabaseTestCase
         self::assertContains(['pieter@finance.example'], array_map(static fn ($message): array => $message->getEnvelopeRecipients(), $outgoing));
     }
 
+    public function testAnInvitationToOneOccurrenceMovesToAnotherCalendarWithoutAScope(): void
+    {
+        $messageId = $this->receive('Invitation: Budget review', str_replace("BEGIN:VEVENT\r\n", "BEGIN:VEVENT\r\nRECURRENCE-ID;TZID=W. Europe Standard Time:20261021T140000\r\n", self::invitation('REQUEST', 0, '20261021T140000')));
+        $eventId = self::string($this->getJson('/api/v1/messages/'.$messageId.'/invitation', $this->kim)['eventId']);
+        $this->client->jsonRequest('POST', '/api/v1/calendars', ['name' => 'Family', 'color' => '#E0457B'], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $family = $this->responseString('id');
+
+        // As the web client sends it for an occurrence without its series: the row's id and no scope.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId.'?notify=false', self::event($family, [
+            'summary' => 'Budget review',
+            'location' => 'Room 3',
+            'start' => ['dateTime' => '2026-10-21T14:00:00', 'timeZone' => 'Europe/Berlin'],
+            'end' => ['dateTime' => '2026-10-21T15:00:00', 'timeZone' => 'Europe/Berlin'],
+        ]), $this->kim);
+
+        self::assertResponseIsSuccessful();
+        $occurrences = $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00');
+        self::assertCount(1, $occurrences);
+        self::assertSame($family, $occurrences[0]['calendarId']);
+        self::assertSame(['dateTime' => '2026-10-21T12:00:00+00:00'], $occurrences[0]['start']);
+    }
+
     public function testANewPlaceIsSentToTheGuests(): void
     {
         $calendarId = $this->localCalendarId($this->kim);
