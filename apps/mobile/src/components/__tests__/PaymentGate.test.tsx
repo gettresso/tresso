@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ApiError } from '@/auth/session'
 import { PaymentGate } from '@/components/PaymentGate'
 
@@ -46,11 +46,19 @@ describe('the payment notice', () => {
     auth.session.me.mockRejectedValueOnce(new ApiError(402, 'Payment Required')).mockRejectedValueOnce(new Error('Network request failed'))
     render(<PaymentGate />)
 
-    fireEvent.click(screen.getByText('Check again'))
-    await waitFor(() => expect(screen.getByText(/Still not renewed/)).toBeTruthy())
+    // Each check runs inside act, so its answer is rendered and its effects ran before the next tap. React Native
+    // Web hands `disabled` to the button's press handler in an effect: a tap between the render that shows the answer
+    // and that effect still finds the button busy and is dropped.
+    await act(async () => {
+      fireEvent.click(screen.getByText('Check again'))
+    })
+    expect(screen.getByText(/Still not renewed/)).toBeTruthy()
 
-    fireEvent.click(screen.getByText('Check again'))
-    await waitFor(() => expect(screen.getByText(/could not be reached: Network request failed/)).toBeTruthy())
+    await act(async () => {
+      fireEvent.click(screen.getByText('Check again'))
+    })
+    expect(screen.getByText(/could not be reached: Network request failed/)).toBeTruthy()
+    expect(auth.session.me).toHaveBeenCalledTimes(2)
   })
 
   it('warns when signing out could not remove this phone from the notifications', async () => {
