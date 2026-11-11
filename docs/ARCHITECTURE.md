@@ -948,7 +948,10 @@ Planned features hook into these steps: AI classification, assignments to teamma
 - The sync worker sends the headers the rules read (`headers`) and the junk keyword (`junk`) with each message; the
   API keeps them in `message_signals`, apart from the message row and only for messages that have any. Anyone can
   write an Authentication-Results header, so a DMARC pass counts only when the receiving server surely wrote it: at
-  Gmail and Microsoft 365 the topmost header is always theirs. The worker sends the topmost one whole, up to 8000
+  Gmail and Microsoft 365 the topmost header is always theirs, and Gmail's must also name Gmail (`mx.google.com`) as
+  the host that wrote it; Microsoft's names none. The header is read as RFC 8601 results (`SenderAuthentication`):
+  comments and quoted strings are dropped (they repeat what the sender chose, such as the envelope sender or the
+  claims of an ARC set), and only a result entry `dmarc=pass` counts. The worker sends the topmost one whole, up to 8000
   characters (other headers up to 1000); a longer one is cut at its last `;` before the limit that is outside
   comments and quoted strings, so the cut never leaves part of a comment or quoted string. Deploy the API before
   the worker: an API older than this answers 422 to such a header, which makes that message a placeholder until
@@ -1808,10 +1811,20 @@ clears the error too, until the failing one reports it again.
     organizer's invitation is then ignored as not coming from the stored organizer. No rule fixes this: whoever stores
     a `UID` first wins under any rule. The user sees the real invitation in the mail and can still answer it there.
   - The sender is the message's `From` address as the mail server delivered it. On Gmail and Microsoft accounts,
-    whose topmost `Authentication-Results` header is the provider's own, calendar mail that changes what the calendar
-    has (an update of a stored event, a `CANCEL`, a `REPLY`) applies by itself only when that header shows DMARC
-    passed. Otherwise it waits: the message shows it with `canApply` and `senderUnconfirmed`, and nothing in the
-    calendar changes until the user applies it. A new invitation changes nothing that is there and lands by itself.
+    calendar mail that changes what the calendar has (an update of a stored event, a `CANCEL`, a `REPLY`) applies by
+    itself only when the provider confirmed its sender. Gmail: its own `Authentication-Results` (authserv-id
+    `mx.google.com`) shows DMARC passed. Microsoft: its header names no authserv-id, so it is told from one the
+    sender wrote only by `X-MS-Exchange-Organization-AuthAs`, which Exchange removes from mail it receives and sets
+    itself: `Internal` (from within the tenant, which carries no `Authentication-Results`) is confirmed, `Anonymous`
+    or `Partner` needs DMARC passed in the topmost `Authentication-Results`. Otherwise it waits: nothing in the
+    calendar changes until the user applies it; the invitation answer carries `senderUnconfirmed` (only together with
+    `canApply`, when the user can act), and the message in the sync delta carries `calendarWaiting`, so a message list
+    can show it without opening the mail. A new invitation changes nothing that is there and lands by itself.
+  - What the sync worker must send for this (its `headers`): `authentication-results` as the topmost header of that
+    name, whole (it is cut at 1,000 characters today, and Gmail writes the DMARC result last, so a long header waits
+    although it passed), and for Microsoft accounts `x-ms-exchange-organization-authas`. Until the worker sends the
+    latter, calendar mail on Microsoft accounts that changes an event waits for the user (the safe side).
+  - Known limit: the mobile app has no apply action yet; mail that waits is applied in the web app.
   - Known limit: on IMAP accounts no `Authentication-Results` header can be trusted (the sender can write one naming
     any server), so nothing can be verified and calendar mail applies by its `From` address as before. A forged
     `From` that the receiving server let through can then move or cancel an event whose `UID` the forger knows.

@@ -25,4 +25,22 @@ final class ReceivingServers
     {
         return MailProvider::Imap !== $provider;
     }
+
+    /**
+     * Whether this Authentication-Results header (the topmost, as the worker sends it) is the receiving provider's
+     * own. Gmail names itself (`mx.google.com`), so a header that names no one or someone else is not Gmail's: mail
+     * that did not pass Gmail's own servers (fetched from another account, put in by another client) carries only
+     * what the sender wrote. Microsoft names no authserv-id at all, so its header is told apart by its place only.
+     */
+    public static function wroteResults(MailProvider $provider, ?string $authenticationResults): bool
+    {
+        if (!self::trustsTopmostHeaderAt($provider) || null === $authenticationResults) {
+            return false;
+        }
+
+        return match ($provider) {
+            MailProvider::Gmail => 'mx.google.com' === SenderAuthentication::authservId($authenticationResults),
+            default => true,
+        };
+    }
 }

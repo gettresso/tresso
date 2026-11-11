@@ -96,6 +96,8 @@ export interface SyncedMessage {
   summary: string | null
   /** The iTIP method of the calendar object the message carries (REQUEST, CANCEL, REPLY, ...), or null. */
   calendarMethod: string | null
+  /** Calendar mail that waits for the user: its provider did not confirm the sender (apply it from the message). */
+  calendarWaiting?: boolean
   /** The batch this message waits for; null once delivered (see `SyncedThread.heldUntil`). */
   heldUntil?: string | null
   /** The batch that delivered it; null when it was delivered as it came. */

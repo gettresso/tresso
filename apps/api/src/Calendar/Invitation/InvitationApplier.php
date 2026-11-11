@@ -20,8 +20,10 @@ use App\Entity\MailAccount;
 use App\Entity\MessageSignals;
 use App\Entity\User;
 use App\Enum\ItipMethod;
+use App\Enum\MailProvider;
 use App\Repository\CalendarObjectRepository;
 use App\Repository\CalendarRepository;
+use App\Sync\Change\ChangeSequencer;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -65,6 +67,7 @@ final readonly class InvitationApplier
         private CalendarStore $store,
         private SelfAddresses $selfAddresses,
         private LoggerInterface $logger,
+        private ChangeSequencer $changes,
     ) {
     }
 
@@ -77,8 +80,13 @@ final readonly class InvitationApplier
                 return;
             }
             if ($this->senderUnconfirmed($invitation)) {
-                // Left for the user, who sees why on the message and can apply it by hand.
+                // Left for the user, who sees why on the message (and in the message list) and can apply it by hand.
                 $this->logger->info('Calendar mail from a sender the provider did not confirm is not applied by itself', ['invitation' => $invitation->getId()->toRfc4122()]);
+                if (!$invitation->waitsForUser()) {
+                    $invitation->waitForUser();
+                    $this->entityManager->flush();
+                    $this->touchMessage($invitation);
+                }
 
                 return;
             }
@@ -87,12 +95,17 @@ final readonly class InvitationApplier
         $this->entityManager->clear();
     }
 
+    private function touchMessage(CalendarInvitation $invitation): void
+    {
+        $message = $invitation->getMessage();
+        $this->changes->touchMessages($message->getMailAccount()->getOwner()->getId(), [$message->getId()->toRfc4122()]);
+    }
+
     /**
      * Whether calendar mail that would change what the calendar has (an update, a cancellation or a reply) comes from a
-     * sender the receiving provider did not confirm: on Gmail and Microsoft accounts, whose topmost
-     * Authentication-Results header is the provider's own ({@see ReceivingServers}), DMARC must pass for the From
-     * domain, or anyone who knows an event's UID could move or cancel it with a forged From. A new invitation changes
-     * nothing that is there and stays automatic. On other (IMAP) accounts nothing can be verified, so nothing is held.
+     * sender the receiving provider did not confirm; such mail waits for the user. Anyone who knows an event's UID
+     * could otherwise move or cancel it with a forged From. A new invitation changes nothing that is there and stays
+     * automatic. On IMAP accounts nothing can be verified, so nothing is held ({@see ReceivingServers}).
      */
     public function senderUnconfirmed(CalendarInvitation $invitation): bool
     {
@@ -111,7 +124,31 @@ final readonly class InvitationApplier
         }
         $headers = $this->entityManager->find(MessageSignals::class, $message->getId())?->getHeaders() ?? [];
 
-        return !SenderAuthentication::dmarcPassed($headers['authentication-results'] ?? null, true);
+        return !self::senderConfirmed($account->getProvider(), $headers);
+    }
+
+    /**
+     * Gmail: its own Authentication-Results (authserv-id mx.google.com) shows DMARC passed. Microsoft writes no
+     * authserv-id, so its header is only told from one the sender wrote by Exchange's own
+     * X-MS-Exchange-Organization-AuthAs, which Exchange removes from mail it receives and sets itself: `Internal` is
+     * mail from within the tenant (which gets no Authentication-Results), `Anonymous` or `Partner` came in from
+     * outside, where Exchange's Authentication-Results must show DMARC passed. Without that header (the worker does
+     * not send it yet) nothing is confirmed.
+     *
+     * @param array<string, string> $headers
+     */
+    private static function senderConfirmed(MailProvider $provider, array $headers): bool
+    {
+        $results = $headers['authentication-results'] ?? null;
+
+        return match ($provider) {
+            MailProvider::Microsoft => match (strtolower(trim($headers['x-ms-exchange-organization-authas'] ?? ''))) {
+                'internal' => true,
+                'anonymous', 'partner' => SenderAuthentication::dmarcPassed($results, true),
+                default => false,
+            },
+            default => SenderAuthentication::dmarcPassed($results, ReceivingServers::wroteResults($provider, $results)),
+        };
     }
 
     /**
@@ -131,7 +168,12 @@ final readonly class InvitationApplier
             $this->logger->info('Calendar mail not applied', ['invitation' => $invitation->getId()->toRfc4122(), 'status' => $outcome->status, 'reason' => $outcome->reason]);
         }
         if (InvitationOutcome::NO_TARGET !== $outcome->status) {
+            $waited = $invitation->waitsForUser();
             $invitation->markApplied(new \DateTimeImmutable());
+            if ($waited) {
+                // The message list shows it waiting no longer.
+                $this->touchMessage($invitation);
+            }
         }
         $this->entityManager->flush();
 
