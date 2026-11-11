@@ -6,21 +6,32 @@
 	root * /srv
 	encode zstd gzip
 
-	# The origin of the API (TRESSO_API_URL without a path), for the Content-Security-Policy below.
+	# The origins the Content-Security-Policy below names, each address without its path: the API, the sign-in pages
+	# (TRESSO_AUTH_URL, optional) and the realtime hub (TRESSO_HUB_URL, optional; set it only when the API's
+	# MERCURE_PUBLIC_URL is on another host than the API). An address left empty names the page's own origin.
 	map {env.TRESSO_API_URL} {tresso_api_origin} {
+		~^(https?://[^/]+) "${1}"
+		default "'self'"
+	}
+	map {env.TRESSO_AUTH_URL} {tresso_auth_origin} {
+		~^(https?://[^/]+) "${1}"
+		default "'self'"
+	}
+	map {env.TRESSO_HUB_URL} {tresso_hub_origin} {
 		~^(https?://[^/]+) "${1}"
 		default "'self'"
 	}
 
 	# The Content-Security-Policy keeps a script injected into the page from loading code or sending data anywhere but
-	# here and the API; the sign-in kept in localStorage depends on it. Message bodies show in srcdoc frames, which
+	# here, the API and its realtime hub; the sign-in kept in localStorage depends on it. Forms may only go here, to the
+	# API and to the sign-in pages (sign-out posts a form to /logout there). Message bodies show in srcdoc frames, which
 	# inherit this policy on top of their own (packages/core/src/sync/frame.ts): images from the API, data: and, once
 	# the reader allows it, the internet; inline styles; fonts from data: and the internet.
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
 		X-Frame-Options DENY
-		Content-Security-Policy "default-src 'self'; script-src 'self'; connect-src 'self' {tresso_api_origin}; img-src 'self' data: blob: https: http:; font-src 'self' data: https: http:; style-src 'self' 'unsafe-inline'; frame-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; connect-src 'self' {tresso_api_origin} {tresso_hub_origin}; img-src 'self' data: blob: https: http:; font-src 'self' data: https: http:; style-src 'self' 'unsafe-inline'; frame-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self' {tresso_api_origin} {tresso_auth_origin}; frame-ancestors 'none'"
 	}
 
 	# Hashed build files never change. A missing one is a 404, never index.html: a page from an older release must
