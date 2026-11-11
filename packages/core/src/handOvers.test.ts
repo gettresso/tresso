@@ -20,6 +20,7 @@ import {
   textToHtml,
   UnscannedFilesError,
   type CreateHandOverRequest,
+  type HandOverFlowDeps,
   type NudgeRequest,
   type UpdateHandOverRequest,
 } from './handOvers'
@@ -158,6 +159,7 @@ describe('HandOverFlow', () => {
   let unscannedRefused: boolean
   let bodyFails: unknown
   let flow: HandOverFlow
+  let flowDeps: HandOverFlowDeps
 
   beforeEach(async () => {
     vi.useFakeTimers()
@@ -206,7 +208,7 @@ describe('HandOverFlow', () => {
       notify: () => undefined,
       explain,
     })
-    flow = new HandOverFlow({
+    flowDeps = {
       composer,
       api: {
         create: async (request) => {
@@ -235,7 +237,8 @@ describe('HandOverFlow', () => {
         syncs += 1
       },
       explain,
-    })
+    }
+    flow = new HandOverFlow(flowDeps)
   })
 
   afterEach(() => {
@@ -356,28 +359,67 @@ describe('HandOverFlow', () => {
     expect(await store.draft(first.draftId)).toBeNull()
   })
 
-  it('does not let a step that hangs hold up the next one for ever', async () => {
-    const first = await flow.handOver(original, input)
-    originalFiles = [{ id: 'contract', filename: 'contract.pdf', contentType: 'application/pdf', size: 100, inline: false, contentId: null, scanStatus: 'clean', access: 'allowed', scanSignature: null, scanFailure: null, url: null }]
-    // This hand-over's file never arrives.
-    drafts.duringFile = () => new Promise<void>(() => undefined)
-    void flow.handOver(message('m2', 't2', 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00'), input).catch(() => undefined)
+  it('answers an undo once the server did, the draft being thrown away after', async () => {
+    const handed = await flow.handOver(original, input)
+    let discard!: () => void
+    vi.spyOn(composer, 'discardStored').mockImplementation(() => new Promise<boolean>((resolve) => (discard = () => resolve(true))))
+
+    await flow.undo(handed)
+    expect(cancelled).toEqual(['forward-1'])
+    let idle = false
+    void flow.idle().then(() => (idle = true))
     await vi.advanceTimersByTimeAsync(10)
+    expect(idle).toBe(false)
 
-    let outcome: string | null = null
-    void flow.takeBack(first).then((result) => (outcome = result))
-    await vi.advanceTimersByTimeAsync(59_000)
-    expect(outcome).toBeNull()
-    await vi.advanceTimersByTimeAsync(2_000)
+    discard()
+    await vi.advanceTimersByTimeAsync(10)
+    expect(idle).toBe(true)
+  })
 
-    expect(outcome).toBe('undone')
-    expect(await store.draft(first.draftId)).toBeNull()
+  it("counts a hand-over's time from when it starts, so slow ones in a row each have the composer to themselves", async () => {
+    flow = new HandOverFlow({ ...flowDeps, queueTimeoutMs: 1_000 })
+    originalFiles = [{ id: 'contract', filename: 'contract.pdf', contentType: 'application/pdf', size: 100, inline: false, contentId: null, scanStatus: 'clean', access: 'allowed', scanSignature: null, scanFailure: null, url: null }]
+    // Each forwarded file takes 900 ms, so each hand-over runs a little under the limit but well past it from when all
+    // three were asked for.
+    drafts.duringFile = () => new Promise<void>((resolve) => setTimeout(resolve, 900))
+    const messages = ['m1', 'm2', 'm3'].map((id, index) => message(id, `t${index + 1}`, 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00', { subject: `Subject ${id}` }))
+
+    const handing = messages.map((each) => flow.handOver(each, input))
+    await vi.advanceTimersByTimeAsync(10_000)
+    const handed = await Promise.all(handing)
+
+    expect(sent.map((request) => request.inReplyToMessageId)).toEqual(['m1', 'm2', 'm3'])
+    expect(handed.map((each) => each.handOver.messageId)).toEqual(['m1', 'm2', 'm3'])
+  })
+
+  it('refuses a hand-over while one past its time limit still uses the composer, and goes on once it is done', async () => {
+    flow = new HandOverFlow({ ...flowDeps, queueTimeoutMs: 1_000 })
+    originalFiles = [{ id: 'contract', filename: 'contract.pdf', contentType: 'application/pdf', size: 100, inline: false, contentId: null, scanStatus: 'clean', access: 'allowed', scanSignature: null, scanFailure: null, url: null }]
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    drafts.duringFile = () => held
+
+    const slow = flow.handOver(original, input)
+    await vi.advanceTimersByTimeAsync(10)
+    const next = flow.handOver(message('m2', 't2', 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00'), input)
+    const refused = expect(next).rejects.toThrow(new HandOverError('Another hand-over is still being made. Try again in a moment.'))
+    await vi.advanceTimersByTimeAsync(1_100)
+    await refused
+
+    release()
+    const handed = await slow
+    expect(sent.map((request) => request.inReplyToMessageId)).toEqual(['m1'])
+    expect(await store.draft(handed.draftId)).toMatchObject({ inReplyToMessageId: 'm1' })
+    drafts.duringFile = null
+    await flow.handOver(message('m3', 't3', 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00'), input)
+    expect(sent.map((request) => request.inReplyToMessageId)).toEqual(['m1', 'm3'])
   })
 
   it('takes back both the forward and the hand-over', async () => {
     const handed = await flow.handOver(original, input)
 
     await flow.undo(handed)
+    await flow.idle()
 
     expect(cancelled).toEqual(['forward-1'])
     expect(withdrawn).toEqual(['h1'])
@@ -434,6 +476,7 @@ describe('HandOverFlow', () => {
     cancelFails = new Error('This message was cancelled already.')
     forwardStatus = 'cancelled'
     expect(await flow.takeBack(handed)).toBe('undone')
+    await flow.idle()
     expect(withdrawn).toEqual(['h1'])
     expect(await store.drafts()).toEqual([])
   })
