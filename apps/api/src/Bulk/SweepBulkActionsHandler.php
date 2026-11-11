@@ -39,8 +39,8 @@ final readonly class SweepBulkActionsHandler
         /** @var list<string> $stale */
         $stale = $this->connection->fetchFirstColumn(
             'UPDATE bulk_action SET updated_at = :now WHERE id IN (
-                SELECT id FROM bulk_action WHERE status IN (:running, :undoing) AND updated_at < :stale
-                ORDER BY updated_at LIMIT :limit FOR UPDATE SKIP LOCKED
+                SELECT id FROM bulk_action WHERE status IN (:running, :undoing) AND COALESCE(updated_at, created_at) < :stale
+                ORDER BY COALESCE(updated_at, created_at) LIMIT :limit FOR UPDATE SKIP LOCKED
              ) RETURNING id',
             [
                 'now' => $now->format('Y-m-d H:i:s'),
