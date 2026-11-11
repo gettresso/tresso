@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBatchesStore } from '@/stores/batches'
+import { useMailStore } from '@/stores/mail'
 import AppShell from '@/views/AppShell.vue'
 
 const screen = (name: string) => ({ template: `<section class="screen">${name}</section>` })
@@ -90,5 +91,25 @@ describe('AppShell', () => {
     expect(await marked('/settings/accounts')).toContain('Settings')
     expect(wrapper.get('.stage').text()).toBe('Accounts settings')
     expect(wrapper.findAll('nav.sidebar .item[aria-current="page"]')).toHaveLength(1)
+  })
+
+  it('marks an account whose sign-in failed, with a link to where it is fixed', async () => {
+    useAuthStore().tokens = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 60_000 }
+    const router = makeRouter()
+    await router.push('/')
+    const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
+    const account = { emailAddress: 'kim@company.example', provider: 'imap', statusDetail: null, lastSyncedAt: null, defaultSignatureId: null, calendarStatus: 'unknown' as const, calendarStatusDetail: null }
+    useMailStore().accounts = [
+      { ...account, id: 'work', displayName: 'Work', status: 'auth_failed' },
+      { ...account, id: 'home', displayName: 'Home', emailAddress: 'kim@mail.example', status: 'active' },
+    ]
+    await flushPromises()
+
+    const [work, home] = wrapper.findAll('nav.sidebar .account-row')
+    expect(work!.get('.account-address').text()).toBe('Sign-in failed')
+    expect(work!.get('.account-address').classes()).toContain('problem')
+    expect(work!.get('a.fix').attributes('href')).toBe('/settings/accounts')
+    expect(home!.get('.account-address').classes()).not.toContain('problem')
+    expect(home!.find('a.fix').exists()).toBe(false)
   })
 })
