@@ -289,6 +289,14 @@ come later. The code is in `App\Mcp`.
 Users log in with email + password (Argon2id) and, later, Google / Microsoft sign-in as identity providers. (Signing
 in with Google or Microsoft to connect a mail account is separate: see Provider sign-in below.)
 
+#### The sign-in session
+
+The sign-in pages (`/login`, `/oauth/authorize` with the consent screen) are the only part of the API with a browser
+session (firewall `main`); every API call is stateless and signed with a token. The session lives in Redis
+(`RedisSessionHandler`, keys `session:*`), so every API instance sees the same one and a deploy signs nobody out. It
+ends two hours after its last request (the Redis TTL, also `gc_maxlifetime`) or when the browser closes (the cookie
+has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https.
+
 ### 3.3 Mail account credentials
 
 - OAuth (Gmail, Microsoft 365) wherever possible; IMAP/SMTP passwords as fallback.
@@ -338,8 +346,9 @@ Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes 
   `connectError=expired` for a state that expired or that it does not know (an unknown one always to the web app).
   For `returnTo: native` the same query goes to `NATIVE_REDIRECT_URI` (`tresso://auth/callback`) with that page in
   `next`; the desktop app opens only those two pages from such a link. It does not depend on the API's browser session (the one used
-  to sign in for `/oauth/authorize`): that session ends after 24 idle minutes or a deploy, long before the web app's
-  sign-in, and requiring it sent users from the provider to Tresso's sign-in page as if they had been signed out.
+  to sign in for `/oauth/authorize`): that session can end long before the web app's sign-in (two idle hours, a closed
+  browser, a sign-out on the sign-in pages), and requiring it sent users from the provider to Tresso's sign-in page as
+  if they had been signed out.
 - **Finish:** the web app (or the desktop app, from the link) takes the answer out of its address bar and posts it to `POST /api/v1/provider-connections`
   (scope `settings:write`, our own apps only) with its access token. That token must belong to the user who started:
   a sign-in link someone else started cannot attach your provider account to their Tresso account. The state works
