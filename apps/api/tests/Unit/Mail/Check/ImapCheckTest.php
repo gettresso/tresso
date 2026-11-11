@@ -7,6 +7,7 @@ namespace App\Tests\Unit\Mail\Check;
 use App\Mail\Check\CheckFailed;
 use App\Mail\Check\CheckStatus;
 use App\Mail\Check\ImapCheck;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class ImapCheckTest extends TestCase
@@ -52,6 +53,29 @@ final class ImapCheckTest extends TestCase
 
         self::assertSame(CheckStatus::AuthFailed, $failure->status);
         self::assertSame('The server said: [AUTHENTICATIONFAILED] Invalid credentials', $failure->getMessage());
+    }
+
+    /**
+     * @return iterable<string, array{string, CheckStatus}>
+     */
+    public static function refusals(): iterable
+    {
+        yield 'no code' => ['t1 NO Invalid login', CheckStatus::AuthFailed];
+        yield 'authentication failed' => ['t1 NO [AUTHENTICATIONFAILED] Invalid credentials', CheckStatus::AuthFailed];
+        yield 'authorization failed' => ['t1 NO [AUTHORIZATIONFAILED] Not allowed', CheckStatus::AuthFailed];
+        yield 'expired' => ['t1 NO [EXPIRED] Password expired', CheckStatus::AuthFailed];
+        yield 'unavailable' => ['t1 NO [UNAVAILABLE] Authentication backend down', CheckStatus::Failed];
+        yield 'in use' => ['t1 NO [INUSE] Mailbox in use', CheckStatus::Failed];
+        yield 'privacy required' => ['t1 NO [PRIVACYREQUIRED] Use TLS', CheckStatus::Failed];
+        yield 'bad' => ['t1 BAD Command unknown', CheckStatus::Failed];
+    }
+
+    #[DataProvider('refusals')]
+    public function testOnlyAWrongPasswordIsCalledOne(string $answer, CheckStatus $expected): void
+    {
+        $failure = $this->failure(static fn () => new ImapCheck(new ScriptedConnection(['* OK ready', $answer]), 'imap.example.test')->run(false, 'kim', 'secret'));
+
+        self::assertSame($expected, $failure->status);
     }
 
     public function testSomethingThatIsNoImapServerFails(): void

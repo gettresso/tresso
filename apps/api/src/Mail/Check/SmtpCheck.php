@@ -78,7 +78,8 @@ final class SmtpCheck
         if (235 === $code) {
             return;
         }
-        if (535 === $code || 534 === $code || 454 === $code) {
+        // 454 is a temporary failure at the server (RFC 4954), not a wrong password.
+        if (535 === $code || 534 === $code) {
             throw new CheckFailed(CheckStatus::AuthFailed, self::said($code, $text));
         }
 

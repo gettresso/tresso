@@ -40,7 +40,7 @@ final class ImapCheck
         $this->send($tag, ['LOGIN', $username, $password]);
         [$status, $text] = $this->response($tag);
         if ('OK' !== $status) {
-            throw new CheckFailed(CheckStatus::AuthFailed, self::said($text) ?: 'The server did not accept the username or password.');
+            throw self::refusedLogin($status, $text);
         }
 
         $folders = 0;
@@ -67,6 +67,25 @@ final class ImapCheck
         }
 
         return $folders;
+    }
+
+    /**
+     * Why LOGIN was refused, by its response code, with the rules of the sync workers: AUTHENTICATIONFAILED,
+     * AUTHORIZATIONFAILED, EXPIRED and a NO without a code (how most servers answer a wrong password) are the
+     * credentials; PRIVACYREQUIRED is the connection security; anything else (UNAVAILABLE, INUSE, LIMIT, BAD, ...) is
+     * a problem at the server, not a wrong password.
+     */
+    private static function refusedLogin(string $status, string $text): CheckFailed
+    {
+        $code = 1 === preg_match('/^\[([A-Z-]+)/i', $text, $match) ? strtoupper($match[1]) : null;
+        if ('NO' === $status && (null === $code || \in_array($code, ['AUTHENTICATIONFAILED', 'AUTHORIZATIONFAILED', 'EXPIRED'], true))) {
+            return new CheckFailed(CheckStatus::AuthFailed, self::said($text) ?: 'The server did not accept the username or password.');
+        }
+        if ('PRIVACYREQUIRED' === $code) {
+            return new CheckFailed(CheckStatus::Failed, 'The server does not accept a password on this connection. Choose SSL/TLS or STARTTLS. '.self::said($text));
+        }
+
+        return new CheckFailed(CheckStatus::Failed, trim('The server could not sign you in right now. '.self::said($text)));
     }
 
     /**
@@ -99,8 +118,8 @@ final class ImapCheck
             $this->connection->write($line.' {'.\strlen($argument)."}\r\n");
             $continuation = $this->connection->readLine();
             if (!str_starts_with($continuation, '+')) {
-                [, $text] = self::status(substr($continuation, \strlen($tag) + 1));
-                throw new CheckFailed(CheckStatus::AuthFailed, self::said($text) ?: 'The server did not accept the username or password.');
+                [$status, $text] = self::status(substr($continuation, \strlen($tag) + 1));
+                throw self::refusedLogin($status, $text);
             }
             $line = $argument;
         }

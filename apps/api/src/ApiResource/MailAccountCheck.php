@@ -19,7 +19,9 @@ use App\State\MailAccountCheckProcessor;
  * `imap` and `smtp` are ok, auth_failed (the server refused the username or password), unreachable (not found, refused
  * or no answer), certificate (TLS certificate not valid for the host), blocked (private address), failed (the server
  * answered, but not as expected) or not_checked (SMTP, when IMAP failed). `detail` is one technical line about what
- * failed. Our own apps only, and at most 20 checks per user in 10 minutes.
+ * failed. An SMTP server that asks for no sign-in passes without the credentials being tried, as the sync workers
+ * send through it. Our own apps only, at most 20 checks per user in 10 minutes and one at a time; both servers
+ * together take at most 25 seconds.
  */
 #[ApiResource(
     shortName: 'MailAccountCheck',

@@ -10,12 +10,14 @@ use Psr\Log\LoggerInterface;
 
 /**
  * Checks that Tresso can sign in to a mail account before the account is created: IMAP sign-in and the folder list,
- * then SMTP sign-in, each within {@see self::TIMEOUT} seconds. Outgoing mail is only checked once incoming mail works,
- * so a wrong password is reported once. Credentials are used for this check only and never stored here.
+ * then SMTP sign-in, each within {@see self::TIMEOUT} seconds and both together within {@see self::TOTAL} seconds.
+ * Outgoing mail is only checked once incoming mail works, so a wrong password is reported once. Credentials are used
+ * for this check only and never stored here.
  */
 class MailConnectionChecker
 {
     public const int TIMEOUT = 15;
+    public const int TOTAL = 25;
 
     public function __construct(
         private readonly MailServerDialer $dialer,
@@ -25,8 +27,9 @@ class MailConnectionChecker
 
     public function check(ServerSettings $imap, ServerSettings $smtp, string $username, #[\SensitiveParameter] string $password): ConnectionCheck
     {
+        $end = microtime(true) + self::TOTAL;
         try {
-            $folders = $this->withConnection($imap, static fn (LineConnection $connection): int => new ImapCheck($connection, $imap->host)->run(ConnectionSecurity::StartTls === $imap->security, $username, $password));
+            $folders = $this->withConnection($imap, $end, static fn (LineConnection $connection): int => new ImapCheck($connection, $imap->host)->run(ConnectionSecurity::StartTls === $imap->security, $username, $password));
         } catch (CheckFailed $e) {
             $this->logger->info('Checking an IMAP server failed.', ['host' => $imap->host, 'port' => $imap->port, 'status' => $e->status->value]);
 
@@ -34,7 +37,7 @@ class MailConnectionChecker
         }
 
         try {
-            $this->withConnection($smtp, static function (LineConnection $connection) use ($smtp, $username, $password): null {
+            $this->withConnection($smtp, $end, static function (LineConnection $connection) use ($smtp, $username, $password): null {
                 new SmtpCheck($connection, $smtp->host)->run(ConnectionSecurity::StartTls === $smtp->security, $username, $password);
 
                 return null;
@@ -55,9 +58,11 @@ class MailConnectionChecker
      *
      * @return T
      */
-    private function withConnection(ServerSettings $server, \Closure $use): mixed
+    private function withConnection(ServerSettings $server, float $end, \Closure $use): mixed
     {
-        $connection = $this->dialer->connect($server, microtime(true) + self::TIMEOUT, self::TIMEOUT);
+        $now = microtime(true);
+        $deadline = min($now + self::TIMEOUT, $end);
+        $connection = $this->dialer->connect($server, $deadline, max(1, (int) round($deadline - $now)));
         try {
             return $use($connection);
         } finally {

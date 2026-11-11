@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
+use App\Mail\Check\CheckLock;
+use Doctrine\DBAL\DriverManager;
 use Symfony\Component\Process\Process;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * Checking an IMAP/SMTP account before it is created, against a scripted mail server on this machine (the test
@@ -63,10 +66,7 @@ final class MailAccountCheckTest extends DatabaseTestCase
 
     public function testAServerThatIsNotThereIsUnreachable(): void
     {
-        $listener = stream_socket_server('tcp://127.0.0.1:0');
-        self::assertIsResource($listener);
-        $port = (int) substr((string) strrchr((string) stream_socket_get_name($listener, false), ':'), 1);
-        fclose($listener);
+        $port = $this->closedPort();
 
         $check = $this->check([$port, $port], 'right');
 
@@ -75,6 +75,45 @@ final class MailAccountCheckTest extends DatabaseTestCase
         $detail = $check['detail'] ?? null;
         self::assertIsString($detail);
         self::assertStringEndsWith('(127.0.0.1:'.$port.').', $detail);
+    }
+
+    public function testAUserGetsTwentyChecksInTenMinutes(): void
+    {
+        $port = $this->closedPort();
+        for ($i = 0; $i < 20; ++$i) {
+            self::assertSame('unreachable', $this->check([$port, $port], 'right')['imap']);
+        }
+
+        $this->client->jsonRequest('POST', '/api/v1/mail-account-checks', $this->payload([$port, $port], 'right'), $this->kim);
+
+        self::assertResponseStatusCodeSame(429);
+    }
+
+    public function testOneCheckOfAUserRunsAtATime(): void
+    {
+        $user = $this->connection()->fetchOne('SELECT id FROM app_user WHERE email = :email', ['email' => 'kim@example.test']);
+        self::assertIsString($user);
+        // A session of its own (advisory locks are per database session), to the same database.
+        $params = $this->connection()->getParams();
+        $text = static fn (mixed $value): string => \is_string($value) ? $value : '';
+        $port = $params['port'] ?? null;
+        $other = DriverManager::getConnection([
+            'driver' => 'pdo_pgsql',
+            'host' => $text($params['host'] ?? null),
+            'port' => \is_int($port) ? $port : (is_numeric($port) ? (int) $port : 5432),
+            'user' => $text($params['user'] ?? null),
+            'password' => $text($params['password'] ?? null),
+            'dbname' => $text($params['dbname'] ?? null),
+        ]);
+        $key = CheckLock::key(Uuid::fromString($user)->toRfc4122());
+        self::assertTrue($other->fetchOne('SELECT pg_try_advisory_lock(:namespace, :key)', ['namespace' => 0x6D61696C, 'key' => $key]));
+
+        try {
+            $this->client->jsonRequest('POST', '/api/v1/mail-account-checks', $this->payload([993, 465], 'right'), $this->kim);
+            self::assertResponseStatusCodeSame(429);
+        } finally {
+            $other->close();
+        }
     }
 
     public function testAnAddressThatIsConnectedAlreadyIsSaidAtOnce(): void
@@ -107,6 +146,17 @@ final class MailAccountCheckTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', '/api/v1/mail-account-checks', $this->payload([993, 465], 'right'), $this->userHeaders('kim@example.test', ['settings:read']));
 
         self::assertResponseStatusCodeSame(403);
+    }
+
+    /** A port on this machine nothing listens on. */
+    private function closedPort(): int
+    {
+        $listener = stream_socket_server('tcp://127.0.0.1:0');
+        self::assertIsResource($listener);
+        $port = (int) substr((string) strrchr((string) stream_socket_get_name($listener, false), ':'), 1);
+        fclose($listener);
+
+        return $port;
     }
 
     /**

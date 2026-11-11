@@ -38,6 +38,8 @@ class MailServerDialer
         private readonly HostResolver $resolver,
         #[Autowire(env: 'bool:MAIL_ALLOW_UNSAFE_SERVERS')]
         private readonly bool $allowUnsafe,
+        /** Certificate authorities to trust instead of the system's; for tests with a local TLS server only. */
+        private readonly ?string $caFile = null,
     ) {
     }
 
@@ -80,14 +82,14 @@ class MailServerDialer
                 $errorMessage,
                 $left,
                 \STREAM_CLIENT_CONNECT,
-                stream_context_create(['ssl' => SocketConnection::tlsOptions($server->host)]),
+                stream_context_create(['ssl' => SocketConnection::tlsOptions($server->host, $this->caFile)]),
             );
             if (false === $stream) {
                 $failure = '' !== $errorMessage ? $errorMessage : 'no answer';
                 continue;
             }
 
-            $connection = new SocketConnection($stream, $server->host, $server->port, $deadline, $timeoutSeconds);
+            $connection = new SocketConnection($stream, $server->host, $server->port, $deadline, $timeoutSeconds, $this->caFile);
             if (ConnectionSecurity::Tls === $server->security) {
                 try {
                     $connection->startTls();

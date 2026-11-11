@@ -436,7 +436,7 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   by a large provider). The first three are requested together. These requests go to domains users type in, so
   they run through a client that refuses private networks, with short timeouts and a 64 KB limit. Only encrypted
   servers are suggested. Answers are cached per domain in Redis: a day when found, an hour when not. Because the
-  cache is per domain, the address itself is never sent to the domain's autoconfig, and a suggested username that is
+  cache is per domain (key prefix `autoconfig2.`, so entries cached before this rule are not read), the address itself is never sent to the domain's autoconfig, and a suggested username that is
   some other address is replaced by the one asked for. The answer also names the large provider behind the address
   (`provider`: `google`, `outlook`, `m365`, `icloud`, `yahoo` or null), from the domain (gmail.com, outlook.com,
   icloud.com, yahoo.*, ...) or else from the preferred mail exchanger (`*.google.com`, `*.mail.protection.outlook.com`
@@ -449,7 +449,14 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   `blocked`, `failed` or `not_checked` (SMTP when IMAP failed). It connects by the sync workers' rules: every address
   of the host must be public, the connection goes to one of the addresses that were checked, and TLS is verified for
   the host name. Nothing is stored; the web client creates the account only once a check passed, so a wrong password
-  or server never leaves a broken account behind. At most 20 checks per user in 10 minutes.
+  or server never leaves a broken account behind. At most 20 checks per user in 10 minutes and one at a time (a
+  PostgreSQL advisory lock on the user), both servers together within 25 seconds; every wait is a `stream_select`
+  against that deadline, so a server that answers a byte at a time cannot hold the request longer. A refused LOGIN
+  is `auth_failed` only for `NO` without a response code or with AUTHENTICATIONFAILED, AUTHORIZATIONFAILED or
+  EXPIRED (the workers' rule); UNAVAILABLE, PRIVACYREQUIRED, BAD and the like, and SMTP 454, are `failed`. An SMTP
+  server that asks for no sign-in passes without the credentials being tried. What the answer tells (refused versus
+  no answer, up to 200 characters of a server's reply) makes the endpoint a slow port and banner probe of public
+  addresses from the API's own address; with public addresses only and the limits above that is accepted.
 - Changing the password, username or a server of an account ends its lease and keeps it from every worker for one
   lease period (90 seconds): the worker that held it no longer gets it back at its next heartbeat (every 30 seconds by
   default), stops that account's syncer, and its calls for the account answer 404 from then on. Once the hold ends the
