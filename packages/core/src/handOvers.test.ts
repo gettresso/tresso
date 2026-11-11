@@ -156,6 +156,7 @@ describe('HandOverFlow', () => {
   let forwardStatus: SyncedOutgoingMessage['status'] | null
   let originalFiles: MessageAttachment[]
   let unscannedRefused: boolean
+  let bodyFails: unknown
   let flow: HandOverFlow
 
   beforeEach(async () => {
@@ -177,6 +178,7 @@ describe('HandOverFlow', () => {
     forwardStatus = null
     originalFiles = []
     unscannedRefused = false
+    bodyFails = null
     const explain = (error: unknown) => ({ message: error instanceof Error ? error.message : String(error), violations: error instanceof ApiFailure ? error.violations : {} })
     const cancel = async (id: string) => {
       if (cancelFails !== null) throw cancelFails
@@ -189,13 +191,16 @@ describe('HandOverFlow', () => {
       accounts: () => accounts,
       signatures: () => [signature('sig-work', 'Work')],
       defaultAccount: () => 'work',
-      body: async () => ({ html: '<p>Charged twice</p>', text: null, attachments: originalFiles }),
+      body: async () => {
+        if (bodyFails !== null) throw bodyFails
+        return { html: '<p>Charged twice</p>', text: null, attachments: originalFiles }
+      },
       send: async (request) => {
         if (unscannedRefused && request.acceptUnscanned !== true) {
           throw new ApiFailure(422, { acceptUnscanned: 'invoice.pdf could not be scanned. Send it anyway?' })
         }
         sent.push(request)
-        return outgoing('forward-1', 'scheduled')
+        return outgoing(`forward-${sent.length}`, 'scheduled')
       },
       cancel,
       notify: () => undefined,
@@ -282,6 +287,50 @@ describe('HandOverFlow', () => {
 
     expect(cancelled).toEqual(['forward-1'])
     expect(await store.drafts()).toEqual([])
+  })
+
+  it('says the forward may still go out when the hand-over could not be recorded nor the forward stopped', async () => {
+    createFails = new Error('Network request failed')
+    cancelFails = new Error('Network request failed')
+
+    await expect(flow.handOver(original, input)).rejects.toThrow(
+      new HandOverError('Network request failed The forward to Lisa Bakker could not be stopped and may still be sent, but it is not in "Waiting on".'),
+    )
+  })
+
+  it('hands nothing over when the original could not be loaded', async () => {
+    bodyFails = new Error('Service unavailable')
+
+    await expect(flow.handOver(original, input)).rejects.toThrow(new HandOverError('The message could not be forwarded: it could not be loaded (Service unavailable).'))
+
+    expect(sent).toEqual([])
+    expect(created).toEqual([])
+    expect(await store.drafts()).toEqual([])
+  })
+
+  it('takes back one hand-over while another is made, each on its own draft', async () => {
+    const first = await flow.handOver(original, input)
+    const second = message('m2', 't2', 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00', { subject: 'Contract' })
+    const delegate = { address: 'tom@company.example', name: 'Tom' }
+    // The second forward takes a file along, which holds it after its draft opened.
+    originalFiles = [{ id: 'contract', filename: 'contract.pdf', contentType: 'application/pdf', size: 100, inline: false, contentId: null, scanStatus: 'clean', access: 'allowed', scanSignature: null, scanFailure: null, url: null }]
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    drafts.duringFile = () => held
+
+    const handing = flow.handOver(second, { ...input, delegate })
+    await vi.advanceTimersByTimeAsync(10)
+    const takingBack = flow.takeBack(first)
+    await vi.advanceTimersByTimeAsync(10)
+    release()
+    const handed = await handing
+    expect(await takingBack).toBe('undone')
+
+    expect(sent[1]).toMatchObject({ to: [delegate], subject: 'Fwd: Contract', inReplyToMessageId: 'm2' })
+    expect(created[1]).toMatchObject({ messageId: 'm2', forwardId: handed.forwardId })
+    expect(withdrawn).toEqual(['h1'])
+    expect(await store.draft(first.draftId)).toBeNull()
+    expect(await store.draft(handed.draftId)).toMatchObject({ inReplyToMessageId: 'm2', outgoingId: handed.forwardId })
   })
 
   it('takes back both the forward and the hand-over', async () => {
