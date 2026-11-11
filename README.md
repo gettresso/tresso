@@ -142,11 +142,43 @@ container (running the image's default `frankenphp` command) needs `RUN_MIGRATIO
 signing keys, migrates the database and creates the OAuth clients. Every other container, more API containers and the
 workers, needs those keys too (mount them read-only at `/app/config/jwt`). `CORS_ALLOW_ORIGIN` and
 `MERCURE_CORS_ORIGINS` list the allowed origins separated by spaces: the web address and the desktop app's own,
-`tauri://localhost` and `http://tauri.localhost`.
+`tauri://localhost` and `http://tauri.localhost`. The API reads the optional addresses above as `AUTH_PUBLIC_URL`,
+`MCP_PUBLIC_URL` and `MCP_ON_API_HOST`, the web image `TRESSO_AUTH_URL`.
 
 In the desktop app, choose **Use another server** on the sign-in screen and enter the API address, such as
 `api.mail.example.com`. The app checks that the server answers and remembers it until you choose again. The web
 client is at your web address.
+
+### Sign-in on the web address, MCP on its own host
+
+Two optional settings move what people see off the API host; left empty, everything stays on the API host as above.
+
+- `TRESSO_AUTH_URL`: where people sign in, sign out and allow apps. Set it to your `TRESSO_WEB_URL` to show the sign-in
+  pages on the web client's address, so the browser's sign-in belongs to the address people use. The proxy in
+  `compose.prod.yaml` already sends `/login`, `/logout`, `/oauth/authorize` and the pages' files (`/auth/auth.css`,
+  `/auth/tresso.svg`, `/auth/fonts/*`) on the web address to the API. The token endpoint, the metadata and the issuer
+  stay on the API address, so apps and tokens that exist keep working; an app that still opens
+  `<TRESSO_API_URL>/oauth/authorize` is sent on to the new address.
+- `TRESSO_MCP_URL`: a host of its own for the MCP endpoint, such as `https://mcp.mail.example.com` (then
+  `https://mcp.mail.example.com/mcp`). That host answers nothing but `/mcp` and its metadata. The old address,
+  `<TRESSO_API_URL>/mcp`, keeps working for clients set up with it, until you set `TRESSO_MCP_ON_API_HOST=0`; a
+  redirect would not do, since MCP clients drop their token when a request is sent to another host.
+
+To switch an existing server without signing anyone out:
+
+1. For `TRESSO_MCP_URL`: add a DNS record (A and AAAA) for the new name pointing at this server. The proxy gets its
+   certificate by itself once the setting is there.
+2. Set `TRESSO_AUTH_URL` (to `TRESSO_WEB_URL`) and `TRESSO_MCP_URL` in `.env`, then
+   `docker compose -f compose.prod.yaml --env-file .env up -d`. Apps and their tokens stay signed in; a browser signs
+   in once more the next time it reaches the sign-in page, since its sign-in cookie belonged to the API address.
+3. Check: sign in on the web address from a signed-out browser; sign in from the desktop app (it opens the API address
+   and is sent on); an MCP client on the old address still works; a new one on `<TRESSO_MCP_URL>/mcp` signs in.
+4. Point people at the new MCP address. Much later, `TRESSO_MCP_ON_API_HOST=0` ends the old one (those clients then
+   add the server again under the new address and sign in once).
+
+Behind a proxy of your own instead of the one in `compose.prod.yaml`: route the six sign-in paths above on the web
+address to the API, serve the MCP host from the API like the API host, and keep the `Host` header the browser sent
+(the API builds its redirects and its MCP metadata from it).
 
 ## 🤖 Use Tresso from Claude and other MCP clients
 
@@ -165,7 +197,7 @@ claude mcp add --transport http tresso https://api.gettresso.com/mcp
 Then run `/mcp` in Claude Code and choose **Authenticate**: your browser opens Tresso's sign-in and a screen that asks
 which permissions to give. In Claude.ai (or Claude Desktop), add a custom connector under **Settings, Connectors** with
 the URL `https://api.gettresso.com/mcp`. On your own server, use your API address instead, such as
-`https://api.mail.example.com/mcp`.
+`https://api.mail.example.com/mcp`, or `<TRESSO_MCP_URL>/mcp` when the endpoint has a host of its own.
 
 **Locally** (the development stack below):
 
