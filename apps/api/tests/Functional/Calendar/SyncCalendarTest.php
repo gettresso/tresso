@@ -189,6 +189,7 @@ final class SyncCalendarTest extends DatabaseTestCase
             self::service($container, CalendarObjectRepository::class),
             self::service($container, CalendarOperationRepository::class),
             self::service($container, CalendarStore::class),
+            self::service($container, \App\Calendar\EventNotes::class),
             new NullLogger(),
             false,
         ));
@@ -201,6 +202,29 @@ final class SyncCalendarTest extends DatabaseTestCase
         self::assertSame('The calendar server address must use https.', $account['calendarStatusDetail']);
         self::assertNull($account['calendarUrl']);
         self::assertSame([], $this->remoteCalendarNames());
+    }
+
+    public function testAnAcceptedListKeepsAReportedSyncErrorUntilACalendarSyncs(): void
+    {
+        $home = $this->reportCalendars()[0]['id'];
+        $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'error', 'detail' => 'Calendars could not be synced; trying again.'], $this->worker);
+        self::assertResponseIsSuccessful();
+
+        // The next round lists the calendars again before the failing one fails again.
+        $this->reportCalendars();
+        $account = $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim);
+        self::assertSame('error', $account['calendarStatus'], 'The list does not make it look active for a minute.');
+        self::assertSame('Calendars could not be synced; trying again.', $account['calendarStatusDetail']);
+
+        // A batch without a cursor is part of a sync, not its end.
+        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'changed' => [['remoteId' => self::HOME.'standup.ics', 'etag' => '"1"', 'ical' => self::object('standup@company.example', 'Standup')]]], $this->worker);
+        self::assertSame('error', $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarStatus']);
+
+        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'cursor' => 'sync-token-1'], $this->worker);
+        self::assertResponseIsSuccessful();
+        $account = $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim);
+        self::assertSame('active', $account['calendarStatus']);
+        self::assertNull($account['calendarStatusDetail']);
     }
 
     public function testUserEditsAreWrittenByTheLeasingWorker(): void
