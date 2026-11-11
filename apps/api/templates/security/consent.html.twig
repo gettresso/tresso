@@ -28,10 +28,17 @@
                 {% endif %}
             </p>
 
-            <p class="warning">
-                Tresso has not checked this app, and anyone can give an app any name. Only allow it if you started this
-                yourself and trust where it sends you.
-            </p>
+            {% if allowed_before %}
+                <p class="warning">
+                    You allowed this app before. An app on this computer is asked every time, because another program
+                    on it could use the same name and address. Only allow it if you started this yourself just now.
+                </p>
+            {% else %}
+                <p class="warning">
+                    Tresso has not checked this app, and anyone can give an app any name. Only allow it if you started this
+                    yourself and trust where it sends you.
+                </p>
+            {% endif %}
 
             {% if error %}
                 <p class="error" role="alert">{{ error }}</p>

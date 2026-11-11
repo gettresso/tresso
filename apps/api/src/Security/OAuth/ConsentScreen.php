@@ -22,7 +22,10 @@ use Twig\Environment;
  *
  * The page posts the answer back to the same URL (so the bundle checks the whole authorization request again), with a
  * CSRF token. Allowing records the scopes ({@see Consents}); the next request that asks for no more than those is
- * approved without the page. Denying sends the app `access_denied`.
+ * approved without the page, but only for an app on the web: for an app on the user's own computer (a loopback or an
+ * app's own scheme as redirect URI) nothing proves which program asks, since any program there can use a public
+ * client id and listen on that port or claim that scheme (RFC 8252 8.6), so the page is shown every time, saying the
+ * user allowed the app before. Denying sends the app `access_denied`.
  *
  * Before anything is shown, the request must only ask for scopes such an app may have, and a `resource` (RFC 8707)
  * must be one this server protects; anything else goes back to the app as `invalid_scope` or `invalid_target`.
@@ -63,21 +66,22 @@ final readonly class ConsentScreen
         $this->checkResource($event, $client, $request);
 
         $consent = $this->consentRepository->findOneFor($user, $client->getIdentifier());
-        if (null !== $consent && $consent->covers($scopes)) {
+        $allowedBefore = null !== $consent && $consent->covers($scopes);
+        if ($allowedBefore && !AppAddress::of(self::targetOf($event, $client))->onThisComputer) {
             $event->resolveAuthorization(AuthorizationRequestResolveEvent::AUTHORIZATION_APPROVED);
 
             return;
         }
 
         if (!$request->isMethod('POST')) {
-            $event->setResponse($this->page($event, $client, $user, $scopes));
+            $event->setResponse($this->page($event, $client, $user, $scopes, $allowedBefore));
 
             return;
         }
 
         $token = new CsrfToken(self::CSRF_TOKEN_ID, $request->request->getString('_csrf_token'));
         if (!$this->csrfTokens->isTokenValid($token)) {
-            $event->setResponse($this->page($event, $client, $user, $scopes, 'This page was open too long or came from somewhere else. Check the request and answer again.'));
+            $event->setResponse($this->page($event, $client, $user, $scopes, $allowedBefore, 'This page was open too long or came from somewhere else. Check the request and answer again.'));
 
             return;
         }
@@ -85,7 +89,7 @@ final readonly class ConsentScreen
         match ($request->request->getString('decision')) {
             self::ALLOW => $this->allow($event, $user, $client, $scopes),
             self::DENY => $event->resolveAuthorization(AuthorizationRequestResolveEvent::AUTHORIZATION_DENIED),
-            default => $event->setResponse($this->page($event, $client, $user, $scopes, 'Choose Allow or Deny.')),
+            default => $event->setResponse($this->page($event, $client, $user, $scopes, $allowedBefore, 'Choose Allow or Deny.')),
         };
     }
 
@@ -153,7 +157,7 @@ final readonly class ConsentScreen
     /**
      * @param list<string> $scopes
      */
-    private function page(AuthorizationRequestResolveEvent $event, Client $client, User $user, array $scopes, ?string $error = null): Response
+    private function page(AuthorizationRequestResolveEvent $event, Client $client, User $user, array $scopes, bool $allowedBefore, ?string $error = null): Response
     {
         $redirectUri = self::targetOf($event, $client);
         $request = $this->requests->getCurrentRequest() ?? throw new \LogicException('The consent screen needs a request.');
@@ -165,6 +169,7 @@ final readonly class ConsentScreen
             'email' => $user->getEmail(),
             'action' => $request->getRequestUri(),
             'error' => $error,
+            'allowed_before' => $allowedBefore,
             'csrf_token_id' => self::CSRF_TOKEN_ID,
         ]), null === $error ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
 

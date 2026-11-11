@@ -225,7 +225,10 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   back to the app's redirect URI once the user allowed the app; before that the user sees them on a page of ours and
   the browser goes nowhere, so the endpoint is no open redirect (RFC 9700 4.11.2). That page explains each error in
   fixed words of ours and never repeats text from the request. When
-  the user already allowed every scope asked for, the request is approved at once. Otherwise the page shows the app's
+  the user already allowed every scope asked for, the request is approved at once, but only for an app on the web
+  (an https redirect URI): for an app on the user's own computer (a loopback or an app's own scheme) nothing proves
+  which program asks, since any program there can use a public client id and listen on that port or claim that scheme
+  (RFC 8252 8.6), so the page is shown every time and says the user allowed the app before. Otherwise the page shows the app's
   name, the host it sends the user back to (the part that is checked), each scope in plain words, the signed-in
   account and a warning that Tresso has not checked the app. Allow and Deny post back to the same URL with a CSRF
   token; Deny sends `access_denied`. The page cannot be framed and is not cached. Allowing stores an `oauth_consent`
