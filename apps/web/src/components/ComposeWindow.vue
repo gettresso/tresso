@@ -129,5 +129,11 @@ const savedText = computed(() =>
     max-height: none;
     border-radius: 0;
   }
+  /* Minimized on a phone: a bar along the bottom edge, so the mail behind it can be read and reached. */
+  .compose.minimized {
+    inset: auto 0 0;
+    width: 100%;
+    border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  }
 }
 </style>
