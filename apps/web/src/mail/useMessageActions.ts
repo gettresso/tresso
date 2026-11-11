@@ -107,8 +107,9 @@ export function useMessageActions(busy: Ref<boolean> = ref(false)) {
 export function shortcutAllowed(event: KeyboardEvent, composing: boolean): boolean {
   const target = event.target instanceof HTMLElement ? event.target : null
   const typing = target !== null && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
-  // A modal dialog element (the event editor, say) holds the keys wherever focus fell, even back on the page body.
-  const inDialog = target?.closest('[role="dialog"]') != null || document.querySelector('dialog[open]') !== null
+  // A modal dialog element (the event editor, say) holds the keys wherever focus fell, even back on the page body. A
+  // panel that says it is not modal (the calendar's event detail) leaves them to the page around it.
+  const inDialog = target?.closest('[role="dialog"]:not([aria-modal="false"])') != null || document.querySelector('dialog[open]') !== null
   const inMenu = target?.closest('[role="menu"]') != null
   return !(typing || composing || inDialog || inMenu || event.repeat || event.isComposing || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey)
 }

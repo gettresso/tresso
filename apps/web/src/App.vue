@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterView, useRouter } from 'vue-router'
 import { errorMessage } from '@/api/errors'
+import { shortcutAllowed } from '@/mail/useMessageActions'
 import { useAuthStore } from '@/stores/auth'
 import { useComposeStore } from '@/stores/compose'
 import { useHandOversStore } from '@/stores/handOvers'
@@ -76,11 +77,9 @@ function reload(): void {
   window.location.reload()
 }
 
-// "C" writes a new message, unless the user is typing somewhere.
+// "C" writes a new message, as the other shortcuts work: not while typing, in a dialog or menu, or held down.
 function shortcut(event: KeyboardEvent): void {
-  const target = event.target as HTMLElement | null
-  const typing = target !== null && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
-  if (!typing && auth.isAuthenticated && !auth.paymentRequired && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'c' && compose.draft === null && handOvers.handingOver === null) {
+  if (shortcutAllowed(event, false) && auth.isAuthenticated && !auth.paymentRequired && event.key.toLowerCase() === 'c' && compose.draft === null && handOvers.handingOver === null) {
     event.preventDefault()
     compose.openNew()
   }
