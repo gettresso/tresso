@@ -12,6 +12,7 @@ import { useHandOversStore } from '@/stores/handOvers'
 import RecipientField from '@/components/RecipientField.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import { backdropClose } from '@/components/backdropClose'
 
 /** Hands a conversation over: forwarded to one person with a note, and waited on until the due date. */
 const props = defineProps<{ message: SyncedMessage }>()
@@ -87,11 +88,10 @@ function cancel(): void {
   }
 }
 
+// Escape reaches the dialog as its cancel event; a popup inside it (the suggestion list) that handles Escape itself
+// prevents that, so closing the popup does not close the dialog and lose the note.
 function keydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    cancel()
-  } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
     event.preventDefault()
     // A second press while the first is on its way would forward the conversation twice.
     if (!submitting.value) {
@@ -100,90 +100,85 @@ function keydown(event: KeyboardEvent): void {
   }
 }
 
+const dialog = ref<HTMLDialogElement | null>(null)
+// A click on the backdrop closes it like Cancel.
+const backdrop = backdropClose(cancel)
+
 onMounted(async () => {
+  // Modal: the page behind is inert, so Tab stays inside the dialog and a screen reader does not read behind it.
+  dialog.value?.showModal?.()
   await nextTick()
   firstField.value?.querySelector<HTMLInputElement>('input')?.focus()
 })
 </script>
 
 <template>
-  <div class="backdrop" @mousedown.self="cancel">
-    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="hand-over-title" @keydown="keydown">
-      <header class="head">
-        <h2 id="hand-over-title">Hand over</h2>
-        <p class="about">{{ message.subject || '(no subject)' }}, from {{ senderName(message.from) }}</p>
-      </header>
-      <form class="form" novalidate @submit.prevent="!submitting && submit()">
-        <div ref="firstField">
-          <RecipientField v-model="delegate" label="Hand over to" :error="errors.delegate" />
-        </div>
+  <dialog ref="dialog" class="dialog" aria-labelledby="hand-over-title" @cancel.prevent="cancel" @keydown="keydown" @pointerdown="backdrop.onPointerdown" @click="backdrop.onClick">
+    <header class="head">
+      <h2 id="hand-over-title">Hand over</h2>
+      <p class="about">{{ message.subject || '(no subject)' }}, from {{ senderName(message.from) }}</p>
+    </header>
+    <form class="form" novalidate @submit.prevent="!submitting && submit()">
+      <div ref="firstField">
+        <RecipientField v-model="delegate" label="Hand over to" :error="errors.delegate" />
+      </div>
 
-        <label class="field">
-          <FieldLabel name="note">{{ noteLabel }}</FieldLabel>
-          <textarea v-model="note" rows="4" :maxlength="MAX_NOTE" placeholder="What should they do, and anything they need to know?" :aria-invalid="errors.note ? 'true' : undefined" />
-          <small class="hint">Sent with the forward, above the original message and its files.</small>
-          <small v-if="errors.note" class="error">{{ errors.note }}</small>
-        </label>
+      <label class="field">
+        <FieldLabel name="note">{{ noteLabel }}</FieldLabel>
+        <textarea v-model="note" rows="4" :maxlength="MAX_NOTE" placeholder="What should they do, and anything they need to know?" :aria-invalid="errors.note ? 'true' : undefined" />
+        <small class="hint">Sent with the forward, above the original message and its files.</small>
+        <small v-if="errors.note" class="error">{{ errors.note }}</small>
+      </label>
 
-        <fieldset class="field">
-          <FieldLabel name="due" tag="legend">Due</FieldLabel>
-          <div class="choices">
-            <label v-for="choice in choices" :key="choice.key" class="choice" :class="{ on: due === choice.key }">
-              <input v-model="due" type="radio" name="due" :value="choice.key" class="visually-hidden" />
-              <span class="choice-label">{{ choiceText[choice.key] }}</span>
-              <span class="choice-sub">{{ weekday(choice.at) }}</span>
-            </label>
-            <label class="choice" :class="{ on: due === 'custom' }">
-              <input v-model="due" type="radio" name="due" value="custom" class="visually-hidden" />
-              <span class="choice-label">Pick a date</span>
-            </label>
-          </div>
-          <label v-if="due === 'custom'" class="day">
-            <span class="visually-hidden">Due on</span>
-            <input v-model="dueDay" type="date" :min="minDay" :aria-invalid="errors.dueDay ? 'true' : undefined" />
+      <fieldset class="field">
+        <FieldLabel name="due" tag="legend">Due</FieldLabel>
+        <div class="choices">
+          <label v-for="choice in choices" :key="choice.key" class="choice" :class="{ on: due === choice.key }">
+            <input v-model="due" type="radio" name="due" :value="choice.key" class="visually-hidden" />
+            <span class="choice-label">{{ choiceText[choice.key] }}</span>
+            <span class="choice-sub">{{ weekday(choice.at) }}</span>
           </label>
-          <small v-if="errors.dueDay" class="error">{{ errors.dueDay }}</small>
-          <small class="hint">You see it in Waiting on until they reply. If the date passes without a reply, Tresso tells you and offers a nudge.</small>
-        </fieldset>
-
-        <p v-if="ui.error" class="form-error" role="alert">{{ ui.error }}</p>
-        <div v-if="unscanned" class="unscanned" role="alert">
-          <p>{{ unscanned }}</p>
-          <button type="button" class="button button-quiet" :disabled="submitting" @click="handOverAnyway">Hand over anyway</button>
+          <label class="choice" :class="{ on: due === 'custom' }">
+            <input v-model="due" type="radio" name="due" value="custom" class="visually-hidden" />
+            <span class="choice-label">Pick a date</span>
+          </label>
         </div>
+        <label v-if="due === 'custom'" class="day">
+          <span class="visually-hidden">Due on</span>
+          <input v-model="dueDay" type="date" :min="minDay" :aria-invalid="errors.dueDay ? 'true' : undefined" />
+        </label>
+        <small v-if="errors.dueDay" class="error">{{ errors.dueDay }}</small>
+        <small class="hint">You see it in Waiting on until they reply. If the date passes without a reply, Tresso tells you and offers a nudge.</small>
+      </fieldset>
 
-        <footer class="actions">
-          <button type="button" class="button button-quiet" :disabled="submitting" @click="cancel">Cancel <KeyShortcut keys="Esc" /></button>
-          <button type="submit" class="button button-primary" :disabled="submitting"><template v-if="submitting"><LogoLoader tone="current" /> Handing over…</template><template v-else>{{ submitText }}</template></button>
-        </footer>
-      </form>
-    </section>
-  </div>
+      <p v-if="ui.error" class="form-error" role="alert">{{ ui.error }}</p>
+      <div v-if="unscanned" class="unscanned" role="alert">
+        <p>{{ unscanned }}</p>
+        <button type="button" class="button button-quiet" :disabled="submitting" @click="handOverAnyway">Hand over anyway</button>
+      </div>
+
+      <footer class="actions">
+        <button type="button" class="button button-quiet" :disabled="submitting" @click="cancel">Cancel <KeyShortcut keys="Esc" /></button>
+        <button type="submit" class="button button-primary" :disabled="submitting"><template v-if="submitting"><LogoLoader tone="current" /> Handing over…</template><template v-else>{{ submitText }}</template></button>
+      </footer>
+    </form>
+  </dialog>
 </template>
 
 <style scoped>
-.backdrop {
-  animation: fade-in var(--motion-base) ease-out;
-  position: fixed;
-  /* Below the macOS app's title bar strip, where a press drags the window instead of reaching the dialog. */
-  inset: var(--titlebar, 0px) 0 0;
-  z-index: 30;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 10vh 16px 16px;
-  background: rgb(15 17 21 / 18%);
-  -webkit-backdrop-filter: var(--scrim-blur);
-  backdrop-filter: var(--scrim-blur);
-  overflow-y: auto;
-}
 .dialog {
   animation: pop-in var(--motion-base) var(--ease-out);
-  width: min(560px, 100%);
-  border-radius: 14px;
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  /* Opens at the same height whatever it holds, so the form does not jump when an error appears. */
+  margin: 10vh auto auto;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
   background: var(--surface);
   -webkit-backdrop-filter: var(--glass-material);
   backdrop-filter: var(--glass-material);
+  color: var(--ink);
   box-shadow: var(--raised);
 }
 .head {
@@ -291,12 +286,5 @@ textarea {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-/* Leaving: the backdrop fades while the dialog shrinks away inside it. */
-.backdrop.layer-leave-active {
-  animation: fade-out var(--motion-fast) ease-in forwards;
-}
-.layer-leave-active .dialog {
-  animation: layer-out var(--motion-fast) ease-in forwards;
 }
 </style>

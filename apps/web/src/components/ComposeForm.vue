@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import FieldLabel from '@/forms/FieldLabel.vue'
 import { provideRequiredFields } from '@/forms/required'
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
 import type { Draft } from '@/mail/db'
@@ -26,6 +26,27 @@ const compose = useComposeStore()
 const mail = useMailStore()
 const showCopies = ref(props.draft.cc.length > 0 || props.draft.bcc.length > 0)
 const laterOpen = ref(false)
+const later = ref<HTMLElement | null>(null)
+
+// Escape closes the "Send later" menu only; it goes no further, where it would close the compose window.
+function closeLater(event: KeyboardEvent): void {
+  if (laterOpen.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    laterOpen.value = false
+  }
+}
+
+// A press elsewhere closes the "Send later" menu. In the capture phase: a press on the macOS app's title strip is
+// stopped at the document by Tauri's drag handling.
+function outsideLater(event: MouseEvent): void {
+  const target = event.target as Node | null
+  if (laterOpen.value && target !== null && !later.value?.contains(target)) {
+    laterOpen.value = false
+  }
+}
+onMounted(() => document.addEventListener('mousedown', outsideLater, true))
+onBeforeUnmount(() => document.removeEventListener('mousedown', outsideLater, true))
 const fileInput = ref<HTMLInputElement | null>(null)
 const dropping = ref(false)
 /** The files of the draft as the server has them; they are not form fields. Images of the quote are shown in it. */
@@ -228,7 +249,7 @@ function keydown(event: KeyboardEvent): void {
 
     <footer class="actions">
       <button type="submit" class="button button-primary" :disabled="compose.sending"><AppIcon name="outbox" :size="15" />Send <KeyShortcut keys="Mod+Enter" /></button>
-      <div class="later">
+      <div ref="later" class="later" @keydown.esc="closeLater">
         <button type="button" class="button button-quiet" :aria-expanded="laterOpen" @click="laterOpen = !laterOpen"><AppIcon name="clock" :size="16" />Send later<AppIcon name="chevron" :size="14" class="chevron" :class="{ open: laterOpen }" /></button>
         <Transition name="fade">
           <div v-if="laterOpen" class="menu" role="menu">

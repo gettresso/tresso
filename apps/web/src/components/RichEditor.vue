@@ -82,7 +82,7 @@ const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'
       <button type="button" :aria-pressed="editor.isActive('blockquote')" title="Quote" @click="editor.chain().focus().toggleBlockquote().run()">Quote</button>
       <button type="button" :aria-pressed="editor.isActive('link')" title="Link" @click="startLink">Link</button>
       <form v-if="linking" class="link" @submit.prevent="applyLink">
-        <input ref="linkInput" v-model="linkHref" type="url" placeholder="https://" aria-label="Link address" @keydown.esc.prevent="linking = false" />
+        <input ref="linkInput" v-model="linkHref" type="url" placeholder="https://" aria-label="Link address" @keydown.esc.stop.prevent="linking = false" />
         <button type="submit">Apply</button>
         <small v-if="linkError" class="error">{{ linkError }}</small>
       </form>
