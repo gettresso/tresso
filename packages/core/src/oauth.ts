@@ -168,7 +168,9 @@ async function requestToken(
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: new URLSearchParams(body),
   })
-  const payload: unknown = await response.json().catch(() => null)
+  // Read as text first: a body that fails to arrive (the caller's signal aborted it) must fail the request, while a
+  // body that is not JSON is only an unexpected answer.
+  const payload = parseJson(await response.text())
 
   if (!response.ok || !isTokenResponse(payload)) {
     const error = isErrorResponse(payload) ? payload : null
@@ -199,6 +201,14 @@ function isTokenResponse(value: unknown): value is TokenResponse {
 
 function isErrorResponse(value: unknown): value is { error: string; error_description?: string } {
   return typeof value === 'object' && value !== null && typeof (value as { error?: unknown }).error === 'string'
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
 }
 
 function authorizeEndpoint(config: OAuthClientConfig): string {

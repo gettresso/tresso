@@ -78,6 +78,20 @@ describe('exchangeCode', () => {
 
     await expect(exchangeCode(config, 'c', 'v', fetchImpl)).rejects.toMatchObject({ code: 'invalid_grant' })
   })
+
+  it('fails with the reason when the body of the answer does not arrive', async () => {
+    const stalled = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error('no answer within 20 seconds'))
+      },
+    })
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(stalled, { status: 200 }))
+
+    const failure = await exchangeCode(config, 'c', 'v', fetchImpl).catch((error: unknown) => error)
+
+    expect(failure).not.toBeInstanceOf(OAuthError)
+    expect(failure).toMatchObject({ message: 'no answer within 20 seconds' })
+  })
 })
 
 describe('revokeToken', () => {
