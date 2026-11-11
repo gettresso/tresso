@@ -829,6 +829,7 @@ export class Composer {
     this.dirty = false
     this.hold(draft.id)
     let sent = false
+    let written = false
     try {
       // Written here first, as every save is: another device's newer version that the form does not show is noted
       // rather than overwritten, and the message is not sent until the user chose which to keep.
@@ -836,6 +837,7 @@ export class Composer {
       if (failure !== null) {
         throw new Error(failure)
       }
+      written = true
       if (((await store.draft(draft.id))?.remoteVersion ?? null) !== null) {
         this.set({ conflict: true })
         throw new Error('This draft was changed on another device. Choose which version to keep first.')
@@ -887,8 +889,9 @@ export class Composer {
       }
       return outgoing
     } catch (error) {
-      if (!sent && this.current.draft?.id === draft.id) {
-        // Whether the send got to write the draft here or not, it is written again before a restart.
+      if (!sent && !written && this.current.draft?.id === draft.id) {
+        // The send did not get to write the form here: it is written again before a restart. Once written, writing the
+        // same text again would only mark it as an edit the server never had, which it may well have.
         this.dirty = true
       }
       const { message, violations } = this.deps.explain(error)
@@ -1096,7 +1099,7 @@ export class Composer {
     const form = this.current.draft?.id === draft.id ? this.current.draft : null
     if (form !== null && editedFields(form) !== editedFields(draft)) {
       await this.keepAsNewDraft(store, form)
-      this.deps.notify({ text: `"${subject}" reached the server after all and is on its way, without what you typed since. That is kept as a new draft.`, tone: 'info' }, 30000)
+      this.deps.notify({ text: `"${subject}" reached the server after all and is on its way, without what you typed since. That is kept as a new draft${withoutFiles(draft)}.`, tone: 'info' }, 30000)
       return recognised
     }
     if (form !== null) {
@@ -1129,7 +1132,7 @@ export class Composer {
       return { ...rest, outgoingId: id, sendAttemptId: null, unsureSendId: null, pendingSave: false }
     })
     this.deps.changed?.()
-    this.deps.notify({ text: `An earlier version of "${draft.subject || '(no subject)'}" reached the server after all and is on its way. What you typed since is kept as a new draft.`, tone: 'info' }, 30000)
+    this.deps.notify({ text: `An earlier version of "${draft.subject || '(no subject)'}" reached the server after all and is on its way. What you typed since is kept as a new draft${withoutFiles(draft)}.`, tone: 'info' }, 30000)
     return recognised
   }
 
@@ -1147,10 +1150,11 @@ export class Composer {
       return false
     }
     const subject = draft.subject || '(no subject)'
-    if (form !== null && editedFields(form) !== editedFields(draft)) {
+    // Text the server never had (typed in the form, or saved here and not uploaded) is never thrown away.
+    if (draft.pendingSave || (form !== null && editedFields(form) !== editedFields(draft))) {
       await store.deleteDraft(draft.id)
-      await this.keepAsNewDraft(store, form)
-      this.deps.notify({ text: `"${subject}" was sent or deleted on another device. What you typed since is kept as a new draft.`, tone: 'info' }, 30000)
+      await this.keepAsNewDraft(store, form ?? draft)
+      this.deps.notify({ text: `"${subject}" was sent or deleted on another device. What you wrote here since is kept as a new draft${withoutFiles(draft)}.`, tone: 'info' }, 30000)
       return true
     }
     await store.deleteDraft(draft.id)
@@ -1171,12 +1175,16 @@ export class Composer {
    */
   private async keepAsNewDraft(store: MailStore, form: Draft): Promise<void> {
     const { hiddenOnServer: _gone, ...fields } = form
-    const copy: Draft = { ...fields, id: crypto.randomUUID(), version: 0, pendingSave: true, remoteVersion: null, outgoingId: null, noticedStatus: null, sendAttemptId: null, attachments: [], updatedAt: Date.now() }
-    this.clearSaveTimer()
-    this.dirty = false
+    const copy: Draft = { ...fields, id: crypto.randomUUID(), version: 0, pendingSave: true, remoteVersion: null, outgoingId: null, noticedStatus: null, sendAttemptId: null, unsureSendId: null, attachments: [], updatedAt: Date.now() }
+    const onScreen = this.current.draft?.id === form.id
+    if (onScreen) {
+      // Only this draft's own save waits no more: another draft on screen keeps its autosave.
+      this.clearSaveTimer()
+      this.dirty = false
+    }
     await store.saveDraft(copy)
     this.bases.delete(form.id)
-    if (this.current.draft?.id === form.id) {
+    if (onScreen && this.current.draft?.id === form.id) {
       this.open(copy, true)
     }
     this.deps.changed?.()
@@ -1217,6 +1225,11 @@ export class Composer {
     this.reset()
     this.listeners.clear()
   }
+}
+
+/** Said of a draft kept as a new one: its files stay with the server's copy, out of reach, so they do not come along. */
+function withoutFiles(draft: Draft): string {
+  return draft.attachments.length > 0 ? ', without its files' : ''
 }
 
 /**

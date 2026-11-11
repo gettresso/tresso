@@ -245,7 +245,9 @@ export class DraftSync {
   private async uploadNow(id: string): Promise<void> {
     const store = this.store()
     const local = await store?.draft(id)
-    if (!store || !local || !local.pendingSave || local.remoteVersion !== null || local.outgoingId !== null) {
+    // A draft hidden on the server waits for the follow-up to settle it: an upload would make it a new server draft
+    // under an id that is taken.
+    if (!store || !local || !local.pendingSave || local.remoteVersion !== null || local.outgoingId !== null || local.hiddenOnServer === true) {
       return
     }
     let saved: SyncedDraft
@@ -351,7 +353,7 @@ export class DraftSync {
   /** Uploads every draft with edits that did not reach the server yet, e.g. after starting offline. */
   async uploadPending(): Promise<void> {
     for (const draft of (await this.store()?.drafts()) ?? []) {
-      if (draft.pendingSave && draft.remoteVersion === null && draft.outgoingId === null) {
+      if (draft.pendingSave && draft.remoteVersion === null && draft.outgoingId === null && draft.hiddenOnServer !== true) {
         await this.upload(draft.id).catch(() => undefined)
       }
     }
