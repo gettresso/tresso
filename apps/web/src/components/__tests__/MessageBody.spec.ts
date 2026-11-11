@@ -16,6 +16,15 @@ describe('MessageFrame', () => {
     expect(frame.attributes('srcdoc')).toContain('img-src http://localhost:8080 data:;')
   })
 
+  // The desktop app opens these in the user's browser from one place, its new-window handler (apps/desktop lib.rs):
+  // every link must ask for a new window, and the frame must be allowed to ask.
+  it('sends every link in the mail to a new window', () => {
+    const frame = mount(MessageFrame, { props: { html: '<a href="https://example.test">x</a>', allowRemoteContent: false } }).get('iframe')
+
+    expect(frame.attributes('srcdoc')).toContain('<base target="_blank">')
+    expect((frame.attributes('sandbox') ?? '').split(/\s+/)).toContain('allow-popups')
+  })
+
   it('opens images to the internet only when allowed', () => {
     const frame = mount(MessageFrame, { props: { html: '<p>Hi</p>', allowRemoteContent: true } }).get('iframe')
 

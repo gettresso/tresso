@@ -11,6 +11,7 @@
         "resizable": true,
         "fullscreen": false,
         "label": "main",
+        "create": false,
         "transparent": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,

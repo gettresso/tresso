@@ -39,6 +39,7 @@ pub fn run() {
       sql::sql_delete,
     ])
     .setup(|app| {
+      main_window(app)?;
       // macOS updates through Sparkle; Windows and Linux through Tauri's updater, driven by the web client.
       #[cfg(target_os = "macos")]
       updates::setup(app)?;
@@ -70,6 +71,38 @@ pub fn run() {
     });
 }
 
+/// The main window, from the window in tauri.conf.json (`create: false` there, so it is made here). Links in a mail
+/// body ask for a new window (the frame's `<base target="_blank">`), and so does `window.open`: web views open none
+/// in the desktop app by themselves (macOS and Linux) or a bare one inside it (Windows), so web addresses and mail
+/// links open in the user's browser and mail app, and anything else is refused.
+fn main_window(app: &tauri::App) -> tauri::Result<()> {
+  use tauri::Manager;
+
+  let config = app
+    .config()
+    .app
+    .windows
+    .iter()
+    .find(|window| window.label == "main")
+    .expect("tauri.conf.json defines the main window");
+  tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
+    .on_new_window(|url, _features| {
+      if opens_outside(&url)
+        && let Err(error) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+      {
+        log::error!("Opening {url} failed: {error}");
+      }
+      tauri::webview::NewWindowResponse::Deny
+    })
+    .build()?;
+  Ok(())
+}
+
+/// Whether a link a page wants in a new window opens outside the app: web pages and mail addresses only.
+fn opens_outside(url: &tauri::Url) -> bool {
+  matches!(url.scheme(), "http" | "https" | "mailto")
+}
+
 /// On Windows and Linux a `tresso://` link starts a second process; this hands the link to the running app instead
 /// (the deep link plugin then emits it there). It must be the first plugin.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -92,6 +125,8 @@ fn single_instance(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri:
 
 #[cfg(test)]
 mod tests {
+  use super::opens_outside;
+
   /// The sources of one directive of the app's Content-Security-Policy.
   fn csp_sources(directive: &str) -> Vec<String> {
     let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
@@ -117,5 +152,15 @@ mod tests {
       checked += 1;
     }
     assert_eq!(checked, 2);
+  }
+
+  #[test]
+  fn only_web_pages_and_mail_addresses_open_outside_the_app() {
+    for url in ["https://example.com/a?b=c", "http://example.com/", "mailto:kim@example.com"] {
+      assert!(opens_outside(&url.parse().unwrap()), "{url}");
+    }
+    for url in ["tresso://auth/callback?code=x", "file:///etc/passwd", "javascript:alert(1)", "about:blank", "tel:+31201234567", "data:text/html,x", "smb://host/share"] {
+      assert!(!opens_outside(&url.parse().unwrap()), "{url}");
+    }
   }
 }
