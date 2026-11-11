@@ -28,7 +28,6 @@ final class MessageInputHeadersTest extends KernelTestCase
         $input = new MessageInput();
         $input->headers = $headers;
         $validator = static::getContainer()->get(ValidatorInterface::class);
-        \assert($validator instanceof ValidatorInterface);
         $paths = [];
         foreach ($validator->validate($input) as $violation) {
             if (str_starts_with($violation->getPropertyPath(), 'headers')) {
