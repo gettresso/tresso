@@ -355,7 +355,7 @@ final class SyncCalendarTest extends DatabaseTestCase
 
         self::assertResponseIsSuccessful();
         self::assertSame(['stored' => 1, 'removed' => 0, 'skipped' => 0], $this->decodedResponse());
-        self::assertSame(2147483647, (int) $this->connection()->fetchOne("SELECT sequence FROM calendar_event WHERE uid = 'standup@company.example'"));
+        self::assertEquals(2147483647, $this->connection()->fetchOne("SELECT sequence FROM calendar_event WHERE uid = 'standup@company.example'"));
     }
 
     public function testSeriesRepeatingMoreOftenThanHourlyAreSkipped(): void
