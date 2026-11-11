@@ -11,10 +11,12 @@ use App\Enum\ParticipationStatus;
 use App\Enum\Transparency;
 use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Component\VEvent;
+use Sabre\VObject\InvalidDataException;
 use Sabre\VObject\Property;
 use Sabre\VObject\Property\ICalendar\DateTime as DateTimeProperty;
 use Sabre\VObject\Property\ICalendar\Duration as DurationProperty;
 use Sabre\VObject\Recur\MaxInstancesExceededException;
+use Sabre\VObject\Recur\RRuleIterator;
 use Sabre\VObject\TimeZoneUtil;
 
 /**
@@ -40,10 +42,26 @@ final class EventReader
      */
     public static function read(VEvent $event, VCalendar $calendar, array $selfAddresses): EventData
     {
+        try {
+            return self::readValues($event, $calendar, $selfAddresses);
+        } catch (InvalidDataException $e) {
+            // sabre parses dates, durations and rules only when they are read: a malformed one fails here.
+            throw new InvalidCalendarData(\sprintf('Event %s has a value that cannot be read: %s', Props::uid($event), $e->getMessage()), previous: $e);
+        }
+    }
+
+    /**
+     * @param list<string> $selfAddresses
+     */
+    private static function readValues(VEvent $event, VCalendar $calendar, array $selfAddresses): EventData
+    {
         $utc = new \DateTimeZone('UTC');
         $uid = Props::uid($event);
         if ('' === $uid) {
             throw new InvalidCalendarData('An event has no UID.');
+        }
+        if (mb_strlen($uid) > Props::MAX_UID_LENGTH) {
+            throw new InvalidCalendarData(\sprintf('An event has a UID longer than %d characters.', Props::MAX_UID_LENGTH));
         }
         $dtStart = Props::dateTime($event, 'DTSTART');
         if (null === $dtStart) {
@@ -65,6 +83,11 @@ final class EventReader
         $rdates = '' === $recurrenceKey ? self::keys($event, 'RDATE') : [];
         $exdates = '' === $recurrenceKey ? self::keys($event, 'EXDATE') : [];
         $recurring = null !== $rrule || [] !== $rdates;
+        if (null !== $rrule) {
+            // Parsed only, not walked: a rule sabre cannot expand (FREQ=FORTNIGHTLY, BYMONTH=13) fails here, so the
+            // event is refused instead of stored with occurrences nobody can compute.
+            new RRuleIterator($rrule, $startsAt);
+        }
         $recurrenceId = Props::get($event, 'RECURRENCE-ID');
         $thisAndFuture = null !== $recurrenceId && 'THISANDFUTURE' === strtoupper(Props::param($recurrenceId, 'RANGE') ?? '');
 
@@ -74,7 +97,7 @@ final class EventReader
         return new EventData(
             $uid,
             $recurrenceKey,
-            max(0, Props::int($event, 'SEQUENCE')),
+            Props::sequence($event),
             EventStatus::fromICalendar(self::text($event, 'STATUS')),
             self::text($event, 'SUMMARY') ?? '',
             self::text($event, 'DESCRIPTION') ?? '',

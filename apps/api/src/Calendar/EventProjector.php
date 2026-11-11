@@ -35,12 +35,18 @@ final readonly class EventProjector
         $self = $this->selfAddresses->of($object->getCalendar()->getOwner());
         $existing = $this->objectIsNew($object) ? [] : $this->events->findForObject($object);
 
-        $rows = [];
+        // Every event is read before any row changes: one that cannot be read leaves the rows as they were.
+        $read = [];
         foreach (CalendarDocument::events($calendar) as $vevent) {
             $data = EventReader::read($vevent, $calendar, $self);
-            if ($data->uid !== $object->getUid() || isset($rows[$data->recurrenceKey])) {
+            if ($data->uid !== $object->getUid() || isset($read[$data->recurrenceKey])) {
                 continue;
             }
+            $read[$data->recurrenceKey] = $data;
+        }
+
+        $rows = [];
+        foreach ($read as $data) {
             $event = $existing[$data->recurrenceKey] ?? null;
             if (null === $event) {
                 $event = new CalendarEvent($object, $data);
@@ -77,6 +83,6 @@ final readonly class EventProjector
 
     private function objectIsNew(CalendarObject $object): bool
     {
-        return $this->entityManager->getUnitOfWork()->isScheduledForInsert($object);
+        return !$this->entityManager->contains($object) || $this->entityManager->getUnitOfWork()->isScheduledForInsert($object);
     }
 }

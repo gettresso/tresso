@@ -56,11 +56,12 @@ final readonly class CalendarStore
             }
         }
 
+        // The rows first: an event that cannot be read is refused before the resource itself changes.
+        $rows = $this->projector->project($object, $calendar);
         $object->setIcal($calendar->serialize());
         if (!$this->entityManager->contains($object)) {
             $this->entityManager->persist($object);
         }
-        $rows = $this->projector->project($object, $calendar);
         $this->entityManager->flush();
         $this->planNotifications($object);
 

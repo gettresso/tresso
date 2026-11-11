@@ -168,6 +168,45 @@ final class EventReaderTest extends TestCase
     }
 
     /**
+     * @return iterable<string, array{list<string>}>
+     */
+    public static function valuesTheDatabaseOrSabreCannotTake(): iterable
+    {
+        yield 'a start with dashes' => [['DTSTART:2026-10-19T09:00:00']];
+        yield 'an end with dashes' => [['DTSTART:20261019T090000Z', 'DTEND:2026-10-19T10:00:00']];
+        yield 'a duration without P' => [['DTSTART:20261019T090000Z', 'DURATION:1H']];
+        yield 'a frequency sabre does not know' => [['DTSTART:20261019T090000Z', 'RRULE:FREQ=FORTNIGHTLY;COUNT=3']];
+        yield 'a frequency sabre does not know, without an end' => [['DTSTART:20261019T090000Z', 'RRULE:FREQ=FORTNIGHTLY']];
+        yield 'an exception date that is not a date' => [['DTSTART:20261019T090000Z', 'RRULE:FREQ=WEEKLY', 'EXDATE:garbage']];
+        yield 'a recurrence id that is not a date' => [['DTSTART:20261019T090000Z', 'RECURRENCE-ID:garbage']];
+    }
+
+    /**
+     * @param list<string> $properties
+     */
+    #[DataProvider('valuesTheDatabaseOrSabreCannotTake')]
+    public function testRefusesValuesSabreCannotRead(array $properties): void
+    {
+        $this->expectException(InvalidCalendarData::class);
+        self::read($properties);
+    }
+
+    public function testRefusesAUidLongerThanTheColumn(): void
+    {
+        $uid = str_repeat('x', 1025);
+        $calendar = CalendarDocument::parse("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:x\r\nBEGIN:VEVENT\r\nUID:".$uid."\r\nDTSTART:20261019T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+
+        $this->expectException(InvalidCalendarData::class);
+        EventReader::read(CalendarDocument::events($calendar)[0], $calendar, []);
+    }
+
+    public function testASequenceLargerThanTheColumnIsReadAsTheLargestItHolds(): void
+    {
+        self::assertSame(2147483647, self::read(['DTSTART:20261019T090000Z', 'SEQUENCE:3000000000'])->sequence);
+        self::assertSame(0, self::read(['DTSTART:20261019T090000Z', 'SEQUENCE:-4'])->sequence);
+    }
+
+    /**
      * @param list<string> $properties
      * @param list<string> $self
      */
