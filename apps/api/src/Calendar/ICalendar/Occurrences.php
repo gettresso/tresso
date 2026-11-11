@@ -431,6 +431,27 @@ final class Occurrences
         return $start->modify(\sprintf('%+d days', $days));
     }
 
+    /**
+     * Where an event or one occurrence of it ends, in $zone: DTEND, else its start plus DURATION, else a day after a
+     * date start and the start itself for a date-time. Instances of a series keep the master's DURATION, so this is
+     * the only reading that gives them their length.
+     */
+    public static function endOf(VEvent $event, \DateTimeZone $zone): \DateTimeImmutable
+    {
+        $start = Props::dateTime($event, 'DTSTART') ?? throw new InvalidCalendarData('The event has no start.');
+        $startValue = \DateTimeImmutable::createFromInterface($start->getDateTime($zone));
+        $end = Props::dateTime($event, 'DTEND');
+        if (null !== $end) {
+            return \DateTimeImmutable::createFromInterface($end->getDateTime($zone));
+        }
+        $duration = Props::get($event, 'DURATION');
+        if ($duration instanceof \Sabre\VObject\Property\ICalendar\Duration) {
+            return $startValue->add($duration->getDateInterval());
+        }
+
+        return $start->hasTime() ? $startValue : $startValue->modify('+1 day');
+    }
+
     /** The event's length in seconds: DTEND, else DURATION, else a day for dates and nothing for date-times. */
     private static function length(VEvent $event, \DateTimeZone $zone): int
     {

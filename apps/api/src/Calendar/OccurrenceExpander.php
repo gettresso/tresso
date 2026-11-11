@@ -101,10 +101,9 @@ final readonly class OccurrenceExpander
         if (null === $row) {
             return null;
         }
-        $end = Props::dateTime($instance, 'DTEND');
         $allDay = !$start->hasTime();
         $startValue = $start->getDateTime($zone);
-        $endValue = null !== $end ? $end->getDateTime($zone) : ($allDay ? $startValue->modify('+1 day') : $startValue);
+        $endValue = Occurrences::endOf($instance, $zone);
 
         return new CalendarOccurrence(
             $row->getId()->toRfc4122().('' === $key ? '' : ':'.$key),
