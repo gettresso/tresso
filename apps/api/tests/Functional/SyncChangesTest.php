@@ -225,6 +225,31 @@ final class SyncChangesTest extends DatabaseTestCase
         }
     }
 
+    public function testPagesEndWhereAFullCountWouldEndThem(): void
+    {
+        // Change numbers in many tables: accounts, folders, threads, messages, smart inboxes, signatures, tombstones.
+        $this->client->jsonRequest('POST', '/api/v1/signatures', ['name' => 'Work', 'html' => '<p>Kim</p>'], $this->kim);
+        self::assertResponseIsSuccessful();
+        $this->ingest('changes', ['folder' => 'INBOX', 'flags' => [['remoteUid' => '1', 'flags' => ['seen' => true, 'flagged' => false, 'answered' => false, 'draft' => false]]]]);
+        $this->ingest('changes', ['folder' => 'INBOX', 'vanished' => ['3']]);
+        $this->ingest('messages', ['folder' => 'Archive', 'messages' => [$this->message('10', '<late@x>', 'Late')]]);
+        $this->sweepOrphanedMessages();
+        // The first pull from the start makes what a user from before had not synced yet (its calendar, say).
+        $this->changes(0);
+
+        foreach ([1, 2, 3, 7] as $limit) {
+            $cursors = [];
+            $cursor = 0;
+            do {
+                $page = $this->changes($cursor, $limit);
+                $cursor = $page['cursor'];
+                $cursors[] = $cursor;
+            } while ($page['hasMore'] && \count($cursors) < 200);
+
+            self::assertSame($this->cursorsByFullCount($limit), $cursors, 'limit '.$limit);
+        }
+    }
+
     public function testUsersOnlySeeTheirOwnChanges(): void
     {
         $lisa = $this->userHeaders('lisa@example.test', ['mail:read']);
@@ -354,6 +379,62 @@ final class SyncChangesTest extends DatabaseTestCase
 
         /** @var array{cursor: int, hasMore: bool, mailAccounts: list<array<string, mixed>>, folders: list<array<string, mixed>>, threads: list<array<string, mixed>>, messages: list<array<string, mixed>>, signatures: list<array<string, mixed>>, smartInboxes: list<array<string, mixed>>, todos: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>} */
         return $this->decodedResponse();
+    }
+
+    /**
+     * The page ends the delta had when it counted every change number left on every page: greedy pages of at most
+     * $limit rows, never splitting a change number.
+     *
+     * @return list<int>
+     */
+    private function cursorsByFullCount(int $limit): array
+    {
+        $user = $this->connection()->fetchOne("SELECT id FROM app_user WHERE email = 'kim@example.test'");
+        self::assertIsString($user);
+        $rows = [];
+        foreach ([
+            'SELECT change_seq FROM mail_account WHERE owner_id = :user',
+            'SELECT x.change_seq FROM folder x JOIN mail_account a ON a.id = x.mail_account_id WHERE a.owner_id = :user',
+            'SELECT x.change_seq FROM thread x JOIN mail_account a ON a.id = x.mail_account_id WHERE a.owner_id = :user',
+            'SELECT x.change_seq FROM message x JOIN mail_account a ON a.id = x.mail_account_id WHERE a.owner_id = :user',
+            'SELECT x.change_seq FROM outgoing_message x JOIN mail_account a ON a.id = x.mail_account_id WHERE a.owner_id = :user',
+            'SELECT x.change_seq FROM unsubscription x JOIN mail_account a ON a.id = x.mail_account_id WHERE a.owner_id = :user',
+            'SELECT x.change_seq FROM calendar_event x JOIN calendar c ON c.id = x.calendar_id WHERE c.owner_id = :user',
+            'SELECT change_seq FROM signature WHERE owner_id = :user',
+            'SELECT change_seq FROM draft WHERE owner_id = :user AND sending_as_id IS NULL',
+            'SELECT change_seq FROM category WHERE owner_id = :user',
+            'SELECT change_seq FROM calendar WHERE owner_id = :user',
+            'SELECT change_seq FROM scheduled_notification WHERE user_id = :user',
+            'SELECT change_seq FROM event_note WHERE user_id = :user',
+            'SELECT change_seq FROM todo WHERE owner_id = :user',
+            'SELECT change_seq FROM mail_notification WHERE user_id = :user',
+            'SELECT change_seq FROM hand_over WHERE owner_id = :user',
+            'SELECT change_seq FROM daily_brief WHERE owner_id = :user',
+            'SELECT change_seq FROM sync_tombstone WHERE user_id = :user',
+        ] as $sql) {
+            foreach ($this->connection()->fetchFirstColumn($sql, ['user' => $user]) as $seq) {
+                self::assertIsNumeric($seq);
+                $rows[(int) $seq] = ($rows[(int) $seq] ?? 0) + 1;
+            }
+        }
+        unset($rows[0]);
+        ksort($rows);
+        self::assertGreaterThan(8, \count($rows), 'Enough change numbers to need many pages.');
+
+        $cursors = [];
+        $until = 0;
+        $total = 0;
+        foreach ($rows as $seq => $count) {
+            if ($total > 0 && $total + $count > $limit) {
+                $cursors[] = $until;
+                $total = 0;
+            }
+            $total += $count;
+            $until = $seq;
+        }
+        $cursors[] = $until;
+
+        return $cursors;
     }
 
     /**
