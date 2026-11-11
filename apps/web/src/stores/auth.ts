@@ -18,6 +18,12 @@ import { initialTokens, tokenStorage, watchTokens, withRefreshLock } from '@/pla
 import { disableWebPush } from '@/platform/webPush'
 
 const PENDING_KEY = 'auth.pending'
+/**
+ * Set when the user signed out on this device, until the next sign-in completes: that sign-in asks for the password
+ * again (`prompt=login`), as the sign-in pages may still remember the browser (30 days). localStorage, so it outlasts a
+ * restart of the desktop app and a closed browser; a reopened authorization page keeps asking.
+ */
+const PROMPT_LOGIN_KEY = 'tresso.auth.promptLogin'
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
 const EXPIRY_MARGIN_MS = 30_000
 /** How long the token endpoint gets to answer: a refresh holds the lock of every tab while it waits. */
@@ -93,6 +99,27 @@ async function withTimeout<T>(ms: number, run: (fetchImpl: typeof fetch) => Prom
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function signedOutBefore(): boolean {
+  try {
+    return localStorage.getItem(PROMPT_LOGIN_KEY) !== null
+  } catch {
+    return false
+  }
+}
+
+function rememberSignOut(signedOut: boolean): void {
+  try {
+    if (signedOut) {
+      localStorage.setItem(PROMPT_LOGIN_KEY, '1')
+    } else {
+      localStorage.removeItem(PROMPT_LOGIN_KEY)
+    }
+  } catch (error) {
+    // Without storage the next sign-in may not ask for the password; on the web the sign-out form still ends the session.
+    console.error('Remembering the sign-out on this device failed', error)
+  }
 }
 
 /** The token endpoint answered (an OAuth error, or a failure status): sending the same request again will not help. */
@@ -218,7 +245,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function signIn(): Promise<void> {
-    const pending = await startAuthorization(oauthConfig)
+    // After a sign-out the authorization page asks for the password again; the URL kept for reopenBrowser carries it.
+    const pending = await startAuthorization(oauthConfig, signedOutBefore() ? { prompt: 'login' } : {})
     const entry: PendingSignIn = { state: pending.state, codeVerifier: pending.codeVerifier, server: config.apiUrl, url: pending.url }
     sessionStorage.setItem(PENDING_KEY, JSON.stringify(entry))
     if (!isDesktop) {
@@ -273,6 +301,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
     const code = parseCallback(callbackUrl, pending.state)
     await store(await exchangeCode(oauthConfig, code, pending.codeVerifier))
+    rememberSignOut(false)
   }
 
   /**
@@ -308,6 +337,7 @@ export const useAuthStore = defineStore('auth', () => {
     generation.value++
     refreshing = null
     if (reason === 'signedOut') {
+      rememberSignOut(true)
       try {
         await disableWebPush(send)
       } catch (error) {
