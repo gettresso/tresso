@@ -82,7 +82,9 @@ final readonly class InvitationApplier
             if ($this->senderUnconfirmed($invitation)) {
                 // Left for the user, who sees why on the message (and in the message list) and can apply it by hand.
                 $this->logger->info('Calendar mail from a sender the provider did not confirm is not applied by itself', ['invitation' => $invitation->getId()->toRfc4122()]);
-                if (!$invitation->waitsForUser()) {
+                // Noted (for the message list) only where the user can act: a calendar its provider schedules takes
+                // nothing from mail, so nothing waits there.
+                if (!$invitation->waitsForUser() && null === $this->blocker($invitation)) {
                     $invitation->waitForUser();
                     $this->entityManager->flush();
                     $this->touchMessage($invitation);
@@ -128,12 +130,14 @@ final readonly class InvitationApplier
     }
 
     /**
-     * Gmail: its own Authentication-Results (authserv-id mx.google.com) shows DMARC passed. Microsoft writes no
-     * authserv-id, so its header is only told from one the sender wrote by Exchange's own
-     * X-MS-Exchange-Organization-AuthAs, which Exchange removes from mail it receives and sets itself: `Internal` is
-     * mail from within the tenant (which gets no Authentication-Results), `Anonymous` or `Partner` came in from
-     * outside, where Exchange's Authentication-Results must show DMARC passed. Without that header (the worker does
-     * not send it yet) nothing is confirmed.
+     * Gmail: its own Authentication-Results (authserv-id mx.google.com) shows DMARC passed. Microsoft (accounts
+     * reached through Graph; never IMAP or Gmail) writes no authserv-id, so its header is only told from one the
+     * sender wrote by Exchange's own X-MS-Exchange-Organization-AuthAs, which Exchange Online's header firewall
+     * removes from mail arriving from outside the organization and sets itself: `Internal` or `Authenticated` is mail
+     * sent within the tenant (which gets no Authentication-Results), `Anonymous` or `Partner` came in from outside,
+     * where Exchange's Authentication-Results must show DMARC passed. Any other value, or none (the worker does not
+     * send it yet), confirms nothing. This rests on Exchange's documented header firewall, not on a check against a
+     * live tenant.
      *
      * @param array<string, string> $headers
      */
@@ -143,7 +147,7 @@ final readonly class InvitationApplier
 
         return match ($provider) {
             MailProvider::Microsoft => match (strtolower(trim($headers['x-ms-exchange-organization-authas'] ?? ''))) {
-                'internal' => true,
+                'internal', 'authenticated' => true,
                 'anonymous', 'partner' => SenderAuthentication::dmarcPassed($results, true),
                 default => false,
             },

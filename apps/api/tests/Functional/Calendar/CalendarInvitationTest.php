@@ -951,8 +951,40 @@ final class CalendarInvitationTest extends DatabaseTestCase
     {
         $messages = $this->getJson('/api/v1/sync/changes?since='.$cursor, $this->kim)['messages'];
         self::assertIsArray($messages);
+        $waiting = [];
+        foreach ($messages as $message) {
+            self::assertIsArray($message);
+            $waiting[self::string($message['id'] ?? null)] = $message['calendarWaiting'] ?? null;
+        }
 
-        return array_column($messages, 'calendarWaiting', 'id');
+        return $waiting;
+    }
+
+    public function testNothingWaitsWhereTheProviderSchedulesTheCalendar(): void
+    {
+        $this->connection()->executeStatement("UPDATE mail_account SET provider = 'gmail' WHERE id = :id", ['id' => $this->accountId]);
+        // The event is in the account's own calendar, which its provider fills from invitations itself.
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$this->accountId.'/calendars', ['workerId' => 'w1', 'source' => 'google', 'providerSchedules' => true, 'calendars' => [
+            ['remoteId' => 'primary', 'name' => 'Kim', 'isDefault' => true],
+        ]], $this->worker);
+        self::assertResponseIsSuccessful();
+        $calendars = $this->decodedResponse()['calendars'] ?? null;
+        self::assertIsArray($calendars);
+        $first = $calendars[0] ?? null;
+        self::assertIsArray($first);
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$this->accountId.'/calendars/'.self::string($first['id'] ?? null).'/objects', ['workerId' => 'w1', 'cursor' => 'c1', 'changed' => [
+            ['remoteId' => 'budget', 'etag' => '"1"', 'ical' => str_replace("METHOD:REQUEST\r\n", '', self::invitation('REQUEST', 0, '20261021T140000'))],
+        ]], $this->worker);
+        self::assertResponseIsSuccessful();
+        $cursor = $this->getJson('/api/v1/sync/changes?since=0', $this->kim)['cursor'];
+        self::assertIsInt($cursor);
+
+        $cancel = $this->receive('Cancelled: Budget review', self::invitation('CANCEL', 1, '20261021T140000'));
+
+        $invitation = $this->getJson('/api/v1/messages/'.$cancel.'/invitation', $this->kim);
+        self::assertFalse($invitation['canApply']);
+        self::assertFalse($invitation['senderUnconfirmed']);
+        self::assertSame([$cancel => false], $this->waitingSince($cursor), 'Nothing waits for the user: the provider applies it.');
     }
 
     public function testOnAnImapAccountCalendarMailStillChangesAnEventByItself(): void
