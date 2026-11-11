@@ -6,7 +6,6 @@ namespace App\Calendar\ICalendar;
 
 use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Component\VEvent;
-use Sabre\VObject\ParseException;
 use Sabre\VObject\Reader;
 
 /**
@@ -24,9 +23,14 @@ final class CalendarDocument
         if (\strlen($ical) > self::MAX_BYTES) {
             throw new InvalidCalendarData('The calendar object is too large.');
         }
+        if (str_contains($ical, "\0")) {
+            // sabre keeps it, and no text column takes it.
+            throw new InvalidCalendarData('The calendar object holds a NUL character.');
+        }
         try {
             $calendar = Reader::read($ical, Reader::OPTION_FORGIVING | Reader::OPTION_IGNORE_INVALID_LINES);
-        } catch (ParseException|\InvalidArgumentException $e) {
+        } catch (\Exception $e) {
+            // ParseException, and InvalidDataException for values sabre reads at once (an RRULE without "=").
             throw new InvalidCalendarData('Not valid iCalendar data: '.$e->getMessage(), previous: $e);
         }
         if (!$calendar instanceof VCalendar) {
