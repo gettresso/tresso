@@ -64,12 +64,12 @@ func openRole(ctx context.Context, d Dialer, credentials api.Credentials, role s
 	if err != nil {
 		return nil, "", err
 	}
-	folders, _, err := listFolders(client.Client)
+	list, err := listFolders(client.Client)
 	if err != nil {
 		_ = client.Close()
 		return nil, "", fmt.Errorf("list folders: %w", err)
 	}
-	for _, folder := range folders {
+	for _, folder := range list.folders {
 		if folder.Role == role {
 			return client, folder.RemoteName, nil
 		}

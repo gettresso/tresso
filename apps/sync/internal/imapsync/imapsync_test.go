@@ -66,7 +66,7 @@ func TestRoleOf(t *testing.T) {
 		{"Projects/Acme", '/', nil, "custom"},
 	}
 	for _, c := range cases {
-		if got := assignRoles([]*imap.ListData{{Mailbox: c.name, Delim: c.delim, Attrs: c.attrs}})[0]; got != c.want {
+		if got := assignRoles([]*imap.ListData{{Mailbox: c.name, Delim: c.delim, Attrs: c.attrs}}, "")[0]; got != c.want {
 			t.Errorf("role of %q %v = %q, want %q", c.name, c.attrs, got, c.want)
 		}
 	}
@@ -84,7 +84,20 @@ func TestEachRoleGoesToOneFolderAndNamesOnlyCountNearTheTop(t *testing.T) {
 		{Mailbox: "Clients.Trash", Delim: '.'},
 	}
 	want := []string{"inbox", "custom", "sent", "custom", "drafts", "custom", "custom"}
-	if got := assignRoles(mailboxes); !slices.Equal(got, want) {
+	if got := assignRoles(mailboxes, ""); !slices.Equal(got, want) {
+		t.Errorf("roles = %v, want %v", got, want)
+	}
+}
+
+// Fails without the namespace: a server that keeps the user's mail below "Mail/" lost its Sent role.
+func TestNamesCountDirectlyBelowThePersonalNamespace(t *testing.T) {
+	mailboxes := []*imap.ListData{
+		{Mailbox: "INBOX", Delim: '/'},
+		{Mailbox: "Mail/Sent", Delim: '/'},
+		{Mailbox: "Mail/Projects/Trash", Delim: '/'},
+	}
+	want := []string{"inbox", "sent", "custom"}
+	if got := assignRoles(mailboxes, "Mail/"); !slices.Equal(got, want) {
 		t.Errorf("roles = %v, want %v", got, want)
 	}
 }

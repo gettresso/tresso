@@ -363,7 +363,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 func TestATemporaryLoginRefusalIsRetriedNotReportedAsAWrongPassword(t *testing.T) {
-	for _, code := range []imap.ResponseCode{imap.ResponseCodeUnavailable, imap.ResponseCodeInUse, imap.ResponseCodeLimit, imap.ResponseCodeServerBug, imap.ResponseCodeContactAdmin, imap.ResponseCodeAlert} {
+	for _, code := range []imap.ResponseCode{imap.ResponseCodeUnavailable, imap.ResponseCodeInUse, imap.ResponseCodeLimit, imap.ResponseCodeServerBug, imap.ResponseCodeContactAdmin} {
 		t.Run(string(code), func(t *testing.T) {
 			sc := &script{login: func(attempt int) error {
 				if attempt <= 6 {
@@ -668,4 +668,185 @@ func TestAServerWithoutUIDNextStillSyncs(t *testing.T) {
 	waitFor(t, "the existing mail", func() bool { return fake.count("INBOX") == 2 })
 	deliver(t, user, "INBOX", "c@x", "Third")
 	waitFor(t, "new mail", func() bool { return fake.count("INBOX") == 3 })
+}
+
+func no(code imap.ResponseCode, text string) error {
+	return &imap.Error{Type: imap.StatusResponseTypeNo, Code: code, Text: text}
+}
+
+// Fails without the fix: any error between two refused logins started the count over, so a server that drops the
+// connection after a bad login never reached auth_failed.
+func TestRefusedLoginsCountAcrossOtherFailures(t *testing.T) {
+	sc := &script{login: func(int) error { return no("", "LOGIN failed.") }}
+	credentials, _ := scriptedServer(t, sc, "INBOX")
+	fake := newMemAPI(credentials)
+	sessions := 0
+	fake.credentialsErr = func() error {
+		sessions++
+		if sessions%2 == 0 {
+			return errors.New("connection reset")
+		}
+		return nil
+	}
+	opts := fastOptions()
+	opts.RefusalsBeforeAuthFailed = 3
+
+	done := runSyncer(t, fake, opts)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run kept retrying a refused login")
+	}
+	if !fake.hasStatus(api.StatusAuthFailed) || sc.loginCount() != 3 {
+		t.Errorf("statuses %v after %d logins", fake.statuses, sc.loginCount())
+	}
+}
+
+// Fails without the fix: NO [ALERT] was an ordinary session error for ever, and its text never reached the user.
+func TestAnAlertRefusalEndsInAuthFailedWithTheServersText(t *testing.T) {
+	sc := &script{login: func(int) error {
+		return no(imap.ResponseCodeAlert, "Application-specific password required: https://support.example/apppasswords")
+	}}
+	credentials, _ := scriptedServer(t, sc, "INBOX")
+	fake := newMemAPI(credentials)
+	opts := fastOptions()
+	opts.RefusalsBeforeAuthFailed = 5
+
+	done := runSyncer(t, fake, opts)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run kept retrying a login the server refuses with ALERT")
+	}
+	statuses, details := fake.statusLog()
+	if len(statuses) == 0 || statuses[len(statuses)-1] != api.StatusAuthFailed || sc.loginCount() != 5 {
+		t.Fatalf("statuses %v after %d logins", statuses, sc.loginCount())
+	}
+	if want := "The mail server refused the sign-in: Application-specific password required: https://support.example/apppasswords"; details[len(details)-1] != want {
+		t.Errorf("detail %q, want %q", details[len(details)-1], want)
+	}
+}
+
+func TestAnUnknownCodeCountsAsARefusalButATemporaryOneNever(t *testing.T) {
+	if !errors.Is(loginError(no("WEBALERT", "Sign in through your browser")), errLoginRefused) {
+		t.Error("an unknown code was not counted as a refusal")
+	}
+	for _, code := range []imap.ResponseCode{imap.ResponseCodeUnavailable, imap.ResponseCodeInUse, imap.ResponseCodeLimit, imap.ResponseCodeServerBug, imap.ResponseCodeContactAdmin} {
+		if errors.Is(loginError(no(code, "x")), errLoginRefused) {
+			t.Errorf("NO [%s] was counted as a refusal", code)
+		}
+	}
+}
+
+func TestATemporaryRefusalNeverEndsInAuthFailed(t *testing.T) {
+	sc := &script{login: func(int) error { return no(imap.ResponseCodeUnavailable, "Try later") }}
+	credentials, _ := scriptedServer(t, sc, "INBOX")
+	fake := newMemAPI(credentials)
+	opts := fastOptions()
+	opts.RefusalsBeforeAuthFailed = 2
+
+	runSyncer(t, fake, opts)
+	waitFor(t, "many refused logins", func() bool { return sc.loginCount() > 10 })
+	if fake.hasStatus(api.StatusAuthFailed) || !fake.hasStatus(api.StatusError) {
+		t.Errorf("statuses %v", fake.statuses)
+	}
+}
+
+// Fails without the fix: a STATUS refused for a passing reason left the folder out, and the API deleted it with its
+// messages.
+func TestAFolderWhoseStatusIsRefusedForAWhileStaysListed(t *testing.T) {
+	sc := &script{statusErr: map[string]error{"Projects": no(imap.ResponseCodeUnavailable, "Mailbox is being repaired")}}
+	credentials, user := scriptedServer(t, sc, "INBOX", "Projects")
+	deliver(t, user, "INBOX", "a@x", "Inbox mail")
+	deliver(t, user, "Projects", "b@x", "Project mail")
+	fake := newMemAPI(credentials)
+
+	runSyncer(t, fake, fastOptions())
+	waitFor(t, "the inbox", func() bool { return fake.count("INBOX") == 1 })
+	fake.mu.Lock()
+	var projects *api.Folder
+	for i := range fake.folders {
+		if fake.folders[i].RemoteName == "Projects" {
+			projects = &fake.folders[i]
+		}
+	}
+	fake.mu.Unlock()
+	if projects == nil || projects.UIDValidity != nil {
+		t.Fatalf("Projects = %+v; want it listed without a UIDVALIDITY, so the API keeps what it has", projects)
+	}
+
+	sc.mu.Lock()
+	delete(sc.statusErr, "Projects")
+	sc.mu.Unlock()
+	waitFor(t, "the folder once the server answers again", func() bool { return fake.count("Projects") == 1 })
+}
+
+// Fails without the fix: an inbox the server refused to open was skipped and the account reported active.
+func TestAnInboxTheServerWillNotOpenIsAnErrorNotActive(t *testing.T) {
+	for name, sc := range map[string]*script{
+		"select": {selectErr: map[string]error{"INBOX": no(imap.ResponseCodeUnavailable, "Try later")}},
+		"status": {statusErr: map[string]error{"INBOX": no(imap.ResponseCodeUnavailable, "Try later")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			credentials, _ := scriptedServer(t, sc, "INBOX", "Projects")
+			fake := newMemAPI(credentials)
+
+			runSyncer(t, fake, fastOptions())
+			waitFor(t, "the error status", func() bool { return fake.hasStatus(api.StatusError) })
+			if fake.hasStatus(api.StatusActive) {
+				t.Errorf("statuses %v; an inbox nobody can open is not in sync", fake.statuses)
+			}
+		})
+	}
+}
+
+// The IMAP side of SYNC-15: a lost error report is sent again after the next failure.
+func TestALostErrorReportIsSentAgain(t *testing.T) {
+	sc := &script{login: func(int) error { return no(imap.ResponseCodeUnavailable, "Try later") }}
+	credentials, _ := scriptedServer(t, sc, "INBOX")
+	fake := newMemAPI(credentials)
+	fake.statusFailures = 1
+
+	runSyncer(t, fake, fastOptions())
+	waitFor(t, "the error status", func() bool { return fake.hasStatus(api.StatusError) })
+	if statuses, _ := fake.statusLog(); len(statuses) != 1 {
+		t.Errorf("statuses %v; want the error once, after the lost report", statuses)
+	}
+}
+
+// A lost lease cancels Run's context: Run must end at once, in its backoff wait as well as while it follows the
+// mailbox.
+func TestALostLeaseEndsTheRunAtOnce(t *testing.T) {
+	for name, sc := range map[string]*script{
+		"in the backoff": {login: func(int) error { return no(imap.ResponseCodeUnavailable, "Try later") }},
+		"following":      {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			credentials, user := scriptedServer(t, sc, "INBOX")
+			deliver(t, user, "INBOX", "a@x", "Mail")
+			fake := newMemAPI(credentials)
+			opts := fastOptions()
+			opts.MinBackoff, opts.MaxBackoff, opts.PollInterval = time.Hour, time.Hour, time.Hour
+			syncer := New(fake, storagetest.New(), plainDialer{}, "test-worker", opts, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_ = syncer.Run(ctx, api.Account{ID: "acc", Provider: "imap"})
+			}()
+			waitFor(t, "the first session", func() bool { return sc.loginCount() >= 1 && (name != "following" || fake.count("INBOX") == 1) })
+			time.Sleep(50 * time.Millisecond)
+
+			start := time.Now()
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Run did not end after its context was cancelled")
+			}
+			if took := time.Since(start); took > time.Second {
+				t.Errorf("Run took %v to end", took)
+			}
+		})
+	}
 }
