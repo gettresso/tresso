@@ -6,6 +6,7 @@ namespace App\Tests\Functional;
 
 use App\Entity\MailAccount;
 use App\Entity\User;
+use App\Enum\CalendarSyncStatus;
 use App\Enum\MailAccountStatus;
 use App\Enum\MailProvider;
 use Doctrine\ORM\EntityManagerInterface;
@@ -124,6 +125,22 @@ final class SyncLeaseTest extends DatabaseTestCase
         self::assertCount(1, $this->lease('w2', $auth, 5));
     }
 
+    public function testTheHeartbeatNamesProviderAccountsWhoseCalendarsAreStillUnknown(): void
+    {
+        $allowed = $this->createAccount('allowed@example.test', MailAccountStatus::Active, MailProvider::Gmail);
+        $listed = $this->createAccount('listed@example.test', MailAccountStatus::Active, MailProvider::Microsoft, CalendarSyncStatus::Active);
+        $this->createAccount('refused@example.test', MailAccountStatus::Active, MailProvider::Gmail, CalendarSyncStatus::NotGranted);
+        $this->createAccount('imap@example.test', MailAccountStatus::Active);
+
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'w1', 'capacity' => 10], $this->bearer('sync:lease'));
+        self::assertResponseIsSuccessful();
+
+        /** @var array{outbox: list<string>} $body */
+        $body = $this->json();
+        self::assertSame([$allowed], $body['outbox'], 'Only a Gmail or Microsoft account whose calendars were not listed yet is woken.');
+        self::assertNotContains($listed, $body['outbox']);
+    }
+
     /**
      * @param array<string, string> $auth
      *
@@ -175,13 +192,14 @@ final class SyncLeaseTest extends DatabaseTestCase
         return $decoded;
     }
 
-    private function createAccount(string $email, MailAccountStatus $status): string
+    private function createAccount(string $email, MailAccountStatus $status, MailProvider $provider = MailProvider::Imap, CalendarSyncStatus $calendarStatus = CalendarSyncStatus::Unknown): string
     {
         $entityManager = static::getContainer()->get(EntityManagerInterface::class);
 
         $owner = new User('owner-'.$email, 'Owner');
-        $account = new MailAccount($owner, $email, 'Test', MailProvider::Imap);
+        $account = new MailAccount($owner, $email, 'Test', $provider);
         $account->setStatus($status);
+        $account->setCalendarStatus($calendarStatus);
         $entityManager->wrapInTransaction(static function () use ($entityManager, $owner, $account): void {
             $entityManager->persist($owner);
             $entityManager->persist($account);

@@ -14,6 +14,7 @@ use App\Repository\DraftCopyRemovalRepository;
 use App\Repository\MailboxChangeRepository;
 use App\Repository\DraftRepository;
 use App\Repository\CalendarOperationRepository;
+use App\Repository\MailAccountRepository;
 use App\Repository\OutgoingMessageRepository;
 use App\Sync\AccountLeaser;
 use App\Sync\LeaseResult;
@@ -37,6 +38,7 @@ final readonly class SyncLeaseProcessor implements ProcessorInterface
         private MailboxChangeRepository $mailboxChanges,
         private Unsubscriptions $unsubscriptions,
         private HandOvers $handOvers,
+        private MailAccountRepository $mailAccounts,
     ) {
     }
 
@@ -56,7 +58,8 @@ final readonly class SyncLeaseProcessor implements ProcessorInterface
         $this->entityManager->wrapInTransaction(fn () => $this->handOvers->markDue($accountIds, $now));
 
         // Mail to send, drafts to file or remove, changes to messages, calendar changes to write and one-click
-        // unsubscribes are all handled when the worker hears the account has outbound work.
+        // unsubscribes are all handled when the worker hears the account has outbound work. So are calendars just
+        // allowed at Google or Microsoft: the worker waits for that wake-up before it asks again.
         $work = array_values(array_unique([
             ...$this->outgoing->accountsWithClaimable($accountIds, $now),
             ...$this->drafts->accountsWithFiling($accountIds, $now, $now->sub(new \DateInterval(DraftFiling::REST))),
@@ -64,6 +67,7 @@ final readonly class SyncLeaseProcessor implements ProcessorInterface
             ...$this->mailboxChanges->accountsWithDueChanges($accountIds, $now),
             ...$this->calendarOperations->accountsWithClaimable($accountIds, $now),
             ...$this->unsubscriptions->accountsWithDueRequests($accountIds, $now),
+            ...$this->mailAccounts->accountsAwaitingCalendars($accountIds),
         ]));
 
         return new LeaseResult(AccountLeaser::LEASE_SECONDS, $accounts, $work);
