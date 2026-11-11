@@ -370,15 +370,19 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   `WEB_APP_URL`. It only counts when it comes from Tresso: with the CSRF token of the sign-out page (always enough,
   also behind a proxy that does not pass the scheme), or with an `Origin` of the sign-in host itself or of
   `WEB_APP_URL` (the web app signs out by submitting a form, `POST`, to `<AUTH_PUBLIC_URL>/logout`, the address it gets
-  as `authUrl` from `/config.js`, after revoking its tokens). Anything else gets the sign-out page with a 403 and changes nothing, so another site cannot
+  as `authUrl` from `/config.js`, after revoking its tokens). When the web app and the sign-in host are on different
+  sites (not Tresso Cloud's or the default layout), the browser sends no `SameSite=Lax` cookie with that form, so the
+  POST clears the remember-me cookie but cannot end the session, which then lasts until its two idle hours pass. Anything else gets the sign-out page with a 403 and changes nothing, so another site cannot
   sign people out (`App\Security\SignOutGuard`, before the firewall). `GET /logout` never signs out: it shows that page
   with a Sign out button, or goes straight back to `WEB_APP_URL` when the browser has no session and no remember-me
   cookie. The sign-in and sign-out pages, like the consent screen, cannot be framed and are not cached.
 - **Asking for the password again (`prompt=login`).** Our apps are approved without a page while the browser is signed
   in, and the desktop and mobile apps cannot end the system browser's sign-in when the user signs out of them. So
-  after a sign-out the user asked for, they add `prompt=login` (parameter `prompt`, value `login`, as in OpenID
-  Connect) to their next authorization request, and only to that one; a sign-in that follows a failed refresh or an
-  expired token does not send it. The web app does not need it: it ends the browser's sign-in itself (`POST /logout`).
+  after a sign-out the user asked for, our apps (web, desktop and mobile) add `prompt=login` (parameter `prompt`,
+  value `login`, as in OpenID Connect) to every authorization request until a sign-in completes; a sign-in that
+  follows a failed refresh or an expired token, without a sign-out, does not send it. The web app also ends the
+  browser's sign-in itself (`POST /logout`) and sends `prompt=login` as well, in case that form did not reach the
+  server.
   The server then shows the sign-in form; signing in there replaces the browser's sign-in (a new session id, the old
   remember-me cookie cancelled), and whoever signs in, the same user or another (that is how someone switches
   account), gets the code for that request, which goes on once without asking again (`PromptLogin`: the form's
@@ -386,7 +390,9 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   skips nothing. Nothing ends before someone signs in on the form, so a link with `prompt=login` on another site signs
   nobody out. `prompt=login` is a request by the app, not a lock: only the authorization request that carries it waits
   for the password; the browser stays signed in for every other request (the web app's included) until someone
-  answers such a request or signs out with `POST /logout`. The consent page's POST back to the same address is not
+  answers such a request or signs out with `POST /logout`. It cannot stop a person at that browser from repeating
+  the same request without `prompt=login`: the server cannot tell, so it is protection against an unintended
+  silent sign-in, not against someone at the keyboard. The consent page's POST back to the same address is not
   asked again, since it comes after that sign-in. Any app may send it; the metadata lists
   `prompt_values_supported: ["login"]`. `prompt` may be a space separated list; other values are ignored.
 
@@ -1905,12 +1911,18 @@ after. Everything lives in `apps/api/src/Notification`.
   - Any other address (an IMAP account's included: it is typed in next to servers of the user's own choosing, and a
     server of one's own accepts any username, so neither a sync nor a matching username proves it) waits as
     `pendingEmailAddress` on `PATCH /api/v1/notification-settings`. Tresso mails a signed link to it, valid two days
-    (`NotificationEmailAddress`); opening it shows a page with a Confirm button (a mail scanner that opens links
-    confirms nothing), and confirming makes it the notification address. Until then notifications go where they went
-    (`effectiveEmailAddress`). Choosing it again sends the link again (`pendingEmailAddressSentAt`), at most five links
-    a day per user (429 after that). A link works while its address is still the pending one.
-  - An address chosen before this existed that does not count now is moved to pending the first time a notification
-    would be mailed to it, with one link; until it is confirmed, notifications go to the sign-in address.
+    and built from `API_PUBLIC_URL` (`NotificationEmailAddress`), once the change committed; opening it shows a page
+    with a Confirm button (a mail scanner that opens links confirms nothing), and confirming makes it the notification
+    address. Until then notifications go where they went (`effectiveEmailAddress`). Choosing it again sends the link
+    again (`pendingEmailAddressSentAt`); choosing the current address again drops the pending one. At most three links
+    a day go to one address, whoever asks, and five a day per user (429 after that). A link works while its address
+    is still the pending one. A link that could not go out is tried again with the next notification.
+  - How a chosen address was shown to be the user's is recorded when it is chosen (`email_address_proof`: sign-in
+    address, provider, link). One that stops counting (its account removed or renamed, a provider no longer
+    confirming it) falls back to the sign-in address without any mail. Only an address that was never proven (stored
+    before this was recorded: the migration gives existing rows the proof they have at that moment, so an IMAP
+    account's address gets none) is moved to pending the first time a notification would be mailed to it, with a
+    link; until it is confirmed, notifications go to the sign-in address.
   The web and mobile apps have no field for this address; it is set through the API or the MCP tool.
 - **Time zones:** quiet hours, working hours, all-day reminders and floating times (date-times without a zone) are
   read in the user's zone from the notification settings (`timeZone`, UTC until a client sets it). The web app, the

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Entity;
 
+use App\Enum\NotificationAddressProof;
 use App\Enum\SnoozeChoice;
 use App\Enum\TravelMode;
 use App\Notification\NotificationChannelChoice;
@@ -107,14 +108,20 @@ class NotificationPreferences
     private array $channelsByKind = [];
 
     /**
-     * Where email notifications go; the sign-in address when null. It counts while the address is provable (the
-     * sign-in address, a provider-confirmed account address) or was confirmed by the link mailed to it
-     * ({@see $emailAddressConfirmedAt}); see App\Notification\NotificationEmailAddress.
+     * Where email notifications go; the sign-in address when null. See App\Notification\NotificationEmailAddress for
+     * when it counts.
      */
     #[ORM\Column(length: 320, nullable: true)]
     private ?string $emailAddress = null;
 
-    /** When the user confirmed {@see $emailAddress} with the link mailed to it; null when it needs no confirmation. */
+    /**
+     * How {@see $emailAddress} was shown to be the user's when it was chosen; null for an address chosen before this
+     * was recorded and never proven.
+     */
+    #[ORM\Column(length: 16, nullable: true, enumType: NotificationAddressProof::class)]
+    private ?NotificationAddressProof $emailAddressProof = null;
+
+    /** When the user confirmed {@see $emailAddress} with the link mailed to it. */
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $emailAddressConfirmedAt = null;
 
@@ -351,15 +358,21 @@ class NotificationPreferences
     }
 
     /**
-     * Notifications go here from now on (null: the sign-in address). $confirmedAt is when its link was used, null for
-     * an address that needs none. Any pending address is dropped.
+     * Notifications go here from now on (null: the sign-in address), shown to be the user's as $proof says;
+     * $confirmedAt is when its link was used. Any pending address is dropped.
      */
-    public function setEmailAddress(?string $emailAddress, ?\DateTimeImmutable $confirmedAt = null): void
+    public function setEmailAddress(?string $emailAddress, ?NotificationAddressProof $proof = null, ?\DateTimeImmutable $confirmedAt = null): void
     {
         $this->emailAddress = null === $emailAddress ? null : mb_strtolower($emailAddress);
+        $this->emailAddressProof = null === $emailAddress ? null : $proof;
         $this->emailAddressConfirmedAt = null === $emailAddress ? null : $confirmedAt;
         $this->pendingEmailAddress = null;
         $this->pendingEmailSentAt = null;
+    }
+
+    public function getEmailAddressProof(): ?NotificationAddressProof
+    {
+        return $this->emailAddressProof;
     }
 
     public function getEmailAddressConfirmedAt(): ?\DateTimeImmutable
@@ -388,8 +401,8 @@ class NotificationPreferences
     }
 
     /**
-     * An address chosen before confirmation existed that needs one: it waits for its link from now on, and
-     * notifications go to the sign-in address until then.
+     * An address that was never shown to be the user's (chosen before that was recorded): it waits for its link from
+     * now on, and notifications go to the sign-in address until then.
      */
     public function moveEmailAddressToPending(): void
     {
@@ -399,6 +412,7 @@ class NotificationPreferences
         $this->pendingEmailAddress = $this->emailAddress;
         $this->pendingEmailSentAt = null;
         $this->emailAddress = null;
+        $this->emailAddressProof = null;
         $this->emailAddressConfirmedAt = null;
     }
 

@@ -15,9 +15,10 @@ use Symfony\Component\Security\Http\Event\LoginSuccessEvent;
 
 /**
  * `prompt=login` on an authorization request (as OpenID Connect defines it): the user types the password again for
- * this request, whatever session or remember-me cookie the browser holds. Our desktop and mobile apps send it on the
- * first sign-in after the user signed out of them, since they cannot end the browser's sign-in themselves; it is
- * also how someone switches to another account.
+ * this request, whatever session or remember-me cookie the browser holds. Our apps send it on their authorization
+ * requests after the user signed out of them, until a sign-in completes (desktop and mobile cannot end the browser's
+ * sign-in themselves, and the web app's sign-out form may not have reached the server); it is also how someone
+ * switches to another account. It cannot stop a person at that browser from sending the same request without it.
  *
  * Before the firewall, a GET of /oauth/authorize with `login` among its `prompt` values goes to the sign-in page
  * instead, which brings the browser back to the same request afterwards. A sign-in on the form marks that one request,

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Notification;
 
 use App\Entity\User;
+use App\Enum\NotificationAddressProof;
 use Doctrine\DBAL\Connection;
 use Symfony\Contracts\Service\ResetInterface;
 
@@ -53,7 +54,18 @@ final class NotificationAddresses implements ResetInterface
 
     public function holds(User $user, string $address): bool
     {
-        return \in_array(mb_strtolower($address), $this->of($user), true);
+        return null !== $this->proofOf($user, $address);
+    }
+
+    /** How the user provably holds this address, or null when they do not. */
+    public function proofOf(User $user, string $address): ?NotificationAddressProof
+    {
+        $address = mb_strtolower($address);
+        if ($address === mb_strtolower($user->getEmail())) {
+            return NotificationAddressProof::SignIn;
+        }
+
+        return \in_array($address, $this->of($user), true) ? NotificationAddressProof::Provider : null;
     }
 
     public function reset(): void

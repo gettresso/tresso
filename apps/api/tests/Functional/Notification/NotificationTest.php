@@ -16,13 +16,16 @@ use App\Tests\Functional\Calendar\CalendarTestHelpers;
 use App\Tests\Functional\DatabaseTestCase;
 use App\Tests\Support\MockHttpRouter;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\Mime\Email;
+use Symfony\Component\Mime\RawMessage;
 use Symfony\Component\Uid\Uuid;
 
 final class NotificationTest extends DatabaseTestCase
 {
     use AuthenticatesUsers;
+    use ClockSensitiveTrait;
     use CalendarTestHelpers;
 
     private const string PUSH_ENDPOINT = 'https://push.example.test/subscriptions/1';
@@ -777,35 +780,36 @@ final class NotificationTest extends DatabaseTestCase
 
     public function testAnAddressNobodyConfirmedWaitsForTheLinkMailedToIt(): void
     {
-        $this->patchSettings(['emailAddress' => 'Somebody@Elsewhere.example']);
+        $somebody = self::elsewhere('somebody');
+        $this->patchSettings(['emailAddress' => strtoupper($somebody)]);
 
         self::assertEmailCount(1);
         $mail = self::getMailerMessage();
         self::assertInstanceOf(Email::class, $mail);
-        self::assertSame('somebody@elsewhere.example', $mail->getTo()[0]->getAddress());
+        self::assertSame($somebody, $mail->getTo()[0]->getAddress());
         $settings = $this->getJson('/api/v1/notification-settings', $this->kim);
         self::assertNull($settings['emailAddress']);
         self::assertSame('kim@example.test', $settings['effectiveEmailAddress'], 'Nothing goes there before it is confirmed.');
-        self::assertSame('somebody@elsewhere.example', $settings['pendingEmailAddress']);
+        self::assertSame($somebody, $settings['pendingEmailAddress']);
         self::assertIsString($settings['pendingEmailAddressSentAt']);
 
-        preg_match('~https?://\S+/notification-address/confirm\?\S+~', (string) $mail->getTextBody(), $match);
-        $link = $match[0] ?? self::fail('The mail has no confirmation link.');
+        $link = $this->linkIn($mail);
+        self::assertStringStartsWith('http://localhost/notification-address/confirm?', $link, 'Built from API_PUBLIC_URL.');
         $this->client->request('GET', $link);
         self::assertResponseIsSuccessful();
         self::assertSelectorTextContains('h1', 'Confirm address');
-        self::assertSame('somebody@elsewhere.example', $this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress'], 'Opening the link (as a mail scanner does) confirms nothing.');
+        self::assertSame($somebody, $this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress'], 'Opening the link (as a mail scanner does) confirms nothing.');
 
         $this->client->request('POST', $link);
         self::assertResponseIsSuccessful();
         self::assertSelectorTextContains('h1', 'Address confirmed');
         $settings = $this->getJson('/api/v1/notification-settings', $this->kim);
-        self::assertSame('somebody@elsewhere.example', $settings['effectiveEmailAddress']);
+        self::assertSame($somebody, $settings['effectiveEmailAddress']);
         self::assertNull($settings['pendingEmailAddress']);
 
         $this->client->request('POST', $link);
         self::assertResponseStatusCodeSame(410, 'A link works once.');
-        $this->client->request('POST', str_replace('somebody%40elsewhere.example', 'other%40elsewhere.example', $link));
+        $this->client->request('POST', str_replace(rawurlencode($somebody), rawurlencode(self::elsewhere('other')), $link));
         self::assertResponseStatusCodeSame(410, 'A changed link is no link.');
 
         $this->patchSettings(['emailAddress' => 'Kim@Example.test']);
@@ -813,23 +817,67 @@ final class NotificationTest extends DatabaseTestCase
         self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
     }
 
-    public function testConfirmationLinksAreLimitedPerDay(): void
+    public function testALinkExpiresAfterTwoDays(): void
     {
-        for ($mail = 1; $mail <= 5; ++$mail) {
-            $this->patchSettings(['emailAddress' => 'somebody@elsewhere.example']);
+        $this->patchSettings(['emailAddress' => self::elsewhere('late')]);
+        $link = $this->linkIn(self::getMailerMessage());
+
+        self::mockTime('+2 days +1 minute');
+        $this->client->request('POST', $link);
+
+        self::assertResponseStatusCodeSame(410);
+        self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
+    }
+
+    public function testALinkOfAnAddressTheUserMovedOnFromDoesNotWork(): void
+    {
+        $first = self::elsewhere('first');
+        $this->patchSettings(['emailAddress' => $first]);
+        $firstLink = $this->linkIn(self::getMailerMessage());
+        $this->patchSettings(['emailAddress' => self::elsewhere('second')]);
+
+        $this->client->request('POST', $firstLink);
+        self::assertResponseStatusCodeSame(410, 'Another address was chosen since.');
+
+        // Back to the address that already counts: a pending one goes, and its link with it.
+        $confirmed = self::elsewhere('confirmed');
+        $this->patchSettings(['emailAddress' => $confirmed]);
+        $this->client->request('POST', $this->linkIn(self::getMailerMessage()));
+        self::assertResponseIsSuccessful();
+        $changedMind = self::elsewhere('changed-mind');
+        $this->patchSettings(['emailAddress' => $changedMind]);
+        $changedMindLink = $this->linkIn(self::getMailerMessage());
+        $this->patchSettings(['emailAddress' => $confirmed]);
+        self::assertEmailCount(0);
+        self::assertNull($this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress']);
+        $this->client->request('POST', $changedMindLink);
+        self::assertResponseStatusCodeSame(410);
+        self::assertSame($confirmed, $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
+    }
+
+    public function testConfirmationLinksAreLimitedPerUserAndPerAddress(): void
+    {
+        $target = self::elsewhere('target');
+        for ($mail = 1; $mail <= 3; ++$mail) {
+            $this->patchSettings(['emailAddress' => $target]);
             self::assertEmailCount(1, null, 'Choosing it again sends the link again.');
         }
+        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => $target], \JSON_THROW_ON_ERROR));
+        self::assertResponseStatusCodeSame(429, 'Three links a day to one address, whoever asks.');
+        self::assertEmailCount(0);
 
-        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'another@elsewhere.example'], \JSON_THROW_ON_ERROR));
-
-        self::assertResponseStatusCodeSame(429);
+        $this->patchSettings(['emailAddress' => self::elsewhere('fourth')]);
+        $this->patchSettings(['emailAddress' => self::elsewhere('fifth')]);
+        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => self::elsewhere('sixth')], \JSON_THROW_ON_ERROR));
+        self::assertResponseStatusCodeSame(429, 'Five links a day per user.');
         self::assertEmailCount(0);
     }
 
     public function testAnAddressChosenBeforeConfirmationGetsOneLinkWhenItIsFirstUsed(): void
     {
+        $old = self::elsewhere('old');
         $this->getJson('/api/v1/notification-settings', $this->kim);
-        $this->connection()->executeStatement("UPDATE notification_preferences SET email_address = 'old@imap.example' WHERE user_id = :user", ['user' => $this->user()->getId()->toRfc4122()]);
+        $this->connection()->executeStatement('UPDATE notification_preferences SET email_address = :old WHERE user_id = :user', ['old' => $old, 'user' => $this->user()->getId()->toRfc4122()]);
         static::getContainer()->get(EntityManagerInterface::class)->clear();
         self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
 
@@ -840,19 +888,48 @@ final class NotificationTest extends DatabaseTestCase
         self::assertEmailCount(1);
         $mail = self::getMailerMessage();
         self::assertInstanceOf(Email::class, $mail);
-        self::assertSame('old@imap.example', $mail->getTo()[0]->getAddress());
-        self::assertSame('old@imap.example', $this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress']);
+        self::assertSame($old, $mail->getTo()[0]->getAddress());
+        self::assertSame($old, $this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress']);
+    }
+
+    public function testALinkThatCouldNotGoOutIsTriedAgainAtTheNextNotification(): void
+    {
+        $old = self::elsewhere('retried');
+        $this->getJson('/api/v1/notification-settings', $this->kim);
+        $this->connection()->executeStatement('UPDATE notification_preferences SET pending_email_address = :old WHERE user_id = :user', ['old' => $old, 'user' => $this->user()->getId()->toRfc4122()]);
+        static::getContainer()->get(EntityManagerInterface::class)->clear();
+
+        self::assertSame('kim@example.test', static::getContainer()->get(NotificationDispatcher::class)->deliveryAddressFor($this->user()));
+
+        self::assertEmailCount(1, null, 'A pending address without a link that went out gets one with the next notification.');
+        self::assertIsString($this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddressSentAt']);
+    }
+
+    public function testAnAddressThatWasProvenAndStoppedCountingGetsNoMail(): void
+    {
+        $account = $this->imapAccount('kim@gmail.example');
+        $this->confirmByProvider($account, 'kim@gmail.example', 'google');
+        $this->patchSettings(['emailAddress' => 'kim@gmail.example']);
+        self::assertEmailCount(0);
+        $this->connection()->executeStatement("UPDATE mail_account SET email_address = 'renamed@gmail.example' WHERE id = :id", ['id' => $account]);
+        static::getContainer()->get(EntityManagerInterface::class)->clear();
+
+        self::assertSame('kim@example.test', static::getContainer()->get(NotificationDispatcher::class)->deliveryAddressFor($this->user()));
+
+        self::assertEmailCount(0, null, 'No link to an address the user gave up; the sign-in address takes over.');
+        self::assertNull($this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress']);
     }
 
     public function testAProviderConfirmedAddressCountsAtOnce(): void
     {
-        $victim = $this->imapAccount('victim@elsewhere.example');
+        $victimAddress = self::elsewhere('victim');
+        $victim = $this->imapAccount($victimAddress);
         $worker = $this->workerHeaders('sync:lease sync:ingest');
         $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'w1'], $worker);
         self::assertResponseIsSuccessful();
         $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$victim.'/status', ['workerId' => 'w1', 'status' => 'active'], $worker);
         self::assertResponseIsSuccessful();
-        $this->patchSettings(['emailAddress' => 'victim@elsewhere.example']);
+        $this->patchSettings(['emailAddress' => $victimAddress]);
         self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress'], 'A synced IMAP account proves a mailbox someone can log in to, not the address typed next to it.');
 
         $google = $this->imapAccount('kim@gmail.example');
@@ -871,6 +948,20 @@ final class NotificationTest extends DatabaseTestCase
         $this->connection()->executeStatement('UPDATE mail_account SET last_synced_at = NOW() WHERE id = :id', ['id' => $microsoft]);
         $this->patchSettings(['emailAddress' => 'kim@contoso.example']);
         self::assertSame('kim@contoso.example', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
+    }
+
+    /** An address of nobody's in particular, new in every test: links to one address are limited per day. */
+    private static function elsewhere(string $name): string
+    {
+        return $name.'-'.bin2hex(random_bytes(4)).'@elsewhere.example';
+    }
+
+    private function linkIn(?RawMessage $mail): string
+    {
+        self::assertInstanceOf(Email::class, $mail);
+        preg_match('~https?://\S+/notification-address/confirm\?\S+~', (string) $mail->getTextBody(), $match);
+
+        return $match[0] ?? self::fail('The mail has no confirmation link.');
     }
 
     private function imapAccount(string $address): string
