@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { dueLabel, handOverStatus, openHandOversOf, todoSourceMessage, type SyncedFolder, type SyncedHandOver, type SyncedMessage, type SyncedThread, type SyncedTodo } from '@tresso/core'
 import { MessageBodyView } from '@/components/MessageBodyView'
+import { PlaceScrollProvider, scrollToPlaceIn, type ScrollToPlace } from '@/components/placeScroll'
 import { useComposer } from '@/compose/ComposerProvider'
 import { useMail } from '@/mail/MailProvider'
 import { useNotices } from '@/components/Notices'
@@ -28,6 +29,8 @@ export default function ThreadScreen() {
   const [messages, setMessages] = useState<SyncedMessage[]>([])
   const [notFound, setNotFound] = useState(false)
   const [expanded, setExpanded] = useState<Set<string> | null>(null)
+  const scroll = useRef<ComponentRef<typeof ScrollView>>(null)
+  const scrollToPlace = useCallback<ScrollToPlace>((view, offset) => scrollToPlaceIn(scroll.current, view, offset), [])
   const [folders, setFolders] = useState<SyncedFolder[]>([])
   const [todos, setTodos] = useState<SyncedTodo[]>([])
   const [ownAddresses, setOwnAddresses] = useState<string[]>([])
@@ -224,89 +227,91 @@ export default function ThreadScreen() {
   return (
     <>
       <Stack.Screen options={{ headerShown: true, title: '', headerBackTitle: 'Inbox' }} />
-      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-        {absent === 'loading' && <LogoLoader size={32} style={styles.loading} accessibilityLabel="Loading the conversation" />}
-        {absent === 'unreachable' && (
-          <View accessibilityRole="alert">
-            <Text style={styles.muted}>This conversation could not be loaded: {syncError}. It opens once Tresso can sync again.</Text>
-            <Pressable onPress={() => void syncNow()} accessibilityRole="button" style={({ pressed }) => [styles.retry, pressed && styles.pressed]}>
-              <Text style={styles.on}>Try again</Text>
-            </Pressable>
-          </View>
-        )}
-        {absent === 'missing' && <Text style={styles.muted}>This conversation no longer exists.</Text>}
-        {thread !== null && (
-          <>
-            <Text style={styles.subject} accessibilityRole="header">
-              {thread.subject || '(no subject)'}
-            </Text>
-            {waitingOn.map((handOver) => {
-              const late = handOverStatus(handOver) === 'overdue'
-              return (
-                <View key={handOver.id} style={[styles.handed, late && styles.handedLate]}>
-                  <Text style={styles.handedText}>
-                    Handed over to {senderName(handOver.delegate)}, {late ? 'was due' : 'due'} {shortDue(handOver.dueAt)}
-                  </Text>
-                  <View style={styles.replies}>
-                    <ReplyButton label="Nudge" onPress={() => void handOvers.nudge(handOver)} styles={styles} />
-                    <ReplyButton label="Mark done" onPress={() => void handOvers.markDone(handOver)} styles={styles} />
-                  </View>
-                </View>
-              )
-            })}
-            {todos.length === 0 ? (
-              <Pressable
-                style={({ pressed }) => [styles.todoButton, (pressed || makingTodo) && styles.replyPressed]}
-                onPress={() => void makeTodo()}
-                disabled={makingTodo}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: makingTodo }}
-              >
-                <Text style={styles.todoButtonLabel}>Make todo</Text>
+      <PlaceScrollProvider value={scrollToPlace}>
+        <ScrollView ref={scroll} style={styles.screen} contentContainerStyle={styles.content}>
+          {absent === 'loading' && <LogoLoader size={32} style={styles.loading} accessibilityLabel="Loading the conversation" />}
+          {absent === 'unreachable' && (
+            <View accessibilityRole="alert">
+              <Text style={styles.muted}>This conversation could not be loaded: {syncError}. It opens once Tresso can sync again.</Text>
+              <Pressable onPress={() => void syncNow()} accessibilityRole="button" style={({ pressed }) => [styles.retry, pressed && styles.pressed]}>
+                <Text style={styles.on}>Try again</Text>
               </Pressable>
-            ) : (
-              todos.map((todo) => (
-                <Pressable key={todo.id} style={styles.todo} onPress={() => router.push('/todos')} accessibilityRole="link">
-                  <Text style={[styles.todoTitle, todo.completedAt !== null && styles.todoDone]} numberOfLines={1}>
-                    {todo.title}
-                  </Text>
-                  <Text style={styles.muted}>{dueLabel(todo, new Date()) ?? 'Open'}</Text>
+            </View>
+          )}
+          {absent === 'missing' && <Text style={styles.muted}>This conversation no longer exists.</Text>}
+          {thread !== null && (
+            <>
+              <Text style={styles.subject} accessibilityRole="header">
+                {thread.subject || '(no subject)'}
+              </Text>
+              {waitingOn.map((handOver) => {
+                const late = handOverStatus(handOver) === 'overdue'
+                return (
+                  <View key={handOver.id} style={[styles.handed, late && styles.handedLate]}>
+                    <Text style={styles.handedText}>
+                      Handed over to {senderName(handOver.delegate)}, {late ? 'was due' : 'due'} {shortDue(handOver.dueAt)}
+                    </Text>
+                    <View style={styles.replies}>
+                      <ReplyButton label="Nudge" onPress={() => void handOvers.nudge(handOver)} styles={styles} />
+                      <ReplyButton label="Mark done" onPress={() => void handOvers.markDone(handOver)} styles={styles} />
+                    </View>
+                  </View>
+                )
+              })}
+              {todos.length === 0 ? (
+                <Pressable
+                  style={({ pressed }) => [styles.todoButton, (pressed || makingTodo) && styles.replyPressed]}
+                  onPress={() => void makeTodo()}
+                  disabled={makingTodo}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: makingTodo }}
+                >
+                  <Text style={styles.todoButtonLabel}>Make todo</Text>
                 </Pressable>
-              ))
-            )}
-            {messages.map((message) => {
-              const open = expanded?.has(message.id) ?? false
-              const to = [...message.recipients.to, ...message.recipients.cc].map(senderName).join(', ')
-              return (
-                <View key={message.id} style={styles.message}>
-                  <Pressable style={styles.head} onPress={() => toggle(message.id)} accessibilityRole="button" accessibilityState={{ expanded: open }}>
-                    <View style={styles.avatar}>
-                      <Text style={styles.avatarText}>{initials(message.from)}</Text>
-                    </View>
-                    <View style={styles.who}>
-                      <Text style={[styles.from, !message.flags.seen && styles.bold]} numberOfLines={1}>
-                        {senderName(message.from)}
-                      </Text>
-                      <Text style={styles.muted} numberOfLines={1}>
-                        {open ? (to === '' ? '' : `To ${to}`) : message.snippet}
-                      </Text>
-                    </View>
-                    <Text style={styles.muted}>{shortTime(Date.parse(message.receivedAt))}</Text>
+              ) : (
+                todos.map((todo) => (
+                  <Pressable key={todo.id} style={styles.todo} onPress={() => router.push('/todos')} accessibilityRole="link">
+                    <Text style={[styles.todoTitle, todo.completedAt !== null && styles.todoDone]} numberOfLines={1}>
+                      {todo.title}
+                    </Text>
+                    <Text style={styles.muted}>{dueLabel(todo, new Date()) ?? 'Open'}</Text>
                   </Pressable>
-                  {open && <MessageBodyView messageId={message.id} />}
-                  {open && (
-                    <View style={styles.replies} accessibilityRole="toolbar" accessibilityLabel={`Answer ${senderName(message.from)}`}>
-                      <ReplyButton label="Reply" onPress={() => void composer.openReply(message, 'reply')} styles={styles} />
-                      <ReplyButton label="Reply all" onPress={() => void composer.openReply(message, 'replyAll')} styles={styles} />
-                      <ReplyButton label="Forward" onPress={() => void composer.openReply(message, 'forward')} styles={styles} />
-                    </View>
-                  )}
-                </View>
-              )
-            })}
-          </>
-        )}
-      </ScrollView>
+                ))
+              )}
+              {messages.map((message) => {
+                const open = expanded?.has(message.id) ?? false
+                const to = [...message.recipients.to, ...message.recipients.cc].map(senderName).join(', ')
+                return (
+                  <View key={message.id} style={styles.message}>
+                    <Pressable style={styles.head} onPress={() => toggle(message.id)} accessibilityRole="button" accessibilityState={{ expanded: open }}>
+                      <View style={styles.avatar}>
+                        <Text style={styles.avatarText}>{initials(message.from)}</Text>
+                      </View>
+                      <View style={styles.who}>
+                        <Text style={[styles.from, !message.flags.seen && styles.bold]} numberOfLines={1}>
+                          {senderName(message.from)}
+                        </Text>
+                        <Text style={styles.muted} numberOfLines={1}>
+                          {open ? (to === '' ? '' : `To ${to}`) : message.snippet}
+                        </Text>
+                      </View>
+                      <Text style={styles.muted}>{shortTime(Date.parse(message.receivedAt))}</Text>
+                    </Pressable>
+                    {open && <MessageBodyView messageId={message.id} />}
+                    {open && (
+                      <View style={styles.replies} accessibilityRole="toolbar" accessibilityLabel={`Answer ${senderName(message.from)}`}>
+                        <ReplyButton label="Reply" onPress={() => void composer.openReply(message, 'reply')} styles={styles} />
+                        <ReplyButton label="Reply all" onPress={() => void composer.openReply(message, 'replyAll')} styles={styles} />
+                        <ReplyButton label="Forward" onPress={() => void composer.openReply(message, 'forward')} styles={styles} />
+                      </View>
+                    )}
+                  </View>
+                )
+              })}
+            </>
+          )}
+        </ScrollView>
+      </PlaceScrollProvider>
       {thread !== null && (
         <View style={[styles.bar, { height: BAR_HEIGHT + insets.bottom, paddingBottom: insets.bottom }]} accessibilityRole="toolbar">
           <BarButton label="Archive" busy={busy} styles={styles} onPress={() => relocateAll('archive')} />
