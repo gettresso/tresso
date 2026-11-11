@@ -61,14 +61,15 @@ export function useMessageActions(busy: Ref<boolean> = ref(false)) {
   /**
    * Archives, trashes or moves the messages and says so, with an undo that puts back exactly what can be (not, for
    * example, messages that were in several folders, since a move takes every copy); the notice says how many it
-   * cannot. Returns what changed, as {@link run} does.
+   * cannot. `said` replaces the notice's own words ("Archived") when the action was part of something else (Noted).
+   * Returns what changed, as {@link run} does.
    */
-  async function relocate(messageIds: string[], action: 'archive' | 'trash' | 'move', folders: SyncedFolder[], folderId?: string): Promise<AppliedAction | null> {
+  async function relocate(messageIds: string[], action: 'archive' | 'trash' | 'move', folders: SyncedFolder[], folderId?: string, said?: string): Promise<AppliedAction | null> {
     const applied = await run(messageIds, action, folderId)
     if (applied === null) {
       return null
     }
-    const label = action === 'archive' ? 'Archived' : action === 'trash' ? 'Moved to Trash' : `Moved to ${folders.find((folder) => folder.id === folderId)?.displayName ?? 'the folder'}`
+    const label = said ?? (action === 'archive' ? 'Archived' : action === 'trash' ? 'Moved to Trash' : `Moved to ${folders.find((folder) => folder.id === folderId)?.displayName ?? 'the folder'}`)
     const plan = undoPlan(applied, action, folders)
     const left = plan.unrestorable
     const caveat = left === 0 || plan.moves.length === 0 ? '' : ` Undo cannot put ${left === 1 ? 'one message' : `${left} messages`} back.`

@@ -298,6 +298,35 @@ describe('ReadingPane actions', () => {
 
     expect(actions).toEqual([{ messageIds: ['m1', 'm2'], action: 'archive' }])
     expect(await folderIdsOf('m2')).toEqual(['archive'])
+    // Says what K did, with the undo.
+    expect(useComposeStore().notices.find((n) => n.text === 'Marked read and archived.')?.action?.label).toBe('Undo')
+  })
+
+  it('tells a screen reader which verdict the conversation has', async () => {
+    later = page(2, { threads: [{ id: 't1', mailAccountId: 'work', subject: 'Offsite plan', messageCount: 2, lastMessageAt: '2026-10-19T09:00:00Z', smartInboxId: null, verdict: 'delegate', classificationReason: null }] })
+    await useMailStore().syncNow()
+    const wrapper = mountPane()
+    await opened(wrapper)
+
+    await vi.waitFor(() => expect(wrapper.get('.verdict.delegate').attributes('aria-current')).toBe('true'))
+    expect(wrapper.get('.verdict.do').attributes('aria-current')).toBeUndefined()
+    expect(wrapper.get('.verdict.know').attributes('aria-current')).toBeUndefined()
+  })
+
+  it('makes the todo with D when the conversation is Do already, without waiting for the smart inboxes', async () => {
+    later = page(2, { threads: [{ id: 't1', mailAccountId: 'work', subject: 'Offsite plan', messageCount: 2, lastMessageAt: '2026-10-19T09:00:00Z', smartInboxId: null, verdict: 'do', classificationReason: null }] })
+    await useMailStore().syncNow()
+    const wrapper = mountPane()
+    await opened(wrapper)
+    useMailStore().smartInboxes = []
+    const classify = vi.spyOn(useMailStore(), 'classifyThread')
+    const make = vi.spyOn(useTodosStore(), 'makeFromMessage').mockResolvedValue({ ...todo('td1'), made: true })
+
+    await wrapper.get('.verdict.do').trigger('click')
+
+    await vi.waitFor(() => expect(make).toHaveBeenCalledWith('m2'))
+    expect(classify).not.toHaveBeenCalled()
+    expect(useComposeStore().notices.some((n) => n.tone === 'error')).toBe(false)
   })
 
   it('takes the shortcuts, but not while typing', async () => {

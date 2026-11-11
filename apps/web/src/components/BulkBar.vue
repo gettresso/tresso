@@ -107,7 +107,7 @@ function noted(): Promise<void> {
   return onSelection(async (messageIds) => {
     // Reading is part of noting, but not worth stopping the archive for when it fails (run says why).
     await actions.run(messageIds, 'markRead')
-    return actions.relocate(messageIds, 'archive', mail.allFolders)
+    return actions.relocate(messageIds, 'archive', mail.allFolders, undefined, 'Marked read and archived')
   })
 }
 
@@ -232,5 +232,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
 }
 .box.mixed {
   background: linear-gradient(var(--focus), var(--focus)) center / 8px 2px no-repeat, var(--paper);
+}
+/* Touch size on a phone, for the Noted button and the rest of the bar. */
+@media (max-width: 760px) {
+  .tool,
+  .link {
+    min-height: 44px;
+  }
 }
 </style>

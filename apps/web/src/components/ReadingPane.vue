@@ -198,12 +198,13 @@ async function settleDo(): Promise<void> {
     if (current === null) {
       return
     }
-    const placement = triagePlacement('do', current.smartInboxId ?? null, mail.smartInboxes)
     try {
-      if (placement === null) {
-        throw new Error('Your smart inboxes have not arrived yet. Try again in a moment.')
-      }
+      // Already Do: only the todo is left to make, so no placement is needed (nor the smart inboxes it is found in).
       if (current.verdict !== 'do') {
+        const placement = triagePlacement('do', current.smartInboxId ?? null, mail.smartInboxes)
+        if (placement === null) {
+          throw new Error('Your smart inboxes have not arrived yet. Try again in a moment.')
+        }
         await mail.classifyThread(current.id, placement.smartInboxId, placement.verdict, { remember: false })
       }
     } catch (e) {
@@ -226,7 +227,7 @@ function settleKnow(): Promise<void> {
     if (unread.length > 0) {
       await run(unread, 'markRead')
     }
-    if ((await actions.relocate(messages.value.map((message) => message.id), 'archive', folders.value)) !== null) {
+    if ((await actions.relocate(messages.value.map((message) => message.id), 'archive', folders.value, undefined, 'Marked read and archived')) !== null) {
       await router.push(props.backTo)
     }
   })
@@ -254,27 +255,30 @@ onBeforeUnmount(() => {
 
 <template>
   <article class="pane" aria-label="Conversation">
-    <p v-if="unreachable" class="missing" role="alert">
+    <!-- The way back sits beside the live message, not in it, so it is not read out with every change. -->
+    <div v-if="unreachable" class="missing with-back">
       <RouterLink :to="backTo" class="tool back" aria-label="Back to the list"><AppIcon name="back" /></RouterLink>
-      This conversation could not be loaded: {{ mail.syncError }}. It opens once Tresso can sync again.
-      <button type="button" class="button button-quiet" @click="mail.syncNow()">Try again</button>
-    </p>
-    <p v-else-if="notFound && !missing" class="state" role="status">
+      <p role="alert">
+        This conversation could not be loaded: {{ mail.syncError }}. It opens once Tresso can sync again.
+        <button type="button" class="button button-quiet" @click="mail.syncNow()">Try again</button>
+      </p>
+    </div>
+    <div v-else-if="notFound && !missing" class="state with-back">
       <RouterLink :to="backTo" class="tool back" aria-label="Back to the list"><AppIcon name="back" /></RouterLink>
-      <LogoLoader /> Loading the conversation…
-    </p>
+      <p role="status"><LogoLoader /> Loading the conversation…</p>
+    </div>
     <p v-if="missing" class="missing">This conversation no longer exists. <RouterLink :to="backTo">Back to the inbox</RouterLink></p>
     <div v-else-if="thread" class="inner">
       <div class="actions" role="group" aria-label="Conversation actions">
         <!-- Below 1100 px the list is hidden while a conversation is open; this is the way back to it. -->
         <RouterLink :to="backTo" class="tool back" aria-label="Back to the list" title="Back to the list"><AppIcon name="back" /></RouterLink>
-        <button type="button" class="verdict do" :class="{ current: thread.verdict === 'do' }" :disabled="busy || makingTodo" aria-keyshortcuts="D" title="Do: make it a todo (D)" @click="settleDo">
+        <button type="button" class="verdict do" :class="{ current: thread.verdict === 'do' }" :aria-current="thread.verdict === 'do' ? 'true' : undefined" :disabled="busy || makingTodo" aria-keyshortcuts="D" title="Do: make it a todo (D)" @click="settleDo">
           Do <KeyShortcut keys="D" />
         </button>
-        <button type="button" class="verdict delegate" :class="{ current: thread.verdict === 'delegate' }" aria-keyshortcuts="H" title="Hand over (H)" @click="handOver">
+        <button type="button" class="verdict delegate" :class="{ current: thread.verdict === 'delegate' }" :aria-current="thread.verdict === 'delegate' ? 'true' : undefined" aria-keyshortcuts="H" title="Hand over (H)" @click="handOver">
           Hand over <KeyShortcut keys="H" />
         </button>
-        <button type="button" class="verdict know" :class="{ current: thread.verdict === 'know' }" :disabled="busy" aria-keyshortcuts="K" title="Noted: mark read and archive (K)" @click="settleKnow">
+        <button type="button" class="verdict know" :class="{ current: thread.verdict === 'know' }" :aria-current="thread.verdict === 'know' ? 'true' : undefined" :disabled="busy" aria-keyshortcuts="K" title="Noted: mark read and archive (K)" @click="settleKnow">
           Noted <KeyShortcut keys="K" />
         </button>
         <span class="divider" aria-hidden="true" />
@@ -554,12 +558,29 @@ onBeforeUnmount(() => {
   padding: 32px 40px;
   color: var(--ink-2);
 }
-.state {
+.with-back {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.with-back p {
+  margin: 0;
+  /* Level with the 36 px back link. */
+  padding-top: 8px;
+}
+.state p {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.missing .back {
-  vertical-align: middle;
+/* Touch size on a phone for the controls this pane adds. */
+@media (max-width: 760px) {
+  .back,
+  .verdict {
+    min-height: 44px;
+  }
+  .back {
+    min-width: 44px;
+  }
 }
 </style>
