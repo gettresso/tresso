@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace App\Tests\Functional;
 
 use App\Entity\Attachment;
+use App\Entity\Category;
 use App\Entity\Folder;
 use App\Entity\Message;
 use App\Entity\MessageLocation;
 use App\Entity\MessageText;
 use App\Entity\Thread;
 use App\Entity\Todo;
+use App\Enum\Verdict;
 use App\Mail\MessageFields;
 use App\Repository\AttachmentRepository;
 use App\Storage\BlobKey;
@@ -383,6 +385,32 @@ final class SyncIngestTest extends DatabaseTestCase
 
         self::assertSame(1, $this->rows(Thread::class));
         self::assertSame(3, $this->onlyThread()->getMessageCount());
+    }
+
+    public function testMergingKeepsThePlacementTheUserGaveTheNewerConversation(): void
+    {
+        $this->folders(['INBOX' => 1]);
+        $this->messages('INBOX', [
+            $this->message('1', ['messageId' => '<a@x>', 'subject' => 'Plan']),
+            $this->message('3', ['messageId' => '<c@x>', 'subject' => 'Re: Plan', 'inReplyTo' => '<b@x>', 'references' => ['<b@x>']]),
+        ]);
+        $entityManager = $this->entityManager();
+        $newer = $entityManager->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'c@x'])?->getThread();
+        self::assertInstanceOf(Thread::class, $newer);
+        $smartInbox = new Category($newer->getMailAccount()->getOwner(), 'Partners', '', Verdict::Know);
+        $entityManager->wrapInTransaction(static function () use ($entityManager, $smartInbox, $newer): void {
+            $entityManager->persist($smartInbox);
+            $newer->placeByUser($smartInbox, Verdict::Know, new \DateTimeImmutable());
+        });
+        $smartInboxId = $smartInbox->getId()->toRfc4122();
+
+        $this->messages('INBOX', [$this->message('2', ['messageId' => '<b@x>', 'subject' => 'Re: Plan', 'inReplyTo' => '<a@x>', 'references' => ['<a@x>']])]);
+
+        $thread = $this->onlyThread();
+        self::assertSame(3, $thread->getMessageCount());
+        self::assertTrue($thread->isClassifiedByUser(), 'The older conversation survives with the placement the user gave the newer one.');
+        self::assertSame($smartInboxId, $thread->getCategory()?->getId()->toRfc4122());
+        self::assertSame(Verdict::Know, $thread->getVerdict());
     }
 
     public function testSubjectFallbackNeedsASharedParticipantAndRecentThread(): void

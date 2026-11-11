@@ -191,6 +191,29 @@ class Thread implements TracksChanges
         return $this->placementId;
     }
 
+    /**
+     * $other is merged into this conversation: a placement the user gave it carries over, unless this conversation has
+     * a newer one of the user's own. A conversation the user placed and could see stays visible: a hold on this one
+     * goes with it.
+     */
+    public function adoptUserPlacement(self $other): void
+    {
+        if (!$other->isClassifiedByUser()) {
+            return;
+        }
+        if ($this->isClassifiedByUser() && null !== $this->classifiedAt && (null === $other->classifiedAt || $this->classifiedAt >= $other->classifiedAt)) {
+            return;
+        }
+        $this->category = $other->category;
+        $this->verdict = $other->verdict;
+        $this->classificationReason = $other->classificationReason;
+        $this->classifiedAt = $other->classifiedAt;
+        $this->placementId = $other->placementId;
+        if (null === $other->heldUntil) {
+            $this->release($other->batchedAt);
+        }
+    }
+
     public function getPlacementId(): ?Uuid
     {
         return $this->placementId;

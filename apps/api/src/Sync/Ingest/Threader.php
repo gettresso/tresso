@@ -168,6 +168,8 @@ final readonly class Threader
             $target->recordMessage($message->getReceivedAt());
         }
         $this->handOvers->threadsMerged($other, $target);
+        // The survivor is the oldest conversation; where the user put the other one counts as much.
+        $target->adoptUserPlacement($other);
         $this->entityManager->remove($other);
     }
 }
