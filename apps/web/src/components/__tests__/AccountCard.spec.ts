@@ -52,4 +52,20 @@ describe('AccountCard', () => {
 
     expect(wrapper.text()).not.toContain('One-click unsubscribe is not available')
   })
+
+  it('shows an account without calendar access in the collapsed card, and opens on it', () => {
+    const wrapper = mount(AccountCard, { props: { account: { ...account('microsoft'), calendarStatus: 'not_granted' } } })
+
+    expect(wrapper.get('.status.calendar').text()).toBe('Calendars not allowed')
+    expect(wrapper.get('button.head').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.text()).toContain('Allow calendar access')
+  })
+
+  it('stays closed and quiet when the calendars are fine', () => {
+    const wrapper = mount(AccountCard, { props: { account: { ...account('microsoft'), calendarStatus: 'active' } } })
+
+    expect(wrapper.find('.status.calendar').exists()).toBe(false)
+    expect(wrapper.get('button.head').attributes('aria-expanded')).toBe('false')
+  })
 })
+

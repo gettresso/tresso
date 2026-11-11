@@ -67,8 +67,9 @@ onMounted(async () => {
     // Without it "None" is not offered as connection security, which only local test servers need.
   }
 })
-// Status changes (a sign-in failure, a first sync) reach the synced copy in real time; refresh the settings then.
-watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.lastSyncedAt}`).join('|'), load)
+// Status changes (a sign-in failure, a first sync, calendars allowed or refused) reach the synced copy in real time;
+// refresh the settings then.
+watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.lastSyncedAt}:${a.calendarStatus}:${a.calendarStatusDetail}`).join('|'), load)
 </script>
 
 <template>

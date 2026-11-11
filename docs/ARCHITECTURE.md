@@ -1692,6 +1692,12 @@ make the status flip every round). The worker ends it: after a round in which ev
 had changes) it reports `active` once, and while a calendar keeps failing it reports `error`, never `active`. The API
 takes `active` only over `error`; any other status (a login, a permission, an address to confirm) stays until a
 calendar list shows it is solved.
+The clients show it where the user looks: the account's card in Settings, Accounts carries a badge for
+`not_granted`, `auth_failed`, `error` and `unconfirmed` and opens by itself, and the calendar page lists every account
+whose calendars do not show, with "Allow calendar access" (one sign-in that adds the calendar scopes) for
+`not_granted`, the detail and a link to the account's settings for the others, and "Looking for the calendars" while
+an account has none yet. An IMAP account's settings show its CalDAV status and take the CalDAV address
+(`calendarUrl`), with "Use this address" for one the worker found but may not trust on its own (`unconfirmed`).
 
 - **CalDAV** for IMAP accounts (`apps/sync/internal/caldavsync` on a small WebDAV client in `internal/caldav`, through
   the guarded dialer). The client keeps objects as raw iCalendar text in both directions and reads colors, ctags and

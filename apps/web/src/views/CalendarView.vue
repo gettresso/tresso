@@ -21,6 +21,7 @@ import {
 import { errorMessage } from '@/api/errors'
 import { isDesktop, openInBrowser } from '@/platform/desktop'
 import AppIcon from '@/components/AppIcon.vue'
+import CalendarAccessNotices from '@/components/CalendarAccessNotices.vue'
 import AgendaList from '@/components/calendar/AgendaList.vue'
 import CalendarRail from '@/components/calendar/CalendarRail.vue'
 import EventDetail from '@/components/calendar/EventDetail.vue'
@@ -362,7 +363,7 @@ function pickDay(day: number): void {
       </header>
 
       <p v-if="calendar.notice" class="empty" role="status">{{ calendar.notice }}</p>
-      <p v-if="mail.ready && calendar.calendars.length === 0" class="empty">No calendars yet. They appear here once your accounts have synced.</p>
+      <CalendarAccessNotices v-if="mail.ready" :accounts="mail.accounts" :calendars="calendar.calendars" />
 
       <TimeGrid
         v-if="calendar.view === 'day' || calendar.view === 'week'"
