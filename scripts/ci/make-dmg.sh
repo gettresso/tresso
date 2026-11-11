@@ -11,13 +11,19 @@
 # own DMG once more, with exactly the arguments Tauri passes (tauri-bundler, bundle/macos/dmg/mod.rs) but the disk
 # name, and the Finder layout from the same merged config Tauri reads. Run from the repository root.
 #
-# Each run starts clean, so scripts/ci/retry.sh can run it again after Finder's AppleScript failed: it detaches a disk
-# an earlier run left mounted and removes that run's images.
+# Each run starts clean, so scripts/ci/retry.sh can run it again after Finder's AppleScript failed: it removes the
+# images an earlier run left in OUT, and detaches one that is still mounted.
 set -euo pipefail
 
 bundle="${1:?usage: make-dmg.sh BUNDLE VERSION OUT}"
 version="${2:?usage: make-dmg.sh BUNDLE VERSION OUT}"
 out="${3:?usage: make-dmg.sh BUNDLE VERSION OUT}"
+
+# The version goes into a file name: only what the release workflow accepts, <major>.<minor>.<patch>[-<pre>].
+if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+  echo "make-dmg.sh: ${version} is not <major>.<minor>.<patch>[-<pre>]" >&2
+  exit 2
+fi
 
 root="${PWD}"
 config="${root}/apps/desktop/src-tauri"
@@ -37,8 +43,9 @@ if [ ! -d "${app}" ]; then
   exit 1
 fi
 
-# An earlier run that stopped half way can leave its read-write image (rw.<pid>.<name>) mounted, and a second disk
-# named "Tresso <version>" would confuse Finder's AppleScript, which finds the disk by name.
+# An earlier run that failed leaves its read-write image (rw.<pid>.<name>) in OUT, where the upload of dist would pick
+# it up, and possibly a half-written DMG. One that stopped before it detached also leaves that image mounted, which
+# would block removing it. (The AppleScript finds its disk by the random mount name, not by "Tresso <version>".)
 shopt -s nullglob
 for image in "${out}"/rw.*."Tresso-${version}.dmg"; do
   hdiutil info | awk -v image="${image}" '
