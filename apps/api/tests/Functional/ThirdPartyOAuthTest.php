@@ -633,8 +633,10 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $token = $this->exchange($clientId, $code, $verifier, ['resource' => 'http://localhost/mcp']);
         self::assertNotSame('', $token['access_token'], 'The token request may name the resource too.');
 
-        $this->authorize($clientId, ['mail:read'], $this->verifier(), 'state-6', ['resource' => 'http://localhost/']);
-        self::assertStringContainsString('code=', (string) $this->client->getResponse()->headers->get('Location'), 'The API itself, with a trailing slash.');
+        // An app on this computer is asked again every time; the page is the answer to an accepted resource.
+        $crawler = $this->authorize($clientId, ['mail:read'], $this->verifier(), 'state-6', ['resource' => 'http://localhost/']);
+        self::assertResponseIsSuccessful('The API itself, with a trailing slash.');
+        $this->answer($crawler, 'Allow', 'state-6');
 
         $this->authorize($clientId, ['mail:read'], $this->verifier(), 'state-7', ['resource' => 'https://evil.example/mcp']);
         parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
@@ -738,10 +740,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $token = $this->connect('kim@example.test', $clientId, ['signatures:read']);
         $this->signIn('kim@example.test');
         $verifier = $this->verifier();
-        $this->authorize($clientId, ['signatures:read'], $verifier, 'code');
-        parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
-        $code = $query['code'] ?? null;
-        self::assertIsString($code);
+        $code = $this->answer($this->authorize($clientId, ['signatures:read'], $verifier, 'code'), 'Allow', 'code');
 
         // As if disconnecting raced with these requests: the consent is gone, the tokens were not revoked yet.
         $this->connection()->executeStatement('DELETE FROM oauth_consent');
