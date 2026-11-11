@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs system packages on a GitHub Ubuntu runner. The runners read their package mirrors from
-# /etc/apt/apt-mirrors.txt; when those do not answer (it happens: for hours the runners could not resolve any
+# /etc/apt/apt-mirrors.txt or from the apt sources; when those do not answer (it happens: for hours the runners could not resolve any
 # ubuntu.com host), apt waits twenty seconds per package and the job hangs. This tries the runner's own mirrors
 # briefly and then switches to a mirror outside ubuntu.com. Packages stay signed by Ubuntu whichever mirror serves them.
 #
@@ -26,12 +26,20 @@ case "$(dpkg --print-architecture)" in
 esac
 
 if ! sudo timeout 90 apt-get "${apt_options[@]}" update; then
-  if [ ! -f "${mirror_list}" ]; then
-    echo "apt-install.sh: the package index could not be read and ${mirror_list} does not exist" >&2
-    exit 1
-  fi
   echo "apt-install.sh: the runner's mirrors do not answer; using ${fallback_mirror}" >&2
-  printf '%s\tpriority:1\n' "${fallback_mirror}" | sudo tee "${mirror_list}" >/dev/null
+  # Some runner images read their mirrors from the list file, others name ubuntu.com hosts in the sources themselves.
+  if [ -f "${mirror_list}" ]; then
+    printf '%s\tpriority:1\n' "${fallback_mirror}" | sudo tee "${mirror_list}" >/dev/null
+  fi
+  sources=()
+  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    if [ -f "${file}" ]; then
+      sources+=("${file}")
+    fi
+  done
+  if [ "${#sources[@]}" -gt 0 ]; then
+    sudo sed -i -E "s#https?://([a-z0-9.-]+\\.)?(archive|security|ports)\\.ubuntu\\.com/ubuntu(-ports)?/?#${fallback_mirror}#g" "${sources[@]}"
+  fi
   sudo timeout 300 apt-get "${apt_options[@]}" update
 fi
 
