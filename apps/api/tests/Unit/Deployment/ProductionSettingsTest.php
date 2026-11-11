@@ -179,6 +179,33 @@ final class ProductionSettingsTest extends TestCase
         self::assertSame([], new ProductionSettings([...self::complete(), 'API_PUBLIC_URL' => 'https://api.mail.example.com:8443'], self::DEVELOPMENT)->problems());
     }
 
+    public function testTheSignInAndMcpAddressesAreOptionalButBareHttpsOriginsWhenSet(): void
+    {
+        self::assertSame([], new ProductionSettings([...self::complete(), 'AUTH_PUBLIC_URL' => '', 'MCP_PUBLIC_URL' => ''], self::DEVELOPMENT)->problems(), 'Empty: the API address.');
+        self::assertSame([], new ProductionSettings([...self::complete(), 'AUTH_PUBLIC_URL' => 'https://mail.example.com', 'MCP_PUBLIC_URL' => 'https://mcp.mail.example.com'], self::DEVELOPMENT)->problems(), 'Sign-in on the web app\'s host, MCP on its own.');
+
+        foreach (['AUTH_PUBLIC_URL', 'MCP_PUBLIC_URL'] as $name) {
+            self::assertSame(
+                [$name.' must be empty or an https address as a browser writes it (lower case, no path, trailing slash or :443), such as https://mail.example.com.'],
+                new ProductionSettings([...self::complete(), $name => 'https://mail.example.com/sign-in'], self::DEVELOPMENT)->problems(),
+                $name,
+            );
+        }
+    }
+
+    public function testTheMcpEndpointNeedsAHostOfItsOwn(): void
+    {
+        self::assertSame(
+            ['MCP_PUBLIC_URL needs a host of its own, not the one of WEB_APP_URL: that host answers nothing but /mcp.'],
+            new ProductionSettings([...self::complete(), 'MCP_PUBLIC_URL' => 'https://mail.example.com'], self::DEVELOPMENT)->problems(),
+        );
+        self::assertSame(
+            ['MCP_PUBLIC_URL needs a host of its own, not the one of AUTH_PUBLIC_URL: that host answers nothing but /mcp.'],
+            new ProductionSettings([...self::complete(), 'AUTH_PUBLIC_URL' => 'https://login.mail.example.com', 'MCP_PUBLIC_URL' => 'https://login.mail.example.com'], self::DEVELOPMENT)->problems(),
+        );
+        self::assertSame([], new ProductionSettings([...self::complete(), 'MCP_PUBLIC_URL' => 'https://api.mail.example.com'], self::DEVELOPMENT)->problems(), 'The API address itself is the default.');
+    }
+
     public function testBillingNeedsStripeKeysAndAPrice(): void
     {
         self::assertSame([

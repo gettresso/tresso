@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Mcp;
 
 use App\Billing\PaymentWall;
+use App\Deployment\PublicAddresses;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\HttpFoundation\Response;
@@ -17,6 +18,9 @@ use Symfony\Component\HttpKernel\HttpKernelInterface;
  * request, which it already signed in); the sub-request carries the same `Authorization` header for code that reads it.
  *
  * A user the {@see PaymentWall} blocks gets the same 402 as over REST, before the operation runs.
+ *
+ * Sub-requests go to the API's own address (API_PUBLIC_URL), whatever host the MCP request came to: URLs the API makes
+ * inside a tool (a signed content URL) must point at the API, not at the MCP host, which answers nothing but /mcp.
  *
  * Answers with the decoded JSON body (an empty array for 204). A 4xx becomes an {@see ApiRefusal} with the API's
  * message and violations; a 5xx is a failure of ours and is thrown as such.
@@ -32,6 +36,7 @@ final readonly class Api
         private HttpKernelInterface $httpKernel,
         private RequestStack $requestStack,
         private PaymentWall $paymentWall,
+        private PublicAddresses $addresses,
     ) {
     }
 
@@ -110,8 +115,8 @@ final readonly class Api
 
         $server = [
             'HTTP_ACCEPT' => self::JSON,
-            'HTTP_HOST' => $main->getHttpHost(),
-            'HTTPS' => $main->isSecure() ? 'on' : 'off',
+            'HTTP_HOST' => PublicAddresses::hostOf($this->addresses->api()),
+            'HTTPS' => str_starts_with($this->addresses->api(), 'https://') ? 'on' : 'off',
             'REMOTE_ADDR' => $main->server->get('REMOTE_ADDR', '127.0.0.1'),
         ];
         $authorization = $main->headers->get('Authorization');

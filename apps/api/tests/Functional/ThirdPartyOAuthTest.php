@@ -20,6 +20,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\DomCrawler\Crawler;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -90,7 +91,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
 
         $resources = static::getContainer()->get(ProtectedResources::class);
         self::assertSame('http://localhost/mcp', $resources->mcpResource());
-        self::assertSame('Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"', $resources->mcpChallenge());
+        self::assertSame('Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"', $resources->mcpChallengeFor(Request::create('http://localhost/mcp')));
     }
 
     public function testBrowserClientsMayReadTheMetadataAndRegisterFromAnyOrigin(): void

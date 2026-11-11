@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Security\OAuth;
 
 use App\Controller\OAuthRevocationController;
+use App\Deployment\PublicAddresses;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 /**
@@ -17,6 +18,7 @@ final readonly class AuthorizationServerMetadata
 
     public function __construct(
         private ProtectedResources $resources,
+        private PublicAddresses $addresses,
         private UrlGeneratorInterface $urls,
     ) {
     }
@@ -28,7 +30,8 @@ final readonly class AuthorizationServerMetadata
 
         return [
             'issuer' => $issuer,
-            'authorization_endpoint' => $issuer.$this->urls->generate('oauth2_authorize'),
+            // Where people sign in (AUTH_PUBLIC_URL); RFC 8414 lets it be another host than the issuer.
+            'authorization_endpoint' => $this->addresses->auth().$this->urls->generate('oauth2_authorize'),
             'token_endpoint' => $issuer.$this->urls->generate('oauth2_token'),
             'registration_endpoint' => $issuer.$this->urls->generate(ClientRegistration::ROUTE),
             'revocation_endpoint' => $issuer.$this->urls->generate(OAuthRevocationController::ROUTE),

@@ -128,7 +128,7 @@ final readonly class ConsentScreen
             return;
         }
 
-        throw new OAuthServerException('The requested resource is not one this server protects.', 0, 'invalid_target', 400, \sprintf('Use %s or %s.', $this->resources->apiResource(), $this->resources->mcpResource()), $this->redirectUri($event, $client));
+        throw new OAuthServerException('The requested resource is not one this server protects.', 0, 'invalid_target', 400, \sprintf('Use %s.', implode(' or ', [$this->resources->apiResource(), ...$this->resources->mcpResources()])), $this->redirectUri($event, $client));
     }
 
     /** Where errors go: the redirect URI of the request, with its state, as the bundle does for its own errors. */

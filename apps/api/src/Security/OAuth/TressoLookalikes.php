@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Security\OAuth;
 
+use App\Deployment\PublicAddresses;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
@@ -27,15 +28,14 @@ final readonly class TressoLookalikes
     private string $ownScheme;
 
     public function __construct(
-        #[Autowire(env: 'API_PUBLIC_URL')]
-        string $apiPublicUrl,
+        PublicAddresses $addresses,
         #[Autowire(env: 'WEB_APP_URL')]
         string $webAppUrl,
         #[Autowire(env: 'NATIVE_REDIRECT_URI')]
         string $nativeRedirectUri,
     ) {
         $domains = self::DOMAINS;
-        foreach ([$apiPublicUrl, $webAppUrl] as $url) {
+        foreach ([$addresses->api(), $addresses->auth(), $addresses->mcp(), $webAppUrl] as $url) {
             $host = strtolower((string) parse_url($url, \PHP_URL_HOST));
             if ('' !== $host && !\in_array($host, self::LOOPBACK_HOSTS, true)) {
                 $domains[] = $host;

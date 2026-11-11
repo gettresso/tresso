@@ -46,6 +46,28 @@ the repository's `.env` files, since a production image would otherwise fall bac
 container (`RUN_MIGRATIONS=1`) then makes the OAuth signing keys once, in a volume, migrates the database and updates
 the first-party OAuth clients; the workers start when it is healthy.
 
+A server has two public addresses, the web client's (`WEB_APP_URL`) and the API's (`API_PUBLIC_URL`), and may give two
+things a host of their own (`App\Deployment\PublicAddresses`):
+
+- `AUTH_PUBLIC_URL`: the sign-in pages (`/login`, `/logout`, `/oauth/authorize` with the consent screen). Tresso Cloud
+  sets it to the web address, where its proxy sends those paths and `/auth/*` to the API, so the browser's sign-in
+  belongs to the address people use. The authorization server metadata names it as `authorization_endpoint`; the
+  issuer, the token, registration and revocation endpoints and the metadata stay on the API host (RFC 8414 allows
+  that), so no app sees another authorization server. A GET of a sign-in page on the API or web host that is not
+  `AUTH_PUBLIC_URL` is redirected there with its path and query (`SignInHost`): installed apps that open
+  `<API_PUBLIC_URL>/oauth/authorize` keep working. Other hosts are left alone.
+- `MCP_PUBLIC_URL`: the MCP endpoint at `<MCP_PUBLIC_URL>/mcp`. That host answers only `/mcp` and its protected
+  resource metadata (404 for anything else, `McpHost`). While `MCP_ON_API_HOST` is on (the default), `/mcp` keeps
+  answering on the API host too, for clients set up with that address; a redirect would break them (clients drop the
+  `Authorization` header on a redirect to another host, and many do not follow a redirected POST). Only clients that
+  follow RFC 9728 are supported on the MCP host: `/.well-known/oauth-authorization-server` stays on the API host.
+- Left empty, both are the API address and nothing changes. In production both must then be empty or a bare https
+  origin, and the MCP host may not be the web or sign-in host (`app:settings:check`). `compose.prod.yaml` passes them
+  from `TRESSO_AUTH_URL`, `TRESSO_MCP_URL` and `TRESSO_MCP_ON_API_HOST`, routes the sign-in paths on the web host to
+  the API and serves the MCP host from the API; the web image renders `TRESSO_AUTH_URL` as `authUrl` in
+  `/config.js`. Provider callbacks (`/connect/...`), signed content URLs and the Stripe webhook stay on the API host.
+  The API takes the host from the `Host` header the proxy passes on unchanged.
+
 ### Organizations
 
 Every user owns a personal organization from the moment the account exists; teams (planned, 3.9) will be organizations
@@ -183,7 +205,8 @@ curl -H "Authorization: Bearer $TRESSO_TOKEN" https://tresso.example/api/v1/sign
 
 Apps that are not ours, such as Claude, Claude Code, Cursor or the MCP Inspector, find this server, register
 themselves and sign in with the user's consent. `App\Security\OAuth` holds the pieces; everything is addressed from
-`API_PUBLIC_URL`, which is also the issuer.
+`API_PUBLIC_URL`, which is also the issuer, except the authorization endpoint (`AUTH_PUBLIC_URL`) and the MCP endpoint
+(`MCP_PUBLIC_URL`, see Deployment).
 
 - **Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414): issuer, authorization, token,
   registration and revocation endpoints, `scopes_supported` (only what such an app may ask for: the user scopes without `teams:*`,
@@ -191,9 +214,10 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   `authorization_code` and `refresh_token`, PKCE `S256` and token endpoint authentication `none`. There is no
   `/.well-known/openid-configuration`: this server issues no ID tokens. `GET /.well-known/oauth-protected-resource`
   and `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728) describe the API and the MCP endpoint
-  (`<API_PUBLIC_URL>/mcp`) with this server as their authorization server. `ProtectedResources` gives the MCP
+  (`<MCP_PUBLIC_URL>/mcp`) with this server as their authorization server. `ProtectedResources` gives the MCP
   resource, its metadata URL and the `WWW-Authenticate: Bearer resource_metadata="..."` value the MCP endpoint sends
-  with a 401. These documents, registering and the token endpoint answer CORS requests from any origin (without
+  with a 401, each for the host the request came to: an MCP client checks that the metadata names the URL it
+  connected to (RFC 9728 3.3), so on the API host, while `/mcp` still answers there, they name `<API_PUBLIC_URL>/mcp`. These documents, registering and the token endpoint answer CORS requests from any origin (without
   cookies), for clients that run in a browser, as does revocation; the API itself does not.
 - **Registering.** `POST /oauth/register` (RFC 7591) is open to anyone, limited to 60 registrations per IPv4 address
   (also when it arrives IPv4-mapped, `::ffff:a.b.c.d`) or IPv6 /64 per hour, 200 per IPv4 /24 or IPv6 /48 and 5000 in
@@ -221,7 +245,7 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   `registered_client` row and are never touched.
 - **Consent screen.** On `/oauth/authorize`, after signing in, a request from an app that is not ours must ask only
   for allowed scopes that the client registered (else `invalid_scope`) and, with a `resource` parameter (RFC 8707),
-  name the API or the MCP endpoint (else `invalid_target`); PKCE `S256` is required by the bundle. Such errors only go
+  name the API or the MCP endpoint, under either of its addresses while both answer (else `invalid_target`); PKCE `S256` is required by the bundle. Such errors only go
   back to the app's redirect URI once the user allowed the app; before that the user sees them on a page of ours and
   the browser goes nowhere, so the endpoint is no open redirect (RFC 9700 4.11.2). That page explains each error in
   fixed words of ours and never repeats text from the request. When
@@ -262,25 +286,30 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
 
 #### MCP endpoint
 
-`<API_PUBLIC_URL>/mcp` is an MCP server (Streamable HTTP, `symfony/mcp-bundle` with the official PHP SDK, `mcp/sdk`)
+`<MCP_PUBLIC_URL>/mcp` (and `<API_PUBLIC_URL>/mcp` while `MCP_ON_API_HOST` is on; one address when the endpoint has
+no host of its own, see Deployment) is an MCP server (Streamable HTTP, `symfony/mcp-bundle` with the official PHP SDK, `mcp/sdk`)
 for Claude, Claude Code and other MCP clients. Its tools change the user's settings; tools for mail, todos and events
 come later. The code is in `App\Mcp`.
 
 - **Signing in.** The firewall `mcp` takes the same tokens as the API: OAuth2 access tokens (an app the user allowed
   on the consent screen, or one of our own apps) and personal access tokens. A request without a token, or with one
   that is unknown, revoked or expired, gets a 401 with `WWW-Authenticate: Bearer
-  resource_metadata="<API_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp"` (and `error="invalid_token"` when a
+  resource_metadata="<MCP_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp"` (on the API host the API address)
+  (and `error="invalid_token"` when a
   token was refused), from where a client finds this authorization server, registers and signs in by itself. A sync
   worker's token has no user and gets a 403 (`MCP_USER`).
 - **Transport.** POST for messages, DELETE to end a session; GET (a server stream) answers 405, since the server sends
   nothing unasked. Sessions live in Redis (`cache.mcp_sessions`) for an hour after their last request and belong to
   the user and app (or personal access token) that started them: another connection that names one gets a 404, and
   so does a session id written other than as the RFC 9562 text the server hands out (base58, base32). Both
-  protocol eras of the SDK are served on the one endpoint. The Host header (and an Origin header from another site)
-  must be the host of `API_PUBLIC_URL`; dev and test also accept `localhost`, `127.0.0.1` and `[::1]` (DNS rebinding,
+  protocol eras of the SDK are served on the one endpoint. The Host header must be the MCP endpoint's host, or the API
+  host while `/mcp` answers there (`McpHosts`), and an Origin header must be the request's own origin; dev and test
+  also accept `localhost`, `127.0.0.1` and `[::1]` (DNS rebinding,
   403 otherwise). There is no CORS on `/mcp`: hosted clients call it from their servers and the MCP Inspector through
   its proxy.
-- **Tools.** Each tool runs the API operations it stands for as sub-requests of the MCP request (`App\Mcp\Api`):
+- **Tools.** Each tool runs the API operations it stands for as sub-requests of the MCP request (`App\Mcp\Api`),
+  addressed to `API_PUBLIC_URL` whatever host the MCP request came to, so URLs the API makes inside a tool point at
+  the API:
   the same token, so the same scopes, voters, first-party checks, validation and messages as the REST call, and no
   tool can do what the API would not do with that token. The payment wall of a server that bills
   (`App\Billing\PaymentWall`) is asked for every such sub-request too, so a user past the trial gets the 402 message
@@ -318,7 +347,8 @@ The sign-in pages (`/login`, `/oauth/authorize` with the consent screen) are the
 session (firewall `main`); every API call is stateless and signed with a token. The session lives in Redis
 (`RedisSessionHandler`, keys `session:*`), so every API instance sees the same one and a deploy signs nobody out. It
 ends two hours after its last request (the Redis TTL, also `gc_maxlifetime`) or when the browser closes (the cookie
-has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https.
+has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https. Its cookies belong to the host of
+`AUTH_PUBLIC_URL` (the API host unless set, see Deployment).
 
 - **Password guessing.** Five wrong passwords for one address from one IP address, or 25 from one IP address, lock
   the form for 15 minutes (Symfony's `login_throttling`, in Redis through `cache.rate_limiter_shared`, so the limit
@@ -330,7 +360,8 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   with the session.
 - **Signing out.** `POST /logout` ends the session and clears the remember-me cookie, then sends the browser to
   `WEB_APP_URL`. It only counts when it comes from Tresso: an `Origin` of the sign-in host itself or of `WEB_APP_URL`
-  (the web app signs out by submitting a form there), or, from a browser that sends no usable `Origin`, the CSRF token
+  (the web app signs out by submitting a form, `POST`, to `<AUTH_PUBLIC_URL>/logout`, the address it gets as
+  `authUrl` from `/config.js`, after revoking its tokens), or, from a browser that sends no usable `Origin`, the CSRF token
   of the sign-out page. Anything else gets the sign-out page with a 403 and changes nothing, so another site cannot
   sign people out (`App\Security\SignOutGuard`, before the firewall). `GET /logout` never signs out: it shows that page
   with a Sign out button, or goes straight back to `WEB_APP_URL` when the browser has no session and no remember-me
