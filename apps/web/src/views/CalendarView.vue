@@ -19,6 +19,7 @@ import {
   type TodoBlock,
 } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
+import { isDesktop, openInBrowser } from '@/platform/desktop'
 import AppIcon from '@/components/AppIcon.vue'
 import AgendaList from '@/components/calendar/AgendaList.vue'
 import CalendarRail from '@/components/calendar/CalendarRail.vue'
@@ -279,6 +280,16 @@ async function toggle(calendarId: string, visible: boolean): Promise<void> {
   }
 }
 
+/** The meeting opens in a new tab; the desktop app has no tabs and opens it in the user's browser. */
+function joinMeeting(url: string): void {
+  if (!isDesktop) {
+    window.open(url, '_blank', 'noopener')
+    return
+  }
+  actionError.value = null
+  openInBrowser(url).catch((error: unknown) => (actionError.value = `The meeting could not be opened: ${errorMessage(error)}`))
+}
+
 /** T, J, K, 1 to 4, N, E and Esc, unless the user is typing or a dialog is open. */
 function onShortcut(event: KeyboardEvent): void {
   if (event.metaKey || event.ctrlKey || event.altKey || editor.value !== null || deleting.value !== null) return
@@ -293,7 +304,7 @@ function onShortcut(event: KeyboardEvent): void {
   } else if (key === 'j') {
     if (event.shiftKey) {
       const url = selected.value?.event.conference?.url
-      if (url) window.open(url, '_blank', 'noopener')
+      if (url) joinMeeting(url)
     } else {
       step(1)
     }

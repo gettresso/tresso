@@ -1,9 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import type { MessageAttachment } from '@tresso/core'
 import { useMailStore } from '@/stores/mail'
 import AttachmentList from '../AttachmentList.vue'
+
+const desktop = vi.hoisted(() => ({ isDesktop: false, opened: [] as string[] }))
+
+vi.mock('@/platform/desktop', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/platform/desktop')>()),
+  get isDesktop() {
+    return desktop.isDesktop
+  },
+  openInBrowser: async (url: string) => {
+    desktop.opened.push(url)
+  },
+}))
 
 function attachment(id: string, override: Partial<MessageAttachment> = {}): MessageAttachment {
   return {
@@ -25,6 +37,12 @@ function attachment(id: string, override: Partial<MessageAttachment> = {}): Mess
 describe('AttachmentList', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    desktop.isDesktop = false
+    desktop.opened = []
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('lets clean files download', () => {
@@ -73,6 +91,22 @@ describe('AttachmentList', () => {
     expect(link).toHaveBeenCalledWith('1')
     expect(tab.location.href).toBe('http://localhost:8080/content/attachments/1?unscanned=1&_hash=y')
     expect(tab.opener).toBeNull()
+  })
+
+  it('downloads an unscanned file in the browser in the desktop app, which neither opens a window nor leaves its page', async () => {
+    desktop.isDesktop = true
+    vi.spyOn(useMailStore(), 'unscannedLink').mockResolvedValue('http://localhost:8080/content/attachments/1?unscanned=1&_hash=y')
+    const open = vi.spyOn(window, 'open')
+    const before = window.location.href
+    const wrapper = mount(AttachmentList, { props: { attachments: [attachment('1', { scanStatus: 'failed', access: 'confirm', scanFailure: 'too_large', url: null })] } })
+
+    await wrapper.get('button[aria-label="Download file-1.pdf, not scanned"]').trigger('click')
+    await wrapper.get('button.confirm-link').trigger('click')
+    await flushPromises()
+
+    expect(desktop.opened).toEqual(['http://localhost:8080/content/attachments/1?unscanned=1&_hash=y'])
+    expect(open).not.toHaveBeenCalled()
+    expect(window.location.href).toBe(before)
   })
 
   it('offers nothing for unscanned files on a server that requires scans', () => {

@@ -7,6 +7,18 @@ import { deleteMailDatabase } from '@/mail/db'
 import { UNDO_SECONDS, useComposeStore } from '../compose'
 import { useMailStore } from '../mail'
 
+const desktop = vi.hoisted(() => ({ isDesktop: false, opened: [] as string[] }))
+
+vi.mock('@/platform/desktop', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/platform/desktop')>()),
+  get isDesktop() {
+    return desktop.isDesktop
+  },
+  openInBrowser: async (url: string) => {
+    desktop.opened.push(url)
+  },
+}))
+
 const original: SyncedMessage = {
   id: 'm1',
   mailAccountId: 'work',
@@ -165,6 +177,26 @@ describe('compose store', () => {
     await compose.openAttachment('f1')
     expect(window.location.href).toBe(before)
     expect(compose.notices[compose.notices.length - 1]).toMatchObject({ tone: 'error', text: 'The file could not be opened: the browser blocked the new tab.' })
+    open.mockRestore()
+  })
+
+  it("opens a draft's file in the browser in the desktop app, without asking for a window first", async () => {
+    const compose = useComposeStore()
+    compose.openNew()
+    await compose.attach([new File(['Q4 notes'], 'notes.txt', { type: 'text/plain' })])
+    const open = vi.spyOn(window, 'open')
+    desktop.isDesktop = true
+    desktop.opened = []
+
+    try {
+      await compose.openAttachment('f1')
+    } finally {
+      desktop.isDesktop = false
+    }
+
+    expect(open).not.toHaveBeenCalled()
+    expect(desktop.opened).toEqual(['https://api.example.test/f1?signed'])
+    expect(compose.notices.filter((notice) => notice.tone === 'error')).toEqual([])
     open.mockRestore()
   })
 
