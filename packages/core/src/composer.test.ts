@@ -1138,6 +1138,77 @@ describe('Composer', () => {
       expect(notices.map((notice) => notice.text)).toContain('"Lost answer" reached the server after all and is on its way.')
     })
 
+    /** The page the server sends once it queued the message: the draft is gone (being sent), the message is there. */
+    function queued(draftId: string, outgoingId: string) {
+      return page({ cursor: 3, deleted: [{ type: 'draft', id: draftId }], outgoingMessages: [{ ...outgoing('scheduled'), id: outgoingId }] })
+    }
+
+    it('does not send twice when the server queued the message, its answer was lost and the delta came while it was open', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Once' })
+      const id = composer.state.draft!.id
+      let answer!: () => void
+      sendGate = new Promise<void>((resolve) => (answer = resolve))
+      const sending = composer.send()
+      await vi.advanceTimersByTimeAsync(10)
+      const attempt = tried[0]!.outgoingId!
+
+      // The server queued it and told the device, then the answer got lost on its way.
+      await store.apply(queued(id, attempt))
+      sendFails = lost
+      answer()
+      await sending
+      await vi.advanceTimersByTimeAsync(1000)
+
+      expect(await store.draft(id)).toMatchObject({ outgoingId: attempt, sendAttemptId: null })
+      expect(composer.state.draft).toBeNull()
+      sendGate = null
+      sendFails = null
+      expect(await composer.send()).toBeNull()
+      expect(tried).toHaveLength(1)
+    })
+
+    it('does not send twice when the delta comes after the failed send was saved again, nor when Send is pressed before', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Once' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      const attempt = tried[0]!.outgoingId!
+      await vi.advanceTimersByTimeAsync(1000)
+
+      await store.apply(queued(id, attempt))
+      // Send again before the follow-up: the message is in the copy, so nothing is sent.
+      sendFails = null
+      expect(await composer.send()).toMatchObject({ id: attempt })
+
+      expect(tried).toHaveLength(1)
+      expect(await store.draft(id)).toMatchObject({ outgoingId: attempt, sendAttemptId: null })
+      expect(composer.state.draft).toBeNull()
+    })
+
+    it('keeps the form, saying so, when something was typed while the lost send was recognised', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Once' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      const attempt = tried[0]!.outgoingId!
+      await vi.advanceTimersByTimeAsync(1000)
+      await store.apply(queued(id, attempt))
+      const changeDraft = store.changeDraft.bind(store)
+      vi.spyOn(store, 'changeDraft').mockImplementationOnce(async (draftId, change) => {
+        const stored = await changeDraft(draftId, change)
+        composer.update({ html: '<p>One more thing</p>' })
+        return stored
+      })
+
+      await composer.followUp()
+
+      expect(composer.state.draft).toMatchObject({ id, html: '<p>One more thing</p>' })
+      expect(notices.map((notice) => notice.text)).toContain('"Once" reached the server after all and is on its way, without what you typed since.')
+    })
+
     it('is dropped by an undo, so sending again is a new send', async () => {
       composer.openNew([{ address: 'anna@example.test', name: null }])
       const id = composer.state.draft!.id
