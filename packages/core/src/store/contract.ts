@@ -434,7 +434,9 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
       expect(await db.draft('d1')).toMatchObject({ subject: 'Local edit', remoteVersion: 4 })
 
       await db.apply(page({ cursor: 13, deleted: [{ type: 'draft', id: 'd1' }] }))
-      expect(await db.draft('d1')).toMatchObject({ subject: 'Local edit', pendingSave: true })
+      // The server's copy and the newer version noted on the edits are gone: the edits become a new draft.
+      expect(await db.draft('d1')).toMatchObject({ subject: 'Local edit', pendingSave: true, version: 0, remoteVersion: null })
+      await db.saveDraft({ ...(await db.draft('d1'))!, version: 3 })
 
       await db.saveDraft({ ...(await db.draft('d1'))!, pendingSave: false, outgoingId: 'o1' })
       await db.apply(page({ cursor: 14, deleted: [{ type: 'draft', id: 'd1' }] }))

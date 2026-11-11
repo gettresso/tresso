@@ -1,5 +1,5 @@
 import { isPlausibleAddress, quotedInlineImages, quoteWithContentId, withInlineLinks, type SendMessageRequest } from './compose'
-import { AttachmentsNeedTheServer, defaultSignatureOf, newDraft, reopenedDraft, replyDraft, sendRequest, sentOutcome, withEdits, withoutLink, type AttachmentFile, type DraftSync } from './drafts'
+import { AttachmentsNeedTheServer, defaultSignatureOf, editedFields, newDraft, reopenedDraft, replyDraft, sendRequest, sentOutcome, withEditsOver, withoutLink, type AttachmentFile, type DraftBase, type DraftSync } from './drafts'
 import { CopyClosingError, type Draft, type MailStore } from './store/mailStore'
 import type { Address, AttachmentAccess, DraftAttachment, MessageAttachment, MessageBody, SyncedMailAccount, SyncedMessage, SyncedOutgoingMessage, SyncedSignature } from './sync/types'
 
@@ -12,6 +12,14 @@ const SAVE_NOW_ROUNDS = 5
 export const MAX_RECIPIENTS = 100
 export const MAX_SUBJECT = 998
 export const MAX_HTML = 2_000_000
+
+/** A forward was asked for, but the message it forwards could not be loaded (its text and files would be missing). */
+export class OriginalUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'OriginalUnavailableError'
+  }
+}
 
 export interface ComposerNotice {
   text: string
@@ -94,6 +102,14 @@ export class Composer {
   private readonly deleting = new Set<string>()
   /** The open draft has edits that are not written on this device yet, or whose write failed. */
   private dirty = false
+  /**
+   * What each draft open (or just put away) was opened on: its text and version as last read from the copy or written
+   * into it, and whether it was there at all. Edits are laid over the stored draft only while that is still this text:
+   * another device's version that the delta brought meanwhile is not overwritten (see withEditsOver).
+   */
+  private readonly bases = new Map<string, DraftBase & { stored: boolean }>()
+  /** Counts saves on this device, so a read of the copy can tell a save came in between. */
+  private writesStarted = 0
 
   constructor(private readonly deps: ComposerDeps) {}
 
@@ -165,6 +181,7 @@ export class Composer {
 
   /** Writes the draft on this device; resolves to null when that worked (or there is nowhere to keep it), else why not. */
   private saveHere(draft: Draft, closing: boolean): Promise<string | null> {
+    this.writesStarted++
     const write = this.writeHere(draft, closing)
     this.writes.add(write)
     void write.then(() => this.writes.delete(write))
@@ -180,11 +197,13 @@ export class Composer {
       return null
     }
     let isNew = false
+    let written: Draft | null = null
     try {
       // Kept as one step, so what an upload or a file learned meanwhile is not written over.
       await store.changeDraft(draft.id, (stored) => {
         isNew = stored === null
-        return withEdits(stored, draft)
+        written = withEditsOver(stored, draft, this.bases.get(draft.id) ?? null)
+        return written
       })
     } catch (error) {
       if (error instanceof CopyClosingError) {
@@ -198,12 +217,20 @@ export class Composer {
       }
       return failure
     }
+    const saved = written as Draft | null
+    if (saved !== null) {
+      if (closing && this.current.draft?.id !== draft.id) {
+        this.bases.delete(draft.id)
+      } else {
+        this.bases.set(draft.id, { version: saved.version, fields: editedFields(saved), stored: true })
+      }
+    }
     // Lists only need to know of a new draft and of one put away; every pause in typing would be too often.
     if (isNew || closing) {
       this.deps.changed?.()
     }
     if (this.current.draft?.id === draft.id) {
-      this.set({ savedAt: Date.now() })
+      this.set(saved !== null && saved.remoteVersion !== null ? { savedAt: Date.now(), conflict: true } : { savedAt: Date.now() })
     }
     return null
   }
@@ -228,7 +255,8 @@ export class Composer {
     return defaultSignatureOf(this.deps.accounts(), this.deps.signatures(), mailAccountId)
   }
 
-  private open(draft: Draft): void {
+  /** Opens a draft in the form; `stored` says it is the draft as the copy has it (not one only made on screen). */
+  private open(draft: Draft, stored = false): void {
     const store = this.deps.store()
     if (store === null) {
       // No copy is open (signed out): there is nowhere to keep a draft.
@@ -241,6 +269,7 @@ export class Composer {
     }
     this.dirty = false
     this.openedIn = store
+    this.bases.set(draft.id, { version: draft.version, fields: editedFields(draft), stored })
     this.set({ draft: plain(draft), revision: this.current.revision + 1, error: null, violations: {}, savedAt: null, conflict: draft.remoteVersion !== null, attaching: this.attachingTo(draft.id) })
   }
 
@@ -262,6 +291,7 @@ export class Composer {
     }
     this.openedIn = null
     this.dirty = false
+    this.bases.clear()
     this.held.clear()
     this.heldSaves.clear()
     this.deleting.clear()
@@ -297,10 +327,36 @@ export class Composer {
     this.open({ ...newDraft(fields.kind, fields.mailAccountId, this.defaultSignature(fields.mailAccountId)), ...fields })
   }
 
-  async openReply(message: SyncedMessage, kind: 'reply' | 'replyAll' | 'forward'): Promise<void> {
-    const body = await this.deps.body(message.id).catch(() => ({ html: null, text: message.snippet, attachments: [] as MessageAttachment[] }))
+  /**
+   * Opens a reply, reply to all or forward of a message. When the original cannot be loaded, a reply still opens,
+   * quoting the snippet and saying the quote is incomplete; a forward does not, since without the original and its
+   * files it is not what was asked for: the user is told, or with `strict` the reason is thrown.
+   *
+   * @throws OriginalUnavailableError for a forward whose original could not be loaded, with `strict`
+   */
+  async openReply(message: SyncedMessage, kind: 'reply' | 'replyAll' | 'forward', options: { strict?: boolean } = {}): Promise<void> {
+    let body: Pick<MessageBody, 'html' | 'text' | 'attachments'>
+    let missing: string | null = null
+    try {
+      body = await this.deps.body(message.id)
+    } catch (error) {
+      missing = this.deps.explain(error).message
+      if (kind === 'forward') {
+        const failure = new OriginalUnavailableError(`The message could not be forwarded: it could not be loaded (${missing}).`)
+        if (options.strict) {
+          throw failure
+        }
+        this.deps.notify({ text: failure.message, tone: 'error' }, 8000)
+        return
+      }
+      // Replying stays possible offline, quoting what the copy here has.
+      body = { html: null, text: message.snippet, attachments: [] }
+    }
     const draft = replyDraft(message, body, kind, this.deps.accounts(), this.deps.signatures())
     this.open(draft)
+    if (missing !== null && this.current.draft?.id === draft.id) {
+      this.set({ error: `The original message could not be loaded (${missing}), so the quote is incomplete.` })
+    }
     const usable = body.attachments.filter((attachment) => attachment.scanStatus !== 'infected')
     // The quote's images go along with the message: their links expire within the hour.
     const images = quotedInlineImages(draft.quoteHtml, usable)
@@ -466,7 +522,50 @@ export class Composer {
   async openDraft(id: string): Promise<void> {
     const stored = await this.deps.store()?.draft(id)
     if (stored) {
-      this.open(reopenedDraft(stored))
+      this.open(reopenedDraft(stored), true)
+    }
+  }
+
+  /**
+   * Brings the open draft in line with the copy, after the delta changed it: another device's text replaces the form
+   * while nothing typed here waits to be saved (with edits waiting, their save notes the other version as a conflict
+   * instead), a draft sent or deleted on another device closes, and files attached or removed there show.
+   */
+  async refreshOpen(): Promise<void> {
+    const open = this.current.draft
+    const store = this.storeOfDraft()
+    if (open === null || store === null) {
+      return
+    }
+    const writesBefore = this.writesStarted
+    const stored = await store.draft(open.id)
+    // Edits waiting to be written, or written while the copy was read (what was read may be older than the form).
+    const busy = this.dirty || this.saveTimer !== null || this.writes.size > 0 || this.writesStarted !== writesBefore || this.held.has(open.id) || this.current.sending
+    // Typed meanwhile (the form holds another object then), or another draft took the screen.
+    if (this.current.draft !== open || busy) {
+      await this.showStoredFiles()
+      return
+    }
+    const base = this.bases.get(open.id)
+    if (stored === null) {
+      if (base?.stored === true) {
+        this.bases.delete(open.id)
+        this.set({ draft: null, conflict: false })
+        this.deps.notify({ text: `"${open.subject || '(no subject)'}" was sent or deleted on another device.`, tone: 'info' }, 8000)
+      }
+      return
+    }
+    if (!stored.pendingSave && stored.outgoingId === null && editedFields(stored) !== editedFields(open)) {
+      // The form starts over with the other device's text.
+      this.open(stored, true)
+      this.deps.notify({ text: `"${stored.subject || '(no subject)'}" was changed on another device. It shows that version now.`, tone: 'info' }, 8000)
+      return
+    }
+    this.noteBase(stored)
+    const conflict = stored.remoteVersion !== null
+    const files = sameFiles(open.attachments, stored.attachments) ? {} : { draft: { ...open, attachments: stored.attachments } }
+    if (conflict !== this.current.conflict || 'draft' in files) {
+      this.set({ conflict, ...files })
     }
   }
 
@@ -516,20 +615,46 @@ export class Composer {
       return
     }
     this.set({ conflict: (stored?.remoteVersion ?? null) !== null })
+    if (stored) {
+      this.noteBase(stored)
+    }
     await this.showStoredFiles()
   }
 
+  /**
+   * Notes the version the open text is at on the server: the stored draft has the same text (this device's own upload
+   * gave it a version, or a file changed on another device), so edits from here on build on that version.
+   */
+  private noteBase(stored: Draft): void {
+    const base = this.bases.get(stored.id)
+    if (base !== undefined && !stored.pendingSave && editedFields(stored) === base.fields) {
+      this.bases.set(stored.id, { ...base, version: stored.version, stored: true })
+    }
+  }
+
+  /** Settles a conflict; when that fails the conflict stays, saying why, so the user can try again. */
   async resolveConflict(keep: 'mine' | 'theirs'): Promise<void> {
     const draft = this.current.draft
     if (draft === null) {
       return
     }
-    await this.save()
-    const resolved = await this.deps.drafts.resolveConflict(draft.id, keep)
-    this.set({ conflict: false })
+    let resolved: Draft | null
+    try {
+      await this.save()
+      resolved = await this.deps.drafts.resolveConflict(draft.id, keep)
+    } catch (error) {
+      if (this.current.draft?.id === draft.id) {
+        this.set({ error: `The versions could not be compared: ${this.deps.explain(error).message}` })
+      }
+      return
+    }
+    if (this.current.draft?.id !== draft.id) {
+      return
+    }
+    this.set({ conflict: false, error: null })
     if (keep === 'theirs' && resolved !== null) {
-      // The form starts over with the other device's version.
-      this.open(resolved)
+      // The form starts over with the other device's version (or this one's, when the other is gone).
+      this.open(resolved, true)
     }
   }
 
@@ -562,6 +687,7 @@ export class Composer {
       return false
     }
     this.deleting.delete(draft.id)
+    this.bases.delete(draft.id)
     if (this.current.draft?.id === draft.id) {
       this.dirty = false
       this.set({ draft: null, conflict: false })
@@ -573,17 +699,32 @@ export class Composer {
     return true
   }
 
-  /** Closes the form; the draft is kept. */
+  /**
+   * Closes the form; the draft is kept. Only edits are written: a draft from the copy that was not changed here stays
+   * as stored, which may be another device's newer version, or no draft at all once it was sent or deleted elsewhere.
+   */
   close(): void {
     if (this.current.sending) {
       // It stays until the send settles, so a failure is not lost with the form.
       return
     }
-    this.clearSaveTimer()
     const closing = this.current.draft
+    const edited = this.dirty || this.saveTimer !== null || (closing !== null && this.bases.get(closing.id)?.stored !== true)
+    this.clearSaveTimer()
     this.dirty = false
     this.set({ draft: null, conflict: false })
-    void this.save(closing, true)
+    if (closing === null) {
+      return
+    }
+    if (edited) {
+      void this.save(closing, true)
+      return
+    }
+    this.bases.delete(closing.id)
+    if (this.storeOfDraft() !== null && !this.held.has(closing.id)) {
+      // Edits saved before but not uploaded yet (offline, say) go up now; there is nothing new to write.
+      void this.deps.drafts.upload(closing.id).catch(() => undefined)
+    }
   }
 
   /** Why the draft cannot be sent as it is, or null when it can. */
@@ -640,6 +781,16 @@ export class Composer {
     this.hold(draft.id)
     let sent = false
     try {
+      // Written here first, as every save is: another device's newer version that the form does not show is noted
+      // rather than overwritten, and the message is not sent until the user chose which to keep.
+      const failure = await this.saveHere(draft, false)
+      if (failure !== null) {
+        throw new Error(failure)
+      }
+      if (((await store.draft(draft.id))?.remoteVersion ?? null) !== null) {
+        this.set({ conflict: true })
+        throw new Error('This draft was changed on another device. Choose which version to keep first.')
+      }
       const onServer = await this.deps.drafts.uploadForSending(draft)
       if (!onServer && draft.attachments.length > 0) {
         // The files are with the server's copy of the draft: sending without it would leave them out.
@@ -649,7 +800,13 @@ export class Composer {
       const at = sendAt ?? new Date(Date.now() + this.undoSeconds * 1000)
       const outgoing = await this.deps.send(sendRequest(draft, this.deps.signatures(), at, onServer, acceptUnscanned))
       sent = true
-      await store.changeDraft(draft.id, (stored) => ({ ...(stored ?? draft), outgoingId: outgoing.id, pendingSave: false, updatedAt: Date.now() }))
+      this.bases.delete(draft.id)
+      try {
+        await store.changeDraft(draft.id, (stored) => ({ ...(stored ?? draft), outgoingId: outgoing.id, pendingSave: false, updatedAt: Date.now() }))
+      } catch (error) {
+        // The server has the message: it goes out whatever this device could note, so the form closes all the same.
+        this.deps.notify({ text: `Sent, but this device could not note it (${this.deps.explain(error).message}). The draft may stay in Drafts.`, tone: 'error' }, 30000)
+      }
       this.deps.changed?.()
       if (this.current.draft?.id === draft.id) {
         this.set({ draft: null, conflict: false })
@@ -722,9 +879,38 @@ export class Composer {
     }
     try {
       await this.deps.cancel(pending.outgoingId)
-      await this.openDraft(pending.draftId)
     } catch (error) {
       this.deps.notify({ text: `Too late to undo: ${this.deps.explain(error).message}`, tone: 'error' }, 8000)
+      return
+    }
+    // A draft again in the copy too, whatever the user does next: otherwise it stays hidden as a message on its way.
+    await this.reopenCancelled(pending.draftId, pending.outgoingId)
+    await this.openDraft(pending.draftId)
+  }
+
+  /**
+   * Makes the draft of a cancelled message a draft again, here and (as edits waiting to go up) on the server. A draft
+   * that was sent again meanwhile, as another message, is left alone.
+   */
+  private async reopenCancelled(draftId: string, outgoingId: string): Promise<void> {
+    const store = this.deps.store()
+    if (store === null) {
+      return
+    }
+    try {
+      let reopened = false
+      await store.changeDraft(draftId, (stored) => {
+        reopened = stored !== null && stored.outgoingId === outgoingId
+        return reopened && stored !== null ? reopenedDraft(stored) : null
+      })
+      if (reopened) {
+        this.deps.changed?.()
+        void this.deps.drafts.upload(draftId).catch(() => undefined)
+      }
+    } catch (error) {
+      if (!(error instanceof CopyClosingError)) {
+        this.deps.notify({ text: `The draft could not be brought back: ${this.deps.explain(error).message}`, tone: 'error' }, 8000)
+      }
     }
   }
 
@@ -768,6 +954,11 @@ export class Composer {
       if (outcome === null || outgoing === null) {
         continue
       }
+      if (outcome === 'cancelled') {
+        // Stopped (an undo, or Cancel in the Outbox, here or on another device): it is a draft again.
+        await this.reopenCancelled(stored.id, outgoing.id)
+        continue
+      }
       if (outcome === 'sent') {
         await store.deleteDraft(stored.id)
         this.deps.changed?.()
@@ -788,7 +979,7 @@ export class Composer {
       }
       await store.changeDraft(stored.id, (now) => now && { ...now, noticedStatus: outgoing.status })
     }
-    await this.showStoredFiles()
+    await this.refreshOpen()
   }
 
   /** The open draft's files as the copy here has them now: attached or removed on another device meanwhile. */

@@ -126,13 +126,21 @@ export function sendRequest(draft: Draft, signatures: SyncedSignature[], sendAt:
 
 /**
  * What became of a sent draft that the user was not told about yet: `sent` (the draft can go), `failed` (offer to edit
- * and send again), `other` (a status to remember without telling), or null when nothing changed.
+ * and send again), `cancelled` (stopped, here or on another device: the draft is a draft again), `other` (a status to
+ * remember without telling), or null when nothing changed.
  */
-export function sentOutcome(draft: Draft, outgoing: SyncedOutgoingMessage | null): 'sent' | 'failed' | 'other' | null {
+export function sentOutcome(draft: Draft, outgoing: SyncedOutgoingMessage | null): 'sent' | 'failed' | 'cancelled' | 'other' | null {
   if (draft.outgoingId === null || outgoing === null || outgoing.status === draft.noticedStatus) {
     return null
   }
-  return outgoing.status === 'sent' ? 'sent' : outgoing.status === 'failed' ? 'failed' : 'other'
+  switch (outgoing.status) {
+    case 'sent':
+    case 'failed':
+    case 'cancelled':
+      return outgoing.status
+    default:
+      return 'other'
+  }
 }
 
 /** Editing a message that failed to send makes it a draft again. */
@@ -140,7 +148,18 @@ export function reopenedDraft(draft: Draft): Draft {
   return draft.outgoingId === null ? draft : { ...draft, outgoingId: null, noticedStatus: null, pendingSave: true }
 }
 
-function requestOf(draft: Draft): DraftRequest {
+/**
+ * The fields a user edits (and the server stores), as one comparable value: two drafts with the same value say the
+ * same thing, whatever their versions, files or bookkeeping.
+ */
+export function editedFields(draft: EditableDraft): string {
+  return JSON.stringify(requestOf(draft))
+}
+
+/** What the user writes in a draft: the fields a save sends, as a draft here and the server's copy both have them. */
+type EditableDraft = Pick<SyncedDraft, 'mailAccountId' | 'kind' | 'to' | 'cc' | 'bcc' | 'subject' | 'html' | 'signatureId' | 'quoteHtml' | 'inReplyToMessageId'>
+
+function requestOf(draft: EditableDraft): DraftRequest {
   return {
     mailAccountId: draft.mailAccountId,
     kind: draft.kind,
@@ -247,6 +266,10 @@ export class DraftSync {
         }
         return
       }
+      if (status === 409 && local.version === 0 && now !== null) {
+        await this.recognise(store, id, local)
+        return
+      }
       if (status === 404 && local.version > 0 && now !== null) {
         // Deleted on another device while it was being written here: it becomes a new draft again.
         await store.changeDraft(id, (stored) => stored && { ...stored, version: 0 })
@@ -277,6 +300,45 @@ export class DraftSync {
     }
   }
 
+  /**
+   * A create refused because the server has a draft with this id already: the device chooses the id and retries it,
+   * so this is a create whose answer was lost, or a copy rebuilt with its drafts reset to version 0. The server's copy
+   * with the same text is taken as this one's; its first version is this device's own first save, which the edits
+   * build on; anything later is another device's version to settle.
+   */
+  private async recognise(store: MailStore, id: string, local: Draft): Promise<void> {
+    const remote = await this.api.get(id)
+    let outcome = 'gone' as 'adopted' | 'again' | 'conflict' | 'gone'
+    await store.changeDraft(id, (stored) => {
+      if (stored === null) {
+        return null
+      }
+      if (stored.version !== 0) {
+        // Another upload of this copy got a version meanwhile: the edits go up on that one.
+        outcome = 'again'
+        return null
+      }
+      const attachments = (remote.attachments ?? []).map(withoutLink)
+      if (editedFields(stored) === editedFields(remote)) {
+        // Edits made while the request was under way stay pending and go up in the next round.
+        const edited = stored.updatedAt !== local.updatedAt
+        outcome = edited ? 'again' : 'adopted'
+        return { ...withVersion(stored, remote.version), pendingSave: edited, attachments }
+      }
+      if (remote.version === 1 && stored.remoteVersion === null) {
+        outcome = 'again'
+        return { ...stored, version: 1, attachments }
+      }
+      outcome = 'conflict'
+      return { ...stored, remoteVersion: remote.version }
+    })
+    if (outcome === 'again') {
+      this.again.add(id)
+    } else if (outcome === 'conflict') {
+      this.onConflict()
+    }
+  }
+
   /** Uploads every draft with edits that did not reach the server yet, e.g. after starting offline. */
   async uploadPending(): Promise<void> {
     for (const draft of (await this.store()?.drafts()) ?? []) {
@@ -293,7 +355,20 @@ export class DraftSync {
     if (!store || !local || local.remoteVersion === null) {
       return local ?? null
     }
-    const remote = await this.api.get(id)
+    let remote: Awaited<ReturnType<DraftApi['get']>>
+    try {
+      remote = await this.api.get(id)
+    } catch (error) {
+      if (statusOf(error) !== 404) {
+        throw error
+      }
+      // The other version is gone (sent or deleted on another device): the edits here are all there is left, whichever
+      // was chosen. They become a new draft, which is what an upload does with a draft the server no longer has.
+      await store.changeDraft(id, (stored) => stored && { ...stored, version: 0, remoteVersion: null, pendingSave: true })
+      // Offline by now: the edits stay pending here and go up with the next upload.
+      await this.upload(id).catch(() => undefined)
+      return store.draft(id)
+    }
     const next = await store.changeDraft(id, (stored) =>
       stored === null
         ? null
@@ -438,6 +513,26 @@ function withVersion(draft: Draft, version: number): Draft {
  */
 export function withEdits(stored: Draft | null, edited: Draft): Draft {
   return { ...edited, version: stored?.version ?? edited.version, remoteVersion: stored?.remoteVersion ?? null, attachments: stored?.attachments ?? edited.attachments }
+}
+
+/** What a form was opened on: the text (see {@link editedFields}) and version of the draft as last read or written. */
+export interface DraftBase {
+  version: number
+  fields: string
+}
+
+/**
+ * {@link withEdits}, for edits made on `base`. The delta replaces a stored draft that has nothing waiting to go up with
+ * another device's newer version; edits made on the older text must not be laid over it as if they built on it (they
+ * would overwrite it on the server). They keep the version they do build on and note the other one, so the user is
+ * asked which to keep.
+ */
+export function withEditsOver(stored: Draft | null, edited: Draft, base: DraftBase | null): Draft {
+  const laid = withEdits(stored, edited)
+  if (stored === null || base === null || stored.pendingSave || stored.version <= base.version || editedFields(stored) === base.fields) {
+    return laid
+  }
+  return { ...laid, version: base.version, remoteVersion: stored.version }
 }
 
 /** A draft attachment as the copy on a device keeps it: without its link, which expires. */
