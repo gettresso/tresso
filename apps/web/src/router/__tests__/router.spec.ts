@@ -73,8 +73,8 @@ describe('router', () => {
 
       await signInHere()
 
-      expect(sessionStorage.getItem('tresso.returnPath'), returnTo).toBeNull()
-      expect(router.currentRoute.value.fullPath, returnTo).toBe('/')
+      expect(sessionStorage.getItem('tresso.returnPath')).toBeNull()
+      expect(router.currentRoute.value.fullPath).toBe('/')
     }
   })
   it('shows the Unified Inbox for a path that matches no screen', async () => {
@@ -95,7 +95,7 @@ describe('router', () => {
   })
   it('keeps only paths that stay inside the app', () => {
     for (const path of ['//evil.example/x', '/\\evil.example/x', '/%09/evil.example', '/\t/evil.example', '/\n//evil.example', 'https://evil.example/', 'javascript:alert(1)', '/auth/callback?code=c', '/%2F/evil.example', ['/todos/abc'], null]) {
-      expect(returnablePath(path), String(path)).toBeNull()
+      expect(returnablePath(path)).toBeNull()
     }
     for (const path of ['/todos/abc', '/inbox/t1?from=push', '/calendar/week/2026-11-11', '/search?q=a%2Fb']) {
       expect(returnablePath(path)).toBe(path)

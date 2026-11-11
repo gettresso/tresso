@@ -6,7 +6,7 @@ const KEY = 'tresso.returnPath'
 
 /** Starts with one slash only, and has no control characters or backslashes, which URL parsers drop or read as slashes. */
 function plainPath(path: string): boolean {
-  return path.startsWith('/') && !path.startsWith('//') && !/[\u0000-\u001f\u007f\\]/.test(path)
+  return path.startsWith('/') && !path.startsWith('//') && ![...path].some((character) => character === '\\' || character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f)
 }
 
 /**
