@@ -1,4 +1,4 @@
-import { actionResult, revertedMessage, type AppliedAction, type MessageAction } from '../actions'
+import { actionResult, OpenActions, type AppliedAction, type MessageAction } from '../actions'
 import { compareBriefs } from '../brief'
 import type { Verdict } from '../domain'
 import { compareHandOvers } from '../handOvers'
@@ -110,6 +110,8 @@ export class SqliteMailStore implements MailStore {
   private queue: Promise<void> = Promise.resolve()
   /** Threads classified on this device whose server version has not arrived yet; see {@link restoreThread}. */
   private readonly unconfirmed = new OpenClassifications()
+  /** Message actions of this device the server has not answered for yet; see {@link revertAction}. */
+  private readonly openActions = new OpenActions()
   /** Set while the copy must sync from the start (see resyncFromStart); kept in the database too, so it holds after a restart. */
   private resyncing: boolean
   /** Raised by every page that changed calendars or events; see calendarChanges. */
@@ -322,6 +324,7 @@ export class SqliteMailStore implements MailStore {
         if (previous !== null && previous.threadId !== message.threadId) {
           affected.add(previous.threadId)
         }
+        this.openActions.confirmed(message.id)
         await writeMessage(tx, message)
         affected.add(message.threadId)
         if (previous === null) {
@@ -384,6 +387,7 @@ export class SqliteMailStore implements MailStore {
         }
         const after = actionResult(before, action, { folders, accounts, folderId, fromFolderId })
         await rewrite(tx, after)
+        before.forEach((message, index) => this.openActions.applied(message, after[index]!))
         applied = { before, after }
       })
       return applied
@@ -397,7 +401,7 @@ export class SqliteMailStore implements MailStore {
         for (const [index, previous] of applied.before.entries()) {
           const row = await tx.first<JsonRow>('SELECT json FROM messages WHERE id = ?', [previous.id])
           const after = applied.after[index]
-          const reverted = row === null || after === undefined ? null : revertedMessage(parse<SyncedMessage>(row), previous, after)
+          const reverted = row === null || after === undefined ? null : this.openActions.refused(parse<SyncedMessage>(row), previous, after)
           if (reverted !== null) {
             restore.push(reverted)
           }

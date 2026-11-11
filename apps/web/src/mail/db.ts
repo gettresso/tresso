@@ -14,7 +14,7 @@ import {
   newerUnsubscription,
   OpenClassifications,
   peopleOn,
-  revertedMessage,
+  OpenActions,
   eventSpan,
   sortCalendars,
   touchesCalendars,
@@ -168,6 +168,8 @@ export type ClosedElsewhere = 'upgraded' | 'deleted' | 'terminated'
 export class IndexedDbMailStore implements MailStore {
   /** Threads classified on this device whose server version has not arrived yet; see {@link restoreThread}. */
   private readonly unconfirmed = new OpenClassifications()
+  /** Message actions of this device the server has not answered for yet; see {@link revertAction}. */
+  private readonly openActions = new OpenActions()
   /** Raised by every page that changed calendars or events; see calendarChanges. */
   private calendarRevision = 0
 
@@ -410,6 +412,7 @@ export class IndexedDbMailStore implements MailStore {
       this.unconfirmed.confirmed(thread.id)
     }
     for (const message of page.messages) {
+      this.openActions.confirmed(message.id)
       const previous = await tx.objectStore('messages').get(message.id)
       if (previous !== undefined && previous.threadId !== message.threadId) {
         affected.add(previous.threadId)
@@ -469,6 +472,7 @@ export class IndexedDbMailStore implements MailStore {
     }
     const after = actionResult(before, action, { folders, accounts, folderId, fromFolderId })
 
+    before.forEach((message, index) => this.openActions.applied(message, after[index]!))
     const affected = new Set<string>()
     for (const message of after) {
       await tx.objectStore('messages').put(message)
@@ -490,7 +494,7 @@ export class IndexedDbMailStore implements MailStore {
     for (const [index, previous] of applied.before.entries()) {
       const current = await tx.objectStore('messages').get(previous.id)
       const after = applied.after[index]
-      const reverted = current === undefined || after === undefined ? null : revertedMessage(current, previous, after)
+      const reverted = current === undefined || after === undefined ? null : this.openActions.refused(current, previous, after)
       if (reverted !== null) {
         await tx.objectStore('messages').put(reverted)
         affected.add(reverted.threadId)
