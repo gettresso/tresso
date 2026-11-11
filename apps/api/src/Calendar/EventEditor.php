@@ -217,7 +217,7 @@ final readonly class EventEditor
             $this->permission->assertMaySend();
         }
         if ($notify && !$calendar->providerSchedules()) {
-            $messages = self::itip(new Broker()->parseEvent(clone $vcalendar, self::hrefs($self), clone $old));
+            $messages = self::itip(self::broker()->parseEvent(clone $vcalendar, self::hrefs($self), clone $old));
             if ([] !== $messages) {
                 $this->permission->assertMaySend();
             }
@@ -696,7 +696,7 @@ final readonly class EventEditor
         $self = $this->selfAddresses->of($calendar->getOwner());
         // A null new object is how sabre's broker learns about a deletion; its docblock leaves that case out.
         /** @phpstan-ignore argument.type */
-        $messages = self::itip(new Broker()->parseEvent(null === $new ? null : clone $new, self::hrefs($self), null === $old ? null : clone $old));
+        $messages = self::itip(self::broker()->parseEvent(null === $new ? null : clone $new, self::hrefs($self), null === $old ? null : clone $old));
         // Only the organizer's side: attendees reply through respond(), never as a side effect of editing.
         $organizerMessages = array_values(array_filter($messages, static fn (ItipMessage $message): bool => \in_array($message->method, ['REQUEST', 'CANCEL'], true)));
         if ([] === $organizerMessages) {
@@ -1048,6 +1048,18 @@ final readonly class EventEditor
         if ('' !== trim($value)) {
             $event->add($name, $value);
         }
+    }
+
+    /**
+     * sabre's broker, judging "significant" as the editor does: sabre leaves LOCATION out, so a new place would raise
+     * SEQUENCE without the guests being told.
+     */
+    private static function broker(): Broker
+    {
+        $broker = new Broker();
+        $broker->significantChangeProperties = array_values(array_unique([...$broker->significantChangeProperties, ...self::SIGNIFICANT]));
+
+        return $broker;
     }
 
     /**

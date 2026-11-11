@@ -764,6 +764,27 @@ final class CalendarInvitationTest extends DatabaseTestCase
         self::assertContains(['pieter@finance.example'], array_map(static fn ($message): array => $message->getEnvelopeRecipients(), $outgoing));
     }
 
+    public function testANewPlaceIsSentToTheGuests(): void
+    {
+        $calendarId = $this->localCalendarId($this->kim);
+        $meeting = ['summary' => 'Planning', 'location' => 'Room 4', 'attendees' => [['address' => 'anna@finance.example', 'name' => 'Anna de Vries']], 'organizerMailAccountId' => $this->accountId];
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($calendarId, $meeting), $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $eventId = self::string($this->decodedResponse()['id']);
+        self::assertCount(1, $this->outgoing());
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($calendarId, ['location' => 'Room 7'] + $meeting), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        $outgoing = $this->outgoing();
+        self::assertCount(2, $outgoing, 'Only the place changed, and the guest is told.');
+        self::assertSame(['anna@finance.example'], $outgoing[1]->getEnvelopeRecipients());
+        $raw = quoted_printable_decode($this->rawOutgoing($outgoing[1]));
+        self::assertStringContainsString('METHOD:REQUEST', $raw);
+        self::assertStringContainsString('LOCATION:Room 7', $raw);
+        self::assertStringContainsString('SEQUENCE:1', $raw);
+    }
+
     public function testAReplyWithoutTimesShowsTheEventAsTheCalendarHasIt(): void
     {
         $calendarId = $this->localCalendarId($this->kim);
