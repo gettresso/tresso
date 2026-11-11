@@ -26,6 +26,12 @@ framework:
             limit: 5
             interval: '1 day'
             cache_pool: cache.rate_limiter_shared
+        # The same links per receiving address, whoever asks for them.
+        notification_address_confirmation_target:
+            policy: sliding_window
+            limit: 3
+            interval: '1 day'
+            cache_pool: cache.rate_limiter_shared
 
 when@dev: &redis_limits
     framework:
