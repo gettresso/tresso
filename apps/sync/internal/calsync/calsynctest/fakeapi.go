@@ -33,6 +33,7 @@ type API struct {
 	results     map[string]api.OperationResult
 	queued      map[string]api.CalendarOperation // every write ever queued, by id
 	statuses    []string
+	details     []string
 	tokens      int
 }
 
@@ -156,11 +157,19 @@ func (a *API) ReportCalendarOperation(_ context.Context, _, operationID string, 
 	return nil
 }
 
-func (a *API) CalendarStatus(_ context.Context, _, _, status, _ string) error {
+func (a *API) CalendarStatus(_ context.Context, _, _, status, detail string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.statuses = append(a.statuses, status)
+	a.details = append(a.details, detail)
 	return nil
+}
+
+// Details returns the detail of every status report, in order.
+func (a *API) Details() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.details...)
 }
 
 // Queue adds a write for the worker to claim.

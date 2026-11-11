@@ -323,3 +323,46 @@ func TestADeltaTokenGraphForgotStartsANewRound(t *testing.T) {
 	graph.put(single("ev6", "Review"))
 	calsynctest.Eventually(t, "the new round", func() bool { _, ok := stored(fake, "ev6"); return ok })
 }
+
+// Fails without the fix: the first event Graph refused ended the fetch, so the events after it and the cursor never
+// arrived, and the first sync of the calendar started over every minute.
+func TestAnEventGraphRefusesIsLeftOutAndTheCalendarMovesOn(t *testing.T) {
+	graph := newFakeGraph(t)
+	graph.put(single("ev1", "Planning"))
+	graph.put(single("ev2", "Broken"))
+	graph.put(single("ev3", "Lunch"))
+	graph.refusals = map[string]int{"GET /events/ev2": http.StatusBadRequest}
+	fake := calsynctest.NewAPI(owner)
+	run(t, graph, fake)
+
+	calsynctest.Eventually(t, "the other events and the cursor", func() bool {
+		_, planning := stored(fake, "ev1")
+		_, lunch := stored(fake, "ev3")
+		return planning && lunch && fake.Cursor(defaultCalendar) != ""
+	})
+	if _, ok := stored(fake, "ev2"); ok {
+		t.Error("the refused event was stored")
+	}
+}
+
+func TestAnEventGraphFailsOnKeepsTheCursorSoItIsAskedForAgain(t *testing.T) {
+	graph := newFakeGraph(t)
+	graph.put(single("ev1", "Planning"))
+	graph.put(single("ev2", "Flaky"))
+	graph.refusals = map[string]int{"GET /events/ev2": http.StatusServiceUnavailable}
+	fake := calsynctest.NewAPI(owner)
+	run(t, graph, fake)
+
+	calsynctest.Eventually(t, "the other event", func() bool { _, ok := stored(fake, "ev1"); return ok })
+	time.Sleep(50 * time.Millisecond)
+	if cursor := fake.Cursor(defaultCalendar); cursor != "" {
+		t.Fatalf("the cursor %q was stored while an event may still come through", cursor)
+	}
+	graph.mu.Lock()
+	graph.refusals = nil
+	graph.mu.Unlock()
+	calsynctest.Eventually(t, "the event once Graph answers", func() bool {
+		_, ok := stored(fake, "ev2")
+		return ok && fake.Cursor(defaultCalendar) != ""
+	})
+}

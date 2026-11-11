@@ -266,8 +266,14 @@ func (s series) exists() bool {
 
 func (s *session) Fetch(ctx context.Context, calendar calsync.Calendar, remoteIDs []string) ([]calsync.Object, error) {
 	var out []calsync.Object
+	var skipped *calsync.FetchError
 	for _, id := range remoteIDs {
 		entry, found, err := s.series(ctx, calendar.RemoteID, id, "")
+		if skip, transient := calsync.EventFailure(err, (&Provider{}).NotGranted); err != nil && skip {
+			s.logger.Warn("an event could not be fetched; leaving it out", "event", id, "error", err)
+			skipped = skipped.Add(err, transient)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -277,6 +283,9 @@ func (s *session) Fetch(ctx context.Context, calendar calsync.Calendar, remoteID
 		if object, ok := s.object(calendar, id, entry); ok {
 			out = append(out, object)
 		}
+	}
+	if skipped != nil {
+		return out, skipped
 	}
 	return out, nil
 }

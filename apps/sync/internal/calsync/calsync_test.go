@@ -147,8 +147,131 @@ func TestOneForbiddenCalendarIsSkippedAndTheOthersSync(t *testing.T) {
 
 	calsynctest.Eventually(t, "the other calendar", func() bool { _, ok := fake.Objects("own")["lunch"]; return ok })
 	calsynctest.Eventually(t, "more rounds in the same session", func() bool { return len(provider.listings()) >= 3 })
-	if provider.sessions != 1 || len(fake.Statuses()) != 0 {
-		t.Fatalf("one calendar is no account problem: sessions %d, statuses %v", provider.sessions, fake.Statuses())
+	if provider.sessions != 1 {
+		t.Fatalf("one calendar is no account problem: sessions %d", provider.sessions)
+	}
+	for _, status := range fake.Statuses() {
+		if status != api.CalendarError {
+			t.Fatalf("statuses = %v; one calendar that keeps failing is at most an error naming it", fake.Statuses())
+		}
+	}
+}
+
+// Fails without the fix: a calendar that failed every time was retried every interval and never reported.
+func TestACalendarThatKeepsFailingIsBackedOffAndReported(t *testing.T) {
+	var mu sync.Mutex
+	var asked []time.Time
+	provider := &fakeProvider{
+		calendars: calendarsOf("broken", "own"),
+		changes: func(calendar Calendar) (Changes, error) {
+			if calendar.RemoteID == "broken" {
+				mu.Lock()
+				asked = append(asked, time.Now())
+				mu.Unlock()
+				return Changes{}, &providerhttp.StatusError{Method: "GET", URL: "/events", StatusCode: http.StatusInternalServerError}
+			}
+			return Changes{Full: true, Objects: []Object{{RemoteID: "lunch", ETag: "1", Ical: "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"}}, Cursor: "c1"}, nil
+		},
+	}
+	fake := calsynctest.NewAPI("kim@example.com")
+	opts := quick
+	opts.Interval, opts.MaxBackoff = 5*time.Millisecond, 40*time.Millisecond
+	start(t, provider, fake, opts)
+
+	calsynctest.Eventually(t, "the error status", func() bool { return len(fake.Statuses()) > 0 })
+	if statuses, details := fake.Statuses(), fake.Details(); statuses[0] != api.CalendarError || details[0] != `The calendar "broken" could not be synced; trying again.` {
+		t.Errorf("statuses %v, details %v", statuses, details)
+	}
+	calsynctest.Eventually(t, "five tries", func() bool { mu.Lock(); defer mu.Unlock(); return len(asked) >= 5 })
+	mu.Lock()
+	first, later := asked[1].Sub(asked[0]), asked[4].Sub(asked[3])
+	mu.Unlock()
+	if later < 30*time.Millisecond || later <= first {
+		t.Errorf("the gaps between tries of the failing calendar do not grow: first %v, later %v", first, later)
+	}
+	if listed := len(provider.listings()); listed < 8 {
+		t.Errorf("the other calendars were synced %d times only", listed)
+	}
+	if _, ok := fake.Objects("own")["lunch"]; !ok {
+		t.Error("the other calendar did not sync")
+	}
+}
+
+type fetchSession struct {
+	fakeSession
+	fetch func(ids []string) ([]Object, error)
+}
+
+func (s fetchSession) Fetch(_ context.Context, _ Calendar, ids []string) ([]Object, error) {
+	return s.fetch(ids)
+}
+
+func TestEventsTheProviderRefusesAreLeftOutAndOnlyAPassingFailureKeepsTheCursor(t *testing.T) {
+	text := "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
+	for _, c := range []struct {
+		name       string
+		transient  bool
+		wantCursor string
+	}{{"refused", false, "c1"}, {"may pass", true, ""}} {
+		t.Run(c.name, func(t *testing.T) {
+			provider := &fakeProvider{calendars: calendarsOf("own")}
+			r := &run{
+				syncer:  New(calsynctest.NewAPI("kim@example.com"), provider, netguard.New(true), "w1", quick, slog.New(slog.NewTextHandler(io.Discard, nil))),
+				account: api.Account{ID: "a1"},
+				logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			fake := r.syncer.api.(*calsynctest.API)
+			r.session = fetchSession{fakeSession{provider}, func(ids []string) ([]Object, error) {
+				var out []Object
+				var skipped *FetchError
+				for _, id := range ids {
+					if id == "two" {
+						skipped = skipped.Add(errors.New("refused"), c.transient)
+						continue
+					}
+					out = append(out, Object{RemoteID: id, ETag: "1", Ical: text})
+				}
+				return out, skipped
+			}}
+			states, err := fake.Calendars(context.Background(), "a1", api.CalendarList{Calendars: []api.RemoteCalendar{{RemoteID: "own", Name: "own"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = r.upload(context.Background(), Calendar{RemoteCalendar: api.RemoteCalendar{RemoteID: "own"}}, states[0], nil, []string{"one", "two", "three"}, nil, "c1")
+			if (err != nil) != c.transient {
+				t.Errorf("upload = %v", err)
+			}
+			if got := calsynctest.Keys(fake.Objects("own")); len(got) != 2 || fake.Cursor("own") != c.wantCursor {
+				t.Errorf("stored %v, cursor %q", got, fake.Cursor("own"))
+			}
+		})
+	}
+}
+
+func TestEventFailure(t *testing.T) {
+	status := func(code int, reasons ...string) error {
+		return &providerhttp.StatusError{StatusCode: code, Reasons: reasons}
+	}
+	never := func(error) bool { return false }
+	cases := []struct {
+		err             error
+		skip, transient bool
+	}{
+		{status(http.StatusBadRequest), true, false},
+		{status(http.StatusForbidden, "ErrorAccessDenied"), true, false},
+		{status(http.StatusServiceUnavailable), true, true},
+		{status(http.StatusForbidden, "rateLimitExceeded"), false, false},
+		{status(http.StatusTooManyRequests), false, false},
+		{fmt.Errorf("%w: %w", providerhttp.ErrUnauthorized, status(http.StatusUnauthorized)), false, false},
+		{errors.New("connection reset"), false, false},
+	}
+	for _, c := range cases {
+		if skip, transient := EventFailure(c.err, never); skip != c.skip || transient != c.transient {
+			t.Errorf("EventFailure(%v) = %v, %v; want %v, %v", c.err, skip, transient, c.skip, c.transient)
+		}
+	}
+	if skip, _ := EventFailure(status(http.StatusForbidden), func(error) bool { return true }); skip {
+		t.Error("a token without the calendar scopes was taken for one event")
 	}
 }
 

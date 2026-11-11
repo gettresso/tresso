@@ -18,6 +18,7 @@ import (
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/caldav"
+	"tresso/sync/internal/calfailures"
 )
 
 // API is the part of the API client the syncer needs.
@@ -107,10 +108,15 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	backoff := s.opts.MinBackoff
 	failures := 0
 	status := newStatusReporter(s, account.ID, logger)
+	failing := calfailures.New(s.opts.Interval, s.opts.MaxBackoff)
 	for {
-		err := s.session(ctx, account, wake, logger, status)
+		healthy, err := s.session(ctx, account, wake, logger, status, failing)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if healthy {
+			// A session that synced: the next failure is the first one again.
+			failures, backoff = 0, s.opts.MinBackoff
 		}
 		wait := backoff
 		var confirm *caldav.ConfirmError
@@ -191,15 +197,16 @@ func (r *statusReporter) reset() {
 	r.last = ""
 }
 
-// session opens the server and syncs until something fails.
-func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan struct{}, logger *slog.Logger, status *statusReporter) error {
+// session opens the server and syncs until something fails. healthy reports whether a sync of every calendar went
+// through, so a failure after it does not count towards the error threshold.
+func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan struct{}, logger *slog.Logger, status *statusReporter, failing *calfailures.Tracker) (healthy bool, err error) {
 	credentials, err := s.api.Credentials(ctx, account.ID, s.workerID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	password, err := credentials.Password()
 	if err != nil {
-		return fmt.Errorf("%w: %v", errNoServer, err)
+		return false, fmt.Errorf("%w: %v", errNoServer, err)
 	}
 	client := caldav.New(s.dialer, credentials.Connection.Username, password, s.opts.AllowHTTP, caldav.NewTrust(credentials.Connection.IMAP.Host, credentials.Connection.CalDAV))
 
@@ -210,23 +217,28 @@ func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan s
 		server, err = client.Discover(ctx, credentials.EmailAddress, credentials.Connection.IMAP.Host, s.opts.Resolver)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	logger.Info("calendar server found", "url", server.ContextURL, "autoSchedule", server.AutoSchedule)
 
-	run := &run{syncer: s, client: client, server: server, account: account, logger: logger}
+	run := &run{syncer: s, client: client, server: server, account: account, logger: logger, failing: failing}
 	for {
 		if err := run.writeAll(ctx); err != nil {
-			return err
+			return healthy, err
 		}
 		if err := run.syncAll(ctx); err != nil {
-			return err
+			return healthy, err
 		}
-		// A calendar list the API accepted makes the status active there.
+		healthy = true
+		// A calendar list the API accepted makes the status active there; calendars that keep failing make it an
+		// error again.
 		status.reset()
+		if detail, failing := failing.Detail(); failing {
+			status.report(ctx, api.CalendarError, detail)
+		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return healthy, ctx.Err()
 		case <-time.After(s.opts.Interval):
 		case <-wake:
 		}
@@ -241,6 +253,8 @@ type run struct {
 	logger  *slog.Logger
 	// The calendars as the API knows them, by remote id, from the last sync.
 	states map[string]api.CalendarState
+	// failing holds the calendars that failed in this or an earlier session.
+	failing *calfailures.Tracker
 }
 
 // cursor is what the API keeps per calendar for this syncer: the sync token, or the ctag for servers without one.
@@ -274,11 +288,16 @@ func (r *run) syncAll(ctx context.Context) error {
 	for _, state := range states {
 		r.states[state.RemoteID] = state
 	}
+	listed := make(map[string]bool, len(calendars))
+	for _, calendar := range calendars {
+		listed[calendar.URL] = true
+	}
+	r.failing.Keep(listed)
 
 	refused, synced := 0, 0
 	for _, calendar := range calendars {
 		state, ok := r.states[calendar.URL]
-		if !ok {
+		if !ok || !r.failing.Due(calendar.URL) {
 			continue
 		}
 		synced++
@@ -292,14 +311,26 @@ func (r *run) syncAll(ctx context.Context) error {
 				r.logger.Warn("a calendar refused the login", "calendar", calendar.URL)
 				continue
 			}
-			// One broken calendar (a shared one that went away mid-sync) must not hold up the others.
+			// One broken calendar (a shared one that went away mid-sync) must not hold up the others; it is backed
+			// off and, if it keeps failing, named in the status.
 			r.logger.Warn("calendar could not be synced", "calendar", calendar.URL, "error", err)
+			r.failing.Failed(calendar.URL, calendarName(calendar))
+			continue
 		}
+		r.failing.Succeeded(calendar.URL)
 	}
 	if refused > 0 && refused == synced {
 		return caldav.ErrUnauthorized
 	}
 	return nil
+}
+
+// calendarName is how the user knows a calendar, for status messages.
+func calendarName(calendar caldav.Calendar) string {
+	if calendar.Name != "" {
+		return calendar.Name
+	}
+	return displayURL(calendar.URL)
 }
 
 // acceptable leaves out the calendars the API cannot take, which would make it refuse the whole list every time: one

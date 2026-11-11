@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"tresso/sync/internal/api"
 )
@@ -35,6 +36,8 @@ type fakeServer struct {
 	shared bool
 	// noETag leaves the getetag out of the answer to a PROPFIND for one resource.
 	noETag bool
+	// broken answers every request inside the calendar with 500, as a calendar the server cannot read.
+	broken bool
 	// afterSync runs after each sync-collection answer, with the server locked.
 	afterSync func()
 }
@@ -89,6 +92,10 @@ func (f *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.broken && strings.HasPrefix(r.URL.Path, calendarPath) {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
 	switch {
 	case r.Method == "PROPFIND" && r.URL.Path == "/dav/":
@@ -311,6 +318,9 @@ type fakeAPI struct {
 	statuses   []string
 	details    []string
 	password   string
+	// listFails answers the calendar list of that call (counted from 1) with an error; listedAt is when each came.
+	listFails map[int]bool
+	listedAt  []time.Time
 }
 
 func newFakeAPI(caldavURL string) *fakeAPI {
@@ -337,6 +347,10 @@ func (a *fakeAPI) secret() string {
 func (a *fakeAPI) Calendars(_ context.Context, _ string, list api.CalendarList) ([]api.CalendarState, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.listedAt = append(a.listedAt, time.Now())
+	if a.listFails[len(a.listedAt)] {
+		return nil, fmt.Errorf("calendar list %d: unexpected status 503", len(a.listedAt))
+	}
 	a.lists = append(a.lists, list)
 	states := make([]api.CalendarState, 0, len(list.Calendars))
 	for _, calendar := range list.Calendars {
