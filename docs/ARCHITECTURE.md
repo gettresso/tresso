@@ -476,7 +476,8 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   tombstones. Only placeholders of moves that never landed within the hour are deleted at once.
 - **Threading** (API side, at ingest): first by headers in both directions (messages this one refers to through
   In-Reply-To/References, and stored messages that refer to this one), merging threads that turn out to be one
-  conversation; without any references, a thread from the last 14 days with the same normalized subject that shares
+  conversation (the oldest survives and takes over a placement the user gave another one, the newest such placement
+  when there are several); without any references, a thread from the last 14 days with the same normalized subject that shares
   a counterpart (one of its messages is from, to or cc someone on the new message other than the user; the user's
   own addresses are on nearly every message and do not count); otherwise a new thread.
 - **Backfill:** newest first, in budgeted steps per folder, so the inbox is usable within seconds while history fills
