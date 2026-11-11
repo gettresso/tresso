@@ -6,9 +6,7 @@ namespace App\Tests\Functional;
 
 use App\Entity\MailAccount;
 use App\Enum\MailAccountStatus;
-use App\Realtime\MercureTokens;
 use App\Security\Crypto\CredentialVault;
-use App\Tests\Support\RecordingMercureHub;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
 
@@ -158,17 +156,16 @@ final class MailAccountApiTest extends DatabaseTestCase
         self::assertSame('app-password-2', static::getContainer()->get(CredentialVault::class)->open($this->account($id))['password']);
     }
 
-    public function testNewServerSettingsClearASyncErrorAndWakeTheWorker(): void
+    public function testNewServerSettingsEndTheLeaseSoTheWorkerStartsAFreshSession(): void
     {
         $headers = $this->userHeaders('kim@example.test', self::READ_WRITE);
         $this->client->jsonRequest('POST', '/api/v1/mail-accounts', $this->imapPayload(), $headers);
         $id = $this->responseString('id');
+        $worker = $this->workerHeaders('sync:lease');
+        self::assertSame([$id], $this->lease('w1', $worker));
 
         $entityManager = static::getContainer()->get(EntityManagerInterface::class);
         $entityManager->wrapInTransaction(fn () => $this->account($id)->setStatus(MailAccountStatus::Error, 'Could not connect to the mail server.'));
-        $hub = static::getContainer()->get(RecordingMercureHub::class);
-        self::assertInstanceOf(RecordingMercureHub::class, $hub);
-        $hub->takePublished();
 
         $this->client->request('PATCH', '/api/v1/mail-accounts/'.$id, server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode([
             'password' => 'app-password-2',
@@ -180,8 +177,17 @@ final class MailAccountApiTest extends DatabaseTestCase
         self::assertSame('active', $body['status'] ?? null);
         self::assertArrayHasKey('statusDetail', $body);
         self::assertNull($body['statusDetail']);
-        $woken = array_filter($hub->takePublished(), static fn (array $update): bool => MercureTokens::OUTBOX_TOPIC === $update['body']['topic']);
-        self::assertSame([json_encode(['mailAccountId' => $id])], array_values(array_map(static fn (array $update): string => $update['body']['data'], $woken)));
+
+        $entityManager->clear();
+        $account = $this->account($id);
+        self::assertNull($account->getLeasedBy(), 'The lease of the worker that held the account has ended.');
+        self::assertGreaterThan(new \DateTimeImmutable(), $account->getLeaseExpiresAt());
+
+        self::assertSame([], $this->lease('w1', $worker), 'The holder no longer gets it back, so it stops its syncer.');
+        self::assertSame([], $this->lease('w2', $worker), 'Nobody takes it while the old syncer stops.');
+
+        $this->connection()->executeStatement("UPDATE mail_account SET lease_expires_at = now() - interval '1 second'");
+        self::assertSame([$id], $this->lease('w1', $worker), 'Once the hold ends a fresh session starts.');
     }
 
     public function testRenamingKeepsASyncError(): void
@@ -265,6 +271,23 @@ final class MailAccountApiTest extends DatabaseTestCase
             'imap' => ['host' => 'imap.company.example', 'port' => 993, 'security' => 'tls'],
             'smtp' => ['host' => 'smtp.company.example', 'port' => 465, 'security' => 'tls'],
         ];
+    }
+
+    /**
+     * A worker's heartbeat.
+     *
+     * @param array<string, string> $worker
+     *
+     * @return list<string> leased account ids
+     */
+    private function lease(string $workerId, array $worker): array
+    {
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => $workerId, 'capacity' => 10], $worker);
+        self::assertResponseIsSuccessful();
+        $accounts = $this->decodedResponse()['accounts'] ?? null;
+        self::assertIsArray($accounts);
+
+        return array_values(array_map(static fn (mixed $account): string => \is_array($account) && \is_string($account['id'] ?? null) ? $account['id'] : '', $accounts));
     }
 
     private function account(string $id): MailAccount
