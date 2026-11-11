@@ -1525,7 +1525,8 @@ delivery to version 7 and schema 5, hand-overs (3.15) to version 8 and schema 6.
 
 Both stores keep held conversations out of the lists and counts, list the delivered batches through an index on
 inbox, batch time and date, and keep the unsubscribe requests (dropped with their account). The web client has a
-Batches view (with the next batch time), an Unsubscribe button on the conversation and on each conversation in the
+Batches view (with the next batch time, asked for again a few seconds after each batch; a request that fails is
+tried again after 30 seconds, doubling up to 10 minutes, and on the next screen change), an Unsubscribe button on the conversation and on each conversation in the
 batches, a "Deliver in batches" choice per smart inbox and Settings > Batched delivery for the times and the zone;
 the phone's `MailSession` unsubscribes and says what a conversation offers. The IndexedDB copy moved to version 7
 and the SQLite copy to schema 5; both sync again from the start.
