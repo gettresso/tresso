@@ -565,8 +565,9 @@ export class Composer {
       }
       return
     }
-    if (!stored.pendingSave && stored.outgoingId === null && editedFields(stored) !== editedFields(open)) {
-      // The form starts over with the other device's text.
+    if (!stored.pendingSave && stored.outgoingId === null && base !== undefined && stored.version > base.version && editedFields(stored) !== editedFields(open)) {
+      // The form starts over with the other device's text: a version past the one it builds on, never an older one (a
+      // page read before this device's last upload that arrived after its answer).
       this.open(stored, true)
       this.deps.notify({ text: `"${stored.subject || '(no subject)'}" was changed on another device. It shows that version now.`, tone: 'info' }, 8000)
       return
@@ -731,6 +732,8 @@ export class Composer {
       return
     }
     this.bases.delete(closing.id)
+    // Autosaves do not tell the lists (too often); a draft put away does, so Drafts shows what was saved since.
+    this.deps.changed?.()
     if (this.storeOfDraft() !== null && !this.held.has(closing.id)) {
       // Edits saved before but not uploaded yet (offline, say) go up now; there is nothing new to write.
       void this.deps.drafts.upload(closing.id).catch(() => undefined)
@@ -840,6 +843,11 @@ export class Composer {
         this.dirty = true
       }
       const { message, violations } = this.deps.explain(error)
+      if (!sent && violations.outgoingId !== undefined) {
+        // The server refused the id itself (made on a clock far ahead) and queued nothing: the next try gets a new one.
+        // When even that cannot be written, the next try is refused the same way and says so again.
+        await store.changeDraft(draft.id, (stored) => (stored?.sendAttemptId ? { ...stored, sendAttemptId: null } : null)).catch(() => undefined)
+      }
       const unscanned = violations.acceptUnscanned
       if (unscanned !== undefined && this.current.draft?.id === draft.id) {
         this.set({ unscannedToConfirm: { message: unscanned, sendAt: sendAt?.getTime() ?? null } })
@@ -961,7 +969,11 @@ export class Composer {
     if (store === null) {
       return
     }
-    for (const stored of await store.drafts()) {
+    for (const listed of await store.drafts()) {
+      const stored = await this.recognisedSend(store, listed)
+      if (stored === null) {
+        continue
+      }
       const outgoing = stored.outgoingId === null ? null : await store.outgoing(stored.outgoingId)
       if (stored.outgoingId !== null && outgoing === null && stored.mailAccountId === null) {
         // Its account was removed while it was on its way: the message went with it, unsent, and the draft is back.
@@ -1000,6 +1012,34 @@ export class Composer {
       await store.changeDraft(stored.id, (now) => now && { ...now, noticedStatus: outgoing.status })
     }
     await this.refreshOpen()
+  }
+
+  /**
+   * A draft whose send was answered with nothing (a lost answer) while the server did queue it: the message with the
+   * send's id is in the copy, so the draft is on its way after all, and an edit must not send it a second time. The
+   * form closes on it unless something is typed or saved there right now (then the next round looks again). Returns
+   * the draft to follow up, or null to leave it this round.
+   */
+  private async recognisedSend(store: MailStore, draft: Draft): Promise<Draft | null> {
+    const id = draft.sendAttemptId ?? null
+    if (draft.outgoingId !== null || id === null || this.held.has(draft.id) || (await store.outgoing(id)) === null) {
+      return draft
+    }
+    const open = this.current.draft?.id === draft.id
+    if (open && (this.dirty || this.saveTimer !== null || this.writes.size > 0)) {
+      return null
+    }
+    const recognised = await store.changeDraft(draft.id, (stored) => (stored === null || stored.sendAttemptId !== id || stored.outgoingId !== null ? null : { ...stored, outgoingId: id, sendAttemptId: null, pendingSave: false }))
+    if (recognised?.outgoingId !== id) {
+      return recognised
+    }
+    if (open && this.current.draft?.id === draft.id) {
+      this.bases.delete(draft.id)
+      this.set({ draft: null, conflict: false })
+    }
+    this.deps.changed?.()
+    this.deps.notify({ text: `"${draft.subject || '(no subject)'}" reached the server after all and is on its way.`, tone: 'info' }, 8000)
+    return recognised
   }
 
   /** The open draft's files as the copy here has them now: attached or removed on another device meanwhile. */

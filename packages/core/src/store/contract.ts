@@ -448,6 +448,15 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
       expect(await db.draft('d1')).toBeNull()
     })
 
+    it('keeps a newer draft than the one a late page brings', async () => {
+      const synced = { id: 'd1', mailAccountId: 'work', kind: 'new' as const, to: [], cc: [], bcc: [], subject: 'Newer', html: '', signatureId: null, quoteHtml: '', inReplyToMessageId: null, version: 5, updatedAt: '2026-10-19T08:00:00Z', attachments: [] }
+      await db.apply(page({ cursor: 11, drafts: [synced] }))
+
+      await db.apply(page({ cursor: 12, drafts: [{ ...synced, subject: 'Older', version: 4 }] }))
+
+      expect(await db.draft('d1')).toMatchObject({ subject: 'Newer', version: 5 })
+    })
+
     it("takes the server's files for a draft, also while its text has edits not uploaded yet", async () => {
       const file = { id: 'f1', filename: 'notes.txt', contentType: 'text/plain', size: 10, scanStatus: 'pending' as const }
       const synced = { id: 'd1', mailAccountId: 'work', kind: 'new' as const, to: [], cc: [], bcc: [], subject: 'Server', html: '', signatureId: null, quoteHtml: '', inReplyToMessageId: null, version: 2, updatedAt: '2026-10-19T08:00:00Z', attachments: [file] }

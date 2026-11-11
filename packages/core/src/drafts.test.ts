@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { defaultSignatureOf, DraftSync, newDraft, reopenedDraft, replyDraft, sendRequest, sentOutcome, withEdits } from './drafts'
+import { defaultSignatureOf, DraftSync, editedFields, newDraft, reopenedDraft, replyDraft, sendRequest, sentOutcome, withEdits } from './drafts'
 import { syncedDraft } from './store/rules'
 import { ApiFailure, FakeDraftApi } from './drafts.fake'
 import { accounts, draft, message, signature } from './store/contract'
@@ -315,6 +315,14 @@ describe('writing mail', () => {
     expect(reopenedDraft({ ...sent, noticedStatus: 'failed', pendingSave: false })).toMatchObject({ outgoingId: null, noticedStatus: null, pendingSave: true })
     expect(reopenedDraft(draft('d2'))).toEqual(draft('d2'))
     expect(reopenedDraft({ ...sent, sendAttemptId: 'a1' }).sendAttemptId).toBeNull()
+  })
+
+  it('compares recipients as the server keeps them: trimmed, an empty name none at all', () => {
+    const typed = draft('d1', { to: [{ address: ' anna@example.test ', name: '  ' }], cc: [{ address: 'lisa@example.test', name: ' Lisa ' }] })
+    const kept = draft('d1', { to: [{ address: 'anna@example.test', name: null }], cc: [{ address: 'lisa@example.test', name: 'Lisa' }] })
+
+    expect(editedFields(typed)).toBe(editedFields(kept))
+    expect(editedFields(typed)).not.toBe(editedFields({ ...kept, cc: [{ address: 'lisa@example.test', name: 'Lisa B' }] }))
   })
 
   it("keeps a send's id while the text it sends stays the same, here and from the server", () => {

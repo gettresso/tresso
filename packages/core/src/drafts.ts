@@ -1,6 +1,6 @@
 import { composeBody, forwardSubject, quotedOriginal, replyRecipients, replySubject, type DraftRequest, type SendMessageRequest } from './compose'
 import type { Draft, MailStore } from './store/mailStore'
-import type { DraftAttachment, DraftAttachmentLink, DraftKind, MessageBody, SyncedDraft, SyncedMailAccount, SyncedMessage, SyncedOutgoingMessage, SyncedSignature } from './sync/types'
+import type { Address, DraftAttachment, DraftAttachmentLink, DraftKind, MessageBody, SyncedDraft, SyncedMailAccount, SyncedMessage, SyncedOutgoingMessage, SyncedSignature } from './sync/types'
 
 /**
  * A file to attach, as the platform has it: the browser's File on the web, a picked file's URI on the phone. `body` is
@@ -154,7 +154,15 @@ export function reopenedDraft(draft: Draft): Draft {
  * same thing, whatever their versions, files or bookkeeping.
  */
 export function editedFields(draft: EditableDraft): string {
-  return JSON.stringify(requestOf(draft))
+  const request = requestOf(draft)
+  // Recipients as the server keeps them, so this device's own save does not come back looking like another's text.
+  return JSON.stringify({ ...request, to: request.to.map(keptRecipient), cc: request.cc.map(keptRecipient), bcc: request.bcc.map(keptRecipient) })
+}
+
+/** A recipient as the drafts API stores it (DraftRecipientInput::toArray): trimmed, an empty name none at all. */
+function keptRecipient(recipient: Address): Address {
+  const name = recipient.name === null ? null : recipient.name.replace(/^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g, '')
+  return { address: recipient.address.replace(/^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g, ''), name: name === '' ? null : name }
 }
 
 /** What the user writes in a draft: the fields a save sends, as a draft here and the server's copy both have them. */
