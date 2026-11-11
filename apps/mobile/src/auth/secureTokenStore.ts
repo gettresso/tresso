@@ -13,6 +13,8 @@ const EXPIRES_AT = 'auth.expiresAt'
  * same user then opens their copy, with the drafts that did not reach the server yet.
  */
 export const LAST_USER = 'auth.lastUserId'
+/** Set by a sign-out the user asked for, until a sign-in completes: that sign-in asks for the password again. */
+const LOGIN_REQUIRED = 'auth.loginRequired'
 
 /** The OS secure store: the iOS Keychain, or values encrypted with the Android Keystore. */
 export const secureTokenStore: TokenStore = {
@@ -46,5 +48,11 @@ export const secureTokenStore: TokenStore = {
   },
   async forgetUser() {
     await SecureStore.deleteItemAsync(LAST_USER)
+  },
+  async loginRequired() {
+    return (await SecureStore.getItemAsync(LOGIN_REQUIRED)) === 'yes'
+  },
+  async setLoginRequired(required) {
+    await (required ? SecureStore.setItemAsync(LOGIN_REQUIRED, 'yes') : SecureStore.deleteItemAsync(LOGIN_REQUIRED))
   },
 }

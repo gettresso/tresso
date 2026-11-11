@@ -4,10 +4,11 @@ import { ApiError, RenewalFailedError, Session, type TokenStore } from './sessio
 
 const CONFIG = { apiUrl: 'https://api.example.test/', clientId: 'mobile', redirectUri: 'tresso://auth/callback' }
 
-function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: TokenSet | null; lastUser: string | null; failing: boolean } {
+function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: TokenSet | null; lastUser: string | null; promptLogin: boolean; failing: boolean } {
   return {
     saved: initial,
     lastUser: initial === null ? null : 'kim',
+    promptLogin: false,
     failing: false,
     async load() {
       return this.saved
@@ -23,6 +24,15 @@ function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: Tok
         throw new Error('Keychain is locked.')
       }
       this.lastUser = null
+    },
+    async loginRequired() {
+      return this.promptLogin
+    },
+    async setLoginRequired(required) {
+      if (this.failing) {
+        throw new Error('Keychain is locked.')
+      }
+      this.promptLogin = required
     },
   }
 }
@@ -358,6 +368,43 @@ describe('Session', () => {
     expect(session.snapshot.tokens?.accessToken).toBe('access-2')
     expect(store.saved).toBeNull()
     expect(session.snapshot.storageError).toContain('could not be kept on this device')
+  })
+
+  it('asks for the password at the next sign-in after a sign-out, also after a restart, until a sign-in completes', async () => {
+    const store = memoryStore(fresh())
+    const fetchImpl = server(async () => tokenResponse('access-2', 'refresh-2'))
+    const session = await restored(store, fetchImpl)
+    expect(await session.loginRequired()).toBe(false)
+
+    await session.signOut()
+    expect(await session.loginRequired()).toBe(true)
+
+    const afterRestart = await restored(store, fetchImpl)
+    expect(await afterRestart.loginRequired()).toBe(true)
+
+    await afterRestart.completeSignIn('the-code', 'the-verifier')
+    expect(await afterRestart.loginRequired()).toBe(false)
+    expect(await (await restored(store, fetchImpl)).loginRequired()).toBe(false)
+  })
+
+  it('does not ask for the password at the next sign-in after the sign-in expired', async () => {
+    const store = memoryStore(expired())
+    const session = await restored(store, vi.fn<Fetch>(async () => refused()))
+
+    await expect(session.accessToken()).rejects.toThrow()
+
+    expect(session.snapshot.ended).toBe('expired')
+    expect(await session.loginRequired()).toBe(false)
+  })
+
+  it('asks for the password when the store cannot say whether it has to', async () => {
+    const store = memoryStore()
+    store.loginRequired = async () => {
+      throw new Error('Keychain is locked.')
+    }
+    const session = await restored(store, vi.fn<Fetch>())
+
+    expect(await session.loginRequired()).toBe(true)
   })
 
   it('tells subscribers about every change', async () => {

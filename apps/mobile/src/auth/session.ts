@@ -16,6 +16,9 @@ export interface TokenStore {
   save(tokens: TokenSet | null): Promise<void>
   /** Forgets who was signed in last (see MailProvider), so their mail no longer opens before the server answers. */
   forgetUser(): Promise<void>
+  /** Whether the next sign-in has to ask for the password again (see {@link Session.loginRequired}). */
+  loginRequired(): Promise<boolean>
+  setLoginRequired(required: boolean): Promise<void>
 }
 
 /** Why the sign-in ended: the user signed out, or the server no longer accepts it. */
@@ -126,11 +129,31 @@ export class Session {
     } catch (error) {
       this.update({ storageError: notKept(error) })
     }
+    try {
+      await this.store.setLoginRequired(false)
+    } catch {
+      // Not reported: it only means the next sign-in after this one asks for the password once more.
+    }
+  }
+
+  /**
+   * Whether the next sign-in asks for the password again (`prompt=login`): after a sign-out the user asked for, until
+   * a sign-in completes, also across launches. The server keeps the browser signed in (remember-me) and approves the
+   * app without a page, so otherwise "Sign in" would go straight back in as the same user, with no way to switch
+   * account. An expired sign-in does not ask. When the store cannot say, it asks, which costs only a password.
+   */
+  async loginRequired(): Promise<boolean> {
+    try {
+      return await this.store.loginRequired()
+    } catch {
+      return true
+    }
   }
 
   /**
    * The sign-out the user asked for: the refresh token is revoked at the server (best effort, it does not wait long),
-   * then the tokens and who was signed in are removed from the phone, and with them the mail on it (MailProvider).
+   * then the tokens and who was signed in are removed from the phone, and with them the mail on it (MailProvider). The
+   * next sign-in asks for the password again ({@link loginRequired}).
    */
   async signOut(): Promise<void> {
     const refreshToken = this.state.tokens?.refreshToken ?? null
@@ -141,7 +164,7 @@ export class Session {
     }
     this.update({ tokens: null, restored: false, ended: 'signedOut', paymentRequired: false })
     try {
-      await Promise.all([this.store.save(null), this.store.forgetUser()])
+      await Promise.all([this.store.setLoginRequired(true), this.store.save(null), this.store.forgetUser()])
       this.update({ storageError: null })
     } catch (error) {
       this.update({ storageError: `You are signed out here, but the sign-in could not be removed from this device: ${message(error)}` })

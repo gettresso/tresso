@@ -5,13 +5,14 @@ import { AuthProvider, useAuth } from '@/auth/AuthProvider'
 import { MailProvider, useMail } from '@/mail/MailProvider'
 import { databaseName } from '@/mail/mailSession'
 
-const { keychain, disk } = vi.hoisted(() => ({
+const { keychain, disk, browser } = vi.hoisted(() => ({
+  browser: { signIn: vi.fn(async (_options: { promptLogin: boolean }) => ({ code: 'the-code', codeVerifier: 'the-verifier' })) },
   keychain: { items: new Map<string, string>(), unreadable: false },
   disk: { files: new Map<string, unknown>(), deleted: [] as string[] },
 }))
 
 vi.mock('@/config', () => ({ config: { apiUrl: 'https://api.example.test', clientId: 'mobile', redirectUri: 'tresso://auth/callback' } }))
-vi.mock('@/auth/browserSignIn', () => ({ signInInBrowser: vi.fn() }))
+vi.mock('@/auth/browserSignIn', () => ({ signInInBrowser: browser.signIn }))
 vi.mock('@/notifications/expoPush', () => ({ secureDeviceId: {} }))
 vi.mock('@/notifications/push', () => ({ forgetPushDevice: async () => undefined }))
 vi.mock('expo/fetch', () => ({ fetch: () => new Promise(() => undefined) }))
@@ -103,6 +104,7 @@ describe('when the sign-in ends', () => {
     disk.files.clear()
     disk.deleted = []
     seen = null
+    browser.signIn.mockClear()
   })
 
   afterEach(() => {
@@ -178,6 +180,41 @@ describe('when the sign-in ends', () => {
 
     await waitFor(() => expect(disk.deleted).toEqual([KIM]))
     expect(fetchImpl.mock.calls.some(([url]) => String(url).endsWith('/oauth/revoke'))).toBe(true)
-    expect(keychain.items.size).toBe(0)
+    expect([...keychain.items.keys()]).toEqual(['auth.loginRequired'])
+  })
+
+  it('asks for the password at the sign-in after a sign-out, also after a restart, and not once that sign-in completed', async () => {
+    keepSignIn(Date.now() + 3_600_000)
+    vi.stubGlobal('fetch', vi.fn<Fetch>(api(async () => new Response(JSON.stringify({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600 })))))
+    const first = launch()
+    await waitFor(() => expect(seen?.mail.userId).toBe('kim'))
+    await act(() => seen!.auth.signOut())
+    first.unmount()
+
+    const second = launch()
+    await waitFor(() => expect(seen?.auth.restoring).toBe(false))
+    await act(async () => {
+      await seen!.auth.signIn()
+    })
+    expect(browser.signIn).toHaveBeenLastCalledWith({ promptLogin: true })
+    await waitFor(() => expect(seen?.mail.userId).toBe('kim'))
+    second.unmount()
+
+    launch()
+    await waitFor(() => expect(seen?.mail.userId).toBe('kim'))
+    expect(await seen!.auth.session.loginRequired()).toBe(false)
+  })
+
+  it('does not ask for the password at the sign-in after the sign-in expired', async () => {
+    keepSignIn(Date.now() - 1)
+    vi.stubGlobal('fetch', vi.fn<Fetch>(api(async () => new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 }))))
+
+    launch()
+    await waitFor(() => expect(seen?.auth.ended).toBe('expired'))
+    await act(async () => {
+      await seen!.auth.signIn().catch(() => undefined)
+    })
+
+    expect(browser.signIn).toHaveBeenLastCalledWith({ promptLogin: false })
   })
 })
