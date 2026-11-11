@@ -12,6 +12,7 @@ import (
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/caldav"
+	"tresso/sync/internal/calfailures"
 )
 
 func event(uid, summary string) string {
@@ -26,7 +27,7 @@ func openRun(t *testing.T, server *fakeServer, fake *fakeAPI) *run {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	return &run{syncer: syncer, client: client, server: account, account: api.Account{ID: "a1"}, logger: syncer.logger}
+	return &run{syncer: syncer, client: client, server: account, account: api.Account{ID: "a1"}, logger: syncer.logger, failing: calfailures.New(time.Minute, time.Hour)}
 }
 
 func TestSyncsWithSyncTokensAndReportsOnlyChanges(t *testing.T) {
@@ -510,5 +511,65 @@ func TestAnUpdateIsNotSentWhenTheServerNamesNoETag(t *testing.T) {
 	}
 	if strings.Contains(server.objects[calendarPath+"standup.ics"].data, "moved") {
 		t.Fatal("the update went out without a precondition")
+	}
+}
+
+// runSyncer runs the syncer until the test ends.
+func runSyncer(t *testing.T, fake *fakeAPI, opts Options) {
+	t.Helper()
+	opts.AllowHTTP = true
+	syncer := New(fake, plainDialer{}, "w1", opts, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- syncer.Run(ctx, api.Account{ID: "a1"}) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Fails without the fix: failures were counted over the account's whole lease, so the third unrelated blip reported
+// an error, and the backoff kept doubling.
+func TestAGoodSessionResetsTheFailureCountAndTheBackoff(t *testing.T) {
+	server := newFakeServer(t, true)
+	fake := newFakeAPI(server.server.URL + "/dav/")
+	fake.listFails = map[int]bool{1: true, 3: true, 5: true, 7: true}
+	runSyncer(t, fake, Options{Interval: time.Millisecond, MinBackoff: 50 * time.Millisecond, MaxBackoff: time.Second, NotFoundRetry: time.Hour})
+
+	eventually(t, "eight calendar lists", func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return len(fake.listedAt) >= 8 })
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.statuses) != 0 {
+		t.Errorf("statuses = %v; failures between good sessions are not in a row", fake.statuses)
+	}
+	if wait := fake.listedAt[7].Sub(fake.listedAt[6]); wait > 150*time.Millisecond {
+		t.Errorf("the wait after the fourth failure was %v, want about MinBackoff (50ms)", wait)
+	}
+}
+
+// Fails without the fix: a calendar that failed every time was synced every interval and never reported.
+func TestACalendarThatKeepsFailingIsBackedOffAndReported(t *testing.T) {
+	server := newFakeServer(t, true)
+	server.put(calendarPath+"standup.ics", event("standup", "Standup"))
+	server.broken = true
+	fake := newFakeAPI(server.server.URL + "/dav/")
+	runSyncer(t, fake, Options{Interval: 5 * time.Millisecond, MinBackoff: 5 * time.Millisecond, MaxBackoff: 40 * time.Millisecond, NotFoundRetry: time.Hour})
+
+	eventually(t, "the error status", func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return len(fake.statuses) > 0 })
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.statuses[0] != api.CalendarError || fake.details[0] != `The calendar "Home" could not be synced; trying again.` {
+		t.Errorf("statuses %v, details %v", fake.statuses, fake.details)
 	}
 }

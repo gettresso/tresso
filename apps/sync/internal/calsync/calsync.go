@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tresso/sync/internal/api"
+	"tresso/sync/internal/calfailures"
 	"tresso/sync/internal/ical"
 	"tresso/sync/internal/netguard"
 	"tresso/sync/internal/providerauth"
@@ -65,7 +66,9 @@ type Session interface {
 	Calendars(ctx context.Context) ([]Calendar, error)
 	// Changes reports what changed since cursor ("" when the calendar was never synced).
 	Changes(ctx context.Context, calendar Calendar, cursor string) (Changes, error)
-	// Fetch returns the named resources as iCalendar; ones that are gone are left out.
+	// Fetch returns the named resources as iCalendar; ones that are gone are left out. Events the provider refuses
+	// one by one (see EventFailure) are left out too: Fetch then returns what it could fetch together with a
+	// *FetchError.
 	Fetch(ctx context.Context, calendar Calendar, remoteIDs []string) ([]Object, error)
 	// Write makes one queued change at the provider. The error is set, next to the result to report, when the
 	// account's access failed: the session then ends.
@@ -165,10 +168,11 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 
 	logger := s.logger.With("account", account.ID)
 	status := &statusReporter{syncer: s, accountID: account.ID, logger: logger}
+	failing := calfailures.New(s.opts.Interval, s.opts.MaxBackoff)
 	backoff := s.opts.MinBackoff
 	failures := 0
 	for {
-		healthy, err := s.session(ctx, account, wake, logger, status)
+		healthy, err := s.session(ctx, account, wake, logger, status, failing)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -245,7 +249,7 @@ func (c calendarTokens) RefreshCredentials(ctx context.Context, accountID, worke
 	return c.client.RefreshCalendarCredentials(ctx, accountID, workerID)
 }
 
-func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan struct{}, logger *slog.Logger, status *statusReporter) (bool, error) {
+func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan struct{}, logger *slog.Logger, status *statusReporter, failing *calfailures.Tracker) (bool, error) {
 	credentials, err := s.api.CalendarCredentials(ctx, account.ID, s.workerID)
 	if err != nil {
 		return false, err
@@ -258,7 +262,7 @@ func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan s
 	if self == "" {
 		self = account.EmailAddress
 	}
-	r := &run{syncer: s, session: s.provider.Open(tokens, s.http, ical.Address(self), logger), account: account, logger: logger}
+	r := &run{syncer: s, session: s.provider.Open(tokens, s.http, ical.Address(self), logger), account: account, logger: logger, failing: failing}
 	healthy := false
 	for {
 		if err := r.syncAll(ctx); err != nil {
@@ -267,9 +271,13 @@ func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan s
 		if err := r.writeAll(ctx); err != nil {
 			return healthy, err
 		}
-		// A calendar list the API accepted made the status active there.
+		// A calendar list the API accepted made the status active there; calendars that keep failing make it an
+		// error again.
 		healthy = true
 		status.forget()
+		if detail, failing := failing.Detail(); failing {
+			status.report(ctx, api.CalendarError, detail)
+		}
 		select {
 		case <-ctx.Done():
 			return healthy, ctx.Err()
@@ -287,6 +295,8 @@ type run struct {
 	// calendars by remote id, with the API's state, from the last list.
 	calendars map[string]Calendar
 	states    map[string]api.CalendarState
+	// failing holds the calendars that failed in this or an earlier session.
+	failing *calfailures.Tracker
 }
 
 func (r *run) syncAll(ctx context.Context) error {
@@ -308,9 +318,12 @@ func (r *run) syncAll(ctx context.Context) error {
 		return err
 	}
 	r.calendars = make(map[string]Calendar, len(calendars))
+	listed := make(map[string]bool, len(calendars))
 	for _, calendar := range calendars {
 		r.calendars[calendar.RemoteID] = calendar
+		listed[calendar.RemoteID] = true
 	}
+	r.failing.Keep(listed)
 	r.states = make(map[string]api.CalendarState, len(states))
 	for _, state := range states {
 		r.states[state.RemoteID] = state
@@ -318,16 +331,20 @@ func (r *run) syncAll(ctx context.Context) error {
 
 	for _, calendar := range calendars {
 		state, ok := r.states[calendar.RemoteID]
-		if !ok {
+		if !ok || !r.failing.Due(calendar.RemoteID) {
 			continue
 		}
 		if err := r.syncCalendar(ctx, calendar, state); err != nil {
 			if ctx.Err() != nil || r.fatal(err) {
 				return err
 			}
-			// One calendar that fails (a shared one taken back mid-sync) must not hold up the others.
+			// One calendar that fails (a shared one taken back mid-sync) must not hold up the others; it is backed
+			// off and, if it keeps failing, named in the status.
 			r.logger.Warn("calendar could not be synced", "calendar", truncate(calendar.RemoteID, 200), "error", err)
+			r.failing.Failed(calendar.RemoteID, calendar.Name)
+			continue
 		}
+		r.failing.Succeeded(calendar.RemoteID)
 	}
 	return nil
 }
@@ -472,9 +489,19 @@ func (r *run) upload(ctx context.Context, calendar Calendar, state api.CalendarS
 			return err
 		}
 	}
+	// Events the provider refused one by one are left out. A refusal that will not change (4xx) lets the cursor
+	// move on: a later change of the event names it again. One that may pass (5xx) keeps the cursor, so the next
+	// sync of this calendar asks for the event again.
+	var transient *FetchError
 	for start := 0; start < len(fetch); start += fetchBatch {
 		objects, err := r.session.Fetch(ctx, calendar, fetch[start:min(start+fetchBatch, len(fetch))])
-		if err != nil {
+		var skipped *FetchError
+		if errors.As(err, &skipped) {
+			r.logger.Warn("events could not be fetched and were left out", "calendar", truncate(calendar.RemoteID, 200), "transient", skipped.Transient, "permanent", skipped.Permanent, "error", skipped.Err)
+			if skipped.Transient > 0 {
+				transient = skipped
+			}
+		} else if err != nil {
 			return err
 		}
 		for _, object := range objects {
@@ -497,7 +524,63 @@ func (r *run) upload(ctx context.Context, calendar Calendar, state api.CalendarS
 		pending = nil
 		kept = kept[removedBatch:]
 	}
+	if transient != nil {
+		if err := send(api.ObjectBatch{WorkerID: r.syncer.workerID, Changed: pending, Removed: kept}); err != nil {
+			return err
+		}
+		return transient
+	}
 	return send(api.ObjectBatch{WorkerID: r.syncer.workerID, Changed: pending, Removed: kept, Cursor: &cursor})
+}
+
+// FetchError is what Fetch returns next to the objects it could fetch when the provider refused some events one by
+// one (see EventFailure).
+type FetchError struct {
+	// Transient counts events that may come through next time (the provider failed, 5xx); Permanent those it
+	// refused (4xx).
+	Transient, Permanent int
+	// Err is the last refusal.
+	Err error
+}
+
+func (e *FetchError) Error() string {
+	return fmt.Sprintf("%d events could not be fetched (%d may pass): %v", e.Transient+e.Permanent, e.Transient, e.Err)
+}
+
+func (e *FetchError) Unwrap() error { return e.Err }
+
+// Add counts one event that was left out; a nil receiver starts the count.
+func (e *FetchError) Add(err error, transient bool) *FetchError {
+	if e == nil {
+		e = &FetchError{}
+	}
+	if transient {
+		e.Transient++
+	} else {
+		e.Permanent++
+	}
+	e.Err = err
+	return e
+}
+
+// EventFailure tells whether an error fetching one event concerns that event only, so it is left out and the others
+// go on (skip), and whether a later try may get it (transient). The account's access, throttling, a broken connection
+// and the end of the context concern every event and end the sync. notGranted is the provider's own test for a token
+// without the calendar scopes.
+func EventFailure(err error, notGranted func(error) bool) (skip, transient bool) {
+	var statusErr *providerhttp.StatusError
+	if !errors.As(err, &statusErr) || errors.Is(err, providerhttp.ErrUnauthorized) || errors.Is(err, api.ErrReauthorize) || throttled(err) || notGranted(err) {
+		return false, false
+	}
+	switch {
+	case statusErr.StatusCode == http.StatusUnauthorized, statusErr.StatusCode == http.StatusTooManyRequests:
+		return false, false
+	case statusErr.StatusCode >= 500:
+		return true, true
+	case statusErr.StatusCode >= 400:
+		return true, false
+	}
+	return false, false
 }
 
 // writeAll makes the changes Tresso queued for this account's calendars.

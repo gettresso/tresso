@@ -32,8 +32,10 @@ type fakeGraph struct {
 	nextID    int
 	requests  []fakeRequest
 	forbidden bool
-	// failures answers requests whose method and path end like the key with that status, once each.
+	// failures answers requests whose method and path end like the key with that status, once each; refusals do
+	// so every time.
 	failures map[string]int
+	refusals map[string]int
 	// beforeWrite runs, with the fake locked, before every request other than a GET, as a change someone makes at
 	// Microsoft meanwhile.
 	beforeWrite func(method, path string)
@@ -229,6 +231,13 @@ func (f *fakeGraph) handle(w http.ResponseWriter, r *http.Request) {
 		if r.Method == method && strings.HasSuffix(r.URL.Path, suffix) {
 			delete(f.failures, key)
 			f.fail(w, status, "ServiceUnavailable")
+			return
+		}
+	}
+	for key, status := range f.refusals {
+		method, suffix, _ := strings.Cut(key, " ")
+		if r.Method == method && strings.HasSuffix(r.URL.Path, suffix) {
+			f.fail(w, status, "ErrorInvalidRequest")
 			return
 		}
 	}
