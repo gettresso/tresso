@@ -28,20 +28,23 @@ describe('authorizationEndpoint', () => {
     expect(await authorizationEndpoint('http://localhost:8000', metadata({ authorization_endpoint: 'http://localhost:5173/oauth/authorize' }))).toBe('http://localhost:5173/oauth/authorize')
   })
 
-  it('signs in at the API address when the metadata does not come within five seconds', async () => {
+  it('signs in at the API address when the metadata does not come within five seconds, and not sooner', async () => {
     vi.useFakeTimers()
     try {
       const fetchImpl = vi.fn<Fetch>(
         (_input, init) =>
           new Promise<Response>((_resolve, reject) => {
-            init!.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
           }),
       )
+      let settled: string | null = null
 
-      const endpoint = authorizationEndpoint('https://api.example.test', fetchImpl)
-      await vi.advanceTimersByTimeAsync(5_000)
+      void authorizationEndpoint('https://api.example.test', fetchImpl).then((endpoint) => (settled = endpoint))
+      await vi.advanceTimersByTimeAsync(4_999)
+      expect(settled).toBeNull()
+      await vi.advanceTimersByTimeAsync(1)
 
-      expect(await endpoint).toBe('https://api.example.test/oauth/authorize')
+      expect(settled).toBe('https://api.example.test/oauth/authorize')
     } finally {
       vi.useRealTimers()
     }
