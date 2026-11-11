@@ -143,7 +143,10 @@ Only first-party clients are approved automatically; every other app goes throug
   issued for it (the same new pair, `expires_in` counted from now), and the old access token keeps working, so
   requests already sent with it do not fail. Both only while the new refresh token is live: once it is used or
   revoked, the old ones are dead at once, and after the 30 seconds the old refresh token gets `invalid_grant` as
-  before. The issued response waits in Redis (`cache.oauth_rotation`), encrypted with `OAUTH_ENCRYPTION_KEY`.
+  before. The issued response waits in Redis (`cache.oauth_rotation`), encrypted with `OAUTH_ENCRYPTION_KEY`. This
+  covers a retry after the first response went out, not two requests at the very same moment: one that arrives while
+  the first is still running gets `invalid_grant` (or a second pair) as without the grace, so clients refresh one at
+  a time.
 - **Revocation.** `POST /oauth/revoke` (RFC 7009, form encoded: `token`, optional `token_type_hint`, `client_id`) is
   for public clients and open to browsers like the token endpoint. A refresh token takes the access token issued with
   it along, an access token its refresh token, and a refresh token that rotated moments ago what it rotated into, so
@@ -350,6 +353,9 @@ ends two hours after its last request (the Redis TTL, also `gc_maxlifetime`) or 
 has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https. Its cookies belong to the host of
 `AUTH_PUBLIC_URL` (the API host unless set, see Deployment).
 
+- **Cross-site posts.** A POST to `/login` without the form's CSRF token gets the sign-in page with a 403 before the
+  firewall sees it (`SignInGuard`), so another site cannot clear the remember-me cookie or spend the login attempts of
+  a browser (the firewall would count such a post as a failed sign-in).
 - **Password guessing.** Five wrong passwords for one address from one IP address, or 25 from one IP address, lock
   the form for 15 minutes (Symfony's `login_throttling`, in Redis through `cache.rate_limiter_shared`, so the limit
   holds across API instances); the page then says to try again later, and even the right password waits.
@@ -359,13 +365,24 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   signed with `APP_SECRET` and the user's password hash: a new password ends it everywhere. Unticked, the sign-in ends
   with the session.
 - **Signing out.** `POST /logout` ends the session and clears the remember-me cookie, then sends the browser to
-  `WEB_APP_URL`. It only counts when it comes from Tresso: an `Origin` of the sign-in host itself or of `WEB_APP_URL`
-  (the web app signs out by submitting a form, `POST`, to `<AUTH_PUBLIC_URL>/logout`, the address it gets as
-  `authUrl` from `/config.js`, after revoking its tokens), or, from a browser that sends no usable `Origin`, the CSRF token
-  of the sign-out page. Anything else gets the sign-out page with a 403 and changes nothing, so another site cannot
+  `WEB_APP_URL`. It only counts when it comes from Tresso: with the CSRF token of the sign-out page (always enough,
+  also behind a proxy that does not pass the scheme), or with an `Origin` of the sign-in host itself or of
+  `WEB_APP_URL` (the web app signs out by submitting a form, `POST`, to `<AUTH_PUBLIC_URL>/logout`, the address it gets
+  as `authUrl` from `/config.js`, after revoking its tokens). Anything else gets the sign-out page with a 403 and changes nothing, so another site cannot
   sign people out (`App\Security\SignOutGuard`, before the firewall). `GET /logout` never signs out: it shows that page
   with a Sign out button, or goes straight back to `WEB_APP_URL` when the browser has no session and no remember-me
   cookie. The sign-in and sign-out pages, like the consent screen, cannot be framed and are not cached.
+- **Asking for the password again (`prompt=login`).** Our apps are approved without a page while the browser is signed
+  in, and the desktop and mobile apps cannot end the system browser's sign-in when the user signs out of them. So
+  after a sign-out the user asked for, they add `prompt=login` (parameter `prompt`, value `login`, as in OpenID
+  Connect) to their next authorization request, and only to that one; a sign-in that follows a failed refresh or an
+  expired token does not send it. The web app does not need it: it ends the browser's sign-in itself (`POST /logout`).
+  The server then ends the browser's sign-in (a new session, the remember-me cookie cleared) and shows the sign-in
+  form; whoever signs in there, the same user or another (that is how someone switches account), gets the code for
+  that request, which goes on once without asking again (`PromptLogin`: the form's sign-in marks that one request,
+  by a hash of its query, in the new session). A mark is never a parameter, so nobody skips the password by adding
+  one. Any app may send it; the metadata lists `prompt_values_supported: ["login"]`. Other `prompt` values are
+  ignored.
 
 ### 3.3 Mail account credentials
 
@@ -989,7 +1006,7 @@ Mail judged `know` asks nothing of the user, so it does not interrupt: once a da
   quiet hours; it opens `/brief`). Email gets a digest instead of the generic notification email: the conversations
   per smart inbox with sender, snippet and a link, from the system sender (`NOTIFICATIONS_FROM`) with
   `Auto-Submitted: auto-generated`, to the notification address (the sign-in address or the address of one of the user's
-  mail accounts that signed in with its provider or synced, the sign-in address when the chosen account is gone). It goes out at most once: `emailed_at`
+  Google or Microsoft accounts as the provider confirmed it, the sign-in address when the chosen account is gone). It goes out at most once: `emailed_at`
   is set under a row lock and committed before the mail is sent, outside any transaction; a refusal by the mail server
   clears it again for Messenger's retry, and a crash in between loses that digest rather than sending it twice.
 - The brief shows each conversation's subject and snippet; AI summaries are planned (3.9).
@@ -1876,9 +1893,11 @@ after. Everything lives in `apps/api/src/Notification`.
   who learns another user's Expo push token can register it and receive that user's reminders and mail notifications until the owner's app
   registers again (each launch). Binding a registration to a challenge sent to the device is a later step (C4, with
   the phone's push registration); web push endpoints are unguessable capability URLs. Email notifications go only to the user's sign-in address or the address
-  of a mail account the user proved to hold: a Google or Microsoft account, or an IMAP account that synced at least
-  once (`NotificationAddresses`). An IMAP account that never synced is only an address someone typed, so choosing it
-  is a 422, and a chosen account that has not synced falls back to the sign-in address.
+  of a Google or Microsoft account that the provider confirmed (the account's address is the one of its provider
+  grant; `NotificationAddresses`). An IMAP account never counts: its address is only typed in next to credentials and
+  servers of the user's own choosing, and a server of one's own accepts any username, so neither a sync nor a matching
+  username proves the address, and Tresso has no confirmed send-as addresses. Choosing another address is a 422, and
+  a chosen address that no longer qualifies falls back to the sign-in address.
 - **Time zones:** quiet hours, working hours, all-day reminders and floating times (date-times without a zone) are
   read in the user's zone from the notification settings (`timeZone`, UTC until a client sets it). The web app, the
   desktop app and the phone send the device's zone the first time a user signs in there and again when they come to

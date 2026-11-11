@@ -39,6 +39,8 @@ final readonly class AuthorizationServerMetadata
             'scopes_supported' => ThirdPartyClients::scopeValues(),
             'response_types_supported' => ['code'],
             'response_modes_supported' => ['query'],
+            // prompt=login asks for the password again whatever the browser's sign-in ({@see PromptLogin}).
+            'prompt_values_supported' => [PromptLogin::LOGIN],
             'grant_types_supported' => ThirdPartyClients::GRANT_TYPES,
             'code_challenge_methods_supported' => ['S256'],
             'token_endpoint_auth_methods_supported' => ['none'],
