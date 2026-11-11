@@ -36,6 +36,9 @@ async function toggleLater(): Promise<void> {
   if (laterOpen.value) {
     await nextTick()
     later.value?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+  } else {
+    // Closed with its button: the focused choice is gone, and WebKit does not focus the clicked button itself.
+    laterButton.value?.focus()
   }
 }
 
@@ -485,6 +488,10 @@ select:focus-visible {
   .actions .shortcut,
   .actions .spacer {
     display: none;
+  }
+  /* Touch size. */
+  .actions .button {
+    min-height: 44px;
   }
 }
 </style>
