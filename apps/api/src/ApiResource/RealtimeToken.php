@@ -13,7 +13,8 @@ use App\State\RealtimeTokenProvider;
 /**
  * Access to the realtime hub. Subscribe with GET `{hubUrl}?match={topic}` and `token` in the `Authorization: Bearer`
  * header (browsers stream through fetch(); the hub takes no token in the URL). Each update carries
- * `{"cursor": N}`: fetch the delta when N is beyond the local cursor. Fetch a new token before `expiresAt`.
+ * `{"cursor": N}`: fetch the delta when N is beyond the local cursor. Fetch a new token before `expiresAt`. The hub
+ * sends a comment line every `heartbeat` seconds on an idle stream, so a stream silent for much longer is dead.
  */
 #[ApiResource(
     shortName: 'RealtimeToken',
@@ -35,6 +36,7 @@ final readonly class RealtimeToken
         public string $topic,
         public string $token,
         public \DateTimeImmutable $expiresAt,
+        public int $heartbeat,
     ) {
     }
 }

@@ -367,6 +367,8 @@ export interface RealtimeAccess {
   topic: string
   token: string
   expiresAt: string
+  /** Seconds between the hub's keep-alive comments on an idle stream; older servers do not say. */
+  heartbeat?: number
 }
 
 export type ScanStatus = 'pending' | 'clean' | 'infected' | 'failed'

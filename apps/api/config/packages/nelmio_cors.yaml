@@ -4,8 +4,9 @@ nelmio_cors:
         allow_origin: ['%env(cors_origins:CORS_ALLOW_ORIGIN)%']
         allow_methods: ['GET', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE']
         allow_headers: ['Content-Type', 'Authorization']
-        # Date: the clients count the undo window on the server's clock (ServerClock in packages/core).
-        expose_headers: ['Link', 'Date']
+        # Date: the clients count the undo window on the server's clock (ServerClock in packages/core). Retry-After:
+        # a failed sync waits as long as the server asked (SyncEngine).
+        expose_headers: ['Link', 'Date', 'Retry-After']
         max_age: 3600
     paths:
         # What an OAuth2 or MCP client running in a browser (such as the MCP Inspector) needs before it has a token:

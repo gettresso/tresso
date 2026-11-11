@@ -51,6 +51,7 @@ final class RealtimeTest extends DatabaseTestCase
         self::assertSame('web', $jwt->claims()->get('client_id'));
         self::assertSame([['type' => MercureTokens::AUTHORIZATION_DETAIL_TYPE, 'actions' => ['subscribe'], 'topics' => [['match' => $topic, 'match_type' => 'exact']]]], $jwt->claims()->get('authorization_details'));
         self::assertEquals($jwt->claims()->get('exp'), new \DateTimeImmutable($this->responseString('expiresAt')));
+        self::assertSame(40, $this->decodedResponse()['heartbeat'] ?? null);
     }
 
     public function testTokenRequiresMailReadScope(): void

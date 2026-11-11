@@ -25,10 +25,30 @@ export interface SyncEngineOptions {
    * engine runs it on its own.
    */
   retry?(pull: () => Promise<void>): void
+  /** A number in [0, 1), for the spread of the retry delays; Math.random by default. */
+  random?(): number
 }
 
 const DEFAULT_PAGE_SIZE = 500
 const DEFAULT_RETRY_DELAYS = [2_000, 5_000, 15_000, 60_000]
+/** Retry delays are spread this much either way, so clients that failed together do not all come back together. */
+const JITTER = 0.2
+
+/**
+ * How long the server asked to wait before trying again, from a `Retry-After` header (seconds or an HTTP date), in
+ * ms; null when it did not say. Clients put it on their API errors as `retryAfterMs`, which the retry honours.
+ */
+export function retryAfterMs(header: string | null, now: number = Date.now()): number | null {
+  if (header === null || header.trim() === '') {
+    return null
+  }
+  const value = header.trim()
+  if (/^\d+$/.test(value)) {
+    return Number(value) * 1000
+  }
+  const at = Date.parse(value)
+  return Number.isFinite(at) ? Math.max(0, at - now) : null
+}
 
 /**
  * Whether a failed pull may work when tried again: not when the copy is closing (a sign-out), nor when the server
@@ -91,26 +111,47 @@ export class SyncEngine {
     this.cancelRetry()
   }
 
+  /**
+   * Something says the network may be back (the device went online, the app became visible again): a pull that waits
+   * to be tried again runs now instead of at its time. Returns whether one did.
+   */
+  wake(): boolean {
+    if (this.stopped || this.retryTimer === null) {
+      return false
+    }
+    this.cancelRetry()
+    this.runRetry()
+    return true
+  }
+
   private scheduleRetry(error: unknown): void {
     if (this.stopped || this.retryTimer !== null || !(this.options.retryable ?? retryablePull)(error)) {
       return
     }
     const delays = this.options.retryDelays ?? DEFAULT_RETRY_DELAYS
-    const delay = delays[Math.min(this.failures, delays.length - 1)] ?? DEFAULT_RETRY_DELAYS[DEFAULT_RETRY_DELAYS.length - 1]!
+    const base = delays[Math.min(this.failures, delays.length - 1)] ?? DEFAULT_RETRY_DELAYS[DEFAULT_RETRY_DELAYS.length - 1]!
+    const spread = base * (1 + JITTER * (2 * (this.options.random ?? Math.random)() - 1))
+    // A server that said how long to wait (a 429 or 503 with Retry-After) is not asked again sooner.
+    const asked = (error as { retryAfterMs?: unknown } | null)?.retryAfterMs
+    const delay = typeof asked === 'number' && Number.isFinite(asked) ? Math.max(spread, asked) : spread
     this.failures++
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null
-      if (this.stopped) {
-        return
-      }
-      const pull = () => this.sync()
-      if (this.options.retry === undefined) {
-        // Its failure schedules the next try; there is no one to tell.
-        void pull().catch(() => undefined)
-      } else {
-        this.options.retry(pull)
-      }
+      this.runRetry()
     }, delay)
+  }
+
+  private runRetry(): void {
+    if (this.stopped) {
+      return
+    }
+    const pull = () => this.sync()
+    if (this.options.retry === undefined) {
+      // Its failure schedules the next try; there is no one to tell.
+      void pull().catch(() => undefined)
+    } else {
+      this.options.retry(pull)
+    }
   }
 
   private cancelRetry(): void {

@@ -1,3 +1,5 @@
+import { retryAfterMs } from '@tresso/core'
+
 /** A failed API request, with what the API said about it (RFC 9457 problem details and validation violations). */
 export class ApiError extends Error {
   constructor(
@@ -5,6 +7,8 @@ export class ApiError extends Error {
     message: string,
     /** Messages per field path, e.g. "imap.host". */
     readonly violations: Record<string, string> = {},
+    /** How long the server asked to wait before trying again (Retry-After), in ms; null when it did not say. */
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -27,7 +31,7 @@ export class ApiError extends Error {
       // Not JSON: keep the generic message.
     }
 
-    return new ApiError(response.status, detail ?? `Request to ${path} failed (${response.status}).`, violations)
+    return new ApiError(response.status, detail ?? `Request to ${path} failed (${response.status}).`, violations, retryAfterMs(response.headers.get('Retry-After')))
   }
 }
 

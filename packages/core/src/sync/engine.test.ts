@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { SyncEngine, type SyncStore } from './engine'
+import { retryAfterMs, SyncEngine, type SyncStore } from './engine'
 import type { ChangePage } from './types'
 
 function page(cursor: number, hasMore = false, ids: string[] = []): ChangePage {
@@ -141,7 +141,7 @@ describe('SyncEngine', () => {
       const failure = Object.assign(new Error('Bad gateway'), { status: 502 })
       const fetchPage = vi.fn().mockRejectedValueOnce(failure).mockRejectedValueOnce(failure).mockResolvedValue(page(1))
       const retried: Promise<void>[] = []
-      const engine = new SyncEngine({ fetchPage, store, retryDelays: [2_000, 5_000], retry: (pull) => retried.push(pull().catch(() => undefined)) })
+      const engine = new SyncEngine({ fetchPage, store, retryDelays: [2_000, 5_000], random: () => 0.5, retry: (pull) => retried.push(pull().catch(() => undefined)) })
 
       await expect(engine.sync()).rejects.toThrow('Bad gateway')
       await vi.advanceTimersByTimeAsync(1_999)
@@ -179,5 +179,53 @@ describe('SyncEngine', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('spreads the retries of clients that failed together, and waits as long as the server asked', async () => {
+    vi.useFakeTimers()
+    try {
+      const busy = Object.assign(new Error('Too many requests'), { status: 429, retryAfterMs: 30_000 })
+      const early = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(page(1))
+      const late = vi.fn().mockRejectedValueOnce(busy).mockResolvedValue(page(1))
+      await expect(new SyncEngine({ fetchPage: early, store: new MemoryStore(), random: () => 0 }).sync()).rejects.toThrow('offline')
+      await expect(new SyncEngine({ fetchPage: late, store: new MemoryStore(), random: () => 0 }).sync()).rejects.toThrow('Too many')
+
+      // 2 s less a fifth for the first; the second waits the 30 s the server asked for.
+      await vi.advanceTimersByTimeAsync(1_600)
+      expect(early).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(28_000)
+      expect(late).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(400)
+      expect(late).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tries a waiting pull at once when the network may be back', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchPage = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(page(1))
+      const store = new MemoryStore()
+      const engine = new SyncEngine({ fetchPage, store })
+      expect(engine.wake()).toBe(false)
+      await expect(engine.sync()).rejects.toThrow('offline')
+
+      expect(engine.wake()).toBe(true)
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(store.applied).toEqual([1])
+      expect(engine.wake()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reads Retry-After as seconds or as a date', () => {
+    const now = Date.parse('2026-11-11T10:00:00Z')
+    expect(retryAfterMs('120', now)).toBe(120_000)
+    expect(retryAfterMs('Wed, 11 Nov 2026 10:01:00 GMT', now)).toBe(60_000)
+    expect(retryAfterMs(null, now)).toBeNull()
+    expect(retryAfterMs('soon', now)).toBeNull()
   })
 })

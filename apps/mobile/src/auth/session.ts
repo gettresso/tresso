@@ -1,4 +1,4 @@
-import { exchangeCode, OAuthError, refreshTokens, ServerClock, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
+import { exchangeCode, OAuthError, refreshTokens, retryAfterMs, ServerClock, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
 import { revokeToken } from '@/auth/revokeToken'
 
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
@@ -55,6 +55,8 @@ export class ApiError extends Error {
     message: string,
     /** Messages per field path (e.g. "subject"), from the API's validation violations. */
     readonly violations: Record<string, string> = {},
+    /** How long the server asked to wait before trying again (Retry-After), in ms; null when it did not say. */
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -236,7 +238,7 @@ export class Session {
     }
     if (!response.ok) {
       const problem = await problemOf(response)
-      throw new ApiError(response.status, problem.detail, problem.violations)
+      throw new ApiError(response.status, problem.detail, problem.violations, retryAfterMs(response.headers.get('Retry-After')))
     }
     return (response.status === 204 ? undefined : await response.json()) as T
   }
@@ -254,8 +256,9 @@ export class Session {
     const headers = new Headers(init.headers)
     headers.set('Authorization', `Bearer ${token}`)
     headers.set('Accept', 'application/json')
+    const sentAt = Date.now()
     const response = await this.fetchImpl(`${this.config.apiUrl.replace(/\/+$/, '')}${path}`, { ...init, headers })
-    this.clock.note(response.headers.get('Date'))
+    this.clock.note(response.headers.get('Date'), sentAt)
     return response
   }
 

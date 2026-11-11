@@ -299,4 +299,49 @@ describe('RealtimeClient', () => {
     const finished = await Promise.race([client.stop().then(() => 'stopped'), new Promise((resolve) => setTimeout(() => resolve('still running'), 500))])
     expect(finished).toBe('stopped')
   })
+
+  it("takes the silence limit from the hub's heartbeat the server tells, and none when the hub sends none", async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const hub = stream()
+      init?.signal?.addEventListener('abort', () => hub.response.body?.cancel().catch(() => {}))
+      return hub.response
+    })
+    const onError = vi.fn()
+    const slow = vi.fn(async () => ({ ...access('t'), heartbeat: 120 }))
+    client = new RealtimeClient({ fetchAccess: slow, onCursor: () => {}, onError, fetch, retryDelays: [1_000] })
+
+    client.start()
+    // A hub with a 120 s heartbeat may be quiet for 299 s without being dead.
+    await vi.advanceTimersByTimeAsync(299_000)
+    expect(onError).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'The realtime hub went quiet.' }))
+    await client.stop()
+
+    const silent = vi.fn(async () => ({ ...access('t'), heartbeat: 0 }))
+    const quiet = vi.fn()
+    client = new RealtimeClient({ fetchAccess: silent, onCursor: () => {}, onError: quiet, fetch })
+    client.start()
+    await vi.advanceTimersByTimeAsync(1_000_000)
+    expect(quiet).not.toHaveBeenCalled()
+  })
+
+  it("reads the token's expiry against the server's clock", async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const hub = stream()
+      init?.signal?.addEventListener('abort', () => hub.response.body?.cancel().catch(() => {}))
+      return hub.response
+    })
+    // The device is an hour ahead: the token expires at the device's now, an hour from now on the server's clock.
+    const fetchAccess = vi.fn(async () => access('t', 0))
+    client = new RealtimeClient({ fetchAccess, onCursor: () => {}, fetch, now: () => Date.now() - 3_600_000, idleTimeout: 7_200_000 })
+
+    client.start()
+    await vi.advanceTimersByTimeAsync(3_000_000)
+    expect(fetchAccess).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(fetchAccess).toHaveBeenCalledTimes(2)
+  })
 })

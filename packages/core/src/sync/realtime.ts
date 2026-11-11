@@ -17,10 +17,16 @@ export interface RealtimeOptions {
   /** Reconnect with a fresh token this long before the current one expires, in ms. */
   renewBefore?: number
   /**
-   * How long the stream may stay silent before it is taken for dead and opened again, in ms. The hub sends a comment
-   * line every 40 s (Mercure's default heartbeat) when there is nothing else to say, so this is two and a half of those.
+   * How long the stream may stay silent before it is taken for dead and opened again, in ms, when the server does not
+   * say how often its hub writes on an idle stream (`heartbeat` with the token; then two and a half of those count).
+   * The default is two and a half of Mercure's default heartbeat of 40 s.
    */
   idleTimeout?: number
+  /**
+   * The time on the server's clock (epoch ms), which the token's `expiresAt` is read against; the device's by default.
+   * A device clock that is off would otherwise renew tokens far too early or too late.
+   */
+  now?(): number
 }
 
 const DEFAULT_RETRY_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000]
@@ -106,7 +112,7 @@ export class RealtimeClient {
     let renewing = false
     let quiet = false
     let connected = false
-    const renewIn = Date.parse(access.expiresAt) - Date.now() - (this.options.renewBefore ?? DEFAULT_RENEW_BEFORE)
+    const renewIn = Date.parse(access.expiresAt) - (this.options.now?.() ?? Date.now()) - (this.options.renewBefore ?? DEFAULT_RENEW_BEFORE)
     const renewal = setTimeout(
       () => {
         renewing = true
@@ -117,14 +123,20 @@ export class RealtimeClient {
     // A connection that died without being closed (a laptop that slept, a proxy that dropped it) never ends a read:
     // silence longer than the heartbeat ends it instead.
     let watchdog: ReturnType<typeof setTimeout> | null = null
+    const heartbeat = access.heartbeat
+    // A hub that writes nothing on idle streams (heartbeat 0) cannot be told from a dead one: the renewal ends those.
+    const idle = typeof heartbeat === 'number' && Number.isFinite(heartbeat) && heartbeat >= 0 ? (heartbeat === 0 ? null : heartbeat * 2_500) : (this.options.idleTimeout ?? DEFAULT_IDLE_TIMEOUT)
     const awake = () => {
       if (watchdog !== null) {
         clearTimeout(watchdog)
       }
+      if (idle === null) {
+        return
+      }
       watchdog = setTimeout(() => {
         quiet = true
         controller.abort()
-      }, this.options.idleTimeout ?? DEFAULT_IDLE_TIMEOUT)
+      }, idle)
     }
     awake()
 
