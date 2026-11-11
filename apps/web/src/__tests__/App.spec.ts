@@ -97,6 +97,23 @@ describe('App', () => {
     vi.unstubAllGlobals()
   })
 
+  it('offers to try again when sync stopped', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
+    await router.push('/')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    const mail = useMailStore()
+    const syncNow = vi.spyOn(mail, 'syncNow').mockResolvedValue()
+    mail.syncState = 'error'
+    mail.syncError = 'The server could not be reached'
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('Sync stopped: The server could not be reached')
+    await wrapper.get('[role="alert"] button').trigger('click')
+    expect(syncNow).toHaveBeenCalled()
+  })
+
   it('lets no shortcut act behind the payment screen', async () => {
     // A page of its own: the signed-in shell links to routes this test has no need for.
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: { template: '<div />' } }] })

@@ -175,6 +175,7 @@ watch(
   </p>
   <p v-else-if="!auth.paymentRequired && (error || mail.syncState === 'error')" class="problem" role="alert">
     {{ error ?? `Sync stopped: ${mail.syncError}` }}
+    <button v-if="error === null" type="button" class="reload" @click="mail.syncNow()">Try again</button>
   </p>
 </template>
 
@@ -192,10 +193,15 @@ watch(
 .problem {
   animation: fade-in var(--motion-base) ease-out;
   position: fixed;
-  left: 50%;
+  /* Centred across the full width, so a long error wraps to a few wide lines rather than a narrow column. */
+  left: 16px;
+  right: 16px;
   bottom: 16px;
-  transform: translateX(-50%);
-  margin: 0;
+  /* Above the compose window (20) and the notices (30), below the dialogs and drawers (40). */
+  z-index: 35;
+  width: fit-content;
+  max-width: min(560px, calc(100vw - 32px));
+  margin: 0 auto;
   padding: 10px 16px;
   border-radius: var(--radius-card);
   background: var(--ink);
