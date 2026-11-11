@@ -56,7 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       restoring,
       isAuthenticated: state.tokens !== null,
       async signIn() {
-        const authorization = await signInInBrowser()
+        const authorization = await signInInBrowser({ promptLogin: await session.loginRequired() })
         if (authorization === null) {
           return false
         }

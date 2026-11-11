@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthSessionResult } from 'expo-auth-session'
 
-vi.mock('expo-auth-session', () => ({ AuthRequest: class {} }))
+vi.mock('expo-auth-session', () => ({ AuthRequest: class {}, Prompt: { Login: 'login' } }))
 vi.stubEnv('EXPO_PUBLIC_API_URL', 'https://api.example.test')
 vi.stubEnv('EXPO_PUBLIC_OAUTH_CLIENT_ID', 'mobile')
 vi.stubEnv('EXPO_PUBLIC_NATIVE_REDIRECT_URI', 'tresso://auth/callback')
 
-const { authorizationCode } = await import('./browserSignIn')
+const { authorizationCode, authRequestConfig } = await import('./browserSignIn')
 
 function completed(type: 'success' | 'error', params: Record<string, string>, error: { code: string; description?: string } | null = null): AuthSessionResult {
   return { type, params, errorCode: null, error, authentication: null, url: 'tresso://auth/callback' } as AuthSessionResult
@@ -31,5 +31,15 @@ describe('authorizationCode', () => {
   it('refuses a success without a code or verifier', () => {
     expect(() => authorizationCode(completed('success', { state: 'xyz' }), 'verifier')).toThrow('no authorization code')
     expect(() => authorizationCode(completed('success', { code: 'abc' }), undefined)).toThrow('no authorization code')
+  })
+})
+
+describe('authRequestConfig', () => {
+  it('asks for the password again when the user signed out', () => {
+    expect(authRequestConfig({ promptLogin: true })).toMatchObject({ clientId: 'mobile', redirectUri: 'tresso://auth/callback', usePKCE: true, prompt: 'login' })
+  })
+
+  it('leaves the prompt to the server otherwise', () => {
+    expect(authRequestConfig({ promptLogin: false })).not.toHaveProperty('prompt')
   })
 })

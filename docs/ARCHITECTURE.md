@@ -1039,7 +1039,11 @@ the tokens and the next request tries again. A 401 from the API renews the token
 sign-in ends. A sign-in that ends this way has expired: the tokens go, but who was signed in and their mail on the
 phone stay, so unsent drafts are still there when they sign in again. Only a sign-out the user asks for revokes the
 refresh token at the server (`/oauth/revoke`, best effort, waiting a few seconds at most) and removes the mail on the
-phone. A store that cannot be read at launch removes nothing either: the app says so, offers Try again, and reads it
+phone. It also leaves a flag in the secure store (it survives a restart and is cleared once a sign-in completes): the
+next authorization request carries `prompt=login`, so the user types the password again whatever session the browser
+holds (the server remembers sign-ins and approves its own apps without a page, so otherwise "Sign in" would go
+straight back in as the same user). A sign-in after an expired one does not ask, and when the store cannot say, the app
+asks. A store that cannot be read at launch removes nothing either: the app says so, offers Try again, and reads it
 again whenever it comes to the front.
 
 Mail on the phone: the mobile app keeps a SQLite copy (expo-sqlite, one database per user) of

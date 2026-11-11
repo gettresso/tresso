@@ -81,4 +81,17 @@ describe('secureTokenStore', () => {
       expect(loaded!.expiresAt).toBe(writes === 3 ? 2_000 : 1_000)
     }
   })
+
+  it('keeps whether the next sign-in asks for the password, apart from the tokens', async () => {
+    expect(await secureTokenStore.loginRequired()).toBe(false)
+
+    await secureTokenStore.setLoginRequired(true)
+    await secureTokenStore.save(null)
+    await secureTokenStore.forgetUser()
+    expect(await secureTokenStore.loginRequired()).toBe(true)
+
+    await secureTokenStore.setLoginRequired(false)
+    expect(await secureTokenStore.loginRequired()).toBe(false)
+    expect(items.size).toBe(0)
+  })
 })
