@@ -8,6 +8,20 @@ function required(name: string, value: string | undefined): string {
   return value
 }
 
+function trimSlash(url: string): string {
+  return url.replace(/\/+$/, '')
+}
+
+/**
+ * Where the web client's user signs in: the web image's TRESSO_AUTH_URL, else the build's VITE_AUTH_URL, else the
+ * API address. The sign-in pages may live on the app's own host while the token endpoint stays on the API.
+ */
+function webAuthServer(): string {
+  const runtime = typeof window === 'undefined' ? undefined : window.tressoConfig?.authUrl
+  const configured = typeof runtime === 'string' && runtime.trim() !== '' ? runtime.trim() : (import.meta.env.VITE_AUTH_URL ?? '').trim()
+  return configured === '' ? defaultServer : trimSlash(configured)
+}
+
 if (defaultServer === '') {
   throw new Error('Missing the server address: set VITE_API_URL for the build, or TRESSO_API_URL for the web image')
 }
@@ -18,6 +32,16 @@ if (defaultServer === '') {
 export const config = {
   get apiUrl(): string {
     return isDesktop ? server.value : defaultServer
+  },
+  /**
+   * The address of the sign-in pages: /oauth/authorize and /logout. The desktop app uses the server it talks to; a
+   * server whose sign-in lives elsewhere redirects there.
+   */
+  get authUrl(): string {
+    return isDesktop ? server.value : webAuthServer()
+  },
+  get authorizeUrl(): string {
+    return `${this.authUrl}/oauth/authorize`
   },
   clientId: isDesktop
     ? required('VITE_DESKTOP_OAUTH_CLIENT_ID', import.meta.env.VITE_DESKTOP_OAUTH_CLIENT_ID)

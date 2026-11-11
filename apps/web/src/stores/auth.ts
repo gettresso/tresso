@@ -1,10 +1,11 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
-  OAuthError,
   exchangeCode,
+  OAuthError,
   parseCallback,
   refreshTokens,
+  revokeToken,
   startAuthorization,
   type Me,
   type OAuthClientConfig,
@@ -13,12 +14,22 @@ import {
 import { ApiError } from '@/api/errors'
 import { config } from '@/config'
 import { isDesktop, openInBrowser } from '@/platform/desktop'
-import { initialTokens, tokenStorage } from '@/platform/tokenStorage'
+import { initialTokens, tokenStorage, watchTokens, withRefreshLock } from '@/platform/tokenStorage'
 import { disableWebPush } from '@/platform/webPush'
 
 const PENDING_KEY = 'auth.pending'
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
 const EXPIRY_MARGIN_MS = 30_000
+/** How long the token endpoint gets to answer: a refresh holds the lock of every tab while it waits. */
+const REFRESH_TIMEOUT_MS = 20_000
+/** How long a sign-out waits for the server to revoke the refresh token before it forgets it anyway. */
+const REVOKE_TIMEOUT_MS = 5_000
+/**
+ * The only answers of the token endpoint that say the sign-in itself is over (revoked, expired, already rotated, or a
+ * request the server will never accept). Anything else (offline, a timeout, a 5xx) may work on the next try.
+ */
+const SESSION_ENDING_ERRORS = new Set(['invalid_grant', 'invalid_request'])
+const EXPIRED = 'Your session has expired. Sign in again.'
 
 const oauthConfig: OAuthClientConfig = config
 
@@ -37,6 +48,37 @@ function pendingSignIn(): PendingSignIn | null {
   return raw === null ? null : (JSON.parse(raw) as PendingSignIn)
 }
 
+/**
+ * Why a session ended. Only `signedOut` is the user's own choice here: then the local mail copy goes. An `expired`
+ * session (the server refused the tokens) and one that ended in another tab keep it, so drafts that never reached the
+ * server are still there when the user signs in again.
+ */
+export type SessionEnd = 'signedOut' | 'expired' | 'elsewhere'
+
+/**
+ * Renewing the sign-in failed for a reason that may pass (offline, the server did not answer or failed). The tokens
+ * are kept and the next request tries again.
+ */
+export class SignInRenewalError extends Error {
+  constructor(readonly reason: unknown) {
+    super(`Tresso could not renew your sign-in (${reason instanceof Error ? reason.message : String(reason)}). It tries again with the next request.`)
+    this.name = 'SignInRenewalError'
+  }
+}
+
+function isFresh(set: TokenSet): boolean {
+  return set.expiresAt - EXPIRY_MARGIN_MS > Date.now()
+}
+
+/** fetch that gives up after `ms`, so an endpoint that never answers fails like one that is down. */
+function fetchWithTimeout(ms: number): typeof fetch {
+  return (input, init) => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error(`no answer within ${ms / 1000} seconds`)), ms)
+    return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer))
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const tokens = ref<TokenSet | null>(initialTokens())
   const me = ref<Me | null>(null)
@@ -47,8 +89,14 @@ export const useAuthStore = defineStore('auth', () => {
   const storageError = ref<string | null>(null)
   /** The server answered 402: the trial or subscription is over, and the payment screen covers the app. */
   const paymentRequired = ref(false)
-  /** Goes up on every sign-out, so an answer to a request from before cannot change the next session. */
+  /** Goes up whenever a session ends, so an answer to a request from before cannot change the next session. */
   const generation = ref(0)
+  /** Why the last session ended; null while none ended in this page load. */
+  const sessionEnd = ref<SessionEnd | null>(null)
+  /** What has to happen when a session ends (the mail copy closes or goes); a sign-out waits for all of it. */
+  const endHandlers = new Set<(reason: SessionEnd) => Promise<void> | void>()
+  /** Refresh tokens rotate: two refreshes with the same one would sign the user out, so a tab runs one at a time. */
+  let refreshing: Promise<string> | null = null
 
   async function store(next: TokenSet | null): Promise<void> {
     tokens.value = next
@@ -72,6 +120,41 @@ export const useAuthStore = defineStore('auth', () => {
       tokens.value = await tokenStorage.load()
     } catch (error) {
       storageError.value = `The saved sign-in could not be read: ${String(error)}`
+    }
+  }
+
+  // Every tab of the web client shares one sign-in: another tab's sign-in, refresh and sign-out reach this one here.
+  watchTokens((next) => {
+    const previous = tokens.value
+    if (next === null) {
+      if (previous !== null) {
+        void endedElsewhere()
+      }
+      return
+    }
+    tokens.value = next
+    if (previous !== null) {
+      void confirmSameUser()
+    }
+  })
+
+  /**
+   * Another tab stored a new token set while this one was signed in. Normally that tab refreshed; should it have
+   * signed in as someone else, everything on this page belongs to the previous user, so it starts again.
+   */
+  async function confirmSameUser(): Promise<void> {
+    const shown = me.value?.id
+    if (shown === undefined) {
+      return
+    }
+    try {
+      const current = await api<Me>('/api/v1/me')
+      if (current.id !== shown) {
+        window.location.reload()
+      }
+    } catch (error) {
+      // The next request finds out the same way.
+      console.error('Checking who is signed in after another tab changed the sign-in failed', error)
     }
   }
 
@@ -133,68 +216,202 @@ export const useAuthStore = defineStore('auth', () => {
     await store(await exchangeCode(oauthConfig, code, pending.codeVerifier))
   }
 
-  /** The user signs out: this browser stops getting their pushes, telling the server, and the tokens go. */
+  /**
+   * The user signs out: this browser stops getting their pushes, the server revokes the refresh token, the tokens go,
+   * and the web client also ends the browser session at the sign-in pages, so the next sign-in asks for the password.
+   */
   function signOut(): Promise<void> {
-    return endSession(true)
+    return endSession('signedOut')
+  }
+
+  /** Registers what has to happen when a session ends; returns the function that removes it again. */
+  function onSessionEnd(handler: (reason: SessionEnd) => Promise<void> | void): () => void {
+    endHandlers.add(handler)
+    return () => endHandlers.delete(handler)
+  }
+
+  async function runEndHandlers(reason: SessionEnd): Promise<void> {
+    const results = await Promise.allSettled([...endHandlers].map(async (handler) => handler(reason)))
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.error('Ending the session here failed', result.reason)
+      }
+    }
   }
 
   /**
-   * Ends the session here. When the user signs out (signedOut), pushes to this browser stop first, while the tokens
-   * can still tell the server. A session that expired keeps them, as a closed tab does: the user did not sign out, and
+   * Ends the session here. When the user signs out, pushes to this browser stop first, while the tokens can still
+   * tell the server. A session that expired keeps them, as a closed browser does: the user did not sign out, and
    * signing in again finds them on; another user signing in here drops them (releaseOtherUsersPush).
    */
-  async function endSession(signedOut: boolean): Promise<void> {
+  async function endSession(reason: 'signedOut' | 'expired'): Promise<void> {
     // First, so nothing still underway (a billing check that would reload the app) acts on the session that ends.
     generation.value++
-    if (signedOut) {
+    refreshing = null
+    if (reason === 'signedOut') {
       try {
         await disableWebPush(send)
       } catch (error) {
         // The subscription is gone either way (disableWebPush drops it whatever the server said).
         console.error('Telling the server this browser signed out failed', error)
       }
+      // Read only now: telling the server about the pushes may have refreshed, and rotated, the token.
+      const refreshToken = tokens.value?.refreshToken ?? null
+      if (refreshToken !== null) {
+        try {
+          await revokeToken(oauthConfig, refreshToken, fetchWithTimeout(REVOKE_TIMEOUT_MS))
+        } catch (error) {
+          // Signing out here matters more: the tokens are forgotten whatever the server said.
+          console.error('Revoking the sign-in at the server failed', error)
+        }
+      }
     }
     me.value = null
     paymentRequired.value = false
+    sessionEnd.value = reason
     await store(null)
+    await runEndHandlers(reason)
+    if (reason === 'signedOut' && !isDesktop) {
+      // The sign-in pages keep a browser session of their own; /logout ends it and sends the browser back here.
+      window.location.assign(`${config.authUrl}/logout`)
+    }
+  }
+
+  /** Another tab signed out or its session ended: this one follows, without telling the server again. */
+  async function endedElsewhere(): Promise<void> {
+    generation.value++
+    refreshing = null
+    me.value = null
+    paymentRequired.value = false
+    sessionEnd.value = 'elsewhere'
+    tokens.value = null
+    await runEndHandlers('elsewhere')
+  }
+
+  /**
+   * The token set to use instead of `stale`, refreshed at most once at a time in this tab and, under a lock, in all
+   * tabs: inside the lock the stored set is read again, as another tab may have refreshed already.
+   */
+  function renew(stale: string): Promise<string> {
+    if (refreshing === null) {
+      const pending: Promise<string> = refreshUnderLock(stale).finally(() => {
+        if (refreshing === pending) {
+          refreshing = null
+        }
+      })
+      refreshing = pending
+    }
+    return refreshing
+  }
+
+  /** Takes a set another tab stored, when it differs from the one this tab holds. */
+  function adoptStored(): TokenSet | null {
+    const stored = tokenStorage.peek()
+    // Null in storage is not a sign-out by itself (the storage may refuse writes); the storage event says when it is.
+    if (stored !== undefined && stored !== null && tokens.value !== null && stored.refreshToken !== tokens.value.refreshToken) {
+      tokens.value = stored
+    }
+    return tokens.value
+  }
+
+  function refreshUnderLock(stale: string): Promise<string> {
+    const session = generation.value
+    return withRefreshLock(async () => {
+      const latest = session === generation.value ? adoptStored() : null
+      if (latest === null) {
+        throw new ApiError(401, 'Not signed in.')
+      }
+      if (latest.accessToken !== stale && isFresh(latest)) {
+        return latest.accessToken
+      }
+      if (latest.refreshToken === null) {
+        void endSession('expired')
+        throw new ApiError(401, EXPIRED)
+      }
+      let next: TokenSet
+      try {
+        next = await refreshTokens(oauthConfig, latest.refreshToken, fetchWithTimeout(REFRESH_TIMEOUT_MS))
+      } catch (error) {
+        if (session !== generation.value) {
+          throw new ApiError(401, 'Not signed in.')
+        }
+        if (!(error instanceof OAuthError) || error.code === null || !SESSION_ENDING_ERRORS.has(error.code)) {
+          throw new SignInRenewalError(error)
+        }
+        // Refused: unless another tab or window stored a newer set meanwhile (a browser without locks), it is over.
+        const newer = adoptStored()
+        if (newer !== null && newer.refreshToken !== latest.refreshToken) {
+          if (isFresh(newer)) {
+            return newer.accessToken
+          }
+          throw new SignInRenewalError(error)
+        }
+        void endSession('expired')
+        throw new ApiError(401, EXPIRED)
+      }
+      if (session !== generation.value) {
+        // Signed out while it ran: the new set must not sign the user back in.
+        throw new ApiError(401, 'Not signed in.')
+      }
+      await store(next)
+      return next.accessToken
+    })
   }
 
   async function accessToken(): Promise<string> {
     const current = tokens.value
     if (current === null) {
-      throw new Error('Not signed in.')
+      throw new ApiError(401, 'Not signed in.')
     }
-    if (current.expiresAt - EXPIRY_MARGIN_MS > Date.now()) {
+    if (isFresh(current)) {
       return current.accessToken
     }
-    if (current.refreshToken === null) {
-      void endSession(false)
-      throw new Error('Session expired.')
+    return renew(current.accessToken)
+  }
+
+  /** A token to retry with after the API refused `rejected`: one refreshed meanwhile, or a new one. */
+  function accessTokenAfterRejection(rejected: string): Promise<string> {
+    const current = tokens.value
+    if (current === null) {
+      return Promise.reject(new ApiError(401, 'Not signed in.'))
     }
-    try {
-      await store(await refreshTokens(oauthConfig, current.refreshToken))
-    } catch (error) {
-      void endSession(false)
-      throw error
+    if (current.accessToken !== rejected && isFresh(current)) {
+      return Promise.resolve(current.accessToken)
     }
-    return tokens.value!.accessToken
+    return renew(rejected)
+  }
+
+  function request(path: string, init: RequestInit, token: string): Promise<Response> {
+    const headers = new Headers(init.headers)
+    headers.set('Authorization', `Bearer ${token}`)
+    headers.set('Accept', 'application/json')
+    return fetch(`${config.apiUrl}${path}`, { ...init, headers })
   }
 
   async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const session = generation.value
-    const headers = new Headers(init.headers)
-    headers.set('Authorization', `Bearer ${await accessToken()}`)
-    headers.set('Accept', 'application/json')
-
-    const response = await fetch(`${config.apiUrl}${path}`, { ...init, headers })
-    if (response.status === 401) {
-      // Only for this session: a late answer to the previous one must not sign out the user who signed in since.
-      if (session === generation.value) {
-        void endSession(false)
+    const sent = await accessToken()
+    let response = await request(path, init, sent)
+    if (response.status === 401 && session === generation.value) {
+      // The server refused a token this tab took for valid (revoked, or the clock is off): refresh once and retry
+      // once. Only a refused refresh or a second 401 ends the session.
+      const retry = await accessTokenAfterRejection(sent)
+      response = await request(path, init, retry)
+      if (response.status === 401) {
+        if (session === generation.value) {
+          void endSession('expired')
+        }
+        throw new ApiError(401, EXPIRED)
       }
-      throw new ApiError(401, 'Your session has expired. Sign in again.')
     }
-    if (response.status === 402 && session === generation.value) {
+    if (session !== generation.value) {
+      // The session ended while the request ran: its answer belongs to no one now, and must not reach the next user.
+      throw new ApiError(401, 'Signed out while this request was under way.')
+    }
+    if (response.status === 401) {
+      throw new ApiError(401, EXPIRED)
+    }
+    if (response.status === 402) {
       paymentRequired.value = true
     }
     if (!response.ok) {
@@ -217,8 +434,32 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function loadMe(): Promise<void> {
-    me.value = await api<Me>('/api/v1/me')
+    const session = generation.value
+    const loaded = await api<Me>('/api/v1/me')
+    // A sign-out while it ran: the answer is about a user who is gone.
+    if (session === generation.value) {
+      me.value = loaded
+    }
   }
 
-  return { tokens, me, isAuthenticated, awaitingBrowser, storageError, paymentRequired, generation, restore, signIn, reopenBrowser, hasPendingSignIn, completeSignIn, signOut, loadMe, api, send }
+  return {
+    tokens,
+    me,
+    isAuthenticated,
+    awaitingBrowser,
+    storageError,
+    paymentRequired,
+    generation,
+    sessionEnd,
+    restore,
+    signIn,
+    reopenBrowser,
+    hasPendingSignIn,
+    completeSignIn,
+    signOut,
+    onSessionEnd,
+    loadMe,
+    api,
+    send,
+  }
 })
