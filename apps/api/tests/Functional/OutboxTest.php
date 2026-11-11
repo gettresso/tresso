@@ -11,6 +11,7 @@ use App\Realtime\MercureTokens;
 use App\Realtime\RealtimeNotifier;
 use App\Storage\BlobVault;
 use App\Tests\Support\RecordingMercureHub;
+use App\Tests\Support\QueryLog;
 use Doctrine\ORM\EntityManagerInterface;
 use Lcobucci\JWT\Encoding\JoseEncoder;
 use Lcobucci\JWT\Token\Parser;
@@ -182,6 +183,49 @@ final class OutboxTest extends DatabaseTestCase
         self::assertSame($id, $first['id'] ?? null);
         self::assertSame($id, $retry['id'] ?? null);
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM outgoing_message'));
+    }
+
+    public function testAnIdOfAnotherUsersMessageIsRefused(): void
+    {
+        $id = $this->sendId(['outgoingId' => Uuid::v7()->toRfc4122(), 'to' => [['address' => 'anna@finance.example']]]);
+        $lisa = $this->userHeaders('lisa@example.test', ['mail:send', 'settings:write']);
+        $this->client->jsonRequest('POST', '/api/v1/mail-accounts', [
+            'emailAddress' => 'lisa@company.example',
+            'displayName' => 'Lisa',
+            'username' => 'lisa@company.example',
+            'password' => 'app-password-1',
+            'imap' => ['host' => 'imap.company.example', 'port' => 993, 'security' => 'tls'],
+            'smtp' => ['host' => 'smtp.company.example', 'port' => 465, 'security' => 'tls'],
+        ], $lisa);
+        $lisasAccount = $this->responseString('id');
+
+        $this->client->jsonRequest('POST', '/api/v1/outgoing-messages', ['outgoingId' => $id, 'mailAccountId' => $lisasAccount, 'to' => [['address' => 'bob@example.test']], 'subject' => 'Hello', 'html' => '<p>Hello</p>'], $lisa);
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertStringNotContainsString('anna@finance.example', (string) $this->client->getResponse()->getContent());
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM outgoing_message'));
+        self::assertSame($this->accountId, $this->outgoing($id)->getMailAccount()->getId()->toRfc4122(), 'Kim\'s message is untouched.');
+    }
+
+    public function testTwoFirstSendsWithOneIdTakeTurnsOnTheId(): void
+    {
+        // Two requests at once cannot run in one test process; what makes them safe can be seen: the id is locked
+        // before it is looked up again and before anything is stored, so the second waits and then finds the first.
+        $id = Uuid::v7()->toRfc4122();
+        $log = static::getContainer()->get(QueryLog::class);
+        $log->clear();
+
+        $this->sendId(['outgoingId' => $id, 'to' => [['address' => 'anna@finance.example']]]);
+
+        $queries = $log->queries();
+        $locked = array_key_first(array_filter($queries, static fn (string $sql): bool => str_contains($sql, 'pg_advisory_xact_lock') && str_contains($sql, 'hashtextextended')));
+        $lookups = array_keys(array_filter($queries, static fn (string $sql): bool => (bool) preg_match('/^SELECT .* FROM outgoing_message /s', $sql)));
+        $stored = array_key_first(array_filter($queries, static fn (string $sql): bool => str_starts_with($sql, 'INSERT INTO outgoing_message ')));
+        self::assertNotNull($locked);
+        self::assertNotNull($stored);
+        self::assertLessThan($stored, $locked);
+        self::assertNotSame([], array_filter($lookups, static fn (int $at): bool => $at < $locked), 'Looked up first, before any check that depends on time.');
+        self::assertNotSame([], array_filter($lookups, static fn (int $at): bool => $at > $locked && $at < $stored), 'And again once the id is locked, before it is stored.');
     }
 
     public function testAClientChosenIdMustBeAUuidV7ThatIsNotAheadOfTheServer(): void
