@@ -210,6 +210,18 @@ func (m *Manager) Status() (accounts int, lastBeat time.Time, lastError error) {
 	return len(m.accounts), m.lastBeat, m.lastError
 }
 
+// Healthy reports whether the worker is in contact with the API: its last successful heartbeat is no older than two
+// heartbeat intervals (or the lease timeout, when that is longer). A worker that lost the API stops its syncers and
+// holds no accounts, so it must not look healthy for ever after its first heartbeat.
+func (m *Manager) Healthy(now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastBeat.IsZero() {
+		return false
+	}
+	return now.Sub(m.lastBeat) <= max(2*m.interval, m.leaseTimeout())
+}
+
 // Running returns the ids of the accounts that currently have a syncer.
 func (m *Manager) Running() []string {
 	m.mu.Lock()

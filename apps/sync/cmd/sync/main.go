@@ -134,7 +134,15 @@ func run(logger *slog.Logger) error {
 	return server.Shutdown(shutdownCtx)
 }
 
-func healthHandler(manager *lease.Manager) http.Handler {
+// health is what the health endpoint reads from the lease manager.
+type health interface {
+	Status() (accounts int, lastBeat time.Time, lastError error)
+	Healthy(now time.Time) bool
+}
+
+// healthHandler answers 503 until the first heartbeat and whenever the last successful one is too old: the worker
+// then has no contact with the API and holds no accounts, and should be restarted or replaced.
+func healthHandler(manager health) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		accounts, lastBeat, lastErr := manager.Status()
@@ -143,7 +151,7 @@ func healthHandler(manager *lease.Manager) http.Handler {
 		if lastErr != nil {
 			body["lastError"] = lastErr.Error()
 		}
-		if lastBeat.IsZero() {
+		if !manager.Healthy(time.Now()) {
 			status = http.StatusServiceUnavailable
 		}
 		w.Header().Set("Content-Type", "application/json")

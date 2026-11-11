@@ -219,3 +219,21 @@ func TestHeartbeatHandsAccountsWithMailToSendToTheOutbox(t *testing.T) {
 		t.Errorf("outbox = %v", got)
 	}
 }
+
+func TestTheWorkerIsHealthyOnlyWhileItsHeartbeatsGoThrough(t *testing.T) {
+	leaser := &fakeLeaser{}
+	m := NewManager(leaser, func(string) (Syncer, error) { return nil, ErrUnsupportedProvider }, "w1", 10, 10*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if m.Healthy(time.Now()) {
+		t.Error("healthy before the first heartbeat")
+	}
+
+	m.Heartbeat(context.Background())
+	now := time.Now()
+	if !m.Healthy(now) {
+		t.Error("not healthy right after a heartbeat")
+	}
+	// Lease of 90 s: the lease timeout (60 s) is longer than two heartbeat intervals.
+	if !m.Healthy(now.Add(55*time.Second)) || m.Healthy(now.Add(61*time.Second)) {
+		t.Error("health does not follow the age of the last heartbeat")
+	}
+}
