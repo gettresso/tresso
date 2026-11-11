@@ -190,6 +190,19 @@ final class MailAccountApiTest extends DatabaseTestCase
         self::assertSame([$id], $this->lease('w1', $worker), 'Once the hold ends a fresh session starts.');
     }
 
+    public function testANewPasswordForAnAccountNoWorkerHoldsIsTriedAtTheNextHeartbeat(): void
+    {
+        $headers = $this->userHeaders('kim@example.test', self::READ_WRITE);
+        $this->client->jsonRequest('POST', '/api/v1/mail-accounts', $this->imapPayload(), $headers);
+        $id = $this->responseString('id');
+        static::getContainer()->get(EntityManagerInterface::class)->wrapInTransaction(fn () => $this->account($id)->setStatus(MailAccountStatus::AuthFailed, 'The mail server rejected the username or password.'));
+
+        $this->client->request('PATCH', '/api/v1/mail-accounts/'.$id, server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: '{"password":"app-password-2"}');
+        self::assertResponseIsSuccessful();
+
+        self::assertSame([$id], $this->lease('w1', $this->workerHeaders('sync:lease')), 'No worker held it, so there is no old run to wait for.');
+    }
+
     public function testRenamingKeepsASyncError(): void
     {
         $headers = $this->userHeaders('kim@example.test', self::READ_WRITE);

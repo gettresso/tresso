@@ -25,6 +25,7 @@ final class CalendarStatusInput extends WorkerRequest
 
     /** With `unconfirmed`: the CalDAV address that was found, offered to the user to confirm. */
     #[Assert\Url(protocols: ['https'], requireTld: true)]
+    #[Assert\Regex(pattern: '~^https://[^/?#@]+(?:[/?#]|$)~i', message: 'The address must not carry a username or password.')]
     #[Assert\Length(max: 2048)]
     public ?string $url = null;
 }

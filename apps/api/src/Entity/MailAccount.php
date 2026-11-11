@@ -273,10 +273,14 @@ class MailAccount implements TracksChanges
      * next heartbeat no longer returns it: that worker stops its syncer (and its calls for the account answer 404 at
      * once). After $until the account is claimable again and a fresh syncer starts, with new credentials or servers
      * and its failure count and backoff from zero. Without the hold the holder would claim the free account again in
-     * the same heartbeat and keep its old run.
+     * the same heartbeat and keep its old run. An account no worker holds (a refused login is not leased) has no old
+     * run: it stays free, so the next heartbeat claims it.
      */
     public function restartSync(\DateTimeImmutable $until): void
     {
+        if (null === $this->leasedBy) {
+            return;
+        }
         $this->leasedBy = null;
         $this->leaseExpiresAt = $until;
     }

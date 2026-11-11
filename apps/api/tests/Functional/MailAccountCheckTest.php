@@ -109,11 +109,16 @@ final class MailAccountCheckTest extends DatabaseTestCase
         self::assertTrue($other->fetchOne('SELECT pg_try_advisory_lock(:namespace, :key)', ['namespace' => 0x6D61696C, 'key' => $key]));
 
         try {
-            $this->client->jsonRequest('POST', '/api/v1/mail-account-checks', $this->payload([993, 465], 'right'), $this->kim);
-            self::assertResponseStatusCodeSame(429);
+            // Every refusal for the lock would otherwise use up the limit: none of these may cost a token.
+            for ($i = 0; $i < 21; ++$i) {
+                $this->client->jsonRequest('POST', '/api/v1/mail-account-checks', $this->payload([993, 465], 'right'), $this->kim);
+                self::assertResponseStatusCodeSame(409);
+            }
         } finally {
             $other->close();
         }
+
+        self::assertSame('unreachable', $this->check([$this->closedPort(), $this->closedPort()], 'right')['imap'], 'The refusals cost no token of the limit.');
     }
 
     public function testAnAddressThatIsConnectedAlreadyIsSaidAtOnce(): void
