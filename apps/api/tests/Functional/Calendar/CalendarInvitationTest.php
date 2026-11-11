@@ -138,6 +138,55 @@ final class CalendarInvitationTest extends DatabaseTestCase
         self::assertCount($recorded ? 2 : 1, $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00'));
     }
 
+    /**
+     * The second line behind the checks: a part the database itself refuses is rolled back alone, in its savepoint,
+     * and the rest of the batch is stored.
+     */
+    public function testAPartTheDatabaseRefusesIsSkippedAndTheBatchStored(): void
+    {
+        // A refusal no check before the insert knows about (the test's own rule, rolled back with the test).
+        $this->connection()->executeStatement(<<<'SQL'
+            CREATE FUNCTION refuse_test_invitation() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW.uid = 'refused@finance.example' THEN
+                    RAISE EXCEPTION 'refused by the test';
+                END IF;
+                RETURN NEW;
+            END $$
+            SQL);
+        $this->connection()->executeStatement('CREATE TRIGGER refuse_test_invitation BEFORE INSERT ON calendar_invitation FOR EACH ROW EXECUTE FUNCTION refuse_test_invitation()');
+
+        $messages = [];
+        $parts = [
+            'Refused' => str_replace('UID:budget-review@finance.example', 'UID:refused@finance.example', self::invitation('REQUEST', 0, '20261021T140000')),
+            'Invitation: Budget review' => self::invitation('REQUEST', 0, '20261021T140000'),
+        ];
+        foreach ($parts as $subject => $ical) {
+            ++$this->uid;
+            $messages[] = [
+                'remoteUid' => (string) $this->uid,
+                'rawObjectKey' => $this->rawKeyFor($this->accountId, $subject.$this->uid),
+                'keyVersion' => 1,
+                'size' => 100,
+                'receivedAt' => new \DateTimeImmutable('+1 minute')->format(\DATE_ATOM),
+                'messageId' => '<invite-'.$this->uid.'@finance.example>',
+                'subject' => $subject,
+                'from' => ['address' => 'anna@finance.example', 'name' => null],
+                'to' => [['address' => 'kim@company.example']],
+                'calendarParts' => [['method' => null, 'ical' => $ical]],
+            ];
+        }
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$this->accountId.'/messages', ['workerId' => 'w1', 'folder' => 'INBOX', 'messages' => $messages], $this->worker);
+        self::assertResponseIsSuccessful();
+        self::assertSame(2, $this->decodedResponse()['stored']);
+        $this->applyQueuedInvitations();
+
+        $refused = $this->messageId('Refused');
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM calendar_invitation WHERE message_id = :id', ['id' => $refused]));
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM calendar_invitation WHERE message_id = :id', ['id' => $this->messageId('Invitation: Budget review')]));
+        self::assertCount(1, $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00'));
+    }
+
     public function testAcceptingRepliesToTheOrganizerThroughTheOutbox(): void
     {
         $messageId = $this->receive('Invitation: Budget review', self::invitation('REQUEST', 0, '20261021T140000'));
