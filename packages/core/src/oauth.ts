@@ -72,7 +72,16 @@ export async function codeChallenge(verifier: string): Promise<string> {
   return base64Url(new Uint8Array(digest))
 }
 
-export async function startAuthorization(config: OAuthClientConfig): Promise<PendingAuthorization> {
+export interface AuthorizationOptions {
+  /**
+   * `login` asks the authorization server to have the user enter the password again, whatever session the browser
+   * holds (OpenID Connect `prompt`). Clients send it for the first sign-in after the user signed out. A server that does
+   * not know the parameter ignores it.
+   */
+  prompt?: 'login'
+}
+
+export async function startAuthorization(config: OAuthClientConfig, options: AuthorizationOptions = {}): Promise<PendingAuthorization> {
   const state = randomToken(16)
   const codeVerifier = randomToken(48)
   const params = new URLSearchParams({
@@ -84,6 +93,9 @@ export async function startAuthorization(config: OAuthClientConfig): Promise<Pen
     code_challenge: await codeChallenge(codeVerifier),
     code_challenge_method: 'S256',
   })
+  if (options.prompt !== undefined) {
+    params.set('prompt', options.prompt)
+  }
 
   return { url: `${authorizeEndpoint(config)}?${params}`, state, codeVerifier }
 }
