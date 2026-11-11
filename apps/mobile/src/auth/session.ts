@@ -1,4 +1,4 @@
-import { exchangeCode, OAuthError, refreshTokens, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
+import { exchangeCode, OAuthError, refreshTokens, ServerClock, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
 import { revokeToken } from '@/auth/revokeToken'
 
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
@@ -90,6 +90,8 @@ export class Session {
    * not kept: they would open another user's mail at the next launch, or be taken for an unfinished sign-out.
    */
   private prepared = true
+  /** The server's clock, as the Date header of its answers tells it (for send times it keeps, such as undo). */
+  private readonly clock = new ServerClock()
 
   constructor(
     private readonly config: OAuthClientConfig,
@@ -239,15 +241,22 @@ export class Session {
     return (response.status === 204 ? undefined : await response.json()) as T
   }
 
+  /** The time on the server's clock (epoch ms), as well as its answers told it. */
+  serverNow(): number {
+    return this.clock.now()
+  }
+
   me(): Promise<Me> {
     return this.api<Me>('/api/v1/me')
   }
 
-  private send(path: string, init: RequestInit, token: string): Promise<Response> {
+  private async send(path: string, init: RequestInit, token: string): Promise<Response> {
     const headers = new Headers(init.headers)
     headers.set('Authorization', `Bearer ${token}`)
     headers.set('Accept', 'application/json')
-    return this.fetchImpl(`${this.config.apiUrl.replace(/\/+$/, '')}${path}`, { ...init, headers })
+    const response = await this.fetchImpl(`${this.config.apiUrl.replace(/\/+$/, '')}${path}`, { ...init, headers })
+    this.clock.note(response.headers.get('Date'))
+    return response
   }
 
   /** A new access token for these tokens, from one refresh shared by every request that needs it. */

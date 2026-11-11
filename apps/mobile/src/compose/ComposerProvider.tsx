@@ -74,6 +74,7 @@ function createComposer(current: Current, drafts: Mail['drafts']): Composer {
       current.notices.notify(notice.action === undefined ? { text: notice.text, tone: notice.tone } : { text: notice.text, tone: notice.tone, action: notice.action }, ms),
     explain: (error) => ({ message: error instanceof Error ? error.message : String(error), violations: error instanceof ApiError ? error.violations : {} }),
     changed: () => current.mail.touch(),
+    now: () => current.mail.serverNow?.() ?? Date.now(),
   })
 }
 

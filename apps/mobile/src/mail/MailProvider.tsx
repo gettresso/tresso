@@ -69,6 +69,8 @@ interface Mail extends MailState {
   /** A link to a received file that could not be scanned, once the user confirmed they accept that. */
   unscannedLink(attachmentId: string): Promise<string>
   syncNow(): Promise<void>
+  /** The time on the server's clock (epoch ms), for send times it keeps such as the undo window; see ServerClock. */
+  serverNow?(): number
   /** The open copy, for writing mail; null while none is open. */
   store(): SqliteMailStore | null
   drafts: DraftSync
@@ -361,6 +363,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
       body,
       unscannedLink,
       syncNow,
+      serverNow: () => auth.session.serverNow(),
       store,
       drafts: session.drafts,
       signatures,
@@ -383,7 +386,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
       clearOverdue,
       respond,
     }),
-    [userId, touch, ready, synced, version, syncState, syncError, lookupError, live, pulls, mailAccounts, folders, act, inbox, triageWaiting, newestInInbox, summaries, smartInboxes, classifyThread, releaseThread, thread, body, unscannedLink, syncNow, store, session, signatures, suggestContacts, send, cancelOutgoing, todos, todosOfThread, messages, makeTodo, removeTodo, setTodoDone, planTodo, unplanTodo, handOvers, outgoing, handOverApi, overdue, clearOverdue, respond],
+    [userId, touch, ready, synced, version, syncState, syncError, lookupError, live, pulls, mailAccounts, folders, act, inbox, triageWaiting, newestInInbox, summaries, smartInboxes, classifyThread, releaseThread, thread, body, unscannedLink, syncNow, auth.session, store, session, signatures, suggestContacts, send, cancelOutgoing, todos, todosOfThread, messages, makeTodo, removeTodo, setTodoDone, planTodo, unplanTodo, handOvers, outgoing, handOverApi, overdue, clearOverdue, respond],
   )
 
   return <MailContext.Provider value={mail}>{children}</MailContext.Provider>

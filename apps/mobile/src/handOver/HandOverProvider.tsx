@@ -66,6 +66,7 @@ function createFlow(latest: Latest, composer: Composer): HandOverFlow {
     signatures: () => latest.signatures,
     sync: () => latest.mail.syncNow(),
     explain: (error) => ({ message: message(error) }),
+    now: () => latest.mail.serverNow?.() ?? Date.now(),
   })
 }
 

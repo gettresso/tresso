@@ -50,6 +50,7 @@ export const useComposeStore = defineStore('compose', () => {
     changed: () => {
       mail.refresh().catch((error: unknown) => console.error('Refreshing the lists failed', error))
     },
+    now: () => auth.serverNow(),
   })
 
   // The composer's state, for templates; replaced whole on every change, so a shallow ref is enough.

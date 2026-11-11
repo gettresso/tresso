@@ -45,6 +45,11 @@ export interface ComposerDeps {
   formatTime?(at: Date): string
   /** Called after the composer changed the copy (a draft saved, sent or removed), so lists read it again. */
   changed?(): void
+  /**
+   * The time on the server's clock (epoch ms), as well as the client knows it. The undo window is a send time the
+   * server keeps, so it is counted on that clock; the device's own clock (the default) may be off by minutes.
+   */
+  now?(): number
   undoSeconds?: number
   autosaveMs?: number
 }
@@ -253,6 +258,10 @@ export class Composer {
 
   defaultSignature(mailAccountId: string | null): string | null {
     return defaultSignatureOf(this.deps.accounts(), this.deps.signatures(), mailAccountId)
+  }
+
+  private now(): number {
+    return this.deps.now?.() ?? Date.now()
   }
 
   /** Opens a draft in the form; `stored` says it is the draft as the copy has it (not one only made on screen). */
@@ -796,8 +805,8 @@ export class Composer {
         // The files are with the server's copy of the draft: sending without it would leave them out.
         throw new AttachmentsNeedTheServer()
       }
-      // Worked out after the upload: the undo window is the time between queueing and sending.
-      const at = sendAt ?? new Date(Date.now() + this.undoSeconds * 1000)
+      // Worked out after the upload: the undo window is the time between queueing and sending, on the server's clock.
+      const at = sendAt ?? new Date(this.now() + this.undoSeconds * 1000)
       const outgoing = await this.deps.send(sendRequest(draft, this.deps.signatures(), at, onServer, acceptUnscanned))
       sent = true
       this.bases.delete(draft.id)
@@ -858,13 +867,17 @@ export class Composer {
     this.set({ unscannedToConfirm: null })
   }
 
-  /** Undo is offered until the message's send time, when it leaves. */
-  private startUndo(outgoingId: string, draftId: string, until: Date): void {
+  /**
+   * Undo is offered until the message's send time, when it leaves. That time is on the server's clock; `undoable.until`
+   * is the same moment on this device's clock, which the screens count with.
+   */
+  private startUndo(outgoingId: string, draftId: string, sendAt: Date): void {
     if (this.undoTimer !== null) {
       clearTimeout(this.undoTimer)
     }
-    this.set({ undoable: { outgoingId, draftId, until: until.getTime() } })
-    this.undoTimer = setTimeout(() => this.set({ undoable: null }), Math.max(0, until.getTime() - Date.now()))
+    const left = Math.max(0, sendAt.getTime() - this.now())
+    this.set({ undoable: { outgoingId, draftId, until: Date.now() + left } })
+    this.undoTimer = setTimeout(() => this.set({ undoable: null }), left)
   }
 
   /** Stops the message that was just sent and opens it again for editing. */

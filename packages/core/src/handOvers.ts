@@ -234,6 +234,8 @@ export interface HandOverFlowDeps {
   explain(error: unknown): { message: string }
   /** Seconds a nudge waits before it goes out, so it can be undone; the composer's own window applies to forwards. */
   undoSeconds?: number
+  /** The time on the server's clock (epoch ms), which a nudge's send time is counted on; the device's by default. */
+  now?(): number
 }
 
 /**
@@ -384,8 +386,11 @@ export class HandOverFlow {
   async nudge(handOver: SyncedHandOver, text: string): Promise<Nudged> {
     const signatureId = defaultSignatureOf(this.deps.accounts(), this.deps.signatures(), handOver.mailAccountId)
     const signature = this.deps.signatures().find((candidate) => candidate.id === signatureId)?.html ?? null
-    const until = Date.now() + (this.deps.undoSeconds ?? 5) * 1000
-    const nudged = await this.deps.api.nudge(handOver.id, { html: composeBody(textToHtml(text), signature, ''), sendAt: new Date(until).toISOString() })
+    const window = (this.deps.undoSeconds ?? 5) * 1000
+    // The send time is the server's to keep, so it is counted on its clock; `until` is the same moment on this device.
+    const until = Date.now() + window
+    const sendAt = new Date((this.deps.now?.() ?? Date.now()) + window)
+    const nudged = await this.deps.api.nudge(handOver.id, { html: composeBody(textToHtml(text), signature, ''), sendAt: sendAt.toISOString() })
     await this.deps.sync().catch(() => undefined)
     if (nudged.lastNudgeId === null) {
       throw new HandOverError('The nudge was not queued.')
