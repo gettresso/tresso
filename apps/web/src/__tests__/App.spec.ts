@@ -329,6 +329,32 @@ describe('App', () => {
       vi.unstubAllGlobals()
     })
 
+    it('starts as if nothing was kept when the kept user cannot be read', async () => {
+      sessionStorage.setItem('tresso.signedInUser', '{not json')
+      const { router, start } = await signedIn([answered])
+      const wrapper = mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+
+      expect(start).toHaveBeenCalledExactlyOnceWith('user-1')
+      expect(JSON.parse(sessionStorage.getItem('tresso.signedInUser')!)).toEqual({ server: config.apiUrl, userId: 'user-1' })
+      expect(wrapper.text()).not.toContain('could not start')
+      vi.unstubAllGlobals()
+    })
+
+    it('lets go of the draft on screen before it opens the copy of another user than the one kept', async () => {
+      sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: config.apiUrl, userId: 'user-0' }))
+      const { router, start } = await signedIn([answered])
+      const { useComposeStore } = await import('../stores/compose')
+      const reset = vi.spyOn(useComposeStore(), 'reset')
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+
+      expect(start.mock.calls).toEqual([['user-0'], ['user-1']])
+      expect(reset).toHaveBeenCalledOnce()
+      expect(reset.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[1]!)
+      vi.unstubAllGlobals()
+    })
+
     it('forgets the user, and stops trying, once signed out', async () => {
       vi.useFakeTimers()
       sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: config.apiUrl, userId: 'user-1' }))
