@@ -82,15 +82,21 @@ final readonly class NotificationEmailAddress
     }
 
     /**
-     * Where a notification about to be mailed goes. A chosen address that was never proven is moved to pending here,
-     * and a pending address whose link did not go out yet is mailed its link.
+     * Where a notification about to be mailed goes. A chosen address that was never proven gets the proof it has now
+     * (a Microsoft account that synced since, say), or else is moved to pending here; a pending address whose link
+     * did not go out yet is mailed its link.
      */
     public function forDelivery(User $user): string
     {
         $preferences = $this->preferences->forUser($user);
         $chosen = $preferences->getEmailAddress();
         if (null !== $chosen && null === $preferences->getEmailAddressProof()) {
-            $preferences->moveEmailAddressToPending();
+            $proof = $this->provable->proofOf($user, $chosen);
+            if (null !== $proof) {
+                $preferences->proveEmailAddress($proof);
+            } else {
+                $preferences->moveEmailAddressToPending();
+            }
             $this->entityManager->flush();
         }
         $pending = $preferences->getPendingEmailAddress();
