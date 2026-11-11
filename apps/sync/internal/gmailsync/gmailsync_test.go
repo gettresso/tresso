@@ -17,6 +17,7 @@ import (
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/fakeapi"
+	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/providerauth"
 	"tresso/sync/internal/providersend"
 	"tresso/sync/internal/storage/storagetest"
@@ -54,7 +55,7 @@ func newHarness(t *testing.T) *harness {
 // start opens a session and runs its first step, as Run does.
 func (h *harness) start(t *testing.T) {
 	t.Helper()
-	h.session = h.syncer.newSession(api.Account{ID: "acc"}, h.syncer.logger)
+	h.session = h.syncer.newSession(api.Account{ID: "acc"}, isolate.NewStrikes(), h.syncer.logger)
 	if err := h.session.refreshFolders(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +671,6 @@ func TestTrashAndRestoreThroughHistory(t *testing.T) {
 	}
 }
 
-// Fails without the fix: the resync listed label folders with Trash and Spam included, keeping a trashed message in
 // Fails without the fix: trashing one message sent a removal to every label folder of the account.
 func TestTrashingAMessageOnlyAsksItsOwnFoldersToRemoveIt(t *testing.T) {
 	h := newHarness(t)
@@ -694,6 +694,7 @@ func TestTrashingAMessageOnlyAsksItsOwnFoldersToRemoveIt(t *testing.T) {
 	}
 }
 
+// Fails without the fix: the resync listed label folders with Trash and Spam included, keeping a trashed message in
 // its labels.
 func TestResyncKeepsTrashedMessagesOutOfTheirLabels(t *testing.T) {
 	h := backfilled(t)

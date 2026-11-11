@@ -358,3 +358,49 @@ func TestMessageWithoutSignalsHasNone(t *testing.T) {
 		t.Errorf("signals = %v", msg.Signals)
 	}
 }
+
+// Fails without the fix: a part with an encoding go-message does not know was skipped, and a damaged base64 body
+// dropped the whole attachment, without a trace.
+func TestAttachmentsWithAnUnknownEncodingOrADamagedBodyAreKept(t *testing.T) {
+	raw := "From: anna@finance.example\r\nSubject: Files\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n" +
+		"--b\r\nContent-Type: text/plain\r\n\r\nTwo files.\r\n" +
+		"--b\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=old.bin\r\nContent-Transfer-Encoding: x-uuencode\r\n\r\nbegin 644 old.bin\r\n#86)C\r\n`\r\nend\r\n" +
+		"--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=cut.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK!!!!\r\n" +
+		"--b\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=after.png\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0K\r\n" +
+		"--b--\r\n"
+
+	msg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for _, a := range msg.Attachments {
+		names = append(names, a.Filename)
+	}
+	if strings.Join(names, ",") != "old.bin,cut.pdf,after.png" {
+		t.Fatalf("attachments = %v", names)
+	}
+	if !strings.Contains(string(msg.Attachments[0].Data), "begin 644 old.bin") {
+		t.Errorf("the uuencoded part is not kept as it is: %q", msg.Attachments[0].Data)
+	}
+	if !strings.HasPrefix(string(msg.Attachments[1].Data), "%PDF") {
+		t.Errorf("the damaged part lost what was read before the damage: %q", msg.Attachments[1].Data)
+	}
+	if len(msg.Problems) != 2 || msg.Snippet != "Two files." {
+		t.Errorf("problems %v, snippet %q", msg.Problems, msg.Snippet)
+	}
+}
+
+// Fails without the fix: a single-part message with an unknown transfer encoding made the reader nil, and Parse
+// panicked.
+func TestASinglePartMessageWithAnUnknownEncodingIsRead(t *testing.T) {
+	raw := "From: anna@finance.example\r\nSubject: Old client\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: 8-bit\r\n\r\nPlain words.\r\n"
+
+	msg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Subject != "Old client" || msg.Snippet != "Plain words." || len(msg.Problems) != 1 {
+		t.Errorf("subject %q, snippet %q, problems %v", msg.Subject, msg.Snippet, msg.Problems)
+	}
+}

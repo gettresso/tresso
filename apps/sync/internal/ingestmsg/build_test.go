@@ -2,6 +2,9 @@ package ingestmsg
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -11,12 +14,14 @@ import (
 	"tresso/sync/internal/storage/storagetest"
 )
 
+var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 func TestBuildStoresRawAndDescribesTheMessage(t *testing.T) {
 	store := storagetest.New()
 	raw := []byte("From: Sam <sam@example.test>\r\nTo: kim@example.test\r\nSubject: Hello\r\nMessage-ID: <a@example.test>\r\nDate: Mon, 19 Oct 2026 10:00:00 +0000\r\n\r\nBody\r\n")
 	received := time.Date(2026, 10, 19, 12, 0, 0, 0, time.FixedZone("x", 3600))
 
-	msg, err := Build(context.Background(), store, "acc-1", raw, "gmail-id", received, api.Flags{Seen: true})
+	msg, err := Build(context.Background(), store, "acc-1", raw, "gmail-id", received, api.Flags{Seen: true}, discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +39,7 @@ func TestBuildStoresRawAndDescribesTheMessage(t *testing.T) {
 	}
 
 	// Without a provider date the Date header is used.
-	msg, _ = Build(context.Background(), store, "acc-1", raw, "x", time.Time{}, api.Flags{})
+	msg, _ = Build(context.Background(), store, "acc-1", raw, "x", time.Time{}, api.Flags{}, discard)
 	if !msg.ReceivedAt.Equal(time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC)) {
 		t.Errorf("fallback receivedAt = %v", msg.ReceivedAt)
 	}
@@ -43,7 +48,7 @@ func TestBuildStoresRawAndDescribesTheMessage(t *testing.T) {
 func TestBuildSendsTheSignalHeaders(t *testing.T) {
 	raw := []byte("From: news@shop.example\r\nPrecedence: bulk\r\nList-Unsubscribe: <https://shop.example/u>\r\nSubject: Deals\r\n\r\nBody\r\n")
 
-	msg, err := Build(context.Background(), storagetest.New(), "acc-1", raw, "x", time.Time{}, api.Flags{})
+	msg, err := Build(context.Background(), storagetest.New(), "acc-1", raw, "x", time.Time{}, api.Flags{}, discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +62,7 @@ func TestBuildReportsTheCalendarParts(t *testing.T) {
 		"Content-Type: text/calendar; charset=utf-8; method=REQUEST\r\n\r\n" +
 		"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:a@finance.example\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
 
-	msg, err := Build(context.Background(), storagetest.New(), "acc-1", raw, "gmail-id", time.Now(), api.Flags{})
+	msg, err := Build(context.Background(), storagetest.New(), "acc-1", raw, "gmail-id", time.Now(), api.Flags{}, discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +77,7 @@ func TestBuildEncryptsTheAttachmentsWithTheMessage(t *testing.T) {
 	raw := []byte("From: anna@finance.example\r\nSubject: Invoice\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n" +
 		"--b\r\nContent-Type: text/plain\r\n\r\nAttached.\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=invoice.pdf\r\n\r\n%PDF-1.4 secret\r\n--b--\r\n")
 
-	msg, err := Build(context.Background(), store, "acc-1", raw, "1", time.Now(), api.Flags{})
+	msg, err := Build(context.Background(), store, "acc-1", raw, "1", time.Now(), api.Flags{}, discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,5 +92,91 @@ func TestBuildEncryptsTheAttachmentsWithTheMessage(t *testing.T) {
 		if strings.Contains(string(object), "secret") {
 			t.Errorf("%s holds plaintext", k)
 		}
+	}
+}
+
+func TestBuildKeepsEveryValueInsideTheAPILimits(t *testing.T) {
+	var parts strings.Builder
+	for i := range 600 {
+		fmt.Fprintf(&parts, "--b\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=f%d.bin\r\n\r\nx\r\n", i)
+	}
+	longReference := strings.Repeat("r", 2000) + "@example.test"
+	raw := []byte("From: =?utf-8?q?Sam=00?= <sam@example.test>\r\nTo: kim@example.test\r\nSubject: Hello\x00 there\x01\r\n" +
+		"References: <" + longReference + "> <ok@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n" +
+		"--b\r\nContent-Type: text/plain\r\n\r\nBody\x00 text\r\n" +
+		"--b\r\nContent-Type: application/" + strings.Repeat("x", 300) + "\r\nContent-Disposition: attachment; filename=long-type.bin\r\nContent-ID: <" + strings.Repeat("c", 400) + ">\r\n\r\ny\r\n" +
+		parts.String() + "--b--\r\n")
+
+	msg, err := Build(context.Background(), storagetest.New(), "acc-1", raw, "1", time.Now(), api.Flags{}, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Subject != "Hello there" || strings.ContainsRune(msg.BodyText, 0) || strings.ContainsRune(msg.Snippet, 0) {
+		t.Errorf("subject %q, body %q, snippet %q still hold control characters", msg.Subject, msg.BodyText, msg.Snippet)
+	}
+	if msg.From.Name == nil || *msg.From.Name != "Sam" {
+		t.Errorf("from = %+v", msg.From)
+	}
+	if len(msg.Attachments) != 500 {
+		t.Errorf("%d attachments, the API takes 500", len(msg.Attachments))
+	}
+	first := msg.Attachments[0]
+	if len([]rune(first.ContentType)) != 255 || first.ContentID == nil || len([]rune(*first.ContentID)) != 255 {
+		t.Errorf("first attachment = %+v", first)
+	}
+	for _, a := range msg.Attachments {
+		if a.ContentType == "" || len([]rune(a.ContentType)) > 255 || a.Filename == "" {
+			t.Fatalf("attachment outside the limits: %+v", a)
+		}
+	}
+	if len(msg.References) != 2 || len([]rune(msg.References[0])) != 998 || msg.References[1] != "ok@example.test" {
+		t.Errorf("references = %d %v", len(msg.References), msg.References[1:])
+	}
+}
+
+func TestCleanDropsControlCharactersAndFallsBack(t *testing.T) {
+	if got := clean("a\x00b\tc\nd\x7f\xff", 10); got != "ab\tc\nd\uFFFD" {
+		t.Errorf("clean = %q", got)
+	}
+	if orDefault(clean(" \x00", 255), "application/octet-stream") != "application/octet-stream" {
+		t.Error("an empty value after cleaning does not fall back")
+	}
+}
+
+func TestPlaceholderKeepsTheRawMessageAndDropsWhatWasParsed(t *testing.T) {
+	modSeq := uint64(7)
+	id := "a@example.test"
+	original := api.Message{RemoteUID: "9", ModSeq: &modSeq, RawObjectKey: "raw/key", KeyVersion: 2, Size: 10, ReceivedAt: time.Unix(5, 0).UTC(),
+		Flags: api.Flags{Seen: true}, MessageID: &id, Subject: "Broken", From: api.Address{Address: "x@example.test"},
+		Attachments: []api.Attachment{{Filename: "a"}}}
+
+	got := Placeholder(original)
+	if got.RemoteUID != "9" || got.ModSeq != &modSeq || got.RawObjectKey != "raw/key" || got.KeyVersion != 2 || !got.Flags.Seen || !got.ReceivedAt.Equal(original.ReceivedAt) {
+		t.Errorf("placeholder lost what identifies the message: %+v", got)
+	}
+	if got.Subject != PlaceholderSubject || got.MessageID != nil || got.From.Address != "unknown@unknown.invalid" || len(got.Attachments) != 0 || got.Snippet == "" {
+		t.Errorf("placeholder kept parsed values: %+v", got)
+	}
+}
+
+func TestUnreadableStoresANoticeThatIsUniquePerMessage(t *testing.T) {
+	store := storagetest.New()
+	at := time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC)
+	first, err := Unreadable(context.Background(), store, "acc-1", "INBOX\x007", "7", at, api.Flags{Flagged: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Unreadable(context.Background(), store, "acc-1", "INBOX\x008", "8", at, api.Flags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RemoteUID != "7" || !first.Flags.Flagged || first.Subject != PlaceholderSubject || first.MessageID == nil || first.KeyVersion != 1 {
+		t.Errorf("unreadable = %+v", first)
+	}
+	if first.RawObjectKey == second.RawObjectKey || *first.MessageID == *second.MessageID {
+		t.Error("two unreadable messages share a raw message or a Message-ID, the API would merge them")
+	}
+	if !strings.Contains(string(store.Plaintext(first.RawObjectKey)), "could not import") {
+		t.Error("the notice was not stored as the raw message")
 	}
 }

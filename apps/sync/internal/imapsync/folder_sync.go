@@ -199,7 +199,7 @@ func (s *session) ingestGroup(ctx context.Context, run *folderRun, group []imap.
 
 	messages := make([]api.Message, 0, len(fetched))
 	for _, buf := range fetched {
-		msg, err := buildMessage(ctx, s.store, s.account.ID, buf, s.condStore)
+		msg, err := buildMessage(ctx, s.store, s.account.ID, buf, s.condStore, s.logger.With("folder", run.folder.RemoteName))
 		if err != nil {
 			return err
 		}

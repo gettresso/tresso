@@ -320,7 +320,7 @@ func (s *session) fetcher(listed map[string]graphMessage, built *providersync.Me
 				return err
 			}
 			item := listed[id]
-			msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, item.receivedAt(), item.flags())
+			msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, item.receivedAt(), item.flags(), s.logger)
 			if err != nil {
 				return err
 			}

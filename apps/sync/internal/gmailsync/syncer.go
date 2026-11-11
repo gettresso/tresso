@@ -21,6 +21,7 @@ import (
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/ingestmsg"
+	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/providerauth"
 	"tresso/sync/internal/providerhttp"
 	"tresso/sync/internal/providersync"
@@ -75,8 +76,9 @@ func New(client providersync.API, store storage.Blobs, workerID string, opts Opt
 // ends the run: the account stops being leased until the user signs in with Google again.
 func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	logger := s.logger.With("account", account.ID)
+	strikes := isolate.NewStrikes()
 	return providersync.Run(ctx, s.api, account, s.workerID, "Google", s.opts.RunOptions, logger, func(ctx context.Context) (bool, error) {
-		return s.runSession(ctx, account, logger)
+		return s.runSession(ctx, account, strikes, logger)
 	})
 }
 
@@ -93,8 +95,8 @@ type session struct {
 	cursor   *Cursor
 }
 
-func (s *Syncer) runSession(ctx context.Context, account api.Account, logger *slog.Logger) (healthy bool, err error) {
-	sess := s.newSession(account, logger)
+func (s *Syncer) runSession(ctx context.Context, account api.Account, strikes *isolate.Strikes, logger *slog.Logger) (healthy bool, err error) {
+	sess := s.newSession(account, strikes, logger)
 
 	if err := sess.refreshFolders(ctx); err != nil {
 		return false, err
@@ -108,13 +110,13 @@ func (s *Syncer) runSession(ctx context.Context, account api.Account, logger *sl
 	return true, sess.follow(ctx)
 }
 
-func (s *Syncer) newSession(account api.Account, logger *slog.Logger) *session {
+func (s *Syncer) newSession(account api.Account, strikes *isolate.Strikes, logger *slog.Logger) *session {
 	tokens := providerauth.New(s.api, account.ID, s.workerID)
 	return &session{
 		Syncer:  s,
 		account: account,
 		gmail:   NewClient(tokens, s.opts.Client),
-		ingest:  &providersync.Ingest{API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Logger: logger},
+		ingest:  &providersync.Ingest{API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Strikes: strikes, Logger: logger},
 		logger:  logger,
 	}
 }
@@ -235,13 +237,22 @@ type fetched struct {
 }
 
 // fetchRaw downloads, stores and describes messages, GetConcurrency at a time. Messages deleted meanwhile are left
-// out. Each raw message is dropped as soon as it is stored.
+// out. Each raw message is dropped as soon as it is stored. A message Gmail keeps refusing (or hands over unreadable)
+// is replaced by a placeholder without labels once it failed often enough (see package isolate); until then the
+// session ends with its error.
 func (s *session) fetchRaw(ctx context.Context, ids []string) (map[string]fetched, error) {
 	out := make(map[string]fetched, len(ids))
+	var failed []providersync.UnreadableMessage
 	var mu sync.Mutex
 	err := s.each(ctx, ids, func(ctx context.Context, id string) error {
 		m, err := s.gmail.getMessage(ctx, id, "raw")
 		if providerhttp.IsStatus(err, http.StatusNotFound) {
+			return nil
+		}
+		if err != nil && providersync.AboutMessage(err) {
+			mu.Lock()
+			failed = append(failed, providersync.UnreadableMessage{ID: id, Err: err})
+			mu.Unlock()
 			return nil
 		}
 		if err != nil {
@@ -249,9 +260,12 @@ func (s *session) fetchRaw(ctx context.Context, ids []string) (map[string]fetche
 		}
 		raw, err := decodeRaw(m.Raw)
 		if err != nil {
-			return fmt.Errorf("message %s: decode raw: %w", id, err)
+			mu.Lock()
+			failed = append(failed, providersync.UnreadableMessage{ID: id, ReceivedAt: m.receivedAt(), Flags: flagsOf(m.LabelIDs), Err: fmt.Errorf("message %s: decode raw: %w", id, err)})
+			mu.Unlock()
+			return nil
 		}
-		msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, m.receivedAt(), flagsOf(m.LabelIDs))
+		msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, m.receivedAt(), flagsOf(m.LabelIDs), s.logger)
 		if err != nil {
 			return err
 		}
@@ -260,7 +274,20 @@ func (s *session) fetchRaw(ctx context.Context, ids []string) (map[string]fetche
 		mu.Unlock()
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	if len(failed) > 0 {
+		// Gmail ids name a message in the whole account, so failures are counted on All Mail.
+		placeholders, err := s.ingest.Unreadable(ctx, s.store, allMailFolder, failed, len(out))
+		if err != nil {
+			return nil, err
+		}
+		for _, msg := range placeholders {
+			out[msg.RemoteUID] = fetched{message: msg}
+		}
+	}
+	return out, nil
 }
 
 // labelsOf fetches the current labels of messages (format=minimal); a deleted message maps to gone = true.

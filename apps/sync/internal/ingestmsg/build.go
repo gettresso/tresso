@@ -4,7 +4,10 @@ package ingestmsg
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/blobcrypt"
@@ -14,8 +17,9 @@ import (
 
 // Build stores raw and its attachments, encrypted with the account owner's key, then describes the message for the
 // ingest API. remoteUID is the provider's id of the message in the folder; receivedAt is when the provider received it
-// (zero falls back to the Date header, then to now).
-func Build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byte, remoteUID string, receivedAt time.Time, flags api.Flags) (api.Message, error) {
+// (zero falls back to the Date header, then to now). What the parser could not read as it should (see
+// mimeparse.Message.Problems) is logged.
+func Build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byte, remoteUID string, receivedAt time.Time, flags api.Flags, logger *slog.Logger) (api.Message, error) {
 	writer, err := blobs.Writer(ctx, accountID)
 	if err != nil {
 		return api.Message{}, err
@@ -28,18 +32,26 @@ func Build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byt
 	parsed, err := mimeparse.Parse(raw)
 	if err != nil {
 		// Not parseable as mail at all: keep it with what the server knows.
-		parsed = &mimeparse.Message{From: mimeparse.Address{Address: mimeparse.UnknownSender}}
+		parsed = &mimeparse.Message{From: mimeparse.Address{Address: mimeparse.UnknownSender}, Problems: []string{err.Error()}}
+	}
+	if len(parsed.Problems) > 0 {
+		logger.Warn("parts of a message could not be read as they should", "uid", remoteUID, "messageId", parsed.MessageID, "problems", parsed.Problems)
 	}
 
-	attachments := make([]api.Attachment, 0, len(parsed.Attachments))
-	for _, a := range parsed.Attachments {
+	attachments := make([]api.Attachment, 0, min(len(parsed.Attachments), maxAttachments))
+	for _, a := range limit(parsed.Attachments, maxAttachments) {
 		_, fingerprint, err := writer.Put(ctx, blobcrypt.KindAttachments, a.Data)
 		if err != nil {
 			return api.Message{}, err
 		}
-		attachment := api.Attachment{Filename: a.Filename, ContentType: a.ContentType, Size: a.Size, Fingerprint: fingerprint, Inline: a.Inline}
-		if a.ContentID != "" {
-			contentID := a.ContentID
+		attachment := api.Attachment{
+			Filename:    orDefault(clean(a.Filename, maxFieldLength), "attachment"),
+			ContentType: orDefault(clean(a.ContentType, maxFieldLength), "application/octet-stream"),
+			Size:        a.Size,
+			Fingerprint: fingerprint,
+			Inline:      a.Inline,
+		}
+		if contentID := clean(a.ContentID, maxFieldLength); contentID != "" {
 			attachment.ContentID = &contentID
 		}
 		attachments = append(attachments, attachment)
@@ -47,13 +59,16 @@ func Build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byt
 
 	calendarParts := make([]api.CalendarPart, 0, len(parsed.CalendarParts))
 	for _, part := range parsed.CalendarParts {
-		calendarPart := api.CalendarPart{Ical: part.Data}
-		if part.Method != "" {
-			method := part.Method
+		ical := clean(part.Data, maxCalendarLength)
+		if ical == "" {
+			continue
+		}
+		calendarPart := api.CalendarPart{Ical: ical}
+		if method := clean(part.Method, maxMethodLength); method != "" {
 			calendarPart.Method = &method
 		}
 		calendarParts = append(calendarParts, calendarPart)
-		if len(calendarParts) == 5 {
+		if len(calendarParts) == maxCalendarParts {
 			break
 		}
 	}
@@ -66,6 +81,10 @@ func Build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byt
 		}
 	}
 
+	from := address(parsed.From)
+	if from.Address == "" {
+		from = api.Address{Address: mimeparse.UnknownSender}
+	}
 	msg := api.Message{
 		RemoteUID:     remoteUID,
 		RawObjectKey:  rawKey,
@@ -74,44 +93,118 @@ func Build(ctx context.Context, blobs storage.Blobs, accountID string, raw []byt
 		ReceivedAt:    receivedAt.UTC(),
 		SentAt:        parsed.Date,
 		Flags:         flags,
-		References:    limit(parsed.References, 200),
-		Subject:       truncate(parsed.Subject, 998),
-		From:          address(parsed.From),
+		References:    references(parsed.References),
+		Subject:       clean(parsed.Subject, maxHeaderLength),
+		From:          from,
 		To:            addresses(parsed.To, 1000),
 		Cc:            addresses(parsed.Cc, 1000),
 		Bcc:           addresses(parsed.Bcc, 1000),
 		ReplyTo:       addresses(parsed.ReplyTo, 100),
-		Snippet:       parsed.Snippet,
-		BodyText:      parsed.BodyText,
+		Snippet:       clean(parsed.Snippet, maxSnippetLength),
+		BodyText:      clean(parsed.BodyText, maxBodyTextLength),
 		Attachments:   attachments,
-		Headers:       parsed.Signals,
+		Headers:       signals(parsed.Signals),
 		CalendarParts: calendarParts,
 	}
-	if parsed.MessageID != "" {
-		id := truncate(parsed.MessageID, 998)
+	if id := clean(parsed.MessageID, maxHeaderLength); id != "" {
 		msg.MessageID = &id
 	}
-	if parsed.InReplyTo != "" {
-		id := truncate(parsed.InReplyTo, 998)
+	if id := clean(parsed.InReplyTo, maxHeaderLength); id != "" {
 		msg.InReplyTo = &id
 	}
 	return msg, nil
 }
 
+// The API's limits (apps/api/src/ApiResource/Input/Sync/MessageInput.php and its parts). A message that breaks one is
+// refused with the whole batch, so every value is kept inside them here.
+const (
+	maxHeaderLength   = 998
+	maxReferences     = 200
+	maxAddressLength  = 320
+	maxNameLength     = 255
+	maxFieldLength    = 255 // attachment filename, content type and Content-ID
+	maxSnippetLength  = 2000
+	maxBodyTextLength = 32768
+	maxSignalLength   = 1000
+	maxSignals        = 20
+	maxAttachments    = 500
+	maxCalendarParts  = 5
+	maxCalendarLength = 262144
+	maxMethodLength   = 32
+)
+
+// clean makes text acceptable to the API: valid UTF-8, without NUL (PostgreSQL refuses it in text) and the other
+// control characters except tab, line feed and carriage return, cut to max characters.
+func clean(s string, max int) string {
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, "\uFFFD")
+	}
+	if strings.IndexFunc(s, isControl) >= 0 {
+		s = strings.Map(func(r rune) rune {
+			if isControl(r) {
+				return -1
+			}
+			return r
+		}, s)
+	}
+	return truncate(s, max)
+}
+
+func isControl(r rune) bool {
+	return (r < 0x20 && r != '\t' && r != '\n' && r != '\r') || r == 0x7f
+}
+
+func orDefault(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+func references(ids []string) []string {
+	out := make([]string, 0, min(len(ids), maxReferences))
+	for _, id := range ids {
+		if id = clean(id, maxHeaderLength); id != "" {
+			out = append(out, id)
+		}
+		if len(out) == maxReferences {
+			break
+		}
+	}
+	return out
+}
+
+func signals(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		if value = clean(value, maxSignalLength); value != "" && len(out) < maxSignals {
+			out[name] = value
+		}
+	}
+	return out
+}
+
 func address(a mimeparse.Address) api.Address {
-	out := api.Address{Address: truncate(a.Address, 320)}
-	if a.Name != "" {
-		name := truncate(a.Name, 255)
+	out := api.Address{Address: strings.TrimSpace(clean(a.Address, maxAddressLength))}
+	if name := clean(a.Name, maxNameLength); name != "" {
 		out.Name = &name
 	}
 	return out
 }
 
-// addresses applies the API's per-header limit.
+// addresses applies the API's per-header limit and leaves out addresses that are empty once cleaned.
 func addresses(list []mimeparse.Address, max int) []api.Address {
-	out := make([]api.Address, 0, len(list))
-	for _, a := range limit(list, max) {
-		out = append(out, address(a))
+	out := make([]api.Address, 0, min(len(list), max))
+	for _, a := range list {
+		if len(out) == max {
+			break
+		}
+		if cleaned := address(a); cleaned.Address != "" {
+			out = append(out, cleaned)
+		}
 	}
 	return out
 }

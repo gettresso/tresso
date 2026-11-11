@@ -81,70 +81,53 @@ type Message struct {
 	// once it is the first (topmost) one: for Authentication-Results that is the one the receiving server added.
 	Signals       map[string]string
 	CalendarParts []CalendarPart
+	// Problems describes what could not be read as it should (unknown encodings, broken parts), for the log.
+	Problems []string
 }
 
 // Parse never fails on malformed input: headers it cannot read stay empty. It only returns an error when the input
 // is not a message at all.
+//
+// A part with a transfer encoding or charset go-message does not know is kept as it is (undecoded), an attachment
+// whose body breaks off keeps the bytes read before, and a broken MIME structure ends the walk with what was read so
+// far. Each of these is noted in Problems.
 func Parse(raw []byte) (*Message, error) {
-	reader, err := gomail.CreateReader(bytes.NewReader(raw))
+	entity, err := message.Read(bytes.NewReader(raw))
 	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
 		return parseHeadersOnly(raw)
 	}
 
-	msg := headersFrom(reader.Header)
+	msg := headersFrom(gomail.Header{Header: entity.Header})
 	var plain, html string
-
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
+	part := 0
+	read := func(e *message.Entity, err error) {
+		part++
 		if err != nil {
-			if message.IsUnknownCharset(err) || message.IsUnknownEncoding(err) {
+			msg.Problems = append(msg.Problems, fmt.Sprintf("part %d: %v; kept as it is", part, err))
+		}
+		msg.readPart(e, part, &plain, &html)
+	}
+
+	if mr := entity.MultipartReader(); mr == nil {
+		read(entity, err)
+	} else {
+		readers := []message.MultipartReader{mr}
+		for len(readers) > 0 {
+			p, err := readers[len(readers)-1].NextPart()
+			if errors.Is(err, io.EOF) {
+				readers = readers[:len(readers)-1]
 				continue
 			}
-			// A broken part ends the walk; everything collected so far is kept.
-			break
-		}
-
-		switch header := part.Header.(type) {
-		case *gomail.InlineHeader:
-			contentType, params, _ := header.ContentType()
-			contentID := strings.Trim(header.Get("Content-Id"), "<> ")
-			switch {
-			case contentType == "text/plain" && plain == "":
-				plain = readText(part.Body)
-			case contentType == "text/html" && html == "":
-				html = readText(part.Body)
-			case isCalendar(contentType):
-				data, err := io.ReadAll(io.LimitReader(part.Body, maxCalendarPart+1))
-				_, _ = io.Copy(io.Discard, part.Body)
-				if err == nil {
-					msg.addCalendarPart(params["method"], data)
-				}
-			case strings.HasPrefix(contentType, "text/"):
-				// Other text parts (vcard and the like) carry no snippet text.
-				_, _ = io.Copy(io.Discard, part.Body)
-			default:
-				// Inline non-text parts are embedded images and similar, referenced by Content-ID.
-				attachment, err := readAttachment(part.Body, filenameFrom(params["name"], contentType), contentType, contentID, true)
-				if err == nil {
-					msg.Attachments = append(msg.Attachments, attachment)
-				}
+			if p == nil {
+				// A broken MIME structure: everything collected so far is kept.
+				msg.Problems = append(msg.Problems, fmt.Sprintf("after part %d: %v; the rest of the message was not read", part, err))
+				break
 			}
-		case *gomail.AttachmentHeader:
-			contentType, params, _ := header.ContentType()
-			filename, _ := header.Filename()
-			contentID := strings.Trim(header.Get("Content-Id"), "<> ")
-			disposition, _, _ := header.ContentDisposition()
-			inline := disposition == "inline" && contentID != ""
-			attachment, err := readAttachment(part.Body, filenameFrom(filename, contentType), contentType, contentID, inline)
-			if err == nil {
-				msg.Attachments = append(msg.Attachments, attachment)
-				if isCalendar(contentType) || strings.HasSuffix(strings.ToLower(filename), ".ics") {
-					msg.addCalendarPart(params["method"], attachment.Data)
-				}
+			if nested := p.MultipartReader(); nested != nil {
+				readers = append(readers, nested)
+				continue
 			}
+			read(p, err)
 		}
 	}
 
@@ -158,6 +141,60 @@ func Parse(raw []byte) (*Message, error) {
 	msg.BodyText = BodyText(text)
 
 	return msg, nil
+}
+
+// readPart takes one leaf part: the first plain and HTML text, calendar objects and attachments. It decides inline
+// or attachment the way go-message's mail reader does.
+func (msg *Message) readPart(e *message.Entity, part int, plain, html *string) {
+	t, _, _ := e.Header.ContentType()
+	disposition, _, _ := e.Header.ContentDisposition()
+	if disposition == "inline" || (disposition != "attachment" && strings.HasPrefix(t, "text/")) {
+		header := gomail.InlineHeader{Header: e.Header}
+		contentType, params, _ := header.ContentType()
+		contentID := strings.Trim(header.Get("Content-Id"), "<> ")
+		switch {
+		case contentType == "text/plain" && *plain == "":
+			*plain = readText(e.Body)
+		case contentType == "text/html" && *html == "":
+			*html = readText(e.Body)
+		case isCalendar(contentType):
+			data, err := io.ReadAll(io.LimitReader(e.Body, maxCalendarPart+1))
+			_, _ = io.Copy(io.Discard, e.Body)
+			if err == nil {
+				msg.addCalendarPart(params["method"], data)
+			}
+		case strings.HasPrefix(contentType, "text/"):
+			// Other text parts (vcard and the like) carry no snippet text.
+			_, _ = io.Copy(io.Discard, e.Body)
+		default:
+			// Inline non-text parts are embedded images and similar, referenced by Content-ID.
+			msg.addAttachment(e.Body, part, filenameFrom(params["name"], contentType), contentType, contentID, true)
+		}
+		return
+	}
+	header := gomail.AttachmentHeader{Header: e.Header}
+	contentType, params, _ := header.ContentType()
+	filename, _ := header.Filename()
+	contentID := strings.Trim(header.Get("Content-Id"), "<> ")
+	inline := disposition == "inline" && contentID != ""
+	if attachment, ok := msg.addAttachment(e.Body, part, filenameFrom(filename, contentType), contentType, contentID, inline); ok {
+		if isCalendar(contentType) || strings.HasSuffix(strings.ToLower(filename), ".ics") {
+			msg.addCalendarPart(params["method"], attachment.Data)
+		}
+	}
+}
+
+// addAttachment reads an attachment. One whose body breaks off is kept with the bytes read before, and noted.
+func (msg *Message) addAttachment(body io.Reader, part int, filename, contentType, contentID string, inline bool) (Attachment, bool) {
+	attachment, err := readAttachment(body, filename, contentType, contentID, inline)
+	if err != nil {
+		msg.Problems = append(msg.Problems, fmt.Sprintf("part %d (%s): %v; kept the first %d bytes", part, filename, err, attachment.Size))
+	}
+	if err != nil && attachment.Size == 0 {
+		return Attachment{}, false
+	}
+	msg.Attachments = append(msg.Attachments, attachment)
+	return attachment, true
 }
 
 func headersFrom(h gomail.Header) *Message {
@@ -294,11 +331,10 @@ func readText(body io.Reader) string {
 	return string(data)
 }
 
+// readAttachment reads an attachment's body. On a read error (damaged base64, a cut-off message) it returns what was
+// read before together with the error.
 func readAttachment(body io.Reader, filename, contentType, contentID string, inline bool) (Attachment, error) {
 	data, err := io.ReadAll(body)
-	if err != nil {
-		return Attachment{}, err
-	}
 	return Attachment{
 		Filename:    filename,
 		ContentType: contentType,
@@ -306,7 +342,7 @@ func readAttachment(body io.Reader, filename, contentType, contentID string, inl
 		Inline:      inline,
 		Size:        int64(len(data)),
 		Data:        data,
-	}, nil
+	}, err
 }
 
 func filenameFrom(name, contentType string) string {
