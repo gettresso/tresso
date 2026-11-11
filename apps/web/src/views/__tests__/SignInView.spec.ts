@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
-const desktop = vi.hoisted(() => ({ isDesktop: true }))
+const desktop = vi.hoisted(() => ({ isDesktop: true, opened: [] as string[] }))
 
 vi.mock('@/platform/desktop', () => ({
   get isDesktop() {
@@ -11,7 +11,9 @@ vi.mock('@/platform/desktop', () => ({
   loadKeychainTokens: async () => null,
   saveKeychainTokens: async () => undefined,
   clearKeychainTokens: async () => undefined,
-  openInBrowser: async () => undefined,
+  openInBrowser: async (url: string) => {
+    desktop.opened.push(url)
+  },
 }))
 
 // The browser's local storage, kept in memory.
@@ -40,6 +42,7 @@ async function signInView() {
 describe('SignInView', () => {
   beforeEach(() => {
     desktop.isDesktop = true
+    desktop.opened = []
     vi.stubGlobal('localStorage', memoryStorage())
   })
 
@@ -51,6 +54,20 @@ describe('SignInView', () => {
     const view = await signInView()
 
     expect(view.get('.server').text()).toContain('localhost:8080')
+  })
+
+  it('opens the same authorization page when the browser is opened again', async () => {
+    const view = await signInView()
+
+    await view.get('button.sign-in').trigger('click')
+    await flushPromises()
+    await view.findAll('button').find((button) => button.text() === 'Open the browser again')!.trigger('click')
+    await flushPromises()
+
+    expect(desktop.opened).toHaveLength(2)
+    expect(desktop.opened[1]).toBe(desktop.opened[0])
+    view.unmount()
+    sessionStorage.clear()
   })
 
   it('switches to the server the user names once it answers', async () => {

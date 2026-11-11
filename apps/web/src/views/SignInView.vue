@@ -86,9 +86,18 @@ function useDefaultServer(): void {
 }
 
 async function signIn(): Promise<void> {
+  await starting(() => auth.signIn())
+}
+
+/** The same sign-in again, so the browser tab the user already had still finishes it. */
+async function reopenBrowser(): Promise<void> {
+  await starting(() => auth.reopenBrowser())
+}
+
+async function starting(start: () => Promise<void>): Promise<void> {
   signInError.value = null
   try {
-    await auth.signIn()
+    await start()
   } catch (error) {
     signInError.value = error instanceof Error ? error.message : String(error)
   }
@@ -101,7 +110,7 @@ async function signIn(): Promise<void> {
     <h1>Every email is something to do, to hand over, or to know.</h1>
     <template v-if="auth.awaitingBrowser">
       <p class="hint" role="status">Continue in your browser. Tresso opens again once you have signed in.</p>
-      <button type="button" class="button button-quiet" @click="signIn">Open the browser again</button>
+      <button type="button" class="button button-quiet" @click="reopenBrowser">Open the browser again</button>
     </template>
     <button v-else type="button" class="button button-primary sign-in" :disabled="editingServer" @click="signIn">Sign in</button>
     <p v-if="signInError" class="error" role="alert">Sign-in could not start: {{ signInError }}</p>

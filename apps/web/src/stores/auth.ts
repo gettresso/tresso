@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
+  OAuthError,
   exchangeCode,
   parseCallback,
   refreshTokens,
@@ -20,6 +21,21 @@ const PENDING_KEY = 'auth.pending'
 const EXPIRY_MARGIN_MS = 30_000
 
 const oauthConfig: OAuthClientConfig = config
+
+/** A sign-in under way in this tab or window, kept until its answer comes back. */
+interface PendingSignIn {
+  state: string
+  codeVerifier: string
+  /** The server: the code can only be exchanged where it was issued. */
+  server?: string
+  /** The authorization page, so the desktop app can open the same sign-in in the browser again. */
+  url?: string
+}
+
+function pendingSignIn(): PendingSignIn | null {
+  const raw = sessionStorage.getItem(PENDING_KEY)
+  return raw === null ? null : (JSON.parse(raw) as PendingSignIn)
+}
 
 export const useAuthStore = defineStore('auth', () => {
   const tokens = ref<TokenSet | null>(initialTokens())
@@ -61,28 +77,54 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function signIn(): Promise<void> {
     const pending = await startAuthorization(oauthConfig)
-    // The server too: the code can only be exchanged where it was issued.
-    sessionStorage.setItem(PENDING_KEY, JSON.stringify({ state: pending.state, codeVerifier: pending.codeVerifier, server: config.apiUrl }))
+    const entry: PendingSignIn = { state: pending.state, codeVerifier: pending.codeVerifier, server: config.apiUrl, url: pending.url }
+    sessionStorage.setItem(PENDING_KEY, JSON.stringify(entry))
     if (!isDesktop) {
       window.location.assign(pending.url)
       return
     }
+    await openBrowser(pending.url)
+  }
+
+  /**
+   * The desktop app opens the sign-in that is under way in the browser again, so whichever browser tab the user
+   * finishes in, its answer belongs to it. Without one (or one for another server) a new sign-in starts.
+   */
+  async function reopenBrowser(): Promise<void> {
+    const pending = pendingSignIn()
+    if (pending?.url === undefined || pending.server !== config.apiUrl) {
+      await signIn()
+      return
+    }
+    await openBrowser(pending.url)
+  }
+
+  async function openBrowser(url: string): Promise<void> {
     awaitingBrowser.value = true
     try {
-      await openInBrowser(pending.url)
+      await openInBrowser(url)
     } catch (error) {
       awaitingBrowser.value = false
       throw error
     }
   }
 
+  /** Whether a sign-in was started here and waits for its answer. */
+  function hasPendingSignIn(): boolean {
+    return pendingSignIn() !== null
+  }
+
   async function completeSignIn(callbackUrl: string): Promise<void> {
-    const raw = sessionStorage.getItem(PENDING_KEY)
-    sessionStorage.removeItem(PENDING_KEY)
-    if (raw === null) {
+    const pending = pendingSignIn()
+    if (pending === null) {
       throw new Error(isDesktop ? 'No sign-in was started in this window.' : 'No sign-in was started in this tab.')
     }
-    const pending = JSON.parse(raw) as { state: string; codeVerifier: string; server?: string }
+    // An answer with another state belongs to another sign-in, or to none: the one under way stays, and its own
+    // answer still completes it. An error is reported only once the state shows it answers this sign-in.
+    if (new URL(callbackUrl).searchParams.get('state') !== pending.state) {
+      throw new OAuthError('The sign-in response does not match the request (state mismatch).', 'invalid_state')
+    }
+    sessionStorage.removeItem(PENDING_KEY)
     awaitingBrowser.value = false
     if (pending.server !== undefined && pending.server !== config.apiUrl) {
       throw new Error(`This sign-in was started for ${pending.server}, but Tresso now uses ${config.apiUrl}. Sign in again.`)
@@ -178,5 +220,5 @@ export const useAuthStore = defineStore('auth', () => {
     me.value = await api<Me>('/api/v1/me')
   }
 
-  return { tokens, me, isAuthenticated, awaitingBrowser, storageError, paymentRequired, generation, restore, signIn, completeSignIn, signOut, loadMe, api, send }
+  return { tokens, me, isAuthenticated, awaitingBrowser, storageError, paymentRequired, generation, restore, signIn, reopenBrowser, hasPendingSignIn, completeSignIn, signOut, loadMe, api, send }
 })
