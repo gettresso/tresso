@@ -1565,8 +1565,10 @@ does the same for that sender at once. Clean up in the sidebar shows the cleanup
 found and one button. The server works through the action; the web client asks how it is doing (soon at first, then
 every four seconds), shows the progress, pulls the delta when it is done and says how it went with the undo
 (`apps/web/src/stores/bulk.ts`), with a Stop button while it runs. A poll that fails (offline, a deploy) is asked
-again after a growing wait; after ten failures in a row the client says it lost track of the action and pulls. The
-action under way is kept in the tab (sessionStorage), so after a reload it is followed again to its result and undo.
+again after a growing wait (1 second, doubling up to 30); after ten failures in a row the client says it lost track of
+the action and pulls. The action under way is kept in the tab (sessionStorage) with the server and the user it belongs
+to, so after a reload it is followed again to its result and undo, once the server confirmed the same user; one the
+server no longer knows is let go. A sign-out stops the follow at once, without a notice, and forgets the action.
 One bulk action runs at a time: the buttons are disabled from the first click.
 
 Triage (`packages/core/src/triage.ts` for the state, `triageSession.ts` for the round; the web client and the phone

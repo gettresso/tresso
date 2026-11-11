@@ -349,4 +349,12 @@ describe('the mail copy across sign-out and sign-in', () => {
 
     expect(copies.deleted).toEqual(['anna'])
   })
+  it('pulls nothing, and counts no pull, while no copy is syncing', async () => {
+    const mail = useMailStore()
+
+    await mail.syncNow()
+
+    expect(mail.pulls).toBe(0)
+    expect(fetch).not.toHaveBeenCalled()
+  })
 })

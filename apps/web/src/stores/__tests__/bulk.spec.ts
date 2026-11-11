@@ -3,7 +3,9 @@ import { createPinia, setActivePinia } from 'pinia'
 import type { BulkActionState } from '@tresso/core'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
-import { LOST_TRACK, useBulkStore } from '../bulk'
+import { config } from '@/config'
+import { useAuthStore } from '@/stores/auth'
+import { failedPollDelay, LOST_TRACK, useBulkStore } from '../bulk'
 
 function state(override: Partial<BulkActionState>): BulkActionState {
   return {
@@ -23,6 +25,13 @@ function state(override: Partial<BulkActionState>): BulkActionState {
     finishedAt: null,
     ...override,
   }
+}
+
+const me = { id: 'user-1', email: 'kim@company.example', displayName: 'Kim', createdAt: '2026-01-01T00:00:00+00:00' }
+
+/** The server said who is signed in, as App.vue has it load at start. */
+function signedInAs(id: string): void {
+  useAuthStore().me = { ...me, id }
 }
 
 function last<T>(items: T[]): T | undefined {
@@ -65,6 +74,7 @@ describe('bulk store', () => {
       }),
     )
     vi.spyOn(useMailStore(), 'syncNow').mockResolvedValue()
+    signedInAs('user-1')
   })
 
   afterEach(() => {
@@ -234,7 +244,7 @@ describe('bulk store', () => {
     replies['GET /api/v1/bulk-actions/b1'] = [state({ conversations: 200 })]
     const done = useBulkStore().start({ in: 'smartInbox', smartInboxId: 's1', action: 'move', folderId: 'f1' }, 'Receipts')
     await vi.advanceTimersByTimeAsync(500)
-    expect(JSON.parse(sessionStorage.getItem('tresso.bulkAction')!)).toEqual({ id: 'b1', undo: false, folderName: 'Receipts' })
+    expect(JSON.parse(sessionStorage.getItem('tresso.bulkAction')!)).toEqual({ id: 'b1', undo: false, folderName: 'Receipts', server: config.apiUrl, userId: 'user-1' })
     void done
 
     // The page loads again: new stores, the action still kept in the tab.
@@ -242,7 +252,10 @@ describe('bulk store', () => {
     vi.spyOn(useMailStore(), 'syncNow').mockResolvedValue()
     replies['GET /api/v1/bulk-actions/b1'] = [state({ action: 'move', folderId: 'f1', status: 'done', conversations: 312, changed: 330, canUndo: true })]
     const bulk = useBulkStore()
-    expect(bulk.busy).toBe(true)
+    // Nothing is asked before the server said who is signed in.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(bulk.busy).toBe(false)
+    signedInAs('user-1')
     await vi.advanceTimersByTimeAsync(0)
 
     expect(bulk.busy).toBe(false)
@@ -250,5 +263,84 @@ describe('bulk store', () => {
     expect(last(useComposeStore().notices)).toMatchObject({ action: { label: 'Undo' } })
     expect(last(useComposeStore().notices)?.text).toContain('312')
     expect(sessionStorage.getItem('tresso.bulkAction')).toBeNull()
+  })
+  /** An action kept in the tab, as a page that is reloaded finds it. */
+  function keptInTab(kept: Record<string, unknown>): void {
+    sessionStorage.setItem('tresso.bulkAction', JSON.stringify({ id: 'b1', undo: false, folderName: null, server: config.apiUrl, userId: 'user-1', ...kept }))
+    setActivePinia(createPinia())
+    vi.spyOn(useMailStore(), 'syncNow').mockResolvedValue()
+  }
+
+  it('does not follow an action kept for another user or another server', async () => {
+    for (const other of [{ userId: 'user-2' }, { server: 'https://elsewhere.example' }]) {
+      keptInTab(other)
+      useBulkStore()
+      signedInAs('user-1')
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(requests).toEqual([])
+      expect(sessionStorage.getItem('tresso.bulkAction')).toBeNull()
+    }
+  })
+
+  it('drops a kept entry it cannot read', async () => {
+    sessionStorage.setItem('tresso.bulkAction', '{not json')
+    setActivePinia(createPinia())
+    useBulkStore()
+    signedInAs('user-1')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(requests).toEqual([])
+    expect(sessionStorage.getItem('tresso.bulkAction')).toBeNull()
+  })
+
+  it('lets go of a kept action the server no longer knows, without a word', async () => {
+    keptInTab({})
+    const notify = vi.spyOn(useComposeStore(), 'notify')
+    vi.mocked(fetch).mockImplementationOnce(async () => new Response(JSON.stringify({ detail: 'Not found.' }), { status: 404 }))
+    const bulk = useBulkStore()
+    signedInAs('user-1')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(bulk.busy).toBe(false)
+    expect(notify).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('tresso.bulkAction')).toBeNull()
+  })
+
+  it('stops following at a sign-out, at once and without a word', async () => {
+    replies['POST /api/v1/bulk-actions'] = [state({})]
+    const bulk = useBulkStore()
+    const notify = vi.spyOn(useComposeStore(), 'notify')
+
+    const done = bulk.start({ in: 'inbox', action: 'archive' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(bulk.busy).toBe(true)
+    useAuthStore().tokens = null
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(await done).toBeNull()
+    expect(bulk.busy).toBe(false)
+    expect(bulk.progress).toBeNull()
+    expect(notify).not.toHaveBeenCalled()
+    expect(useMailStore().syncNow).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('tresso.bulkAction')).toBeNull()
+    expect(requests.filter((request) => request.method === 'GET')).toEqual([])
+  })
+
+  it('waits a second after the first failed poll, doubling up to half a minute', () => {
+    expect([1, 2, 3, 5, 6, 10].map(failedPollDelay)).toEqual([1000, 2000, 4000, 16_000, 30_000, 30_000])
+  })
+  it('ends the wait between polls when the store goes', async () => {
+    replies['POST /api/v1/bulk-actions'] = [state({})]
+    const bulk = useBulkStore()
+    const notify = vi.spyOn(useComposeStore(), 'notify')
+    const done = bulk.start({ in: 'inbox', action: 'archive' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    bulk.$dispose()
+
+    expect(await done).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(notify).not.toHaveBeenCalled()
   })
 })
