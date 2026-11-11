@@ -27,4 +27,23 @@ describe('authorizationEndpoint', () => {
   it('accepts a plain http sign-in page from a development server reached over http', async () => {
     expect(await authorizationEndpoint('http://localhost:8000', metadata({ authorization_endpoint: 'http://localhost:5173/oauth/authorize' }))).toBe('http://localhost:5173/oauth/authorize')
   })
+
+  it('signs in at the API address when the metadata does not come within five seconds', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchImpl = vi.fn<Fetch>(
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init!.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+          }),
+      )
+
+      const endpoint = authorizationEndpoint('https://api.example.test', fetchImpl)
+      await vi.advanceTimersByTimeAsync(5_000)
+
+      expect(await endpoint).toBe('https://api.example.test/oauth/authorize')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

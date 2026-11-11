@@ -1,3 +1,6 @@
+/** How long the sign-in waits for the server's metadata before it uses the API address. */
+const METADATA_WAIT_MS = 5_000
+
 /**
  * Where the browser signs in. A server may put its sign-in pages on another address than the API (`AUTH_PUBLIC_URL`)
  * and names it as `authorization_endpoint` in its authorization server metadata (RFC 8414), which stays on the API
@@ -7,8 +10,11 @@
 export async function authorizationEndpoint(apiUrl: string, fetchImpl: typeof fetch = (input, init) => fetch(input, init)): Promise<string> {
   const api = apiUrl.replace(/\/+$/, '')
   const fallback = `${api}/oauth/authorize`
+  // A server that accepts the connection and never answers must not keep "Sign in" from opening the browser.
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(), METADATA_WAIT_MS)
   try {
-    const response = await fetchImpl(`${api}/.well-known/oauth-authorization-server`, { headers: { Accept: 'application/json' } })
+    const response = await fetchImpl(`${api}/.well-known/oauth-authorization-server`, { headers: { Accept: 'application/json' }, signal: abort.signal })
     if (!response.ok) {
       return fallback
     }
@@ -22,5 +28,7 @@ export async function authorizationEndpoint(apiUrl: string, fetchImpl: typeof fe
     return endpoint.protocol === 'https:' || endpoint.protocol === new URL(api).protocol ? endpoint.toString() : fallback
   } catch {
     return fallback
+  } finally {
+    clearTimeout(timer)
   }
 }
