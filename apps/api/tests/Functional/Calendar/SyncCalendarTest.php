@@ -101,6 +101,9 @@ final class SyncCalendarTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'unconfirmed', 'url' => 'http://dav.company.example/'], $this->worker);
         self::assertResponseStatusCodeSame(422, 'Only https addresses are offered.');
 
+        $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'unconfirmed', 'url' => 'https://kim:secret@dav.company.example/'], $this->worker);
+        self::assertResponseStatusCodeSame(422, 'An address never carries a login.');
+
         $this->reportCalendars();
         self::assertNull($this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarFoundUrl'], 'Gone once the calendars sync.');
     }

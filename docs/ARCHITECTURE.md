@@ -449,20 +449,24 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   `blocked`, `failed` or `not_checked` (SMTP when IMAP failed). It connects by the sync workers' rules: every address
   of the host must be public, the connection goes to one of the addresses that were checked, and TLS is verified for
   the host name. Nothing is stored; the web client creates the account only once a check passed, so a wrong password
-  or server never leaves a broken account behind. At most 20 checks per user in 10 minutes and one at a time (a
-  PostgreSQL advisory lock on the user), both servers together within 25 seconds; every wait is a `stream_select`
+  or server never leaves a broken account behind. At most 20 checks per user in 10 minutes (429) and one at a time (a
+  PostgreSQL session advisory lock on the user, taken before a token is counted; a second check answers 409 and the
+  client retries it, since a check the client gave up still runs to its deadline: PHP notices a client that left only
+  when it writes output; a transaction pooler such as pgbouncer in transaction mode would break these locks), both servers together within 25 seconds; every wait is a `stream_select`
   against that deadline, so a server that answers a byte at a time cannot hold the request longer. A refused LOGIN
   is `auth_failed` only for `NO` without a response code or with AUTHENTICATIONFAILED, AUTHORIZATIONFAILED or
   EXPIRED (the workers' rule); UNAVAILABLE, PRIVACYREQUIRED, BAD and the like, and SMTP 454, are `failed`. An SMTP
   server that asks for no sign-in passes without the credentials being tried. What the answer tells (refused versus
   no answer, up to 200 characters of a server's reply) makes the endpoint a slow port and banner probe of public
   addresses from the API's own address; with public addresses only and the limits above that is accepted.
-- Changing the password, username or a server of an account ends its lease and keeps it from every worker for one
-  lease period (90 seconds): the worker that held it no longer gets it back at its next heartbeat (every 30 seconds by
+- Changing the password, username or a server of an account that a worker holds ends its lease and keeps it from
+  every worker for one lease period (90 seconds); an account no worker holds (a refused login is not leased) stays
+  free and is claimed at the next heartbeat. For a held account: the worker that held it no longer gets it back at its next heartbeat (every 30 seconds by
   default), stops that account's syncer, and its calls for the account answer 404 from then on. Once the hold ends the
   next heartbeat of any worker claims it and starts a fresh session with the new settings, its failure count and
   backoff from zero, so a problem that continues is reported again after three failed sessions. The new settings are
-  tried within about two minutes instead of after a backoff of up to five. An account in `auth_failed` or `error` is
+  tried within about two minutes instead of after a backoff of up to five. The hold is written with PHP's clock and
+  compared with the database's, so it is only exact where both run in UTC (see MAIL-12). An account in `auth_failed` or `error` is
   set `active` at the same time, since the old failure says nothing about the new settings.
 
 #### Provider sign-in (Gmail, Microsoft 365)
