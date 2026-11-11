@@ -52,24 +52,17 @@ final class SocketConnection implements LineConnection
     {
         $this->applyTimeout();
         stream_context_set_options($this->stream, ['ssl' => self::tlsOptions($this->host)]);
-        $error = null;
-        set_error_handler(static function (int $level, string $message) use (&$error): bool {
-            $error = $message;
-
-            return true;
-        });
-        try {
-            $enabled = stream_socket_enable_crypto($this->stream, true, \STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT | \STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT);
-        } finally {
-            restore_error_handler();
-        }
+        error_clear_last();
+        // The warning says why the handshake failed; it is read below instead of being printed.
+        $enabled = @stream_socket_enable_crypto($this->stream, true, \STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT | \STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT);
         if (true === $enabled) {
             return;
         }
         if ($this->timedOut()) {
             throw $this->broken();
         }
-        if (\is_string($error) && (str_contains($error, 'certificate') || str_contains($error, 'peer'))) {
+        $error = error_get_last()['message'] ?? '';
+        if (str_contains($error, 'certificate') || str_contains($error, 'peer')) {
             throw new CheckFailed(CheckStatus::Certificate, \sprintf('The security certificate of %s could not be verified.', $this->host));
         }
 

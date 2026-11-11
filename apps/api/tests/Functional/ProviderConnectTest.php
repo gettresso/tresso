@@ -328,7 +328,8 @@ final class ProviderConnectTest extends DatabaseTestCase
         $response = $this->decodedResponse();
         self::assertSame('denied', $response['connectError'] ?? null);
         self::assertSame(['mail', 'calendar'], $response['requested'] ?? null, 'Says what was asked for, so the client can offer mail alone.');
-        self::assertNull($response['approvalUrl'] ?? 'missing');
+        self::assertArrayHasKey('approvalUrl', $response);
+        self::assertNull($response['approvalUrl']);
         self::assertSame(0, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]));
     }
 
@@ -337,10 +338,11 @@ final class ProviderConnectTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'microsoft', 'emailAddress' => 'Kim@Company.example', 'features' => ['mail', 'calendar']], $this->user);
         self::assertResponseStatusCodeSame(201);
         parse_str((string) parse_url($this->responseString('authorizationUrl'), \PHP_URL_QUERY), $query);
-        self::assertIsString($query['state'] ?? null);
+        $state = $query['state'] ?? null;
+        self::assertIsString($state);
 
         $answer = $this->providerRedirect('microsoft', [
-            'state' => $query['state'],
+            'state' => $state,
             'error' => 'access_denied',
             'error_description' => 'AADSTS90094: Admin consent is required for the permissions requested by this application.',
         ]);
@@ -361,8 +363,11 @@ final class ProviderConnectTest extends DatabaseTestCase
         $answer = $this->providerRedirect('microsoft', ['state' => $query['state'], 'error' => 'consent_required']);
         $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
 
-        self::assertSame('admin_approval_required', $this->decodedResponse()['connectError'] ?? null);
-        self::assertStringStartsWith('https://login.microsoftonline.com/organizations/adminconsent?', (string) ($this->decodedResponse()['approvalUrl'] ?? ''), 'Without an address, any organization.');
+        $response = $this->decodedResponse();
+        self::assertSame('admin_approval_required', $response['connectError'] ?? null);
+        $approvalUrl = $response['approvalUrl'] ?? null;
+        self::assertIsString($approvalUrl);
+        self::assertStringStartsWith('https://login.microsoftonline.com/organizations/adminconsent?', $approvalUrl, 'Without an address, any organization.');
     }
 
     public function testAnAdministratorsApprovalReturnsToTheConnectPage(): void

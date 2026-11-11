@@ -72,7 +72,9 @@ final class MailAccountCheckTest extends DatabaseTestCase
 
         self::assertSame('unreachable', $check['imap']);
         self::assertSame('not_checked', $check['smtp']);
-        self::assertStringEndsWith('(127.0.0.1:'.$port.').', (string) $check['detail']);
+        $detail = $check['detail'] ?? null;
+        self::assertIsString($detail);
+        self::assertStringEndsWith('(127.0.0.1:'.$port.').', $detail);
     }
 
     public function testAnAddressThatIsConnectedAlreadyIsSaidAtOnce(): void
@@ -137,6 +139,7 @@ final class MailAccountCheckTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', '/api/v1/mail-account-checks', $this->payload($ports, $password), $this->kim);
         self::assertResponseStatusCodeSame(200);
 
+        /** @var array<string, mixed> */
         return $this->decodedResponse();
     }
 

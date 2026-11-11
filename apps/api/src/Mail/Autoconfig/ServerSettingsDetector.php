@@ -95,13 +95,15 @@ final readonly class ServerSettingsDetector
      */
     private function exchangers(string $domain): array
     {
-        /** @var list<string> */
-        return $this->cache->get('mx.'.hash('sha256', $domain), function (ItemInterface $item) use ($domain): array {
+        /** @var list<string> $exchangers */
+        $exchangers = $this->cache->get('mx.'.hash('sha256', $domain), function (ItemInterface $item) use ($domain): array {
             $exchangers = $this->mx->resolve($domain);
             $item->expiresAfter([] === $exchangers ? self::MISSING_TTL : self::FOUND_TTL);
 
             return $exchangers;
         });
+
+        return $exchangers;
     }
 
     /**
