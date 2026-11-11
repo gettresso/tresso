@@ -108,8 +108,9 @@ final readonly class MessageIngestor
         // nearly every message. Mail filed in Sent is the user's own whatever its From says (an alias used elsewhere).
         $sender = mb_strtolower($from->address);
         $isOwn = isset($ownAddresses[$sender]) || FolderRole::Sent === $folder->getRole();
-        $counterparts = self::others($isOwn ? [...$input->to, ...$input->cc] : [$from, ...$input->to, ...$input->cc], $ownAddresses);
+        // The user's own mail is about its To recipients only; a colleague in Cc does not say whom it answers.
         $needed = $isOwn ? self::others($input->to, $ownAddresses) : [$sender];
+        $counterparts = $isOwn ? $needed : self::others([$from, ...$input->to, ...$input->cc], $ownAddresses);
         $thread = $this->threader->threadFor($account, $messageId, $references, $input->subject, $counterparts, $needed, array_keys($ownAddresses), $receivedAt);
 
         $keyVersion = $input->keyVersion ?? throw new \LogicException('Validation guarantees a key version.');

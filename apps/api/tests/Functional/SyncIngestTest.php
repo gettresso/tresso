@@ -495,6 +495,21 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame(2, $this->rows(Thread::class), 'A colleague the user copies on both is not who the mail is to.');
     }
 
+    public function testSubjectFallbackDoesNotJoinTheUsersMailThroughACopiedColleagueWhoAnswered(): void
+    {
+        $this->folders(['INBOX' => 1, 'Sent' => 1]);
+        $kim = ['address' => 'kim@company.example'];
+        $pieter = ['address' => 'pieter@company.example'];
+
+        $this->messages('Sent', [$this->message('1', ['messageId' => '<sent-1@x>', 'subject' => 'Offer', 'from' => $kim, 'to' => [['address' => 'anna@finance.example']], 'cc' => [$pieter], 'receivedAt' => '2026-10-01T09:00:00+00:00'])]);
+        $this->messages('INBOX', [$this->message('2', ['messageId' => '<pieter-1@x>', 'subject' => 'Re: Offer', 'from' => $pieter, 'to' => [$kim, ['address' => 'anna@finance.example']], 'receivedAt' => '2026-10-02T09:00:00+00:00'])]);
+        self::assertSame(1, $this->rows(Thread::class), 'Pieter answers to all and joins.');
+
+        $this->messages('Sent', [$this->message('3', ['messageId' => '<sent-2@x>', 'subject' => 'Offer', 'from' => $kim, 'to' => [['address' => 'bert@supplier.example']], 'cc' => [$pieter], 'receivedAt' => '2026-10-03T09:00:00+00:00'])]);
+
+        self::assertSame(2, $this->rows(Thread::class), 'The offer to Bert is about Bert, not about Pieter in Cc.');
+    }
+
     public function testSubjectFallbackDoesNotJoinAStrangerThroughSomeoneTheUsersMailWentTo(): void
     {
         $this->folders(['INBOX' => 1, 'Sent' => 1]);
