@@ -25,17 +25,19 @@ type API struct {
 	Reauthorize    bool // answer credentials with 409, as when the provider refused to renew
 	Refreshes      int
 
-	reported       []api.Folder
-	Cursors        map[string]*string
-	locations      map[string]map[string]string // folder -> remote uid -> message key
-	messages       map[string]api.Message       // key -> message
-	Deleted        []string                     // keys of deleted messages, in order
-	Statuses       []string                     // "status: detail"
-	ingested       map[string][]string          // remote uids of every MessageBatch, per folder, in arrival order
-	FolderCalls    int
-	vanishRequests int // change requests that removed messages (or tried to)
+	reported    []api.Folder
+	Cursors     map[string]*string
+	locations   map[string]map[string]string // folder -> remote uid -> message key
+	messages    map[string]api.Message       // key -> message
+	Deleted     []string                     // keys of deleted messages, in order
+	Statuses    []string                     // "status: detail"
+	ingested    map[string][]string          // remote uids of every MessageBatch, per folder, in arrival order
+	FolderCalls int
+	// RefuseMessages, when set, can refuse a message batch the way the API does (an *api.HTTPError).
+	RefuseMessages func(batch api.MessageBatch) error
 	// StatusFailures fails that many status reports before taking them.
 	StatusFailures int
+	vanishRequests int // change requests that removed messages (or tried to)
 }
 
 func New() *API {
@@ -92,6 +94,11 @@ func (f *API) Messages(_ context.Context, _ string, batch api.MessageBatch) (api
 	defer f.mu.Unlock()
 	if len(batch.Messages) > api.MaxMessagesPerBatch {
 		return api.MessageBatchResult{}, fmt.Errorf("batch of %d messages", len(batch.Messages))
+	}
+	if f.RefuseMessages != nil {
+		if err := f.RefuseMessages(batch); err != nil {
+			return api.MessageBatchResult{}, err
+		}
 	}
 	if err := f.storeCursor(batch.Folder, batch.Cursor); err != nil {
 		return api.MessageBatchResult{}, err

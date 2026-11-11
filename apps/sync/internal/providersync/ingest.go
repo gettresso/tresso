@@ -2,11 +2,18 @@ package providersync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
+	"time"
 
 	"tresso/sync/internal/api"
+	"tresso/sync/internal/ingestmsg"
+	"tresso/sync/internal/isolate"
+	"tresso/sync/internal/providerhttp"
+	"tresso/sync/internal/storage"
 )
 
 // MaxRemoteUIDLength is the longest remote uid the API stores. Provider ids are far shorter; a longer one is refused
@@ -33,7 +40,69 @@ type Ingest struct {
 	WorkerID  string
 	// FetchBatch is how many raw messages are downloaded per ingest request (at most api.MaxMessagesPerBatch).
 	FetchBatch int
-	Logger     *slog.Logger
+	// Strikes counts the messages that failed in earlier sessions of the account's run (see package isolate). Nil
+	// starts a count of its own.
+	Strikes *isolate.Strikes
+	Logger  *slog.Logger
+}
+
+func (in *Ingest) strikes() *isolate.Strikes {
+	if in.Strikes == nil {
+		in.Strikes = isolate.NewStrikes()
+	}
+	return in.Strikes
+}
+
+// Unreadable describes a message the provider would not hand over (err) for Messages: once it failed often enough,
+// a placeholder with the given received time and flags stands in for it. Doubtful failures (5xx) only count when
+// delivered other messages of the same request came through.
+func (in *Ingest) Unreadable(ctx context.Context, store storage.Blobs, folder string, failed []UnreadableMessage, delivered int) ([]api.Message, error) {
+	list := make([]isolate.Failed, 0, len(failed))
+	for _, f := range failed {
+		list = append(list, isolate.Failed{
+			Folder:   folder,
+			UID:      f.ID,
+			Err:      f.Err,
+			Doubtful: Doubtful(f.Err),
+			Placeholder: func(ctx context.Context) (api.Message, error) {
+				return ingestmsg.Unreadable(ctx, store, in.AccountID, f.ID, f.ID, f.ReceivedAt, f.Flags)
+			},
+		})
+	}
+	return isolate.Unreadable(ctx, in.strikes(), list, delivered, in.Logger)
+}
+
+// UnreadableMessage is a message the provider would not hand over.
+type UnreadableMessage struct {
+	ID         string
+	ReceivedAt time.Time
+	Flags      api.Flags
+	Err        error
+}
+
+// AboutMessage reports whether a provider error concerns the one message asked for rather than the account or the
+// connection: an answer other than 401 (the token), 404 (the message is gone, handled by the callers), 429
+// (throttling) and lost access. Those end the session as before.
+func AboutMessage(err error) bool {
+	if errors.Is(err, providerhttp.ErrUnauthorized) || errors.Is(err, api.ErrReauthorize) || errors.Is(err, ErrAccessDenied) {
+		return false
+	}
+	var status *providerhttp.StatusError
+	if !errors.As(err, &status) {
+		return false
+	}
+	switch status.StatusCode {
+	case http.StatusUnauthorized, http.StatusNotFound, http.StatusTooManyRequests:
+		return false
+	}
+	return status.StatusCode >= 400
+}
+
+// Doubtful reports whether a failure may say nothing about the message itself: the provider failed (5xx) also after
+// providerhttp's retries.
+func Doubtful(err error) bool {
+	var status *providerhttp.StatusError
+	return errors.As(err, &status) && status.StatusCode >= 500
 }
 
 // ApplyFlags reports flags for messages in a folder. The messages the API has no location for in that folder are
@@ -81,11 +150,16 @@ func (in *Ingest) Messages(ctx context.Context, folder string, messages []api.Me
 		if end == len(messages) {
 			batch.Cursor = cursor
 		}
-		result, err := in.API.Messages(ctx, in.AccountID, batch)
-		if err != nil {
+		send := func(ctx context.Context, messages []api.Message, cursor *string) error {
+			result, err := in.API.Messages(ctx, in.AccountID, api.MessageBatch{WorkerID: in.WorkerID, Folder: folder, Messages: messages, Cursor: cursor})
+			if err == nil {
+				in.Logger.Debug("ingested", "folder", folder, "stored", result.Stored, "linked", result.Linked, "updated", result.Updated)
+			}
 			return err
 		}
-		in.Logger.Debug("ingested", "folder", folder, "stored", result.Stored, "linked", result.Linked, "updated", result.Updated)
+		if err := isolate.Batch(ctx, send, in.strikes(), folder, batch.Messages, batch.Cursor, in.Logger); err != nil {
+			return err
+		}
 		if end == len(messages) {
 			break
 		}
