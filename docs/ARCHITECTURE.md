@@ -170,12 +170,13 @@ from the API that a refresh and one retry do not cure, ends the session. A netwo
 the whole answer) or a 5xx keeps the tokens; the request fails with an error that says the next one tries again. When
 the answer was lost (a network error or the timeout, not an error answer), the client asks once more after 2 seconds:
 the server may have rotated the token already, and answers the old one with the same new pair for 30 seconds. A device
-that sleeps longer than that between the lost answer and the retry is signed out at its next request; the client
-cannot prevent that. Signing out revokes the refresh token at `POST /oauth/revoke` (RFC 7009) before the client forgets
-it, best effort: an unreachable server does not keep the user signed in. After a sign-out (not after a session that
-expired) the device remembers it, and its next sign-in sends `prompt=login`, so the sign-in pages ask for the password
-again although they may still remember the browser; the mark goes once a sign-in completes, not when the authorization
-page is opened again.
+that sleeps longer than that between the lost answer and the retry, or a hidden tab whose timers the browser holds
+back as long, is signed out at its next request; the client cannot prevent that. Signing out revokes the refresh token
+at `POST /oauth/revoke` (RFC 7009) before the client forgets it, best effort (5 seconds): an unreachable server does not
+keep the user signed in. After a sign-out (not after a session that expired) the device remembers it, and every
+authorization request it starts until a sign-in completes carries `prompt=login` (also one opened again, and on the
+web, where the sign-out form already ended the browser session: it costs nothing there and covers a sign-out whose
+form could not be sent). The sign-in pages then ask for the password although they may still remember the browser.
 
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
 `settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
@@ -1245,9 +1246,16 @@ brings a sign-in, refresh or sign-out of one tab to the others; a tab whose user
 without Web Locks refreshes without the lock, which is as safe as a single tab. A sign-out revokes and forgets the
 tokens under the same lock, after reading the stored set again, and a refresh whose answer arrives after the stored set
 is gone drops that answer and revokes it, so a refresh in one tab never signs the user back in after a sign-out in
-another. Signing out also ends the browser session of the sign-in pages, remember-me cookie included, by submitting a
+another. The waits are bounded, as a tab the browser suspended while it held the lock may hold it for long: a sign-out
+waits up to 5 seconds for the lock (and up to 5 seconds for the server to stop the pushes), a refresh up to 60 seconds
+(a healthy holder needs at most 42); then each goes on without the lock, as it does when the browser refuses the lock,
+and the check of the stored set after a refresh keeps that safe. While a sign-out runs its button says so; a failure is
+shown. Signing out also ends the browser session of the sign-in pages, remember-me cookie included, by submitting a
 top-level form (POST) to `/logout` on the sign-in address; the server accepts it for the app's origin and sends the
-browser back to the app. The desktop app does not open the system browser to sign out: the sign-in pages may still
+browser back to the app. When the sign-in pages are on the API's address and the API did not answer the revocation,
+the form is not sent (it would only show the browser's error page): the app shows its sign-in screen, and the next
+sign-in asks for the password. A separate sign-in address cannot be checked from the page (the CSP allows no
+connection to it), so the form goes there whatever the API did. The desktop app does not open the system browser to sign out: the sign-in pages may still
 remember that browser, which is why its next sign-in asks for the password (`prompt=login`, above). The
 sign-in pages may live on another address than the API (`TRESSO_AUTH_URL`, `VITE_AUTH_URL`); `/oauth/authorize`
 and `/logout` go there, the token and revocation endpoints stay on the API address. Because a script injected into
