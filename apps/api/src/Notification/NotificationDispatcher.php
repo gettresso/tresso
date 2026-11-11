@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Notification;
 
 use App\Billing\Entitlements;
-use App\Calendar\SelfAddresses;
 use App\Entity\NotificationDelivery;
 use App\Entity\NotificationDevice;
 use App\Entity\User;
@@ -52,7 +51,7 @@ final readonly class NotificationDispatcher
         private WebPushSender $webPush,
         private ExpoPushSender $expo,
         private EmailNotifier $email,
-        private SelfAddresses $selfAddresses,
+        private NotificationAddresses $notificationAddresses,
         private LoggerInterface $logger,
         private Entitlements $entitlements,
     ) {
@@ -168,7 +167,7 @@ final readonly class NotificationDispatcher
     {
         $chosen = $this->preferences->forUser($user)->getEmailAddress();
 
-        return null !== $chosen && \in_array($chosen, $this->selfAddresses->of($user), true) ? $chosen : $user->getEmail();
+        return null !== $chosen && \in_array($chosen, $this->notificationAddresses->of($user), true) ? $chosen : $user->getEmail();
     }
 
     private function record(string $deliveryKey, string $target, ?NotificationDevice $device, PushResult $result): void

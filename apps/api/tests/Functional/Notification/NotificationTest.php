@@ -783,6 +783,32 @@ final class NotificationTest extends DatabaseTestCase
         self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['emailAddress']);
     }
 
+    public function testAMailAccountMustHaveSyncedBeforeNotificationsGoToIt(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/mail-accounts', [
+            'emailAddress' => 'victim@elsewhere.example',
+            'displayName' => 'Not mine',
+            'username' => 'victim@elsewhere.example',
+            'password' => 'app-password-1',
+            'imap' => ['host' => 'imap.elsewhere.example', 'port' => 993, 'security' => 'tls'],
+            'smtp' => ['host' => 'smtp.elsewhere.example', 'port' => 465, 'security' => 'tls'],
+        ], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $accountId = $this->responseString('id');
+
+        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'victim@elsewhere.example'], \JSON_THROW_ON_ERROR));
+        self::assertResponseStatusCodeSame(422, 'Typing an address into an account that never signed in proves nothing.');
+
+        $worker = $this->workerHeaders('sync:lease sync:ingest');
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'w1'], $worker);
+        self::assertResponseIsSuccessful();
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$accountId.'/status', ['workerId' => 'w1', 'status' => 'active'], $worker);
+        self::assertResponseIsSuccessful();
+
+        $this->patchSettings(['emailAddress' => 'victim@elsewhere.example']);
+        self::assertSame('victim@elsewhere.example', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress'], 'Once it synced, the user holds that mailbox.');
+    }
+
     public function testFloatingTimesAreReadInTheUsersZone(): void
     {
         $this->patchSettings(['timeZone' => 'Europe/Amsterdam']);

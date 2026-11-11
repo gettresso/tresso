@@ -419,6 +419,8 @@ final class DailyBriefTest extends DatabaseTestCase
     public function testTheEmailDigestGoesOutOnceToTheNotificationAddress(): void
     {
         $this->setZone('Europe/Amsterdam');
+        // Notifications only go to a mail account that synced (the user proved to hold it).
+        $this->ingest('status', ['status' => 'active']);
         $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => self::ME], \JSON_THROW_ON_ERROR));
         self::assertResponseIsSuccessful();
         $this->client->jsonRequest('PUT', '/api/v1/daily-brief-settings', $this->settings(['channels' => ['email']]), $this->kim);
@@ -493,6 +495,7 @@ final class DailyBriefTest extends DatabaseTestCase
 
     public function testTheDigestFallsBackToTheSignInAddressWhenTheAccountIsGone(): void
     {
+        $this->ingest('status', ['status' => 'active']);
         $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => self::ME], \JSON_THROW_ON_ERROR));
         $this->client->jsonRequest('PUT', '/api/v1/daily-brief-settings', $this->settings(['channels' => ['email']]), $this->kim);
         $this->ingestKnowMail();
