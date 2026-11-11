@@ -43,6 +43,10 @@ export function syncedDraft(local: Draft | null | undefined, draft: SyncedDraft)
     }
     return { ...local, remoteVersion, attachments }
   }
+  if (local != null && draft.version < local.version) {
+    // A page the server read before this device's last upload, applied after its answer: the copy is newer already.
+    return null
+  }
   return {
     ...draft,
     updatedAt: Date.parse(draft.updatedAt),

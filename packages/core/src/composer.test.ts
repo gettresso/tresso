@@ -689,11 +689,15 @@ describe('Composer', () => {
     await vi.advanceTimersByTimeAsync(10)
     expect(changes).toBe(afterFirst + 1)
 
-    // Put away without edits, nothing changed in the copy.
+    // Put away with its edits saved already: nothing is written, but the lists are told, since autosaves did not.
     await composer.openDraft((await store.drafts())[0]!.id)
+    composer.update({ subject: 'Four' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const written = (await store.draft(composer.state.draft!.id))!.updatedAt
     composer.close()
     await vi.advanceTimersByTimeAsync(10)
-    expect(changes).toBe(afterFirst + 1)
+    expect(changes).toBe(afterFirst + 2)
+    expect((await store.draft((await store.drafts())[0]!.id))!.updatedAt).toBe(written)
   })
 
   it('puts the draft on the server before attaching files, and shows them as they arrive', async () => {
@@ -890,6 +894,27 @@ describe('Composer', () => {
     expect(await store.draft(id)).toBeNull()
   })
 
+  it("keeps the form on the user's newest text when a page with an older version of it arrives late", async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'First' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const id = composer.state.draft!.id
+    // The server read this page before the second upload; it is applied after that upload's answer.
+    const older = { ...api.drafts.get(id)! }
+    composer.update({ subject: 'Second' })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await store.draft(id)).toMatchObject({ subject: 'Second', version: 2, pendingSave: false })
+
+    await store.apply(page({ cursor: 2, drafts: [older] }))
+    expect(await store.draft(id)).toMatchObject({ subject: 'Second', version: 2 })
+    // Even a copy that took the older version (as an older store would) does not move the form back.
+    await store.saveDraft({ ...(await store.draft(id))!, subject: 'First', version: 1 })
+    await composer.followUp()
+
+    expect(composer.state.draft).toMatchObject({ subject: 'Second' })
+    expect(notices.filter((notice) => notice.text.includes('changed on another device'))).toEqual([])
+  })
+
   it('keeps edits typed while the copy is read, rather than showing what was stored before them', async () => {
     composer.openNew([{ address: 'anna@example.test', name: null }])
     composer.update({ subject: 'First' })
@@ -1079,6 +1104,38 @@ describe('Composer', () => {
 
       expect(sent[0]!.outgoingId).toBeDefined()
       expect(sent[0]!.outgoingId).not.toBe(tried[0]!.outgoingId)
+    })
+
+    it('is made anew when the server refused the id itself', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      const id = composer.state.draft!.id
+      sendFails = new ApiFailure(422, { outgoingId: 'The id lies in the future; check the clock of this device.' })
+      await composer.send()
+      expect(await store.draft(id)).toMatchObject({ sendAttemptId: null })
+
+      sendFails = null
+      await composer.send()
+
+      expect(sent[0]!.outgoingId).not.toBe(tried[0]!.outgoingId)
+    })
+
+    it('recognises a send whose answer was lost once the message shows up, and closes its form', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Lost answer' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      const attempt = tried[0]!.outgoingId!
+      // The form saves what the failed send left to write.
+      await vi.advanceTimersByTimeAsync(1000)
+
+      // The server did queue it: the delta brings the message with the send's id.
+      await store.apply(page({ cursor: 2, outgoingMessages: [{ ...outgoing('scheduled'), id: attempt }] }))
+      await composer.followUp()
+
+      expect(await store.draft(id)).toMatchObject({ outgoingId: attempt, sendAttemptId: null, pendingSave: false })
+      expect(composer.state.draft).toBeNull()
+      expect(notices.map((notice) => notice.text)).toContain('"Lost answer" reached the server after all and is on its way.')
     })
 
     it('is dropped by an undo, so sending again is a new send', async () => {
