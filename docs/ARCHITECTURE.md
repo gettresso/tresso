@@ -1493,9 +1493,17 @@ Shared TypeScript lives in `packages/core`: domain types, the OAuth flow, and th
 protocol, so every client syncs the same way:
 
 - `SyncEngine` pulls the delta into a `SyncStore` (each page and its cursor in one transaction). Pulls never overlap;
-  a request during a pull makes it go round once more.
+  a request during a pull makes it go round once more. A pull that failed is tried again by the engine itself after
+  2 s, 5 s, 15 s and then every minute until one works (not after a 401, 402 or 403, nor while the copy closes), so
+  "Sync stopped" does not stay on a quiet mailbox until the next realtime notification. The clients run the retry
+  through their own pull, which shows it like any other, and stop the engine with the copy.
 - `RealtimeClient` reads the hub through `fetch()` with the token as bearer, reconnects with backoff, renews the token
-  before it expires, and asks for a pull on every (re)connect, because missed notifications are not replayed.
+  before it expires, and asks for a pull on every (re)connect, because missed notifications are not replayed. The
+  token's `expiresAt` is the server's time read against the device's clock, so a token is used at least 30 s before
+  it is renewed (a clock that runs ahead would otherwise make every token look expired, and the client would ask for
+  tokens in a loop), and a renewal before the hub even answered waits a moment before the next try. A stream that
+  stays silent for 100 s (two and a half of the hub's 40 s heartbeats) is taken for dead and opened again, since a
+  connection lost without being closed (a laptop that slept, a proxy that dropped it) never ends a read.
 - `mailFrameDocument` wraps a sanitized body in the document for the sandboxed frame, with its Content-Security-Policy.
 
 Every client keeps a copy of the user's mail behind one interface, `MailStore` in `packages/core`: the browser in
@@ -1525,7 +1533,9 @@ Both stores keep the smart inboxes and list a smart inbox across all accounts th
 whether the conversation is in an inbox or junk folder, and date (`ListScope`: an inbox or a smart inbox).
 Conversations in the Spam smart inbox stay out of the inboxes, also when the server left them there
 (`summarizeConversation`). A correction shows at once (`classifyThread`) and is put back when the server refuses
-(`restoreThread`), unless the delta changed the conversation since. In the web client the sidebar lists the smart
+(`restoreThread`), unless the delta changed the conversation since. A conversation corrected twice before either
+request was answered goes back only once both were refused, to how it was before the first (`OpenClassifications`).
+In the web client the sidebar lists the smart
 inboxes with unread counts, the list and the reading pane show the verdict and change it or move the conversation,
 and Settings > Smart inboxes edits them and lists the remembered senders. The IndexedDB copy moved to version 5 and the
 SQLite copy to schema 3; both sync again from the start. Todos (3.14) moved them to version 6 and schema 4, batched
@@ -1542,7 +1552,19 @@ and the SQLite copy to schema 5; both sync again from the start.
 Drafts in the web client are saved on the device first and uploaded right after (one upload at a time per
 draft). Edits made here are never overwritten by the delta: when another device saved a newer version, the compose
 window asks whether to keep this version or take the other one. Drafts written before they were synced are
-uploaded after the update.
+uploaded after the update. The composer remembers the text and version each open draft was opened on: while nothing
+typed waits to be saved, another device's version that the delta brings replaces the form (with a notice), and a
+draft sent or deleted there closes it; edits typed on the older text are not laid over the newer version but noted as
+a conflict (also when sending), and closing a draft without edits writes nothing. When the other version is gone by
+the time the user chooses (sent or deleted on another device, which also clears the version noted on the edits), the
+edits here become a new draft; a choice that fails (offline) says so and can be made again. A create the server
+already has (its answer was lost, or a rebuilt copy reset the draft to version 0) is recognised by its text rather
+than retried for ever. A cancelled message (Undo, or Cancel in the Outbox, on any device) becomes a draft again in
+the copy at once, so it shows in Drafts whatever the user does next. A forward whose original cannot be loaded is not
+opened (a hand-over then sends nothing); a reply opens quoting the snippet and says the quote is incomplete. The few
+seconds of the undo window are a send time on the server's clock (`ComposerDeps.now`, `ServerClock` from the `Date`
+header of answers) while the notice counts them on the device's. A message the server took counts as sent also when
+noting it on the device fails.
 
 Message actions in the web client: opening a conversation reads it; the conversation's buttons archive, trash, mark
 unread, flag and move it (shortcuts E, #, U and S, not while typing or writing), and archiving, trashing or moving
@@ -1553,7 +1575,8 @@ triage, in the reading pane and in the bulk bar. The undo moves back only what t
 into the one folder it came from (`fromFolderId` on the move); for a message that was in several folders (Gmail's
 All Mail aside) no exact undo exists, so none is offered. Each action changes the local copy first
 (`applyAction` of the mail store), so lists update at once; when the server does not take it (for a large selection, the
-batches it did not take), it is put back, except on messages the delta updated since.
+batches it did not take), it is put back part by part (read, flagged, folders), each part only while it still shows
+what the action made of it, so a second action on the same messages or a change the delta brought is kept.
 
 Bulk actions in the web client: conversations are selected with their checkboxes (shift selects a range), by age
 from the list's Select menu, or as everything from the senders of the selected ones; the last two search the whole
