@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { ConnectedApp } from '@tresso/core'
 import { useAuthStore } from '@/stores/auth'
@@ -22,6 +22,14 @@ export const useConnectedAppsStore = defineStore('connectedApps', () => {
     await auth.send<void>('DELETE', `/api/v1/connected-apps/${encodeURIComponent(id)}`)
     apps.value = apps.value.filter((app) => app.id !== id)
   }
+
+  // The desktop app signs another user in without a reload: nothing of the previous one may show meanwhile.
+  watch(
+    () => auth.generation,
+    () => {
+      apps.value = []
+    },
+  )
 
   return { apps, load, disconnect }
 })

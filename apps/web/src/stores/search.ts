@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { SearchHit, SearchResults } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
@@ -71,6 +71,22 @@ export const useSearchStore = defineStore('search', () => {
       }
     }
   }
+
+  // The desktop app signs another user in without a reload: nothing of the previous one may show meanwhile. A search
+  // still under way is dropped with it.
+  watch(
+    () => auth.generation,
+    () => {
+      request++
+      query.value = ''
+      hits.value = []
+      totalHits.value = 0
+      page.value = 0
+      totalPages.value = 0
+      loading.value = false
+      error.value = null
+    },
+  )
 
   return { query, hits, totalHits, page, totalPages, loading, error, run, more }
 })

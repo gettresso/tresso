@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { DailyBriefSettings, DailyBriefSettingsUpdate } from '@tresso/core'
 import { useAuthStore } from '@/stores/auth'
@@ -36,6 +36,14 @@ export const useBriefStore = defineStore('brief', () => {
       // Without storage (a private window) the brief shows as new again after a reload; nothing else depends on it.
     }
   }
+
+  // The desktop app signs another user in without a reload: nothing of the previous one may show meanwhile.
+  watch(
+    () => auth.generation,
+    () => {
+      settings.value = null
+    },
+  )
 
   return { settings, seenBriefId, load, save, seen }
 })

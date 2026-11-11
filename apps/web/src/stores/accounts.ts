@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { LocationQuery } from 'vue-router'
 import type {
@@ -121,6 +121,16 @@ export const useAccountsStore = defineStore('accounts', () => {
   function suggest(emailAddress: string): Promise<SuggestedServerSettings> {
     return auth.api<SuggestedServerSettings>(`/api/v1/mail-server-settings?${new URLSearchParams({ emailAddress })}`)
   }
+
+  // The desktop app signs another user in without a reload: nothing of the previous one may show meanwhile.
+  watch(
+    () => auth.generation,
+    () => {
+      accounts.value = []
+      loaded.value = false
+      providers.value = []
+    },
+  )
 
   return { accounts, loaded, load, get, create, update, remove, suggest, providers, loadProviders, startProviderSignIn, openProviderSignIn, finishProviderSignIn }
 })
