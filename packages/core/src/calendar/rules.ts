@@ -1,4 +1,4 @@
-import { DAY, recurrenceKey, toInstant, wallParts, weekdayOf, utc } from './zones'
+import { DAY, formatDate, isTimeZone, parseRecurrenceKey, recurrenceKey, toInstant, toWall, wallParts, weekdayOf, utc } from './zones'
 
 /** The ways an event can repeat that the editor offers; anything else is shown as it is and kept unless changed. */
 export type RepeatPreset = 'none' | 'daily' | 'weekdays' | 'weekly' | 'biweekly' | 'monthlyByDay' | 'monthlyByDate' | 'yearly' | 'custom'
@@ -72,8 +72,12 @@ function normalize(rule: string): string {
     .join(';')
 }
 
-/** The end of a stored rule. */
-export function endOf(rule: string | null): RepeatEnd {
+/**
+ * The end of a stored rule. An UNTIL in UTC (a timed series in a zone) is read as the date it falls on in `zone`, the
+ * series' own zone, so it reads back what {@link withEnd} wrote; a date, a floating time, or a series without a known
+ * zone is read as written.
+ */
+export function endOf(rule: string | null, zone: string | null = null): RepeatEnd {
   if (rule === null) {
     return { kind: 'never' }
   }
@@ -81,11 +85,15 @@ export function endOf(rule: string | null): RepeatEnd {
   if (count !== undefined) {
     return { kind: 'count', count: Number(count) }
   }
-  const until = /(?:^|;)UNTIL=(\d{4})(\d{2})(\d{2})/.exec(rule)
-  if (until !== null) {
-    return { kind: 'until', date: `${until[1]}-${until[2]}-${until[3]}` }
+  const until = /(?:^|;)UNTIL=((\d{4})(\d{2})(\d{2})(T\d{6}Z?)?)/.exec(rule)
+  if (until === null) {
+    return { kind: 'never' }
   }
-  return { kind: 'never' }
+  const instant = until[5]?.endsWith('Z') && zone !== null && isTimeZone(zone) ? parseRecurrenceKey(until[1]!) : null
+  if (instant !== null) {
+    return { kind: 'until', date: formatDate(toWall(instant, zone!)) }
+  }
+  return { kind: 'until', date: `${until[2]}-${until[3]}-${until[4]}` }
 }
 
 /**
@@ -154,8 +162,11 @@ function list(words: string[]): string {
   return words.length <= 1 ? (words[0] ?? '') : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`
 }
 
-/** A plain sentence for any rule ("Weekly on Monday and Wednesday, until 31 December 2026"). */
-export function describeRule(rule: string): string {
+/**
+ * A plain sentence for any rule ("Weekly on Monday and Wednesday, until 31 December 2026"). `zone` is the series' own
+ * zone, which its end date is read in (see {@link endOf}).
+ */
+export function describeRule(rule: string, zone: string | null = null): string {
   const parts = new Map(rule.split(';').map((part) => part.split('=') as [string, string]))
   const freq = parts.get('FREQ') ?? ''
   const interval = Number(parts.get('INTERVAL') ?? 1)
@@ -184,7 +195,7 @@ export function describeRule(rule: string): string {
   if (byMonthDay !== undefined) {
     sentence += ` on day ${list(byMonthDay.split(','))}`
   }
-  const end = endOf(rule)
+  const end = endOf(rule, zone)
   if (end.kind === 'count') {
     sentence += `, ${end.count} ${end.count === 1 ? 'time' : 'times'}`
   } else if (end.kind === 'until') {

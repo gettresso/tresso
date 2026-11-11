@@ -69,7 +69,7 @@ function initials(name: string | null, address: string): string {
 
     <p class="when">{{ occurrenceWhen(occurrence, zone, toWall(now, zone)) }}</p>
     <p v-if="ownZone" class="hint">{{ ownZone }}</p>
-    <p v-if="rule" class="line"><AppIcon name="repeat" :size="15" /> {{ describeRule(rule) }}</p>
+    <p v-if="rule" class="line"><AppIcon name="repeat" :size="15" /> {{ describeRule(rule, occurrence.timeZone) }}</p>
     <p v-if="event.status === 'cancelled'" class="cancelled" role="status">This event was cancelled.</p>
     <p v-if="event.syncError" class="error" role="alert">Not saved at the provider: {{ event.syncError }}</p>
 

@@ -91,7 +91,7 @@ const heading = computed(() => {
 const repeats = computed(() => {
   const value = invitation.value
   if (value === null) return null
-  if (value.recurrence !== null) return describeRule(value.recurrence)
+  if (value.recurrence !== null) return describeRule(value.recurrence, 'dateTime' in value.start ? value.start.timeZone : null)
   return value.recurrenceId !== null ? 'One event of a series.' : null
 })
 

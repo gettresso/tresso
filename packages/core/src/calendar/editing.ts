@@ -1,6 +1,6 @@
 import type { NotificationChannel } from '../notifications'
 import { sameRule } from './rules'
-import type { Occurrence } from './occurrences'
+import { zoneOr, type Occurrence } from './occurrences'
 import type { AttendeeRole, EventStatus, EventTime, SyncedCalendar, SyncedCalendarEvent } from './types'
 import { DAY, formatDate, formatDateTime, parseRecurrenceKey, parseWall, toWall } from './zones'
 
@@ -168,7 +168,14 @@ function timeAt(instant: number, allDay: boolean, date: string | null, own: Even
     return { date }
   }
   const zone = 'dateTime' in own ? own.timeZone : null
-  return { dateTime: formatDateTime(toWall(instant, zone ?? readerZone)), timeZone: zone }
+  if (zone === null) {
+    // Floating: the same clock reading wherever it is read.
+    return { dateTime: formatDateTime(toWall(instant, readerZone)), timeZone: null }
+  }
+  // A zone the platform does not know is shown in the reader's (as the views show it), and saved so: the time saved
+  // is the one the user saw.
+  const reading = zoneOr(zone, readerZone)
+  return { dateTime: formatDateTime(toWall(instant, reading)), timeZone: reading }
 }
 
 /** The editor's starting values for a stored event (series, override or single event). */

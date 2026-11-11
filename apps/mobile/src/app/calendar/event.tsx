@@ -74,7 +74,7 @@ export default function EventScreen() {
         </Text>
         <Text style={styles.when}>{occurrenceWhen(occurrence, zone, toWall(now, zone))}</Text>
         {ownZone !== null && <Text style={styles.muted}>{ownZone}</Text>}
-        {rule !== null && <Text style={styles.muted}>{describeRule(rule)}</Text>}
+        {rule !== null && <Text style={styles.muted}>{describeRule(rule, occurrence.timeZone)}</Text>}
       </View>
 
       {event.conference !== null && (
