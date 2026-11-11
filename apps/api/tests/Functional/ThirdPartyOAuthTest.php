@@ -775,6 +775,23 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertSame('invalid_grant', $this->decodedResponse()['error'] ?? null);
     }
 
+    public function testPromptLoginAsksForThePasswordAndThenTheConsentOnce(): void
+    {
+        $clientId = $this->registeredClientId();
+        $this->signIn('kim@example.test');
+        $verifier = $this->verifier();
+
+        $this->authorize($clientId, ['signatures:read'], $verifier, 'prompted', ['prompt' => 'login']);
+        self::assertResponseRedirects('http://localhost/login', null, 'An app that is not ours may ask for it too.');
+        $crawler = $this->client->followRedirect();
+        $this->client->submit($crawler->selectButton('Sign in')->form(['_username' => 'kim@example.test', '_password' => self::DEFAULT_PASSWORD]));
+        $consent = $this->client->followRedirect();
+
+        self::assertResponseIsSuccessful('After the password, the consent page.');
+        $code = $this->answer($consent, 'Allow', 'prompted');
+        self::assertNotSame('', $this->exchange($clientId, $code, $verifier)['access_token'], 'Its answer, posted to the same address, is not asked again.');
+    }
+
     public function testAllowingTwiceAtOnceKeepsOneConsentWithEveryScope(): void
     {
         $clientId = $this->registeredClientId();

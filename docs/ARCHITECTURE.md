@@ -355,7 +355,9 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
 
 - **Cross-site posts.** A POST to `/login` without the form's CSRF token gets the sign-in page with a 403 before the
   firewall sees it (`SignInGuard`), so another site cannot clear the remember-me cookie or spend the login attempts of
-  a browser (the firewall would count such a post as a failed sign-in).
+  a browser (the firewall would count such a post as a failed sign-in). A refused POST to `/login` or `/logout` that
+  came without the session cookie, as one from another site does, gets a 303 to the page instead, so no new session
+  cookie replaces the browser's.
 - **Password guessing.** Five wrong passwords for one address from one IP address, or 25 from one IP address, lock
   the form for 15 minutes (Symfony's `login_throttling`, in Redis through `cache.rate_limiter_shared`, so the limit
   holds across API instances); the page then says to try again later, and even the right password waits.
@@ -377,12 +379,16 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   after a sign-out the user asked for, they add `prompt=login` (parameter `prompt`, value `login`, as in OpenID
   Connect) to their next authorization request, and only to that one; a sign-in that follows a failed refresh or an
   expired token does not send it. The web app does not need it: it ends the browser's sign-in itself (`POST /logout`).
-  The server then ends the browser's sign-in (a new session, the remember-me cookie cleared) and shows the sign-in
-  form; whoever signs in there, the same user or another (that is how someone switches account), gets the code for
-  that request, which goes on once without asking again (`PromptLogin`: the form's sign-in marks that one request,
-  by a hash of its query, in the new session). A mark is never a parameter, so nobody skips the password by adding
-  one. Any app may send it; the metadata lists `prompt_values_supported: ["login"]`. Other `prompt` values are
-  ignored.
+  The server then shows the sign-in form; signing in there replaces the browser's sign-in (a new session id, the old
+  remember-me cookie cancelled), and whoever signs in, the same user or another (that is how someone switches
+  account), gets the code for that request, which goes on once without asking again (`PromptLogin`: the form's
+  sign-in marks that one request, by a hash of its query, in the session). A mark is never a parameter, so adding one
+  skips nothing. Nothing ends before someone signs in on the form, so a link with `prompt=login` on another site signs
+  nobody out. `prompt=login` is a request by the app, not a lock: only the authorization request that carries it waits
+  for the password; the browser stays signed in for every other request (the web app's included) until someone
+  answers such a request or signs out with `POST /logout`. The consent page's POST back to the same address is not
+  asked again, since it comes after that sign-in. Any app may send it; the metadata lists
+  `prompt_values_supported: ["login"]`. `prompt` may be a space separated list; other values are ignored.
 
 ### 3.3 Mail account credentials
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Security;
 
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
+use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
@@ -17,7 +18,8 @@ use Twig\Environment;
  * of the sign-in attempt: a post with a wrong token there is a failed sign-in, which clears the browser's remember-me
  * cookie and counts against the login limit for the posted address from that browser's address. So another site
  * could sign people out, or lock their form, by posting to /login. Here such a post gets the sign-in page again with
- * a 403 and nothing else happens.
+ * a 403, or, when it came without the session cookie (as a post from another site does), a 303 to the sign-in page,
+ * so that no new session cookie replaces the browser's either.
  */
 #[AsEventListener(event: KernelEvents::REQUEST, priority: self::PRIORITY)]
 final readonly class SignInGuard
@@ -38,6 +40,13 @@ final readonly class SignInGuard
     {
         $request = $event->getRequest();
         if (!$event->isMainRequest() || self::ROUTE !== $request->attributes->get('_route') || !$request->isMethod('POST')) {
+            return;
+        }
+        // Without the session cookie no token can match, and rendering the page would start a new session whose cookie
+        // replaces the browser's: send it to the sign-in page, a navigation that carries its cookies.
+        if (!$request->hasPreviousSession()) {
+            $event->setResponse(new RedirectResponse($request->getBaseUrl().$request->getPathInfo(), Response::HTTP_SEE_OTHER));
+
             return;
         }
         if ($this->csrfTokens->isTokenValid(new CsrfToken(self::CSRF_TOKEN_ID, $request->request->getString('_csrf_token')))) {

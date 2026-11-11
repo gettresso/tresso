@@ -296,11 +296,12 @@ final class SignInFlowTest extends DatabaseTestCase
 
         $this->client->request('GET', $request);
         self::assertResponseRedirects('http://localhost/login', null, 'A live session is not enough.');
-        self::assertNull($this->client->getCookieJar()->get('REMEMBERME'), 'The remembered sign-in ends.');
+        self::assertNotNull($this->client->getCookieJar()->get('REMEMBERME'), 'Nothing ends before someone signs in.');
         $this->client->followRedirect();
         self::assertSelectorExists('input[name="_password"]');
 
-        $this->client->submit($this->client->getCrawler()->selectButton('Sign in')->form(['_username' => self::EMAIL, '_password' => self::PASSWORD]));
+        $this->submitSignIn(self::EMAIL, self::PASSWORD, rememberMe: false);
+        self::assertNull($this->client->getCookieJar()->get('REMEMBERME'), 'The new sign-in replaced the remembered one.');
         self::assertResponseRedirects();
         $back = (string) $this->client->getResponse()->headers->get('Location');
         self::assertStringStartsWith('http://localhost/oauth/authorize?', $back, 'Back to the same request.');
@@ -317,6 +318,59 @@ final class SignInFlowTest extends DatabaseTestCase
 
         $this->client->request('GET', $request);
         self::assertResponseRedirects('http://localhost/login', null, 'The answer was for that one request: asking again asks again.');
+    }
+
+    public function testAPromptLoginRequestNobodyAnswersLeavesTheBrowserSignedIn(): void
+    {
+        $this->signIn();
+
+        // A link on any site to such a request, and the user goes away.
+        $this->client->request('GET', $this->authorizeUrl(bin2hex(random_bytes(32)), ['prompt' => 'login']));
+        self::assertResponseRedirects('http://localhost/login');
+
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'Still signed in.');
+        $this->dropSession();
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'And still remembered.');
+    }
+
+    public function testPromptLoginIsReadFromASpaceSeparatedList(): void
+    {
+        $this->signIn();
+
+        $this->client->request('GET', $this->authorizeUrl(bin2hex(random_bytes(32)), ['prompt' => 'consent login']));
+        self::assertResponseRedirects('http://localhost/login');
+        $this->client->request('GET', $this->authorizeUrl(bin2hex(random_bytes(32)), ['prompt' => 'consent']));
+        self::assertStringStartsWith($this->webRedirectUri().'?', (string) $this->client->getResponse()->headers->get('Location'), 'Other values ask for nothing.');
+    }
+
+    public function testAWrongPasswordOnTheWayKeepsTheRequestWaiting(): void
+    {
+        $this->signIn();
+        $verifier = bin2hex(random_bytes(32));
+        $this->client->request('GET', $this->authorizeUrl($verifier, ['prompt' => 'login']));
+        $this->client->followRedirect();
+
+        $this->submitSignIn(self::EMAIL, 'not-the-password');
+        $this->client->followRedirect();
+        self::assertSelectorTextContains('.error', 'Invalid credentials');
+        $this->submitSignIn(self::EMAIL, self::PASSWORD);
+        $this->client->followRedirect();
+
+        self::assertSame(self::EMAIL, $this->meWithCode((string) $this->client->getResponse()->headers->get('Location'), $verifier));
+    }
+
+    public function testARefusedPostWithoutTheSessionCookieStartsNoSession(): void
+    {
+        $this->signIn();
+        $this->dropSession();
+
+        foreach (['/login', '/logout'] as $path) {
+            $this->client->request('POST', $path, ['_username' => self::EMAIL, '_password' => 'x', '_csrf_token' => 'forged'], server: ['HTTP_ORIGIN' => 'https://evil.example']);
+            self::assertResponseStatusCodeSame(303, $path);
+            self::assertResponseRedirects('/'.ltrim($path, '/'));
+            self::assertSame([], $this->client->getResponse()->headers->getCookies(), 'No new session cookie: '.$path);
+        }
+        self::assertNotNull($this->client->getCookieJar()->get('REMEMBERME'));
     }
 
     public function testPromptLoginLetsAnotherUserSignIn(): void
@@ -575,6 +629,18 @@ final class SignInFlowTest extends DatabaseTestCase
     private function me(string $accessToken): void
     {
         $this->client->request('GET', '/api/v1/me', server: ['HTTP_AUTHORIZATION' => 'Bearer '.$accessToken, 'HTTP_ACCEPT' => 'application/json']);
+    }
+
+    /** Submits the sign-in form on the page the client is on. */
+    private function submitSignIn(string $email, string $password, bool $rememberMe = true): void
+    {
+        $form = $this->client->getCrawler()->selectButton('Sign in')->form(['_username' => $email, '_password' => $password]);
+        if (!$rememberMe) {
+            $checkbox = $form['_remember_me'];
+            self::assertInstanceOf(ChoiceFormField::class, $checkbox);
+            $checkbox->untick();
+        }
+        $this->client->submit($form);
     }
 
     private function signIn(bool $rememberMe = true, string $password = self::PASSWORD): void
