@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -146,5 +147,69 @@ func TestLimiterSpacesRequests(t *testing.T) {
 	}
 	if NewLimiter(0, 1) != nil {
 		t.Error("a rate of 0 means no limit")
+	}
+}
+
+// dropFirst closes the connection of the first request without answering, as a reset or a dropped HTTP/2 stream does,
+// and answers 200 afterwards.
+func dropFirst(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+func TestABrokenConnectionIsRetriedForIdempotentRequests(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+		srv, calls := dropFirst(t)
+		c := New(srv.Client(), &fakeTokens{token: "t"}, testOptions())
+		if _, err := c.Do(context.Background(), Request{Method: method, URL: srv.URL}); err != nil || calls.Load() != 2 {
+			t.Errorf("%s: err %v after %d calls; want success on the second", method, err, calls.Load())
+		}
+	}
+}
+
+func TestABrokenConnectionIsNotRetriedForAPost(t *testing.T) {
+	srv, calls := dropFirst(t)
+	c := New(srv.Client(), &fakeTokens{token: "t"}, testOptions())
+	if _, err := c.Do(context.Background(), Request{Method: http.MethodPost, URL: srv.URL, Body: []byte("x")}); err == nil || calls.Load() != 1 {
+		t.Errorf("err %v after %d calls; a POST may have taken effect and must not be sent again", err, calls.Load())
+	}
+}
+
+func TestATimedOutAttemptIsRetriedButACancelledCallIsNot(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			<-r.Context().Done()
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	opts := testOptions()
+	opts.Timeout = 50 * time.Millisecond
+	c := New(srv.Client(), &fakeTokens{token: "t"}, opts)
+	if _, err := c.Do(context.Background(), Request{Method: http.MethodGet, URL: srv.URL}); err != nil || calls.Load() != 2 {
+		t.Errorf("err %v after %d calls; a timed-out attempt must be retried", err, calls.Load())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	before := calls.Load()
+	if _, err := c.Do(ctx, Request{Method: http.MethodGet, URL: srv.URL}); !errors.Is(err, context.Canceled) || calls.Load() != before {
+		t.Errorf("err %v after %d more calls; a cancelled call must end at once", err, calls.Load()-before)
 	}
 }

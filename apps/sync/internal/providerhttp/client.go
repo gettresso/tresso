@@ -122,8 +122,9 @@ const maxResponseBytes = 256 << 20
 // Do sends the request and returns the body of a 2xx response.
 //
 // 429 is retried for every request, other 5xx responses only for idempotent methods (GET, PUT, DELETE): a POST that
-// failed on the provider's side may still have taken effect (a sent message), so the caller decides. A 401 renews the
-// access token once.
+// failed on the provider's side may still have taken effect (a sent message), so the caller decides. The same holds
+// for a broken connection (reset, refused, DNS, the per-attempt timeout): idempotent requests are sent again, a POST
+// returns the error. A 401 renews the access token once.
 func (c *Client) Do(ctx context.Context, req Request) ([]byte, error) {
 	renewed := false
 	backoff := c.opts.MinBackoff
@@ -138,6 +139,17 @@ func (c *Client) Do(ctx context.Context, req Request) ([]byte, error) {
 		}
 
 		status, header, body, err := c.send(ctx, req, token)
+		var broken *connectionError
+		if err != nil && errors.As(err, &broken) && ctx.Err() == nil && idempotent(req.Method) && attempt < c.opts.MaxAttempts {
+			wait := backoff
+			backoff = min(backoff*2, c.opts.MaxBackoff)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +240,7 @@ func (c *Client) send(ctx context.Context, req Request, token string) (int, http
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
 		// The URL may carry a page token, never a secret; the access token is only in the header.
-		return 0, nil, nil, fmt.Errorf("%s %s: %w", req.Method, redact(req.URL), err)
+		return 0, nil, nil, fmt.Errorf("%s %s: %w", req.Method, redact(req.URL), &connectionError{err})
 	}
 	defer resp.Body.Close()
 
@@ -238,13 +250,20 @@ func (c *Client) send(ctx context.Context, req Request, token string) (int, http
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("%s %s: read response: %w", req.Method, redact(req.URL), err)
+		return 0, nil, nil, fmt.Errorf("%s %s: read response: %w", req.Method, redact(req.URL), &connectionError{err})
 	}
 	if int64(len(body)) > limit && resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		return 0, nil, nil, fmt.Errorf("%s %s: response larger than %d bytes", req.Method, redact(req.URL), limit)
 	}
 	return resp.StatusCode, resp.Header, body, nil
 }
+
+// connectionError is a request that got no complete answer: the connection failed, broke or timed out (the attempt's
+// own timeout; the caller's context is checked apart).
+type connectionError struct{ err error }
+
+func (e *connectionError) Error() string { return e.err.Error() }
+func (e *connectionError) Unwrap() error { return e.err }
 
 func newStatusError(req Request, status int, body []byte) *StatusError {
 	out := &StatusError{Method: req.Method, URL: redact(req.URL), StatusCode: status}
