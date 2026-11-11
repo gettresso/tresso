@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\ApiResource;
 
-use ApiPlatform\Metadata\ApiProperty;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Post;
 use App\ApiResource\Input\CheckMailAccount;
@@ -40,7 +39,6 @@ use App\State\MailAccountCheckProcessor;
 final readonly class MailAccountCheck
 {
     public function __construct(
-        #[ApiProperty(identifier: true)]
         public string $emailAddress,
         public string $imap,
         public string $smtp,
