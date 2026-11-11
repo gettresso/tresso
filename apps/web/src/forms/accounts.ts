@@ -44,6 +44,12 @@ export const accountSchema = z.object({
   password: z.string().max(1024),
   imap: serverSchema,
   smtp: serverSchema,
+  /** The CalDAV address of the account's calendars; empty lets Tresso find it. */
+  calendarUrl: z
+    .string()
+    .trim()
+    .max(2048, 'The address is too long.')
+    .refine((value) => value === '' || /^https:\/\/[^\s/:]+\.[^\s/:]+(:\d+)?(\/\S*)?$/i.test(value), 'Enter an address that starts with https://, for example https://dav.example.com/.'),
 })
 
 /** Gmail and Microsoft 365 accounts: only the name is theirs to change; signing in again replaces the rest. */
