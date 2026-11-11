@@ -285,7 +285,7 @@ function openItem(item: Occurrence | TodoBlock): void {
 }
 .item.filled {
   background: color-mix(in srgb, var(--cal) 16%, var(--paper));
-  color: color-mix(in srgb, var(--cal) 65%, var(--ink));
+  color: var(--cal-ink);
   font-weight: 600;
 }
 .item.pending.filled {
@@ -311,7 +311,7 @@ function openItem(item: Occurrence | TodoBlock): void {
   border: 1px solid var(--cal);
 }
 .item.todo .title {
-  color: color-mix(in srgb, var(--cal) 65%, var(--ink));
+  color: var(--cal-ink);
 }
 .time {
   color: var(--ink-2);

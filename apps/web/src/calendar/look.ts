@@ -3,14 +3,80 @@ import { longDate, occurrenceWhen, RESPONSE_WORDS, todoBlockTimes, toWall, type 
 /** The default calendar color when a calendar has none the browser understands. */
 const FALLBACK = '#6E56CF'
 
-/** The calendar's color as a CSS custom property; fills and text are mixed from it in the stylesheet. */
-export function calendarColor(calendar: SyncedCalendar | undefined): Record<string, string> {
-  const color = calendar?.color && /^#[0-9a-f]{3,8}$/i.test(calendar.color) ? calendar.color : FALLBACK
-  return { '--cal': color }
+/**
+ * The paper and ink of both themes, as main.css defines them (a test holds the two together). Text on a calendar's
+ * tint is mixed from these, so its contrast can be worked out here.
+ */
+export const THEME_COLORS = {
+  light: { paper: '#ffffff', ink: '#16181d' },
+  dark: { paper: '#171a20', ink: '#eceef2' },
+} as const
+
+/** How much of the calendar color the tint behind event text holds (the stylesheets mix it with --paper). */
+const TINT_SHARE = 0.16
+/** How much of the calendar color event text holds at most; the rest is --ink. Light colors get less. */
+const MAX_INK_SHARE = 65
+/** Event text is small (11 to 12 px), so it needs the full contrast for body text. */
+const MIN_CONTRAST = 4.5
+
+type Rgb = readonly [number, number, number]
+
+function parse(hex: string): Rgb {
+  const digits = hex.slice(1)
+  const full = digits.length <= 4 ? [...digits].map((digit) => digit + digit).join('') : digits
+  return [0, 2, 4].map((at) => parseInt(full.slice(at, at + 2), 16)) as unknown as Rgb
 }
 
-/** Time planned for a todo takes the Do colors, the one verdict color the calendar shows. */
-export const TODO_COLOR: Record<string, string> = { '--cal': 'var(--do)' }
+function mix(a: Rgb, b: Rgb, shareOfA: number): Rgb {
+  return a.map((channel, index) => channel * shareOfA + b[index]! * (1 - shareOfA)) as unknown as Rgb
+}
+
+function luminance(rgb: Rgb): number {
+  const [r, g, b] = rgb.map((channel) => {
+    const value = channel / 255
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  }) as [number, number, number]
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+function contrast(a: Rgb, b: Rgb): number {
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number]
+  return (light + 0.05) / (dark + 0.05)
+}
+
+/** The largest share of the color (in steps of 5) that keeps event text readable on its tint in one theme. */
+function inkShare(color: Rgb, theme: { paper: string; ink: string }): number {
+  const tint = mix(color, parse(theme.paper), TINT_SHARE)
+  for (let share = MAX_INK_SHARE; share > 0; share -= 5) {
+    if (contrast(mix(color, parse(theme.ink), share / 100), tint) >= MIN_CONTRAST) {
+      return share
+    }
+  }
+  return 0
+}
+
+/**
+ * The calendar's color as CSS custom properties: `--cal` itself for bars, dots and tints; `--cal-on` for text on a
+ * fill of it (light or dark, whichever reads); `--cal-ink` for text on its tint, with as much of the color as each
+ * theme allows (a pastel the provider sent would otherwise give text that cannot be read).
+ */
+export function calendarColor(calendar: SyncedCalendar | undefined): Record<string, string> {
+  const color = calendar?.color && /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(calendar.color) ? calendar.color : FALLBACK
+  const rgb = parse(color)
+  const on = contrast(rgb, parse('#ffffff')) >= contrast(rgb, parse(THEME_COLORS.light.ink)) ? 'var(--fill-text-light)' : 'var(--fill-text-dark)'
+  const light = inkShare(rgb, THEME_COLORS.light)
+  const dark = inkShare(rgb, THEME_COLORS.dark)
+  // --theme-dark is 0 in the light theme and 1 in the dark one (main.css), so the share follows the theme.
+  const share = light === dark ? `${light}%` : `calc(${light}% + ${dark - light}% * var(--theme-dark))`
+  return { '--cal': color, '--cal-on': on, '--cal-ink': `color-mix(in srgb, var(--cal) ${share}, var(--ink))` }
+}
+
+/** Time planned for a todo takes the Do colors, the one verdict color the calendar shows; the tokens read in both themes. */
+export const TODO_COLOR: Record<string, string> = {
+  '--cal': 'var(--do)',
+  '--cal-on': 'var(--paper)',
+  '--cal-ink': `color-mix(in srgb, var(--cal) ${MAX_INK_SHARE}%, var(--ink))`,
+}
 
 /** What a screen reader hears for the time a todo is planned at. */
 export function todoBlockLabel(block: TodoBlock, zone: string, now: number): string {

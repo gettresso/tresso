@@ -239,7 +239,7 @@ ul {
   align-self: stretch;
   padding: 2px 0;
   background: var(--cal);
-  color: #fff;
+  color: var(--cal-on);
   font: 700 11px/16px var(--font-ui);
   text-transform: uppercase;
   letter-spacing: 0.04em;
