@@ -109,7 +109,7 @@ final readonly class MessageIngestor
             array_unique(array_map(static fn (AddressInput $address): string => mb_strtolower($address->address), [$from, ...$input->to, ...$input->cc])),
             static fn (string $address): bool => !isset($ownAddresses[$address]),
         ));
-        $thread = $this->threader->threadFor($account, $messageId, $references, $input->subject, $counterparts, $receivedAt);
+        $thread = $this->threader->threadFor($account, $messageId, $references, $input->subject, $counterparts, array_keys($ownAddresses), $receivedAt);
 
         $keyVersion = $input->keyVersion ?? throw new \LogicException('Validation guarantees a key version.');
         $message = new Message($account, $thread, $messageId, $input->subject, $from->address, $from->name, $receivedAt, $input->rawObjectKey, $keyVersion);
