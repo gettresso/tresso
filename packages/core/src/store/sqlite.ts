@@ -1,4 +1,4 @@
-import { actionResult, type AppliedAction, type MessageAction } from '../actions'
+import { actionResult, revertedMessage, type AppliedAction, type MessageAction } from '../actions'
 import { compareBriefs } from '../brief'
 import type { Verdict } from '../domain'
 import { compareHandOvers } from '../handOvers'
@@ -10,7 +10,7 @@ import { compareTodos } from '../todos'
 import { inList, summarizeConversation, type ConversationSummary, type ListFolders, type ListScope } from '../sync/conversation'
 import type { ChangePage, SyncedDailyBrief, SyncedFolder, SyncedHandOver, SyncedMailAccount, SyncedMessage, SyncedOutgoingMessage, SyncedSignature, SyncedSmartInbox, SyncedThread, SyncedTodo, SyncedUnsubscription } from '../sync/types'
 import { CopyClosingError, type Contact, type Draft, type MailStore } from './mailStore'
-import { classifiedByUser, contactMatches, deletedDraft, draftOnlyHere, mergeContact, newerUnsubscription, peopleOn, stillAsClassified, storedDraft, syncedDraft } from './rules'
+import { classifiedByUser, contactMatches, deletedDraft, draftOnlyHere, mergeContact, newerUnsubscription, OpenClassifications, peopleOn, storedDraft, syncedDraft } from './rules'
 import type { Sql, SqlValue } from './sql'
 
 /**
@@ -109,7 +109,7 @@ export class SqliteMailStore implements MailStore {
    */
   private queue: Promise<void> = Promise.resolve()
   /** Threads classified on this device whose server version has not arrived yet; see {@link restoreThread}. */
-  private readonly unconfirmed = new Set<string>()
+  private readonly unconfirmed = new OpenClassifications()
   /** Set while the copy must sync from the start (see resyncFromStart); kept in the database too, so it holds after a restart. */
   private resyncing: boolean
   /** Raised by every page that changed calendars or events; see calendarChanges. */
@@ -314,7 +314,7 @@ export class SqliteMailStore implements MailStore {
       for (const thread of page.threads) {
         await writeThread(tx, thread)
         affected.add(thread.id)
-        this.unconfirmed.delete(thread.id)
+        this.unconfirmed.confirmed(thread.id)
       }
       for (const message of page.messages) {
         const row = await tx.first<JsonRow>('SELECT json FROM messages WHERE id = ?', [message.id])
@@ -396,8 +396,10 @@ export class SqliteMailStore implements MailStore {
         const restore: SyncedMessage[] = []
         for (const [index, previous] of applied.before.entries()) {
           const row = await tx.first<JsonRow>('SELECT json FROM messages WHERE id = ?', [previous.id])
-          if (row !== null && row.json === JSON.stringify(applied.after[index])) {
-            restore.push(previous)
+          const after = applied.after[index]
+          const reverted = row === null || after === undefined ? null : revertedMessage(parse<SyncedMessage>(row), previous, after)
+          if (reverted !== null) {
+            restore.push(reverted)
           }
         }
         await rewrite(tx, restore)
@@ -573,21 +575,22 @@ export class SqliteMailStore implements MailStore {
         }
         previous = parse<SyncedThread>(row)
         await writeThread(tx, classifiedByUser(previous, smartInboxId, verdict))
-        this.unconfirmed.add(threadId)
+        this.unconfirmed.opened(previous, { smartInboxId, verdict })
         await refreshConversation(tx, threadId, await listFoldersOf(tx))
       })
       return previous
     })
   }
 
-  restoreThread(previous: SyncedThread, optimistic: { smartInboxId: string; verdict: Verdict }): Promise<void> {
+  restoreThread(previous: SyncedThread): Promise<void> {
     return this.write(() =>
       this.sql.transaction(async (tx) => {
         const row = await tx.first<JsonRow>('SELECT json FROM threads WHERE id = ?', [previous.id])
         // Once the server's version arrived it stays, also when it is the same placement: the request went through.
-        if (this.unconfirmed.delete(previous.id) && stillAsClassified(row === null ? null : parse<SyncedThread>(row), optimistic)) {
-          await writeThread(tx, previous)
-          await refreshConversation(tx, previous.id, await listFoldersOf(tx))
+        const restore = this.unconfirmed.failed(previous.id, row === null ? null : parse<SyncedThread>(row))
+        if (restore !== null) {
+          await writeThread(tx, restore)
+          await refreshConversation(tx, restore.id, await listFoldersOf(tx))
         }
       }),
     )

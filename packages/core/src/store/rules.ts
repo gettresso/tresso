@@ -87,6 +87,48 @@ export function stillAsClassified(current: SyncedThread | null | undefined, opti
 }
 
 /**
+ * The user's choices for threads that the server has not confirmed yet, so a refused one can be put back. Choices for
+ * one thread may overlap (classified twice before either request was answered): it goes back to how it was before the
+ * first of them only once the last one open failed, and only while the copy still shows the newest choice.
+ */
+export class OpenClassifications {
+  private readonly open = new Map<string, { count: number; previous: SyncedThread; latest: { smartInboxId: string; verdict: Verdict } }>()
+
+  /** A choice was shown for the thread, which was `previous` before it. */
+  opened(previous: SyncedThread, optimistic: { smartInboxId: string; verdict: Verdict }): void {
+    const known = this.open.get(previous.id)
+    if (known === undefined) {
+      this.open.set(previous.id, { count: 1, previous, latest: optimistic })
+    } else {
+      known.count += 1
+      known.latest = optimistic
+    }
+  }
+
+  /** The server's version of the thread arrived: whatever was chosen, it stays as the server has it. */
+  confirmed(threadId: string): void {
+    this.open.delete(threadId)
+  }
+
+  /**
+   * A choice for the thread was refused. Returns the thread to put back (as it was before the first open choice) when
+   * no other choice for it is open and `current` still shows the newest one; null to leave it.
+   */
+  failed(threadId: string, current: SyncedThread | null | undefined): SyncedThread | null {
+    const known = this.open.get(threadId)
+    if (known === undefined) {
+      return null
+    }
+    known.count -= 1
+    if (known.count > 0) {
+      return null
+    }
+    this.open.delete(threadId)
+    return stillAsClassified(current, known.latest) ? known.previous : null
+  }
+}
+
+/**
  * Whether the answer to an unsubscribe request should replace what the store has: only when it is a newer request
  * (asked again after a failure). For the same request the stored copy came with the delta, which is at least as new.
  */

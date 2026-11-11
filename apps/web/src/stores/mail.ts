@@ -609,7 +609,7 @@ export const useMailStore = defineStore('mail', () => {
       if (previous !== null && optimistic !== null && database !== null) {
         // Put back what the server did not confirm; when the request went through after all and only the answer was
         // lost, the pull brings the server's version again.
-        await database.restoreThread(previous, optimistic)
+        await database.restoreThread(previous)
         await refresh()
         void syncNow()
       }

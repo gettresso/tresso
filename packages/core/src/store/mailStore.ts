@@ -70,8 +70,9 @@ export interface MailStore extends SyncStore {
    */
   applyAction(messageIds: string[], action: MessageAction, folderId?: string, fromFolderId?: string): Promise<AppliedAction>
   /**
-   * Puts back what {@link applyAction} changed, on the messages the delta has not updated since. It is only given
-   * messages whose request the server did not take, so a delta can only have brought them someone else's change.
+   * Puts back what {@link applyAction} changed, part by part (read, flagged, folders; see revertedMessage): a part goes
+   * back only while it still shows what the action made of it, so a second action on the same messages, or a change
+   * the delta brought, is kept. It is only given messages whose request the server did not take.
    */
   revertAction(applied: AppliedAction): Promise<void>
   /**
@@ -134,9 +135,11 @@ export interface MailStore extends SyncStore {
   classifyThread(threadId: string, smartInboxId: string, verdict: Verdict): Promise<SyncedThread | null>
   /**
    * Puts a thread back as it was before {@link classifyThread}, unless the delta brought the server's version since,
-   * even one with the same placement (the request went through and only its answer was lost).
+   * even one with the same placement (the request went through and only its answer was lost). When the thread was
+   * classified again before this one was refused, it goes back only once the last of those is refused too, to how it
+   * was before the first (see OpenClassifications).
    */
-  restoreThread(previous: SyncedThread, optimistic: { smartInboxId: string; verdict: Verdict }): Promise<void>
+  restoreThread(previous: SyncedThread): Promise<void>
   /** The user's unsubscribe requests, of every account. */
   unsubscriptions(): Promise<SyncedUnsubscription[]>
   /**

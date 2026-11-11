@@ -495,6 +495,22 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
       expect((await db.inbox('work', 10)).map((c) => c.threadId).sort()).toEqual(['t1', 't2'])
     })
 
+    it('undoes two refused actions on the same message part by part, whichever order they fail in', async () => {
+      const read = await db.applyAction(['m2'], 'markRead')
+      const flagged = await db.applyAction(['m2'], 'flag')
+
+      await db.revertAction(read)
+      expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm2')?.flags).toMatchObject({ seen: false, flagged: true })
+      await db.revertAction(flagged)
+      expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm2')?.flags).toMatchObject({ seen: false, flagged: false })
+
+      const archived = await db.applyAction(['m2'], 'archive')
+      const readAgain = await db.applyAction(['m2'], 'markRead')
+      await db.revertAction(readAgain)
+      await db.revertAction(archived)
+      expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm2')).toMatchObject({ folderIds: ['work-inbox'], flags: { seen: false, flagged: false } })
+    })
+
     it('lists signatures by name and keeps them current', async () => {
       expect((await db.signatures()).map((s) => s.name)).toEqual(['Short reply', 'Work'])
 
@@ -687,16 +703,38 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         ])
         expect((await db.inbox(null, 10)).map((c) => c.threadId)).toContain('t3')
 
-        await db.restoreThread(previous!, { smartInboxId: 'todo', verdict: 'delegate' })
+        await db.restoreThread(previous!)
         expect((await db.thread('t3'))?.thread).toMatchObject({ smartInboxId: 'spam', classificationReason: 'server_spam' })
         expect((await db.inbox(null, 10)).map((c) => c.threadId)).not.toContain('t3')
+      })
+
+      it('puts a conversation classified twice back only once both choices were refused, as it was before the first', async () => {
+        const before = (await db.thread('t3'))!.thread
+        const first = await db.classifyThread('t3', 'todo', 'delegate')
+        const second = await db.classifyThread('t3', 'todo', 'do')
+
+        await db.restoreThread(first!)
+        expect((await db.thread('t3'))?.thread).toMatchObject({ smartInboxId: 'todo', verdict: 'do', classificationReason: 'user' })
+
+        await db.restoreThread(second!)
+        expect((await db.thread('t3'))?.thread).toEqual(before)
+      })
+
+      it('keeps the second choice when only the first was refused and the server confirmed the second', async () => {
+        const first = await db.classifyThread('t3', 'todo', 'delegate')
+        await db.classifyThread('t3', 'todo', 'do')
+
+        await db.restoreThread(first!)
+        await db.apply(page({ cursor: 21, threads: [thread('t3', 'home', { smartInboxId: 'todo', verdict: 'do', classificationReason: 'user' })] }))
+
+        expect((await db.thread('t3'))?.thread).toMatchObject({ smartInboxId: 'todo', verdict: 'do', classificationReason: 'user' })
       })
 
       it('does not put back a conversation the delta changed since', async () => {
         const previous = await db.classifyThread('t2', 'todo', 'do')
         await db.apply(page({ cursor: 21, threads: [thread('t2', 'work', { smartInboxId: 'news', verdict: 'know', classificationReason: 'sender_rule' })] }))
 
-        await db.restoreThread(previous!, { smartInboxId: 'todo', verdict: 'do' })
+        await db.restoreThread(previous!)
 
         expect((await db.thread('t2'))?.thread).toMatchObject({ smartInboxId: 'news', classificationReason: 'sender_rule' })
       })
@@ -705,7 +743,7 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         const previous = await db.classifyThread('t2', 'todo', 'do')
         await db.apply(page({ cursor: 21, threads: [thread('t2', 'work', { smartInboxId: 'todo', verdict: 'do', classificationReason: 'user' })] }))
 
-        await db.restoreThread(previous!, { smartInboxId: 'todo', verdict: 'do' })
+        await db.restoreThread(previous!)
 
         expect((await db.thread('t2'))?.thread).toMatchObject({ smartInboxId: 'todo', verdict: 'do', classificationReason: 'user' })
       })

@@ -124,6 +124,26 @@ export function actionResult(
   })
 }
 
+/**
+ * A message as it is once an action that did not go through is taken back: each part the action changed (read, flagged,
+ * folders) goes back to how it was, but only while it still shows what the action made of it. Parts another change
+ * set since (a second action of this device, the delta) stay as they are. Null when nothing goes back.
+ */
+export function revertedMessage(current: SyncedMessage, before: SyncedMessage, after: SyncedMessage): SyncedMessage | null {
+  let reverted = current
+  if (before.flags.seen !== after.flags.seen && current.flags.seen === after.flags.seen) {
+    reverted = { ...reverted, flags: { ...reverted.flags, seen: before.flags.seen } }
+  }
+  if (before.flags.flagged !== after.flags.flagged && current.flags.flagged === after.flags.flagged) {
+    reverted = { ...reverted, flags: { ...reverted.flags, flagged: before.flags.flagged } }
+  }
+  const sameFolders = (one: string[], other: string[]) => JSON.stringify(one) === JSON.stringify(other)
+  if (!sameFolders(before.folderIds, after.folderIds) && sameFolders(current.folderIds, after.folderIds)) {
+    reverted = { ...reverted, folderIds: before.folderIds }
+  }
+  return reverted === current ? null : reverted
+}
+
 function withFolder(folderIds: string[], folderId: string): string[] {
   return folderIds.includes(folderId) ? folderIds : [...folderIds, folderId]
 }

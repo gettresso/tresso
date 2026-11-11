@@ -12,12 +12,13 @@ import {
   listFolders,
   mergeContact,
   newerUnsubscription,
+  OpenClassifications,
   peopleOn,
+  revertedMessage,
   eventSpan,
   sortCalendars,
   touchesCalendars,
   sortSmartInboxes,
-  stillAsClassified,
   storedDraft,
   summarizeConversation,
   syncedDraft,
@@ -166,7 +167,7 @@ export type ClosedElsewhere = 'upgraded' | 'deleted' | 'terminated'
 /** The signed-in user's mail in the browser's IndexedDB. The desktop app keeps it in SQLite instead (SqliteMailStore). */
 export class IndexedDbMailStore implements MailStore {
   /** Threads classified on this device whose server version has not arrived yet; see {@link restoreThread}. */
-  private readonly unconfirmed = new Set<string>()
+  private readonly unconfirmed = new OpenClassifications()
   /** Raised by every page that changed calendars or events; see calendarChanges. */
   private calendarRevision = 0
 
@@ -406,7 +407,7 @@ export class IndexedDbMailStore implements MailStore {
     for (const thread of page.threads) {
       await tx.objectStore('threads').put(thread)
       affected.add(thread.id)
-      this.unconfirmed.delete(thread.id)
+      this.unconfirmed.confirmed(thread.id)
     }
     for (const message of page.messages) {
       const previous = await tx.objectStore('messages').get(message.id)
@@ -482,18 +483,17 @@ export class IndexedDbMailStore implements MailStore {
     return { before, after }
   }
 
-  /**
-   * Puts back what {@link applyAction} changed, on the messages the delta has not updated since. It is only given
-   * messages whose request the server did not take, so a delta can only have brought them someone else's change.
-   */
+  /** Puts back what {@link applyAction} changed, part by part (see MailStore.revertAction). */
   async revertAction(applied: AppliedAction): Promise<void> {
     const tx = this.db.transaction(ALL_STORES, 'readwrite')
     const affected = new Set<string>()
     for (const [index, previous] of applied.before.entries()) {
       const current = await tx.objectStore('messages').get(previous.id)
-      if (current !== undefined && JSON.stringify(current) === JSON.stringify(applied.after[index])) {
-        await tx.objectStore('messages').put(previous)
-        affected.add(previous.threadId)
+      const after = applied.after[index]
+      const reverted = current === undefined || after === undefined ? null : revertedMessage(current, previous, after)
+      if (reverted !== null) {
+        await tx.objectStore('messages').put(reverted)
+        affected.add(reverted.threadId)
       }
     }
     const lists = await listFoldersOf(tx)
@@ -701,7 +701,7 @@ export class IndexedDbMailStore implements MailStore {
     const previous = await tx.objectStore('threads').get(threadId)
     if (previous !== undefined) {
       await tx.objectStore('threads').put(classifiedByUser(previous, smartInboxId, verdict))
-      this.unconfirmed.add(threadId)
+      this.unconfirmed.opened(previous, { smartInboxId, verdict })
       await refreshConversation(tx, threadId, await listFoldersOf(tx))
     }
     await tx.done
@@ -710,12 +710,13 @@ export class IndexedDbMailStore implements MailStore {
   }
 
   /** Puts a thread back as it was, unless the delta changed it since. */
-  async restoreThread(previous: SyncedThread, optimistic: { smartInboxId: string; verdict: Verdict }): Promise<void> {
+  async restoreThread(previous: SyncedThread): Promise<void> {
     const tx = this.db.transaction(ALL_STORES, 'readwrite')
     // Once the server's version arrived it stays, also when it is the same placement: the request went through.
-    if (this.unconfirmed.delete(previous.id) && stillAsClassified(await tx.objectStore('threads').get(previous.id), optimistic)) {
-      await tx.objectStore('threads').put(previous)
-      await refreshConversation(tx, previous.id, await listFoldersOf(tx))
+    const restore = this.unconfirmed.failed(previous.id, await tx.objectStore('threads').get(previous.id))
+    if (restore !== null) {
+      await tx.objectStore('threads').put(restore)
+      await refreshConversation(tx, restore.id, await listFoldersOf(tx))
     }
     await tx.done
   }
