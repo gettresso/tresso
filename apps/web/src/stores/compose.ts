@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { Composer, type Address, type AttachmentAccess, type ComposerNotice, type ComposerState, type SyncedMessage } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
 import type { Draft } from '@/mail/db'
+import { isDesktop, openInBrowser } from '@/platform/desktop'
 import { useMailStore } from '@/stores/mail'
 
 export { UNDO_SECONDS } from '@tresso/core'
@@ -76,28 +77,35 @@ export const useComposeStore = defineStore('compose', () => {
 
   /**
    * Opens one of the draft's files in a new tab, through a fresh link. A file that could not be scanned only opens
-   * with `acceptUnscanned`, once the user confirmed the warning.
+   * with `acceptUnscanned`, once the user confirmed the warning. The desktop app has no tabs: the file opens in the
+   * user's browser once the link is known.
    */
   async function openAttachment(attachmentId: string, acceptUnscanned = false): Promise<void> {
     // Opened at once, in the click, so the browser does not block it; the link follows. Not with noopener, which
     // gives no handle to the tab; the tab loses its way back to this page by hand instead.
-    const opened = window.open('about:blank', '_blank')
-    if (opened === null) {
+    const opened = isDesktop ? null : window.open('about:blank', '_blank')
+    if (!isDesktop && opened === null) {
       notify({ text: 'The file could not be opened: the browser blocked the new tab.', tone: 'error' })
       return
     }
-    opened.opener = null
+    if (opened !== null) {
+      opened.opener = null
+    }
     try {
       const link = await composer.attachmentLink(attachmentId)
       const url = link?.access === 'confirm' && acceptUnscanned ? await composer.unscannedAttachmentLink(attachmentId) : (link?.url ?? null)
       if (url === null) {
-        opened.close()
+        opened?.close()
         notify({ text: unavailable(link?.access ?? 'blocked'), tone: 'error' })
         return
       }
-      opened.location.href = url
+      if (opened === null) {
+        await openInBrowser(url)
+      } else {
+        opened.location.href = url
+      }
     } catch (error) {
-      opened.close()
+      opened?.close()
       notify({ text: `The file could not be opened: ${errorMessage(error)}`, tone: 'error' })
     }
   }

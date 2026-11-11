@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { fileSize, type MessageAttachment, type ScanFailure } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
+import { isDesktop, openInBrowser } from '@/platform/desktop'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
@@ -25,22 +26,25 @@ const failureText: Record<ScanFailure, string> = {
 
 /**
  * Downloads a file that could not be scanned, after the reader confirmed: the link is asked for only now. The tab
- * opens in the click, so the browser does not block it; the link follows.
+ * opens in the click, so the browser does not block it; the link follows. The desktop app has no tabs and must not
+ * leave its own page: the file opens in the user's browser.
  */
 async function downloadAnyway(attachment: MessageAttachment): Promise<void> {
   confirming.value = null
   failed.value = null
-  const opened = window.open('about:blank', '_blank')
+  const opened = isDesktop ? null : window.open('about:blank', '_blank')
   if (opened !== null) {
     opened.opener = null
   }
   try {
     const url = await mail.unscannedLink(attachment.id)
-    if (opened === null) {
+    if (isDesktop) {
+      await openInBrowser(url)
+    } else if (opened === null) {
       window.location.assign(url)
-      return
+    } else {
+      opened.location.href = url
     }
-    opened.location.href = url
   } catch (error) {
     opened?.close()
     failed.value = `${attachment.filename} could not be downloaded: ${errorMessage(error)}`
