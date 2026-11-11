@@ -53,12 +53,17 @@ export class PartialActionError extends Error {
 export interface AppliedAction {
   before: SyncedMessage[]
   after: SyncedMessage[]
+  /**
+   * The store's number for this action (see OpenActions), so taking it back or noting it as taken finds this action
+   * and no later one on the same messages. Absent for an action that changed nothing.
+   */
+  id?: number
 }
 
 /** The part of an applied action that concerns these messages. */
 export function appliedFor(applied: AppliedAction, messageIds: Set<string>): AppliedAction {
   const keep = applied.before.map((message) => messageIds.has(message.id))
-  return { before: applied.before.filter((_, i) => keep[i]), after: applied.after.filter((_, i) => keep[i]) }
+  return { ...applied, before: applied.before.filter((_, i) => keep[i]), after: applied.after.filter((_, i) => keep[i]) }
 }
 
 /**
@@ -134,50 +139,53 @@ const PARTS: { part: Part; read: (message: SyncedMessage) => string; write: (mes
 
 /**
  * The actions of this device that changed a part of a message (read, flagged, folders) and that the server has not
- * answered for yet, so one it refuses can be taken back. Actions on the same part may overlap (marked read, then
- * unread, before either request was answered): the part goes back only once the last one open was refused, to how it
- * was before the first, and only while it still shows the newest one's result. A change the delta brings for the
- * message ends them all: the server has spoken.
+ * answered for yet, each by its own number, so one it refuses can be taken back. Actions on the same part may overlap
+ * (marked read, then unread, before either request was answered): the part goes back only once no action on it is
+ * open any more, to how the server has it (as it was before the first, or as the last one it took left it), and only
+ * while it still shows the newest one's result. A change the delta brings for the message ends them all: the server
+ * has spoken, and a late answer to one of them then finds nothing to do.
  */
 export class OpenActions {
-  private readonly open = new Map<string, { count: number; before: string; latest: string }>()
+  private next = 0
+  private readonly open = new Map<string, { actions: Set<number>; before: string; latest: string }>()
 
-  /** An action changed `before` into `after` on this device. */
-  applied(before: SyncedMessage, after: SyncedMessage): void {
-    for (const { part, read } of PARTS) {
-      if (read(before) === read(after)) {
-        continue
+  /** An action changed `before` into `after` on this device; returns its number. */
+  applied(before: SyncedMessage[], after: SyncedMessage[]): number {
+    const id = ++this.next
+    before.forEach((message, index) => {
+      const result = after[index]!
+      for (const { part, read } of PARTS) {
+        if (read(message) === read(result)) {
+          continue
+        }
+        const key = `${message.id} ${part}`
+        const known = this.open.get(key)
+        if (known === undefined) {
+          this.open.set(key, { actions: new Set([id]), before: read(message), latest: read(result) })
+        } else {
+          known.actions.add(id)
+          known.latest = read(result)
+        }
       }
-      const key = `${before.id} ${part}`
-      const known = this.open.get(key)
-      if (known === undefined) {
-        this.open.set(key, { count: 1, before: read(before), latest: read(after) })
-      } else {
-        known.count += 1
-        known.latest = read(after)
-      }
-    }
+    })
+    return id
   }
 
   /**
-   * The server took the action that changed `before` into `after`. It may change nothing there (the flag had that
-   * value), so no delta would end it: its part now builds on its result, and the entry goes once nothing is open.
+   * The server took action `id` for these messages. It may change nothing there (the flag had that value), so no delta
+   * would end it: the part now builds on its result, and the entry goes once no action on it is open.
    */
-  accepted(before: SyncedMessage, after: SyncedMessage): void {
+  accepted(id: number, before: SyncedMessage, after: SyncedMessage): void {
     for (const { part, read } of PARTS) {
-      if (read(before) === read(after)) {
-        continue
-      }
       const key = `${before.id} ${part}`
       const known = this.open.get(key)
-      if (known === undefined) {
+      if (read(before) === read(after) || known === undefined || !known.actions.delete(id)) {
         continue
       }
-      known.count -= 1
-      if (known.count > 0) {
-        known.before = read(after)
-      } else {
+      if (known.actions.size === 0) {
         this.open.delete(key)
+      } else {
+        known.before = read(after)
       }
     }
   }
@@ -190,23 +198,16 @@ export class OpenActions {
   }
 
   /**
-   * The action that changed `before` into `after` was refused. Returns the message as it is to be stored (`current`
+   * Action `id`, which changed `before` into `after`, was refused. Returns the message as it is to be stored (`current`
    * with each part put back that no other open action holds and that still shows the newest result), or null when
    * nothing goes back.
    */
-  refused(current: SyncedMessage, before: SyncedMessage, after: SyncedMessage): SyncedMessage | null {
+  refused(id: number, current: SyncedMessage, before: SyncedMessage, after: SyncedMessage): SyncedMessage | null {
     let reverted = current
     for (const { part, read, write } of PARTS) {
-      if (read(before) === read(after)) {
-        continue
-      }
       const key = `${before.id} ${part}`
       const known = this.open.get(key)
-      if (known === undefined) {
-        continue
-      }
-      known.count -= 1
-      if (known.count > 0) {
+      if (read(before) === read(after) || known === undefined || !known.actions.delete(id) || known.actions.size > 0) {
         continue
       }
       this.open.delete(key)

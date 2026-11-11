@@ -387,15 +387,18 @@ export class SqliteMailStore implements MailStore {
         }
         const after = actionResult(before, action, { folders, accounts, folderId, fromFolderId })
         await rewrite(tx, after)
-        before.forEach((message, index) => this.openActions.applied(message, after[index]!))
         applied = { before, after }
       })
-      return applied
+      // Noted once written: a transaction that failed leaves nothing open.
+      return { ...applied, id: this.openActions.applied(applied.before, applied.after) }
     })
   }
 
   acceptAction(applied: AppliedAction): void {
-    applied.before.forEach((message, index) => this.openActions.accepted(message, applied.after[index]!))
+    const id = applied.id
+    if (id !== undefined) {
+      applied.before.forEach((message, index) => this.openActions.accepted(id, message, applied.after[index]!))
+    }
   }
 
   revertAction(applied: AppliedAction): Promise<void> {
@@ -405,7 +408,7 @@ export class SqliteMailStore implements MailStore {
         for (const [index, previous] of applied.before.entries()) {
           const row = await tx.first<JsonRow>('SELECT json FROM messages WHERE id = ?', [previous.id])
           const after = applied.after[index]
-          const reverted = row === null || after === undefined ? null : this.openActions.refused(parse<SyncedMessage>(row), previous, after)
+          const reverted = row === null || after === undefined || applied.id === undefined ? null : this.openActions.refused(applied.id, parse<SyncedMessage>(row), previous, after)
           if (reverted !== null) {
             restore.push(reverted)
           }
