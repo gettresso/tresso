@@ -8,6 +8,8 @@ use App\Entity\User;
 use App\Repository\UserRepository;
 use App\Security\OAuth\Consents;
 use App\Security\OAuth\ProtectedResources;
+use App\Security\OAuth\PurgeExpiredOAuthTokens;
+use App\Security\OAuth\PurgeExpiredOAuthTokensHandler;
 use App\Security\OAuth\PurgeUnusedRegisteredClients;
 use App\Security\OAuth\PurgeUnusedRegisteredClientsHandler;
 use App\Security\OAuth\RegistrationLimits;
@@ -839,6 +841,50 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertSame(2, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
         self::assertSame(['desktop', 'mobile', 'sync-worker', 'web'], $firstParty);
         self::assertSame($firstParty, $this->connection()->fetchFirstColumn('SELECT identifier FROM oauth2_client WHERE identifier NOT IN (SELECT client_id FROM registered_client) ORDER BY identifier'), 'Our own clients are never touched.');
+    }
+
+    public function testExpiredTokensAndCodesArePurgedButDisconnectingStillFindsLiveOnes(): void
+    {
+        $clientId = $this->registeredClientId();
+        $live = $this->connect('kim@example.test', $clientId, ['signatures:read']);
+        $expired = $this->connect('lisa@example.test', $clientId, ['signatures:read']);
+        $liveAccess = self::jti($live['access_token']);
+        $expiredAccess = self::jti($expired['access_token']);
+        // Both access tokens are past their hour; only the second pair's refresh token is past its 30 days too.
+        $this->connection()->executeStatement("UPDATE oauth2_access_token SET expiry = NOW() - INTERVAL '2 hours'");
+        $this->connection()->executeStatement("UPDATE oauth2_refresh_token SET expiry = NOW() - INTERVAL '1 day' WHERE access_token = :id", ['id' => $expiredAccess]);
+        $this->connection()->executeStatement("UPDATE oauth2_authorization_code SET expiry = NOW() - INTERVAL '1 hour'");
+        $codes = $this->countRows('SELECT COUNT(*) FROM oauth2_authorization_code');
+        self::assertGreaterThan(0, $codes);
+
+        $deleted = static::getContainer()->get(PurgeExpiredOAuthTokensHandler::class)(new PurgeExpiredOAuthTokens());
+
+        self::assertSame(2 + $codes, $deleted, 'The expired refresh token, its access token and every code.');
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth2_authorization_code'));
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth2_access_token WHERE identifier = :id', ['id' => $expiredAccess]));
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM oauth2_access_token WHERE identifier = :id', ['id' => $liveAccess]), 'A live refresh token keeps its access token.');
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM oauth2_refresh_token WHERE access_token = :id', ['id' => $liveAccess]));
+
+        $kim = $this->userHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $consentId = $this->connection()->fetchOne("SELECT c.id FROM oauth_consent c JOIN app_user u ON u.id = c.user_id WHERE u.email = 'kim@example.test'");
+        self::assertIsString($consentId);
+        $this->client->request('DELETE', '/api/v1/connected-apps/'.$consentId, server: $kim);
+        self::assertResponseStatusCodeSame(204);
+
+        $this->refresh($clientId, $live['refresh_token']);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_grant', $this->decodedResponse()['error'] ?? null, 'Disconnecting still revoked it.');
+    }
+
+    /** The id of an access token, from its (unverified) claims. */
+    private static function jti(string $accessToken): string
+    {
+        $payload = json_decode(base64_decode(strtr(explode('.', $accessToken)[1] ?? '', '-_', '+/'), true) ?: '', true);
+        self::assertIsArray($payload);
+        $jti = $payload['jti'] ?? null;
+        self::assertIsString($jti);
+
+        return $jti;
     }
 
     private function registerFrom(string $address): void
