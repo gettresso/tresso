@@ -296,6 +296,34 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame(2, $this->rows(MessageLocation::class));
     }
 
+    public function testAnotherMailWithTheSameMessageIdIsStoredOnItsOwn(): void
+    {
+        $this->folders(['INBOX' => 1]);
+
+        $this->messages('INBOX', [$this->message('1', ['messageId' => '<fixed@device.example>', 'subject' => 'Door opened', 'from' => ['address' => 'camera@device.example']])]);
+        $result = $this->messages('INBOX', [$this->message('2', [
+            'messageId' => '<fixed@device.example>',
+            'rawObjectKey' => $this->rawKeyFor($this->accountId, 'another mail'),
+            'subject' => 'Invoice 2026-114',
+            'from' => ['address' => 'billing@supplier.example'],
+        ])]);
+
+        self::assertSame(['stored' => 1, 'linked' => 0, 'updated' => 0], $result);
+        self::assertSame(2, $this->rows(Message::class));
+    }
+
+    public function testACopyTheServerRewroteIsLinkedBySenderDateAndSubject(): void
+    {
+        $this->folders(['INBOX' => 1, 'Archive' => 1]);
+        $copy = ['messageId' => '<same@x>', 'subject' => 'Offsite', 'from' => ['address' => 'anna@finance.example'], 'sentAt' => '2026-10-19T09:59:00+02:00'];
+
+        $this->messages('INBOX', [$this->message('1', $copy)]);
+        $result = $this->messages('Archive', [$this->message('2', ['rawObjectKey' => $this->rawKeyFor($this->accountId, 'rewritten')] + $copy)]);
+
+        self::assertSame(['stored' => 0, 'linked' => 1, 'updated' => 0], $result);
+        self::assertSame(1, $this->rows(Message::class));
+    }
+
     public function testMessageWithoutMessageIdIsMatchedByRawContent(): void
     {
         $this->folders(['INBOX' => 1, 'Archive' => 1]);
@@ -677,10 +705,13 @@ final class SyncIngestTest extends DatabaseTestCase
      */
     private function message(string $uid, array $override = []): array
     {
+        // Copies of one mail (one Message-ID) have the same content, as on a real server.
+        $messageId = $override['messageId'] ?? null;
+
         return $override + [
             'remoteUid' => $uid,
             'modSeq' => 1,
-            'rawObjectKey' => $this->rawKeyFor($this->accountId, 'message-'.$uid.'-'.json_encode($override)),
+            'rawObjectKey' => $this->rawKeyFor($this->accountId, \is_string($messageId) ? 'message-'.trim($messageId, '<>') : 'message-'.$uid.'-'.json_encode($override)),
             'keyVersion' => 1,
             'size' => 2048,
             'receivedAt' => '2026-10-19T08:00:00+00:00',
