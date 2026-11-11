@@ -63,11 +63,13 @@ export function syncedDraft(local: Draft | null | undefined, draft: SyncedDraft)
 /**
  * What a draft the server deleted leaves on this device: a sent one stays until its outcome is known (the server keeps
  * it meanwhile, version and files, so an undo or a failure brings it back); unsaved edits stay too, as a new draft:
- * the server's copy they build on is gone, and so is any newer version of another device that was noted on them.
- * Returns the draft to keep, or null to delete it.
+ * the server's copy they build on is gone, and so is any newer version of another device that was noted on them. A
+ * draft with a send under way stays as well: queueing its message hides the draft on the server, which the delta
+ * reports as a deletion, also when the answer to the send was lost; the send's id must outlive that, so the message is
+ * recognised and not sent again. Returns the draft to keep, or null to delete it.
  */
 export function deletedDraft(local: Draft): Draft | null {
-  if (local.outgoingId) {
+  if (local.outgoingId || local.sendAttemptId) {
     return { ...local, pendingSave: false, remoteVersion: null }
   }
   return local.pendingSave ? { ...local, version: 0, remoteVersion: null } : null

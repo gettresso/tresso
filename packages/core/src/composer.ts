@@ -809,6 +809,19 @@ export class Composer {
       // queues the message once. Its time is the server's, which takes only an id made about now.
       const attempt = await store.changeDraft(draft.id, (stored) => (stored === null || stored.sendAttemptId ? null : { ...stored, sendAttemptId: uuidV7(this.now()) }))
       const attemptId = attempt?.sendAttemptId ?? uuidV7(this.now())
+      // A try whose answer was lost may have reached the server: when its message is in the copy, it is on its way.
+      const queued = await store.outgoing(attemptId)
+      if (queued !== null) {
+        sent = true
+        await this.markOnItsWay(store, draft.id, attemptId)
+        this.bases.delete(draft.id)
+        if (this.current.draft?.id === draft.id) {
+          this.set({ draft: null, conflict: false })
+        }
+        this.deps.changed?.()
+        this.deps.notify({ text: `"${draft.subject || '(no subject)'}" reached the server after all and is on its way.`, tone: 'info' }, 8000)
+        return queued
+      }
       const onServer = await this.deps.drafts.uploadForSending({ ...draft, sendAttemptId: attemptId })
       if (!onServer && draft.attachments.length > 0) {
         // The files are with the server's copy of the draft: sending without it would leave them out.
@@ -864,6 +877,11 @@ export class Composer {
     } finally {
       this.set({ sending: false })
       this.release(draft.id, sent)
+      if (!sent) {
+        // The answer may be lost while the server queued the message, and the delta that says so may have come while
+        // the draft was held: look again now.
+        void this.followUp().catch(() => undefined)
+      }
     }
   }
 
@@ -1016,30 +1034,52 @@ export class Composer {
 
   /**
    * A draft whose send was answered with nothing (a lost answer) while the server did queue it: the message with the
-   * send's id is in the copy, so the draft is on its way after all, and an edit must not send it a second time. The
-   * form closes on it unless something is typed or saved there right now (then the next round looks again). Returns
-   * the draft to follow up, or null to leave it this round.
+   * send's id is in the copy, so the draft is on its way after all, and an edit must not send it a second time. Its
+   * form closes unless something was typed there that the stored draft does not have; then it stays, saying the
+   * message went out without that. Returns the draft to follow up, or null to leave it this round.
    */
   private async recognisedSend(store: MailStore, draft: Draft): Promise<Draft | null> {
     const id = draft.sendAttemptId ?? null
     if (draft.outgoingId !== null || id === null || this.held.has(draft.id) || (await store.outgoing(id)) === null) {
       return draft
     }
-    const open = this.current.draft?.id === draft.id
-    if (open && (this.dirty || this.saveTimer !== null || this.writes.size > 0)) {
+    const form = this.current.draft?.id === draft.id ? this.current.draft : null
+    if (form !== null && this.typedOver(form, draft)) {
+      // A save is under way or something new was typed: the next round, after the save, looks again.
       return null
     }
-    const recognised = await store.changeDraft(draft.id, (stored) => (stored === null || stored.sendAttemptId !== id || stored.outgoingId !== null ? null : { ...stored, outgoingId: id, sendAttemptId: null, pendingSave: false }))
+    const recognised = await this.markOnItsWay(store, draft.id, id)
     if (recognised?.outgoingId !== id) {
       return recognised
     }
-    if (open && this.current.draft?.id === draft.id) {
+    this.deps.changed?.()
+    const subject = draft.subject || '(no subject)'
+    const now = this.current.draft
+    if (form !== null && now?.id === draft.id && (now !== form || this.typedOver(now, recognised))) {
+      // Typed while this was noted: the words stay on screen, and the user knows they did not go along.
+      this.deps.notify({ text: `"${subject}" reached the server after all and is on its way, without what you typed since.`, tone: 'info' }, 30000)
+      return recognised
+    }
+    if (form !== null && now?.id === draft.id) {
+      this.clearSaveTimer()
+      this.dirty = false
       this.bases.delete(draft.id)
       this.set({ draft: null, conflict: false })
     }
-    this.deps.changed?.()
-    this.deps.notify({ text: `"${draft.subject || '(no subject)'}" reached the server after all and is on its way.`, tone: 'info' }, 8000)
+    this.deps.notify({ text: `"${subject}" reached the server after all and is on its way.`, tone: 'info' }, 8000)
     return recognised
+  }
+
+  /** Whether the form holds something the stored draft does not: a save under way, or other text. */
+  private typedOver(form: Draft, stored: Draft): boolean {
+    return this.writes.size > 0 || editedFields(form) !== editedFields(stored)
+  }
+
+  /** Notes the draft as the message `outgoingId` on its way, the send's id done with. */
+  private markOnItsWay(store: MailStore, draftId: string, outgoingId: string): Promise<Draft | null> {
+    return store.changeDraft(draftId, (stored) =>
+      stored === null || stored.outgoingId !== null || stored.sendAttemptId !== outgoingId ? null : { ...stored, outgoingId, sendAttemptId: null, pendingSave: false },
+    )
   }
 
   /** The open draft's files as the copy here has them now: attached or removed on another device meanwhile. */
