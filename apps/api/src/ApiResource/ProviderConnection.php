@@ -17,6 +17,11 @@ use App\State\ProviderConnectionProcessor;
  * `code` (or `error`) the API's callback passed on to it, with the access token of the user who started the sign-in.
  * The answer says what was connected (`connected`: the mail account id; `grant`: the grant, when only calendars were
  * allowed) or why not (`connectError`). A state works once.
+ *
+ * `requested` lists what the sign-in asked for (also when it failed, so a client can offer to try mail alone),
+ * `missing` what was asked for and not allowed (calendars left unticked), `existing` whether a new sign-in found the
+ * account connected already, and `approvalUrl` where an administrator approves Tresso when the organization requires
+ * that (`connectError: admin_approval_required`).
  */
 #[ApiResource(
     shortName: 'ProviderConnection',
@@ -35,13 +40,21 @@ use App\State\ProviderConnectionProcessor;
 )]
 final readonly class ProviderConnection
 {
+    /**
+     * @param list<string> $requested mail, calendar
+     * @param list<string> $missing   mail, calendar
+     */
     public function __construct(
         #[ApiProperty(identifier: true)]
         public string $provider,
         public ?string $connected,
         public ?string $grant,
-        /** denied, expired, different_user, scopes_missing, wrong_account, already_connected, unverified_address, no_mailbox or failed */
+        /** denied, admin_approval_required, expired, different_user, scopes_missing, wrong_account, already_connected, unverified_address, no_mailbox or failed */
         public ?string $connectError,
+        public array $requested = [],
+        public array $missing = [],
+        public bool $existing = false,
+        public ?string $approvalUrl = null,
     ) {
     }
 }

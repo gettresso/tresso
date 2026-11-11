@@ -164,11 +164,19 @@ final readonly class ProviderAccessTokens
         return \is_string($refreshToken) ? $refreshToken : null;
     }
 
+    /**
+     * What an account's status says when the grant does not cover a feature other than mail.
+     */
+    public static function notGrantedDetail(OAuthProvider $provider, ProviderFeature $feature): string
+    {
+        return \sprintf('Tresso is not allowed to use the %s of this account yet. Allow it by signing in with %s again.', $feature->label(), $provider->label());
+    }
+
     private function notGranted(ProviderGrant $grant, ProviderFeature $feature): ?FeatureNotGranted
     {
         $provider = $grant->getProvider();
         if (ProviderFeature::Mail !== $feature) {
-            return new FeatureNotGranted(\sprintf('Tresso is not allowed to use the %s of this account yet. Allow it by signing in with %s again.', $feature->label(), $provider->label()));
+            return new FeatureNotGranted(self::notGrantedDetail($provider, $feature));
         }
         $this->requireSignIn($grant, \sprintf('Tresso is not allowed to use the %s of this account. Sign in with %s again and allow it.', $feature->value, $provider->label()));
 
