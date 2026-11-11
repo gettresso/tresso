@@ -21,6 +21,7 @@ import FieldLabel from '@/forms/FieldLabel.vue'
 import { provideRequiredFields } from '@/forms/required'
 import { todoSchema, type TodoValues } from '@/forms/todos'
 import { senderName, shortTime } from '@/mail/format'
+import { useAuthStore } from '@/stores/auth'
 import { useComposeStore } from '@/stores/compose'
 import { useTodosStore } from '@/stores/todos'
 import AppIcon from '@/components/AppIcon.vue'
@@ -31,6 +32,7 @@ provideRequiredFields(todoSchema)
 
 const store = useTodosStore()
 const compose = useComposeStore()
+const auth = useAuthStore()
 const router = useRouter()
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -72,15 +74,31 @@ watch(dueDate, (next) => {
   }
 })
 
-function saved(): TodoValues {
+/** A todo as the form shows it. */
+function valuesOf(todo: Todo): TodoValues {
   return {
-    title: props.todo.title,
-    notes: props.todo.notes,
-    dueDate: props.todo.dueDate ?? '',
-    dueTime: props.todo.dueTime ?? '',
-    durationMinutes: props.todo.durationMinutes === null ? '' : String(props.todo.durationMinutes),
+    title: todo.title,
+    notes: todo.notes,
+    dueDate: todo.dueDate ?? '',
+    dueTime: todo.dueTime ?? '',
+    durationMinutes: todo.durationMinutes === null ? '' : String(todo.durationMinutes),
   }
 }
+
+function saved(): TodoValues {
+  return valuesOf(props.todo)
+}
+
+/** The form's values as a save would send them (a title without spaces at its ends), so they compare like for like. */
+function normalized(raw: TodoValues): TodoValues {
+  const checked = todoSchema.safeParse(raw)
+  return checked.success ? checked.data : raw
+}
+
+/** Raised whenever the form is reset for another todo, so a save can tell that from the user's typing. */
+let formRun = 0
+/** The todo on screen is being deleted: its edits go with it. */
+let removing = false
 
 /** A save under way: the values it writes, and whether it worked once done. Edits made meanwhile build on it. */
 interface SaveUnderWay {
@@ -108,6 +126,9 @@ watch(
     const switched = previous !== undefined && previous.id !== todo.id
     const unsaved = switched ? unsavedEdits() : null
     if (previous === undefined || switched || (!saving.value && !meta.value.dirty)) {
+      if (switched) {
+        formRun += 1
+      }
       reset(saved())
       confirmingRemoval.value = false
       error.value = null
@@ -119,10 +140,10 @@ watch(
 )
 
 // The detail closes (no todo selected, another screen): edits on the form are saved; a failure is told in a notice,
-// as the form is gone.
+// as the form is gone. Not for a todo just deleted, nor at a sign-out: those edits have nowhere to go.
 onBeforeUnmount(() => {
   const unsaved = unsavedEdits()
-  if (unsaved !== null) {
+  if (unsaved !== null && !removing && auth.isAuthenticated) {
     void keepEdits(props.todo, unsaved, (text) => compose.notify({ text, tone: 'error' }))
   }
 })
@@ -177,6 +198,7 @@ async function run(action: () => Promise<void>): Promise<void> {
 const save = handleSubmit((current) =>
   run(async () => {
     const id = props.todo.id
+    const shown = formRun
     const changed = changes(current)
     if (Object.keys(changed).length === 0) {
       reset(current)
@@ -184,24 +206,37 @@ const save = handleSubmit((current) =>
     }
     let finished!: (worked: boolean) => void
     inFlight = { values: current, done: new Promise((resolve) => (finished = resolve)) }
+    let updated: Todo
     try {
-      await store.update(id, changed)
+      updated = await store.update(id, changed)
       finished(true)
     } catch (e) {
       finished(false)
+      // The form went to another todo meanwhile: the edits it carried away say themselves whether they were saved.
+      if (formRun !== shown) {
+        return
+      }
       throw e
     } finally {
       inFlight = null
     }
-    // Another todo was picked meanwhile: its form is its own (and the watcher saved any edits typed after this save).
+    // Another todo is on screen: its form is its own (and the watcher saved any edits typed after this save).
     if (props.todo.id !== id) {
       return
     }
-    // The todo as the server has it now, with what another device changed meanwhile.
     await nextTick()
-    const typedSince = changes({ ...values } as TodoValues, current)
+    if (formRun !== shown) {
+      // Back on this todo after another one: the form was reset meanwhile, perhaps to values from before this save.
+      // A clean form shows what the server answered; a dirty one keeps the baseline its own reset gave it.
+      if (!meta.value.dirty) {
+        reset(valuesOf(updated))
+      }
+      return
+    }
+    const typedSince = changes(normalized({ ...values } as TodoValues), current)
     if (Object.keys(typedSince).length === 0) {
-      reset(saved())
+      // The todo as the server answered, with what another device changed meanwhile.
+      reset(valuesOf(updated))
     } else {
       // Typed while the save ran: those edits stay on the form, now told against what was saved.
       baseline = current
@@ -229,7 +264,13 @@ function unplan(): Promise<void> {
 
 function remove(): Promise<void> {
   return run(async () => {
-    await store.remove(props.todo.id)
+    removing = true
+    try {
+      await store.remove(props.todo.id)
+    } catch (e) {
+      removing = false
+      throw e
+    }
     await router.push({ name: 'todos' })
   })
 }
