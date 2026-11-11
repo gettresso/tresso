@@ -25,8 +25,9 @@ use Symfony\Component\Uid\Uuid;
  *    in a Sent folder (that also covers an alias they send from elsewhere, which Tresso knows nothing else about).
  *    - Someone else's mail joins a thread with someone else's mail from one of its own people (its sender, or whom it
  *      went to: a reply-all of a colleague), or with the user's own mail that went to its sender (a reply).
- *    - The user's own mail joins a thread with someone else's mail from one of its recipients (an answer), or with
- *      the user's own mail that went to every one of its To recipients (writing again to the same people).
+ *    - The user's own mail joins a thread with someone else's mail from one of its To recipients (an answer), or
+ *      with the user's own mail that went to every one of its To recipients (writing again to the same people). Its
+ *      Cc says nothing, not even when that colleague wrote in the other conversation.
  *    The user's addresses never count, as they are on nearly every message, and neither does a recipient that only
  *    happens to be shared (an alias or billing@ two strangers wrote to, a colleague the user copies on everything).
  *    The price: a reply without References from a new address that only copies the original recipient (Bob answers
@@ -47,8 +48,8 @@ final readonly class Threader
 
     /**
      * @param list<string> $referencedIds normalized Message-IDs this message refers to
-     * @param list<string> $counterparts  lowercased addresses of the people on the message other than the user (its
-     *                                    sender unless it is the user's own mail, its to and cc)
+     * @param list<string> $counterparts  lowercased addresses of the people the message is about, other than the user:
+     *                                    sender, to and cc of someone else's mail; the To of the user's own mail
      * @param list<string> $needed        who an older own message must have gone to: the sender of someone else's
      *                                    mail, or every To recipient of the user's own mail
      * @param list<string> $ownAddresses  the addresses of all the user's accounts, lowercased

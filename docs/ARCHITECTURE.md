@@ -484,8 +484,8 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   a Sent folder (so mail sent from an alias in another app counts too). Someone else's mail joins a thread with
   someone else's mail from one of its people (its sender, or a recipient: a colleague's reply-all), or with the user's
   own mail that went to its sender (an answer). The user's own mail joins a thread with someone else's mail from one of
-  its recipients, or with the user's own mail that went to every one of its To recipients (writing again to the same
-  people). The user's addresses never count, nor does a recipient that is merely shared (billing@ two strangers wrote
+  its To recipients, or with the user's own mail that went to every one of its To recipients (writing again to the
+  same people); its Cc says nothing, not even when that colleague wrote in the other conversation. The user's addresses never count, nor does a recipient that is merely shared (billing@ two strangers wrote
   to, a colleague the user copies on everything). The price: a reply without References from a new address that only
   copies the original recipient (Bob answers for Anna, Cc Anna) starts its own thread. The condition is part of the
   candidate query, so an older conversation is found behind any number of newer ones with that subject.
