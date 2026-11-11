@@ -1,6 +1,7 @@
 import { forwardRef, useImperativeHandle, useMemo, useRef, useState, type ComponentRef } from 'react'
 import { StyleSheet } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
+import { mayLoad } from '@/components/frameLinks'
 import { editorDocument } from '@/compose/editorDocument'
 import { editorScript, parseEditorEvent, type EditorCommand, type EditorEvent } from '@/compose/editorProtocol'
 import { useTheme } from '@/theme'
@@ -81,15 +82,15 @@ export const MessageEditor = forwardRef<MessageEditorHandle, Props>(function Mes
     <WebView
       ref={view}
       style={[styles.editor, { height, backgroundColor: theme.surface }]}
-      originWhitelist={['about:*']}
+      originWhitelist={['*']}
       source={{ html, baseUrl: '' }}
       onLoadStart={() => {
         // A reload (after the theme changed) starts the editor over: it gets the current text again once ready.
         ready.current = false
       }}
       onMessage={receive}
-      // Nothing leaves the editor: links in the text are not followed while writing.
-      onShouldStartLoadWithRequest={(request) => request.url.startsWith('about:')}
+      // Nothing leaves the editor: links in the text are not followed while writing (see frameLinks).
+      onShouldStartLoadWithRequest={(request) => mayLoad(request.url)}
       scrollEnabled={false}
       javaScriptEnabled
       allowFileAccess={false}
