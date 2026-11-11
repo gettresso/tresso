@@ -283,6 +283,12 @@ async function toggle(calendarId: string, visible: boolean): Promise<void> {
 /** T, J, K, 1 to 4, N, E and Esc, unless the user is typing or a dialog is open. */
 function onShortcut(event: KeyboardEvent): void {
   if (event.metaKey || event.ctrlKey || event.altKey || editor.value !== null || deleting.value !== null) return
+  // Escape closes the calendar drawer first, wherever focus is (right after opening it is still on the toggle).
+  if (event.key === 'Escape' && railOpen.value) {
+    event.preventDefault()
+    closeRail()
+    return
+  }
   const target = event.target as HTMLElement | null
   if (target !== null && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return
   const key = event.key.toLowerCase()
@@ -317,26 +323,46 @@ function showDay(day: number): void {
 }
 function pickDay(day: number): void {
   go(calendar.view, day)
-  railOpen.value = false
+  if (railOpen.value) {
+    closeRail()
+  }
 }
 
 /**
- * Below 1100 px the rail (calendars to show, the month, the time zone) is a drawer the toolbar opens; it closes again
- * on Escape, on a press beside it, and once a day is picked in it.
+ * Below 1100 px the rail (calendars to show, the month, the time zone) is a drawer the toolbar opens. Focus moves
+ * into it on open and back to the toggle on close; it closes on Escape (wherever focus is), on a press beside it,
+ * and once a day is picked in it.
  */
 const railOpen = ref(false)
 const railToggle = ref<HTMLButtonElement | null>(null)
+async function openRail(): Promise<void> {
+  railOpen.value = true
+  await nextTick()
+  document.querySelector<HTMLElement>('#calendar-rail button, #calendar-rail input, #calendar-rail a[href]')?.focus()
+}
+function closeRail(): void {
+  railOpen.value = false
+  railToggle.value?.focus()
+}
+function toggleRail(): void {
+  if (railOpen.value) {
+    closeRail()
+  } else {
+    void openRail()
+  }
+}
 function closeRailOutside(event: MouseEvent): void {
   const target = event.target as Element | null
   if (railOpen.value && target !== null && !target.closest('#calendar-rail') && !railToggle.value?.contains(target)) {
+    // Focus goes where the press went, not back to the toggle.
     railOpen.value = false
   }
 }
+// On the rail itself, for Escape on one of its checkboxes, which the window shortcuts leave alone.
 function closeRailOnEscape(event: KeyboardEvent): void {
   if (railOpen.value) {
     event.stopPropagation()
-    railOpen.value = false
-    railToggle.value?.focus()
+    closeRail()
   }
 }
 // In the capture phase: a press on the macOS app's title strip is stopped at the document by Tauri's drag handling.
@@ -370,8 +396,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside
         <button type="button" class="button button-quiet icon" aria-label="Next" @click="step(1)"><AppIcon name="next" :size="16" /></button>
         <h1 id="calendar-title">{{ title }} <span v-if="subtitle" class="subtitle">{{ subtitle }}</span></h1>
         <span class="spacer" />
-        <button ref="railToggle" type="button" class="button button-quiet rail-toggle" aria-controls="calendar-rail" :aria-expanded="railOpen ? 'true' : 'false'" @click="railOpen = !railOpen">
-          Calendars<span v-if="calendar.unanswered.length > 0" class="count">{{ calendar.unanswered.length }} to answer</span>
+        <button ref="railToggle" type="button" class="button button-quiet rail-toggle" aria-controls="calendar-rail" :aria-expanded="railOpen ? 'true' : 'false'" @click="toggleRail">
+          Calendars <span v-if="calendar.unanswered.length > 0" class="count"><span class="visually-hidden">, </span>{{ calendar.unanswered.length }} to answer</span>
         </button>
         <SegmentedControl label="View" :options="VIEWS.map((entry) => ({ value: entry.kind, label: entry.label }))" :selected="calendar.view" @choose="(kind) => go(kind)" />
         <button type="button" class="button button-primary" @click="newEvent()"><AppIcon name="plus" :size="16" /> New event <KeyShortcut keys="N" /></button>
@@ -639,6 +665,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside
     max-height: 40vh;
     border-left: 0;
     border-top: 1px solid var(--line);
+  }
+}
+/* Touch size on a phone for the drawer's toggle. */
+@media (max-width: 760px) {
+  .rail-toggle {
+    min-height: 44px;
   }
 }
 </style>

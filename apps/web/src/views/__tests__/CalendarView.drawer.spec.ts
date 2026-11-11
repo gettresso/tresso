@@ -22,21 +22,46 @@ async function mountView() {
   return wrapper
 }
 
-describe('CalendarView', () => {
-  it('opens the calendar rail as a drawer from the toolbar, and closes it on Escape or a press beside it', async () => {
+describe('CalendarView drawer', () => {
+  it('opens the calendar rail as a drawer from the toolbar, with focus inside it', async () => {
     const wrapper = await mountView()
     const toggle = wrapper.get('button[aria-controls="calendar-rail"]')
     expect(toggle.attributes('aria-expanded')).toBe('false')
     expect(wrapper.get('#calendar-rail').classes()).not.toContain('open')
 
     await toggle.trigger('click')
+    await flushPromises()
     expect(toggle.attributes('aria-expanded')).toBe('true')
     expect(wrapper.get('#calendar-rail').classes()).toContain('open')
+    expect(wrapper.get('#calendar-rail').element.contains(document.activeElement)).toBe(true)
+  })
 
+  it('closes the drawer on Escape wherever focus is, and gives focus back to the toggle', async () => {
+    const wrapper = await mountView()
+    const toggle = wrapper.get('button[aria-controls="calendar-rail"]')
+
+    // Focus still on the toggle, as right after a click in WebKit.
+    await toggle.trigger('click')
+    await flushPromises()
+    ;(toggle.element as HTMLElement).focus()
+    toggle.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    expect(wrapper.get('#calendar-rail').classes()).not.toContain('open')
+    expect(document.activeElement).toBe(toggle.element)
+
+    // Escape inside the rail.
+    await toggle.trigger('click')
+    await flushPromises()
     await wrapper.get('#calendar-rail .day').trigger('keydown', { key: 'Escape' })
     expect(wrapper.get('#calendar-rail').classes()).not.toContain('open')
+    expect(document.activeElement).toBe(toggle.element)
+  })
 
+  it('closes the drawer on a press beside it', async () => {
+    const wrapper = await mountView()
+    const toggle = wrapper.get('button[aria-controls="calendar-rail"]')
     await toggle.trigger('click')
+    await flushPromises()
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
     await flushPromises()
     expect(wrapper.get('#calendar-rail').classes()).not.toContain('open')
