@@ -254,6 +254,8 @@ describe('HandOverFlow', () => {
     expect(handed).toMatchObject({ forwardId: 'forward-1', handOver: { id: 'h1' } })
     expect(handed.until).toBeGreaterThan(Date.now())
     expect(syncs).toBe(1)
+    // The forward carries the id of its send, so a request sent again does not forward twice.
+    expect(sent[0]!.outgoingId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7/)
   })
 
   it("takes the original's files along", async () => {

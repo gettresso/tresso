@@ -111,6 +111,7 @@ export function sendRequest(draft: Draft, signatures: SyncedSignature[], sendAt:
     throw new Error('Choose the account to send from.')
   }
   return {
+    ...(draft.sendAttemptId ? { outgoingId: draft.sendAttemptId } : {}),
     mailAccountId: draft.mailAccountId,
     to: draft.to,
     cc: draft.cc,
@@ -143,9 +144,9 @@ export function sentOutcome(draft: Draft, outgoing: SyncedOutgoingMessage | null
   }
 }
 
-/** Editing a message that failed to send makes it a draft again. */
+/** Editing a message that failed to send makes it a draft again; sending it again is a new send, with a new id. */
 export function reopenedDraft(draft: Draft): Draft {
-  return draft.outgoingId === null ? draft : { ...draft, outgoingId: null, noticedStatus: null, pendingSave: true }
+  return draft.outgoingId === null ? draft : { ...draft, outgoingId: null, noticedStatus: null, pendingSave: true, sendAttemptId: null }
 }
 
 /**
@@ -512,7 +513,14 @@ function withVersion(draft: Draft, version: number): Draft {
  * stays, and so do the files: the screen does not know either for sure.
  */
 export function withEdits(stored: Draft | null, edited: Draft): Draft {
-  return { ...edited, version: stored?.version ?? edited.version, remoteVersion: stored?.remoteVersion ?? null, attachments: stored?.attachments ?? edited.attachments }
+  return {
+    ...edited,
+    version: stored?.version ?? edited.version,
+    remoteVersion: stored?.remoteVersion ?? null,
+    attachments: stored?.attachments ?? edited.attachments,
+    // A send under way keeps its id while the text stays the same; an edited message is a new one.
+    sendAttemptId: stored !== null && editedFields(stored) === editedFields(edited) ? (stored.sendAttemptId ?? null) : null,
+  }
 }
 
 /** What a form was opened on: the text (see {@link editedFields}) and version of the draft as last read or written. */

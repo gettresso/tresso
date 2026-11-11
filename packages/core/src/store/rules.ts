@@ -1,4 +1,5 @@
 import type { Verdict } from '../domain'
+import { editedFields } from '../drafts'
 import type { SyncedDraft, SyncedMessage, SyncedThread, SyncedUnsubscription } from '../sync/types'
 import type { Contact, Draft } from './mailStore'
 
@@ -49,6 +50,8 @@ export function syncedDraft(local: Draft | null | undefined, draft: SyncedDraft)
     remoteVersion: null,
     outgoingId: local?.outgoingId ?? null,
     noticedStatus: local?.noticedStatus ?? null,
+    // A send under way keeps its id while the text is the one it sends; another device's other text is a new message.
+    sendAttemptId: local != null && editedFields(local) === editedFields(draft) ? (local.sendAttemptId ?? null) : null,
     attachments: draft.attachments ?? [],
   }
 }

@@ -2,6 +2,12 @@ import type { Address, SyncedMessage } from './sync/types'
 
 /** POST /api/v1/outgoing-messages */
 export interface SendMessageRequest {
+  /**
+   * The id the client chose for the message (a UUIDv7 made when the user pressed Send): the server queues one message
+   * per id, so the same request sent again after its answer was lost returns that message. A server that does not
+   * know the field ignores it.
+   */
+  outgoingId?: string
   mailAccountId: string
   to: Address[]
   cc: Address[]

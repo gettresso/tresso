@@ -1564,7 +1564,12 @@ the copy at once, so it shows in Drafts whatever the user does next. A forward w
 opened (a hand-over then sends nothing); a reply opens quoting the snippet and says the quote is incomplete. The few
 seconds of the undo window are a send time on the server's clock (`ComposerDeps.now`, `ServerClock` from the `Date`
 header of answers) while the notice counts them on the device's. A message the server took counts as sent also when
-noting it on the device fails.
+noting it on the device fails. Every send carries an `outgoingId`: a UUIDv7 on the server's clock, chosen when the
+user first presses Send and kept with the draft in the copy (`sendAttemptId`) before the request leaves, so pressing
+Send again after a lost answer, also after a restart, sends the same id and the server returns the message it queued
+instead of sending it twice. The id is dropped once the server confirmed the message, when the send is cancelled or
+undone, and when the draft's text changes (an edited message is a new one). A server that does not know the field
+ignores it.
 
 Message actions in the web client: opening a conversation reads it; the conversation's buttons archive, trash, mark
 unread, flag and move it (shortcuts E, #, U and S, not while typing or writing), and archiving, trashing or moving

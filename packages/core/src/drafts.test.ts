@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { defaultSignatureOf, DraftSync, newDraft, reopenedDraft, replyDraft, sendRequest, sentOutcome } from './drafts'
+import { defaultSignatureOf, DraftSync, newDraft, reopenedDraft, replyDraft, sendRequest, sentOutcome, withEdits } from './drafts'
+import { syncedDraft } from './store/rules'
 import { ApiFailure, FakeDraftApi } from './drafts.fake'
 import { accounts, draft, message, signature } from './store/contract'
 import { memorySql } from './store/memorySql'
@@ -313,5 +314,18 @@ describe('writing mail', () => {
 
     expect(reopenedDraft({ ...sent, noticedStatus: 'failed', pendingSave: false })).toMatchObject({ outgoingId: null, noticedStatus: null, pendingSave: true })
     expect(reopenedDraft(draft('d2'))).toEqual(draft('d2'))
+    expect(reopenedDraft({ ...sent, sendAttemptId: 'a1' }).sendAttemptId).toBeNull()
+  })
+
+  it("keeps a send's id while the text it sends stays the same, here and from the server", () => {
+    const sending = draft('d1', { sendAttemptId: 'a1', version: 2 })
+    const synced = { ...sending, version: 3, updatedAt: '2026-10-19T08:00:00Z' }
+
+    expect(withEdits(sending, { ...sending, sendAttemptId: null }).sendAttemptId).toBe('a1')
+    expect(withEdits(sending, { ...sending, subject: 'Edited' }).sendAttemptId).toBeNull()
+    expect(syncedDraft(sending, synced)?.sendAttemptId).toBe('a1')
+    expect(syncedDraft(sending, { ...synced, html: '<p>Other text</p>' })?.sendAttemptId).toBeNull()
+    expect(sendRequest(sending, [], new Date('2026-10-19T09:00:00Z'), true).outgoingId).toBe('a1')
+    expect(sendRequest({ ...sending, sendAttemptId: null }, [], new Date('2026-10-19T09:00:00Z'), true)).not.toHaveProperty('outgoingId')
   })
 })
