@@ -53,8 +53,29 @@ describe('App', () => {
     await flushPromises()
 
     expect(wrapper.get('[role="alert"]').text()).toContain('Sync stopped: The server could not be reached')
+    // Along the bottom edge while no draft is open; it lies below the compose window and the notices either way.
+    expect(wrapper.get('[role="alert"]').classes()).not.toContain('with-draft')
     await wrapper.get('[role="alert"] button').trigger('click')
     expect(syncNow).toHaveBeenCalled()
+  })
+
+  it('hides a sync error on request, and shows a different one again', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
+    await router.push('/')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    const mail = useMailStore()
+    mail.syncState = 'error'
+    mail.syncError = 'The server could not be reached'
+    await flushPromises()
+
+    await wrapper.get('[role="alert"] button[aria-label="Hide this message"]').trigger('click')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+
+    mail.syncError = 'Signing in to kim@company.example failed'
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('Signing in to kim@company.example failed')
   })
 
   it('lets no shortcut act behind the payment screen', async () => {

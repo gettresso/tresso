@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterView, useRouter } from 'vue-router'
 import { errorMessage } from '@/api/errors'
 import { useAuthStore } from '@/stores/auth'
@@ -9,6 +9,7 @@ import { useMailStore } from '@/stores/mail'
 import { startTimeZoneSync, storedSentZone } from '@/platform/timeZone'
 import { releaseOtherUsersPush } from '@/platform/webPush'
 import NoticeStack from '@/components/NoticeStack.vue'
+import { problemPlacement } from '@/components/problemPlacement'
 import UpdateCard from '@/components/UpdateCard.vue'
 import { useUpdatesStore } from '@/stores/updates'
 import { useBillingStore } from '@/stores/billing'
@@ -19,6 +20,11 @@ import { vibrant } from '@/platform/vibrancy'
 const auth = useAuthStore()
 const mail = useMailStore()
 const compose = useComposeStore()
+/** Where the problem banner goes, out of the compose window's way (problemPlacement). */
+const problemPlace = computed(() => problemPlacement(compose.draft === null ? null : { minimized: compose.minimized }))
+/** The sync error the user hid; a different error shows again. */
+const hiddenSyncError = ref<string | null>(null)
+const syncProblem = computed(() => (mail.syncState === 'error' ? `Sync stopped: ${mail.syncError}` : null))
 // Started with the app: it tells the user about hand-overs past their due date wherever they are.
 const handOvers = useHandOversStore()
 // The editor is large; it loads the first time a message is written.
@@ -135,13 +141,14 @@ watch(
     </template>
   </div>
   <PaymentScreen v-if="auth.isAuthenticated && auth.paymentRequired" />
-  <p v-if="mail.updatedElsewhere" class="problem" role="alert">
+  <p v-if="mail.updatedElsewhere" class="problem" :class="problemPlace" role="alert">
     {{ mail.updatedElsewhere }}
     <button type="button" class="reload" @click="reload">Reload</button>
   </p>
-  <p v-else-if="!auth.paymentRequired && (error || mail.syncState === 'error')" class="problem" role="alert">
-    {{ error ?? `Sync stopped: ${mail.syncError}` }}
+  <p v-else-if="!auth.paymentRequired && (error || (syncProblem !== null && syncProblem !== hiddenSyncError))" class="problem" :class="problemPlace" role="alert">
+    {{ error ?? syncProblem }}
     <button v-if="error === null" type="button" class="reload" @click="mail.syncNow()">Try again</button>
+    <button v-if="error === null" type="button" class="hide" aria-label="Hide this message" @click="hiddenSyncError = syncProblem">×</button>
   </p>
 </template>
 
@@ -163,8 +170,11 @@ watch(
   left: 16px;
   right: 16px;
   bottom: 16px;
-  /* Above the compose window (20) and the notices (30), below the dialogs and drawers (40). */
-  z-index: 35;
+  /*
+   * Below the compose window (20) and the notices (30): Send, Undo and a minimized draft always stay on top and take
+   * clicks. problemPlacement moves the banner out of their way; Hide takes a sync error away altogether.
+   */
+  z-index: 15;
   width: fit-content;
   max-width: min(560px, calc(100vw - 32px));
   margin: 0 auto;
@@ -173,6 +183,39 @@ watch(
   background: var(--ink);
   color: var(--paper);
   box-shadow: var(--raised);
+}
+/* A draft open or minimized on a wide window: along the top edge, clear of the compose window. */
+@media (min-width: 761px) {
+  .problem.with-draft,
+  .problem.with-minimized-draft {
+    top: calc(var(--titlebar, 0px) + 12px);
+    bottom: auto;
+  }
+}
+/* On a phone an open draft covers the screen (the banner waits behind it); above a minimized draft's 64 px bar. */
+@media (max-width: 760px) {
+  .problem.with-minimized-draft {
+    bottom: 76px;
+  }
+}
+.hide {
+  margin-left: 8px;
+  min-width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+@media (max-width: 760px) {
+  .reload,
+  .hide {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 .reload {
   margin-left: 12px;
