@@ -774,6 +774,40 @@ describe('auth store', () => {
       expect(forms).toEqual([])
     })
 
+    it('asks for the password at the first sign-in after a sign-out, also after a restart, until one completes', async () => {
+      stubServer()
+      desktop.keychain = JSON.stringify(TOKENS)
+      const before = await authStore()
+      await before.restore()
+      await before.signOut()
+
+      // The app restarts.
+      const auth = await authStore()
+      const callback = await startSignIn(auth, () => desktop.opened[0]!)
+      expect(new URL(desktop.opened[0]!).searchParams.get('prompt')).toBe('login')
+      // Opening the authorization page again still asks.
+      await auth.signIn()
+      expect(new URL(desktop.opened[1]!).searchParams.get('prompt')).toBe('login')
+      stubTokenEndpoint()
+      await auth.completeSignIn(`${callback.split('&state=')[0]}&state=${new URL(desktop.opened[1]!).searchParams.get('state')}`)
+
+      await auth.signIn()
+      expect(new URL(desktop.opened[2]!).searchParams.has('prompt')).toBe(false)
+    })
+
+    it('does not ask for the password again after a session that expired', async () => {
+      stubServer({ refresh: () => Response.json({ error: 'invalid_grant' }, { status: 400 }) })
+      desktop.keychain = JSON.stringify(EXPIRED)
+      const auth = await authStore()
+      await auth.restore()
+      await expect(auth.api('/api/v1/me')).rejects.toThrow('Your session has expired.')
+      await vi.waitFor(() => expect(auth.isAuthenticated).toBe(false))
+
+      await auth.signIn()
+
+      expect(new URL(desktop.opened[0]!).searchParams.has('prompt')).toBe(false)
+    })
+
     it('clears the keychain on sign-out', async () => {
       stubServer()
       desktop.keychain = JSON.stringify(TOKENS)
