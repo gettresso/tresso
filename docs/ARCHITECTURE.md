@@ -1709,7 +1709,10 @@ The clients show it where the user looks: the account's card in Settings, Accoun
 whose calendars do not show, with "Allow calendar access" (one sign-in that adds the calendar scopes) for
 `not_granted`, the detail and a link to the account's settings for the others, and "Looking for the calendars" while
 an account has none yet. An IMAP account's settings show its CalDAV status and take the CalDAV address
-(`calendarUrl`), with "Use this address" for one the worker found but may not trust on its own (`unconfirmed`).
+(`calendarUrl`), with "Use this address" for one the worker found but may not trust on its own (`unconfirmed`). The
+worker may send that address as `url` with the status; the API keeps it while the status is `unconfirmed` and returns
+it as the account's `calendarFoundUrl`. A worker that sends only the sentence is still understood: the client then
+reads the address from `calendarStatusDetail`.
 
 - **CalDAV** for IMAP accounts (`apps/sync/internal/caldavsync` on a small WebDAV client in `internal/caldav`, through
   the guarded dialer). The client keeps objects as raw iCalendar text in both directions and reads colors, ctags and

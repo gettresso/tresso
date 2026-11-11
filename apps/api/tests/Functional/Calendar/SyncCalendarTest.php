@@ -92,6 +92,19 @@ final class SyncCalendarTest extends DatabaseTestCase
         self::assertSame('unconfirmed', $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarStatus']);
     }
 
+    public function testAFoundCalendarServerIsOfferedWithItsAddress(): void
+    {
+        $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'unconfirmed', 'detail' => 'A calendar server was found.', 'url' => 'https://dav.company.example/caldav/?user=kim'], $this->worker);
+        self::assertResponseIsSuccessful();
+        self::assertSame('https://dav.company.example/caldav/?user=kim', $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarFoundUrl']);
+
+        $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'unconfirmed', 'url' => 'http://dav.company.example/'], $this->worker);
+        self::assertResponseStatusCodeSame(422, 'Only https addresses are offered.');
+
+        $this->reportCalendars();
+        self::assertNull($this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarFoundUrl'], 'Gone once the calendars sync.');
+    }
+
     public function testAnIncompleteCalendarListRemovesNothing(): void
     {
         $this->reportCalendars();

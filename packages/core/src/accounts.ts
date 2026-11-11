@@ -29,6 +29,8 @@ export interface MailAccount {
   calendarUrl: string | null
   calendarStatus: CalendarSyncStatus
   calendarStatusDetail: string | null
+  /** With calendar status `unconfirmed`: the CalDAV address the sync found, for the user to confirm. */
+  calendarFoundUrl?: string | null
   lastSyncedAt: string | null
   createdAt: string
   /** Changed through the signature's `defaultFor`. */
@@ -294,12 +296,14 @@ export function normalizeAppPassword(value: string): string {
 }
 
 /**
- * The CalDAV address the sync worker found on a server it may not trust on its own, from the calendar status of an
- * account in status `unconfirmed` ("A calendar server was found at https://... To sync your calendars there, confirm
- * this address in the account settings."). Null when the text names none.
+ * The CalDAV address the sync worker found on a server it may not trust on its own, for an account in calendar
+ * status `unconfirmed`: the API's `calendarFoundUrl` when the worker reported it, else read from the status text
+ * ("A calendar server was found at https://... To sync your calendars there, confirm this address in the account
+ * settings."), which is all workers before that field send. Null when neither names one.
  */
-export function foundCalendarUrl(detail: string | null): string | null {
-  const match = detail?.match(/https:\/\/\S+/)
+export function foundCalendarUrl(account: Pick<MailAccount, 'calendarFoundUrl' | 'calendarStatusDetail'>): string | null {
+  if (typeof account.calendarFoundUrl === 'string' && account.calendarFoundUrl !== '') return account.calendarFoundUrl
+  const match = account.calendarStatusDetail?.match(/https:\/\/\S+/)
   return match ? match[0].replace(/[.,;:]+$/, '') : null
 }
 

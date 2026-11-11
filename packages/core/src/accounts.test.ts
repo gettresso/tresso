@@ -121,11 +121,19 @@ describe('normalizeAppPassword', () => {
 
 describe('calendar statuses', () => {
   it('reads the address the worker found from its message', () => {
-    expect(foundCalendarUrl('A calendar server was found at https://dav.studio-noord.example/caldav/. To sync your calendars there, confirm this address in the account settings.')).toBe(
-      'https://dav.studio-noord.example/caldav/',
+    expect(
+      foundCalendarUrl({
+        calendarStatusDetail: 'A calendar server was found at https://dav.studio-noord.example/caldav/. To sync your calendars there, confirm this address in the account settings.',
+      }),
+    ).toBe('https://dav.studio-noord.example/caldav/')
+    expect(foundCalendarUrl({ calendarStatusDetail: 'A calendar server was found at the address the server named. To sync ...' })).toBeNull()
+    expect(foundCalendarUrl({ calendarStatusDetail: null })).toBeNull()
+  })
+
+  it('prefers the address the API reports as its own field', () => {
+    expect(foundCalendarUrl({ calendarFoundUrl: 'https://dav.studio-noord.example/caldav/?user=kim', calendarStatusDetail: 'A calendar server was found at https://dav.studio-noord.example/caldav/.' })).toBe(
+      'https://dav.studio-noord.example/caldav/?user=kim',
     )
-    expect(foundCalendarUrl('A calendar server was found at the address the server named. To sync ...')).toBeNull()
-    expect(foundCalendarUrl(null)).toBeNull()
   })
 
   it('names the statuses that need the user', () => {
