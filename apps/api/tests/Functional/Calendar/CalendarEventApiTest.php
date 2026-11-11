@@ -233,6 +233,23 @@ final class CalendarEventApiTest extends DatabaseTestCase
         }
     }
 
+    public function testAfterThisAndFollowingTheNewSeriesReachesItsFirstOccurrence(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=this&recurrenceId=20261026T080000Z', self::event($this->calendarId, ['summary' => 'Planning', ...self::secondWeek()]), $this->kim);
+        self::assertResponseIsSuccessful();
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=following&recurrenceId=20261026T080000Z', self::event($this->calendarId, ['summary' => 'Planning, final', 'recurrence' => 'FREQ=WEEKLY;COUNT=4', ...self::secondWeek()]), $this->kim);
+        self::assertResponseIsSuccessful();
+        $next = self::string($this->decodedResponse()['id']);
+
+        // Nothing makes the first occurrence its own any more, so a change of the whole new series reaches it.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$next.'?scope=all', self::event($this->calendarId, ['summary' => 'Planning, renamed', 'recurrence' => 'FREQ=WEEKLY;COUNT=3', ...self::secondWeek()]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        $summaries = array_column($this->occurrences($this->kim, '2026-10-20T00:00:00+00:00', '2026-12-01T00:00:00+00:00'), 'summary');
+        self::assertSame(['Planning, renamed', 'Planning, renamed', 'Planning, renamed'], $summaries);
+    }
+
     public function testMovingAllEventsToAnotherWeekdayMovesTheRuleAndKeepsTheExceptions(): void
     {
         $series = $this->create(['recurrence' => 'FREQ=WEEKLY;BYDAY=MO;COUNT=4']);
@@ -944,6 +961,9 @@ final class CalendarEventApiTest extends DatabaseTestCase
             array_map(static fn (array $o): array => [$o['summary'], \is_array($o['start']) ? $o['start']['dateTime'] : null], $occurrences),
             'The changed occurrence shows once, and the deleted one stays deleted.',
         );
+        // The moved occurrence takes the series' form too: a reader in another zone sees it as the series reads.
+        $moved = array_values(array_filter($this->occurrences($this->kim, '2026-10-27T00:00:00+00:00', '2026-10-28T00:00:00+00:00', 'America/New_York'), static fn (array $o): bool => 'Standup, moved' === $o['summary']));
+        self::assertSame([null === $to ? '2026-10-27T18:00:00+00:00' : '2026-10-27T13:00:00+00:00'], array_map(static fn (array $o): mixed => \is_array($o['start']) ? $o['start']['dateTime'] : null, $moved));
     }
 
     public function testASeriesWithARuleSabreCannotExpandShowsAndCanBeEdited(): void
