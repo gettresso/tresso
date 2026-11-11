@@ -413,6 +413,39 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame(Verdict::Know, $thread->getVerdict());
     }
 
+    public function testMergingIntoAHeldConversationDeliversItsMessagesWithTheUsersPlacement(): void
+    {
+        $this->folders(['INBOX' => 1]);
+        $this->messages('INBOX', [
+            $this->message('1', ['messageId' => '<a@x>', 'subject' => 'Plan']),
+            $this->message('3', ['messageId' => '<c@x>', 'subject' => 'Re: Plan', 'inReplyTo' => '<b@x>', 'references' => ['<b@x>']]),
+        ]);
+        $entityManager = $this->entityManager();
+        $older = $entityManager->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'a@x']);
+        self::assertInstanceOf(Message::class, $older);
+        // The older conversation waits for its batch.
+        $until = new \DateTimeImmutable('+6 hours', new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $entityManager->getConnection()->executeStatement('UPDATE message SET held_until = :until WHERE id = :id', ['until' => $until, 'id' => $older->getId()->toRfc4122()]);
+        $entityManager->getConnection()->executeStatement('UPDATE thread SET held_until = :until WHERE id = :id', ['until' => $until, 'id' => $older->getThread()->getId()->toRfc4122()]);
+        $entityManager = $this->entityManager();
+        $newer = $entityManager->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'c@x'])?->getThread();
+        self::assertInstanceOf(Thread::class, $newer);
+        $smartInbox = new Category($newer->getMailAccount()->getOwner(), 'Partners', '', Verdict::Know);
+        $entityManager->wrapInTransaction(static function () use ($entityManager, $smartInbox, $newer): void {
+            $entityManager->persist($smartInbox);
+            $newer->placeByUser($smartInbox, Verdict::Know, new \DateTimeImmutable());
+        });
+
+        $this->messages('INBOX', [$this->message('2', ['messageId' => '<b@x>', 'subject' => 'Re: Plan', 'inReplyTo' => '<a@x>', 'references' => ['<a@x>']])]);
+
+        $thread = $this->onlyThread();
+        self::assertTrue($thread->isClassifiedByUser());
+        self::assertNull($thread->getHeldUntil());
+        $released = $this->entityManager()->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'a@x']);
+        self::assertInstanceOf(Message::class, $released);
+        self::assertNull($released->getHeldUntil(), 'None of its messages waits for the batch and notifies later.');
+    }
+
     public function testSubjectFallbackNeedsASharedParticipantAndRecentThread(): void
     {
         $this->folders(['INBOX' => 1]);
