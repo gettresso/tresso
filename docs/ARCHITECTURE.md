@@ -1251,8 +1251,9 @@ session as expired in every tab. The mail copy and its drafts stay, and signing 
 pages still remember the browser).
 
 A sign-out removes the tokens from the device first, so it holds at once in every tab (the storage event), and only
-then tells the server: revoking the refresh token and stopping this browser's pushes run side by side, within 6
-seconds in all, with the tokens taken before they went, so nothing the sign-out does can refresh. A refresh anywhere
+then tells the server, within 6 seconds in all and with the tokens taken before they went, so nothing the sign-out
+does can refresh: first it stops this browser's pushes (up to 2.5 seconds), then it revokes the refresh token, which
+also ends the access token the push calls need. A refresh anywhere
 that finishes after the tokens are gone, also one this tab started before the sign-out, drops its answer and revokes
 it. While a sign-out runs its button says so; a failure is shown. Signing out also ends the browser session of the
 sign-in pages, remember-me cookie included, by submitting a top-level form (POST) to `/logout` on the sign-in address;
@@ -1261,7 +1262,8 @@ sign-in pages answer, as it would otherwise leave the user on the browser's erro
 revocation's outcome tells, on the app's own origin (Tresso Cloud, where a proxy serves them) a GET of `/logout`
 tells, and another address cannot be asked (the CSP allows no connection to it), so the form goes there. When they did
 not answer, the browser is still signed in there: the device remembers it, the sign-in screen says so with a link to
-the sign-out page, and the next start of the signed-out app sends the form once they answer. Until then the next
+the sign-out page, and the next start of the signed-out app sends the form once they answer (not while a sign-in is
+being completed, and not when one completed meanwhile: that fresh session replaces the old one). Until then the next
 sign-in asks for the password (`prompt=login`); a browser that refuses storage loses both marks, and someone at that
 browser who removes `prompt=login` from the authorization address gets in without the password.
 The desktop app does not open the system browser to sign out: the sign-in pages may still remember that browser, which is why its next sign-in asks for the password (`prompt=login`, above). The
