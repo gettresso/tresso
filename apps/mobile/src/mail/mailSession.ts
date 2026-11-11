@@ -328,6 +328,12 @@ export class MailSession {
       store: database,
       pageSize: PAGE_SIZE,
       fetchPage: (since, limit) => this.deps.fetchPage(since, limit),
+      // A failed pull is tried again by the engine, shown as any other pull.
+      retry: (run) => {
+        if (this.open?.engine === engine) {
+          void this.pull(this.open, run)
+        }
+      },
       onApplied: (page) => {
         if (this.open?.database === database) {
           this.update({ version: this.state.version + 1 })
@@ -388,6 +394,7 @@ export class MailSession {
       return
     }
     this.update({ userId: null, ready: false, synced: false, live: false, syncState: 'idle' })
+    open.engine.stop()
     await open.realtime.stop()
     // Waits for a page being stored, not for one on its way over the network: that one is refused when it arrives.
     await open.database.close()

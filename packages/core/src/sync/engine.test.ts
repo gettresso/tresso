@@ -119,8 +119,8 @@ describe('SyncEngine', () => {
     const store = new MemoryStore()
     store.stored = 5
 
-    await expect(new SyncEngine({ fetchPage: async () => page(4), store }).sync()).rejects.toThrow('behind')
-    await expect(new SyncEngine({ fetchPage: async () => page(5, true), store }).sync()).rejects.toThrow('did not advance')
+    await expect(new SyncEngine({ fetchPage: async () => page(4), store, retryable: () => false }).sync()).rejects.toThrow('behind')
+    await expect(new SyncEngine({ fetchPage: async () => page(5, true), store, retryable: () => false }).sync()).rejects.toThrow('did not advance')
   })
 
   it('can sync again after a failure', async () => {
@@ -132,5 +132,52 @@ describe('SyncEngine', () => {
     await engine.sync()
 
     expect(store.applied).toEqual([1])
+  })
+
+  it('tries a failed pull again by itself, backing off, until one works', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = new MemoryStore()
+      const failure = Object.assign(new Error('Bad gateway'), { status: 502 })
+      const fetchPage = vi.fn().mockRejectedValueOnce(failure).mockRejectedValueOnce(failure).mockResolvedValue(page(1))
+      const retried: Promise<void>[] = []
+      const engine = new SyncEngine({ fetchPage, store, retryDelays: [2_000, 5_000], retry: (pull) => retried.push(pull().catch(() => undefined)) })
+
+      await expect(engine.sync()).rejects.toThrow('Bad gateway')
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(fetchPage).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(fetchPage).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(4_999)
+      expect(fetchPage).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      await Promise.all(retried)
+
+      expect(retried).toHaveLength(2)
+      expect(store.applied).toEqual([1])
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(fetchPage).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not try again a pull the session or the plan refused, nor after a stop', async () => {
+    vi.useFakeTimers()
+    try {
+      const refused = vi.fn().mockRejectedValue(Object.assign(new Error('Unauthorized'), { status: 401 }))
+      await expect(new SyncEngine({ fetchPage: refused, store: new MemoryStore() }).sync()).rejects.toThrow('Unauthorized')
+
+      const offline = vi.fn().mockRejectedValue(new Error('offline'))
+      const engine = new SyncEngine({ fetchPage: offline, store: new MemoryStore() })
+      await expect(engine.sync()).rejects.toThrow('offline')
+      engine.stop()
+
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(refused).toHaveBeenCalledTimes(1)
+      expect(offline).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

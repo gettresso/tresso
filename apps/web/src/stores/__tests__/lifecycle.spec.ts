@@ -400,4 +400,29 @@ describe('the mail copy across sign-out and sign-in', () => {
     const uploaded = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes('/api/v1/drafts')).map(([, init]) => JSON.parse(String(init?.body)) as { draftId: string })
     expect(uploaded.map((body) => body.draftId)).toEqual(['kept'])
   })
+
+  it('tries a pull that failed again by itself, and clears "Sync stopped" once one works', async () => {
+    let failures = 1
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input))
+        if (url.pathname === '/api/v1/sync/changes') {
+          if (failures-- > 0) {
+            return new Response(JSON.stringify({ detail: 'Bad gateway' }), { status: 502 })
+          }
+          return new Response(JSON.stringify(page(Number(url.searchParams.get('since')))))
+        }
+        return new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503 })
+      }),
+    )
+    const mail = useMailStore()
+
+    await mail.start('anna')
+    expect(mail.syncState).toBe('error')
+
+    // No realtime event comes: the engine's own retry pulls again.
+    await vi.waitFor(() => expect(mail.syncState).toBe('idle'), { timeout: 5_000 })
+    expect(mail.syncError).toBeNull()
+  })
 })
