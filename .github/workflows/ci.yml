@@ -167,6 +167,21 @@ jobs:
           cache-from: type=gha,scope=ci-${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=ci-${{ matrix.image }}
 
+      # The web image's Caddyfile only runs when the image starts; check it with the optional addresses set and unset,
+      # with the Caddy the image uses.
+      - name: Validate the web image's Caddyfile
+        if: matrix.image == 'tresso-web'
+        run: |
+          caddy="$(sed -n 's/^FROM \(caddy:[^ ]*\) AS prod$/\1/p' docker/web/Dockerfile)"
+          test -n "$caddy"
+          check() {
+            docker run --rm -v "$PWD/docker/web/Caddyfile:/etc/caddy/Caddyfile:ro" "$@" "$caddy" \
+              caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          }
+          check -e TRESSO_API_URL=https://api.example.com
+          check -e TRESSO_API_URL=https://api.example.com/tresso -e TRESSO_AUTH_URL=https://app.example.com \
+            -e TRESSO_HUB_URL=https://hub.example.com/.well-known/mercure
+
   typescript:
     name: TypeScript (core, web, mobile)
     runs-on: ubuntu-latest
