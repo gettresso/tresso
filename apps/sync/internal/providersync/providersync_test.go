@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/fakeapi"
+	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/providerhttp"
 )
 
@@ -168,5 +171,40 @@ func TestALostErrorReportIsSentAgainAfterTheNextFailure(t *testing.T) {
 	})
 	if f.StatusLog() != "error: Syncing failed. Tresso keeps retrying." {
 		t.Errorf("statuses = %q; want the error once, after the lost report", f.StatusLog())
+	}
+}
+
+// Fails without the fix: a replacement was only stored with the cursor at the end of the round, so a failure later
+// in the round had it done again, on the real message.
+func TestEachReplacementIsStoredAtOnce(t *testing.T) {
+	f := fakeapi.New()
+	f.RefuseMessages = func(batch api.MessageBatch) error {
+		for _, m := range batch.Messages {
+			if m.RemoteUID == "b" && !m.Placeholder {
+				return &api.HTTPError{Status: http.StatusBadGateway}
+			}
+		}
+		return nil
+	}
+	now := time.Unix(1_000_000, 0)
+	in := &Ingest{API: f, AccountID: "acc", WorkerID: "w1", Logger: discard, Now: func() time.Time { return now }}
+	cursor := `{"v":1}`
+	ctx := context.Background()
+	in.Load("INBOX", &cursor)
+	in.pending["INBOX"] = isolate.PendingList{}.Add(now, "a", "b")
+	if err := in.StoreCursor(ctx, "INBOX", cursor); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(isolate.RetryFirst)
+
+	fetch := func(_ context.Context, uid string) (*api.Message, []string, error) {
+		return &api.Message{RemoteUID: uid, RawObjectKey: "raw/aa/" + uid, Subject: "Real " + uid}, []string{"INBOX"}, nil
+	}
+	if err := in.RetryPlaceholders(ctx, "INBOX", fetch); err == nil {
+		t.Fatal("the 502 for b did not end the round")
+	}
+	stored := f.Cursor("INBOX")
+	if strings.Contains(stored, `"uid":"a"`) || !strings.Contains(stored, `"uid":"b"`) {
+		t.Errorf("stored cursor %s; want a's replacement stored, b still pending", stored)
 	}
 }

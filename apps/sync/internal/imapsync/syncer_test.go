@@ -907,3 +907,72 @@ func TestIMAPMailDoesNotPassOnExchangesAuthAs(t *testing.T) {
 		t.Errorf("headers %v", msg.Headers)
 	}
 }
+
+// Fails without the fix: a replacement was only stored with the cursor at the end of syncFolder, so a failure later
+// in the round left it listed and had it done again, on the real message.
+func TestEachIMAPReplacementIsStoredAtOnce(t *testing.T) {
+	credentials, user := scriptedServer(t, &script{}, "INBOX")
+	for _, id := range []string{"a@x", "b@x", "c@x"} {
+		deliver(t, user, "INBOX", id, "Message "+id)
+	}
+	fake := newMemAPI(credentials)
+	fake.refuse = func(batch api.MessageBatch) error {
+		for _, msg := range batch.Messages {
+			if (msg.RemoteUID == "2" || msg.RemoteUID == "3") && !ingestmsg.IsPlaceholder(msg) {
+				return &api.HTTPError{Method: http.MethodPost, Path: "/messages", Status: http.StatusUnprocessableEntity}
+			}
+		}
+		return nil
+	}
+	clk := newTestClock()
+
+	runSyncerAt(t, fake, fastOptions(), clk)
+	waitFor(t, "two placeholders", func() bool { c := fake.cursor("INBOX"); return c != nil && len(c.Pending) == 2 })
+
+	// The API takes uid 2 now; uid 3's first send gets a 502, which ends the round.
+	fake.mu.Lock()
+	fake.refuse = func(batch api.MessageBatch) error {
+		for _, msg := range batch.Messages {
+			if msg.RemoteUID == "3" && !ingestmsg.IsPlaceholder(msg) {
+				return &api.HTTPError{Method: http.MethodPost, Path: "/messages", Status: http.StatusBadGateway}
+			}
+		}
+		return nil
+	}
+	fake.mu.Unlock()
+	clk.advance(isolate.RetryFirst)
+	waitFor(t, "uid 2's replacement stored", func() bool {
+		c := fake.cursor("INBOX")
+		return c != nil && len(c.Pending) == 1 && c.Pending[0].UID == "3"
+	})
+}
+
+// Fails without the fix: the pending entry was only in memory until the batch's cursor went in, so a placeholder
+// whose own ingest failed was left without a later try.
+func TestAPlaceholderIsRecordedInTheStoredCursorBeforeItIsSent(t *testing.T) {
+	credentials, user := scriptedServer(t, &script{}, "INBOX")
+	for _, id := range []string{"a@x", "b@x", "c@x"} {
+		deliver(t, user, "INBOX", id, "Message "+id)
+	}
+	fake := newMemAPI(credentials)
+	fake.refuse = func(batch api.MessageBatch) error {
+		for _, msg := range batch.Messages {
+			switch {
+			case msg.RemoteUID == "2" && ingestmsg.IsPlaceholder(msg):
+				return &api.HTTPError{Method: http.MethodPost, Path: "/messages", Status: http.StatusBadGateway}
+			case msg.RemoteUID == "2":
+				return &api.HTTPError{Method: http.MethodPost, Path: "/messages", Status: http.StatusUnprocessableEntity}
+			}
+		}
+		return nil
+	}
+
+	runSyncer(t, fake, fastOptions())
+	waitFor(t, "the recorded placeholder", func() bool {
+		c := fake.cursor("INBOX")
+		return c != nil && len(c.Pending) == 1 && c.Pending[0].UID == "2"
+	})
+	if c := fake.cursor("INBOX"); c.BackfillBelow != 4 {
+		t.Errorf("cursor %+v; the cursor stored with the entry must not claim the group", c)
+	}
+}
