@@ -157,12 +157,13 @@ final readonly class MessageIngestor
         $message->setHasAttachments($hasAttachments);
         $message->summarizeAttachmentScans($scanStatuses);
 
-        $this->invitations->arrived($message, $folder->getRole(), $input->calendarParts);
-
         $this->addLocation($message, $folder, $input);
 
         // Flushed per message so the next message in the batch can thread onto this one.
         $this->entityManager->flush();
+
+        // After the flush: each calendar part is written in its own savepoint, which needs the message row.
+        $this->invitations->arrived($message, $folder->getRole(), $input->calendarParts);
 
         // The delegate's reply closes the hand-over of this conversation.
         $this->handOvers->messageArrived($message, $references, $input->headers, $input->junk, $folder->getRole(), new \DateTimeImmutable());
