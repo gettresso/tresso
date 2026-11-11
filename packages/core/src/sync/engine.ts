@@ -33,6 +33,11 @@ const DEFAULT_PAGE_SIZE = 500
 const DEFAULT_RETRY_DELAYS = [2_000, 5_000, 15_000, 60_000]
 /** Retry delays are spread this much either way, so clients that failed together do not all come back together. */
 const JITTER = 0.2
+/**
+ * The longest a Retry-After is honoured, in ms: a pull is tried at least hourly whatever the server (or a device clock
+ * far behind, reading an HTTP date) says, and the timer never overflows into firing at once.
+ */
+const MAX_RETRY_AFTER = 3_600_000
 
 /**
  * How long the server asked to wait before trying again, from a `Retry-After` header (seconds or an HTTP date), in
@@ -73,6 +78,8 @@ export class SyncEngine {
   /** Pulls that failed in a row, for the backoff; a pull that works starts it over. */
   private failures = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
+  /** The waiting retry keeps a time the server asked for (Retry-After), which a wake does not cut short. */
+  private retryAsked = false
   private stopped = false
 
   constructor(private readonly options: SyncEngineOptions) {}
@@ -113,10 +120,11 @@ export class SyncEngine {
 
   /**
    * Something says the network may be back (the device went online, the app became visible again): a pull that waits
-   * to be tried again runs now instead of at its time. Returns whether one did.
+   * to be tried again runs now instead of at its time, unless the server asked to wait that long (Retry-After). The
+   * user asking for a pull (sync) always pulls. Returns whether one ran.
    */
   wake(): boolean {
-    if (this.stopped || this.retryTimer === null) {
+    if (this.stopped || this.retryTimer === null || this.retryAsked) {
       return false
     }
     this.cancelRetry()
@@ -133,10 +141,13 @@ export class SyncEngine {
     const spread = base * (1 + JITTER * (2 * (this.options.random ?? Math.random)() - 1))
     // A server that said how long to wait (a 429 or 503 with Retry-After) is not asked again sooner.
     const asked = (error as { retryAfterMs?: unknown } | null)?.retryAfterMs
-    const delay = typeof asked === 'number' && Number.isFinite(asked) ? Math.max(spread, asked) : spread
+    const honoured = typeof asked === 'number' && Number.isFinite(asked) && asked > spread ? Math.min(asked, MAX_RETRY_AFTER) : null
+    const delay = honoured ?? spread
+    this.retryAsked = honoured !== null
     this.failures++
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null
+      this.retryAsked = false
       this.runRetry()
     }, delay)
   }
@@ -155,6 +166,7 @@ export class SyncEngine {
   }
 
   private cancelRetry(): void {
+    this.retryAsked = false
     if (this.retryTimer !== null) {
       clearTimeout(this.retryTimer)
       this.retryTimer = null
