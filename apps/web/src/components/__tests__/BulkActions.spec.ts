@@ -181,19 +181,34 @@ describe('bulk actions', () => {
     await vi.waitFor(() => expect([...useSelectionStore().threadIds]).toEqual(['t2']))
   })
 
-  it('marks read with K and lets go with Escape', async () => {
+  it('notes with K, as triage does: read and archived; and lets go with Escape', async () => {
     const wrapper = mountList()
     await checkbox(wrapper, 't3').trigger('click')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }))
-    await vi.waitFor(() => expect(actions).toEqual([{ messageIds: ['m3'], action: 'markRead' }]))
+    await vi.waitFor(() =>
+      expect(actions).toEqual([
+        { messageIds: ['m3'], action: 'markRead' },
+        { messageIds: ['m3'], action: 'archive' },
+      ]),
+    )
     await vi.waitFor(() => expect(useSelectionStore().active).toBe(false))
 
     await checkbox(wrapper, 't1').trigger('click')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await settle()
     expect(useSelectionStore().active).toBe(false)
-    expect(actions).toHaveLength(1)
+    expect(actions).toHaveLength(2)
+  })
+
+  it('still marks read without archiving from the Mark read button', async () => {
+    const wrapper = mountList()
+    await checkbox(wrapper, 't3').trigger('click')
+
+    await vi.waitFor(() => expect(wrapper.findAll('[aria-label="Bulk actions"] button').some((b) => b.text() === 'Mark read')).toBe(true))
+    await wrapper.findAll('[aria-label="Bulk actions"] button').find((b) => b.text() === 'Mark read')!.trigger('click')
+
+    await vi.waitFor(() => expect(actions).toEqual([{ messageIds: ['m3'], action: 'markRead' }]))
   })
 
   it('moves only conversations of one account', async () => {

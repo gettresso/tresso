@@ -1526,7 +1526,10 @@ uploaded after the update.
 
 Message actions in the web client: opening a conversation reads it; the conversation's buttons archive, trash, mark
 unread, flag and move it (shortcuts E, #, U and S, not while typing or writing), and archiving, trashing or moving
-goes back to the list with an undo. The undo moves back only what the action moved, each message from where it went
+goes back to the list with an undo. The reading pane opens with the triage verdicts, each showing its key: Do (D)
+places the conversation with the do verdict (this conversation only) and makes its todo, Hand over (H) opens the
+hand-over dialog, and Noted (K) marks it read, archives it and goes back to the list. K means Noted everywhere: in
+triage, in the reading pane and in the bulk bar. The undo moves back only what the action moved, each message from where it went
 into the one folder it came from (`fromFolderId` on the move); for a message that was in several folders (Gmail's
 All Mail aside) no exact undo exists, so none is offered. Each action changes the local copy first
 (`applyAction` of the mail store), so lists update at once; when the server does not take it (for a large selection, the
@@ -1535,8 +1538,9 @@ batches it did not take), it is put back, except on messages the delta updated s
 Bulk actions in the web client: conversations are selected with their checkboxes (shift selects a range), by age
 from the list's Select menu, or as everything from the senders of the selected ones; the last two search the whole
 mailbox on screen in the local copy, not only the part of the list that is loaded. A bar above the list then marks
-read or unread, archives, moves (within one account) or trashes every message of the selected conversations, with the
-same exact undo as a single conversation (`apps/web/src/mail/useMessageActions.ts`); K, E, # and Escape work while a
+read or unread, notes (read and archived), archives, moves (within one account) or trashes every message of the
+selected conversations, with the same exact undo as a single conversation (`apps/web/src/mail/useMessageActions.ts`);
+K (Noted), E, # and Escape work while a
 selection exists (not in menus or fields), and the conversation's own shortcuts wait. Conversations that leave the
 mailbox meanwhile (sync from another device) drop out of the selection, and the undo puts back what it exactly can,
 saying how many messages that were in several folders it leaves.
@@ -2366,7 +2370,7 @@ planned again. A deadline that has passed, or a duration outside 5 minutes to 24
   ("Today 17:00", "Fri 23 Oct") and reads a day and time from a quick-add line ("Call Anna friday", "tomorrow 9:00",
   "27 oct"; full weekday names only, so "sun" in a title stays a word). The web client has a Todos page with quick
   add and a detail panel ("Complete and archive email" archives the conversation the todo came from), "Make todo" in
-  the reading pane (`T`), which uses the newest email someone else sent, and the auto-create switch in the smart
+  the reading pane (`T`, keeping the verdict; Do with `D` also sets the do verdict), which uses the newest email someone else sent, and the auto-create switch in the smart
   inbox settings; the mobile app lists todos by section, checks them off, and makes them from a conversation.
 
 #### Todos in the calendar

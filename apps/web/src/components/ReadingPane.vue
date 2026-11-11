@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { classificationReasonText, dueLabel, unsubscribeOffer, todoSourceMessage, type MessageAction, type SyncedMessage, type SyncedThread, type Todo, handOverStatus, openHandOversOf } from '@tresso/core'
+import { classificationReasonText, dueLabel, triagePlacement, unsubscribeOffer, todoSourceMessage, type MessageAction, type SyncedMessage, type SyncedThread, type Todo, handOverStatus, openHandOversOf } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import type { AppliedAction } from '@tresso/core'
 import { shortcutAllowed, useMessageActions } from '@/mail/useMessageActions'
@@ -17,6 +17,7 @@ import MessageCard from '@/components/MessageCard.vue'
 import MenuButton from '@/components/MenuButton.vue'
 import UnsubscribeAction from '@/components/UnsubscribeAction.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import KeyShortcut from '@/components/KeyShortcut.vue'
 
 const props = defineProps<{ threadId: string; backTo: string }>()
 
@@ -186,13 +187,59 @@ function handOver(): Promise<void> {
   return handOvers.openForThread(props.threadId)
 }
 
-// E archives, # trashes, U marks unread, S flags, H hands over: only when the conversation has the user's attention, not while
+/**
+ * Do, as D does in triage: the conversation is the user's own to act on (verdict do, this conversation only) and
+ * becomes a todo. It stays open, with the todo shown above it.
+ */
+async function settleDo(): Promise<void> {
+  let settled = false
+  await exclusive(async () => {
+    const current = thread.value
+    if (current === null) {
+      return
+    }
+    const placement = triagePlacement('do', current.smartInboxId ?? null, mail.smartInboxes)
+    try {
+      if (placement === null) {
+        throw new Error('Your smart inboxes have not arrived yet. Try again in a moment.')
+      }
+      if (current.verdict !== 'do') {
+        await mail.classifyThread(current.id, placement.smartInboxId, placement.verdict, { remember: false })
+      }
+    } catch (e) {
+      compose.notify({ text: errorMessage(e), tone: 'error' })
+      return
+    }
+    settled = true
+  })
+  // The todo is made once the verdict is in, outside the guard above (makeTodo waits for nothing else to run).
+  if (settled && !unmounted) {
+    await makeTodo()
+  }
+}
+
+/** Noted, as K does in triage: the conversation is read and archived, and the list comes back. */
+function settleKnow(): Promise<void> {
+  return exclusive(async () => {
+    const unread = messages.value.filter((message) => !message.flags.seen).map((message) => message.id)
+    // Reading is part of noting, but not worth stopping the archive for when it fails (run says why).
+    if (unread.length > 0) {
+      await run(unread, 'markRead')
+    }
+    if ((await actions.relocate(messages.value.map((message) => message.id), 'archive', folders.value)) !== null) {
+      await router.push(props.backTo)
+    }
+  })
+}
+
+// D settles as Do, H hands over, K settles as Noted (as in triage); E archives, # trashes, U marks unread, S flags,
+// T makes a todo: only when the conversation has the user's attention, not while
 // they type, write in the compose window, hold the key down, or have conversations selected in the list.
 function shortcut(event: KeyboardEvent): void {
   if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized) || thread.value === null || moveMenu.value?.open === true || selection.active || handOvers.handingOver !== null) {
     return
   }
-  const action = { e: () => relocate('archive'), '#': () => relocate('trash'), u: markUnread, s: toggleFlag, t: makeTodo, h: handOver }[event.key.toLowerCase()]
+  const action = { d: settleDo, h: handOver, k: settleKnow, e: () => relocate('archive'), '#': () => relocate('trash'), u: markUnread, s: toggleFlag, t: makeTodo }[event.key.toLowerCase()]
   if (action !== undefined) {
     event.preventDefault()
     void action()
@@ -208,31 +255,38 @@ onBeforeUnmount(() => {
 <template>
   <article class="pane" aria-label="Conversation">
     <p v-if="unreachable" class="missing" role="alert">
+      <RouterLink :to="backTo" class="tool back" aria-label="Back to the list"><AppIcon name="back" /></RouterLink>
       This conversation could not be loaded: {{ mail.syncError }}. It opens once Tresso can sync again.
       <button type="button" class="button button-quiet" @click="mail.syncNow()">Try again</button>
     </p>
-    <p v-else-if="notFound && !missing" class="state" role="status"><LogoLoader /> Loading the conversation…</p>
+    <p v-else-if="notFound && !missing" class="state" role="status">
+      <RouterLink :to="backTo" class="tool back" aria-label="Back to the list"><AppIcon name="back" /></RouterLink>
+      <LogoLoader /> Loading the conversation…
+    </p>
     <p v-if="missing" class="missing">This conversation no longer exists. <RouterLink :to="backTo">Back to the inbox</RouterLink></p>
     <div v-else-if="thread" class="inner">
       <div class="actions" role="group" aria-label="Conversation actions">
+        <!-- Below 1100 px the list is hidden while a conversation is open; this is the way back to it. -->
+        <RouterLink :to="backTo" class="tool back" aria-label="Back to the list" title="Back to the list"><AppIcon name="back" /></RouterLink>
+        <button type="button" class="verdict do" :class="{ current: thread.verdict === 'do' }" :disabled="busy || makingTodo" aria-keyshortcuts="D" title="Do: make it a todo (D)" @click="settleDo">
+          Do <KeyShortcut keys="D" />
+        </button>
+        <button type="button" class="verdict delegate" :class="{ current: thread.verdict === 'delegate' }" aria-keyshortcuts="H" title="Hand over (H)" @click="handOver">
+          Hand over <KeyShortcut keys="H" />
+        </button>
+        <button type="button" class="verdict know" :class="{ current: thread.verdict === 'know' }" :disabled="busy" aria-keyshortcuts="K" title="Noted: mark read and archive (K)" @click="settleKnow">
+          Noted <KeyShortcut keys="K" />
+        </button>
+        <span class="divider" aria-hidden="true" />
         <button type="button" class="tool" :disabled="busy" aria-keyshortcuts="E" title="Archive (E)" @click="relocate('archive')"><AppIcon name="archive" label="Archive" /></button>
         <button type="button" class="tool" :disabled="busy" aria-keyshortcuts="#" title="Move to Trash (#)" @click="relocate('trash')"><AppIcon name="trash" label="Move to Trash" /></button>
         <button type="button" class="tool" :disabled="busy" aria-keyshortcuts="U" title="Mark unread (U)" @click="markUnread"><AppIcon name="unread" label="Mark unread" /></button>
         <button type="button" class="tool" :class="{ on: flagged }" :disabled="busy" :aria-pressed="flagged" aria-keyshortcuts="S" :title="flagged ? 'Remove flag (S)' : 'Flag (S)'" @click="toggleFlag">
           <AppIcon name="flag" label="Flag" />
         </button>
-        <button
-          v-if="todos.length === 0"
-          type="button"
-          class="tool make-todo"
-          :disabled="!canMakeTodo"
-          aria-keyshortcuts="T"
-          title="Make todo (T)"
-          @click="makeTodo"
-        >
-          <AppIcon name="todo" /> <span>Make todo</span>
+        <button v-if="todos.length === 0" type="button" class="tool" :disabled="!canMakeTodo" aria-keyshortcuts="T" title="Make todo, keep the verdict (T)" @click="makeTodo">
+          <AppIcon name="todo" label="Make todo" />
         </button>
-        <button type="button" class="tool labelled" aria-keyshortcuts="H" title="Hand over (H)" @click="handOver"><AppIcon name="delegate" />Hand over</button>
         <MenuButton
           ref="moveMenu"
           class="move"
@@ -294,7 +348,14 @@ onBeforeUnmount(() => {
   box-shadow: var(--glass-edge);
 }
 .inner {
+  /* The board's reading column: 760 px of text at most, so a line of mail stays readable on a wide window. */
+  max-width: 840px;
   padding: 24px 40px 32px;
+}
+@media (max-width: 760px) {
+  .inner {
+    padding: 16px;
+  }
 }
 .actions {
   display: flex;
@@ -333,10 +394,68 @@ onBeforeUnmount(() => {
 .move {
   margin-left: 8px;
 }
-.make-todo {
-  margin-left: 8px;
+/* The way back to the list; only needed where the list is hidden while a conversation is open (MailView). */
+.back {
+  display: none;
+}
+@media (max-width: 1100px) {
+  .back {
+    display: inline-flex;
+  }
+}
+/* The three verdicts, as triage offers them: each in its verdict's colour, the conversation's current one filled. */
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: transparent;
+  font: inherit;
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.verdict.do {
+  color: var(--do);
+}
+.verdict.delegate {
+  color: var(--delegate);
+}
+.verdict.know {
+  color: var(--know);
+}
+.verdict:hover:not(:disabled) {
+  background: var(--ground);
+}
+.verdict.current {
+  border-color: currentcolor;
+}
+.verdict.do.current {
+  background: var(--do-soft);
+}
+.verdict.delegate.current {
+  background: var(--delegate-soft);
+}
+.verdict.know.current {
+  background: var(--know-soft);
+}
+.verdict:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.verdict:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 6px;
+  background: var(--line-strong);
 }
 .todos {
   display: flex;
@@ -378,10 +497,6 @@ onBeforeUnmount(() => {
 }
 .unsubscribe {
   margin-left: auto;
-}
-.tool.labelled {
-  font-weight: 600;
-  font-size: 13px;
 }
 .handed {
   display: flex;
@@ -436,5 +551,13 @@ onBeforeUnmount(() => {
 .state {
   padding: 32px 40px;
   color: var(--ink-2);
+}
+.state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.missing .back {
+  vertical-align: middle;
 }
 </style>

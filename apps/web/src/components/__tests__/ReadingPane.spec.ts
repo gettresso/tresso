@@ -4,11 +4,13 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import type { ChangePage, SyncedMessage, SyncedUnsubscription, SyncedHandOver } from '@tresso/core'
+import { todo } from '@tresso/core/testing'
 import { deleteMailDatabase } from '@/mail/db'
 import { useComposeStore } from '@/stores/compose'
 import { useHandOversStore } from '@/stores/handOvers'
 import { useMailStore } from '@/stores/mail'
 import { useSelectionStore } from '@/stores/selection'
+import { useTodosStore } from '@/stores/todos'
 import ReadingPane from '../ReadingPane.vue'
 
 const account = { id: 'work', emailAddress: 'kim@company.example', displayName: 'Work', provider: 'imap', status: 'active' as const, statusDetail: null, lastSyncedAt: null, defaultSignatureId: null, calendarStatus: 'unknown' as const, calendarStatusDetail: null }
@@ -233,6 +235,69 @@ describe('ReadingPane actions', () => {
     await vi.waitFor(() => expect(actions).toHaveLength(1))
     // Only what moved goes back, from where it went: the Sent copy was never touched.
     expect(actions).toEqual([{ messageIds: ['m2'], action: 'move', folderId: 'inbox', fromFolderId: 'archive' }])
+  })
+
+  it('offers a way back to the list, also while the conversation loads', async () => {
+    const wrapper = mountPane()
+    await opened(wrapper)
+    expect(wrapper.get('.actions a[aria-label="Back to the list"]').attributes('href')).toBe('/')
+
+    // The pull that would bring the conversation is still on its way.
+    vi.spyOn(useMailStore(), 'syncNow').mockImplementation(() => new Promise<void>(() => {}))
+    const loading = mount(ReadingPane, { props: { threadId: 't9', backTo: '/' }, global: { plugins: [router] }, attachTo: document.body })
+    await vi.waitFor(() => expect(loading.text()).toContain('Loading the conversation'))
+    expect(loading.get('a[aria-label="Back to the list"]').attributes('href')).toBe('/')
+  })
+
+  it('shows the three verdicts with their keys, as triage does', async () => {
+    const wrapper = mountPane()
+    await opened(wrapper)
+
+    // Each label, its key for the screen reader, and the keycap shown.
+    expect(wrapper.findAll('.verdict').map((button) => [button.text().split(/\s{2,}|\s(?=\S+$)/)[0], button.attributes('aria-keyshortcuts'), button.find('.shortcut-key').text()])).toEqual([
+      ['Do', 'D', 'D'],
+      ['Hand over', 'H', 'H'],
+      ['Noted', 'K', 'K'],
+    ])
+  })
+
+  it('settles as Do with D: the conversation gets the do verdict and becomes a todo', async () => {
+    const wrapper = mountPane()
+    await opened(wrapper)
+    useMailStore().smartInboxes = [{ id: 'todo', builtin: 'todo', name: 'To do', instructions: '', includeSenders: [], excludeSenders: [], verdict: 'do', autoCreateTodo: false, position: 0 }]
+    const classify = vi.spyOn(useMailStore(), 'classifyThread').mockResolvedValue({ threadId: 't1', smartInboxId: 'todo', verdict: 'do', reason: 'user', senderRule: null, placementId: 'p1' })
+    const make = vi.spyOn(useTodosStore(), 'makeFromMessage').mockResolvedValue({ ...todo('td1'), made: true })
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }))
+
+    await vi.waitFor(() => expect(make).toHaveBeenCalledWith('m2'))
+    expect(classify).toHaveBeenCalledWith('t1', 'todo', 'do', { remember: false })
+    expect(router.currentRoute.value.path).toBe('/inbox/t1')
+  })
+
+  it('makes no todo when the do verdict is refused', async () => {
+    const wrapper = mountPane()
+    await opened(wrapper)
+    useMailStore().smartInboxes = [{ id: 'todo', builtin: 'todo', name: 'To do', instructions: '', includeSenders: [], excludeSenders: [], verdict: 'do', autoCreateTodo: false, position: 0 }]
+    vi.spyOn(useMailStore(), 'classifyThread').mockRejectedValue(new Error('The server is unavailable.'))
+    const make = vi.spyOn(useTodosStore(), 'makeFromMessage').mockResolvedValue({ ...todo('td1'), made: true })
+
+    await wrapper.get('.verdict.do').trigger('click')
+
+    await vi.waitFor(() => expect(useComposeStore().notices.some((n) => n.text === 'The server is unavailable.')).toBe(true))
+    expect(make).not.toHaveBeenCalled()
+  })
+
+  it('settles as Noted with K: read, archived, and back to the list', async () => {
+    const wrapper = mountPane()
+    await opened(wrapper)
+    actions.length = 0
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }))
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/'))
+
+    expect(actions).toEqual([{ messageIds: ['m1', 'm2'], action: 'archive' }])
+    expect(await folderIdsOf('m2')).toEqual(['archive'])
   })
 
   it('takes the shortcuts, but not while typing', async () => {
