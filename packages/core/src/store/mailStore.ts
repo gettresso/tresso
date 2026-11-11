@@ -77,9 +77,10 @@ export interface MailStore extends SyncStore {
    */
   applyAction(messageIds: string[], action: MessageAction, folderId?: string, fromFolderId?: string): Promise<AppliedAction>
   /**
-   * Puts back what {@link applyAction} changed, part by part (read, flagged, folders; see revertedMessage): a part goes
-   * back only while it still shows what the action made of it, so a second action on the same messages, or a change
-   * the delta brought, is kept. It is only given messages whose request the server did not take.
+   * Puts back what {@link applyAction} changed, part by part (read, flagged, folders; see OpenActions): a part goes
+   * back once no other action of this device on it is still open, to how it was before the first of them, and only
+   * while it shows the newest one's result; once the delta brought the message, the server's version stays. It is
+   * only given messages whose request the server did not take.
    */
   revertAction(applied: AppliedAction): Promise<void>
   /**

@@ -504,6 +504,20 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
       await db.revertAction(flagged)
       expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm2')?.flags).toMatchObject({ seen: false, flagged: false })
 
+      // The same part twice: read, then unread again, both refused in the order they were made.
+      const markedRead = await db.applyAction(['m2'], 'markRead')
+      const markedUnread = await db.applyAction(['m2'], 'markUnread')
+      await db.revertAction(markedRead)
+      await db.revertAction(markedUnread)
+      expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm2')?.flags).toMatchObject({ seen: false })
+      // And in the other order, from a message that was read.
+      const unread = await db.applyAction(['m1'], 'markUnread')
+      const readAgainFirst = await db.applyAction(['m1'], 'markRead')
+      await db.revertAction(readAgainFirst)
+      expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm1')?.flags).toMatchObject({ seen: true })
+      await db.revertAction(unread)
+      expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm1')?.flags).toMatchObject({ seen: true })
+
       const archived = await db.applyAction(['m2'], 'archive')
       const readAgain = await db.applyAction(['m2'], 'markRead')
       await db.revertAction(readAgain)

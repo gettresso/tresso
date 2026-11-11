@@ -124,24 +124,75 @@ export function actionResult(
   })
 }
 
+type Part = 'seen' | 'flagged' | 'folders'
+
+const PARTS: { part: Part; read: (message: SyncedMessage) => string; write: (message: SyncedMessage, value: string) => SyncedMessage }[] = [
+  { part: 'seen', read: (message) => String(message.flags.seen), write: (message, value) => ({ ...message, flags: { ...message.flags, seen: value === 'true' } }) },
+  { part: 'flagged', read: (message) => String(message.flags.flagged), write: (message, value) => ({ ...message, flags: { ...message.flags, flagged: value === 'true' } }) },
+  { part: 'folders', read: (message) => JSON.stringify(message.folderIds), write: (message, value) => ({ ...message, folderIds: JSON.parse(value) as string[] }) },
+]
+
 /**
- * A message as it is once an action that did not go through is taken back: each part the action changed (read, flagged,
- * folders) goes back to how it was, but only while it still shows what the action made of it. Parts another change
- * set since (a second action of this device, the delta) stay as they are. Null when nothing goes back.
+ * The actions of this device that changed a part of a message (read, flagged, folders) and that the server has not
+ * answered for yet, so one it refuses can be taken back. Actions on the same part may overlap (marked read, then
+ * unread, before either request was answered): the part goes back only once the last one open was refused, to how it
+ * was before the first, and only while it still shows the newest one's result. A change the delta brings for the
+ * message ends them all: the server has spoken.
  */
-export function revertedMessage(current: SyncedMessage, before: SyncedMessage, after: SyncedMessage): SyncedMessage | null {
-  let reverted = current
-  if (before.flags.seen !== after.flags.seen && current.flags.seen === after.flags.seen) {
-    reverted = { ...reverted, flags: { ...reverted.flags, seen: before.flags.seen } }
+export class OpenActions {
+  private readonly open = new Map<string, { count: number; before: string; latest: string }>()
+
+  /** An action changed `before` into `after` on this device. */
+  applied(before: SyncedMessage, after: SyncedMessage): void {
+    for (const { part, read } of PARTS) {
+      if (read(before) === read(after)) {
+        continue
+      }
+      const key = `${before.id} ${part}`
+      const known = this.open.get(key)
+      if (known === undefined) {
+        this.open.set(key, { count: 1, before: read(before), latest: read(after) })
+      } else {
+        known.count += 1
+        known.latest = read(after)
+      }
+    }
   }
-  if (before.flags.flagged !== after.flags.flagged && current.flags.flagged === after.flags.flagged) {
-    reverted = { ...reverted, flags: { ...reverted.flags, flagged: before.flags.flagged } }
+
+  /** The delta brought the message: whatever was open for it, the server's version stays. */
+  confirmed(messageId: string): void {
+    for (const { part } of PARTS) {
+      this.open.delete(`${messageId} ${part}`)
+    }
   }
-  const sameFolders = (one: string[], other: string[]) => JSON.stringify(one) === JSON.stringify(other)
-  if (!sameFolders(before.folderIds, after.folderIds) && sameFolders(current.folderIds, after.folderIds)) {
-    reverted = { ...reverted, folderIds: before.folderIds }
+
+  /**
+   * The action that changed `before` into `after` was refused. Returns the message as it is to be stored (`current`
+   * with each part put back that no other open action holds and that still shows the newest result), or null when
+   * nothing goes back.
+   */
+  refused(current: SyncedMessage, before: SyncedMessage, after: SyncedMessage): SyncedMessage | null {
+    let reverted = current
+    for (const { part, read, write } of PARTS) {
+      if (read(before) === read(after)) {
+        continue
+      }
+      const key = `${before.id} ${part}`
+      const known = this.open.get(key)
+      if (known === undefined) {
+        continue
+      }
+      known.count -= 1
+      if (known.count > 0) {
+        continue
+      }
+      this.open.delete(key)
+      if (read(current) === known.latest) {
+        reverted = write(reverted, known.before)
+      }
+    }
+    return reverted === current ? null : reverted
   }
-  return reverted === current ? null : reverted
 }
 
 function withFolder(folderIds: string[], folderId: string): string[] {
