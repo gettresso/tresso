@@ -55,6 +55,8 @@ type Ingest struct {
 	// Gmail keeps every placeholder on All Mail, as its ids name a message in the whole account.
 	PendingFolder func(folder string) string
 	Logger        *slog.Logger
+	// Store keeps the raw notices of placeholders (see ingestmsg.PlaceholderFor).
+	Store storage.Blobs
 	// Now is the clock of the placeholders' retries; nil is time.Now.
 	Now func() time.Time
 
@@ -217,7 +219,7 @@ func (in *Ingest) RetryPlaceholders(ctx context.Context, folder string, fetch fu
 			err := isolate.Replace(ctx, in.sender(target), func(ctx context.Context, uid string) error {
 				_, err := in.API.Changes(ctx, in.AccountID, api.ChangeBatch{WorkerID: in.WorkerID, Folder: target, Vanished: []string{uid}})
 				return err
-			}, *msg)
+			}, *msg, in.placeholder)
 			if err != nil && isolate.Classify(err) == isolate.NotRefused {
 				return err
 			}
@@ -230,10 +232,20 @@ func (in *Ingest) RetryPlaceholders(ctx context.Context, folder string, fetch fu
 		if replaced {
 			in.Logger.Info("a placeholder was replaced by its message", "folder", folder, "uid", uid)
 			update(func(l isolate.PendingList) isolate.PendingList { return l.Drop(uid) })
+			// Stored at once: a later failure of this round must not have the replacement done again, on the real
+			// message.
+			if err := in.storePending(ctx, folder); err != nil {
+				return err
+			}
 		} else {
 			update(func(l isolate.PendingList) isolate.PendingList { return l.Later(uid, in.clock()) })
 		}
 	}
+	return in.storePending(ctx, folder)
+}
+
+// storePending stores folder's cursor as the API has it, with the folder's current placeholders.
+func (in *Ingest) storePending(ctx context.Context, folder string) error {
 	in.mu.Lock()
 	stored := in.stored[folder]
 	in.mu.Unlock()
@@ -241,6 +253,11 @@ func (in *Ingest) RetryPlaceholders(ctx context.Context, folder string, fetch fu
 		return nil
 	}
 	return in.StoreCursor(ctx, folder, *stored)
+}
+
+// placeholder builds the placeholder of a message; provider ids name a message in the whole account.
+func (in *Ingest) placeholder(ctx context.Context, msg api.Message) (api.Message, error) {
+	return ingestmsg.PlaceholderFor(ctx, in.Store, in.AccountID, msg.RemoteUID, msg)
 }
 
 // Unreadable describes messages the provider would not hand over for Messages: once one failed often and long enough
@@ -351,7 +368,7 @@ func (in *Ingest) Messages(ctx context.Context, folder string, messages []api.Me
 			return merged
 		}
 		placed := func(uids []string) error { return in.recordPending(ctx, folder, uids) }
-		if err := isolate.Batch(ctx, in.sender(folder), in.strikes(), folder, messages[start:end], batchCursor, placed, in.Logger); err != nil {
+		if err := isolate.Batch(ctx, in.sender(folder), in.strikes(), folder, messages[start:end], batchCursor, placed, in.placeholder, in.Logger); err != nil {
 			return err
 		}
 		if cursorErr != nil {

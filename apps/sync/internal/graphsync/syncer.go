@@ -128,7 +128,7 @@ func (s *Syncer) newSession(account api.Account, strikes *isolate.Strikes, logge
 		Syncer:  s,
 		account: account,
 		graph:   NewClient(tokens, s.opts.Client),
-		ingest:  &providersync.Ingest{API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Strikes: strikes, Logger: logger},
+		ingest:  &providersync.Ingest{API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Strikes: strikes, Logger: logger, Store: s.store},
 		logger:  logger,
 	}
 }
@@ -176,8 +176,7 @@ func (s *session) step(ctx context.Context, all bool) error {
 }
 
 // retryPlaceholders tries the messages of the folder's due placeholders again (see
-// providersync.Ingest.RetryPlaceholders). A message that moved to another folder is dropped here: the delta of that
-// folder brings it, and this folder's delta removes the placeholder.
+// providersync.Ingest.RetryPlaceholders), in the folder the message is in now.
 func (s *session) retryPlaceholders(ctx context.Context, run *folderRun) error {
 	folder := run.folder.RemoteName
 	return s.ingest.RetryPlaceholders(ctx, folder, func(ctx context.Context, id string) (*api.Message, []string, error) {
@@ -188,8 +187,14 @@ func (s *session) retryPlaceholders(ctx context.Context, run *folderRun) error {
 		if err != nil {
 			return nil, nil, err
 		}
+		target := folder
 		if item.ParentFolderID != folder {
-			return nil, nil, nil
+			// Moved (in Tresso or at Microsoft): immutable ids keep the uid, so the placeholder, or the message the
+			// delta of that folder brings, is there.
+			if !s.knownFolder(item.ParentFolderID) {
+				return nil, nil, nil
+			}
+			target = item.ParentFolderID
 		}
 		raw, err := s.graph.raw(ctx, id)
 		if providerhttp.IsStatus(err, http.StatusNotFound) {
@@ -202,8 +207,18 @@ func (s *session) retryPlaceholders(ctx context.Context, run *folderRun) error {
 		if err != nil {
 			return nil, nil, err
 		}
-		return &msg, []string{folder}, nil
+		return &msg, []string{target}, nil
 	})
+}
+
+// knownFolder reports whether id is a folder this session syncs.
+func (s *session) knownFolder(id string) bool {
+	for _, run := range s.runs {
+		if run.folder.RemoteName == id && !run.denied {
+			return true
+		}
+	}
+	return false
 }
 
 // deny marks run as denied when err is Graph refusing access to the folder, and returns err otherwise. A folder the

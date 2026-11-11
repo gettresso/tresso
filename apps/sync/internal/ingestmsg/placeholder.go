@@ -90,3 +90,14 @@ func Unreadable(ctx context.Context, blobs storage.Blobs, accountID, identity, r
 	msg.MessageID = &messageID
 	return msg, nil
 }
+
+// PlaceholderFor is the placeholder of msg, a message the API refused: Unreadable's notice as its raw message (so
+// the API never takes it for the real message by its raw content), with msg's uid, date, flags, MODSEQ and junk mark.
+func PlaceholderFor(ctx context.Context, blobs storage.Blobs, accountID, identity string, msg api.Message) (api.Message, error) {
+	out, err := Unreadable(ctx, blobs, accountID, identity, msg.RemoteUID, msg.ReceivedAt, msg.Flags)
+	if err != nil {
+		return api.Message{}, err
+	}
+	out.ModSeq, out.Junk = msg.ModSeq, msg.Junk
+	return out, nil
+}
