@@ -59,7 +59,7 @@ final readonly class NotificationTools implements ToolProvider
                 'quietStart' => Schema::timeOfDay('When the quiet hours start.'),
                 'quietEnd' => Schema::timeOfDay('When the quiet hours end; past midnight means the next day.'),
                 'focusDuringBusy' => Schema::boolean('While a busy event runs, only the user\'s own meetings and leave-now alerts come through.'),
-                'emailAddress' => Schema::string('Where email notifications go: the sign-in address or one of the user\'s mail account addresses. An empty string goes back to the sign-in address.', maxLength: 320),
+                'emailAddress' => Schema::string('Where email notifications go. The sign-in address or a Google or Microsoft account\'s address counts at once; any other address gets a confirmation link and counts once the user confirms it (pendingEmailAddress until then; giving it again sends the link again). An empty string goes back to the sign-in address.', maxLength: 320),
                 'workDays' => self::days('ISO days with working hours (1 = Monday, 7 = Sunday).'),
                 'workStart' => Schema::timeOfDay('When the working day starts.'),
                 'workEnd' => Schema::timeOfDay('When the working day ends.'),

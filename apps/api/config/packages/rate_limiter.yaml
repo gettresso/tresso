@@ -20,6 +20,12 @@ framework:
             limit: 5000
             interval: '1 hour'
             cache_pool: cache.rate_limiter_shared
+        # Confirmation links for a notification address, per user (App\Notification\NotificationEmailAddress).
+        notification_address_confirmation:
+            policy: sliding_window
+            limit: 5
+            interval: '1 day'
+            cache_pool: cache.rate_limiter_shared
 
 when@dev: &redis_limits
     framework:

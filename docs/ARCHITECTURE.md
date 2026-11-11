@@ -1011,8 +1011,8 @@ Mail judged `know` asks nothing of the user, so it does not interrupt: once a da
   (delivery key `daily_brief:{id}`, so a retry never notifies a device twice; Android channel `mail`; silent during
   quiet hours; it opens `/brief`). Email gets a digest instead of the generic notification email: the conversations
   per smart inbox with sender, snippet and a link, from the system sender (`NOTIFICATIONS_FROM`) with
-  `Auto-Submitted: auto-generated`, to the notification address (the sign-in address or the address of one of the user's
-  Google or Microsoft accounts as the provider confirmed it, the sign-in address when the chosen account is gone). It goes out at most once: `emailed_at`
+  `Auto-Submitted: auto-generated`, to the notification address (the sign-in address, a provider-confirmed account address or an
+  address the user confirmed by link; the sign-in address when the chosen one no longer counts). It goes out at most once: `emailed_at`
   is set under a row lock and committed before the mail is sent, outside any transaction; a refusal by the mail server
   clears it again for Messenger's retry, and a crash in between loses that digest rather than sending it twice.
 - The brief shows each conversation's subject and snippet; AI summaries are planned (3.9).
@@ -1898,12 +1898,20 @@ after. Everything lives in `apps/api/src/Notification`.
   once do not fail on its unique key. Known limit: Expo gives no proof that the caller holds the phone, so anyone
   who learns another user's Expo push token can register it and receive that user's reminders and mail notifications until the owner's app
   registers again (each launch). Binding a registration to a challenge sent to the device is a later step (C4, with
-  the phone's push registration); web push endpoints are unguessable capability URLs. Email notifications go only to the user's sign-in address or the address
-  of a Google or Microsoft account that the provider confirmed (the account's address is the one of its provider
-  grant; `NotificationAddresses`). An IMAP account never counts: its address is only typed in next to credentials and
-  servers of the user's own choosing, and a server of one's own accepts any username, so neither a sync nor a matching
-  username proves the address, and Tresso has no confirmed send-as addresses. Choosing another address is a 422, and
-  a chosen address that no longer qualifies falls back to the sign-in address.
+  the phone's push registration); web push endpoints are unguessable capability URLs. Email notifications go only to an address the user holds:
+  - At once: the sign-in address, or a Google or Microsoft account's address that the provider confirmed (the
+    account's address is the one of its provider grant; a Microsoft account only once it synced, since Graph's `mail`
+    is a directory attribute a tenant administrator can set to anything; `NotificationAddresses`).
+  - Any other address (an IMAP account's included: it is typed in next to servers of the user's own choosing, and a
+    server of one's own accepts any username, so neither a sync nor a matching username proves it) waits as
+    `pendingEmailAddress` on `PATCH /api/v1/notification-settings`. Tresso mails a signed link to it, valid two days
+    (`NotificationEmailAddress`); opening it shows a page with a Confirm button (a mail scanner that opens links
+    confirms nothing), and confirming makes it the notification address. Until then notifications go where they went
+    (`effectiveEmailAddress`). Choosing it again sends the link again (`pendingEmailAddressSentAt`), at most five links
+    a day per user (429 after that). A link works while its address is still the pending one.
+  - An address chosen before this existed that does not count now is moved to pending the first time a notification
+    would be mailed to it, with one link; until it is confirmed, notifications go to the sign-in address.
+  The web and mobile apps have no field for this address; it is set through the API or the MCP tool.
 - **Time zones:** quiet hours, working hours, all-day reminders and floating times (date-times without a zone) are
   read in the user's zone from the notification settings (`timeZone`, UTC until a client sets it). The web app, the
   desktop app and the phone send the device's zone the first time a user signs in there and again when they come to

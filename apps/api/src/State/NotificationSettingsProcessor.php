@@ -11,7 +11,7 @@ use App\ApiResource\NotificationSettingsResource;
 use App\Entity\NotificationPreferences;
 use App\Enum\SnoozeChoice;
 use App\Enum\TravelMode;
-use App\Notification\NotificationAddresses;
+use App\Notification\NotificationEmailAddress;
 use App\Notification\NotificationChannelChoice;
 use App\Notification\PlanUserNotifications;
 use App\Realtime\AfterCommitDispatcher;
@@ -21,7 +21,6 @@ use App\Security\CurrentUser;
 use App\Todo\TodoReplanning;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Clock\ClockInterface;
-use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 /**
  * @implements ProcessorInterface<UpdateNotificationSettings, NotificationSettingsResource>
@@ -33,7 +32,7 @@ final readonly class NotificationSettingsProcessor implements ProcessorInterface
         private NotificationPreferencesRepository $preferences,
         private CurrentUser $currentUser,
         private AfterCommitDispatcher $afterCommit,
-        private NotificationAddresses $notificationAddresses,
+        private NotificationEmailAddress $emailAddresses,
         private DailyBriefSettingsRepository $briefSettings,
         private ClockInterface $clock,
         private TodoReplanning $todoReplanning,
@@ -44,7 +43,7 @@ final readonly class NotificationSettingsProcessor implements ProcessorInterface
     {
         $user = $this->currentUser->get();
 
-        return NotificationSettingsResource::fromEntity($this->entityManager->wrapInTransaction(function () use ($user, $data): NotificationPreferences {
+        $saved = $this->entityManager->wrapInTransaction(function () use ($user, $data): NotificationPreferences {
             $preferences = $this->preferences->forUser($user);
             $zoneChanged = null !== $data->timeZone && $data->timeZone !== $preferences->getTimeZone();
             if (null !== $data->timeZone) {
@@ -61,11 +60,9 @@ final readonly class NotificationSettingsProcessor implements ProcessorInterface
             }
             if (null !== $data->emailAddress) {
                 $address = '' === trim($data->emailAddress) ? null : mb_strtolower(trim($data->emailAddress));
-                // Only addresses the user proved to hold, so notifications cannot be aimed at someone else's inbox.
-                if (null !== $address && !\in_array($address, $this->notificationAddresses->of($user), true)) {
-                    throw new UnprocessableEntityHttpException('Notifications can only go to your sign-in address or the address of one of your mail accounts that has synced.');
-                }
-                $preferences->setEmailAddress($address);
+                // An address the user does not provably hold waits for the link mailed to it, so notifications cannot
+                // be aimed at someone else's inbox.
+                $this->emailAddresses->choose($user, $preferences, $address);
             }
             $planningBefore = self::planning($preferences);
             $hoursBefore = [$preferences->getWorkDays(), $preferences->getWorkStart(), $preferences->getWorkEnd()];
@@ -122,7 +119,9 @@ final readonly class NotificationSettingsProcessor implements ProcessorInterface
             }
 
             return $preferences;
-        }));
+        });
+
+        return NotificationSettingsResource::fromEntity($saved, $this->emailAddresses->effective($user, $saved));
     }
 
     /**

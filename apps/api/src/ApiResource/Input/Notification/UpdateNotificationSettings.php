@@ -32,8 +32,8 @@ final class UpdateNotificationSettings
     public ?bool $focusDuringBusy = null;
 
     /**
-     * Where email notifications go: the sign-in address or one of the user's mail accounts; an empty string goes back
-     * to the sign-in address.
+     * Where email notifications go; an empty string goes back to the sign-in address. The sign-in address and a Google
+     * or Microsoft account's address count at once; any other address waits for the confirmation link mailed to it.
      */
     #[Assert\AtLeastOneOf([new Assert\Blank(), new Assert\Email(mode: Assert\Email::VALIDATION_MODE_STRICT)])]
     #[Assert\Length(max: 320)]
