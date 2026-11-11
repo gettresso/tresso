@@ -1608,7 +1608,9 @@ sent with a `sendAt` a few seconds ahead, so "Undo" can cancel it; "Send later" 
 the local copy while typing and kept until the message is confirmed sent, so a failed message can be edited and sent
 again; the outcome of each sent message is announced once. When the session ends, the draft on screen goes with it,
 so whoever signs in next never sees it; when the copy is opened again for the same user (another tab signed out and
-removed it), the draft on screen moves to the new copy and is saved and uploaded there. Recipient suggestions come from the people in synced
+removed it), the draft on screen moves to the new copy and is saved and uploaded there. Drafts whose upload failed
+(offline) go up at the next start, when the realtime connection is made again, and after the first pull that works
+after a failed one. Recipient suggestions come from the people in synced
 mail, stored locally per user.
 
 Attachments: files are attached to the server's copy of a draft (`POST /api/v1/drafts/{id}/attachments`, multipart,

@@ -223,7 +223,8 @@ export const useMailStore = defineStore('mail', () => {
       onCursor: (cursor) => void pull(() => engine?.notify(cursor)),
       onConnected: () => {
         live.value = true
-        void pull(() => engine?.sync())
+        // Back online: drafts whose upload failed meanwhile go up now, not only at the next start.
+        void pull(() => engine?.sync()).then(() => uploadPendingDrafts())
       },
       onError: () => {
         live.value = false
@@ -240,12 +241,17 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   async function pull(run: () => Promise<void> | undefined): Promise<void> {
+    const failedBefore = syncState.value === 'error'
     syncState.value = 'syncing'
     try {
       await run()
       syncState.value = 'idle'
       syncError.value = null
       pulls.value += 1
+      if (failedBefore) {
+        // The server is reachable again: drafts whose upload failed while it was not go up now.
+        void uploadPendingDrafts()
+      }
       if (notifyingSince === null) {
         delivered = []
         deliveredHandOvers = []
