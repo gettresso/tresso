@@ -36,6 +36,7 @@ import { useCalendarStore, type CalendarViewKind, type Response } from '@/stores
 import { useMailStore } from '@/stores/mail'
 import { useTodosStore } from '@/stores/todos'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import SegmentedControl from '@/components/SegmentedControl.vue'
 
 const calendar = useCalendarStore()
 const mail = useMailStore()
@@ -328,13 +329,40 @@ function showDay(day: number): void {
 }
 function pickDay(day: number): void {
   go(calendar.view, day)
+  railOpen.value = false
 }
+
+/**
+ * Below 1100 px the rail (calendars to show, the month, the time zone) is a drawer the toolbar opens; it closes again
+ * on Escape, on a press beside it, and once a day is picked in it.
+ */
+const railOpen = ref(false)
+const railToggle = ref<HTMLButtonElement | null>(null)
+function closeRailOutside(event: MouseEvent): void {
+  const target = event.target as Element | null
+  if (railOpen.value && target !== null && !target.closest('#calendar-rail') && !railToggle.value?.contains(target)) {
+    railOpen.value = false
+  }
+}
+function closeRailOnEscape(event: KeyboardEvent): void {
+  if (railOpen.value) {
+    event.stopPropagation()
+    railOpen.value = false
+    railToggle.value?.focus()
+  }
+}
+// In the capture phase: a press on the macOS app's title strip is stopped at the document by Tauri's drag handling.
+onMounted(() => document.addEventListener('mousedown', closeRailOutside, true))
+onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside, true))
 </script>
 
 <template>
   <div ref="shell" class="calendar-shell" :class="{ detail: selected !== null || selectedTodo !== null || panelLeaving }">
     <CalendarRail
+      id="calendar-rail"
       class="rail"
+      :class="{ open: railOpen }"
+      @keydown.esc="closeRailOnEscape"
       :anchor="calendar.anchor"
       :today="calendar.today"
       :shown="shownRange"
@@ -354,11 +382,10 @@ function pickDay(day: number): void {
         <button type="button" class="button button-quiet icon" aria-label="Next" @click="step(1)"><AppIcon name="next" :size="16" /></button>
         <h1 id="calendar-title">{{ title }} <span v-if="subtitle" class="subtitle">{{ subtitle }}</span></h1>
         <span class="spacer" />
-        <div class="segments" role="group" aria-label="View">
-          <button v-for="entry in VIEWS" :key="entry.kind" type="button" class="segment" :aria-pressed="calendar.view === entry.kind ? 'true' : 'false'" @click="go(entry.kind)">
-            {{ entry.label }}
-          </button>
-        </div>
+        <button ref="railToggle" type="button" class="button button-quiet rail-toggle" aria-controls="calendar-rail" :aria-expanded="railOpen ? 'true' : 'false'" @click="railOpen = !railOpen">
+          Calendars<span v-if="calendar.unanswered.length > 0" class="count">{{ calendar.unanswered.length }} to answer</span>
+        </button>
+        <SegmentedControl label="View" :options="VIEWS.map((entry) => ({ value: entry.kind, label: entry.label }))" :selected="calendar.view" @choose="(kind) => go(kind)" />
         <button type="button" class="button button-primary" @click="newEvent()"><AppIcon name="plus" :size="16" /> New event <KeyShortcut keys="N" /></button>
       </header>
 
@@ -518,24 +545,9 @@ function pickDay(day: number): void {
   width: 36px;
   padding: 0;
 }
-.segments {
-  display: flex;
-  padding: 2px;
-  border-radius: var(--radius-control);
-  background: var(--ground);
-}
-.segment {
-  height: 32px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  font: 600 13px var(--font-ui);
-  cursor: pointer;
-}
-.segment[aria-pressed='true'] {
-  background: var(--surface);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+/* Only where the rail is a drawer (below 1100 px). */
+.rail-toggle {
+  display: none;
 }
 .view {
   flex: 1;
@@ -612,11 +624,33 @@ function pickDay(day: number): void {
   .calendar-shell.detail {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* The rail becomes a drawer over the page, opened from the toolbar. */
   .rail {
     display: none;
   }
+  .rail.open {
+    position: fixed;
+    /* Below the macOS app's title bar strip, so the drawer takes clicks instead of dragging the window. */
+    inset: var(--titlebar, 0px) auto 0 0;
+    z-index: 40;
+    display: flex;
+    width: min(300px, calc(100vw - 32px));
+    background: var(--surface);
+    box-shadow: var(--raised);
+  }
+  .rail-toggle {
+    display: inline-flex;
+  }
+  /* The invitations to answer go under the agenda instead of beside it. */
+  .agenda-view {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
   .pending {
-    display: none;
+    width: auto;
+    max-height: 40vh;
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
 }
 </style>
