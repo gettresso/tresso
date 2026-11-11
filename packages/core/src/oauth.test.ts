@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { codeChallenge, exchangeCode, OAuthError, parseCallback, startAuthorization } from './oauth'
+import { codeChallenge, exchangeCode, OAuthError, parseCallback, revokeToken, startAuthorization } from './oauth'
 
 const config = { apiUrl: 'http://api.test/', clientId: 'web', redirectUri: 'http://app.test/auth/callback' }
 
@@ -21,6 +21,20 @@ describe('PKCE', () => {
     expect(url.searchParams.get('code_challenge')).toBe(await codeChallenge(pending.codeVerifier))
     expect(url.searchParams.get('state')).toBe(pending.state)
     expect(pending.codeVerifier.length).toBeGreaterThanOrEqual(43)
+  })
+
+  it('sends the browser to the sign-in address when it differs from the API address', async () => {
+    const pending = await startAuthorization({ ...config, authorizeUrl: 'https://app.test/oauth/authorize' })
+    const url = new URL(pending.url)
+
+    expect(url.origin + url.pathname).toBe('https://app.test/oauth/authorize')
+    expect(url.searchParams.get('client_id')).toBe('web')
+  })
+
+  it('falls back to the API address for an empty sign-in address', async () => {
+    const pending = await startAuthorization({ ...config, authorizeUrl: '' })
+
+    expect(pending.url.startsWith('http://api.test/oauth/authorize?')).toBe(true)
   })
 })
 
@@ -63,5 +77,26 @@ describe('exchangeCode', () => {
     )
 
     await expect(exchangeCode(config, 'c', 'v', fetchImpl)).rejects.toMatchObject({ code: 'invalid_grant' })
+  })
+})
+
+describe('revokeToken', () => {
+  it('posts the refresh token to the revocation endpoint of the API address (RFC 7009)', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }))
+
+    await revokeToken({ ...config, authorizeUrl: 'https://app.test/oauth/authorize' }, 'rt', fetchImpl)
+
+    const [url, init] = fetchImpl.mock.calls[0]!
+    expect(url).toBe('http://api.test/oauth/revoke')
+    expect(init?.method).toBe('POST')
+    expect(new Headers(init?.headers).get('Content-Type')).toBe('application/x-www-form-urlencoded')
+    const body = new URLSearchParams(String(init?.body))
+    expect(Object.fromEntries(body)).toEqual({ token: 'rt', token_type_hint: 'refresh_token', client_id: 'web' })
+  })
+
+  it('throws when the server does not confirm', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ error: 'temporarily_unavailable' }, { status: 503 }))
+
+    await expect(revokeToken(config, 'rt', fetchImpl)).rejects.toMatchObject({ name: 'OAuthError', code: 'temporarily_unavailable' })
   })
 })

@@ -25,6 +25,11 @@ export interface OAuthClientConfig {
   clientId: string
   redirectUri: string
   scopes?: readonly string[]
+  /**
+   * Where the browser signs in, when the human-facing pages live on another address than the API (the app's own host,
+   * say). Defaults to `<apiUrl>/oauth/authorize`. The token and revocation endpoints always stay on the API address.
+   */
+  authorizeUrl?: string
 }
 
 export interface PendingAuthorization {
@@ -80,7 +85,7 @@ export async function startAuthorization(config: OAuthClientConfig): Promise<Pen
     code_challenge_method: 'S256',
   })
 
-  return { url: `${trimSlash(config.apiUrl)}/oauth/authorize?${params}`, state, codeVerifier }
+  return { url: `${authorizeEndpoint(config)}?${params}`, state, codeVerifier }
 }
 
 /** Validates the redirect back from the authorization server and returns the authorization code. */
@@ -131,6 +136,28 @@ export function refreshTokens(
   )
 }
 
+/**
+ * Revokes a refresh token at the authorization server (RFC 7009), so a copy of it stops working once the user signed
+ * out. The server answers 200 whether or not it knew the token; anything else, and a network failure, throws, and the
+ * caller decides whether that may stop the sign-out (it should not: forgetting the tokens matters more).
+ */
+export async function revokeToken(
+  config: OAuthClientConfig,
+  refreshToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const response = await fetchImpl(`${trimSlash(config.apiUrl)}/oauth/revoke`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams({ token: refreshToken, token_type_hint: 'refresh_token', client_id: config.clientId }),
+  })
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null)
+    const error = isErrorResponse(payload) ? payload : null
+    throw new OAuthError(error?.error_description ?? `Revoking the token failed (${response.status}).`, error?.error ?? null)
+  }
+}
+
 async function requestToken(
   config: OAuthClientConfig,
   body: Record<string, string>,
@@ -172,6 +199,11 @@ function isTokenResponse(value: unknown): value is TokenResponse {
 
 function isErrorResponse(value: unknown): value is { error: string; error_description?: string } {
   return typeof value === 'object' && value !== null && typeof (value as { error?: unknown }).error === 'string'
+}
+
+function authorizeEndpoint(config: OAuthClientConfig): string {
+  const custom = config.authorizeUrl?.trim() ?? ''
+  return custom !== '' ? custom : `${trimSlash(config.apiUrl)}/oauth/authorize`
 }
 
 function trimSlash(url: string): string {
