@@ -43,6 +43,7 @@ describe('connecting through the provider in another tab', () => {
   const opened = vi.fn<(url: string, target?: string, features?: string) => null>()
   const close = vi.fn<() => void>()
   let expiresIn: number
+  let authorizationState: string
 
   beforeEach(() => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
@@ -54,6 +55,7 @@ describe('connecting through the provider in another tab', () => {
     opened.mockReset()
     close.mockReset()
     expiresIn = 900_000
+    authorizationState = 'state-1'
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -66,7 +68,7 @@ describe('connecting through the provider in another tab', () => {
         if (url.pathname === '/api/v1/oauth-providers') return Response.json([{ id: 'google', name: 'Google', features: ['mail', 'calendar'] }])
         if (url.pathname === '/api/v1/server-info') return Response.json({ product: 'tresso-server', apiVersion: 1, billing: false, trialDays: 0, allowUnencryptedMailServers: false })
         if (url.pathname === '/api/v1/provider-authorizations') {
-          return Response.json({ authorizationUrl: 'https://accounts.google.example/auth?state=state-1', provider: 'google', expiresAt: new Date(Date.now() + expiresIn).toISOString() }, { status: 201 })
+          return Response.json({ authorizationUrl: `https://accounts.google.example/auth?state=${authorizationState}`, provider: 'google', expiresAt: new Date(Date.now() + expiresIn).toISOString() }, { status: 201 })
         }
         if (url.pathname === '/api/v1/provider-connections') return Response.json(connected)
         if (url.pathname === '/api/v1/mail-accounts') return Response.json([])
@@ -159,6 +161,11 @@ describe('connecting through the provider in another tab', () => {
     await vi.waitFor(() => expect(heading(waiting)).toBe('Sign-in came back signed out'))
     expect(waiting.get('dialog').text()).toContain('nothing was connected')
     expect(waiting.findAll('dialog button').some((button) => button.text().trim() === 'Try again')).toBe(true)
+
+    // The user signs in to Tresso in the provider's tab, which then comes back to the page with the code after all.
+    const returned = await tab('/settings/accounts/new?provider=google&state=state-1&code=code-1')
+    expect(heading(returned)).toBe('This sign-in was given up')
+    expect(requests.some((r) => r.path === '/api/v1/provider-connections')).toBe(false)
   })
 
   it('stops waiting once the sign-in expired', async () => {
@@ -167,6 +174,23 @@ describe('connecting through the provider in another tab', () => {
 
     await vi.waitFor(() => expect(heading(waiting)).toBe('No answer from Google'), { timeout: 2000 })
     expect(waiting.findAll('dialog button').some((button) => button.text().trim() === 'Try again')).toBe(true)
+
+    expiresIn = 900_000
+    const late = await tab('/settings/accounts/new?provider=google&state=state-1&code=code-1')
+    expect(heading(late)).toBe('This sign-in was given up')
+    expect(requests.some((r) => r.path === '/api/v1/provider-connections')).toBe(false)
+  })
+
+  it('hands each of two waiting tabs its own sign-in', async () => {
+    const first = await startWaiting()
+    // A second dialog in another tab starts its own sign-in.
+    authorizationState = 'state-2'
+    const second = await startWaiting()
+
+    await tab('/settings/accounts/new?provider=google&state=state-1&code=code-1')
+    await vi.waitFor(() => expect(heading(first)).toBe("You're connected"))
+    expect(heading(second)).toBe('Finish in your browser')
+    expect(close).toHaveBeenCalledOnce()
   })
 
   it('does not finish a sign-in the waiting tab cancelled', async () => {

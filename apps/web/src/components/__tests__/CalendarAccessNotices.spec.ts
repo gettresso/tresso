@@ -86,6 +86,8 @@ describe('CalendarAccessNotices', () => {
 
     expect(mountNotices([account({ calendarStatus: 'not_granted' })]).find('li').exists()).toBe(false)
     expect(mountNotices([account({ calendarStatus: 'error', calendarStatusDetail: 'Syncing the calendars failed.' })]).text()).toContain('Syncing the calendars failed.')
+    // The status changed meanwhile; when calendars are not allowed again later, that shows again.
+    expect(mountNotices([account({ calendarStatus: 'not_granted' })]).text()).toContain('Tresso may not use the calendars of kim@company.example yet.')
   })
 
   it('says nothing for accounts whose calendars sync', () => {

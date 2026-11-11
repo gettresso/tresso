@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { signInProvider, type SyncedCalendar, type SyncedMailAccount } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
@@ -14,7 +14,10 @@ const props = defineProps<{ accounts: SyncedMailAccount[]; calendars: SyncedCale
 
 const store = useAccountsStore()
 
-/** Notices the user hid, per account and status, in this browser: a status that changes shows again. */
+/**
+ * Notices the user hid, per account and status, in this browser. A hidden entry lasts only while the account keeps
+ * that status: once the status changed, the entry goes, so the same problem coming back later shows again.
+ */
 const HIDDEN_KEY = 'tresso.calendar.hiddenAccessNotices'
 function readHidden(): string[] {
   try {
@@ -25,14 +28,28 @@ function readHidden(): string[] {
   }
 }
 const hidden = ref<string[]>(readHidden())
-function hide(account: SyncedMailAccount): void {
-  hidden.value = [...hidden.value, `${account.id}:${account.calendarStatus}`]
+function saveHidden(entries: string[]): void {
+  hidden.value = entries
   try {
-    globalThis.localStorage?.setItem(HIDDEN_KEY, JSON.stringify(hidden.value))
+    globalThis.localStorage?.setItem(HIDDEN_KEY, JSON.stringify(entries))
   } catch {
     // Hidden for this visit only.
   }
 }
+function hide(account: SyncedMailAccount): void {
+  saveHidden([...hidden.value, `${account.id}:${account.calendarStatus}`])
+}
+// Only while the account still has the status that was hidden. An account that is not in the list (yet) keeps its
+// entry: the list may still be loading.
+watch(
+  () => props.accounts.map((account) => `${account.id}:${account.calendarStatus}`),
+  (current) => {
+    const known = new Set(props.accounts.map((account) => account.id))
+    const kept = hidden.value.filter((entry) => current.includes(entry) || !known.has(entry.split(':')[0] ?? ''))
+    if (kept.length !== hidden.value.length) saveHidden(kept)
+  },
+  { immediate: true },
+)
 const opening = ref<string | null>(null)
 const inBrowser = ref(false)
 const error = ref<string | null>(null)

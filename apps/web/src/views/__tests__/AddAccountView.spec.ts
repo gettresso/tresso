@@ -57,6 +57,8 @@ describe('connecting a mail account', () => {
   let accounts: Record<string, MailAccount>
   /** While set, checks wait for it: to see the checking step. */
   let holdCheck: Promise<void> | null
+  /** Checks answered 409 (the user's previous check still runs) before the real answer. */
+  let busyChecks: number
   /** While set, creating an account waits for it. */
   let holdCreate: Promise<void> | null
   /** While set, the provider list waits for it. */
@@ -79,6 +81,7 @@ describe('connecting a mail account', () => {
     accounts = { 'acc-g': gmail, 'acc-1': created }
     holdCheck = null
     holdCreate = null
+    busyChecks = 0
     holdProviders = null
     opened.mockReset()
     vi.stubGlobal('open', opened)
@@ -105,6 +108,10 @@ describe('connecting a mail account', () => {
         if (url.pathname === '/api/v1/provider-connections' && method === 'POST') return json(connected)
         if (url.pathname === '/api/v1/mail-account-checks' && method === 'POST') {
           if (holdCheck) await holdCheck
+          if (busyChecks > 0) {
+            busyChecks--
+            return json({ detail: 'Your previous connection check is still running.' }, 409)
+          }
           return json(checkResult)
         }
         if (url.pathname.startsWith('/api/v1/mail-accounts/') && method === 'DELETE') return new Response(null, { status: 204 })
@@ -595,6 +602,24 @@ describe('connecting a mail account', () => {
       expect(dialog(wrapper).get('h1').text()).toBe('Set up manually')
       expect(requests.some((r) => r.method === 'POST' && r.path === '/api/v1/mail-accounts')).toBe(true)
       expect(requests.find((r) => r.method === 'DELETE')?.path).toBe('/api/v1/mail-accounts/acc-1')
+    })
+
+    it('waits quietly for a check of the same user that is still running on the server', async () => {
+      busyChecks = 2
+      const wrapper = await mountView()
+      await enterAddress(wrapper, 'kim@fastmail.com')
+      await dialog(wrapper).get('input[type="password"]').setValue('secret')
+      await dialog(wrapper).get('form').trigger('submit')
+      await settle()
+      expect(dialog(wrapper).get('h1').text()).toBe('Connecting kim@fastmail.com')
+
+      await vi.advanceTimersByTimeAsync(4500)
+      await settle()
+      await vi.advanceTimersByTimeAsync(400)
+      await settle()
+
+      expect(requests.filter((r) => r.path === '/api/v1/mail-account-checks')).toHaveLength(3)
+      expect(dialog(wrapper).get('h1').text()).toBe("You're connected")
     })
 
     it('creates the account once the check passed, named after the user', async () => {

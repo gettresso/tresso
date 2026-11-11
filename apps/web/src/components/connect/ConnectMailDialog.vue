@@ -34,7 +34,7 @@ import ConnectManual from './ConnectManual.vue'
 import ConnectPicker from './ConnectPicker.vue'
 import ConnectSuccess from './ConnectSuccess.vue'
 import ProviderMark from './ProviderMark.vue'
-import { clearAwaiting, handOver, isAwaited, isCancelled, listenForSignIns, markAwaiting, markCancelled, stateOf, takeNotedOutcome, type HandedOver } from './connectChannel'
+import { abandoned, clearAwaiting, handOver, isAwaited, listenForSignIns, markAwaiting, markCancelled, stateOf, takeNotedOutcome, type HandedOver } from './connectChannel'
 import { PROVIDERS, type ProviderChoice } from './providers'
 
 /**
@@ -71,6 +71,9 @@ const EXCHANGE_LEAD = 'Exchange servers often have IMAP turned off. Ask your IT 
 /** How long the detecting and checking rows take at least, so each one can be read. */
 const ROW_MS = 300
 const CHECK_ROW_MS = 1500
+/** How long a check waits, in steps, for the user's previous check that is still running on the server. */
+const BUSY_RETRY_MS = 30_000
+const BUSY_RETRY_STEP_MS = 2000
 
 const auth = useAuthStore()
 const accounts = useAccountsStore()
@@ -293,8 +296,11 @@ let pending: PendingSignIn | null = null
 let preparing: Promise<PendingSignIn> | null = null
 /** The sign-in this dialog waits for; answers for any other are not ours (or were cancelled). */
 const awaitedState = ref<string | null>(null)
-/** Why the waiting stopped without an answer: the sign-in expired, or came back in a tab signed out of Tresso. */
-const stalled = ref<'timeout' | 'signed-out'>('timeout')
+/**
+ * Why the waiting stopped without an answer: the sign-in expired, came back in a tab signed out of Tresso, or (in the
+ * provider's tab) was given up by the tab that waited.
+ */
+const stalled = ref<'timeout' | 'signed-out' | 'given-up'>('timeout')
 let waitTimer: ReturnType<typeof setTimeout> | null = null
 
 function stopWaitTimer(): void {
@@ -305,7 +311,12 @@ function stopWaitTimer(): void {
 /** The waiting ended without a connection: say why, and offer to try again. */
 function stopWaiting(reason: 'timeout' | 'signed-out'): void {
   stopWaitTimer()
-  if (awaitedState.value !== null) clearAwaiting()
+  if (awaitedState.value !== null) {
+    // This tab tells the user nothing was connected: the provider's tab must not connect it later after all.
+    // Kept a while past the sign-in's own expiry: the provider's tab may still come back after it.
+    markCancelled(awaitedState.value, Math.max(pending?.expiresAt ?? 0, Date.now()) + 15 * 60_000, 'given-up')
+    clearAwaiting(awaitedState.value)
+  }
   awaitedState.value = null
   pending = null
   stalled.value = reason
@@ -388,7 +399,7 @@ function forgetSignIn(): void {
   stopWaitTimer()
   if (awaitedState.value !== null) {
     markCancelled(awaitedState.value, pending?.expiresAt ?? Date.now() + 15 * 60_000)
-    clearAwaiting()
+    clearAwaiting(awaitedState.value)
   }
   awaitedState.value = null
   pending = null
@@ -415,7 +426,7 @@ async function copyApprovalUrl(): Promise<void> {
 /** Shows how a provider sign-in ended. */
 async function applySignIn(result: ProviderConnection): Promise<void> {
   stopWaitTimer()
-  if (awaitedState.value !== null) clearAwaiting()
+  if (awaitedState.value !== null) clearAwaiting(awaitedState.value)
   awaitedState.value = null
   pending = null
   requested.value = result.requested
@@ -456,11 +467,18 @@ async function finishFromRoute(): Promise<void> {
   // The query holds a one-time code; it leaves the address bar and the history before anything else happens.
   await router.replace({ query: {} })
   const state = typeof query.state === 'string' ? query.state : null
-  if (state !== null && isCancelled(state)) {
-    // Cancelled while the provider's page was open: nothing is finished, so nothing is connected.
+  const gaveUp = state === null ? null : abandoned(state)
+  if (gaveUp !== null) {
+    // Cancelled, or given up by the tab that waited (it told the user nothing was connected): nothing is finished, so
+    // nothing is connected, and the user starts again from the dialog.
     choice.value = query.provider === 'google' ? 'google' : 'm365'
     history.value = ['email']
-    step.value = 'oauth-cancelled'
+    if (gaveUp === 'cancelled') {
+      step.value = 'oauth-cancelled'
+    } else {
+      stalled.value = 'given-up'
+      step.value = 'oauth-stalled'
+    }
     return
   }
 
@@ -605,13 +623,24 @@ async function checkAndCreate(input: CheckMailAccount, from: FormStep): Promise<
   }
 
   let result: MailAccountCheck
-  try {
-    result = await accounts.check(input, signal)
-  } catch (e) {
-    if (id !== run) return
-    returnTo()
-    failedRequest(e, from)
-    return
+  const started = Date.now()
+  for (;;) {
+    try {
+      result = await accounts.check(input, signal)
+      break
+    } catch (e) {
+      if (id !== run) return
+      // 409: a check this user gave up (Cancel, then Connect again) still runs on the server until its deadline, at
+      // most 25 seconds. Waited for quietly; this one then runs.
+      if (e instanceof ApiError && e.status === 409 && Date.now() - started < BUSY_RETRY_MS) {
+        await pause(BUSY_RETRY_STEP_MS)
+        if (id !== run) return
+        continue
+      }
+      returnTo()
+      failedRequest(e, from)
+      return
+    }
   }
   if (id !== run) return
   if (result.imap !== 'ok' || result.smtp !== 'ok') {
@@ -930,9 +959,14 @@ onBeforeUnmount(() => {
           ><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg
         ></span>
         <div class="cf-heading narrow">
-          <h1 id="connect-title">{{ stalled === 'signed-out' ? 'Sign-in came back signed out' : 'No answer from ' + description.company }}</h1>
+          <h1 id="connect-title">
+            {{ stalled === 'signed-out' ? 'Sign-in came back signed out' : stalled === 'given-up' ? 'This sign-in was given up' : 'No answer from ' + description.company }}
+          </h1>
           <p class="cf-lead">
-            <template v-if="stalled === 'signed-out'"
+            <template v-if="stalled === 'given-up'"
+              >Tresso already stopped waiting for this sign-in, so nothing was connected. Start again from the dialog: choose Try again.</template
+            >
+            <template v-else-if="stalled === 'signed-out'"
               >{{ description.company }}'s page came back in a tab that is not signed in to Tresso, so nothing was connected. Sign in to Tresso in that browser too, then try
               again.</template
             >
