@@ -96,6 +96,11 @@ final class CalendarInvitationTest extends DatabaseTestCase
         // Recorded, with the largest SEQUENCE the column holds (another event, so it does not outdate the second message).
         yield 'a SEQUENCE larger than the column' => [null, str_replace(['SEQUENCE:0', 'UID:budget-review@'], ['SEQUENCE:3000000000', 'UID:crafted@'], $valid), true];
         yield 'a RECURRENCE-ID that is not a date' => [null, str_replace('SEQUENCE:0', "SEQUENCE:0\r\nRECURRENCE-ID:garbage", $valid), false];
+        yield 'an occurrence in the year 10000 in UTC' => [null, str_replace('SEQUENCE:0', "SEQUENCE:0\r\nRECURRENCE-ID;TZID=America/Los_Angeles:99991231T230000", $valid), false];
+        yield 'an occurrence before the year 1 in UTC' => [null, str_replace('SEQUENCE:0', "SEQUENCE:0\r\nRECURRENCE-ID;TZID=Asia/Tokyo:00000101T000000", $valid), false];
+        yield 'a NUL character in the UID' => [null, str_replace('UID:budget-review@finance.example', "UID:budget\0review@finance.example", $valid), false];
+        yield 'a NUL character in the title' => [null, str_replace('SUMMARY:Budget review', "SUMMARY:Budget\0review", $valid), false];
+        yield 'an RRULE sabre cannot read at all' => [null, str_replace('SEQUENCE:0', "SEQUENCE:0\r\nRRULE:garbage", $valid), false];
     }
 
     /**

@@ -7,7 +7,7 @@ namespace App\Calendar\Invitation;
 use App\ApiResource\Input\Sync\CalendarPartInput;
 use App\Calendar\ICalendar\CalendarDocument;
 use App\Calendar\ICalendar\Props;
-use App\Entity\CalendarInvitation;
+use App\Calendar\ICalendar\RecurrenceKey;
 use App\Entity\Message;
 use App\Enum\FolderRole;
 use App\Enum\ItipMethod;
@@ -16,11 +16,13 @@ use App\Repository\CalendarInvitationRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Sabre\VObject\Component\VCalendar;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * Records the calendar objects that came with a new message, at ingest, and has them applied to the user's calendars
- * once the ingest is committed (when $apply says the message may change the calendar). Parts that are not usable iTIP (no METHOD, no event, broken) are skipped: a message
- * must never fail to ingest because of its calendar part.
+ * once the ingest is committed (when $apply says the message may change the calendar). Parts that are not usable iTIP
+ * (no METHOD, no event, broken, refused by the database) are skipped: a message must never fail to ingest because of
+ * its calendar part. Call it once the message itself is flushed.
  */
 final readonly class InvitationRecorder
 {
@@ -62,30 +64,52 @@ final readonly class InvitationRecorder
         }
     }
 
-    public function record(Message $message, ?string $partMethod, string $ical, bool $apply): ?CalendarInvitation
+    /**
+     * Records one part, whatever it holds: a part that cannot be read, or that the database refuses, is skipped and
+     * logged. The row is written in its own savepoint (after the message itself was flushed), so a refusal rolls back
+     * only this part and leaves the mail's transaction, and the rest of the batch, usable.
+     */
+    private function record(Message $message, ?string $partMethod, string $ical, bool $apply): void
     {
         try {
-            $calendar = CalendarDocument::parse($ical);
-            $read = self::read($calendar, $partMethod);
+            $read = self::read(CalendarDocument::parse($ical), $partMethod);
         } catch (\Throwable $e) {
             // sabre reads most values lazily, so a malformed date or rule only fails here; whatever it is, the
             // message is stored without its calendar part.
             $this->logger->info('Skipping an unreadable calendar part', ['message' => $message->getId()->toRfc4122(), 'error' => $e::class.': '.$e->getMessage()]);
 
-            return null;
+            return;
         }
         if (null === $read) {
-            return null;
+            return;
         }
 
         [$method, $uid, $sequence, $recurrenceKey, $serialized] = $read;
-        $invitation = new CalendarInvitation($message, $method, $uid, $sequence, $recurrenceKey, $serialized);
-        $this->entityManager->persist($invitation);
-        if ($apply) {
-            $this->afterCommit->dispatch(new ApplyCalendarInvitation($invitation->getId()->toRfc4122()));
-        }
+        $id = Uuid::v7();
+        $connection = $this->entityManager->getConnection();
+        $connection->beginTransaction();
+        try {
+            $connection->insert('calendar_invitation', [
+                'id' => $id->toRfc4122(),
+                'message_id' => $message->getId()->toRfc4122(),
+                'method' => $method->value,
+                'uid' => $uid,
+                'sequence' => $sequence,
+                'recurrence_key' => $recurrenceKey,
+                'ical' => $serialized,
+                'applied_at' => null,
+                'created_at' => new \DateTimeImmutable()->format('Y-m-d H:i:s'),
+            ]);
+            $connection->commit();
+        } catch (\Throwable $e) {
+            $connection->rollBack();
+            $this->logger->warning('Skipping a calendar part the database refused', ['message' => $message->getId()->toRfc4122(), 'error' => $e::class.': '.$e->getMessage()]);
 
-        return $invitation;
+            return;
+        }
+        if ($apply) {
+            $this->afterCommit->dispatch(new ApplyCalendarInvitation($id->toRfc4122()));
+        }
     }
 
     /**
@@ -119,6 +143,12 @@ final readonly class InvitationRecorder
             $recurrenceKey = '' === $recurrenceKey ? $key : $recurrenceKey;
         }
 
-        return [$method, $uid, $sequence, $hasMaster ? '' : $recurrenceKey, $calendar->serialize()];
+        $recurrenceKey = $hasMaster ? '' : $recurrenceKey;
+        if ('' !== $recurrenceKey && !RecurrenceKey::isValid($recurrenceKey)) {
+            // An occurrence outside the years 1 to 9999: no calendar has it, and the column does not take its key.
+            return null;
+        }
+
+        return [$method, $uid, $sequence, $recurrenceKey, $calendar->serialize()];
     }
 }
