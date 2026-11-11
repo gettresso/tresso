@@ -132,6 +132,11 @@ export const useMailStore = defineStore('mail', () => {
 
   const db = shallowRef<MailStore | null>(null)
   let userId: string | null = null
+  /**
+   * The user of the last start, kept apart from the claim (`userId`): a start whose open or first read failed gives the
+   * claim back so it can be tried again, but a sign-out must still remove that user's copy.
+   */
+  let lastUser: string | null = null
   let engine: SyncEngine | null = null
   let realtime: RealtimeClient | null = null
   /**
@@ -161,6 +166,7 @@ export const useMailStore = defineStore('mail', () => {
     }
     // Claimed before anything is awaited, so a sign-out (or another start) while the old copy closes overtakes it.
     const mine = ++generation
+    lastUser = forUserId
     await teardown()
     if (mine !== generation) {
       return
@@ -399,7 +405,9 @@ export const useMailStore = defineStore('mail', () => {
 
   /** Stops syncing and removes the local copy, so nothing stays behind on a shared computer. */
   async function forget(): Promise<void> {
-    const forUserId = userId
+    // Also the copy of a start that failed to open or read it (it gave its claim back, see lastUser).
+    const forUserId = userId ?? lastUser
+    lastUser = null
     // Named now: by the time the copy is closed, the user may be signed in to another server under the same id.
     const name = forUserId === null ? null : mailCopyName(forUserId)
     await stop()

@@ -24,6 +24,8 @@ const copies = vi.hoisted(() => ({
   deletedNames: [] as string[],
   /** What each opened copy calls when another tab or the browser closes it. */
   closedElsewhere: new Map<string, (reason: 'deleted' | 'upgraded' | 'terminated') => void>(),
+  /** Changes the store a test opens, e.g. to make a read fail. */
+  afterOpen: null as ((store: MailStore) => void) | null,
 }))
 
 vi.mock('@/mail/store', () => ({
@@ -32,9 +34,16 @@ vi.mock('@/mail/store', () => ({
     if (onClosedElsewhere) {
       copies.closedElsewhere.set(userId, onClosedElsewhere)
     }
-    await copies.holdOpen.get(userId)
+    try {
+      await copies.holdOpen.get(userId)
+    } catch (error) {
+      // An open that failed holds nothing open.
+      copies.opening.splice(copies.opening.lastIndexOf(userId), 1)
+      throw error
+    }
     const store = await SqliteMailStore.open(await memorySql())
     copies.opened.push(userId)
+    copies.afterOpen?.(store)
     const close = store.close.bind(store)
     store.close = async () => {
       await copies.holdClose.get(userId)
@@ -90,6 +99,7 @@ describe('the mail copy across sign-out and sign-in', () => {
     copies.names.clear()
     copies.deletedNames = []
     copies.closedElsewhere.clear()
+    copies.afterOpen = null
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -312,5 +322,31 @@ describe('the mail copy across sign-out and sign-in', () => {
 
     expect(copies.opened).toEqual(['anna'])
     expect(mail.ready).toBe(true)
+  })
+  it('removes the copy of a start that could not open it, once the user signs out', async () => {
+    const mail = useMailStore()
+    copies.holdOpen.set('anna', Promise.reject(new Error('IndexedDB refused')))
+    await expect(mail.start('anna')).rejects.toThrow('IndexedDB refused')
+
+    await mail.forget()
+
+    expect(copies.deletedNames).toEqual(['copy-anna'])
+  })
+
+  it('removes the copy of a start that could not read it, once the user signs out', async () => {
+    const mail = useMailStore()
+    const failingRead = vi.fn(async () => {
+      throw new Error('The copy could not be read.')
+    })
+    copies.afterOpen = (store) => {
+      store.mailAccounts = failingRead
+    }
+    await expect(mail.start('anna')).rejects.toThrow('The copy could not be read.')
+    expect(copies.closed).toEqual(['anna'])
+    expect(mail.ready).toBe(false)
+
+    await mail.forget()
+
+    expect(copies.deleted).toEqual(['anna'])
   })
 })
