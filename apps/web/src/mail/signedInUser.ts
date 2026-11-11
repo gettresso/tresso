@@ -20,9 +20,20 @@ export function signedInUser(): string | null {
   if (raw === null) {
     return null
   }
-  const kept = JSON.parse(raw) as { server: string; userId: string }
+  let kept: unknown
+  try {
+    kept = JSON.parse(raw)
+  } catch {
+    kept = null
+  }
+  if (typeof kept !== 'object' || kept === null || typeof (kept as { server?: unknown }).server !== 'string' || typeof (kept as { userId?: unknown }).userId !== 'string') {
+    // Not what this Tresso keeps: dropped, so the start goes on as if nothing was kept.
+    storage().removeItem(KEY)
+    return null
+  }
+  const { server, userId } = kept as { server: string; userId: string }
   // User ids are only unique per server.
-  return kept.server === config.apiUrl ? kept.userId : null
+  return server === config.apiUrl ? userId : null
 }
 
 export function rememberSignedInUser(userId: string): void {

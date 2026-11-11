@@ -163,9 +163,11 @@ async function startSession(): Promise<void> {
       // Pushes someone else turned on in this browser stop once another user signs in here.
       releaseOtherUsersPush(auth.me.id).catch((e) => compose.notify({ text: `Another account's notifications may still show in this browser: ${errorMessage(e)}`, tone: 'error' }))
       // The copy opened early is the right one (one that failed to open is opened again), or this start overtakes it
-      // and opens the user's own.
+      // and opens the user's own; a draft opened in the other user's copy never moves into it.
       if (auth.me.id === known) {
         await openedEarly
+      } else if (known !== null) {
+        compose.reset()
       }
       await mail.start(auth.me.id)
       if (run !== startRun || !auth.isAuthenticated) {

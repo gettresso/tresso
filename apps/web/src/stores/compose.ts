@@ -163,15 +163,14 @@ export const useComposeStore = defineStore('compose', () => {
     () => auth.isAuthenticated,
     (authenticated) => {
       if (!authenticated) {
-        composer.reset()
-        minimized.value = false
-        notices.value = []
+        reset()
       }
     },
   )
 
   // The copy was opened again for the same user (removed or closed under this tab): the open draft moves to it, so
-  // typing is kept and Send works. Another user never gets here with a draft open: the sign-out before reset it.
+  // typing is kept and Send works. Before another user's copy opens, the draft on screen was let go: by the sign-out,
+  // or by App.vue when the server names another user than the one whose copy opened early (`reset`).
   watch(
     () => mail.ready,
     (ready) => {
@@ -181,7 +180,15 @@ export const useComposeStore = defineStore('compose', () => {
     },
   )
 
+  /** Lets go of the draft on screen without saving it anywhere, before another user's copy opens. */
+  function reset(): void {
+    composer.reset()
+    minimized.value = false
+    notices.value = []
+  }
+
   return {
+    reset,
     draft,
     revision,
     conflict,
