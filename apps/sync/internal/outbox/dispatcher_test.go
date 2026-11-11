@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"slices"
 	"sync"
 	"testing"
@@ -56,6 +57,9 @@ type fakeAPI struct {
 	unsubscribes []api.UnsubscribeRequest
 	unsubscribed []unsubscribeReport
 	reportErr    error
+	// reportErrs answer the next outcome reports, one each; reportCalls counts every outcome report.
+	reportErrs  []error
+	reportCalls int
 }
 
 func (f *fakeAPI) ClaimUnsubscribes(context.Context, string, string) ([]api.UnsubscribeRequest, error) {
@@ -171,17 +175,24 @@ func (f *fakeAPI) ClaimOutbox(context.Context, string, string) ([]api.OutgoingMe
 func (f *fakeAPI) ReportOutbox(_ context.Context, _, messageID, _, outcome, text string, copied bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.reportCalls++
+	if len(f.reportErrs) > 0 {
+		err := f.reportErrs[0]
+		f.reportErrs = f.reportErrs[1:]
+		return err
+	}
 	f.reports = append(f.reports, report{messageID, outcome, text, copied})
 	return nil
 }
 
 type fakeSent struct {
-	contains map[string]bool
-	appended [][]byte
-	openErr  error
+	contains    map[string]bool
+	containsErr error
+	appended    [][]byte
+	openErr     error
 }
 
-func (s *fakeSent) Contains(id string) (bool, error) { return s.contains[id], nil }
+func (s *fakeSent) Contains(id string) (bool, error) { return s.contains[id], s.containsErr }
 func (s *fakeSent) Append(raw []byte, _ time.Time) error {
 	s.appended = append(s.appended, raw)
 	return nil
@@ -885,5 +896,67 @@ func TestSlowUnsubscribesStopBeforeTheirClaimRunsOut(t *testing.T) {
 	}
 	if len(h.api.unsubscribed) != 3 {
 		t.Errorf("reported %+v; the fourth is left for the next claim", h.api.unsubscribed)
+	}
+}
+
+// Fails without the fix: an IMAP account whose Sent folder could not be searched fell through and sent again.
+func TestAnIMAPRetryThatCannotCheckSentDoesNotSend(t *testing.T) {
+	cases := map[string]func(h *harness){
+		"search fails":     func(h *harness) { h.sent.containsErr = errors.New("connection reset") },
+		"Sent cannot open": func(h *harness) { h.sent.openErr = errors.New("login: NO [UNAVAILABLE]") },
+		"login refused":    func(h *harness) { h.sent.openErr = imapsync.ErrAuth },
+	}
+	for name, setup := range cases {
+		h := newHarness(message("m1", 2))
+		setup(h)
+
+		h.run()
+
+		if len(h.sends) != 0 {
+			t.Errorf("%s: sent again although Sent could not be checked", name)
+		}
+		if !slices.Equal(h.api.reports, []report{{"m1", api.OutcomeRetry, checkingText, false}}) {
+			t.Errorf("%s: reports = %+v", name, h.api.reports)
+		}
+	}
+
+	last := message("m1", 6)
+	last.LastAttempt = true
+	h := newHarness(last)
+	h.sent.containsErr = errors.New("connection reset")
+	h.run()
+	if len(h.sends) != 0 || !slices.Equal(h.api.reports, []report{{"m1", api.OutcomeRetry, undecidedText, false}}) {
+		t.Errorf("last attempt: sends %d, reports %+v", len(h.sends), h.api.reports)
+	}
+}
+
+func TestAnIMAPRetryWithoutASentFolderSends(t *testing.T) {
+	h := newHarness(message("m1", 2))
+	h.sent.openErr = imapsync.ErrNoSentFolder
+
+	h.run()
+
+	if len(h.sends) != 1 || !slices.Equal(h.api.reports, []report{{"m1", api.OutcomeSent, "", false}}) {
+		t.Errorf("sends %d, reports %+v", len(h.sends), h.api.reports)
+	}
+}
+
+func TestALostOutcomeReportIsSentAgain(t *testing.T) {
+	defer func(previous time.Duration) { reportBackoff = previous }(reportBackoff)
+	reportBackoff = time.Millisecond
+	h := newHarness(message("m1", 1))
+	h.api.reportErrs = []error{errors.New("connection reset"), &api.HTTPError{Status: http.StatusServiceUnavailable}}
+
+	h.run()
+
+	if h.api.reportCalls != 3 || !slices.Equal(h.api.reports, []report{{"m1", api.OutcomeSent, "", true}}) {
+		t.Errorf("%d report calls, reports %+v", h.api.reportCalls, h.api.reports)
+	}
+
+	h = newHarness(message("m2", 1))
+	h.api.reportErrs = []error{&api.HTTPError{Status: http.StatusUnprocessableEntity}}
+	h.run()
+	if h.api.reportCalls != 1 {
+		t.Errorf("a refused report was sent %d times", h.api.reportCalls)
 	}
 }

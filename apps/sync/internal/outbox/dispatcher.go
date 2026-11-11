@@ -528,9 +528,17 @@ func (d *Dispatcher) deliver(ctx context.Context, logger *slog.Logger, sender Se
 		return
 	}
 
-	// An earlier attempt may have reached the server before the worker could report it; never send twice.
+	// An earlier attempt may have reached the server before the worker could report it; never send twice. A check
+	// that cannot be made (no connection, a refused login, a failed search) leaves the question open and nothing is
+	// sent; only an account without a Sent folder has nothing to check.
 	if message.Attempt > 1 {
-		if store, err := sent.get(); err == nil {
+		store, err := sent.get()
+		switch {
+		case errors.Is(err, imapsync.ErrNoSentFolder):
+		case err != nil:
+			d.undecided(ctx, logger, credentials, message, err)
+			return
+		default:
 			if finder, ok := store.(OutgoingFinder); ok {
 				found, err := finder.SentBefore(message, raw, earliestAttempt(message, time.Now()))
 				switch {
@@ -547,13 +555,8 @@ func (d *Dispatcher) deliver(ctx context.Context, logger *slog.Logger, sender Se
 					return
 				case err != nil:
 					// No answer (connection, timeout, 429, 5xx) or not decided yet (a copy the provider may still be
-					// sending): look again next attempt. On the last attempt the API ends the message with this text.
-					text := checkingText
-					if message.LastAttempt {
-						text = finalText(err)
-					}
-					logger.Warn("checking for an earlier attempt did not decide", "lastAttempt", message.LastAttempt, "error", err)
-					d.report(ctx, logger, credentials.AccountID, message.ID, api.OutcomeRetry, text, false)
+					// sending): look again next attempt.
+					d.undecided(ctx, logger, credentials, message, err)
 					return
 				}
 				if found {
@@ -561,10 +564,17 @@ func (d *Dispatcher) deliver(ctx context.Context, logger *slog.Logger, sender Se
 					d.report(ctx, logger, credentials.AccountID, message.ID, api.OutcomeSent, "", true)
 					return
 				}
-			} else if found, err := store.Contains(message.MessageID); err == nil && found {
-				logger.Info("outgoing message was sent by an earlier attempt")
-				d.report(ctx, logger, credentials.AccountID, message.ID, api.OutcomeSent, "", true)
-				return
+			} else {
+				found, err := store.Contains(message.MessageID)
+				if err != nil {
+					d.undecided(ctx, logger, credentials, message, err)
+					return
+				}
+				if found {
+					logger.Info("outgoing message was sent by an earlier attempt")
+					d.report(ctx, logger, credentials.AccountID, message.ID, api.OutcomeSent, "", true)
+					return
+				}
 			}
 		}
 	}
@@ -591,14 +601,56 @@ func (d *Dispatcher) deliver(ctx context.Context, logger *slog.Logger, sender Se
 	d.report(ctx, logger, credentials.AccountID, message.ID, api.OutcomeSent, "", copied)
 }
 
+// undecided reports that the duplicate check of a retried message could not be made: the message is tried again
+// later, and on its last attempt the API ends it with a text that tells the user to check Sent.
+func (d *Dispatcher) undecided(ctx context.Context, logger *slog.Logger, credentials api.Credentials, message api.OutgoingMessage, err error) {
+	text := checkingText
+	if message.LastAttempt {
+		text = finalText(err)
+	}
+	logger.Warn("checking for an earlier attempt did not decide; not sending", "lastAttempt", message.LastAttempt, "error", err)
+	d.report(ctx, logger, credentials.AccountID, message.ID, api.OutcomeRetry, text, false)
+}
+
+// reportAttempts is how often an outcome report is sent when the API cannot be reached or fails. A lost report of a
+// sent message makes the next attempt check Sent, which may not be able to decide.
+const reportAttempts = 3
+
+// reportBackoff is the wait before the second report attempt; it doubles after that.
+var reportBackoff = time.Second
+
 func (d *Dispatcher) report(ctx context.Context, logger *slog.Logger, accountID, messageID, outcome, text string, copied bool) {
-	if err := d.api.ReportOutbox(ctx, accountID, messageID, d.workerID, outcome, text, copied); err != nil {
-		if errors.Is(err, api.ErrClaimLost) {
+	wait := reportBackoff
+	for attempt := 1; ; attempt++ {
+		err := d.api.ReportOutbox(ctx, accountID, messageID, d.workerID, outcome, text, copied)
+		switch {
+		case err == nil:
+			return
+		case errors.Is(err, api.ErrClaimLost):
 			logger.Warn("claim on the outgoing message was lost before reporting", "outcome", outcome)
 			return
+		case attempt < reportAttempts && ctx.Err() == nil && reportMayPass(err):
+			logger.Warn("reporting the outgoing message failed; trying again", "outcome", outcome, "error", err)
+			select {
+			case <-ctx.Done():
+			case <-time.After(wait):
+			}
+			wait *= 2
+			continue
 		}
 		logger.Error("reporting the outgoing message failed", "outcome", outcome, "error", err)
+		return
 	}
+}
+
+// reportMayPass reports whether a failed report may go through when sent again: no answer, or a 5xx. A 4xx answers
+// the report itself.
+func reportMayPass(err error) bool {
+	var httpErr *api.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Status >= 500
+	}
+	return true
 }
 
 // outcomeOf maps a send failure to the outcome reported to the API and the text shown to the user.
