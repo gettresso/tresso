@@ -77,7 +77,7 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
 
             if ($data instanceof EventInput) {
                 $calendar = $this->calendar($user, $data->calendarId);
-                $changes = self::changes($data);
+                $changes = self::changes($data, $event->getRrule());
                 $organizer = $this->organizer($user, $data->organizerMailAccountId);
 
                 return CalendarEventResource::fromEntity($this->entityManager->wrapInTransaction(
@@ -105,7 +105,11 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
         throw new \LogicException(\sprintf('Unexpected input for %s.', $operation->getName()));
     }
 
-    private static function changes(EventInput $input): EventChanges
+    /**
+     * @param string|null $storedRule the event's rule as stored: kept as it is even when sabre cannot expand it
+     *                                (devices may), so such an event can still be edited
+     */
+    private static function changes(EventInput $input, ?string $storedRule = null): EventChanges
     {
         try {
             $start = EventTime::fromArray($input->start);
@@ -125,7 +129,7 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
             throw self::invalid('end', 'The end must be after the start.');
         }
         $recurrence = null === $input->recurrence || '' === trim($input->recurrence) ? null : trim($input->recurrence);
-        if (null !== $recurrence) {
+        if (null !== $recurrence && $recurrence !== $storedRule) {
             try {
                 new RRuleIterator($recurrence, $start->toInstant($utc));
             } catch (InvalidDataException $e) {
