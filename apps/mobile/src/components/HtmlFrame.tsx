@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react'
+import { useMemo, useRef, useState, type ComponentRef } from 'react'
 import { Linking, StyleSheet, View } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { randomUUID } from 'expo-crypto'
@@ -31,15 +31,18 @@ export function HtmlFrame({ html, allowRemoteContent, accessibilityLabel, initia
   const frame = useRef<ComponentRef<typeof View>>(null)
   const web = useRef<ComponentRef<typeof WebView>>(null)
   const scrollToPlace = usePlaceScroll()
-  const source = useMemo(() => ({ html: mailFrameDocument(html, { apiOrigin: API_ORIGIN, allowRemoteContent }), baseUrl: '' }), [html, allowRemoteContent])
-  /** Binds reports to this view's own script (see frameMessage). */
-  const [token] = useState(() => randomUUID())
+  // Each document comes with the token that binds reports to its script (see frameMessage): a new one for every
+  // document, so a page that loaded in place of an earlier one, and got its script, knows a token that no longer counts.
+  const { source, token } = useMemo(
+    () => ({ source: { html: mailFrameDocument(html, { apiOrigin: API_ORIGIN, allowRemoteContent }), baseUrl: '' }, token: randomUUID() }),
+    [html, allowRemoteContent],
+  )
   const script = useMemo(() => frameScript(token), [token])
-  /** The view started loading something other than its own document: nothing it reports from then on counts. */
-  const left = useRef(false)
-  useEffect(() => {
-    left.current = false
-  }, [source])
+  /**
+   * The token of the document the view left by starting to load something else: nothing reported with it counts.
+   * A new document has a new token, so this needs no reset.
+   */
+  const left = useRef<string | null>(null)
 
   return (
     <View ref={frame} collapsable={false} style={styles.frame}>
@@ -56,11 +59,11 @@ export function HtmlFrame({ html, allowRemoteContent, accessibilityLabel, initia
         injectedJavaScript={script}
         onLoadStart={(event): void => {
           if (!ownDocument(event.nativeEvent.url)) {
-            left.current = true
+            left.current = token
           }
         }}
         onMessage={(event: WebViewMessageEvent): void => {
-          const report = left.current ? null : frameMessage(event.nativeEvent.data, token)
+          const report = left.current === token ? null : frameMessage(event.nativeEvent.data, token)
           if (report?.kind === 'tap') {
             const link = linkToOpen(report.url)
             if (link !== null) {

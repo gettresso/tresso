@@ -16,7 +16,8 @@ type WebViewProps = {
 
 const { views, injected } = vi.hoisted(() => ({ views: [] as WebViewProps[], injected: [] as string[] }))
 
-vi.mock('expo-crypto', () => ({ randomUUID: () => 'token-1' }))
+const tokens = vi.hoisted(() => ({ made: 0 }))
+vi.mock('expo-crypto', () => ({ randomUUID: () => `token-${++tokens.made}` }))
 vi.mock('@/config', () => ({ config: { apiUrl: 'https://api.example.test', clientId: 'mobile', redirectUri: 'tresso://auth/callback' } }))
 vi.mock('react-native-webview', async () => {
   const { forwardRef, useImperativeHandle } = await import('react')
@@ -39,6 +40,7 @@ function send(report: Record<string, unknown>, sender = 'about:blank', token: st
 describe('the web views', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    tokens.made = 0
     views.length = 0
     injected.length = 0
   })
