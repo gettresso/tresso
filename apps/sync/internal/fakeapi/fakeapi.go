@@ -34,6 +34,8 @@ type API struct {
 	ingested       map[string][]string          // remote uids of every MessageBatch, per folder, in arrival order
 	FolderCalls    int
 	vanishRequests int // change requests that removed messages (or tried to)
+	// StatusFailures fails that many status reports before taking them.
+	StatusFailures int
 }
 
 func New() *API {
@@ -191,6 +193,10 @@ func (f *API) RemoteUIDs(_ context.Context, _, _, folder, after string, limit in
 func (f *API) Status(_ context.Context, _, _, status, detail string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.StatusFailures > 0 {
+		f.StatusFailures--
+		return &api.HTTPError{Method: http.MethodPost, Path: "/status", Status: http.StatusServiceUnavailable}
+	}
 	f.Statuses = append(f.Statuses, status+": "+detail)
 	return nil
 }

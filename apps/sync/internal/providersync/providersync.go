@@ -53,6 +53,7 @@ type Session func(ctx context.Context) (healthy bool, err error)
 func Run(ctx context.Context, client API, account api.Account, workerID, provider string, opts RunOptions, logger *slog.Logger, session Session) error {
 	backoff := opts.MinBackoff
 	failures := 0
+	reported := false // whether the API took the error status of the current run of failures
 
 	for {
 		healthy, err := session(ctx)
@@ -69,12 +70,13 @@ func Run(ctx context.Context, client API, account api.Account, workerID, provide
 			return nil
 		}
 		if healthy {
-			failures, backoff = 0, opts.MinBackoff
+			failures, backoff, reported = 0, opts.MinBackoff, false
 		}
 		failures++
 		logger.Warn("sync session ended", "error", err, "retryIn", backoff)
-		if failures == opts.FailuresBeforeError {
-			Report(ctx, client, account.ID, workerID, api.StatusError, UserFacingDetail(err, provider), logger)
+		// Reported until the API took it: a lost report would leave the account looking fine while it fails.
+		if failures >= opts.FailuresBeforeError && !reported {
+			reported = Report(ctx, client, account.ID, workerID, api.StatusError, UserFacingDetail(err, provider), logger) == nil
 		}
 
 		select {
@@ -86,11 +88,13 @@ func Run(ctx context.Context, client API, account api.Account, workerID, provide
 	}
 }
 
-// Report sends an account status; a failure is only logged, the next report repeats it.
-func Report(ctx context.Context, client API, accountID, workerID, status, detail string, logger *slog.Logger) {
-	if err := client.Status(ctx, accountID, workerID, status, detail); err != nil && ctx.Err() == nil {
+// Report sends an account status; a failure is logged and returned, so the caller can send it again.
+func Report(ctx context.Context, client API, accountID, workerID, status, detail string, logger *slog.Logger) error {
+	err := client.Status(ctx, accountID, workerID, status, detail)
+	if err != nil && ctx.Err() == nil {
 		logger.Warn("reporting account status failed", "status", status, "error", err)
 	}
+	return err
 }
 
 // UserFacingDetail turns an error into a short message the user can act on. Never provider output or secrets.

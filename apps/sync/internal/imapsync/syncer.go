@@ -75,6 +75,7 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	logger := s.logger.With("account", account.ID)
 	backoff := s.opts.MinBackoff
 	failures := 0
+	reported := false // whether the API took the error status of the current run of failures
 
 	for {
 		healthy, err := s.runSession(ctx, account, logger)
@@ -87,12 +88,13 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 			return nil
 		}
 		if healthy {
-			failures, backoff = 0, s.opts.MinBackoff
+			failures, backoff, reported = 0, s.opts.MinBackoff, false
 		}
 		failures++
 		logger.Warn("sync session ended", "error", err, "retryIn", backoff)
-		if failures == s.opts.FailuresBeforeError {
-			s.report(ctx, account, api.StatusError, userFacingDetail(err), logger)
+		// Reported until the API took it: a lost report would leave the account looking fine while it fails.
+		if failures >= s.opts.FailuresBeforeError && !reported {
+			reported = s.report(ctx, account, api.StatusError, userFacingDetail(err), logger) == nil
 		}
 
 		select {
@@ -104,10 +106,13 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	}
 }
 
-func (s *Syncer) report(ctx context.Context, account api.Account, status, detail string, logger *slog.Logger) {
-	if err := s.api.Status(ctx, account.ID, s.workerID, status, detail); err != nil && ctx.Err() == nil {
+// report sends an account status; a failure is logged and returned.
+func (s *Syncer) report(ctx context.Context, account api.Account, status, detail string, logger *slog.Logger) error {
+	err := s.api.Status(ctx, account.ID, s.workerID, status, detail)
+	if err != nil && ctx.Err() == nil {
 		logger.Warn("reporting account status failed", "status", status, "error", err)
 	}
+	return err
 }
 
 type session struct {

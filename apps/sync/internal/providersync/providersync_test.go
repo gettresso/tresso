@@ -151,3 +151,22 @@ func TestPendingMovePlaceholdersAreNeverMissing(t *testing.T) {
 		t.Errorf("Missing = %v, %v; want only m2", missing, err)
 	}
 }
+
+// Fails without the fix: the error status was sent only at exactly the third failure, and a lost report was never
+// repeated.
+func TestALostErrorReportIsSentAgainAfterTheNextFailure(t *testing.T) {
+	f := fakeapi.New()
+	f.StatusFailures = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	_ = Run(ctx, f, api.Account{ID: "acc"}, "w1", "Microsoft", RunOptions{FailuresBeforeError: 2}, discard, func(context.Context) (bool, error) {
+		calls++
+		if calls == 5 {
+			cancel()
+		}
+		return false, errors.New("internal detail")
+	})
+	if f.StatusLog() != "error: Syncing failed. Tresso keeps retrying." {
+		t.Errorf("statuses = %q; want the error once, after the lost report", f.StatusLog())
+	}
+}
