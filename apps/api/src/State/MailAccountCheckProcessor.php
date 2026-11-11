@@ -54,8 +54,11 @@ final readonly class MailAccountCheckProcessor implements ProcessorInterface
 
         $imap = $data->imap ?? throw new \LogicException('Validation guarantees IMAP settings.');
         $smtp = $data->smtp ?? throw new \LogicException('Validation guarantees SMTP settings.');
-        // Both servers within the checker's total budget, with room for the answer; more than PHP's default limit.
-        set_time_limit(MailConnectionChecker::TOTAL + 15);
+        // Both servers within the checker's total budget, with room for the answer: more than PHP's default 30 seconds.
+        // Only a limit is raised; where there is none (the command line, the tests) none is set.
+        if (0 !== (int) \ini_get('max_execution_time')) {
+            set_time_limit(MailConnectionChecker::TOTAL + 15);
+        }
         $result = $this->lock->run($owner->getId()->toRfc4122(), fn (): ConnectionCheck => $this->checker->check($imap, $smtp, $data->username, $data->password))
             ?? throw new TooManyRequestsHttpException(MailConnectionChecker::TOTAL, 'Another connection check of yours is still running. Wait for it, then try again.');
 
