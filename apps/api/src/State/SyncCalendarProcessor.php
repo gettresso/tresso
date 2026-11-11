@@ -104,7 +104,7 @@ final readonly class SyncCalendarProcessor implements ProcessorInterface
             return new CalendarStatusResult($account->getCalendarStatus()->value);
         }
         $detail = trim((string) $input->detail);
-        $account->setCalendarStatus($status, '' === $detail ? null : $detail);
+        $account->setCalendarStatus($status, '' === $detail ? null : $detail, $input->url);
         $this->entityManager->flush();
 
         return new CalendarStatusResult($status->value);

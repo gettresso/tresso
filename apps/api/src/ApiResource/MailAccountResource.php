@@ -84,6 +84,8 @@ final class MailAccountResource
         public ?string $calendarUrl,
         public CalendarSyncStatus $calendarStatus,
         public ?string $calendarStatusDetail,
+        /** With calendar status `unconfirmed`: the CalDAV address the sync found, for the user to confirm. */
+        public ?string $calendarFoundUrl,
         public ?\DateTimeImmutable $lastSyncedAt,
         public \DateTimeImmutable $createdAt,
         /** Set through the signature's "defaultFor" (/api/v1/signatures). */
@@ -106,6 +108,7 @@ final class MailAccountResource
             $account->getCalendarServer(),
             $account->getCalendarStatus(),
             $account->getCalendarStatusDetail(),
+            $account->getCalendarFoundUrl(),
             $account->getLastSyncedAt(),
             $account->getCreatedAt(),
             $account->getDefaultSignature()?->getId()->toRfc4122(),

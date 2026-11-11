@@ -22,4 +22,9 @@ final class CalendarStatusInput extends WorkerRequest
     /** Short, user-safe description of the problem. */
     #[Assert\Length(max: 500)]
     public ?string $detail = null;
+
+    /** With `unconfirmed`: the CalDAV address that was found, offered to the user to confirm. */
+    #[Assert\Url(protocols: ['https'], requireTld: true)]
+    #[Assert\Length(max: 2048)]
+    public ?string $url = null;
 }

@@ -76,6 +76,10 @@ class MailAccount implements TracksChanges
     #[ORM\Column(length: 500, nullable: true)]
     private ?string $calendarStatusDetail = null;
 
+    /** The CalDAV address the worker found for status `unconfirmed`, for the user to confirm as calendar server. */
+    #[ORM\Column(length: 2048, nullable: true)]
+    private ?string $calendarFoundUrl = null;
+
     #[ORM\Column(length: 120, nullable: true)]
     private ?string $leasedBy = null;
 
@@ -242,10 +246,16 @@ class MailAccount implements TracksChanges
         return $this->calendarStatusDetail;
     }
 
-    public function setCalendarStatus(CalendarSyncStatus $status, ?string $detail = null): void
+    public function setCalendarStatus(CalendarSyncStatus $status, ?string $detail = null, ?string $foundUrl = null): void
     {
         $this->calendarStatus = $status;
         $this->calendarStatusDetail = CalendarSyncStatus::Active === $status ? null : $detail;
+        $this->calendarFoundUrl = CalendarSyncStatus::Unconfirmed === $status ? $foundUrl : null;
+    }
+
+    public function getCalendarFoundUrl(): ?string
+    {
+        return $this->calendarFoundUrl;
     }
 
     public function getLeasedBy(): ?string

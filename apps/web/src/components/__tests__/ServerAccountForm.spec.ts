@@ -74,6 +74,14 @@ describe('ServerAccountForm calendar server', () => {
     expect(requests.find((r) => r.method === 'PATCH')?.body).toEqual({ password: 'app-password', calendarUrl: 'https://dav.studio-noord.example/caldav/' })
   })
 
+  it('takes the found address from its own field when the API has it', async () => {
+    const wrapper = mountForm({ calendarStatus: 'unconfirmed', calendarStatusDetail: 'A calendar server was found.', calendarFoundUrl: 'https://dav.studio-noord.example/caldav/?user=kim' })
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Use this address')!.trigger('click')
+
+    expect((wrapper.get('input[type="url"]').element as HTMLInputElement).value).toBe('https://dav.studio-noord.example/caldav/?user=kim')
+  })
+
   it('says when no calendar server was found', () => {
     expect(mountForm({ calendarStatus: 'unsupported' }).get('.calendar-state').text()).toBe('No calendar server found for this account. Enter its CalDAV address if your provider has one.')
   })

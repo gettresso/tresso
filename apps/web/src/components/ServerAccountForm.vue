@@ -50,7 +50,7 @@ const calendarState = computed<{ text: string; found: string | null } | null>(()
     case 'unsupported':
       return { text: 'No calendar server found for this account. Enter its CalDAV address if your provider has one.', found: null }
     case 'unconfirmed':
-      return { text: calendarStatusDetail ?? 'Tresso found a calendar server it cannot trust on its own. Confirm its address below.', found: foundCalendarUrl(calendarStatusDetail) }
+      return { text: calendarStatusDetail ?? 'Tresso found a calendar server it cannot trust on its own. Confirm its address below.', found: foundCalendarUrl(props.account) }
     case 'auth_failed':
       return { text: calendarStatusDetail ?? 'The calendar server refused the username or password.', found: null }
     case 'error':
