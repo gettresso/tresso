@@ -13,6 +13,11 @@ use Sabre\VObject\Property\ICalendar\DateTime as DateTimeProperty;
  */
 final class Props
 {
+    /** The longest UID stored: the uid columns of calendar objects, event rows and invitations hold this many. */
+    public const int MAX_UID_LENGTH = 1024;
+    /** SEQUENCE is stored in a 32-bit column; RFC 5545 gives it no bound, so larger values count as this. */
+    public const int MAX_SEQUENCE = 2147483647;
+
     public static function get(Component $component, string $name): ?Property
     {
         foreach ($component->select($name) as $child) {
@@ -72,6 +77,12 @@ final class Props
         $value = self::text($component, $name);
 
         return null !== $value && is_numeric($value) ? (int) $value : 0;
+    }
+
+    /** SEQUENCE, between 0 and what the database stores. */
+    public static function sequence(Component $component): int
+    {
+        return max(0, min(self::int($component, 'SEQUENCE'), self::MAX_SEQUENCE));
     }
 
     public static function value(Property $property): string
