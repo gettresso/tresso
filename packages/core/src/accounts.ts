@@ -42,7 +42,10 @@ export interface NewMailAccount {
   calendarUrl?: string | null
 }
 
-/** JSON merge patch: omitted fields stay as they are. A new password also clears a sign-in failure. */
+/**
+ * JSON merge patch: omitted fields stay as they are. A new password, username or server clears a sign-in failure or a
+ * sync error, and the worker tries the account again at once.
+ */
 export interface MailAccountUpdate {
   displayName?: string
   username?: string
