@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { accountSchema, addressSchema, connectSchema } from '../accounts'
+import { accountSchema, manualSchema, providerAccountSchema } from '../accounts'
 import { composeSchema } from '../compose'
 import { requiredPaths } from '../required'
 
 describe('requiredPaths', () => {
   it('reads required fields, nested ones included, from the schemas', () => {
-    expect([...requiredPaths(addressSchema)]).toEqual(['emailAddress', 'displayName'])
-    expect([...requiredPaths(connectSchema)]).toEqual(['username', 'password', 'imap.host', 'imap.port', 'imap.security', 'smtp.host', 'smtp.port', 'smtp.security'])
+    expect([...requiredPaths(providerAccountSchema)]).toEqual(['displayName'])
+    expect([...requiredPaths(manualSchema('example.com'))]).toEqual(['imap.host', 'imap.port', 'imap.security', 'smtp.host', 'smtp.port', 'smtp.security', 'username', 'password'])
   })
 
   it('leaves out what may stay empty', () => {

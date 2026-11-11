@@ -84,11 +84,17 @@ describe('connecting a provider account in the desktop app', () => {
         if (url.pathname === '/api/v1/oauth-providers') {
           return Response.json([{ id: 'google', name: 'Google', features: ['mail', 'calendar'] }])
         }
+        if (url.pathname === '/api/v1/mail-server-settings') {
+          return Response.json({ emailAddress: 'kim@gmail.example', found: false, source: null, username: null, imap: null, smtp: null, authentication: [], provider: 'google' })
+        }
+        if (url.pathname === '/api/v1/server-info') {
+          return Response.json({ product: 'tresso-server', apiVersion: 1, billing: false, trialDays: 0, allowUnencryptedMailServers: false })
+        }
         if (url.pathname === '/api/v1/provider-authorizations' && method === 'POST') {
           return Response.json({ authorizationUrl: AUTHORIZATION_URL, provider: 'google', expiresAt: '2026-10-19T08:15:00+00:00' }, { status: 201 })
         }
         if (url.pathname === '/api/v1/provider-connections' && method === 'POST') {
-          return Response.json({ provider: 'google', connected: 'acc-g', grant: null, connectError: null })
+          return Response.json({ provider: 'google', connected: 'acc-g', grant: null, connectError: null, requested: ['mail', 'calendar'], missing: [], existing: false, approvalUrl: null })
         }
         if (url.pathname === '/api/v1/mail-accounts/acc-g') {
           return Response.json(gmail)
@@ -107,6 +113,12 @@ describe('connecting a provider account in the desktop app', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
+
+  /** The last sign-in started at the API. */
+  function lastStart() {
+    const started = requests.filter((r) => r.path === '/api/v1/provider-authorizations')
+    return started[started.length - 1]
+  }
 
   function makeRouter() {
     return createRouter({
@@ -135,14 +147,27 @@ describe('connecting a provider account in the desktop app', () => {
     const wrapper = mount(App, { global: { plugins: [router] } })
     await settle()
 
-    await wrapper.get('button.provider').trigger('click')
+    // Another address than the connected one; the provider may still sign in a different account, and the dialog
+    // then names the one that was connected.
+    await wrapper.get('dialog input[type="email"]').setValue('kim.visser@gmail.example')
+    await wrapper.get('dialog form').trigger('submit')
+    await settle()
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    await settle()
+    const proceed = wrapper.findAll('dialog button').find((button) => button.text().trim() === 'Proceed in browser')
+    expect(proceed).toBeDefined()
+    await proceed!.trigger('click')
     await settle()
 
-    expect(requests.find((r) => r.path === '/api/v1/provider-authorizations')?.body).toEqual({ provider: 'google', features: ['mail'], returnTo: 'native' })
+    expect(lastStart()?.body).toEqual({
+      provider: 'google',
+      features: ['mail', 'calendar'],
+      emailAddress: 'kim.visser@gmail.example',
+      returnTo: 'native',
+    })
     expect(desktop.opened).toEqual([AUTHORIZATION_URL])
     expect(assign).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('Continue in your browser.')
-    expect(wrapper.get('button.provider').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('dialog h1').text()).toBe('Finish in your browser')
 
     await openLink(router, `${REDIRECT}?next=%2Fsettings%2Faccounts%2Fnew&provider=google&state=state-1&code=code-1`)
 
@@ -154,9 +179,8 @@ describe('connecting a provider account in the desktop app', () => {
     })
     expect(router.currentRoute.value.name).toBe('settings-accounts-new')
     expect(router.currentRoute.value.query).toEqual({})
-    expect(wrapper.text()).toContain('kim@gmail.example')
-    expect(wrapper.text()).toContain('Signing in and fetching your folders')
-    expect(wrapper.text()).not.toContain('Continue in your browser.')
+    expect(wrapper.get('dialog h1').text()).toBe("You're connected")
+    expect(wrapper.get('dialog').text()).toContain('kim@gmail.example, Google')
     expect(useAuthStore().isAuthenticated).toBe(true)
     expect(desktop.keychain).toBe(tokens)
   })
