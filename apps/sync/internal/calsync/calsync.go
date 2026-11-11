@@ -186,9 +186,16 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 			logger.Info("calendar access not allowed yet", "retryIn", s.opts.NotGrantedRetry)
 			status.forget()
 			wait = s.opts.NotGrantedRetry
-		case s.provider.NotGranted(err), errors.Is(err, errListRefused):
+		case s.provider.NotGranted(err):
 			logger.Info("the provider refuses calendar access", "error", err, "retryIn", s.opts.NotGrantedRetry)
 			status.report(ctx, api.CalendarNotGranted, fmt.Sprintf("Tresso is not allowed to use the calendars of this account. Allow calendar access by signing in with %s again.", s.provider.Name()))
+			wait = s.opts.NotGrantedRetry
+		case errors.Is(err, errListRefused):
+			// The API only hands out a calendar token for a grant with the calendar scopes, so a refusal the
+			// provider does not mark as a missing scope is the mailbox's or the organization's: signing in again
+			// would not change it.
+			logger.Warn("the provider refuses the calendar list", "error", err, "retryIn", s.opts.NotGrantedRetry)
+			status.report(ctx, api.CalendarError, listRefusedDetail(s.provider.Name(), err))
 			wait = s.opts.NotGrantedRetry
 		case errors.Is(err, api.ErrReauthorize), errors.Is(err, providerhttp.ErrUnauthorized):
 			// The mail side reports a lost sign-in; the calendar waits for the new one.
@@ -210,6 +217,16 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 		case <-wake:
 		}
 	}
+}
+
+// listRefusedDetail tells the user that the provider refused the calendars, with the provider's error code.
+func listRefusedDetail(provider string, err error) string {
+	code := ""
+	var statusErr *providerhttp.StatusError
+	if errors.As(err, &statusErr) && len(statusErr.Reasons) > 0 {
+		code = " (" + statusErr.Reasons[0] + ")"
+	}
+	return fmt.Sprintf("%s refused the calendars of this account%s. Your organization may not allow Tresso to use calendars.", provider, code)
 }
 
 type statusReporter struct {

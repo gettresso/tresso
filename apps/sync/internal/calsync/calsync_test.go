@@ -117,7 +117,9 @@ func TestFailuresBackOffAndReachTheUserOnlyAfterSeveral(t *testing.T) {
 	}
 }
 
-func TestARefusedCalendarListAsksTheUserToAllowCalendars(t *testing.T) {
+// The API only hands out a calendar token for a grant with the calendar scopes: a refused list the provider does not
+// mark as a missing scope is no reason to sign in again (fails without the fix: it reported not_granted).
+func TestARefusedCalendarListIsReportedAsAnErrorWithTheProvidersCode(t *testing.T) {
 	refused := &providerhttp.StatusError{Method: "GET", URL: "/calendars", StatusCode: http.StatusForbidden, Reasons: []string{"ErrorAccessDenied"}}
 	provider := &fakeProvider{calendars: func() ([]Calendar, error) { return nil, fmt.Errorf("list: %w", refused) }}
 	fake := calsynctest.NewAPI("kim@example.com")
@@ -126,7 +128,21 @@ func TestARefusedCalendarListAsksTheUserToAllowCalendars(t *testing.T) {
 	calsynctest.Eventually(t, "the status", func() bool { return len(fake.Statuses()) == 1 })
 	syncer.Trigger("a1")
 	calsynctest.Eventually(t, "the retry the trigger starts", func() bool { return len(provider.listings()) >= 2 })
-	if statuses := fake.Statuses(); len(statuses) != 1 || statuses[0] != api.CalendarNotGranted {
+	if statuses := fake.Statuses(); len(statuses) != 1 || statuses[0] != api.CalendarError {
+		t.Fatalf("statuses = %v", statuses)
+	}
+	if detail := fake.Details()[0]; detail != "Fake refused the calendars of this account (ErrorAccessDenied). Your organization may not allow Tresso to use calendars." {
+		t.Errorf("detail = %q", detail)
+	}
+}
+
+func TestAListRefusedForAMissingScopeAsksTheUserToAllowCalendars(t *testing.T) {
+	provider := &fakeProvider{calendars: func() ([]Calendar, error) { return nil, fmt.Errorf("list: %w", errScope) }}
+	fake := calsynctest.NewAPI("kim@example.com")
+	start(t, provider, fake, quick)
+
+	calsynctest.Eventually(t, "the status", func() bool { return len(fake.Statuses()) == 1 })
+	if statuses := fake.Statuses(); statuses[0] != api.CalendarNotGranted {
 		t.Fatalf("statuses = %v", statuses)
 	}
 }

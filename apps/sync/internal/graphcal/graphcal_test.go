@@ -300,14 +300,17 @@ func TestARuleOutlookCannotRepeatIsRefused(t *testing.T) {
 	}
 }
 
-func TestCalendarAccessTheUserDidNotAllowIsReported(t *testing.T) {
+// Graph answers ErrorAccessDenied alike for a token without the calendar scopes and for a mailbox or tenant that does
+// not allow calendars; the API only hands out a calendar token with the scopes, so it is the latter: an error with
+// Graph's code, not a request to sign in again (which would loop).
+func TestARefusedCalendarListIsReportedWithGraphsCode(t *testing.T) {
 	graph := newFakeGraph(t)
 	graph.forbidden = true
 	fake := calsynctest.NewAPI(owner)
 	run(t, graph, fake)
 	calsynctest.Eventually(t, "the status", func() bool {
 		statuses := fake.Statuses()
-		return len(statuses) > 0 && statuses[0] == api.CalendarNotGranted
+		return len(statuses) > 0 && statuses[0] == api.CalendarError && strings.Contains(fake.Details()[0], "(ErrorAccessDenied)")
 	})
 }
 
