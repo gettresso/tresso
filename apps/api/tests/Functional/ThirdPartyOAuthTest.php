@@ -55,6 +55,8 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
             'authorization_endpoint' => 'http://localhost/oauth/authorize',
             'token_endpoint' => 'http://localhost/oauth/token',
             'registration_endpoint' => 'http://localhost/oauth/register',
+            'revocation_endpoint' => 'http://localhost/oauth/revoke',
+            'revocation_endpoint_auth_methods_supported' => ['none'],
             'scopes_supported' => self::THIRD_PARTY_SCOPES,
             'response_types_supported' => ['code'],
             'response_modes_supported' => ['query'],

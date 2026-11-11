@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Security\OAuth;
 
+use App\Controller\OAuthRevocationController;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 /**
@@ -30,6 +31,8 @@ final readonly class AuthorizationServerMetadata
             'authorization_endpoint' => $issuer.$this->urls->generate('oauth2_authorize'),
             'token_endpoint' => $issuer.$this->urls->generate('oauth2_token'),
             'registration_endpoint' => $issuer.$this->urls->generate(ClientRegistration::ROUTE),
+            'revocation_endpoint' => $issuer.$this->urls->generate(OAuthRevocationController::ROUTE),
+            'revocation_endpoint_auth_methods_supported' => ['none'],
             'scopes_supported' => ThirdPartyClients::scopeValues(),
             'response_types_supported' => ['code'],
             'response_modes_supported' => ['query'],

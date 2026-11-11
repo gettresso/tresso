@@ -15,8 +15,9 @@ security:
         health:
             pattern: ^/health$
             security: false
+        # The token endpoint and token revocation (RFC 7009): clients identify themselves in the request.
         oauth_token:
-            pattern: ^/oauth/token$
+            pattern: ^/oauth/(token|revoke)$
             security: false
         # Apps that are not ours register themselves here (RFC 7591); limited per IP address in the controller.
         oauth_register:

@@ -20,6 +20,12 @@ framework:
                 adapter: cache.adapter.redis
                 provider: '%env(REDIS_URL)%'
 
+            # What a refresh token rotation left behind for its short grace (App\Security\OAuth\RefreshTokenRotation);
+            # shared by every API instance.
+            cache.oauth_rotation:
+                adapter: cache.adapter.redis
+                provider: '%env(REDIS_URL)%'
+
             # MCP sessions (config/packages/mcp.yaml); shared by every API instance, expire an hour after their last use.
             cache.mcp_sessions:
                 adapter: cache.adapter.redis
