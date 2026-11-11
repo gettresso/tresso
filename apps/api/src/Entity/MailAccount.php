@@ -220,6 +220,11 @@ class MailAccount implements TracksChanges
     {
         $this->status = $status;
         $this->statusDetail = MailAccountStatus::Active === $status || MailAccountStatus::Paused === $status ? null : $detail;
+        if (MailAccountStatus::Paused === $status) {
+            // No worker holds a paused account: the one that did gets 404 on its next call, not after its heartbeat.
+            $this->leasedBy = null;
+            $this->leaseExpiresAt = null;
+        }
     }
 
     public function getStatusDetail(): ?string

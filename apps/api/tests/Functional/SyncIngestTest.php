@@ -611,6 +611,37 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame('The server rejected the password.', $account['statusDetail'] ?? null);
     }
 
+    public function testPausingTakesTheLeaseAndAReportCannotUndoIt(): void
+    {
+        $patch = $this->userHeaders('kim@example.test', ['settings:write']) + ['CONTENT_TYPE' => 'application/merge-patch+json'];
+        $this->client->request('PATCH', '/api/v1/mail-accounts/'.$this->accountId, server: $patch, content: '{"status":"paused"}');
+        self::assertResponseIsSuccessful();
+
+        $this->client->jsonRequest('POST', $this->url('status'), ['workerId' => 'w1', 'status' => 'active'], $this->worker);
+        self::assertResponseStatusCodeSame(404, 'The worker no longer holds the account.');
+
+        // A report that passed the lease check before the pause committed.
+        $this->entityManager()->getConnection()->executeStatement(
+            "UPDATE mail_account SET leased_by = 'w1', lease_expires_at = :until WHERE id = :id",
+            ['until' => new \DateTimeImmutable('+1 minute', new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'), 'id' => $this->accountId],
+        );
+        $this->client->jsonRequest('POST', $this->url('status'), ['workerId' => 'w1', 'status' => 'active'], $this->worker);
+        self::assertResponseIsSuccessful();
+        self::assertSame(['status' => 'paused'], $this->decodedResponse());
+    }
+
+    public function testAnActiveReportDoesNotUndoARefusedSignIn(): void
+    {
+        $this->entityManager()->getConnection()->executeStatement("UPDATE mail_account SET status = 'auth_failed', status_detail = 'Sign in again.' WHERE id = :id", ['id' => $this->accountId]);
+
+        foreach (['active', 'error'] as $reported) {
+            $this->client->jsonRequest('POST', $this->url('status'), ['workerId' => 'w1', 'status' => $reported, 'detail' => 'Connection lost.'], $this->worker);
+
+            self::assertResponseIsSuccessful();
+            self::assertSame(['status' => 'auth_failed'], $this->decodedResponse());
+        }
+    }
+
     public function testWorkerCannotPauseAnAccount(): void
     {
         $this->client->jsonRequest('POST', $this->url('status'), ['workerId' => 'w1', 'status' => 'paused'], $this->worker);
