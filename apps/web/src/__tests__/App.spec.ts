@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { config } from '@/config'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import App from '../App.vue'
 import { useMailStore } from '../stores/mail'
@@ -196,5 +197,127 @@ describe('App', () => {
     window.removeEventListener('keydown', behind)
     wrapper.unmount()
     vi.unstubAllGlobals()
+  })
+  describe('a start that fails', () => {
+    const me = { id: 'user-1', email: 'ada@example.com', displayName: 'Ada', createdAt: '2026-01-01T00:00:00+00:00' }
+
+    /** A signed-in tab whose server answers /me with what `answers` says, one per call, and 200 to the rest. */
+    async function signedIn(answers: (() => Response)[]) {
+      const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: { template: '<div />' } }] })
+      await router.push('/')
+      await router.isReady()
+      const fetchMe = vi.fn<() => Response>()
+      answers.forEach((answer) => fetchMe.mockImplementationOnce(answer))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          if (String(url).endsWith('/api/v1/me')) {
+            return fetchMe()
+          }
+          if (String(url).endsWith('/api/v1/billing')) {
+            return new Response(JSON.stringify({ enabled: false, entitled: true, plans: [], organizations: [] }))
+          }
+          return new Response(null, { status: 204 })
+        }),
+      )
+      const { useAuthStore } = await import('../stores/auth')
+      const auth = useAuthStore()
+      auth.tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+      const mail = useMailStore()
+      const start = vi.spyOn(mail, 'start').mockResolvedValue()
+      return { router, start, fetchMe, auth }
+    }
+
+    const offline = () => {
+      throw new TypeError('Failed to fetch')
+    }
+    const answered = () => new Response(JSON.stringify(me))
+
+    it('says so with a Retry button, and starts once the device is back online', async () => {
+      const { router, start } = await signedIn([offline, answered])
+      const wrapper = mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+
+      expect(start).not.toHaveBeenCalled()
+      expect(wrapper.get('[role="alert"]').text()).toContain('Failed to fetch')
+      expect(wrapper.get('[role="alert"] button').text()).toBe('Retry')
+
+      window.dispatchEvent(new Event('online'))
+      await flushPromises()
+
+      expect(start).toHaveBeenCalledWith('user-1')
+      expect(wrapper.text()).not.toContain('could not start')
+      vi.unstubAllGlobals()
+    })
+
+    it('starts again when the user presses Retry', async () => {
+      const { router, start } = await signedIn([() => new Response(JSON.stringify({ title: 'Bad Gateway' }), { status: 502 }), answered])
+      const wrapper = mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await wrapper.get('[role="alert"] button').trigger('click')
+      await flushPromises()
+
+      expect(start).toHaveBeenCalledWith('user-1')
+      expect(wrapper.text()).not.toContain('could not start')
+      vi.unstubAllGlobals()
+    })
+
+    it('tries again by itself after a wait', async () => {
+      vi.useFakeTimers()
+      const { router, start } = await signedIn([offline, offline, answered])
+      const wrapper = mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(start).not.toHaveBeenCalled()
+      // The second wait is longer than the first.
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(start).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(5_000)
+
+      expect(start).toHaveBeenCalledWith('user-1')
+      expect(wrapper.text()).not.toContain('could not start')
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    })
+
+    it('opens the copy of the user last confirmed here before the server answers', async () => {
+      sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: config.apiUrl, userId: 'user-1' }))
+      const { router, start } = await signedIn([offline])
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+
+      expect(start).toHaveBeenCalledWith('user-1')
+      vi.unstubAllGlobals()
+    })
+
+    it('opens no copy kept for another server', async () => {
+      sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: 'https://elsewhere.example', userId: 'user-1' }))
+      const { router, start } = await signedIn([offline])
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+
+      expect(start).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    })
+
+    it('forgets the user, and stops trying, once signed out', async () => {
+      vi.useFakeTimers()
+      sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: config.apiUrl, userId: 'user-1' }))
+      const { router, start, auth, fetchMe } = await signedIn([offline, answered])
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+
+      auth.tokens = null
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(600_000)
+
+      expect(sessionStorage.getItem('tresso.signedInUser')).toBeNull()
+      expect(fetchMe).toHaveBeenCalledOnce()
+      expect(start).toHaveBeenCalledOnce()
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    })
   })
 })

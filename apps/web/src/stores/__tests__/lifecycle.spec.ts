@@ -301,4 +301,16 @@ describe('the mail copy across sign-out and sign-in', () => {
     await mail.forget()
     expect(copies.deleted).toEqual(['ben'])
   })
+  it('opens the copy when the same user is started again after the open failed', async () => {
+    const mail = useMailStore()
+    copies.holdOpen.set('anna', Promise.reject(new Error('IndexedDB refused')))
+
+    await expect(mail.start('anna')).rejects.toThrow('IndexedDB refused')
+    expect(mail.ready).toBe(false)
+    copies.holdOpen.delete('anna')
+    await mail.start('anna')
+
+    expect(copies.opened).toEqual(['anna'])
+    expect(mail.ready).toBe(true)
+  })
 })

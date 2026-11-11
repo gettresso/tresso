@@ -185,12 +185,22 @@ export const useMailStore = defineStore('mail', () => {
         // Overtaken anyway (a sign-out, another user): its failure is no longer anyone's concern.
         return
       }
+      // Not claimed after all, so starting the same user again (the app retries) opens the copy anew.
+      userId = null
       throw error
     } finally {
       openings.delete(opening)
       opened()
     }
-    await refresh()
+    try {
+      await refresh()
+    } catch (error) {
+      if (mine === generation) {
+        // Reading the copy failed: close it again, so a retry of the same user starts from the beginning.
+        await stop()
+      }
+      throw error
+    }
     if (mine !== generation) {
       return
     }
