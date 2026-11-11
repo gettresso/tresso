@@ -236,7 +236,14 @@ export interface HandOverFlowDeps {
   undoSeconds?: number
   /** The time on the server's clock (epoch ms), which a nudge's send time is counted on; the device's by default. */
   now?(): number
+  /**
+   * How long one step that uses the flow's composer may hold the next one up, in ms: a request that hangs must not
+   * stop every later hand-over and undo. The step itself goes on.
+   */
+  queueTimeoutMs?: number
 }
+
+const QUEUE_TIMEOUT_MS = 60_000
 
 /**
  * Handing over, the same on every client: the conversation is forwarded to the delegate with the note through the
@@ -245,8 +252,10 @@ export interface HandOverFlowDeps {
  */
 export class HandOverFlow {
   /**
-   * The flow's composer holds one draft at a time, so what uses it (handing over, undoing, taking back) runs one after
-   * another: none of them finds another's draft open after an await.
+   * The flow's composer holds one draft at a time, so what uses it (handing over, throwing away the draft a taken
+   * back forward came back as) runs one after another: none of them finds another's draft open after an await.
+   * Requests that do not use the composer (stopping a forward, withdrawing a hand-over) do not wait in it: a forward
+   * leaves within seconds, so an undo cannot wait for a hand-over still being made.
    */
   private queue: Promise<unknown> = Promise.resolve()
 
@@ -254,7 +263,14 @@ export class HandOverFlow {
 
   private inOrder<T>(task: () => Promise<T>): Promise<T> {
     const run = this.queue.then(task, task)
-    this.queue = run.catch(() => undefined)
+    // The next step waits for this one, but not for ever: a hung request lets the queue go on after the timeout.
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const limit = new Promise<void>((resolve) => (timer = setTimeout(resolve, this.deps.queueTimeoutMs ?? QUEUE_TIMEOUT_MS)))
+    this.queue = Promise.race([run.catch(() => undefined), limit]).finally(() => {
+      if (timer !== null) {
+        clearTimeout(timer)
+      }
+    })
     return run
   }
 
@@ -310,7 +326,7 @@ export class HandOverFlow {
         await this.takeBackForward(forward.id, draft.id)
       } catch {
         const who = input.delegate.name?.trim() || input.delegate.address
-        throw new HandOverError(`${reason} The forward to ${who} could not be stopped and may still be sent, but it is not in "Waiting on".`)
+        throw new HandOverError(`${sentence(reason)} The forward to ${who} could not be stopped and may still be sent, but it is not in "Waiting on".`)
       }
       throw new HandOverError(reason)
     }
@@ -323,13 +339,10 @@ export class HandOverFlow {
    *
    * @throws HandOverError when it is too late or the server cannot be reached
    */
-  undo(handed: HandedOver): Promise<void> {
-    return this.inOrder(() => this.undoNow(handed))
-  }
-
-  private async undoNow(handed: HandedOver): Promise<void> {
+  async undo(handed: HandedOver): Promise<void> {
+    // Stopped at once, not after a hand-over still being made: the forward leaves within seconds.
     try {
-      await this.takeBackForward(handed.forwardId, handed.draftId)
+      await this.deps.cancel(handed.forwardId)
     } catch (error) {
       throw new HandOverError(`Too late to undo: ${this.deps.explain(error).message}`)
     }
@@ -338,6 +351,7 @@ export class HandOverFlow {
     } finally {
       await this.deps.sync().catch(() => undefined)
     }
+    await this.inOrder(() => this.discardDraft(handed.draftId))
   }
 
   /**
@@ -348,11 +362,8 @@ export class HandOverFlow {
    *
    * @throws HandOverError saying the hand-over still stands
    */
-  takeBack(handed: HandedOver): Promise<'undone' | 'withdrawn'> {
-    return this.inOrder(() => this.takeBackNow(handed))
-  }
-
-  private async takeBackNow(handed: HandedOver): Promise<'undone' | 'withdrawn'> {
+  async takeBack(handed: HandedOver): Promise<'undone' | 'withdrawn'> {
+    // Stopped at once (see undo); only throwing the draft away waits for the composer.
     let refused: unknown = null
     try {
       await this.deps.cancel(handed.forwardId)
@@ -378,7 +389,7 @@ export class HandOverFlow {
     } finally {
       await this.deps.sync().catch(() => undefined)
     }
-    await this.discardDraft(handed.draftId)
+    await this.inOrder(() => this.discardDraft(handed.draftId))
     return 'undone'
   }
 
@@ -445,6 +456,12 @@ export class HandOverFlow {
       await composer.discard()
     }
   }
+}
+
+/** A reason as a sentence of its own, so another can follow it. */
+function sentence(reason: string): string {
+  const trimmed = reason.trim()
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
 }
 
 /** What triage says when undoing a hand-over could only withdraw it: the forward had left already. */
