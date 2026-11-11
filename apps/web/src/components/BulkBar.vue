@@ -102,7 +102,16 @@ function relocate(action: 'archive' | 'trash' | 'move', folderId?: string): Prom
   return onSelection((messageIds) => actions.relocate(messageIds, action, mail.allFolders, folderId))
 }
 
-// K marks read, E archives, # trashes, Esc lets go of the selection; not while typing, writing or in a menu (an
+/** Noted, as K does in triage and the reading pane: read and archived. */
+function noted(): Promise<void> {
+  return onSelection(async (messageIds) => {
+    // Reading is part of noting, but not worth stopping the archive for when it fails (run says why).
+    await actions.run(messageIds, 'markRead')
+    return actions.relocate(messageIds, 'archive', mail.allFolders)
+  })
+}
+
+// K notes (read and archived), E archives, # trashes, Esc lets go of the selection; not while typing, writing or in a menu (an
 // Escape that closed a menu or left a field was handled there already).
 function shortcut(event: KeyboardEvent): void {
   if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized) || moveMenu.value?.open === true) {
@@ -112,7 +121,7 @@ function shortcut(event: KeyboardEvent): void {
     selection.clear()
     return
   }
-  const action = { k: () => act('markRead'), e: () => relocate('archive'), '#': () => relocate('trash') }[event.key.toLowerCase()]
+  const action = { k: noted, e: () => relocate('archive'), '#': () => relocate('trash') }[event.key.toLowerCase()]
   if (action !== undefined) {
     event.preventDefault()
     void action()
@@ -128,7 +137,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
       <span class="box" :class="allState" aria-hidden="true" />
     </button>
     <span class="count" role="status">{{ count }} selected</span>
-    <button type="button" class="tool" :disabled="busy" aria-keyshortcuts="K" title="Mark read (K)" @click="act('markRead')"><AppIcon name="inbox" /> Mark read</button>
+    <button type="button" class="tool" :disabled="busy" aria-keyshortcuts="K" title="Noted: mark read and archive (K)" @click="noted"><AppIcon name="know" /> Noted</button>
+    <button type="button" class="tool" :disabled="busy" title="Mark read" @click="act('markRead')"><AppIcon name="inbox" /> Mark read</button>
     <button type="button" class="tool" :disabled="busy" title="Mark unread" @click="act('markUnread')"><AppIcon name="unread" /> Mark unread</button>
     <button type="button" class="tool" :disabled="busy" aria-keyshortcuts="E" title="Archive (E)" @click="relocate('archive')"><AppIcon name="archive" /> Archive</button>
     <MenuButton

@@ -155,6 +155,7 @@ watch(
 }
 .from {
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 .address {
   font-weight: 400;
@@ -177,6 +178,12 @@ watch(
   flex-direction: column;
   gap: 16px;
   padding: 0 0 24px 48px;
+}
+/* On a phone the mail gets the full width; indenting it under the avatar would leave too little for it. */
+@media (max-width: 760px) {
+  .content {
+    padding-left: 0;
+  }
 }
 .remote {
   display: flex;
