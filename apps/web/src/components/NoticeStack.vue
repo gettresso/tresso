@@ -70,7 +70,8 @@ function leave(element: Element, done: () => void): void {
 }
 .notice.error {
   background: color-mix(in srgb, var(--danger) 88%, transparent);
-  color: #fff;
+  /* Paper, not white: --danger turns light in the dark theme, where white on it would be hard to read. */
+  color: var(--paper);
 }
 /* After the fills above, which they replace when transparency is reduced. */
 @media (prefers-reduced-transparency: reduce) {
