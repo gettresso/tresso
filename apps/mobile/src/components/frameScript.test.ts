@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FRAME_SCRIPT } from './frameLinks'
+import { frameScript } from './frameLinks'
 
 const posted: unknown[] = []
 
@@ -17,7 +17,7 @@ describe('the frame script', () => {
       observe(): void {}
     })
     Object.assign(window, { ReactNativeWebView: { postMessage: (data: string) => posted.push(JSON.parse(data)) } })
-    new Function(FRAME_SCRIPT)()
+    new Function(frameScript('token-1'))()
   })
 
   beforeEach(() => {
@@ -35,7 +35,7 @@ describe('the frame script', () => {
     expect(click('#out')).toBe(true)
     expect(click('#inside')).toBe(true)
 
-    expect(posted).toEqual([{ tap: 'https://example.test/offer' }, { tap: 'https://example.test/offer' }])
+    expect(posted).toEqual([{ token: 'token-1', tap: 'https://example.test/offer' }, { token: 'token-1', tap: 'https://example.test/offer' }])
   })
 
   it('reports where a place in the same mail is instead of navigating to it', () => {
@@ -45,7 +45,7 @@ describe('the frame script', () => {
     expect(click('#named')).toBe(true)
     expect(click('#missing')).toBe(true)
 
-    expect(posted).toEqual([{ place: 480 }, { place: 0 }])
+    expect(posted).toEqual([{ token: 'token-1', place: 480 }, { token: 'token-1', place: 0 }])
   })
 
   it('leaves taps outside links alone', () => {

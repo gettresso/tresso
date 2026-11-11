@@ -4,7 +4,7 @@
  * so the whitelist has to pass everything for these rules to decide.
  *
  * A web view only ever loads its own document (`about:`). A link the reader taps is not a navigation: the frame's
- * script reports the tap (`FRAME_SCRIPT`) and the app opens it outside, when it is a web, mail or phone link, or
+ * script reports the tap (`frameScript`) and the app opens it outside, when it is a web, mail or phone link, or
  * scrolls to the place it names in the same mail. Android reports every navigation as `other`, so a navigation cannot
  * tell a tap from a redirect; a reported click can.
  */
@@ -22,35 +22,37 @@ export function linkToOpen(url: string): string | null {
 export type FrameMessage = { kind: 'height'; value: number } | { kind: 'tap'; url: string } | { kind: 'place'; offset: number }
 
 /**
- * Whether a message came from the frame's own document. iOS reports the sender's URL, which for a document loaded
- * from a string is an `about:` URL. Android (react-native-webview on a WebView with WEB_MESSAGE_LISTENER, which every
- * current one has) reports the sender's origin instead: a document loaded from a string has an opaque origin, which
- * serializes as `null`; the fallback for old WebViews reports the URL again (`about:blank`). A page loaded from the
- * web reports its own `https://host` (or its URL), so it is never taken for the frame.
+ * Whether the view started loading a document of its own: the one it was given, which the platforms report as an
+ * `about:` URL, or the `data:` form Android may use for a document loaded from a string (a page cannot navigate the
+ * top of the view to a `data:` address). Anything else is a page the app refused that loaded anyway: on Android the
+ * library allows a navigation when the app's answer takes longer than 250 ms.
  */
-export function fromFrame(sender: string): boolean {
-  return sender === 'null' || mayLoad(sender)
+export function ownDocument(url: string): boolean {
+  return mayLoad(url) || url.startsWith('data:')
 }
 
 /**
- * What the frame's script reported; null for anything else, and for any message sent by a page other than the
- * frame's own document. A navigation the app refused can still load on Android when the answer takes too long (the
- * library allows it after 250 ms), and a page loaded that way must not open links nobody tapped.
+ * What the frame's script reported; null for anything else. A report counts only with the token the app put into
+ * the script of this view (see {@link frameScript}): the mail itself cannot run script (its Content-Security-Policy),
+ * so it can neither read the token nor send a report. The sender the platform names is not looked at: Android names
+ * an origin that a sandboxed page shares with the frame. A page that loaded in place of the frame would get the
+ * script injected too, so the view drops every report once it starts loading anything but its own document
+ * (HtmlFrame, {@link ownDocument}).
  */
-export function frameMessage(event: { url: string; data: string }): FrameMessage | null {
-  if (!fromFrame(event.url)) {
-    return null
-  }
+export function frameMessage(data: string, token: string): FrameMessage | null {
   let parsed: unknown
   try {
-    parsed = JSON.parse(event.data)
+    parsed = JSON.parse(data)
   } catch {
     return null
   }
   if (typeof parsed !== 'object' || parsed === null) {
     return null
   }
-  const { height, tap, place } = parsed as { height?: unknown; tap?: unknown; place?: unknown }
+  const { token: echoed, height, tap, place } = parsed as { token?: unknown; height?: unknown; tap?: unknown; place?: unknown }
+  if (token === '' || echoed !== token) {
+    return null
+  }
   if (typeof height === 'number' && Number.isFinite(height) && height > 0) {
     return { kind: 'height', value: height }
   }
@@ -70,12 +72,14 @@ export function frameMessage(event: { url: string; data: string }): FrameMessage
  * report instead of a navigation: a link elsewhere is reported to open outside, a link to a place in the same mail
  * (a table of contents, a footnote) reports where that place is, so the screen scrolls to it.
  */
-export const FRAME_SCRIPT = `
+export function frameScript(token: string): string {
+  return `
   (function () {
     var style = document.createElement('style')
     style.textContent = 'html,body{height:auto!important;min-height:0!important}'
     document.head.appendChild(style)
-    function post(report) { window.ReactNativeWebView.postMessage(JSON.stringify(report)) }
+    var token = ${JSON.stringify(token)}
+    function post(report) { report.token = token; window.ReactNativeWebView.postMessage(JSON.stringify(report)) }
     function report() { post({ height: Math.ceil(document.body.getBoundingClientRect().height) }) }
     function place(name) {
       if (name === '' || name === 'top') { return document.body }
@@ -100,3 +104,4 @@ export const FRAME_SCRIPT = `
   })();
   true;
 `
+}

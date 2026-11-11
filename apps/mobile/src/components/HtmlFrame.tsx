@@ -1,9 +1,10 @@
-import { useMemo, useRef, useState, type ComponentRef } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react'
 import { Linking, StyleSheet, View } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
+import { randomUUID } from 'expo-crypto'
 import { mailFrameDocument } from '@tresso/core'
 import { config } from '@/config'
-import { FRAME_SCRIPT, frameMessage, linkToOpen, mayLoad } from '@/components/frameLinks'
+import { frameMessage, frameScript, linkToOpen, mayLoad, ownDocument } from '@/components/frameLinks'
 import { usePlaceScroll } from '@/components/placeScroll'
 import { MAX_BODY_HEIGHT, nextBodyHeight } from '@/mail/bodyHeight'
 
@@ -31,6 +32,14 @@ export function HtmlFrame({ html, allowRemoteContent, accessibilityLabel, initia
   const web = useRef<ComponentRef<typeof WebView>>(null)
   const scrollToPlace = usePlaceScroll()
   const source = useMemo(() => ({ html: mailFrameDocument(html, { apiOrigin: API_ORIGIN, allowRemoteContent }), baseUrl: '' }), [html, allowRemoteContent])
+  /** Binds reports to this view's own script (see frameMessage). */
+  const [token] = useState(() => randomUUID())
+  const script = useMemo(() => frameScript(token), [token])
+  /** The view started loading something other than its own document: nothing it reports from then on counts. */
+  const left = useRef(false)
+  useEffect(() => {
+    left.current = false
+  }, [source])
 
   return (
     <View ref={frame} collapsable={false} style={styles.frame}>
@@ -44,9 +53,14 @@ export function HtmlFrame({ html, allowRemoteContent, accessibilityLabel, initia
         javaScriptEnabled
         allowFileAccess={false}
         mixedContentMode="never"
-        injectedJavaScript={FRAME_SCRIPT}
+        injectedJavaScript={script}
+        onLoadStart={(event): void => {
+          if (!ownDocument(event.nativeEvent.url)) {
+            left.current = true
+          }
+        }}
         onMessage={(event: WebViewMessageEvent): void => {
-          const report = frameMessage(event.nativeEvent)
+          const report = left.current ? null : frameMessage(event.nativeEvent.data, token)
           if (report?.kind === 'tap') {
             const link = linkToOpen(report.url)
             if (link !== null) {
