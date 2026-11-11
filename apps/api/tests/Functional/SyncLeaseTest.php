@@ -101,6 +101,19 @@ final class SyncLeaseTest extends DatabaseTestCase
         self::assertSame([], $this->lease('w1', $auth), 'w1 lost the account to w2');
     }
 
+    public function testALeaseHoldsWhateverTimeZoneTheDatabaseSessionHas(): void
+    {
+        $active = $this->createAccount('zone@example.test', MailAccountStatus::Active);
+        // West of UTC a lease written with the database clock looked expired at once to the PHP clock.
+        $this->connection()->executeStatement("SET TIME ZONE 'America/New_York'");
+
+        self::assertSame([$active], $this->lease('w1', $this->bearer('sync:lease')));
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$active.'/status', ['workerId' => 'w1', 'status' => 'active'], $this->bearer('sync:ingest'));
+
+        self::assertResponseIsSuccessful();
+        self::assertSame([], $this->lease('w2', $this->bearer('sync:lease')), 'Nor can another worker take it over.');
+    }
+
     public function testCapacityLimitsClaimedAccounts(): void
     {
         $this->createAccount('one@example.test', MailAccountStatus::Active);
