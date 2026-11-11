@@ -175,6 +175,7 @@ type statusReporter struct {
 	accountID string
 	logger    *slog.Logger
 	last      string
+	recovery  calfailures.Recovery
 }
 
 func newStatusReporter(s *Syncer, accountID string, logger *slog.Logger) *statusReporter {
@@ -201,6 +202,7 @@ func (r *statusReporter) reportFound(ctx context.Context, status, detail, foundU
 		return
 	}
 	r.last = status
+	r.recovery.Problem()
 }
 
 // unconfirmedDetail is the sentence of the unconfirmed status. Web clients older than the API's calendarFoundUrl, and
@@ -216,6 +218,13 @@ func acceptableFoundURL(raw string) bool {
 	}
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "https" && strings.Contains(u.Hostname(), ".") && u.User == nil
+}
+
+// recovered tells the API, once, that every calendar synced again (see calfailures.Recovery).
+func (r *statusReporter) recovered(ctx context.Context) {
+	r.recovery.Report(func() error {
+		return r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, api.CalendarActive, "", "")
+	}, r.logger)
 }
 
 func (r *statusReporter) reset() {
@@ -260,6 +269,8 @@ func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan s
 		status.reset()
 		if detail, failing := failing.Detail(); failing {
 			status.report(ctx, api.CalendarError, detail)
+		} else if run.clean {
+			status.recovered(ctx)
 		}
 		select {
 		case <-ctx.Done():
@@ -280,6 +291,8 @@ type run struct {
 	states map[string]api.CalendarState
 	// failing holds the calendars that failed in this or an earlier session.
 	failing *calfailures.Tracker
+	// clean is set by syncAll when every calendar was synced and none failed or refused the login.
+	clean bool
 }
 
 // cursor is what the API keeps per calendar for this syncer: the sync token, or the ctag for servers without one.
@@ -320,9 +333,16 @@ func (r *run) syncAll(ctx context.Context) error {
 	r.failing.Keep(listed)
 
 	refused, synced := 0, 0
+	r.clean = false
+	clean := true
+	defer func() { r.clean = clean }()
 	for _, calendar := range calendars {
 		state, ok := r.states[calendar.URL]
-		if !ok || !r.failing.Due(calendar.URL) {
+		if !ok {
+			continue
+		}
+		if !r.failing.Due(calendar.URL) {
+			clean = false // backing off: not reached this round
 			continue
 		}
 		synced++
@@ -333,6 +353,7 @@ func (r *run) syncAll(ctx context.Context) error {
 			if errors.Is(err, caldav.ErrUnauthorized) {
 				// A calendar shared with the user and taken back refuses the login; the others may still work.
 				refused++
+				clean = false
 				r.logger.Warn("a calendar refused the login", "calendar", calendar.URL)
 				continue
 			}
@@ -340,6 +361,7 @@ func (r *run) syncAll(ctx context.Context) error {
 			// off and, if it keeps failing, named in the status.
 			r.logger.Warn("calendar could not be synced", "calendar", calendar.URL, "error", err)
 			r.failing.Failed(calendar.URL, calendarName(calendar))
+			clean = false
 			continue
 		}
 		r.failing.Succeeded(calendar.URL)

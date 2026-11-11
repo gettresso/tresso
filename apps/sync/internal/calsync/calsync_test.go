@@ -369,3 +369,76 @@ func TestTheCursorStaysWhenEveryEventIsRefused(t *testing.T) {
 		t.Errorf("upload = %v, cursor %q; want an error and no cursor", err, fake.Cursor("own"))
 	}
 }
+
+func countOf(statuses []string, status string) int {
+	n := 0
+	for _, s := range statuses {
+		if s == status {
+			n++
+		}
+	}
+	return n
+}
+
+// Fails without the fix: after the error, a quiet account (nothing changed) never told the API it syncs again, and
+// the API keeps an error until it hears so.
+func TestARecoveryWithNothingChangedReportsActiveOnce(t *testing.T) {
+	var mu sync.Mutex
+	failing := true
+	provider := &fakeProvider{
+		calendars: calendarsOf("own"),
+		changes: func(Calendar) (Changes, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if failing {
+				return Changes{}, &providerhttp.StatusError{Method: "GET", URL: "/events", StatusCode: http.StatusInternalServerError}
+			}
+			return Changes{Unchanged: true}, nil
+		},
+	}
+	fake := calsynctest.NewAPI("kim@example.com")
+	opts := quick
+	opts.Interval, opts.MaxBackoff = 5*time.Millisecond, 20*time.Millisecond
+	start(t, provider, fake, opts)
+
+	calsynctest.Eventually(t, "the error", func() bool { return countOf(fake.Statuses(), api.CalendarError) > 0 })
+	if countOf(fake.Statuses(), api.CalendarActive) != 0 {
+		t.Fatalf("statuses %v; a round with a failing calendar must not report active", fake.Statuses())
+	}
+	mu.Lock()
+	failing = false
+	mu.Unlock()
+	calsynctest.Eventually(t, "the recovery", func() bool { return countOf(fake.Statuses(), api.CalendarActive) == 1 })
+	listed := len(provider.listings())
+	calsynctest.Eventually(t, "more rounds", func() bool { return len(provider.listings()) > listed+5 })
+	if n := countOf(fake.Statuses(), api.CalendarActive); n != 1 {
+		t.Errorf("active reported %d times, want once: %v", n, fake.Statuses())
+	}
+}
+
+// After a start the worker does not know what the API shows: the first good round reports active, once.
+func TestAStartReportsActiveOnceAfterAGoodRound(t *testing.T) {
+	provider := &fakeProvider{calendars: calendarsOf("own", "team")}
+	fake := calsynctest.NewAPI("kim@example.com")
+	start(t, provider, fake, quick)
+
+	calsynctest.Eventually(t, "the first report", func() bool { return countOf(fake.Statuses(), api.CalendarActive) == 1 })
+	calsynctest.Eventually(t, "more rounds", func() bool { return len(provider.listings()) > 5 })
+	if statuses := fake.Statuses(); len(statuses) != 1 {
+		t.Errorf("statuses %v; want active once", statuses)
+	}
+}
+
+// main's API answers 422 for an active status it does not know: no failure, and it is not asked again.
+func TestAnAPIWithoutTheActiveStatusIsNotAskedAgain(t *testing.T) {
+	provider := &fakeProvider{calendars: calendarsOf("own")}
+	fake := calsynctest.NewAPI("kim@example.com")
+	fake.RefuseActive = true
+	start(t, provider, fake, quick)
+
+	calsynctest.Eventually(t, "the first try", func() bool { return fake.ActiveAsked() == 1 })
+	calsynctest.Eventually(t, "more rounds", func() bool { return len(provider.listings()) > 5 })
+	if fake.ActiveAsked() != 1 || provider.sessions != 1 || len(fake.Statuses()) != 0 {
+		t.Errorf("asked %d times, %d sessions, statuses %v", fake.ActiveAsked(), provider.sessions, fake.Statuses())
+	}
+}

@@ -3,6 +3,7 @@ package calsynctest
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"sync"
 	"testing"
@@ -34,7 +35,10 @@ type API struct {
 	queued      map[string]api.CalendarOperation // every write ever queued, by id
 	statuses    []string
 	details     []string
-	tokens      int
+	// RefuseActive answers an active status with 422, as an API that does not know it; activeAsked counts them.
+	RefuseActive bool
+	activeAsked  int
+	tokens       int
 }
 
 func NewAPI(email string) *API {
@@ -160,9 +164,22 @@ func (a *API) ReportCalendarOperation(_ context.Context, _, operationID string, 
 func (a *API) CalendarStatus(_ context.Context, _, _, status, detail, _ string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if status == api.CalendarActive {
+		a.activeAsked++
+		if a.RefuseActive {
+			return &api.HTTPError{Method: http.MethodPost, Path: "/calendar-status", Status: http.StatusUnprocessableEntity}
+		}
+	}
 	a.statuses = append(a.statuses, status)
 	a.details = append(a.details, detail)
 	return nil
+}
+
+// ActiveAsked returns how often an active status was sent, taken or not.
+func (a *API) ActiveAsked() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.activeAsked
 }
 
 // Details returns the detail of every status report, in order.

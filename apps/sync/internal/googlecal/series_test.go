@@ -214,8 +214,11 @@ func TestAWriteToACalendarTheUserMayOnlyReadIsRefusedNotRetried(t *testing.T) {
 	if r.Outcome != api.OperationFailed || r.Current == nil || !strings.Contains(*r.Error, "read-only") {
 		t.Fatalf("result = %+v", r)
 	}
-	if statuses := fake.Statuses(); len(statuses) != 0 {
-		t.Fatalf("statuses = %v", statuses)
+	// A refused write is no account problem; the only status is the active a start reports once.
+	for _, status := range fake.Statuses() {
+		if status != api.CalendarActive {
+			t.Fatalf("statuses = %v", fake.Statuses())
+		}
 	}
 }
 

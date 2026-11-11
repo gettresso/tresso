@@ -143,6 +143,9 @@ const (
 	CalendarUnconfirmed = "unconfirmed"
 	// CalendarNotGranted: the provider refuses calendar access because the user did not allow it.
 	CalendarNotGranted = "not_granted"
+	// CalendarActive: the calendars sync again after an error. The API applies it only over error; an API that does
+	// not know it answers 422.
+	CalendarActive = "active"
 )
 
 // CalendarStatus reports why the account's calendars do not sync. foundURL is the address of a calendar server the
