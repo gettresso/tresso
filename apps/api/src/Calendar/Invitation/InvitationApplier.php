@@ -24,6 +24,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Component\VEvent;
+use Sabre\VObject\InvalidDataException;
 use Sabre\VObject\ITip\Broker;
 use Sabre\VObject\ITip\Message as ItipMessage;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -86,7 +87,8 @@ final readonly class InvitationApplier
     {
         try {
             $outcome = $this->apply($invitation);
-        } catch (InvalidCalendarData $e) {
+        } catch (InvalidCalendarData|InvalidDataException $e) {
+            // sabre reads values lazily, so a malformed one can fail anywhere in the checks: never retried forever.
             $outcome = InvitationOutcome::ignored('The calendar part of the message cannot be read: '.$e->getMessage());
         }
         if (InvitationOutcome::APPLIED !== $outcome->status) {

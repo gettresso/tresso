@@ -320,6 +320,44 @@ final class SyncCalendarTest extends DatabaseTestCase
         ], $starts, 'The 21st stays excluded at its new time.');
     }
 
+    /**
+     * One resource the API cannot store is skipped: the batch is taken and the cursor moves on, so the calendar keeps
+     * syncing.
+     */
+    public function testAResourceTheApiCannotStoreIsSkippedAndTheBatchTaken(): void
+    {
+        $home = $this->reportCalendars()[0]['id'];
+        $good = self::object('standup@company.example', 'Standup');
+        $bad = [
+            'dashes' => str_replace('DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTSTART:2026-10-19T09:00:00', self::object('dashes@company.example', 'Dashes')),
+            'duration' => str_replace('DTEND;TZID=Europe/Amsterdam:20261019T091500', 'DURATION:1H', self::object('duration@company.example', 'Duration')),
+            'fortnightly' => str_replace('SUMMARY:', "RRULE:FREQ=FORTNIGHTLY;COUNT=3\r\nSUMMARY:", self::object('fortnightly@company.example', 'Fortnightly')),
+            'uid' => self::object(str_repeat('x', 1025), 'Long'),
+        ];
+        $changed = [['remoteId' => self::HOME.'standup.ics', 'etag' => '"1"', 'ical' => $good]];
+        foreach ($bad as $name => $ical) {
+            $changed[] = ['remoteId' => self::HOME.$name.'.ics', 'etag' => '"1"', 'ical' => $ical];
+        }
+        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'cursor' => 'sync-token-1', 'changed' => $changed], $this->worker);
+
+        self::assertResponseIsSuccessful();
+        self::assertSame(['stored' => 1, 'removed' => 0, 'skipped' => 4], $this->decodedResponse());
+        self::assertSame('sync-token-1', $this->reportCalendars()[0]['cursor']);
+        self::assertSame(['Standup'], array_column($this->occurrences($this->kim, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00'), 'summary'));
+    }
+
+    public function testASequenceLargerThanTheColumnIsStored(): void
+    {
+        $home = $this->reportCalendars()[0]['id'];
+        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'changed' => [
+            ['remoteId' => self::HOME.'standup.ics', 'etag' => '"1"', 'ical' => str_replace('SUMMARY:', "SEQUENCE:3000000000\r\nSUMMARY:", self::object('standup@company.example', 'Standup'))],
+        ]], $this->worker);
+
+        self::assertResponseIsSuccessful();
+        self::assertSame(['stored' => 1, 'removed' => 0, 'skipped' => 0], $this->decodedResponse());
+        self::assertSame(2147483647, (int) $this->connection()->fetchOne("SELECT sequence FROM calendar_event WHERE uid = 'standup@company.example'"));
+    }
+
     public function testSeriesRepeatingMoreOftenThanHourlyAreSkipped(): void
     {
         $home = $this->reportCalendars()[0]['id'];
