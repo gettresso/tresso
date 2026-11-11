@@ -7,6 +7,7 @@ namespace App;
 use App\Billing\ReconcileSubscriptions;
 use App\Bulk\SweepBulkActions;
 use App\Scan\SweepPendingScans;
+use App\Security\OAuth\PurgeExpiredOAuthTokens;
 use App\Security\OAuth\PurgeUnusedRegisteredClients;
 use App\Security\PersonalAccessToken\PurgeOldPersonalAccessTokens;
 use App\Storage\SweepReencryption;
@@ -38,6 +39,7 @@ final readonly class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::every('1 hour', new SweepReencryption()))
             ->add(RecurringMessage::cron('17 3 * * *', new ReconcileSubscriptions()))
             ->add(RecurringMessage::cron('41 3 * * *', new PurgeOldPersonalAccessTokens()))
-            ->add(RecurringMessage::cron('47 3 * * *', new PurgeUnusedRegisteredClients()));
+            ->add(RecurringMessage::cron('47 3 * * *', new PurgeUnusedRegisteredClients()))
+            ->add(RecurringMessage::cron('53 3 * * *', new PurgeExpiredOAuthTokens()));
     }
 }

@@ -131,6 +131,9 @@ Only first-party clients are approved automatically; every other app goes throug
   `invalid_request`. The authorization server metadata names it as `revocation_endpoint`. Our apps call it when the
   user signs out, before they forget the tokens; the web app then also ends the browser sign-in (see The sign-in
   session below).
+- **Clean-up.** A nightly job (`PurgeExpiredOAuthTokens`, 03:53) deletes expired refresh tokens, then expired access
+  tokens that no remaining refresh token was issued with (disconnecting an app finds its refresh tokens through
+  them), and expired authorization codes.
 
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
 `settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
