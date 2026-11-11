@@ -34,7 +34,8 @@ final readonly class ItipMailer
 
     /**
      * Queues every message that matters to its recipient: replies and cancellations always, requests when the
-     * event changed in a way attendees must know (time, recurrence, status, or they are new).
+     * event changed in a way attendees must know (time, place, recurrence, status, or they are new; see
+     * EventEditor::SIGNIFICANT, which the broker is given).
      *
      * @param list<ItipMessage> $messages
      *
