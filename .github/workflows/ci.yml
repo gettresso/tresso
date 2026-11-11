@@ -240,7 +240,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: ShellCheck
-        run: shellcheck scripts/install.sh scripts/ci/retry.sh scripts/ci/apt-install.sh
+        run: shellcheck scripts/install.sh scripts/ci/retry.sh scripts/ci/apt-install.sh scripts/ci/make-dmg.sh
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
