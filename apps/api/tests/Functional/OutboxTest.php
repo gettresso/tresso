@@ -171,6 +171,18 @@ final class OutboxTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(409);
     }
 
+    public function testASendAtWithAnOffsetIsKeptAsThatMoment(): void
+    {
+        // Two hours ahead, written as a time in New York: as a wall clock read as UTC it would be due already.
+        $sendAt = new \DateTimeImmutable('+2 hours')->setTimezone(new \DateTimeZone('-05:00'));
+        $id = $this->sendId(['to' => [['address' => 'anna@finance.example']], 'sendAt' => $sendAt->format(\DATE_ATOM)]);
+
+        self::assertSame($sendAt->getTimestamp(), $this->outgoing($id)->getSendAt()->getTimestamp());
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'w1'], $this->worker);
+        self::assertResponseIsSuccessful();
+        self::assertSame('scheduled', $this->outgoingStatus($id), 'The heartbeat leaves it until its time.');
+    }
+
     public function testReleasesAScheduledMessageAtItsTime(): void
     {
         $id = $this->scheduledThatIsDue();

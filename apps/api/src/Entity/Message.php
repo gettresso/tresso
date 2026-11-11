@@ -171,7 +171,8 @@ class Message implements TracksChanges
         $this->subject = $subject;
         $this->fromAddress = mb_strtolower($fromAddress);
         $this->fromName = $fromName;
-        $this->receivedAt = $receivedAt;
+        // Stored without a zone and read back as UTC: the worker may send any offset.
+        $this->receivedAt = self::utc($receivedAt);
         $this->rawObjectKey = $rawObjectKey;
         $this->rawKeyVersion = $rawKeyVersion;
     }
@@ -261,9 +262,15 @@ class Message implements TracksChanges
         return $this->sentAt;
     }
 
+    /** The Date header, which carries the sender's offset; kept in UTC like every other time. */
     public function setSentAt(?\DateTimeImmutable $sentAt): void
     {
-        $this->sentAt = $sentAt;
+        $this->sentAt = null === $sentAt ? null : self::utc($sentAt);
+    }
+
+    private static function utc(\DateTimeImmutable $moment): \DateTimeImmutable
+    {
+        return $moment->setTimezone(new \DateTimeZone('UTC'));
     }
 
     public function getReceivedAt(): \DateTimeImmutable
