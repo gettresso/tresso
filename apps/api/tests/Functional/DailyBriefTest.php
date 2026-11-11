@@ -24,6 +24,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\Mime\Email;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * The daily brief end to end: settings over the API, the sweep the scheduler runs, the brief in the delta, and the
@@ -419,8 +420,8 @@ final class DailyBriefTest extends DatabaseTestCase
     public function testTheEmailDigestGoesOutOnceToTheNotificationAddress(): void
     {
         $this->setZone('Europe/Amsterdam');
-        // Notifications only go to a mail account that synced (the user proved to hold it).
-        $this->ingest('status', ['status' => 'active']);
+        // Notification mail only goes to an address a provider confirmed.
+        $this->confirmByProvider();
         $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => self::ME], \JSON_THROW_ON_ERROR));
         self::assertResponseIsSuccessful();
         $this->client->jsonRequest('PUT', '/api/v1/daily-brief-settings', $this->settings(['channels' => ['email']]), $this->kim);
@@ -495,7 +496,7 @@ final class DailyBriefTest extends DatabaseTestCase
 
     public function testTheDigestFallsBackToTheSignInAddressWhenTheAccountIsGone(): void
     {
-        $this->ingest('status', ['status' => 'active']);
+        $this->confirmByProvider();
         $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => self::ME], \JSON_THROW_ON_ERROR));
         $this->client->jsonRequest('PUT', '/api/v1/daily-brief-settings', $this->settings(['channels' => ['email']]), $this->kim);
         $this->ingestKnowMail();
@@ -724,6 +725,18 @@ final class DailyBriefTest extends DatabaseTestCase
         $transport->reset();
 
         return $envelopes;
+    }
+
+    /** As a Google sign-in leaves the account: a grant with the address Google confirmed, which the account uses. */
+    private function confirmByProvider(): void
+    {
+        $grant = Uuid::v7()->toRfc4122();
+        $this->connection()->executeStatement(
+            "INSERT INTO provider_grant (id, provider, subject, email_address, scopes, encrypted_tokens, created_at, updated_at, owner_id)
+             SELECT :id, 'google', 'subject-1', email_address, '[]', 'not-used', NOW(), NOW(), owner_id FROM mail_account WHERE id = :account",
+            ['id' => $grant, 'account' => $this->accountId],
+        );
+        $this->connection()->executeStatement('UPDATE mail_account SET provider_grant_id = :grant WHERE id = :account', ['grant' => $grant, 'account' => $this->accountId]);
     }
 
     /**

@@ -783,30 +783,53 @@ final class NotificationTest extends DatabaseTestCase
         self::assertSame('kim@example.test', $this->getJson('/api/v1/notification-settings', $this->kim)['emailAddress']);
     }
 
-    public function testAMailAccountMustHaveSyncedBeforeNotificationsGoToIt(): void
+    public function testOnlyAnAddressAProviderConfirmedReceivesNotifications(): void
+    {
+        $victim = $this->imapAccount('victim@elsewhere.example');
+        $worker = $this->workerHeaders('sync:lease sync:ingest');
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'w1'], $worker);
+        self::assertResponseIsSuccessful();
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$victim.'/status', ['workerId' => 'w1', 'status' => 'active'], $worker);
+        self::assertResponseIsSuccessful();
+
+        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'victim@elsewhere.example'], \JSON_THROW_ON_ERROR));
+        self::assertResponseStatusCodeSame(422, 'A synced IMAP account proves a mailbox someone can log in to, not the address typed next to it.');
+
+        $other = $this->imapAccount('kim@gmail.example');
+        $this->confirmByProvider($other, 'someone-else@gmail.example');
+        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'kim@gmail.example'], \JSON_THROW_ON_ERROR));
+        self::assertResponseStatusCodeSame(422, 'The provider confirmed another address.');
+
+        $this->connection()->executeStatement("UPDATE provider_grant SET email_address = 'Kim@Gmail.example'");
+        $this->patchSettings(['emailAddress' => 'kim@gmail.example']);
+        self::assertSame('kim@gmail.example', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress']);
+    }
+
+    private function imapAccount(string $address): string
     {
         $this->client->jsonRequest('POST', '/api/v1/mail-accounts', [
-            'emailAddress' => 'victim@elsewhere.example',
-            'displayName' => 'Not mine',
-            'username' => 'victim@elsewhere.example',
+            'emailAddress' => $address,
+            'displayName' => $address,
+            'username' => $address,
             'password' => 'app-password-1',
             'imap' => ['host' => 'imap.elsewhere.example', 'port' => 993, 'security' => 'tls'],
             'smtp' => ['host' => 'smtp.elsewhere.example', 'port' => 465, 'security' => 'tls'],
         ], $this->kim);
         self::assertResponseStatusCodeSame(201);
-        $accountId = $this->responseString('id');
 
-        $this->client->request('PATCH', '/api/v1/notification-settings', server: [...$this->kim, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['emailAddress' => 'victim@elsewhere.example'], \JSON_THROW_ON_ERROR));
-        self::assertResponseStatusCodeSame(422, 'Typing an address into an account that never signed in proves nothing.');
+        return $this->responseString('id');
+    }
 
-        $worker = $this->workerHeaders('sync:lease sync:ingest');
-        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'w1'], $worker);
-        self::assertResponseIsSuccessful();
-        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$accountId.'/status', ['workerId' => 'w1', 'status' => 'active'], $worker);
-        self::assertResponseIsSuccessful();
-
-        $this->patchSettings(['emailAddress' => 'victim@elsewhere.example']);
-        self::assertSame('victim@elsewhere.example', $this->getJson('/api/v1/notification-settings', $this->kim)['effectiveEmailAddress'], 'Once it synced, the user holds that mailbox.');
+    /** As a Google sign-in leaves it: a grant with the address Google confirmed, which the account uses. */
+    private function confirmByProvider(string $accountId, string $confirmed): void
+    {
+        $grant = Uuid::v7()->toRfc4122();
+        $this->connection()->executeStatement(
+            "INSERT INTO provider_grant (id, provider, subject, email_address, scopes, encrypted_tokens, created_at, updated_at, owner_id)
+             SELECT :id, 'google', 'subject-1', :address, '[]', 'not-used', NOW(), NOW(), owner_id FROM mail_account WHERE id = :account",
+            ['id' => $grant, 'address' => $confirmed, 'account' => $accountId],
+        );
+        $this->connection()->executeStatement('UPDATE mail_account SET provider_grant_id = :grant WHERE id = :account', ['grant' => $grant, 'account' => $accountId]);
     }
 
     public function testFloatingTimesAreReadInTheUsersZone(): void
