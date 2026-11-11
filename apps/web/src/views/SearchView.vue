@@ -108,7 +108,7 @@ function threadLink(hit: SearchHit) {
         <header class="header">
           <SearchField :query="query" autofocus />
           <div class="filters">
-            <label class="chip">
+            <label class="chip" :class="{ on: accountFilter !== '' }">
               <span class="visually-hidden">Account</span>
               <select :value="accountFilter" @change="refine(withSearchFilter(query, 'in', ($event.target as HTMLSelectElement).value || null))">
                 <option value="">All accounts</option>
@@ -144,7 +144,8 @@ function threadLink(hit: SearchHit) {
             <ul v-if="search.hits.length > 0" class="list">
               <li v-for="hit in search.hits" :key="hit.id">
                 <RouterLink :to="threadLink(hit)" class="row" :class="{ unread: !hit.seen }">
-                  <span class="dot" :aria-label="hit.seen ? undefined : 'Unread'" />
+                  <span v-if="!hit.seen" class="visually-hidden">Unread. </span>
+                  <span class="dot" aria-hidden="true" />
                   <span class="body">
                     <span class="top">
                       <span class="subject">

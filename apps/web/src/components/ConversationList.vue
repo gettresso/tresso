@@ -112,7 +112,7 @@ const days = computed(() => {
   <section class="list" :aria-label="title">
     <header class="header">
       <div class="title">
-        <h1>{{ title }}</h1>
+        <h1 :title="title">{{ title }}</h1>
         <span class="title-actions">
           <RouterLink v-if="manageTo" :to="manageTo" class="manage">Manage senders</RouterLink>
           <MenuButton label="Select" menu-label="Select conversations" :items="ages" :disabled="conversations.length === 0" @choose="selectOlderThan" />
@@ -150,7 +150,9 @@ const days = computed(() => {
             <span class="box" aria-hidden="true" />
           </button>
           <RouterLink :to="linkTo(conversation.threadId)" class="link" :aria-current="conversation.threadId === selectedThreadId ? 'true' : undefined">
-            <span class="dot" :aria-label="conversation.unreadCount > 0 ? 'Unread' : undefined" />
+            <!-- The dot is colour only; a screen reader hears "Unread" as part of the link. -->
+            <span v-if="conversation.unreadCount > 0" class="visually-hidden">Unread. </span>
+            <span class="dot" aria-hidden="true" />
             <SenderAvatar :sender="conversation.senders[0] ?? { name: null, address: '?' }" />
             <span class="body">
               <span class="top">
@@ -209,8 +211,13 @@ const days = computed(() => {
   border-bottom: 1px solid var(--line);
 }
 h1 {
+  /* A long title (an account named after its address) is cut short, so Select stays in the header. */
+  min-width: 0;
   margin: 0;
+  overflow: hidden;
   font: 700 28px/34px var(--font-display);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .scroll {
   overflow-y: auto;
@@ -224,6 +231,7 @@ h1 {
   color: var(--ink-3);
 }
 .title-actions {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
