@@ -14,14 +14,20 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  * lost response does not end a sign-in.
  *
  * The token endpoint revokes the old refresh token and its access token the moment it issues the new pair. A client
- * whose response never arrived (a reload, a closed lid, a dropped connection), or a second window that refreshed with
- * the same token at the same moment, still holds the old ones. For {@see self::GRACE_SECONDS} after the rotation:
+ * whose response never arrived (a reload, a closed lid, a dropped connection) still holds the old ones, and so does a
+ * second window that asks with the same token once the first answer went out. For {@see self::GRACE_SECONDS} after
+ * the rotation was answered:
  * - the same client presenting the old refresh token (with the same scope) gets the very response already issued for
  *   it, the same new pair, instead of `invalid_grant`; nothing new is issued, so no second token family appears;
  * - the old access token keeps working, so requests already sent with it do not come back 401.
  * Both only while the new refresh token is still live: once it is used, revoked (sign-out, a disconnected app, a
  * deleted user) or gone, the old tokens are dead at once. After the grace, the old refresh token is refused exactly
  * as before.
+ *
+ * Two requests with the same token at the very same moment are not covered: the rotation is recorded when its response
+ * goes out, so a second request that arrives while the first one is still running gets `invalid_grant` (or, before the
+ * first revoked anything, a second pair) as without the grace. Clients refresh one at a time (the web app across its
+ * tabs); a client with several processes that share a token has to do the same.
  *
  * What a rotation left behind sits in Redis (`cache.oauth_rotation`) for a little longer than the grace, with the
  * response encrypted with the authorization server's key ({@see TokenCrypt}).
