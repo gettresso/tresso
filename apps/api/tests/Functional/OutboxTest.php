@@ -88,8 +88,12 @@ final class OutboxTest extends DatabaseTestCase
         self::assertStringContainsString('To: Anna de Vries <anna@finance.example>', $headers);
         self::assertStringContainsString('Subject: Q4 budget', $headers);
         self::assertMatchesRegularExpression('/^Message-ID: <[0-9a-f-]{36}@company\.example>\r?$/m', $headers);
-        self::assertStringNotContainsStringIgnoringCase('bcc', $raw);
+        // No Bcc header line (the random Message-ID may well contain the letters), and the address nowhere.
+        self::assertDoesNotMatchRegularExpression('/^bcc:/im', $headers);
         self::assertStringNotContainsString('archive@company.example', $raw);
+        // The Bcc recipient still gets it: through the envelope.
+        self::assertSame([['address' => 'archive@company.example', 'name' => null]], $this->outgoing($id)->getRecipients()['bcc']);
+        self::assertSame(['anna@finance.example', 'archive@company.example'], $this->claim()[0]['recipients'] ?? null);
         self::assertStringNotContainsString('<script', $raw);
         self::assertStringContainsString('multipart/alternative', $headers);
         self::assertStringContainsString("Approved from my side.\r\n\r\nThe sheet (https://example.test/sheet)", quoted_printable_decode($raw));
