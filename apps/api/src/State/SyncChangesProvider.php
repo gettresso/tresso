@@ -330,6 +330,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
                     m.sent_at, m.received_at, m.seen, m.flagged, m.answered, m.draft, m.has_attachments, m.attachment_scan,
                     m.category_id, m.verdict, m.summary, m.held_until, m.batched_at,
                     (SELECT i.method FROM calendar_invitation i WHERE i.message_id = m.id ORDER BY i.id LIMIT 1) AS calendar_method,
+                    EXISTS (SELECT 1 FROM calendar_invitation i WHERE i.message_id = m.id AND i.waits_for_user AND i.applied_at IS NULL) AS calendar_waiting,
                     a.provider, s.headers AS signal_headers,
                     COALESCE((SELECT json_agg(l.folder_id ORDER BY l.folder_id) FROM message_location l WHERE l.message_id = m.id), '[]') AS folder_ids
              FROM message m JOIN mail_account a ON a.id = m.mail_account_id
@@ -361,6 +362,8 @@ final readonly class SyncChangesProvider implements ProviderInterface
                 'verdict' => $r['verdict'],
                 'summary' => $r['summary'],
                 'calendarMethod' => $r['calendar_method'],
+                // Calendar mail the provider did not confirm the sender of: it waits for the user to apply it.
+                'calendarWaiting' => (bool) $r['calendar_waiting'],
                 'heldUntil' => self::date($r['held_until']),
                 'batchedAt' => self::date($r['batched_at']),
                 'unsubscribe' => $unsubscribe?->method->value,
@@ -383,7 +386,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
         /** @var array<string, string> $headers */
         $headers = json_decode($row['signal_headers'], true, flags: \JSON_THROW_ON_ERROR);
 
-        return UnsubscribeLink::fromMessage($headers, self::text($row['from_address']), ReceivingServers::trustsTopmostHeaderAt(MailProvider::from(self::text($row['provider']))));
+        return UnsubscribeLink::fromMessage($headers, self::text($row['from_address']), ReceivingServers::wroteResults(MailProvider::from(self::text($row['provider'])), $headers['authentication-results'] ?? null));
     }
 
     /**

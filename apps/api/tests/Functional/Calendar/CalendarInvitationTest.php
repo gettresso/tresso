@@ -845,28 +845,37 @@ final class CalendarInvitationTest extends DatabaseTestCase
     }
 
     /**
-     * @return iterable<string, array{array<string, string>, bool}>
+     * @return iterable<string, array{string, array<string, string>, bool}>
      */
     public static function providerVerdictsOnACancellation(): iterable
     {
-        yield 'DMARC passed' => [['authentication-results' => 'mx.google.com; dkim=pass; spf=pass; dmarc=pass (p=REJECT) header.from=finance.example'], true];
-        yield 'DMARC failed' => [['authentication-results' => 'mx.google.com; spf=fail; dmarc=fail (p=NONE) header.from=finance.example'], false];
-        yield 'no verdict' => [[], false];
+        yield 'Gmail: DMARC passed' => ['gmail', ['authentication-results' => 'mx.google.com; dkim=pass header.i=@finance.example; spf=pass; dmarc=pass (p=REJECT) header.from=finance.example'], true];
+        yield 'Gmail: DMARC failed' => ['gmail', ['authentication-results' => 'mx.google.com; spf=fail; dmarc=fail (p=NONE) header.from=finance.example'], false];
+        yield 'Gmail: no verdict' => ['gmail', [], false];
+        yield 'Gmail: a pass in the envelope sender only' => ['gmail', ['authentication-results' => 'mx.google.com; spf=pass (google.com: domain of x+dmarc=pass@attacker.example designates 1.2.3.4 as permitted sender) smtp.mailfrom=x+dmarc=pass@attacker.example; dmarc=fail (p=NONE) header.from=finance.example'], false];
+        yield 'Gmail: a pass in an ARC comment only' => ['gmail', ['authentication-results' => 'mx.google.com; arc=pass (i=1 spf=pass spfdomain=a.example dmarc=pass fromdomain=finance.example); dmarc=fail header.from=finance.example'], false];
+        yield 'Gmail: a header Gmail did not write' => ['gmail', ['authentication-results' => 'mx.finance.example; dmarc=pass header.from=finance.example'], false];
+        yield 'Microsoft: from outside, DMARC passed' => ['microsoft', ['authentication-results' => 'spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=finance.example; dkim=pass (signature was verified) header.d=finance.example;dmarc=pass action=none header.from=finance.example;compauth=pass reason=100', 'x-ms-exchange-organization-authas' => 'Anonymous'], true];
+        yield 'Microsoft: from outside, DMARC failed' => ['microsoft', ['authentication-results' => 'spf=fail smtp.mailfrom=attacker.example; dmarc=fail action=none header.from=finance.example', 'x-ms-exchange-organization-authas' => 'Anonymous'], false];
+        yield 'Microsoft: from within the tenant' => ['microsoft', ['x-ms-exchange-organization-authas' => 'Internal'], true];
+        yield 'Microsoft: no word from Exchange' => ['microsoft', ['authentication-results' => 'spf=pass smtp.mailfrom=finance.example; dmarc=pass action=none header.from=finance.example'], false];
     }
 
     /**
-     * On Gmail and Microsoft the provider writes the topmost Authentication-Results header: calendar mail that changes
-     * an event applies by itself only when DMARC passed for the sender.
+     * On Gmail and Microsoft accounts calendar mail that changes an event applies by itself only when the provider
+     * confirmed its sender.
      *
      * @param array<string, string> $headers
      */
     #[DataProvider('providerVerdictsOnACancellation')]
-    public function testOnAGmailAccountOnlyAConfirmedSenderChangesAnEventByItself(array $headers, bool $applied): void
+    public function testOnAGmailOrMicrosoftAccountOnlyAConfirmedSenderChangesAnEventByItself(string $provider, array $headers, bool $applied): void
     {
-        $this->connection()->executeStatement("UPDATE mail_account SET provider = 'gmail' WHERE id = :id", ['id' => $this->accountId]);
+        $this->connection()->executeStatement('UPDATE mail_account SET provider = :provider WHERE id = :id', ['provider' => $provider, 'id' => $this->accountId]);
         // A new invitation changes nothing that is there: it lands by itself.
         $this->receive('Invitation: Budget review', self::invitation('REQUEST', 0, '20261021T140000'));
         self::assertSame('confirmed', $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00')[0]['status']);
+        $cursor = $this->getJson('/api/v1/sync/changes?since=0', $this->kim)['cursor'];
+        self::assertIsInt($cursor);
 
         $cancel = $this->receive('Cancelled: Budget review', self::invitation('CANCEL', 1, '20261021T140000'), headers: $headers);
 
@@ -874,11 +883,27 @@ final class CalendarInvitationTest extends DatabaseTestCase
         $invitation = $this->getJson('/api/v1/messages/'.$cancel.'/invitation', $this->kim);
         self::assertSame(!$applied, $invitation['senderUnconfirmed']);
         self::assertSame(!$applied, $invitation['canApply'], 'The user can still apply it.');
+        self::assertSame([$cancel => !$applied], $this->waitingSince($cursor), 'The message list says it waits, without opening it.');
         if (!$applied) {
+            $cursor = $this->getJson('/api/v1/sync/changes?since=0', $this->kim)['cursor'];
+            self::assertIsInt($cursor);
             $this->client->request('POST', '/api/v1/messages/'.$cancel.'/invitation/apply', server: $this->kim);
             self::assertResponseIsSuccessful();
             self::assertSame('cancelled', $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00')[0]['status']);
+            self::assertFalse($this->getJson('/api/v1/messages/'.$cancel.'/invitation', $this->kim)['senderUnconfirmed'], 'Nothing left to decide.');
+            self::assertSame([$cancel => false], $this->waitingSince($cursor), 'Clients learn it no longer waits.');
         }
+    }
+
+    /**
+     * @return array<string, mixed> calendarWaiting of the messages that changed since the cursor, by id
+     */
+    private function waitingSince(int $cursor): array
+    {
+        $messages = $this->getJson('/api/v1/sync/changes?since='.$cursor, $this->kim)['messages'];
+        self::assertIsArray($messages);
+
+        return array_column($messages, 'calendarWaiting', 'id');
     }
 
     public function testOnAnImapAccountCalendarMailStillChangesAnEventByItself(): void

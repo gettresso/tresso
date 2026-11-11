@@ -72,6 +72,7 @@ final readonly class MessageInvitationProvider implements ProviderInterface
             $data = EventReader::read($event, $stored, $self);
         }
 
+        $canApply = null === $invitation->getAppliedAt() && \in_array($invitation->getMethod(), [ItipMethod::Request, ItipMethod::Cancel, ItipMethod::Reply], true) && null === $this->applier->blocker($invitation);
         $stored = null === $row ? null : $row->getSequence();
         $kind = match (true) {
             ItipMethod::Cancel === $invitation->getMethod() => 'cancelled',
@@ -114,8 +115,9 @@ final readonly class MessageInvitationProvider implements ProviderInterface
             ($row?->getSelfPartstat() ?? $data->selfPartstat)?->value,
             ItipMethod::Request === $invitation->getMethod() && null !== $row && null !== $row->getSelfPartstat() && 'outdated' !== $kind,
             $conflicts,
-            null === $invitation->getAppliedAt() && \in_array($invitation->getMethod(), [ItipMethod::Request, ItipMethod::Cancel, ItipMethod::Reply], true) && null === $this->applier->blocker($invitation),
-            null === $invitation->getAppliedAt() && $this->applier->senderUnconfirmed($invitation),
+            $canApply,
+            // Only where the user can act on it: mail the calendar cannot take (a provider schedules) is no question.
+            $canApply && $this->applier->senderUnconfirmed($invitation),
         );
     }
 

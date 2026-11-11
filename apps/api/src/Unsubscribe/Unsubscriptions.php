@@ -58,7 +58,7 @@ final readonly class Unsubscriptions
         }
         $account = $message->getMailAccount();
         $headers = $this->entityManager->find(MessageSignals::class, $message->getId())?->getHeaders() ?? [];
-        $trusted = ReceivingServers::trustsTopmostHeader($account);
+        $trusted = ReceivingServers::wroteResults($account->getProvider(), $headers['authentication-results'] ?? null);
         if (!SenderAuthentication::dmarcPassed($headers['authentication-results'] ?? null, $trusted)) {
             throw new UnsubscribeRefused('Tresso only unsubscribes from senders your mail server confirmed, and it did not confirm this one.');
         }

@@ -47,6 +47,10 @@ class CalendarInvitation
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $appliedAt = null;
 
+    /** Not applied by itself because the provider did not confirm its sender: it waits for the user. */
+    #[ORM\Column(options: ['default' => false])]
+    private bool $waitsForUser = false;
+
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
 
@@ -105,6 +109,17 @@ class CalendarInvitation
     public function markApplied(\DateTimeImmutable $at): void
     {
         $this->appliedAt = $at;
+        $this->waitsForUser = false;
+    }
+
+    public function waitForUser(): void
+    {
+        $this->waitsForUser = true;
+    }
+
+    public function waitsForUser(): bool
+    {
+        return $this->waitsForUser;
     }
 
     public function getCreatedAt(): \DateTimeImmutable

@@ -434,7 +434,7 @@ final readonly class MailClassification
                 (bool) $row['junk'],
                 $folderRoles,
                 null !== $message->getInReplyTo(),
-                ReceivingServers::trustsTopmostHeader($message->getMailAccount()),
+                ReceivingServers::wroteResults($message->getMailAccount()->getProvider(), $headers['authentication-results'] ?? null),
             );
         }
 
