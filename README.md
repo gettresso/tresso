@@ -143,7 +143,9 @@ signing keys, migrates the database and creates the OAuth clients. Every other c
 workers, needs those keys too (mount them read-only at `/app/config/jwt`). `CORS_ALLOW_ORIGIN` and
 `MERCURE_CORS_ORIGINS` list the allowed origins separated by spaces: the web address and the desktop app's own,
 `tauri://localhost` and `http://tauri.localhost`. The API reads the optional addresses above as `AUTH_PUBLIC_URL`,
-`MCP_PUBLIC_URL` and `MCP_ON_API_HOST`, the web image `TRESSO_AUTH_URL`.
+`MCP_PUBLIC_URL` and `MCP_ON_API_HOST`, the web image `TRESSO_AUTH_URL`. `MERCURE_HEARTBEAT_SECONDS` (40 by default)
+sets how often the hub writes on an idle stream; the API tells the apps, which take a stream silent for two and a half
+of these for dead, so set it for the API and the hub alike.
 
 In the desktop app, choose **Use another server** on the sign-in screen and enter the API address, such as
 `api.mail.example.com`. The app checks that the server answers and remembers it until you choose again. The web

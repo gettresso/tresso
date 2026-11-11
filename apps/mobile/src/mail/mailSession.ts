@@ -58,6 +58,8 @@ export interface MailSessionDeps {
   deleteSql(name: string): Promise<void>
   fetchPage(since: number, limit: number): Promise<ChangePage>
   fetchAccess(): Promise<RealtimeAccess>
+  /** The time on the server's clock (epoch ms), which hub tokens expire by; the device's by default. */
+  serverNow?(): number
   /** POST /api/v1/message-actions */
   postAction(request: MessageActionRequest): Promise<void>
   /** POST /api/v1/unsubscriptions */
@@ -352,6 +354,7 @@ export class MailSession {
     let open: Open | null = null
     const realtime = new RealtimeClient({
       fetchAccess: () => this.deps.fetchAccess(),
+      now: () => this.deps.serverNow?.() ?? Date.now(),
       fetch: this.deps.fetch,
       onCursor: (cursor) => {
         if (open !== null) {

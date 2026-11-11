@@ -13,6 +13,7 @@ use App\Security\FirstPartyClients;
 use App\Security\PersonalAccessToken\PersonalAccessTokenAuthentication;
 use League\Bundle\OAuth2ServerBundle\Security\Authentication\Token\OAuth2Token;
 use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Security\Core\Exception\AccessDeniedException;
 
 /**
@@ -24,6 +25,9 @@ final readonly class RealtimeTokenProvider implements ProviderInterface
         private CurrentUser $currentUser,
         private Security $security,
         private MercureTokens $tokens,
+        /** Seconds between the hub's keep-alive comments (the Caddyfile reads the same setting). */
+        #[Autowire(env: 'int:MERCURE_HEARTBEAT_SECONDS')]
+        private int $heartbeat,
     ) {
     }
 
@@ -45,6 +49,6 @@ final readonly class RealtimeTokenProvider implements ProviderInterface
 
         $token = $this->tokens->subscriberToken($user->getId(), $authentication->getOAuthClientId());
 
-        return new RealtimeToken($this->tokens->hubUrl(), MercureTokens::changesTopic($user->getId()), $token->value, $token->expiresAt);
+        return new RealtimeToken($this->tokens->hubUrl(), MercureTokens::changesTopic($user->getId()), $token->value, $token->expiresAt, $this->heartbeat);
     }
 }

@@ -148,6 +148,13 @@ export const useMailStore = defineStore('mail', () => {
   let openedUnconfirmed: string | null = null
   let engine: SyncEngine | null = null
   let realtime: RealtimeClient | null = null
+  // A pull that failed and waits to be tried again goes at once when the network may be back.
+  window.addEventListener('online', () => engine?.wake())
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      engine?.wake()
+    }
+  })
   /**
    * When notifications were switched on: after the first complete pull, so the mail that was already there (or that
    * arrived while the app was closed) does not pop up all at once. null until then.
@@ -284,6 +291,7 @@ export const useMailStore = defineStore('mail', () => {
     })
     const stream = new RealtimeClient({
       fetchAccess: () => auth.api<RealtimeAccess>('/api/v1/realtime/token'),
+      now: () => auth.serverNow(),
       onCursor: (cursor) => void pull(() => engine?.notify(cursor)),
       onConnected: () => {
         live.value = true

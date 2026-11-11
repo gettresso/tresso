@@ -27,6 +27,9 @@
 			}
 		}
 		cors_origins {$MERCURE_CORS_ORIGINS}
+		# A comment line on idle streams; clients take a stream silent for 2.5 of these for dead. The API reads the
+		# same setting to tell them (GET /api/v1/realtime/token, `heartbeat`).
+		heartbeat {$MERCURE_HEARTBEAT_SECONDS:40}s
 	}
 
 	php_server

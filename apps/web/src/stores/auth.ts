@@ -697,8 +697,9 @@ export const useAuthStore = defineStore('auth', () => {
     const headers = new Headers(init.headers)
     headers.set('Authorization', `Bearer ${token}`)
     headers.set('Accept', 'application/json')
+    const sentAt = Date.now()
     const response = await fetch(`${config.apiUrl}${path}`, { ...init, headers })
-    clock.note(response.headers.get('Date'))
+    clock.note(response.headers.get('Date'), sentAt)
     return response
   }
 
