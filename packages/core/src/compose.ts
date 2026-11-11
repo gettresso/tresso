@@ -114,21 +114,59 @@ export function isPlausibleAddress(value: string): boolean {
   return /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/.test(value.trim())
 }
 
-/** Parses what users paste: "Name <a@b.c>", "a@b.c", several separated by commas or semicolons. */
+/**
+ * Parses what users paste: "Name <a@b.c>", "a@b.c", several separated by commas, semicolons or line breaks. A quoted
+ * name may hold those itself, as in the "Doe, John" <john@example.com> that Outlook copies.
+ */
 export function parseAddresses(input: string): Address[] {
   const result: Address[] = []
-  for (const part of input.split(/[,;\n]+/)) {
+  for (const part of splitAddresses(input)) {
     const trimmed = part.trim()
     if (trimmed === '') continue
     const match = /^(.*?)<([^>]+)>$/.exec(trimmed)
     if (match) {
-      const name = match[1]!.trim().replace(/^"|"$/g, '')
+      const quoted = /^"((?:[^"\\]|\\.)*)"$/.exec(match[1]!.trim())
+      const name = quoted === null ? match[1]!.trim() : quoted[1]!.replace(/\\(.)/g, '$1')
       result.push({ address: match[2]!.trim(), name: name === '' ? null : name })
     } else {
       result.push({ address: trimmed, name: null })
     }
   }
   return result
+}
+
+/** The addresses of a pasted list, cut at commas, semicolons and line breaks outside quotes and angle brackets. */
+function splitAddresses(input: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quoted = false
+  let angle = false
+  for (let index = 0; index < input.length; index++) {
+    const char = input[index]!
+    if (quoted && char === '\\' && index + 1 < input.length) {
+      current += char + input[index + 1]!
+      index++
+      continue
+    }
+    if (char === '"' && !angle) {
+      quoted = !quoted
+    } else if (!quoted && char === '<') {
+      angle = true
+    } else if (!quoted && char === '>') {
+      angle = false
+    } else if (!quoted && !angle && (char === ',' || char === ';' || char === '\n')) {
+      parts.push(current)
+      current = ''
+      continue
+    }
+    current += char
+  }
+  if (quoted || angle) {
+    // A quote or bracket that never closes is no name: every separator counts, as typed.
+    return input.split(/[,;\n]/)
+  }
+  parts.push(current)
+  return parts
 }
 
 /**

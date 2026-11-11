@@ -238,11 +238,15 @@ function monthIndex(name: string): number {
   return MONTH_NAMES.findIndex((month) => month.startsWith(name.toLowerCase().slice(0, 3)))
 }
 
+/**
+ * The next time the day comes, today included. A day that is not in every year (29 February) is looked for over a
+ * leap cycle; one that is in no year (31 April) gives null.
+ */
 function nextDayOfMonth(day: number, month: number, now: Date): string | null {
-  for (const year of [now.getFullYear(), now.getFullYear() + 1]) {
+  for (let year = now.getFullYear(); year <= now.getFullYear() + 4; year++) {
     const date = new Date(year, month, day)
     if (date.getMonth() !== month) {
-      return null
+      continue
     }
     if (localDate(date) >= localDate(now)) {
       return localDate(date)
