@@ -426,6 +426,74 @@ describe('auth store', () => {
       expect(localStorage.getItem('tresso.auth.browserSessionOpen')).toBeNull()
     })
 
+    it('does not send the remembered logout form while a sign-in started in this tab is on its way', async () => {
+      localStorage.setItem('tresso.auth.browserSessionOpen', '1')
+      sessionStorage.setItem('auth.pending', JSON.stringify({ state: 's', codeVerifier: 'v', server: 'http://localhost:8080' }))
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ name: 'Tresso' })))
+      const forms = captureForms()
+      const auth = await authStore()
+
+      await auth.endOpenBrowserSession()
+
+      expect(forms).toEqual([])
+      expect(localStorage.getItem('tresso.auth.browserSessionOpen')).not.toBeNull()
+    })
+
+    it('does not send the remembered logout form when a sign-in completes while the server is being checked', async () => {
+      localStorage.setItem('tresso.auth.browserSessionOpen', '1')
+      let answerProbe!: () => void
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL) =>
+          String(input).endsWith('/api/v1/server-info')
+            ? new Promise<Response>((resolve) => (answerProbe = () => resolve(Response.json({ name: 'Tresso' }))))
+            : Promise.resolve(Response.json({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600, token_type: 'Bearer' })),
+        ),
+      )
+      const forms = captureForms()
+      const auth = await authStore()
+
+      // The start check asks the server, which answers late; meanwhile a sign-in completes (here, or in another tab).
+      const checking = auth.endOpenBrowserSession()
+      await vi.waitFor(() => expect(answerProbe).toBeDefined())
+      sessionStorage.setItem('auth.pending', JSON.stringify({ state: 's', codeVerifier: 'v', server: 'http://localhost:8080' }))
+      await auth.completeSignIn('http://localhost:3000/auth/callback?code=the-code&state=s')
+      answerProbe()
+      await checking
+
+      expect(forms).toEqual([])
+      expect(auth.tokens?.accessToken).toBe('access-2')
+      expect(localStorage.getItem('tresso.auth.browserSessionOpen')).toBeNull()
+      expect(auth.browserSessionOpen).toBe(false)
+    })
+
+    it('stops the pushes at the server before revoking, while the access token is still accepted', async () => {
+      push.subscribed = true
+      const server = stubServer()
+      const order: string[] = []
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        const path = new URL(String(input)).pathname
+        order.push(`${init?.method ?? 'GET'} ${path}`)
+        if (path === '/oauth/revoke') {
+          server.revoked.push('refresh-1')
+          return new Response(null, { status: 200 })
+        }
+        // A revoked token takes its access token along.
+        return server.revoked.length > 0 ? Response.json({}, { status: 401 }) : Response.json({ id: 'device-1' })
+      })
+      captureForms()
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      try {
+        await auth.signOut()
+      } finally {
+        push.subscribed = false
+      }
+
+      expect(order).toEqual(['POST /api/v1/notification-devices', 'POST /oauth/revoke'])
+    })
+
     it('checks sign-in pages on the app\'s own address before sending the form there', async () => {
       window.tressoConfig = { authUrl: window.location.origin }
       const forms = captureForms()

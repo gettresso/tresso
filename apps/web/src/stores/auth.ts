@@ -35,6 +35,11 @@ const REVOKE_TIMEOUT_MS = 5_000
  * side by side within it. The tokens are gone from the device before it starts.
  */
 const SIGN_OUT_BUDGET_MS = 6_000
+/**
+ * The part of that budget the push calls get. They go first: revoking the refresh token also revokes the access token
+ * they are sent with, so after it the server would refuse them.
+ */
+const PUSH_BUDGET_MS = 2_500
 /** How long the check whether the sign-in pages answer may take. */
 const PROBE_TIMEOUT_MS = 3_000
 /**
@@ -251,6 +256,8 @@ export const useAuthStore = defineStore('auth', () => {
    * that another tab signed out (a browser that refuses storage never had one there).
    */
   let keptInStorage = tokens.value !== null && tokenStorage.peek() !== null
+  /** completeSignIn is exchanging a code; a remembered logout form must not go out meanwhile. */
+  let completingSignIn = false
   /** A sign-out is under way; the buttons that start one show it. */
   const signingOut = ref(false)
   /** The server answered 402: the trial or subscription is over, and the payment screen covers the app. */
@@ -383,6 +390,15 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function completeSignIn(callbackUrl: string): Promise<void> {
+    completingSignIn = true
+    try {
+      await finishSignIn(callbackUrl)
+    } finally {
+      completingSignIn = false
+    }
+  }
+
+  async function finishSignIn(callbackUrl: string): Promise<void> {
     const pending = pendingSignIn()
     if (pending === null) {
       throw new Error(isDesktop ? 'No sign-in was started in this window.' : 'No sign-in was started in this tab.')
@@ -400,9 +416,14 @@ export const useAuthStore = defineStore('auth', () => {
     const code = parseCallback(callbackUrl, pending.state)
     await store(await exchangeCode(oauthConfig, code, pending.codeVerifier))
     rememberSignOut(false)
-    // The user signed in at the sign-in pages again: that browser session is theirs now.
+    // The user signed in at the sign-in pages again: the fresh browser session there replaces the old one, and is theirs.
     rememberBrowserSession(false)
     browserSessionOpen.value = false
+  }
+
+  /** A sign-in this tab started is on its way back, or its code is being exchanged now. */
+  function signInUnderWay(): boolean {
+    return completingSignIn || sessionStorage.getItem(PENDING_KEY) !== null
   }
 
   /**
@@ -461,15 +482,14 @@ export const useAuthStore = defineStore('auth', () => {
     forgetSession(reason)
     await store(null)
     let revocationAnswered = false
-    const tellServer = Promise.allSettled([
-      disableWebPush(sendWith(ending?.accessToken ?? null)).catch((error: unknown) => {
+    const tellServer = (async () => {
+      // The pushes first, while the access token is still valid at the server; then the revocation, which ends it.
+      await withinTime(PUSH_BUDGET_MS, disableWebPush(sendWith(ending?.accessToken ?? null))).catch((error: unknown) => {
         // The subscription in the browser went before the server was asked (disableWebPush).
         console.error('Telling the server this browser signed out failed', error)
-      }),
-      revokeQuietly(ending?.refreshToken ?? null).then((answered) => {
-        revocationAnswered = answered
-      }),
-    ])
+      })
+      revocationAnswered = await revokeQuietly(ending?.refreshToken ?? null)
+    })()
     await Promise.all([
       withinTime(SIGN_OUT_BUDGET_MS, tellServer).catch((error: unknown) => {
         console.error('The server did not confirm the sign-out in time', error)
@@ -487,8 +507,14 @@ export const useAuthStore = defineStore('auth', () => {
    * Sends the logout form when the sign-in pages answer; otherwise the form would only leave the user on the browser's
    * error page, so the app stays, remembers that the browser is still signed in there, and says so.
    */
-  async function endBrowserSessionOrRemember(revocationAnswered?: boolean): Promise<void> {
-    if (await signInPagesAnswer(revocationAnswered)) {
+  async function endBrowserSessionOrRemember(revocationAnswered?: boolean, atStart = false): Promise<void> {
+    const reachable = await signInPagesAnswer(revocationAnswered)
+    // At a start, the user may have signed in meanwhile (here or in another tab): the form would end that session.
+    if (atStart && (tokens.value !== null || signInUnderWay() || !browserSessionLeftOpen())) {
+      browserSessionOpen.value = tokens.value === null && browserSessionLeftOpen()
+      return
+    }
+    if (reachable) {
       rememberBrowserSession(false)
       browserSessionOpen.value = false
       endBrowserSession()
@@ -500,11 +526,13 @@ export const useAuthStore = defineStore('auth', () => {
 
   /** At the start of the signed-out web client: ends a sign-in page session a sign-out could not end, once it answers. */
   async function endOpenBrowserSession(): Promise<void> {
-    if (isDesktop || !browserSessionOpen.value || tokens.value !== null) {
+    // Not while a sign-in is on its way: its callback loads the app too, and the form would end the new session.
+    if (isDesktop || !browserSessionOpen.value || tokens.value !== null || signInUnderWay()) {
       return
     }
-    await endBrowserSessionOrRemember()
+    await endBrowserSessionOrRemember(undefined, true)
   }
+
 
   function forgetSession(reason: SessionEnd): void {
     me.value = null
