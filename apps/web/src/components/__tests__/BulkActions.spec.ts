@@ -201,6 +201,8 @@ describe('bulk actions', () => {
       ]),
     )
     await vi.waitFor(() => expect(useSelectionStore().active).toBe(false))
+    // The notice says both, so whoever pressed K to mark read learns it archives too; Undo puts the mail back.
+    expect(useComposeStore().notices.find((n) => n.text === 'Marked read and archived.')?.action?.label).toBe('Undo')
 
     await checkbox(wrapper, 't1').trigger('click')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
