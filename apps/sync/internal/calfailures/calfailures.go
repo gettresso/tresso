@@ -111,30 +111,46 @@ func (t *Tracker) Detail() (detail string, ok bool) {
 // Recovery remembers whether the API was told that the calendars sync again. The API keeps an error status
 // until it hears so (a calendar list does not clear it), so after a round in which every calendar synced the worker
 // reports active: once after it reported a problem, and once after a start, when it does not know what the API
-// shows. An API that does not know the status answers 422; it is not asked again.
+// shows. An API that does not know the status answers 422; it is asked again a day later at the earliest (a worker
+// may outlive an upgrade of the API), and after the next problem.
 //
 // Problem notes that a problem status was reported; Report sends active (with send) unless the API was told already
 // or does not know the status.
 type Recovery struct {
-	told        bool
-	unsupported bool
+	told bool
+	// unsupported is when the API last answered 422 to active; zero when it has not.
+	unsupported time.Time
+	now         func() time.Time
 }
 
-func (c *Recovery) Problem() { c.told = false }
+// UnsupportedRetry is how long an API that refused active is left alone.
+const UnsupportedRetry = 24 * time.Hour
+
+func (c *Recovery) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *Recovery) Problem() {
+	c.told = false
+	c.unsupported = time.Time{}
+}
 
 func (c *Recovery) Report(send func() error, logger *slog.Logger) {
-	if c.told || c.unsupported {
+	if c.told || (!c.unsupported.IsZero() && c.clock().Sub(c.unsupported) < UnsupportedRetry) {
 		return
 	}
 	err := send()
 	var httpErr *api.HTTPError
 	switch {
 	case errors.As(err, &httpErr) && httpErr.Status == http.StatusUnprocessableEntity:
-		logger.Info("the API takes no active calendar status; not reporting recoveries")
-		c.unsupported = true
+		logger.Info("the API takes no active calendar status; asking again in a day")
+		c.unsupported = c.clock()
 	case err != nil:
 		logger.Warn("reporting that the calendars sync again failed", "error", err)
 	default:
-		c.told = true
+		c.told, c.unsupported = true, time.Time{}
 	}
 }

@@ -594,7 +594,7 @@ func TestTheUnconfirmedStatusCarriesTheFoundAddress(t *testing.T) {
 	}
 
 	// An address the API would refuse (not https, no domain) is left out, so the status still goes in.
-	for _, refused := range []string{"http://dav.example.com/", "https://localhost/dav/", "https://kim:secret@dav.example.com/"} {
+	for _, refused := range []string{"http://dav.example.com/", "https://localhost/dav/", "https://kim:secret@dav.example.com/", "https://dav.example.com/a b/", "https://dav.example.com/%zz", "https://dav.example.com/<x>", "https://dav.example./"} {
 		fake := newFakeAPI("https://dav.example.com/")
 		syncer := New(fake, plainDialer{}, "w1", Options{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		newStatusReporter(syncer, "a1", syncer.logger).reportFound(context.Background(), api.CalendarUnconfirmed, unconfirmedDetail(refused), refused)
@@ -636,5 +636,19 @@ func TestACalDAVRecoveryReportsActiveOnce(t *testing.T) {
 	eventually(t, "more rounds", func() bool { return lists() > before+5 })
 	if n := active(); n != 1 {
 		t.Errorf("active reported %d times, want once", n)
+	}
+}
+
+// An address the API refuses after all (a rule the worker does not know): the status goes in again without it.
+func TestAStatusWhoseAddressTheAPIRefusesGoesInWithoutIt(t *testing.T) {
+	fake := newFakeAPI("https://dav.example.com/")
+	fake.refuseURL = true
+	syncer := New(fake, plainDialer{}, "w1", Options{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	found := "https://dav.example.com/calendars/kim/"
+
+	newStatusReporter(syncer, "a1", syncer.logger).reportFound(context.Background(), api.CalendarUnconfirmed, unconfirmedDetail(found), found)
+
+	if len(fake.statuses) != 1 || fake.statuses[0] != api.CalendarUnconfirmed || fake.foundURLs[0] != "" {
+		t.Errorf("statuses %v, urls %q; want the status without the address", fake.statuses, fake.foundURLs)
 	}
 }

@@ -1,8 +1,13 @@
 package calfailures
 
 import (
+	"io"
+	"log/slog"
+	"net/http"
 	"testing"
 	"time"
+
+	"tresso/sync/internal/api"
 )
 
 func TestAFailingCalendarIsBackedOffAndNamedAfterTheThreshold(t *testing.T) {
@@ -54,5 +59,34 @@ func TestCalendarsNoLongerListedAreForgotten(t *testing.T) {
 	tracker.Keep(map[string]bool{"b": true})
 	if detail, _ := tracker.Detail(); detail != `The calendar "B" could not be synced; trying again.` {
 		t.Errorf("detail %q", detail)
+	}
+}
+
+func TestAnAPIThatRefusedActiveIsAskedAgainADayLater(t *testing.T) {
+	now := time.Unix(0, 0)
+	r := &Recovery{now: func() time.Time { return now }}
+	asked := 0
+	refuse := true
+	send := func() error {
+		asked++
+		if refuse {
+			return &api.HTTPError{Status: http.StatusUnprocessableEntity}
+		}
+		return nil
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	r.Report(send, logger)
+	now = now.Add(UnsupportedRetry - time.Minute)
+	r.Report(send, logger)
+	if asked != 1 {
+		t.Fatalf("asked %d times within a day", asked)
+	}
+	refuse = false
+	now = now.Add(2 * time.Minute)
+	r.Report(send, logger)
+	r.Report(send, logger)
+	if asked != 2 {
+		t.Errorf("asked %d times; want once more after a day, then not again", asked)
 	}
 }

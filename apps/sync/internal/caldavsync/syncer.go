@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 	_ "time/tzdata" // calendar time zones are checked against the IANA database, also in minimal images
+	"unicode"
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/caldav"
@@ -197,7 +199,15 @@ func (r *statusReporter) reportFound(ctx context.Context, status, detail, foundU
 	if !acceptableFoundURL(foundURL) {
 		foundURL = ""
 	}
-	if err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, detail, foundURL); err != nil {
+	err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, detail, foundURL)
+	var httpErr *api.HTTPError
+	if foundURL != "" && errors.As(err, &httpErr) && httpErr.Status == http.StatusUnprocessableEntity {
+		// The API refused the address after all: the status goes in without it, and the user reads the address
+		// from the detail.
+		r.logger.Warn("the API refused the found calendar address; reporting the status without it", "error", err)
+		err = r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, detail, "")
+	}
+	if err != nil {
 		r.logger.Warn("reporting the calendar status failed", "error", err)
 		return
 	}
@@ -211,13 +221,35 @@ func unconfirmedDetail(found string) string {
 	return "A calendar server was found at " + displayURL(found) + ". To sync your calendars there, confirm this address in the account settings."
 }
 
-// acceptableFoundURL reports whether the API takes the address as calendarFoundUrl.
+// acceptableFoundURL reports whether the API takes the address as calendarFoundUrl, with the rules of its input
+// (Symfony's Url constraint, https only, a host with a top-level domain, at most 2048 characters) and no login in
+// it: only the characters an URL may hold unescaped, and % only before two hex digits.
 func acceptableFoundURL(raw string) bool {
-	if raw == "" || len(raw) > 2048 {
+	if raw == "" || len(raw) > 2048 || !strings.HasPrefix(raw, "https://") {
 		return false
 	}
+	for i, r := range raw {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), strings.ContainsRune("-._~!$&'()*+,;=:@/?#[]", r):
+		case r == '%':
+			if i+2 >= len(raw) || !isHex(raw[i+1]) || !isHex(raw[i+2]) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && strings.Contains(u.Hostname(), ".") && u.User == nil
+	if err != nil || u.User != nil {
+		return false
+	}
+	host := u.Hostname()
+	dot := strings.LastIndexByte(host, '.')
+	return dot > 0 && dot < len(host)-1
+}
+
+func isHex(c byte) bool {
+	return ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
 }
 
 // recovered tells the API, once, that every calendar synced again (see calfailures.Recovery).

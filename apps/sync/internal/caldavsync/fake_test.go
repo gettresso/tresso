@@ -318,6 +318,7 @@ type fakeAPI struct {
 	statuses   []string
 	details    []string
 	foundURLs  []string
+	refuseURL  bool // answer a report with an address with 422
 	password   string
 	// listFails answers the calendar list of that call (counted from 1) with an error; listedAt is when each came.
 	listFails map[int]bool
@@ -416,6 +417,9 @@ func (a *fakeAPI) ReportCalendarOperation(_ context.Context, _, operationID stri
 func (a *fakeAPI) CalendarStatus(_ context.Context, _, _, status, detail, foundURL string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.refuseURL && foundURL != "" {
+		return &api.HTTPError{Method: http.MethodPost, Path: "/calendar-status", Status: http.StatusUnprocessableEntity}
+	}
 	a.statuses = append(a.statuses, status)
 	a.details = append(a.details, detail)
 	a.foundURLs = append(a.foundURLs, foundURL)
