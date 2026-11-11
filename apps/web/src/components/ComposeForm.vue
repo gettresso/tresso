@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import FieldLabel from '@/forms/FieldLabel.vue'
 import { provideRequiredFields } from '@/forms/required'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
 import type { Draft } from '@/mail/db'
@@ -27,13 +27,26 @@ const mail = useMailStore()
 const showCopies = ref(props.draft.cc.length > 0 || props.draft.bcc.length > 0)
 const laterOpen = ref(false)
 const later = ref<HTMLElement | null>(null)
+const laterButton = ref<HTMLButtonElement | null>(null)
 
-// Escape closes the "Send later" menu only; it goes no further, where it would close the compose window.
+// Opening the "Send later" menu moves focus to its first choice, as a menu does; so its keys work in every engine
+// (WebKit does not focus a button on a click, which would leave Escape on the page).
+async function toggleLater(): Promise<void> {
+  laterOpen.value = !laterOpen.value
+  if (laterOpen.value) {
+    await nextTick()
+    later.value?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+  }
+}
+
+// Escape closes the "Send later" menu only; it goes no further, where it would close the compose window. Focus goes
+// back to the button that opened it.
 function closeLater(event: KeyboardEvent): void {
   if (laterOpen.value) {
     event.preventDefault()
     event.stopPropagation()
     laterOpen.value = false
+    laterButton.value?.focus()
   }
 }
 
@@ -250,7 +263,7 @@ function keydown(event: KeyboardEvent): void {
     <footer class="actions">
       <button type="submit" class="button button-primary" :disabled="compose.sending"><AppIcon name="outbox" :size="15" />Send <KeyShortcut keys="Mod+Enter" /></button>
       <div ref="later" class="later" @keydown.esc="closeLater">
-        <button type="button" class="button button-quiet" :aria-expanded="laterOpen" @click="laterOpen = !laterOpen"><AppIcon name="clock" :size="16" />Send later<AppIcon name="chevron" :size="14" class="chevron" :class="{ open: laterOpen }" /></button>
+        <button ref="laterButton" type="button" class="button button-quiet" aria-haspopup="menu" :aria-expanded="laterOpen" @click="toggleLater"><AppIcon name="clock" :size="16" />Send later<AppIcon name="chevron" :size="14" class="chevron" :class="{ open: laterOpen }" /></button>
         <Transition name="fade">
           <div v-if="laterOpen" class="menu" role="menu">
             <button v-for="option in laterOptions" :key="option.label" type="button" role="menuitem" @click="sendLater(option.time)">

@@ -67,11 +67,16 @@ describe('ComposeForm', () => {
     wrapper.element.parentElement!.addEventListener('keydown', parent)
 
     await wrapper.get('.later > button').trigger('click')
+    await settle()
     expect(wrapper.find('.later [role="menu"]').exists()).toBe(true)
-    await wrapper.get('#compose-later').trigger('keydown', { key: 'Escape' })
+    // Focus moved to the first choice, so Escape lands in the menu whatever the engine did with the click.
+    expect(document.activeElement).toBe(wrapper.find('.later [role="menuitem"]').element)
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await settle()
 
     expect(wrapper.find('.later [role="menu"]').exists()).toBe(false)
     expect(parent).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(wrapper.get('.later > button').element)
     wrapper.element.parentElement!.removeEventListener('keydown', parent)
     wrapper.unmount()
   })
