@@ -335,7 +335,7 @@ describe('the mail copy across sign-out and sign-in', () => {
 
   it('removes the copy of a start that could not read it, once the user signs out', async () => {
     const mail = useMailStore()
-    const failingRead = vi.fn(async () => {
+    const failingRead = vi.fn<MailStore['mailAccounts']>(async () => {
       throw new Error('The copy could not be read.')
     })
     copies.afterOpen = (store) => {
