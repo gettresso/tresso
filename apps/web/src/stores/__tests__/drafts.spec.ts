@@ -6,6 +6,21 @@ import { deleteMailDatabase, type Draft } from '@/mail/db'
 import { useComposeStore } from '../compose'
 import { useMailStore } from '../mail'
 
+/** The realtime connection of the last start, so a test can say when it connects (again). */
+const realtime = vi.hoisted(() => ({ connected: null as (() => void) | null }))
+
+vi.mock('@tresso/core', async (importOriginal) => {
+  const core = await importOriginal<typeof import('@tresso/core')>()
+  class RealtimeClient {
+    constructor(options: { onConnected: () => void }) {
+      realtime.connected = options.onConnected
+    }
+    start(): void {}
+    async stop(): Promise<void> {}
+  }
+  return { ...core, RealtimeClient }
+})
+
 function page(cursor: number, extra: Partial<ChangePage> = {}): ChangePage {
   return { cursor, hasMore: false, mailAccounts: [], folders: [], threads: [], messages: [], outgoingMessages: [], signatures: [], drafts: [], smartInboxes: [], calendars: [], calendarEvents: [], notifications: [], eventNotes: [], todos: [], mailNotifications: [], handOvers: [], deleted: [], ...extra }
 }
@@ -16,17 +31,23 @@ describe('drafts across devices', () => {
   /** The server's drafts, by id. */
   let server: Map<string, SyncedDraft>
   let pages: ChangePage[]
+  /** No request reaches the server. */
+  let offline: boolean
   const requests: { method: string; path: string; body: Record<string, unknown> | undefined }[] = []
 
   beforeEach(async () => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
     setActivePinia(createPinia())
     server = new Map()
+    offline = false
     requests.length = 0
     pages = [page(1, { mailAccounts: [account] })]
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (offline) {
+          throw new TypeError('Failed to fetch')
+        }
         const url = new URL(String(input))
         const method = init?.method ?? 'GET'
         const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
@@ -167,5 +188,41 @@ describe('drafts across devices', () => {
     expect(requests.find((r) => r.path === '/api/v1/outgoing-messages')?.body).toMatchObject({ draftId: id })
     expect(server.has(id)).toBe(false)
     expect((await local(id))?.outgoingId).toBe('o1')
+  })
+  it('uploads a draft whose upload failed once the connection is back', async () => {
+    const compose = useComposeStore()
+    compose.openNew()
+    const id = compose.draft!.id
+    offline = true
+
+    compose.update({ subject: 'Written offline' })
+    await compose.close()
+    await vi.waitFor(async () => expect((await local(id))?.subject).toBe('Written offline'))
+    expect((await local(id))?.pendingSave).toBe(true)
+
+    offline = false
+    realtime.connected!()
+
+    await vi.waitFor(async () => expect(await local(id)).toMatchObject({ pendingSave: false, version: 1 }))
+    expect(server.get(id)).toMatchObject({ subject: 'Written offline' })
+  })
+
+  it('uploads a draft whose upload failed after the first pull that works again', async () => {
+    const compose = useComposeStore()
+    const mail = useMailStore()
+    compose.openNew()
+    const id = compose.draft!.id
+    offline = true
+
+    compose.update({ subject: 'Written offline' })
+    await compose.close()
+    await vi.waitFor(async () => expect((await local(id))?.subject).toBe('Written offline'))
+    await mail.syncNow()
+    expect(mail.syncState).toBe('error')
+
+    offline = false
+    await mail.syncNow()
+
+    await vi.waitFor(async () => expect(await local(id)).toMatchObject({ pendingSave: false, version: 1 }))
   })
 })
