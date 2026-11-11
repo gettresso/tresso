@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { frameMessage, linkToOpen, mayLoad } from './frameLinks'
+import { frameMessage, fromFrame, linkToOpen, mayLoad } from './frameLinks'
 
 describe('the link rules of the web views', () => {
   it("loads only the view's own document", () => {
@@ -38,7 +38,16 @@ describe('the link rules of the web views', () => {
     expect(frame('null')).toBeNull()
   })
 
-  it.each(['https://phish.example/landing', 'http://tracker.example/', 'data:text/html,<p>hi</p>', ''])('ignores a report sent by a page at %s, not the frame\'s own document', (url) => {
-    expect(frameMessage({ url, data: '{"tap":"https://phish.example/next"}' })).toBeNull()
+  it.each(['about:blank', 'about:srcdoc', 'null'])('takes a report from %s for the frame itself (iOS sends the URL, Android the opaque origin)', (sender) => {
+    expect(fromFrame(sender)).toBe(true)
+    expect(frameMessage({ url: sender, data: '{"height":412}' })).toEqual({ kind: 'height', value: 412 })
   })
+
+  it.each(['https://phish.example', 'https://phish.example/landing', 'http://tracker.example', 'data:text/html,<p>hi</p>', '', 'NULL', 'null://x', 'file://'])(
+    'ignores a report sent by %s, not the frame\'s own document',
+    (sender) => {
+      expect(fromFrame(sender)).toBe(false)
+      expect(frameMessage({ url: sender, data: '{"tap":"https://phish.example/next"}' })).toBeNull()
+    },
+  )
 })

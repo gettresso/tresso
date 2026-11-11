@@ -1430,7 +1430,9 @@ reader asks. The view's script reports a tap on a link instead of following it, 
 phone links (`apps/mobile/src/components/frameLinks.ts`); a link to a place in the same mail scrolls the screen there.
 The app refuses every navigation away from the document, which also covers Android, where a navigation cannot tell a
 tap from a redirect. On Android react-native-webview allows a navigation when the app's answer takes longer than
-250 ms, so a report counts only when the frame's own document sent it. The web views' `originWhitelist` passes
+250 ms, so a report counts only when the frame's own document sent it: iOS names the sender by its URL (`about:`),
+Android by its origin, which for the frame's document (loaded from a string) is the opaque origin `null`; a page
+loaded from the web has an http or https origin and is ignored. The web views' `originWhitelist` passes
 everything, because react-native-webview opens a URL that misses it outside the app before the app is asked. Opening a conversation on the phone reads it, and its action bar archives, trashes, marks unread and
 flags it, with the same exact undo as the web client: the way an action changes messages (`actionResult`) and how to
 undo it (`undoPlan`) live in `packages/core`, and `MailSession.act` applies it to the copy first and puts back what

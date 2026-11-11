@@ -6,6 +6,7 @@ import { PlaceScrollProvider, scrollToPlaceIn } from '@/components/placeScroll'
 import { MessageEditor } from '@/compose/MessageEditor'
 
 type WebViewProps = {
+  style: unknown
   originWhitelist: string[]
   onShouldStartLoadWithRequest(request: { url: string }): boolean
   onMessage(event: { nativeEvent: { url: string; data: string } }): void
@@ -55,9 +56,19 @@ describe('the web views', () => {
 
     send('{"tap":"https://example.test/offer"}')
     send('{"tap":"tresso://auth/callback?code=x"}')
+    send('{"tap":"https://example.test/android"}', 'null')
     send('{"tap":"https://phish.example/next"}', 'https://phish.example/landing')
+    send('{"tap":"https://phish.example/next"}', 'https://phish.example')
 
-    expect(open.mock.calls).toEqual([['https://example.test/offer']])
+    expect(open.mock.calls).toEqual([['https://example.test/offer'], ['https://example.test/android']])
+  })
+
+  it('sizes the mail to the height its frame reports on Android, where the sender is the opaque origin', () => {
+    render(<HtmlFrame html="<p>Hi</p>" allowRemoteContent={false} accessibilityLabel="Message" />)
+
+    send('{"height":640}', 'null')
+
+    expect(last()).toMatchObject({ style: [expect.anything(), { height: 640 }] })
   })
 
   it('scrolls the screen to a place in the mail', () => {
