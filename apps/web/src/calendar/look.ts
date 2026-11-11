@@ -12,6 +12,12 @@ export const THEME_COLORS = {
   dark: { paper: '#171a20', ink: '#eceef2' },
 } as const
 
+/**
+ * Text on a fill of the calendar color itself, as main.css defines --fill-text-light and --fill-text-dark (a test holds
+ * them together). White and black: one of the two always reaches 4.5:1, whatever the color.
+ */
+export const FILL_TEXT = { light: '#ffffff', dark: '#000000' } as const
+
 /** How much of the calendar color the tint behind event text holds (the stylesheets mix it with --paper). */
 const TINT_SHARE = 0.16
 /** How much of the calendar color event text holds at most; the rest is --ink. Light colors get less. */
@@ -63,12 +69,14 @@ function inkShare(color: Rgb, theme: { paper: string; ink: string }): number {
 export function calendarColor(calendar: SyncedCalendar | undefined): Record<string, string> {
   const color = calendar?.color && /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(calendar.color) ? calendar.color : FALLBACK
   const rgb = parse(color)
-  const on = contrast(rgb, parse('#ffffff')) >= contrast(rgb, parse(THEME_COLORS.light.ink)) ? 'var(--fill-text-light)' : 'var(--fill-text-dark)'
+  const on = contrast(rgb, parse(FILL_TEXT.light)) >= contrast(rgb, parse(FILL_TEXT.dark)) ? 'var(--fill-text-light)' : 'var(--fill-text-dark)'
   const light = inkShare(rgb, THEME_COLORS.light)
   const dark = inkShare(rgb, THEME_COLORS.dark)
-  // --theme-dark is 0 in the light theme and 1 in the dark one (main.css), so the share follows the theme.
-  const share = light === dark ? `${light}%` : `calc(${light}% + ${dark - light}% * var(--theme-dark))`
-  return { '--cal': color, '--cal-on': on, '--cal-ink': `color-mix(in srgb, var(--cal) ${share}, var(--ink))` }
+  const ink = (share: number) => `color-mix(in srgb, var(--cal) ${share}%, var(--ink))`
+  // Both shares at once, picked by --theme-light-share (100% in the light theme, 0% in the dark one, main.css): a
+  // mix of 100% and 0% is the one or the other. No calc() inside color-mix, which older engines may not take.
+  const text = light === dark ? ink(light) : `color-mix(in srgb, ${ink(light)} var(--theme-light-share), ${ink(dark)})`
+  return { '--cal': color, '--cal-on': on, '--cal-ink': text }
 }
 
 /** Time planned for a todo takes the Do colors, the one verdict color the calendar shows; the tokens read in both themes. */
