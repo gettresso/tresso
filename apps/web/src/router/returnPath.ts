@@ -9,18 +9,28 @@ function plainPath(path: string): boolean {
   return path.startsWith('/') && !path.startsWith('//') && ![...path].some((character) => character === '\\' || character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f)
 }
 
+/** Where the app runs: the page's own location, or another for a test. */
+export interface AppLocation {
+  protocol: string
+  host: string
+  href: string
+}
+
 /**
  * A path inside this app: one leading slash, no control characters or backslashes (`/\t/host` would become `//host`),
- * neither as written nor once decoded (`/%09/host`, `/%2F/host`), still on this origin once resolved, and not the
- * sign-in callback.
+ * neither as written nor, in the path, once decoded (`/%09/host`, `/%2F/host`), still on this app's scheme and host
+ * once resolved, and not the sign-in callback in any case (the router matches paths in any case). Scheme and host
+ * are compared rather than origins: under the desktop app's own scheme (`tauri://localhost`) an origin is "null".
  */
-export function returnablePath(path: unknown): string | null {
+export function returnablePath(path: unknown, app: AppLocation = window.location): string | null {
   if (typeof path !== 'string' || !plainPath(path)) {
     return null
   }
+  // The query and fragment may hold encoded slashes of their own (a search for "a/b"); only the path leads somewhere.
+  const pathOnly = path.split(/[?#]/, 1)[0]!
   let decoded: string
   try {
-    decoded = decodeURIComponent(path)
+    decoded = decodeURIComponent(pathOnly)
   } catch {
     return null
   }
@@ -29,11 +39,12 @@ export function returnablePath(path: unknown): string | null {
   }
   let resolved: URL
   try {
-    resolved = new URL(path, window.location.origin)
+    resolved = new URL(path, app.href)
   } catch {
     return null
   }
-  if (resolved.origin !== window.location.origin || resolved.pathname.startsWith('//') || resolved.pathname.startsWith('/auth/')) {
+  const pathname = resolved.pathname.toLowerCase()
+  if (resolved.protocol !== app.protocol || resolved.host !== app.host || pathname.startsWith('//') || pathname.startsWith('/auth/')) {
     return null
   }
   return path
