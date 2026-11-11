@@ -2,9 +2,11 @@ package googlecal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -356,4 +358,42 @@ func TestNoTokenIsAskedForWhileCalendarsAreNotAllowed(t *testing.T) {
 	fake.Grant()
 	syncer.Trigger("a1")
 	calsynctest.Eventually(t, "the sync after the grant", func() bool { _, ok := stored(fake, "lunch"); return ok })
+}
+
+type staticToken struct{}
+
+func (staticToken) Token(context.Context) (string, error)    { return "token", nil }
+func (staticToken) Invalidate(context.Context, string) error { return nil }
+
+// Fails without the fix: the first event Google refused ended the fetch, so the events after it never arrived.
+func TestFetchLeavesOutAnEventGoogleRefusesAndCarriesOn(t *testing.T) {
+	google := newFakeGoogle(t)
+	google.put(calendarID, meetingEvent("lunch", "Lunch"))
+	google.put(calendarID, meetingEvent("broken", "Broken"))
+	google.put(calendarID, meetingEvent("dinner", "Dinner"))
+	google.refusals = map[string]int{"GET /events/broken": http.StatusBadRequest}
+	opts := DefaultClientOptions()
+	opts.BaseURL = google.server.URL + "/calendar/v3"
+	opts.HTTP.MinBackoff, opts.HTTP.MaxBackoff = time.Millisecond, time.Millisecond
+	session := NewProvider(opts).Open(staticToken{}, google.server.Client(), calendarID, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	objects, err := session.Fetch(context.Background(), calsync.Calendar{RemoteCalendar: api.RemoteCalendar{RemoteID: calendarID}}, []string{"lunch", "broken", "dinner"})
+	var skipped *calsync.FetchError
+	if !errors.As(err, &skipped) || skipped.Permanent != 1 || skipped.Transient != 0 {
+		t.Fatalf("err = %v; want a FetchError for the one refused event", err)
+	}
+	var ids []string
+	for _, object := range objects {
+		ids = append(ids, object.RemoteID)
+	}
+	if !slices.Equal(ids, []string{"lunch", "dinner"}) {
+		t.Errorf("fetched %v", ids)
+	}
+
+	google.mu.Lock()
+	google.refusals = map[string]int{"GET /events/broken": http.StatusServiceUnavailable}
+	google.mu.Unlock()
+	if _, err := session.Fetch(context.Background(), calsync.Calendar{RemoteCalendar: api.RemoteCalendar{RemoteID: calendarID}}, []string{"broken"}); !errors.As(err, &skipped) || skipped.Transient != 1 {
+		t.Errorf("err = %v; a 5xx is a failure that may pass", err)
+	}
 }
