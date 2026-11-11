@@ -795,6 +795,55 @@ final class CalendarInvitationTest extends DatabaseTestCase
         self::assertSame(['dateTime' => '2026-10-21T12:00:00+00:00'], $occurrences[0]['start']);
     }
 
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function spellingsOfTheUsersAddress(): iterable
+    {
+        yield 'capitals, as a directory spells it' => ['kim@company.example', 'Kim@Company.example'];
+        yield 'a capital outside ASCII' => ['jörg@example.test', 'JÖRG@example.test'];
+    }
+
+    #[DataProvider('spellingsOfTheUsersAddress')]
+    public function testAnAnswerIsMailedWhateverCapitalsTheInvitationSpellsTheAddressWith(string $address, string $spelled): void
+    {
+        if ('kim@company.example' !== $address) {
+            // The sign-in address, which no account sends as: the reply goes from the account the invitation came to.
+            $this->connection()->executeStatement("UPDATE app_user SET email = :email WHERE email = 'kim@example.test'", ['email' => $address]);
+            $this->kim = $this->userHeaders($address, ['mail:read', 'mail:send', 'calendar:read', 'calendar:write', 'settings:write']);
+        }
+        $messageId = $this->receive('Invitation: Budget review', str_replace('mailto:kim@company.example', 'mailto:'.$spelled, self::invitation('REQUEST', 0, '20261021T140000')));
+        $eventId = self::string($this->getJson('/api/v1/messages/'.$messageId.'/invitation', $this->kim)['eventId']);
+
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events/'.$eventId.'/response', ['response' => 'accepted'], $this->kim);
+
+        self::assertResponseIsSuccessful();
+        $outgoing = $this->outgoing();
+        self::assertCount(1, $outgoing, 'The organizer is told.');
+        self::assertSame(['anna@finance.example'], $outgoing[0]->getEnvelopeRecipients());
+        self::assertSame('Accepted: Budget review', $outgoing[0]->getSubject());
+    }
+
+    public function testDeletingAnEventWhoseOrganizerIsSpelledWithCapitalsCancelsIt(): void
+    {
+        $calendar = static::getContainer()->get(\App\Repository\CalendarRepository::class)->find($this->localCalendarId($this->kim));
+        self::assertNotNull($calendar);
+        $ical = implode("\r\n", ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Other client//EN', 'BEGIN:VEVENT', 'UID:capitals@test', 'DTSTAMP:20261019T080000Z',
+            'DTSTART:20261021T120000Z', 'DTEND:20261021T130000Z', 'SUMMARY:Planning', 'ORGANIZER;CN=Kim Visser:mailto:KIM@company.example',
+            'ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:anna@finance.example', 'END:VEVENT', 'END:VCALENDAR', '']);
+        $entityManager = static::getContainer()->get(EntityManagerInterface::class);
+        $entityManager->wrapInTransaction(static fn () => static::getContainer()->get(\App\Calendar\CalendarStore::class)->save(new \App\Entity\CalendarObject($calendar, 'capitals@test', ''), \App\Calendar\ICalendar\CalendarDocument::parse($ical)));
+        $eventId = self::string($this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00')[0]['eventId']);
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId, server: $this->kim);
+
+        self::assertResponseStatusCodeSame(204);
+        $outgoing = $this->outgoing();
+        self::assertCount(1, $outgoing);
+        self::assertSame('Cancelled: Planning', $outgoing[0]->getSubject());
+        self::assertSame(['anna@finance.example'], $outgoing[0]->getEnvelopeRecipients());
+    }
+
     public function testANewPlaceIsSentToTheGuests(): void
     {
         $calendarId = $this->localCalendarId($this->kim);
