@@ -75,7 +75,10 @@ func (s *session) round(ctx context.Context, due []*folderRun) error {
 	for _, run := range due {
 		result, err := s.poll(ctx, run)
 		if err != nil {
-			return err
+			if err := s.deny(run, err); err != nil {
+				return err
+			}
+			continue
 		}
 		polled[run] = true
 		results = append(results, result)
@@ -100,19 +103,22 @@ func (s *session) round(ctx context.Context, due []*folderRun) error {
 		results = kept
 
 		for _, run := range s.runs {
-			if polled[run] {
+			if polled[run] || run.denied {
 				continue
 			}
 			if run.cursor == nil {
 				// Its delta starts now, so its existing mail (a moved message too) comes through its backfill.
-				if err := s.start(ctx, run); err != nil {
+				if err := s.start(ctx, run); s.deny(run, err) != nil {
 					return err
 				}
 				continue
 			}
 			result, err := s.poll(ctx, run)
 			if err != nil {
-				return err
+				if err := s.deny(run, err); err != nil {
+					return err
+				}
+				continue
 			}
 			results = append(results, result)
 		}
@@ -215,6 +221,9 @@ func (s *session) rescueMoves(ctx context.Context, results []*deltaResult) ([]*d
 		item, err := s.graph.message(ctx, id)
 		if providerhttp.IsStatus(err, http.StatusNotFound) {
 			return nil // deleted for good
+		}
+		if accessDenied(err) {
+			return nil // moved where the user may not look
 		}
 		if err != nil {
 			return err

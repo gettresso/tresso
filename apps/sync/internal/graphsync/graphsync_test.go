@@ -17,6 +17,8 @@ import (
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/fakeapi"
+	"tresso/sync/internal/ingestmsg"
+	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/providerauth"
 	"tresso/sync/internal/providersend"
 	"tresso/sync/internal/storage/storagetest"
@@ -51,16 +53,33 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-// start opens a session and runs its first step over every folder, as Run does.
+// start opens a session, starts every folder (Run's steps do that one folder per step) and runs a step over every
+// folder.
 func (h *harness) start(t *testing.T) {
 	t.Helper()
-	h.session = h.syncer.newSession(api.Account{ID: "acc"}, h.syncer.logger)
+	h.session = h.syncer.newSession(api.Account{ID: "acc"}, isolate.NewStrikes(), h.syncer.logger)
 	if err := h.session.refreshFolders(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	for _, run := range h.session.runs {
+		if run.cursor == nil {
+			if err := h.session.start(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	if err := h.session.step(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (s *session) unstarted() bool {
+	for _, run := range s.runs {
+		if run.cursor == nil && !run.denied {
+			return true
+		}
+	}
+	return false
 }
 
 // pollInbox runs a step in which only the inbox is due.
@@ -498,11 +517,15 @@ func TestPartialFirstStartResumesWithCheckpointedBackfill(t *testing.T) {
 	g.failDelta = "f-proj"
 
 	// The first session stops while starting the folders.
-	h.session = h.syncer.newSession(api.Account{ID: "acc"}, h.syncer.logger)
+	h.session = h.syncer.newSession(api.Account{ID: "acc"}, isolate.NewStrikes(), h.syncer.logger)
 	if err := h.session.refreshFolders(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.session.step(context.Background(), true); err == nil {
+	err := h.session.step(context.Background(), true)
+	for err == nil && h.session.unstarted() {
+		err = h.session.step(context.Background(), false)
+	}
+	if err == nil {
 		t.Fatal("the failing delta walk did not end the session")
 	}
 	if h.api.Cursor("f-inbox") == "" || h.api.Cursor("f-proj") != "" {
@@ -996,5 +1019,175 @@ func TestDraftCopiesAreRemovedByTheirExtendedProperty(t *testing.T) {
 	}
 	if h.graph.headerReads != 0 {
 		t.Errorf("%d drafts read; the property filter needs none", h.graph.headerReads)
+	}
+}
+
+// runSessions starts n sessions in a row on one run's strikes, as Run does after each failed session, and returns the
+// error of each.
+func (h *harness) runSessions(n int) []error {
+	strikes := isolate.NewStrikes()
+	var errs []error
+	for range n {
+		h.session = h.syncer.newSession(api.Account{ID: "acc"}, strikes, h.syncer.logger)
+		err := h.session.refreshFolders(context.Background())
+		if err == nil {
+			err = h.session.step(context.Background(), true)
+		}
+		for err == nil && h.session.unstarted() {
+			err = h.session.step(context.Background(), false)
+		}
+		errs = append(errs, err)
+	}
+	return errs
+}
+
+func TestAMessageGraphKeepsRefusingIsReplacedAndTheFolderMovesOn(t *testing.T) {
+	h := newHarness(t)
+	h.graph.add("m1", "f-inbox", 100, raw("m1"))
+	h.graph.add("m2", "f-inbox", 200, raw("m2"))
+	h.graph.add("m3", "f-inbox", 300, raw("m3"))
+	h.graph.refuseRaw = map[string]fakeRefusal{"m2": {http.StatusBadRequest, `{"error":{"code":"ErrorInvalidRequest"}}`}}
+
+	errs := h.runSessions(isolate.StrikesBeforeSkip)
+	for i, err := range errs[:len(errs)-1] {
+		if err == nil {
+			t.Errorf("session %d went through although m2 was refused only %d times", i+1, i+1)
+		}
+	}
+	if last := errs[len(errs)-1]; last != nil {
+		t.Fatalf("session %d: %v", len(errs), last)
+	}
+	expectUIDs(t, h, "f-inbox", "m1", "m2", "m3")
+	if msg, _ := h.api.Message("f-inbox", "m2"); msg.Subject != ingestmsg.PlaceholderSubject {
+		t.Errorf("m2 = %+v, want a placeholder", msg)
+	}
+	if !h.cursor(t, "f-inbox").BackfillDone {
+		t.Error("the inbox backfill did not finish after the refused message")
+	}
+}
+
+func TestAGraphOutageReplacesNoMessage(t *testing.T) {
+	h := newHarness(t)
+	h.graph.add("m1", "f-inbox", 100, raw("m1"))
+	h.graph.add("m2", "f-inbox", 200, raw("m2"))
+	failing := `{"error":{"code":"ErrorInternalServerError"}}`
+	h.graph.refuseRaw = map[string]fakeRefusal{"m1": {http.StatusInternalServerError, failing}, "m2": {http.StatusInternalServerError, failing}}
+
+	for i, err := range h.runSessions(isolate.StrikesBeforeSkip + 1) {
+		if err == nil {
+			t.Errorf("session %d went through while Graph failed every download", i+1)
+		}
+	}
+	for _, id := range []string{"m1", "m2"} {
+		if msg, ok := h.api.Message("f-inbox", id); ok {
+			t.Errorf("%s was stored as %+v while Graph failed every download", id, msg)
+		}
+	}
+}
+
+func TestAFolderOrMessageGraphDeniesIsSkippedNotTakenForTheMailbox(t *testing.T) {
+	h := newHarness(t)
+	h.graph.add("m1", "f-inbox", 100, raw("m1"))
+	h.graph.add("m2", "f-inbox", 200, raw("m2"))
+	h.graph.add("m3", "f-inbox", 300, raw("m3"))
+	h.graph.add("n1", "f-notes", 100, raw("n1"))
+	h.graph.add("a1", "f-acme", 100, raw("a1"))
+	denied := `{"error":{"code":"ErrorAccessDenied","message":"Access is denied."}}`
+	h.graph.deniedFolders = map[string]bool{"f-proj": true, "f-notes": true}
+	h.graph.refuseRaw = map[string]fakeRefusal{"m2": {http.StatusForbidden, denied}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.syncer.Run(ctx, api.Account{ID: "acc"}) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !slices.Equal(h.api.UIDs("f-inbox"), []string{"m1", "m2", "m3"}) {
+		if time.Now().After(deadline) {
+			t.Fatalf("inbox holds %v, statuses %q", h.api.UIDs("f-inbox"), h.api.StatusLog())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if strings.Contains(h.api.StatusLog(), api.StatusAuthFailed) {
+		t.Errorf("statuses = %q; a denied folder or message is not a mailbox Tresso may not read", h.api.StatusLog())
+	}
+	if msg, _ := h.api.Message("f-inbox", "m2"); msg.Subject != ingestmsg.PlaceholderSubject {
+		t.Errorf("m2 = %+v, want a placeholder", msg)
+	}
+	for _, f := range h.api.ReportedFolders() {
+		if f.RemoteName == "f-acme" {
+			t.Error("a folder below a folder whose children Graph refused was listed")
+		}
+	}
+	if got := h.api.UIDs("f-notes"); len(got) != 0 {
+		t.Errorf("notes holds %v", got)
+	}
+}
+
+func TestTheInboxIsIngestedBeforeTheOtherFoldersAreWalked(t *testing.T) {
+	h := newHarness(t)
+	h.graph.add("m1", "f-inbox", 100, raw("m1"))
+	h.graph.add("p1", "f-proj", 100, raw("p1"))
+	h.session = h.syncer.newSession(api.Account{ID: "acc"}, isolate.NewStrikes(), h.syncer.logger)
+	if err := h.session.refreshFolders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.session.step(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+
+	expectUIDs(t, h, "f-inbox", "m1")
+	for _, query := range h.graph.paths() {
+		if strings.Contains(query, "f-proj/messages/delta") {
+			t.Fatalf("the Projects folder was walked in the first step: %v", h.graph.paths())
+		}
+	}
+	for h.session.unstarted() {
+		if err := h.session.step(context.Background(), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expectUIDs(t, h, "f-proj", "p1")
+}
+
+func TestAnInterruptedFirstDeltaWalkResumesWhereItStopped(t *testing.T) {
+	h := newHarness(t)
+	// Two messages per delta page: the walk has 2*startCheckpointPages+3 pages and breaks after the second checkpoint.
+	for i := range 4*startCheckpointPages + 5 {
+		h.graph.add(fmt.Sprintf("m%02d", i), "f-inbox", 100+i, raw(fmt.Sprintf("m%02d", i)))
+	}
+	h.graph.failDeltaFolder, h.graph.failDeltaRequest = "f-inbox", 2*startCheckpointPages+2
+	h.session = h.syncer.newSession(api.Account{ID: "acc"}, isolate.NewStrikes(), h.syncer.logger)
+	if err := h.session.refreshFolders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.session.step(context.Background(), true); err == nil {
+		t.Fatal("the walk did not break")
+	}
+	stored := h.api.Cursor("f-inbox")
+	cursor, err := DecodeCursor(&stored)
+	if err != nil || cursor == nil || cursor.Started() || cursor.StartLink == "" {
+		t.Fatalf("stored cursor %q: %v", stored, err)
+	}
+
+	before := h.graph.deltaPages("f-inbox")
+	h.start(t)
+	// The rest of the walk (3 pages) and the first round's poll (1 page), not the 23 pages from the start.
+	if walked := h.graph.deltaPages("f-inbox") - before; walked > 5 {
+		t.Errorf("the resumed session read %d delta pages of the inbox", walked)
+	}
+	for range 10 {
+		if h.cursor(t, "f-inbox").BackfillDone {
+			break
+		}
+		if err := h.session.step(context.Background(), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !h.cursor(t, "f-inbox").Started() || len(h.api.UIDs("f-inbox")) != 4*startCheckpointPages+5 {
+		t.Errorf("inbox holds %d messages, cursor %+v", len(h.api.UIDs("f-inbox")), h.cursor(t, "f-inbox"))
 	}
 }

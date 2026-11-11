@@ -17,23 +17,28 @@ var wellKnownRoles = []struct{ name, role string }{
 	{"archive", "archive"},
 }
 
-// listFolders returns the whole folder tree. The remote name is the folder id; nested folders show their path.
-func listFolders(ctx context.Context, c *Client) ([]api.Folder, error) {
+// listFolders returns the whole folder tree. The remote name is the folder id; nested folders show their path. A
+// folder whose children Graph refuses to list (403, a folder the user lost access to) is listed without them; denied
+// names those folders.
+func listFolders(ctx context.Context, c *Client) (folders []api.Folder, denied []string, err error) {
 	roleOf := map[string]string{}
 	for _, wk := range wellKnownRoles {
 		id, err := c.wellKnownID(ctx, wk.name)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if id != "" {
 			roleOf[id] = wk.role
 		}
 	}
 
-	var folders []api.Folder
 	var walk func(parentID, prefix string) error
 	walk = func(parentID, prefix string) error {
 		level, err := c.folders(ctx, parentID)
+		if parentID != "" && accessDenied(err) {
+			denied = append(denied, prefix)
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -56,7 +61,7 @@ func listFolders(ctx context.Context, c *Client) ([]api.Folder, error) {
 		return nil
 	}
 	if err := walk("", ""); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Inbox first: it is what users look at, so it syncs first.
@@ -68,5 +73,5 @@ func listFolders(ctx context.Context, c *Client) ([]api.Folder, error) {
 			break
 		}
 	}
-	return folders, nil
+	return folders, denied, nil
 }

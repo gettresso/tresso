@@ -22,6 +22,7 @@ import (
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/ingestmsg"
+	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/providerauth"
 	"tresso/sync/internal/providerhttp"
 	"tresso/sync/internal/providersync"
@@ -78,8 +79,9 @@ func New(client providersync.API, store storage.Blobs, workerID string, opts Opt
 // ends the run: the account stops being leased until the user signs in with Microsoft again.
 func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	logger := s.logger.With("account", account.ID)
+	strikes := isolate.NewStrikes()
 	return providersync.Run(ctx, s.api, account, s.workerID, "Microsoft", s.opts.RunOptions, logger, func(ctx context.Context) (bool, error) {
-		return s.runSession(ctx, account, logger)
+		return s.runSession(ctx, account, strikes, logger)
 	})
 }
 
@@ -88,6 +90,11 @@ type folderRun struct {
 	cursor   *Cursor
 	nextPoll time.Time
 	storedAt time.Time // when this session last stored the cursor; zero when it came from the API
+	// startLink is where the folder's interrupted first delta walk continues; "" to start it from the beginning.
+	startLink string
+	// denied is set when Graph refused this folder's messages (403 ErrorAccessDenied: a folder the user lost access
+	// to). The folder is left alone until the folder tree is read again.
+	denied bool
 }
 
 type session struct {
@@ -99,8 +106,8 @@ type session struct {
 	runs    []*folderRun
 }
 
-func (s *Syncer) runSession(ctx context.Context, account api.Account, logger *slog.Logger) (healthy bool, err error) {
-	sess := s.newSession(account, logger)
+func (s *Syncer) runSession(ctx context.Context, account api.Account, strikes *isolate.Strikes, logger *slog.Logger) (healthy bool, err error) {
+	sess := s.newSession(account, strikes, logger)
 
 	if err := sess.refreshFolders(ctx); err != nil {
 		return false, err
@@ -114,13 +121,13 @@ func (s *Syncer) runSession(ctx context.Context, account api.Account, logger *sl
 	return true, sess.follow(ctx)
 }
 
-func (s *Syncer) newSession(account api.Account, logger *slog.Logger) *session {
+func (s *Syncer) newSession(account api.Account, strikes *isolate.Strikes, logger *slog.Logger) *session {
 	tokens := providerauth.New(s.api, account.ID, s.workerID)
 	return &session{
 		Syncer:  s,
 		account: account,
 		graph:   NewClient(tokens, s.opts.Client),
-		ingest:  &providersync.Ingest{API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Logger: logger},
+		ingest:  &providersync.Ingest{API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Strikes: strikes, Logger: logger},
 		logger:  logger,
 	}
 }
@@ -129,17 +136,21 @@ func (s *Syncer) newSession(account api.Account, logger *slog.Logger) *session {
 // are due), then continues the backfill. Every folder's existing mail comes in through its checkpointed newest-first
 // backfill, also when the folder appears next to folders already in sync (round rescues mail moved into it).
 func (s *session) step(ctx context.Context, all bool) error {
+	// One folder's first delta walk per step, in list order (the inbox first): a large folder can take thousands of
+	// requests to walk, and the folders already started (the inbox above all) keep being polled and backfilled in
+	// between.
 	for _, run := range s.runs {
-		if run.cursor == nil {
-			if err := s.start(ctx, run); err != nil {
+		if run.cursor == nil && !run.denied {
+			if err := s.start(ctx, run); s.deny(run, err) != nil {
 				return err
 			}
+			break
 		}
 	}
 	now := time.Now()
 	var due []*folderRun
 	for _, run := range s.runs {
-		if all || !now.Before(run.nextPoll) {
+		if run.cursor != nil && !run.denied && (all || !now.Before(run.nextPoll)) {
 			due = append(due, run)
 		}
 	}
@@ -147,12 +158,23 @@ func (s *session) step(ctx context.Context, all bool) error {
 		return err
 	}
 	for _, run := range s.runs {
-		if !run.cursor.BackfillDone {
-			if err := s.backfill(ctx, run); err != nil {
+		if run.cursor != nil && !run.denied && !run.cursor.BackfillDone {
+			if err := s.backfill(ctx, run); s.deny(run, err) != nil {
 				return err
 			}
 		}
 	}
+	return nil
+}
+
+// deny marks run as denied when err is Graph refusing access to the folder, and returns err otherwise. A folder the
+// user lost access to must not stop the others, nor be taken for a mailbox Tresso may not read.
+func (s *session) deny(run *folderRun, err error) error {
+	if err == nil || !accessDenied(err) {
+		return err
+	}
+	s.logger.Warn("Graph refused access to a folder; leaving it alone until the folder tree is read again", "folder", run.folder.RemoteName, "error", err)
+	run.denied = true
 	return nil
 }
 
@@ -164,7 +186,7 @@ func (s *session) follow(ctx context.Context) error {
 		if !s.backfillPending() {
 			next := time.Now().Add(s.opts.PollInterval)
 			for _, run := range s.runs {
-				if run.nextPoll.Before(next) {
+				if !run.denied && run.nextPoll.Before(next) {
 					next = run.nextPoll
 				}
 			}
@@ -192,6 +214,9 @@ func (s *session) follow(ctx context.Context) error {
 
 func (s *session) backfillPending() bool {
 	for _, run := range s.runs {
+		if run.denied {
+			continue
+		}
 		if run.cursor == nil || !run.cursor.BackfillDone {
 			return true
 		}
@@ -202,9 +227,12 @@ func (s *session) backfillPending() bool {
 // refreshFolders reports the folder tree and rebuilds the runs. A folder the session already runs keeps its run (and
 // cursor, which may be ahead of the stored one within a round); a new or reset folder starts from what the API stored.
 func (s *session) refreshFolders(ctx context.Context) error {
-	folders, err := listFolders(ctx, s.graph)
+	folders, denied, err := listFolders(ctx, s.graph)
 	if err != nil {
 		return err
+	}
+	for _, path := range denied {
+		s.logger.Warn("Graph refused to list the subfolders of a folder; leaving them out", "folder", path)
 	}
 	states, err := s.api.Folders(ctx, s.account.ID, s.workerID, folders)
 	if err != nil {
@@ -225,6 +253,7 @@ func (s *session) refreshFolders(ctx context.Context) error {
 		state := stateOf[folder.RemoteName]
 		if old, ok := previous[folder.RemoteName]; ok && !state.Reset && old.cursor != nil {
 			old.folder = folder // a rename changes the display name only
+			old.denied = false  // tried again with every new folder tree
 			runs = append(runs, old)
 			continue
 		}
@@ -234,7 +263,14 @@ func (s *session) refreshFolders(ctx context.Context) error {
 			if err != nil {
 				s.logger.Warn("unreadable cursor, restarting folder", "folder", folder.RemoteName, "error", err)
 			}
+			if cursor != nil && !cursor.Started() {
+				run.startLink = cursor.StartLink
+				cursor = nil
+			}
 			run.cursor = cursor
+		}
+		if old, ok := previous[folder.RemoteName]; ok && !state.Reset && run.cursor == nil && old.startLink != "" {
+			run.startLink = old.startLink // stored by this session, maybe after the folder list was read
 		}
 		runs = append(runs, run)
 	}
@@ -251,10 +287,39 @@ func (s *session) interval(run *folderRun) time.Duration {
 
 // start walks a new folder's delta query to its end, only to learn where changes start; the items are ingested by
 // the checkpointed backfill, newest first. Asking for the synced properties here makes later delta rounds return
-// them. The cursor is stored right away, so a session that fails later resumes this folder instead of starting it
-// again.
+// them. Every startCheckpointPages pages the walk's position is stored, so a session that ends inside a large folder
+// continues there; the cursor is stored right away at the end, so a session that fails later resumes this folder
+// instead of starting it again.
 func (s *session) start(ctx context.Context, run *folderRun) error {
-	deltaLink, err := s.walkDelta(ctx, deltaStart(run.folder.RemoteName), func([]graphMessage) {})
+	link := deltaStart(run.folder.RemoteName)
+	resumed := run.startLink != ""
+	if resumed {
+		link = run.startLink
+	}
+	pages := 0
+	checkpoint := func(next string) error {
+		pages++
+		if pages%startCheckpointPages != 0 {
+			return nil
+		}
+		encoded, err := Cursor{StartLink: s.graph.relative(next)}.Encode()
+		if err != nil {
+			// A link too long to store only costs the checkpoint.
+			s.logger.Warn("delta walk position not stored", "folder", run.folder.RemoteName, "error", err)
+			return nil
+		}
+		if err := s.ingest.StoreCursor(ctx, run.folder.RemoteName, encoded); err != nil {
+			return err
+		}
+		run.startLink = s.graph.relative(next)
+		return nil
+	}
+	deltaLink, err := s.walkDeltaPages(ctx, link, func([]graphMessage) {}, checkpoint)
+	if resumed && deltaExpired(err) {
+		s.logger.Info("stored delta walk position expired, walking the folder from the start", "folder", run.folder.RemoteName)
+		run.startLink = ""
+		deltaLink, err = s.walkDeltaPages(ctx, deltaStart(run.folder.RemoteName), func([]graphMessage) {}, checkpoint)
+	}
 	if err != nil {
 		return err
 	}
@@ -266,11 +331,14 @@ func (s *session) start(ctx context.Context, run *folderRun) error {
 	if err := s.ingest.StoreCursor(ctx, run.folder.RemoteName, encoded); err != nil {
 		return err
 	}
-	run.cursor, run.storedAt = cursor, time.Now()
+	run.cursor, run.storedAt, run.startLink = cursor, time.Now(), ""
 	run.nextPoll = time.Now().Add(s.interval(run))
-	s.logger.Info("starting folder from scratch", "folder", run.folder.RemoteName)
+	s.logger.Info("starting folder from scratch", "folder", run.folder.RemoteName, "resumed", resumed)
 	return nil
 }
+
+// startCheckpointPages is how many pages of a folder's first delta walk go between two stored positions.
+const startCheckpointPages = 10
 
 func deltaStart(folderID string) string {
 	return "/me/mailFolders/" + url.PathEscape(folderID) + "/messages/delta?$select=" + messageFields
@@ -279,6 +347,11 @@ func deltaStart(folderID string) string {
 // walkDelta follows a delta query's pages to its end and returns the new delta link (relative). each receives the
 // items of every page.
 func (s *session) walkDelta(ctx context.Context, link string, each func([]graphMessage)) (deltaLink string, err error) {
+	return s.walkDeltaPages(ctx, link, each, nil)
+}
+
+// walkDeltaPages is walkDelta that also hands every next link to next (when not nil) before following it.
+func (s *session) walkDeltaPages(ctx context.Context, link string, each func([]graphMessage), next func(link string) error) (deltaLink string, err error) {
 	for {
 		page, err := s.graph.messagesPage(ctx, link, true)
 		if err != nil {
@@ -288,6 +361,11 @@ func (s *session) walkDelta(ctx context.Context, link string, each func([]graphM
 		switch {
 		case page.NextLink != "":
 			link = page.NextLink
+			if next != nil {
+				if err := next(link); err != nil {
+					return "", err
+				}
+			}
 		case page.DeltaLink != "":
 			return s.graph.relative(page.DeltaLink), nil
 		default:
@@ -298,7 +376,8 @@ func (s *session) walkDelta(ctx context.Context, link string, each func([]graphM
 
 // fetcher downloads, stores and describes messages for the ingest helper, FetchConcurrency at a time, using the flags
 // and dates Graph listed. Messages deleted meanwhile are left out. A message that several folders of a round lack is
-// built once while it stays in the bounded cache.
+// built once while it stays in the bounded cache. A message Graph keeps refusing is replaced by a placeholder once it
+// failed often enough (see package isolate); until then the session ends with its error.
 func (s *session) fetcher(listed map[string]graphMessage, built *providersync.MessageCache) providersync.Fetcher {
 	return func(ctx context.Context, ids []string) ([]api.Message, error) {
 		got := make(map[string]api.Message, len(ids))
@@ -311,15 +390,22 @@ func (s *session) fetcher(listed map[string]graphMessage, built *providersync.Me
 				missing = append(missing, id)
 			}
 		}
+		var failed []providersync.UnreadableMessage
 		err := s.each(ctx, missing, func(ctx context.Context, id string) error {
 			raw, err := s.graph.raw(ctx, id)
 			if providerhttp.IsStatus(err, http.StatusNotFound) {
 				return nil
 			}
+			item := listed[id]
+			if err != nil && providersync.AboutMessage(err) {
+				mu.Lock()
+				failed = append(failed, providersync.UnreadableMessage{ID: id, ReceivedAt: item.receivedAt(), Flags: item.flags(), Err: err})
+				mu.Unlock()
+				return nil
+			}
 			if err != nil {
 				return err
 			}
-			item := listed[id]
 			msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, item.receivedAt(), item.flags(), s.logger)
 			if err != nil {
 				return err
@@ -332,6 +418,17 @@ func (s *session) fetcher(listed map[string]graphMessage, built *providersync.Me
 		})
 		if err != nil {
 			return nil, err
+		}
+		if len(failed) > 0 {
+			// Immutable ids name a message in the whole mailbox, so failures are counted once, not per folder.
+			placeholders, err := s.ingest.Unreadable(ctx, s.store, unreadableFolder, failed, len(got))
+			if err != nil {
+				return nil, err
+			}
+			for _, msg := range placeholders {
+				built.Put(msg.RemoteUID, msg)
+				got[msg.RemoteUID] = msg
+			}
 		}
 		messages := make([]api.Message, 0, len(ids))
 		for _, id := range ids {
@@ -346,6 +443,9 @@ func (s *session) fetcher(listed map[string]graphMessage, built *providersync.Me
 		return messages, nil
 	}
 }
+
+// unreadableFolder is where the failures of messages Graph would not hand over are counted: ids are mailbox-wide.
+const unreadableFolder = "graph:messages"
 
 // each runs fn for every id with at most FetchConcurrency in flight, and stops at the first error.
 func (s *session) each(ctx context.Context, ids []string, fn func(ctx context.Context, id string) error) error {

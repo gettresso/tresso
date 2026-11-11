@@ -64,6 +64,22 @@ type fakeGraph struct {
 	refuseRecipientFilter bool
 	// headerReads counts listed messages whose headers were asked for, to show how much a lookup reads.
 	headerReads int
+	// refuseRaw answers the $value of these messages with the status and body, every time.
+	refuseRaw map[string]fakeRefusal
+	// requestPaths lists the path of every request; deltaRequests counts the delta pages asked for, per folder.
+	requestPaths  []string
+	deltaRequests map[string]int
+	// failDeltaRequest answers that delta page request of failDeltaFolder (counted from 1) with 400, once.
+	failDeltaFolder  string
+	failDeltaRequest int
+	// deniedFolders answers every request below these folders (children, messages, delta) with 403
+	// ErrorAccessDenied, as Graph does for a folder the user lost access to.
+	deniedFolders map[string]bool
+}
+
+type fakeRefusal struct {
+	status int
+	body   string
 }
 
 type fakeFolder struct{ id, name, parent string }
@@ -190,6 +206,18 @@ func (f *fakeGraph) fail(status int, body string) {
 	f.failNext, f.failBody = status, body
 }
 
+func (f *fakeGraph) paths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.requestPaths)
+}
+
+func (f *fakeGraph) deltaPages(folder string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deltaRequests[folder]
+}
+
 func (f *fakeGraph) gets(id string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -223,8 +251,13 @@ func (f *fakeGraph) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.rawQueries = append(f.rawQueries, r.URL.RawQuery)
+	f.requestPaths = append(f.requestPaths, r.URL.Path)
 	q := r.URL.Query()
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1.0/me/"), "/")
+	if len(parts) >= 3 && parts[0] == "mailFolders" && f.deniedFolders[parts[1]] {
+		writeError(w, http.StatusForbidden, `{"error":{"code":"ErrorAccessDenied","message":"Access is denied."}}`)
+		return
+	}
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1.0/me/messages":
 		body, _ := io.ReadAll(r.Body)
@@ -370,6 +403,10 @@ func (f *fakeGraph) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.rawGets[m.id]++
+		if refusal, refused := f.refuseRaw[m.id]; refused {
+			writeError(w, refusal.status, refusal.body)
+			return
+		}
 		_, _ = w.Write(m.raw)
 	case len(parts) == 1 && parts[0] == "messages":
 		var value []map[string]any
@@ -448,6 +485,14 @@ func (f *fakeGraph) delta(w http.ResponseWriter, folder string, q map[string][]s
 	}
 	if get("$select") == "" && get("$deltatoken") == "" && get("$skiptoken") == "" {
 		f.t.Errorf("delta query without $select")
+	}
+	if f.deltaRequests == nil {
+		f.deltaRequests = map[string]int{}
+	}
+	f.deltaRequests[folder]++
+	if folder == f.failDeltaFolder && f.deltaRequests[folder] == f.failDeltaRequest {
+		writeError(w, http.StatusBadRequest, `{"error":{"code":"ErrorInvalidRequest"}}`)
+		return
 	}
 	// $skiptoken is "<from token>.<offset>"; "-" as from token means from scratch.
 	from, offset := get("$deltatoken"), 0

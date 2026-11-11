@@ -126,7 +126,7 @@ func (c *Client) listMarked(ctx context.Context, scope, filter string) ([]marked
 			NextLink string          `json:"@odata.nextLink"`
 		}
 		if err := c.get(ctx, link, "", &page); err != nil {
-			return nil, err
+			return nil, mapAccessError(err)
 		}
 		found = append(found, page.Value...)
 		link = page.NextLink

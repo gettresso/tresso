@@ -107,7 +107,9 @@ type messagePage struct {
 	DeltaLink string         `json:"@odata.deltaLink"`
 }
 
-// folders lists a folder level: the top level for parentID "", else the children of parentID.
+// folders lists a folder level: the top level for parentID "", else the children of parentID. Only a refused top
+// level means the token cannot read the mailbox (providersync.ErrAccessDenied); a refused child level is a folder the
+// user lost access to (see folderDenied).
 func (c *Client) folders(ctx context.Context, parentID string) ([]mailFolder, error) {
 	link := "/me/mailFolders?$top=100"
 	if parentID != "" {
@@ -120,6 +122,9 @@ func (c *Client) folders(ctx context.Context, parentID string) ([]mailFolder, er
 			NextLink string       `json:"@odata.nextLink"`
 		}
 		if err := c.get(ctx, link, "", &page); err != nil {
+			if parentID == "" {
+				return nil, mapAccessError(err)
+			}
 			return nil, err
 		}
 		all = append(all, page.Value...)
@@ -137,7 +142,7 @@ func (c *Client) wellKnownID(ctx context.Context, name string) (string, error) {
 	if providerhttp.IsStatus(err, http.StatusNotFound) {
 		return "", nil
 	}
-	return out.ID, err
+	return out.ID, mapAccessError(err)
 }
 
 // messagesPage fetches one page of a listing or delta query; link is a path below the base URL or a full link
@@ -159,10 +164,10 @@ func (c *Client) message(ctx context.Context, id string) (graphMessage, error) {
 	return out, err
 }
 
-// raw downloads a message's MIME. A message deleted meanwhile is a 404 StatusError.
+// raw downloads a message's MIME. A message deleted meanwhile is a 404 StatusError; a 403 is about this message
+// (see package isolate), not the mailbox.
 func (c *Client) raw(ctx context.Context, id string) ([]byte, error) {
-	body, err := c.http.Do(ctx, providerhttp.Request{Method: http.MethodGet, URL: c.base + "/me/messages/" + url.PathEscape(id) + "/$value"})
-	return body, mapAccessError(err)
+	return c.http.Do(ctx, providerhttp.Request{Method: http.MethodGet, URL: c.base + "/me/messages/" + url.PathEscape(id) + "/$value"})
 }
 
 func (c *Client) get(ctx context.Context, link, prefer string, out any) error {
@@ -174,7 +179,7 @@ func (c *Client) get(ctx context.Context, link, prefer string, out any) error {
 	if prefer != "" {
 		req.Header = http.Header{"Prefer": {prefer}}
 	}
-	return mapAccessError(c.http.JSON(ctx, req, out))
+	return c.http.JSON(ctx, req, out)
 }
 
 // resolve turns a stored link into a URL. Links are kept relative to the base URL to keep cursors short; a full link
@@ -203,13 +208,21 @@ func queryEscape(s string) string {
 	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
-// mapAccessError marks refused mailbox access as providersync.ErrAccessDenied.
+// mapAccessError marks refused mailbox access as providersync.ErrAccessDenied. Graph answers ErrorAccessDenied alike
+// for a token without Mail.ReadWrite and for one folder or message the user lost access to, so it is only used for
+// the requests about the mailbox itself: the top of the folder tree and the well-known folders. (The API refuses to
+// hand out a token without the mail scopes in the first place.)
 func mapAccessError(err error) error {
-	var statusErr *providerhttp.StatusError
-	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusForbidden && statusErr.HasReason("ErrorAccessDenied") {
+	if accessDenied(err) {
 		return fmt.Errorf("%w: %w", providersync.ErrAccessDenied, err)
 	}
 	return err
+}
+
+// accessDenied reports whether Graph refused access to what was asked (403 ErrorAccessDenied).
+func accessDenied(err error) bool {
+	var statusErr *providerhttp.StatusError
+	return errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusForbidden && statusErr.HasReason("ErrorAccessDenied")
 }
 
 // deltaExpired reports whether Graph no longer knows a delta token: the folder has to be walked from scratch.
