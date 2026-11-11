@@ -167,6 +167,53 @@ describe('Composer', () => {
     await expect(composer.saveNow()).resolves.toBeUndefined()
   })
 
+  it('moves the open draft to a copy opened again for the same user, saves it there and uploads it', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'Before' })
+    const id = composer.state.draft!.id
+    const reopened = await SqliteMailStore.open(await memorySql())
+    await reopened.apply(page({ cursor: 1, mailAccounts: accounts }))
+    currentStore = reopened
+
+    // Typed while the copy was replaced: nowhere to keep it until the draft moves.
+    composer.update({ subject: 'After' })
+    await composer.rebind()
+
+    expect(await reopened.draft(id)).toMatchObject({ subject: 'After', pendingSave: false, version: 1 })
+    expect(api.drafts.get(id)).toMatchObject({ subject: 'After' })
+    await composer.send()
+    expect(composer.state.error).toBeNull()
+    expect(sent).toHaveLength(1)
+  })
+
+  it('moves nothing when no draft is open, or the copy is the one the draft is in', async () => {
+    await composer.rebind()
+    expect(api.calls).toEqual([])
+
+    composer.openNew()
+    await composer.rebind()
+    expect(await store.draft(composer.state.draft!.id)).toBeNull()
+  })
+
+  it('does not write a draft being sent into the copy that replaced its own', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'Going out' })
+    const id = composer.state.draft!.id
+    let sendNow: (() => void) | null = null
+    sendGate = new Promise<void>((resolve) => (sendNow = resolve))
+    const sending = composer.send()
+    await vi.waitFor(() => expect(composer.unfinished).toBe('sending'))
+    const reopened = await SqliteMailStore.open(await memorySql())
+    currentStore = reopened
+
+    await composer.rebind()
+    sendNow!()
+    await sending
+
+    expect(sent).toHaveLength(1)
+    expect(await reopened.draft(id)).toBeNull()
+  })
+
   it('does not write back a draft that is being sent', async () => {
     composer.openNew([{ address: 'anna@example.test', name: null }])
     composer.update({ subject: 'Going out' })
