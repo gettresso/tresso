@@ -1284,6 +1284,12 @@ developer tools, statistics and Year in mail.
 | Desktop (`apps/desktop`) | Tauri 2 (Rust) wrapping `apps/web` | SQLite via Rust | Native notifications |
 | Mobile (`apps/mobile`) | Expo (React Native), TypeScript | expo-sqlite | APNs / FCM via Expo |
 
+When the web client starts signed in, it asks the server who the user is (`/api/v1/me`) and then opens that user's
+mail copy. The id the server last confirmed is kept as long as the tokens (in the tab on the web, on the device in the
+desktop app, per server), so the copy opens before the server answers and the mail is there when the app starts
+offline. A start that fails (offline, the server down, the copy refused) says so with a Retry button and tries again by
+itself: after 5 seconds, doubling up to 5 minutes, and at once when the device comes back online.
+
 The desktop app runs the web client unchanged; only signing in and keeping the tokens go through the shell
 (`apps/web/src/platform/desktop.ts`). It is its own OAuth client (`desktop`) with the redirect URI
 `tresso://auth/callback`: sign-in opens the authorization page in the system browser, where the user's password
