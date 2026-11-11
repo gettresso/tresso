@@ -4,6 +4,7 @@ import { Composer, type Address, type AttachmentAccess, type ComposerNotice, typ
 import { ApiError, errorMessage } from '@/api/errors'
 import type { Draft } from '@/mail/db'
 import { isDesktop, openInBrowser } from '@/platform/desktop'
+import { useAuthStore } from '@/stores/auth'
 import { useMailStore } from '@/stores/mail'
 
 export { UNDO_SECONDS } from '@tresso/core'
@@ -19,6 +20,7 @@ export interface Notice extends ComposerNotice {
  */
 export const useComposeStore = defineStore('compose', () => {
   const mail = useMailStore()
+  const auth = useAuthStore()
 
   const minimized = ref(false)
   const notices = ref<Notice[]>([])
@@ -154,6 +156,29 @@ export const useComposeStore = defineStore('compose', () => {
   watch(
     () => mail.outbox,
     () => void composer.followUp(),
+  )
+
+  // The session ended: what was being written goes no further, so whoever signs in next never sees it.
+  watch(
+    () => auth.isAuthenticated,
+    (authenticated) => {
+      if (!authenticated) {
+        composer.reset()
+        minimized.value = false
+        notices.value = []
+      }
+    },
+  )
+
+  // The copy was opened again for the same user (removed or closed under this tab): the open draft moves to it, so
+  // typing is kept and Send works. Another user never gets here with a draft open: the sign-out before reset it.
+  watch(
+    () => mail.ready,
+    (ready) => {
+      if (ready) {
+        composer.rebind().catch((error: unknown) => notify({ text: `The draft could not be saved: ${errorMessage(error)}`, tone: 'error' }))
+      }
+    },
   )
 
   return {

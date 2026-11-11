@@ -1606,7 +1606,9 @@ Writing mail in the web client: reply and reply all pick recipients from Reply-T
 addresses, and quote the original (helpers in `packages/core/src/compose.ts`, shared with mobile). Every message is
 sent with a `sendAt` a few seconds ahead, so "Undo" can cancel it; "Send later" picks a time. The draft is saved in
 the local copy while typing and kept until the message is confirmed sent, so a failed message can be edited and sent
-again; the outcome of each sent message is announced once. Recipient suggestions come from the people in synced
+again; the outcome of each sent message is announced once. When the session ends, the draft on screen goes with it,
+so whoever signs in next never sees it; when the copy is opened again for the same user (another tab signed out and
+removed it), the draft on screen moves to the new copy and is saved and uploaded there. Recipient suggestions come from the people in synced
 mail, stored locally per user.
 
 Attachments: files are attached to the server's copy of a draft (`POST /api/v1/drafts/{id}/attachments`, multipart,
