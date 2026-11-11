@@ -58,12 +58,15 @@ describe('App', () => {
     auth.tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
     mount(App, { global: { plugins: [router] } })
 
-    auth.storageError = 'The sign-in could not be kept on this device, so you will have to sign in again next time: denied'
+    const text = 'The sign-in could not be kept on this device, so you will have to sign in again next time: denied'
+    auth.storageError = text
+    auth.storageFailures++
+    await flushPromises()
+    // The same failure again (the next refresh): said again, though the text did not change.
+    auth.storageFailures++
     await flushPromises()
 
-    expect(useComposeStore().notices.map((notice) => notice.text)).toContain(
-      'The sign-in could not be kept on this device, so you will have to sign in again next time: denied',
-    )
+    expect(useComposeStore().notices.filter((notice) => notice.text === text)).toHaveLength(2)
   })
 
   it('offers sign in when signed out', async () => {

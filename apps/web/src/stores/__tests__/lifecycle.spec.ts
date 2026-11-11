@@ -22,11 +22,16 @@ const copies = vi.hoisted(() => ({
   /** The name each user's copy has now; the server chosen on the sign-in screen changes it. */
   names: new Map<string, string>(),
   deletedNames: [] as string[],
+  /** What each opened copy calls when another tab or the browser closes it. */
+  closedElsewhere: new Map<string, (reason: 'deleted' | 'upgraded' | 'terminated') => void>(),
 }))
 
 vi.mock('@/mail/store', () => ({
-  openMailStore: async (userId: string): Promise<MailStore> => {
+  openMailStore: async (userId: string, onClosedElsewhere?: (reason: 'deleted' | 'upgraded' | 'terminated') => void): Promise<MailStore> => {
     copies.opening.push(userId)
+    if (onClosedElsewhere) {
+      copies.closedElsewhere.set(userId, onClosedElsewhere)
+    }
     await copies.holdOpen.get(userId)
     const store = await SqliteMailStore.open(await memorySql())
     copies.opened.push(userId)
@@ -84,6 +89,7 @@ describe('the mail copy across sign-out and sign-in', () => {
     copies.holdClose.clear()
     copies.names.clear()
     copies.deletedNames = []
+    copies.closedElsewhere.clear()
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -223,18 +229,59 @@ describe('the mail copy across sign-out and sign-in', () => {
     expect(copies.deleted).toEqual([])
   })
 
-  it('removes the copy an expired session left behind once another user signs in, and keeps it for the same user', async () => {
+  it('removes the copy an expired session left behind once the server confirmed another user, and keeps it for the same user', async () => {
     const mail = useMailStore()
     await mail.start('anna')
+    await mail.removeOtherUsersCopies('anna')
     await mail.stop()
     await mail.start('anna')
+    await mail.removeOtherUsersCopies('anna')
     expect(copies.deleted).toEqual([])
     await mail.stop()
 
     await mail.start('ben')
+    expect(copies.deleted).toEqual([])
+    await mail.removeOtherUsersCopies('ben')
 
     expect(copies.deleted).toEqual(['anna'])
     expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'ben', name: 'copy-ben' }])
+  })
+
+  it('never removes the copy of the signed-in user for a remembered id that /me then contradicts', async () => {
+    const mail = useMailStore()
+    // Ben is signed in here, with unsent drafts in his copy.
+    await mail.start('ben')
+    await mail.stop()
+
+    // A copy opens for an id remembered from before, ahead of /me.
+    await mail.start('anna')
+    expect(copies.deleted).toEqual([])
+    // /me answers: it is Ben. Anna's copy is still open, Ben's is his.
+    await mail.removeOtherUsersCopies('ben')
+    expect(copies.deleted).toEqual([])
+    await mail.stop()
+    await mail.start('ben')
+    await mail.removeOtherUsersCopies('ben')
+
+    expect(copies.deleted).toEqual(['anna'])
+    expect(copies.deletedNames).not.toContain('copy-ben')
+  })
+
+  it('does not open a new copy when the copy was removed by a sign-out in another tab whose storage event is still to come', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { useAuthStore } = await import('../auth')
+    const auth = useAuthStore()
+    const mail = useMailStore()
+    await mail.start('anna')
+
+    // The other tab cleared the shared sign-in and then removed the copy; this tab hears of the copy first.
+    localStorage.removeItem('auth.tokens')
+    copies.closedElsewhere.get('anna')!('deleted')
+
+    await vi.waitFor(() => expect(auth.isAuthenticated).toBe(false))
+    await vi.waitFor(() => expect(copies.closed).toEqual(['anna']))
+    expect(copies.opening).toEqual(['anna'])
+    expect(auth.sessionEnd).toBe('elsewhere')
   })
 
   it('closes a copy whose opening was overtaken by another sign-in', async () => {
