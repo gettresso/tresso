@@ -62,4 +62,23 @@ final class DailyBriefSettingsTest extends TestCase
         $settings->reschedule('Pacific/Kiritimati', new \DateTimeImmutable('2026-10-20T08:00:00+00:00'));
         self::assertFalse($settings->isDueBriefMade('Pacific/Kiritimati'));
     }
+
+    public function testARetryAfterMidnightKeepsTheNextDaysBrief(): void
+    {
+        $settings = new DailyBriefSettings(new User('kim@example.test', 'Kim'), 'UTC', new \DateTimeImmutable('2026-10-20T07:00:00+00:00'));
+        $settings->change(true, '23:50', 'UTC', new \DateTimeImmutable('2026-10-20T07:00:00+00:00'));
+
+        // The run at 23:50 failed and is tried again at 00:05, and again at 00:20.
+        $settings->postpone(new \DateTimeImmutable('2026-10-21T00:05:00+00:00'));
+        $settings->postpone(new \DateTimeImmutable('2026-10-21T00:20:00+00:00'));
+        self::assertSame('2026-10-20T23:50:00+00:00', $settings->getDueAt()?->format(\DATE_ATOM));
+        self::assertSame('2026-10-21T00:20:00+00:00', $settings->getNextRunAt()->format(\DATE_ATOM));
+        self::assertFalse($settings->isDueBriefMade('UTC'));
+
+        $settings->ran(new \DateTimeImmutable('2026-10-21T00:19:59+00:00'), 'UTC', new \DateTimeImmutable('2026-10-21T00:20:00+00:00'));
+
+        self::assertSame('2026-10-20', $settings->getLastDueDay());
+        self::assertSame('2026-10-21T23:50:00+00:00', $settings->getNextRunAt()->format(\DATE_ATOM), 'The brief due on the 21st still comes.');
+        self::assertNull($settings->getDueAt());
+    }
 }

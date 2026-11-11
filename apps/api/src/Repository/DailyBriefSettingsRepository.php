@@ -45,11 +45,14 @@ class DailyBriefSettingsRepository extends ServiceEntityRepository
         return \is_string($id) ? Uuid::fromString($id) : null;
     }
 
-    /** Puts a user's next brief off, after their run failed; outside any transaction, so it holds once written. */
+    /**
+     * Puts a user's next brief off, after their run failed; outside any transaction, so it holds once written. The
+     * moment it was due is kept (the first time only), so the brief keeps its day ({@see DailyBriefSettings::postpone()}).
+     */
     public function postpone(Uuid $userId, \DateTimeImmutable $until): void
     {
         $this->getEntityManager()->getConnection()->executeStatement(
-            'UPDATE daily_brief_settings SET next_run_at = :until WHERE user_id = :user',
+            'UPDATE daily_brief_settings SET due_at = COALESCE(due_at, next_run_at), next_run_at = :until WHERE user_id = :user',
             ['until' => $until->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'), 'user' => $userId->toRfc4122()],
         );
     }
