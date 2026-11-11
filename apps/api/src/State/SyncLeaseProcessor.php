@@ -45,7 +45,7 @@ final readonly class SyncLeaseProcessor implements ProcessorInterface
     public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = []): LeaseResult
     {
         $accounts = array_map(
-            static fn (array $account): LeasedAccount => new LeasedAccount($account['id'], $account['emailAddress'], $account['provider'], $account['leaseExpiresAt']),
+            static fn (array $account): LeasedAccount => new LeasedAccount($account['id'], $account['emailAddress'], $account['provider'], $account['leaseExpiresAt'], $account['fresh']),
             $this->leaser->lease($data->workerId, $data->capacity),
         );
         $accountIds = array_map(static fn (LeasedAccount $account): string => $account->id, $accounts);

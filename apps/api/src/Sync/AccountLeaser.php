@@ -30,7 +30,10 @@ final readonly class AccountLeaser
     }
 
     /**
-     * @return list<array{id: string, emailAddress: string, provider: string, leaseExpiresAt: string}>
+     * "fresh" is true for an account this worker did not hold before this call (also when the API ended its lease, as
+     * after the user changed the account's sign-in): the worker restarts a syncer it still runs for it.
+     *
+     * @return list<array{fresh: bool, id: string, emailAddress: string, provider: string, leaseExpiresAt: string}>
      */
     public function lease(string $workerId, int $capacity): array
     {
@@ -38,11 +41,11 @@ final readonly class AccountLeaser
         $expires = $now->add(new \DateInterval('PT'.self::LEASE_SECONDS.'S'));
 
         return $this->connection->transactional(function (Connection $connection) use ($workerId, $capacity, $now, $expires): array {
-            /** @var list<array{id: string, email_address: string, provider: string, lease_expires_at: string}> $rows */
+            /** @var list<array{fresh: bool|string, id: string, email_address: string, provider: string, lease_expires_at: string}> $rows */
             $rows = $connection->fetchAllAssociative(
                 \sprintf(<<<'SQL'
                     WITH claimable AS (
-                        SELECT id
+                        SELECT id, leased_by IS DISTINCT FROM :worker AS fresh
                         FROM mail_account
                         WHERE status IN (:active, :error)
                           AND (leased_by = :worker OR lease_expires_at IS NULL OR lease_expires_at < CAST(:now AS TIMESTAMP))
@@ -56,7 +59,7 @@ final readonly class AccountLeaser
                         lease_expires_at = CAST(:expires AS TIMESTAMP)
                     FROM claimable
                     WHERE account.id = claimable.id
-                    RETURNING account.id, account.email_address, account.provider, account.lease_expires_at
+                    RETURNING claimable.fresh, account.id, account.email_address, account.provider, account.lease_expires_at
                     SQL, Entitlements::condition('mail_account.owner_id')),
                 [
                     'active' => MailAccountStatus::Active->value,
@@ -82,6 +85,7 @@ final readonly class AccountLeaser
             );
 
             return array_map(static fn (array $row): array => [
+                'fresh' => true === $row['fresh'] || 't' === $row['fresh'],
                 'id' => $row['id'],
                 'emailAddress' => $row['email_address'],
                 'provider' => $row['provider'],

@@ -140,12 +140,20 @@ func (m *Manager) reconcileLocked(ctx context.Context, accounts []api.Account) {
 			continue
 		default:
 		}
-		if _, ok := leased[id]; !ok {
+		account, ok := leased[id]
+		switch {
+		case !ok:
 			m.logger.Info("lease lost, stopping account", "account", id)
-			r.cancel()
-			<-r.done
-			delete(m.accounts, id)
+		case account.Fresh:
+			// The API ended the lease and this worker got the account back: start over, with the new sign-in and
+			// fresh counters.
+			m.logger.Info("lease started again, restarting account", "account", id)
+		default:
+			continue
 		}
+		r.cancel()
+		<-r.done
+		delete(m.accounts, id)
 	}
 
 	for id, account := range leased {

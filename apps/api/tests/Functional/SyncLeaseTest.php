@@ -90,6 +90,35 @@ final class SyncLeaseTest extends DatabaseTestCase
         self::assertSame([$failing], $this->lease('w1', $this->bearer('sync:lease')), 'An error is retried; a refused login waits for a new password.');
     }
 
+    public function testALeaseTheAPIEndedComesBackFresh(): void
+    {
+        $account = $this->createAccount('fresh@example.test', MailAccountStatus::Active);
+        $auth = $this->bearer('sync:lease');
+
+        self::assertSame([true], $this->freshness('w1', $auth), 'A first claim is fresh.');
+        self::assertSame([false], $this->freshness('w1', $auth), 'A renewal is not.');
+
+        // The user changed the sign-in: the API ends the lease, and the same worker claims the account again.
+        $this->connection()->executeStatement('UPDATE mail_account SET leased_by = NULL, lease_expires_at = NULL WHERE id = :id', ['id' => $account]);
+        self::assertSame([true], $this->freshness('w1', $auth), 'The worker restarts the account.');
+    }
+
+    /**
+     * @param array<string, string> $auth
+     *
+     * @return list<bool>
+     */
+    private function freshness(string $workerId, array $auth): array
+    {
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => $workerId, 'capacity' => 10], $auth);
+        self::assertResponseIsSuccessful();
+
+        /** @var array{accounts: list<array{fresh: bool}>} $body */
+        $body = $this->json();
+
+        return array_column($body['accounts'], 'fresh');
+    }
+
     public function testExpiredLeaseIsTakenOver(): void
     {
         $active = $this->createAccount('expired@example.test', MailAccountStatus::Active);
