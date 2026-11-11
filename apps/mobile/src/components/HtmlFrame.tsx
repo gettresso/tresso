@@ -3,25 +3,10 @@ import { Linking, StyleSheet } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { mailFrameDocument } from '@tresso/core'
 import { config } from '@/config'
+import { FRAME_SCRIPT, frameMessage, linkToOpen, mayLoad } from '@/components/frameLinks'
 import { MAX_BODY_HEIGHT, nextBodyHeight } from '@/mail/bodyHeight'
 
 const API_ORIGIN = new URL(config.apiUrl).origin
-
-// Reports the content's height so the view can size to it. It is added by the app, not by the mail: the document's
-// Content-Security-Policy keeps any script in the message itself from running. The body is measured with heights
-// set to auto, so mail sized to the viewport (100vh, height:100%) does not grow with every report.
-const MEASURE = `
-  (function () {
-    var style = document.createElement('style')
-    style.textContent = 'html,body{height:auto!important;min-height:0!important}'
-    document.head.appendChild(style)
-    function report() { window.ReactNativeWebView.postMessage(String(Math.ceil(document.body.getBoundingClientRect().height))) }
-    new ResizeObserver(report).observe(document.body)
-    window.addEventListener('load', report)
-    report()
-  })();
-  true;
-`
 
 interface Props {
   /** Sanitized HTML (a message body, a quote, a signature). */
@@ -34,7 +19,7 @@ interface Props {
 
 /**
  * Sanitized HTML in a locked-down web view that sizes to its content. Links the reader taps open in the browser (or
- * the mail app), never inside the view; nothing else leaves the page.
+ * the mail or phone app), never inside the view; nothing else leaves the page (see frameLinks).
  */
 export function HtmlFrame({ html, allowRemoteContent, accessibilityLabel, initialHeight = 80 }: Props) {
   const [height, setHeight] = useState(initialHeight)
@@ -46,33 +31,28 @@ export function HtmlFrame({ html, allowRemoteContent, accessibilityLabel, initia
   return (
     <WebView
       style={[styles.web, { height }]}
-      originWhitelist={['about:*']}
+      originWhitelist={['*']}
       source={source}
       scrollEnabled={height >= MAX_BODY_HEIGHT}
       nestedScrollEnabled
       javaScriptEnabled
       allowFileAccess={false}
       mixedContentMode="never"
-      injectedJavaScript={MEASURE}
+      injectedJavaScript={FRAME_SCRIPT}
       onMessage={(event: WebViewMessageEvent): void => {
-        const measured = Number(event.nativeEvent.data)
-        if (!Number.isFinite(measured) || measured <= 0) {
-          return
+        const report = frameMessage(event.nativeEvent.data)
+        if (report?.kind === 'tap') {
+          const link = linkToOpen(report.url)
+          if (link !== null) {
+            void Linking.openURL(link)
+          }
+        } else if (report?.kind === 'height') {
+          // Worked out here rather than in a state updater, which React may run twice.
+          shown.current = nextBodyHeight(shown.current, report.value, growths.current)
+          setHeight(shown.current)
         }
-        // Worked out here rather than in a state updater, which React may run twice.
-        shown.current = nextBodyHeight(shown.current, measured, growths.current)
-        setHeight(shown.current)
       }}
-      onShouldStartLoadWithRequest={(request): boolean => {
-        if (request.url.startsWith('about:')) {
-          return true
-        }
-        const tapped = request.isTopFrame !== false && (request.navigationType === undefined || request.navigationType === 'click')
-        if (tapped && /^(https?|mailto|tel):/i.test(request.url)) {
-          void Linking.openURL(request.url)
-        }
-        return false
-      }}
+      onShouldStartLoadWithRequest={(request): boolean => mayLoad(request.url)}
       allowsLinkPreview={false}
       setSupportMultipleWindows={false}
       accessibilityLabel={accessibilityLabel}

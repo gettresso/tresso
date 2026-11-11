@@ -1054,7 +1054,10 @@ copies marked for removal by a sign-out or a switch are removed then. The last s
 a launch their copy opens before the server confirms who is signed in, also offline; a new sign-in forgets them first
 and opens a copy only once the server said who it is. The copy is the same `SqliteMailStore` the desktop app uses (see below). Message bodies show in a web view with the same Content-Security-Policy as
 the web client's frame; only links the reader taps open, in the browser, and remote images load only when the
-reader asks. Opening a conversation on the phone reads it, and its action bar archives, trashes, marks unread and
+reader asks. The view's script reports a tap on a link instead of following it, and the app opens only web, mail and
+phone links (`apps/mobile/src/components/frameLinks.ts`); every navigation away from the document is refused, which
+also covers Android, where a navigation cannot tell a tap from a redirect. The web views' `originWhitelist` passes
+everything, because react-native-webview opens a URL that misses it outside the app before the app is asked. Opening a conversation on the phone reads it, and its action bar archives, trashes, marks unread and
 flags it, with the same exact undo as the web client: the way an action changes messages (`actionResult`) and how to
 undo it (`undoPlan`) live in `packages/core`, and `MailSession.act` applies it to the copy first and puts back what
 the server did not take.
