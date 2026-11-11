@@ -3,7 +3,8 @@
 #
 #   docker compose -f compose.prod.yaml --env-file .env up -d
 #
-# The proxy gets HTTPS certificates for TRESSO_WEB_URL and TRESSO_API_URL by itself (ports 80 and 443 must reach it).
+# The proxy gets HTTPS certificates for TRESSO_WEB_URL, TRESSO_API_URL and, when set, TRESSO_MCP_URL by itself (ports
+# 80 and 443 must reach it).
 
 # Its own project name, so it never takes over the development stack's containers or volumes on the same machine.
 name: tresso-server
@@ -13,6 +14,11 @@ x-api-env: &api-env
   APP_SECRET: ${APP_SECRET:?set APP_SECRET}
   DEFAULT_URI: ${TRESSO_API_URL:?set TRESSO_API_URL}
   API_PUBLIC_URL: ${TRESSO_API_URL}
+  # Optional: sign-in pages on the web client's host (set it to TRESSO_WEB_URL; the proxy below routes them there), and
+  # the MCP endpoint on a host of its own. Left empty, both stay on the API host.
+  AUTH_PUBLIC_URL: ${TRESSO_AUTH_URL:-}
+  MCP_PUBLIC_URL: ${TRESSO_MCP_URL:-}
+  MCP_ON_API_HOST: ${TRESSO_MCP_ON_API_HOST:-1}
   WEB_APP_URL: ${TRESSO_WEB_URL:?set TRESSO_WEB_URL}
   NATIVE_REDIRECT_URI: tresso://auth/callback
   # The origins that may call the API from a browser: the web client and the desktop app (WebKit and WebView2).
@@ -102,6 +108,7 @@ services:
     image: ghcr.io/gettresso/tresso-web:${TRESSO_VERSION:-latest}
     environment:
       TRESSO_API_URL: ${TRESSO_API_URL}
+      TRESSO_AUTH_URL: ${TRESSO_AUTH_URL:-}
     restart: unless-stopped
 
   api:
@@ -221,14 +228,23 @@ services:
     restart: unless-stopped
 
 configs:
+  # The sign-in pages and their files go to the API on the web client's host too: the API answers them there when
+  # TRESSO_AUTH_URL is the web address, and sends the browser to the API host otherwise. The MCP host (when set) is
+  # served by the API, which answers nothing there but /mcp and its metadata.
   proxy:
     content: |
       ${TRESSO_WEB_URL} {
       	encode zstd gzip
-      	reverse_proxy web:80
+      	@signin path /login /logout /oauth/authorize /auth/auth.css /auth/tresso.svg /auth/fonts/*
+      	handle @signin {
+      		reverse_proxy api:80
+      	}
+      	handle {
+      		reverse_proxy web:80
+      	}
       }
 
-      ${TRESSO_API_URL} {
+      ${TRESSO_API_URL} ${TRESSO_MCP_URL:-} {
       	encode zstd gzip
       	reverse_proxy api:80
       }
