@@ -711,6 +711,41 @@ export class Composer {
   }
 
   /**
+   * Throws away a stored draft here and on the server without opening it, so the draft on screen is not touched: the
+   * one a forward came back as when a hand-over is taken back. The open draft goes through {@link discard}. Says why
+   * when it cannot (it stays in Drafts then).
+   */
+  async discardStored(id: string): Promise<boolean> {
+    if (this.current.draft?.id === id) {
+      return this.discard()
+    }
+    if (this.deps.store() === null || this.held.has(id)) {
+      return false
+    }
+    this.hold(id)
+    this.deleting.add(id)
+    this.set({})
+    let gone = false
+    try {
+      await this.deps.drafts.deleteEverywhere(id)
+      gone = true
+    } catch (error) {
+      this.deps.notify({ text: `The draft could not be deleted: ${this.deps.explain(error).message}`, tone: 'error' }, 8000)
+    } finally {
+      this.deleting.delete(id)
+      if (gone) {
+        this.bases.delete(id)
+      }
+      this.release(id, gone)
+      this.set({})
+    }
+    if (gone) {
+      this.deps.changed?.()
+    }
+    return gone
+  }
+
+  /**
    * Closes the form; the draft is kept. Only edits are written: a draft from the copy that was not changed here stays
    * as stored, which may be another device's newer version, or no draft at all once it was sent or deleted elsewhere.
    */

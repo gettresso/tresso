@@ -252,26 +252,65 @@ const QUEUE_TIMEOUT_MS = 60_000
  */
 export class HandOverFlow {
   /**
-   * The flow's composer holds one draft at a time, so what uses it (handing over, throwing away the draft a taken
-   * back forward came back as) runs one after another: none of them finds another's draft open after an await.
-   * Requests that do not use the composer (stopping a forward, withdrawing a hand-over) do not wait in it: a forward
-   * leaves within seconds, so an undo cannot wait for a hand-over still being made.
+   * The flow's composer holds one draft at a time, so hand-overs run one after another: none finds another's draft
+   * open after an await. What does not need the draft on screen (stopping a forward, withdrawing a hand-over, throwing
+   * away the draft a taken back forward came back as, by its id) does not wait for them: a forward leaves within
+   * seconds.
    */
   private queue: Promise<unknown> = Promise.resolve()
+  /** A hand-over is using the composer right now; it keeps it until it settles, also past its turn's time limit. */
+  private composing = false
+  /** Clean-ups still under way after an undo or take back answered; see {@link idle}. */
+  private readonly cleanups = new Set<Promise<unknown>>()
 
   constructor(private readonly deps: HandOverFlowDeps) {}
 
+  /**
+   * Runs a step that uses the composer once the steps before it are done. A step that takes longer than the time limit
+   * (counted from when it starts) lets the queue go on, but keeps the composer: the next step is refused until it
+   * settles, rather than sharing the draft on screen with it.
+   */
   private inOrder<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(task, task)
-    // The next step waits for this one, but not for ever: a hung request lets the queue go on after the timeout.
     let timer: ReturnType<typeof setTimeout> | null = null
-    const limit = new Promise<void>((resolve) => (timer = setTimeout(resolve, this.deps.queueTimeoutMs ?? QUEUE_TIMEOUT_MS)))
+    let startLimit: () => void = () => undefined
+    const limit = new Promise<void>((resolve) => {
+      startLimit = () => {
+        timer = setTimeout(resolve, this.deps.queueTimeoutMs ?? QUEUE_TIMEOUT_MS)
+      }
+    })
+    const step = async (): Promise<T> => {
+      if (this.composing) {
+        throw new HandOverError('Another hand-over is still being made. Try again in a moment.')
+      }
+      this.composing = true
+      startLimit()
+      try {
+        return await task()
+      } finally {
+        this.composing = false
+      }
+    }
+    const run = this.queue.then(step, step)
     this.queue = Promise.race([run.catch(() => undefined), limit]).finally(() => {
       if (timer !== null) {
         clearTimeout(timer)
       }
     })
     return run
+  }
+
+  /** Resolves once the clean-ups of earlier undos and take backs (throwing away their drafts) are done. */
+  async idle(): Promise<void> {
+    while (this.cleanups.size > 0) {
+      await Promise.all([...this.cleanups])
+    }
+  }
+
+  /** Throws the draft a taken back forward came back as away, after the answer: it is clean-up, not part of the undo. */
+  private cleanUp(draftId: string): void {
+    const cleanup = this.deps.composer.discardStored(draftId).catch(() => undefined)
+    this.cleanups.add(cleanup)
+    void cleanup.then(() => this.cleanups.delete(cleanup))
   }
 
   /** @throws HandOverError with the reason, after taking back whatever was done already */
@@ -351,7 +390,7 @@ export class HandOverFlow {
     } finally {
       await this.deps.sync().catch(() => undefined)
     }
-    await this.inOrder(() => this.discardDraft(handed.draftId))
+    this.cleanUp(handed.draftId)
   }
 
   /**
@@ -363,7 +402,7 @@ export class HandOverFlow {
    * @throws HandOverError saying the hand-over still stands
    */
   async takeBack(handed: HandedOver): Promise<'undone' | 'withdrawn'> {
-    // Stopped at once (see undo); only throwing the draft away waits for the composer.
+    // Stopped at once (see undo); throwing the draft away is clean-up after the answer.
     let refused: unknown = null
     try {
       await this.deps.cancel(handed.forwardId)
@@ -389,7 +428,7 @@ export class HandOverFlow {
     } finally {
       await this.deps.sync().catch(() => undefined)
     }
-    await this.inOrder(() => this.discardDraft(handed.draftId))
+    this.cleanUp(handed.draftId)
     return 'undone'
   }
 
@@ -445,16 +484,7 @@ export class HandOverFlow {
   /** Cancels the forward and throws away the draft it came back as. */
   private async takeBackForward(forwardId: string, draftId: string): Promise<void> {
     await this.deps.cancel(forwardId)
-    await this.discardDraft(draftId)
-  }
-
-  /** Throws away this draft, and no other: when it is not in the copy any more, there is nothing to throw away. */
-  private async discardDraft(draftId: string): Promise<void> {
-    const composer = this.deps.composer
-    await composer.openDraft(draftId)
-    if (composer.state.draft?.id === draftId) {
-      await composer.discard()
-    }
+    await this.deps.composer.discardStored(draftId)
   }
 }
 
