@@ -58,6 +58,15 @@ final class SmtpCheckTest extends TestCase
         self::assertSame('The server said: 535 5.7.8 Authentication credentials invalid', $failure->getMessage());
     }
 
+    public function testATemporaryFailureIsNoWrongPassword(): void
+    {
+        $connection = new ScriptedConnection(['220 ready', '250-hello', '250 AUTH PLAIN', '454 4.7.0 Temporary authentication failure']);
+
+        $failure = $this->failure(static fn () => new SmtpCheck($connection, 'smtp.example.test')->run(false, 'kim', 'secret'));
+
+        self::assertSame(CheckStatus::Failed, $failure->status);
+    }
+
     public function testNoSupportedSignInMethodFails(): void
     {
         $connection = new ScriptedConnection(['220 ready', '250-hello', '250 AUTH CRAM-MD5 XOAUTH2']);

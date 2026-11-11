@@ -7,10 +7,23 @@ declare(strict_types=1);
  * answers one IMAP connection and then one SMTP connection, both without TLS.
  *   argv[1]  the password the IMAP server accepts (any username)
  *   argv[2]  the password the SMTP server accepts (any username)
+ *   argv[3]  optional: "tls" for IMAP over TLS from the first byte, "starttls" for IMAP that offers STARTTLS
+ *   argv[4]  with argv[3]: a PEM file with the server's certificate and key
  */
 $arguments = $_SERVER['argv'] ?? [];
 $imapPassword = is_array($arguments) && is_string($arguments[1] ?? null) ? $arguments[1] : '';
 $smtpPassword = is_array($arguments) && is_string($arguments[2] ?? null) ? $arguments[2] : '';
+$security = is_array($arguments) && is_string($arguments[3] ?? null) ? $arguments[3] : 'none';
+$certificate = is_array($arguments) && is_string($arguments[4] ?? null) ? $arguments[4] : '';
+$secure = static function (mixed $client) use ($certificate): bool {
+    if (!is_resource($client)) {
+        return false;
+    }
+    stream_context_set_option($client, 'ssl', 'local_cert', $certificate);
+    stream_context_set_option($client, 'ssl', 'verify_peer', false);
+
+    return true === @stream_socket_enable_crypto($client, true, \STREAM_CRYPTO_METHOD_TLS_SERVER);
+};
 
 $imap = stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
 $smtp = stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
@@ -32,6 +45,9 @@ $client = stream_socket_accept($imap, 10);
 if (false === $client) {
     exit(1);
 }
+if ('tls' === $security && !$secure($client)) {
+    exit(0);
+}
 fwrite($client, "* OK IMAP4rev1 ready\r\n");
 $signedIn = false;
 while (true) {
@@ -49,6 +65,12 @@ while (true) {
             break;
         case 'LIST':
             fwrite($client, "* LIST (\\HasNoChildren) \"/\" INBOX\r\n* LIST (\\HasNoChildren \\Sent) \"/\" Sent\r\n* LIST (\\HasNoChildren) \"/\" Archive\r\n$tag OK LIST completed\r\n");
+            break;
+        case 'STARTTLS':
+            fwrite($client, "$tag OK Begin TLS\r\n");
+            if (!$secure($client)) {
+                exit(0);
+            }
             break;
         case 'LOGOUT':
             fwrite($client, "* BYE\r\n$tag OK LOGOUT completed\r\n");

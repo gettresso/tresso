@@ -9,6 +9,8 @@ use ApiPlatform\State\ProcessorInterface;
 use ApiPlatform\Validator\Exception\ValidationException;
 use App\ApiResource\Input\CheckMailAccount;
 use App\ApiResource\MailAccountCheck;
+use App\Mail\Check\CheckLock;
+use App\Mail\Check\ConnectionCheck;
 use App\Mail\Check\MailConnectionChecker;
 use App\Repository\MailAccountRepository;
 use App\Security\CurrentUser;
@@ -25,6 +27,7 @@ final readonly class MailAccountCheckProcessor implements ProcessorInterface
 {
     public function __construct(
         private MailConnectionChecker $checker,
+        private CheckLock $lock,
         private MailAccountRepository $accounts,
         private CurrentUser $currentUser,
         #[Autowire(service: 'limiter.mail_account_check')]
@@ -51,7 +54,10 @@ final readonly class MailAccountCheckProcessor implements ProcessorInterface
 
         $imap = $data->imap ?? throw new \LogicException('Validation guarantees IMAP settings.');
         $smtp = $data->smtp ?? throw new \LogicException('Validation guarantees SMTP settings.');
-        $result = $this->checker->check($imap, $smtp, $data->username, $data->password);
+        // Both servers within the checker's total budget, with room for the answer; more than PHP's default limit.
+        set_time_limit(MailConnectionChecker::TOTAL + 15);
+        $result = $this->lock->run($owner->getId()->toRfc4122(), fn (): ConnectionCheck => $this->checker->check($imap, $smtp, $data->username, $data->password))
+            ?? throw new TooManyRequestsHttpException(MailConnectionChecker::TOTAL, 'Another connection check of yours is still running. Wait for it, then try again.');
 
         return new MailAccountCheck($emailAddress, $result->imap->value, $result->smtp->value, $result->folders, $result->detail);
     }
