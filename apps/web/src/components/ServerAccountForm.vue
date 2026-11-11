@@ -116,7 +116,7 @@ const save = handleSubmit(async (values) => {
     </div>
     <label class="field">
       <FieldLabel name="password">New password or app password</FieldLabel>
-      <input v-model="password" type="password" autocomplete="new-password" placeholder="Leave empty to keep the current one" />
+      <input v-model="password" type="password" autocomplete="off" data-1p-ignore data-lpignore="true" placeholder="Leave empty to keep the current one" />
       <small class="hint">Stored encrypted and only used to sync and send your mail.</small>
       <small v-if="errors.password" class="error">{{ errors.password }}</small>
     </label>
