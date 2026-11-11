@@ -133,10 +133,10 @@ final readonly class InvitationApplier
      * Gmail: its own Authentication-Results (authserv-id mx.google.com) shows DMARC passed. Microsoft (accounts
      * reached through Graph; never IMAP or Gmail) writes no authserv-id, so its header is only told from one the
      * sender wrote by Exchange's own X-MS-Exchange-Organization-AuthAs, which Exchange Online's header firewall
-     * removes from mail arriving from outside the organization and sets itself: `Internal` or `Authenticated` is mail
-     * sent within the tenant (which gets no Authentication-Results), `Anonymous` or `Partner` came in from outside,
-     * where Exchange's Authentication-Results must show DMARC passed. Any other value, or none (the worker does not
-     * send it yet), confirms nothing. This rests on Exchange's documented header firewall, not on a check against a
+     * removes from mail arriving from outside the organization and sets itself: `Internal` is mail sent within the
+     * tenant (which gets no Authentication-Results); any other value (`Authenticated`, `Anonymous`, `Partner`) needs
+     * Exchange's Authentication-Results to show DMARC passed. Without the header (the worker does not send it yet)
+     * nothing is confirmed. This rests on Exchange's documented header firewall, not on a check against a
      * live tenant.
      *
      * @param array<string, string> $headers
@@ -147,9 +147,11 @@ final readonly class InvitationApplier
 
         return match ($provider) {
             MailProvider::Microsoft => match (strtolower(trim($headers['x-ms-exchange-organization-authas'] ?? ''))) {
-                'internal', 'authenticated' => true,
-                'anonymous', 'partner' => SenderAuthentication::dmarcPassed($results, true),
-                default => false,
+                'internal' => true,
+                // `Authenticated` says only that the submitting client signed in, not that the sender is of this
+                // organization: like mail from outside, it needs Exchange's DMARC pass.
+                '' => false,
+                default => SenderAuthentication::dmarcPassed($results, true),
             },
             default => SenderAuthentication::dmarcPassed($results, ReceivingServers::wroteResults($provider, $results)),
         };

@@ -1817,9 +1817,9 @@ calendar list shows it is solved.
     `mx.google.com`) shows DMARC passed. Microsoft: its header names no authserv-id, so it is told from one the
     sender wrote only by `X-MS-Exchange-Organization-AuthAs` (read on Microsoft accounts only, reached through Graph;
     the value case-insensitive), which Exchange Online's header firewall removes from mail arriving from outside the
-    organization and sets itself: `Internal` or `Authenticated` (sent within the tenant, which carries no
-    `Authentication-Results`) is confirmed, `Anonymous` or `Partner` needs DMARC passed in the topmost
-    `Authentication-Results`, anything else confirms nothing. Mail is noted as waiting only where the user can apply
+    organization and sets itself: `Internal` (sent within the tenant, which carries no `Authentication-Results`) is
+    confirmed; any other value (`Authenticated` says only that the submitting client signed in, `Anonymous`,
+    `Partner`) needs DMARC passed in the topmost `Authentication-Results`; without the header nothing is confirmed. Mail is noted as waiting only where the user can apply
     it (not in a calendar its provider schedules). Otherwise it waits: nothing in the
     calendar changes until the user applies it; the invitation answer carries `senderUnconfirmed` (only together with
     `canApply`, when the user can act), and the message in the sync delta carries `calendarWaiting`, so a message list
