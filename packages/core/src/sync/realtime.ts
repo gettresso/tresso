@@ -16,10 +16,22 @@ export interface RealtimeOptions {
   retryDelays?: readonly number[]
   /** Reconnect with a fresh token this long before the current one expires, in ms. */
   renewBefore?: number
+  /**
+   * How long the stream may stay silent before it is taken for dead and opened again, in ms. The hub sends a comment
+   * line every 40 s (Mercure's default heartbeat) when there is nothing else to say, so this is two and a half of those.
+   */
+  idleTimeout?: number
 }
 
 const DEFAULT_RETRY_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000]
 const DEFAULT_RENEW_BEFORE = 60_000
+const DEFAULT_IDLE_TIMEOUT = 100_000
+/**
+ * The shortest time a token is used before it is renewed, in ms. Its expiry is the server's time, read against this
+ * device's clock: a clock that runs ahead would otherwise make it look expired at once, and the client would ask for
+ * tokens as fast as the network answers. A token that did expire is refused by the hub, which retries with backoff.
+ */
+const MIN_RENEW_AFTER = 30_000
 
 /**
  * Listens to the user's private topic on the Mercure hub. Browsers' EventSource cannot send the access token, so the
@@ -64,7 +76,11 @@ export class RealtimeClient {
     this.failures = 0
     while (this.current(generation)) {
       try {
-        await this.listen(generation)
+        const connected = await this.listen(generation)
+        if (!connected && this.current(generation)) {
+          // Renewed before the hub even answered: wait a moment rather than ask again at once.
+          await this.sleep(delays[0] ?? DEFAULT_RETRY_DELAYS[0]!, generation)
+        }
       } catch (error) {
         if (!this.current(generation)) {
           return
@@ -77,19 +93,40 @@ export class RealtimeClient {
     }
   }
 
-  /** Resolves when the token is due for renewal or the run is no longer current; rejects when the connection fails. */
-  private async listen(generation: number): Promise<void> {
+  /**
+   * Resolves when the token is due for renewal or the run is no longer current, saying whether the hub was reached;
+   * rejects when the connection fails or goes quiet.
+   */
+  private async listen(generation: number): Promise<boolean> {
     const access = await this.options.fetchAccess()
     if (!this.current(generation)) {
-      return
+      return false
     }
     const controller = this.track(new AbortController())
     let renewing = false
+    let quiet = false
+    let connected = false
     const renewIn = Date.parse(access.expiresAt) - Date.now() - (this.options.renewBefore ?? DEFAULT_RENEW_BEFORE)
-    const renewal = setTimeout(() => {
-      renewing = true
-      controller.abort()
-    }, Math.max(renewIn, 0))
+    const renewal = setTimeout(
+      () => {
+        renewing = true
+        controller.abort()
+      },
+      Number.isFinite(renewIn) ? Math.max(renewIn, MIN_RENEW_AFTER) : MIN_RENEW_AFTER,
+    )
+    // A connection that died without being closed (a laptop that slept, a proxy that dropped it) never ends a read:
+    // silence longer than the heartbeat ends it instead.
+    let watchdog: ReturnType<typeof setTimeout> | null = null
+    const awake = () => {
+      if (watchdog !== null) {
+        clearTimeout(watchdog)
+      }
+      watchdog = setTimeout(() => {
+        quiet = true
+        controller.abort()
+      }, this.options.idleTimeout ?? DEFAULT_IDLE_TIMEOUT)
+    }
+    awake()
 
     try {
       const url = new URL(access.hubUrl)
@@ -103,6 +140,8 @@ export class RealtimeClient {
         throw new Error(`The realtime hub refused the connection (${response.status}).`)
       }
       this.failures = 0
+      connected = true
+      awake()
       this.options.onConnected?.()
 
       const parser = new SseParser()
@@ -117,20 +156,34 @@ export class RealtimeClient {
       controller.signal.addEventListener('abort', cancel, { once: true })
       for (;;) {
         const { done, value } = await reader.read()
+        if (quiet) {
+          throw new Error('The realtime hub went quiet.')
+        }
         if (done) {
           throw new Error('The realtime hub closed the connection.')
         }
+        // Any bytes count, the hub's heartbeat comments too.
+        awake()
         for (const event of parser.push(decoder.decode(value, { stream: true }))) {
           this.handle(event.type, event.data)
         }
       }
     } catch (error) {
-      if (renewing || !this.current(generation)) {
-        return
+      if (!this.current(generation)) {
+        return connected
+      }
+      if (quiet) {
+        throw new Error('The realtime hub went quiet.')
+      }
+      if (renewing) {
+        return connected
       }
       throw error
     } finally {
       clearTimeout(renewal)
+      if (watchdog !== null) {
+        clearTimeout(watchdog)
+      }
       this.controllers.delete(controller)
     }
   }
