@@ -473,7 +473,9 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   So it is marked orphaned (`message.orphaned_at`): clients see it in no folder, search leaves it out, and a copy that
   shows up anywhere clears the mark, so the message keeps its id, todo, hand-over and placement. A sweep every five
   minutes deletes messages that stayed in no folder for 15 minutes (longer than the 5 minute poll), with their
-  tombstones. Only placeholders of moves that never landed within the hour are deleted at once.
+  tombstones. Only placeholders of moves that never landed within the hour are deleted at once. The grace covers a
+  move, not a long download: when a folder whose UIDVALIDITY changed takes longer than that to download again, the
+  messages not reached by then are deleted and stored again as new, as before the grace existed.
 - **Threading** (API side, at ingest): first by headers in both directions (messages this one refers to through
   In-Reply-To/References, and stored messages that refer to this one), merging threads that turn out to be one
   conversation (the oldest survives and takes over a placement the user gave another one, the newest such placement
