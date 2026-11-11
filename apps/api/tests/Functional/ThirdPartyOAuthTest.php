@@ -32,6 +32,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
     use ConnectsThirdPartyApps;
 
     private const string REDIRECT = 'http://127.0.0.1:33418/callback';
+    private const string WEB_REDIRECT = 'https://notes.example/oauth/callback';
     private const array THIRD_PARTY_SCOPES = [
         'mail:read', 'mail:write', 'mail:send', 'todos:read', 'todos:write', 'calendar:read', 'calendar:write',
         'settings:read', 'settings:write', 'signatures:read', 'signatures:write',
@@ -415,26 +416,55 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM oauth_consent WHERE last_used_at IS NOT NULL'));
     }
 
-    public function testTheSecondTimeTheAppIsApprovedWithoutAskingUnlessItWantsMore(): void
+    public function testTheSecondTimeAnAppOnTheWebIsApprovedWithoutAskingUnlessItWantsMore(): void
+    {
+        $clientId = $this->registeredClientId(['redirect_uris' => [self::WEB_REDIRECT]]);
+        $web = ['redirect_uri' => self::WEB_REDIRECT];
+        $this->signIn('kim@example.test');
+        $crawler = $this->authorize($clientId, ['signatures:read', 'todos:read'], $this->verifier(), 'first', $web);
+        self::assertResponseIsSuccessful();
+        $this->client->submit($crawler->selectButton('Allow')->form());
+        self::assertStringStartsWith(self::WEB_REDIRECT.'?code=', (string) $this->client->getResponse()->headers->get('Location'));
+
+        foreach ([['signatures:read', 'todos:read'], ['todos:read']] as $scopes) {
+            $this->authorize($clientId, $scopes, $this->verifier(), 'again', $web);
+            self::assertResponseRedirects();
+            self::assertStringStartsWith(self::WEB_REDIRECT.'?code=', (string) $this->client->getResponse()->headers->get('Location'), implode(' ', $scopes));
+        }
+
+        $crawler = $this->authorize($clientId, ['todos:read', 'todos:write'], $this->verifier(), 'more', $web);
+        self::assertResponseIsSuccessful('A scope the user did not allow yet: asked again.');
+        self::assertSame(['See todos', 'Change todos'], $crawler->filter('.scopes li strong')->each(static fn (Crawler $item): string => $item->text()));
+        $this->client->submit($crawler->selectButton('Allow')->form());
+
+        $scopes = $this->connection()->fetchOne('SELECT scopes FROM oauth_consent');
+        self::assertIsString($scopes);
+        self::assertSame(['signatures:read', 'todos:read', 'todos:write'], json_decode($scopes, true), 'What was allowed before stays allowed.');
+    }
+
+    /**
+     * Nothing proves which program on the computer asks for a loopback or custom-scheme redirect (RFC 8252 8.6): any
+     * program can use the app's public client id. So the user is asked every time, even for what they allowed.
+     */
+    public function testAnAppOnThisComputerIsAskedEveryTime(): void
     {
         $clientId = $this->registeredClientId();
         $this->connect('kim@example.test', $clientId, ['signatures:read', 'todos:read']);
         $this->signIn('kim@example.test');
 
-        foreach ([['signatures:read', 'todos:read'], ['todos:read']] as $scopes) {
-            $this->authorize($clientId, $scopes, $this->verifier(), 'again');
-            self::assertResponseRedirects();
-            self::assertStringStartsWith(self::REDIRECT.'?code=', (string) $this->client->getResponse()->headers->get('Location'), implode(' ', $scopes));
-        }
+        $crawler = $this->authorize($clientId, ['todos:read'], $this->verifier(), 'again');
 
-        $crawler = $this->authorize($clientId, ['todos:read', 'todos:write'], $this->verifier(), 'more');
-        self::assertResponseIsSuccessful('A scope the user did not allow yet: asked again.');
-        self::assertSame(['See todos', 'Change todos'], $crawler->filter('.scopes li strong')->each(static fn (Crawler $item): string => $item->text()));
-        $this->answer($crawler, 'Allow', 'more');
+        self::assertResponseIsSuccessful('No silent approval for an app on this computer.');
+        self::assertStringContainsString('You allowed this app before', $crawler->filter('.warning')->text());
+        self::assertSame(['See todos'], $crawler->filter('.scopes li strong')->each(static fn (Crawler $item): string => $item->text()));
+        $this->answer($crawler, 'Allow', 'again');
 
-        $scopes = $this->connection()->fetchOne('SELECT scopes FROM oauth_consent');
-        self::assertIsString($scopes);
-        self::assertSame(['signatures:read', 'todos:read', 'todos:write'], json_decode($scopes, true), 'What was allowed before stays allowed.');
+        $reverseDomain = $this->registeredClientId(['redirect_uris' => ['com.example.notes:/callback']]);
+        $this->signIn('kim@example.test');
+        $verifier = $this->verifier();
+        $this->client->submit($this->authorize($reverseDomain, ['todos:read'], $verifier, 'scheme', ['redirect_uri' => 'com.example.notes:/callback'])->selectButton('Allow')->form());
+        $this->authorize($reverseDomain, ['todos:read'], $this->verifier(), 'scheme-again', ['redirect_uri' => 'com.example.notes:/callback']);
+        self::assertResponseIsSuccessful('An app\'s own scheme proves nothing either.');
     }
 
     public function testDenyingSendsAccessDenied(): void
