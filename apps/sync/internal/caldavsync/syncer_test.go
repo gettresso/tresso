@@ -573,3 +573,31 @@ func TestACalendarThatKeepsFailingIsBackedOffAndReported(t *testing.T) {
 		t.Errorf("statuses %v, details %v", fake.statuses, fake.details)
 	}
 }
+
+// The unconfirmed status carries the full found address as a field, and the sentence clients older than that field
+// read the address from keeps its wording (address cut at 200 characters, without query).
+func TestTheUnconfirmedStatusCarriesTheFoundAddress(t *testing.T) {
+	fake := newFakeAPI("https://dav.example.com/")
+	syncer := New(fake, plainDialer{}, "w1", Options{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	found := "https://dav.example.com/calendars/kim/?session=" + strings.Repeat("s", 300)
+
+	newStatusReporter(syncer, "a1", syncer.logger).reportFound(context.Background(), api.CalendarUnconfirmed, unconfirmedDetail(found), found)
+
+	if len(fake.foundURLs) != 1 || fake.foundURLs[0] != found {
+		t.Fatalf("found urls %v, want the full address", fake.foundURLs)
+	}
+	want := "A calendar server was found at https://dav.example.com/calendars/kim/. To sync your calendars there, confirm this address in the account settings."
+	if fake.details[0] != want {
+		t.Errorf("detail %q, want %q", fake.details[0], want)
+	}
+
+	// An address the API would refuse (not https, no domain) is left out, so the status still goes in.
+	for _, refused := range []string{"http://dav.example.com/", "https://localhost/dav/", "https://kim:secret@dav.example.com/"} {
+		fake := newFakeAPI("https://dav.example.com/")
+		syncer := New(fake, plainDialer{}, "w1", Options{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		newStatusReporter(syncer, "a1", syncer.logger).reportFound(context.Background(), api.CalendarUnconfirmed, unconfirmedDetail(refused), refused)
+		if len(fake.statuses) != 1 || fake.foundURLs[0] != "" {
+			t.Errorf("%s: statuses %v, url %q", refused, fake.statuses, fake.foundURLs)
+		}
+	}
+}

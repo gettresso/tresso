@@ -157,7 +157,7 @@ func (a *API) ReportCalendarOperation(_ context.Context, _, operationID string, 
 	return nil
 }
 
-func (a *API) CalendarStatus(_ context.Context, _, _, status, detail string) error {
+func (a *API) CalendarStatus(_ context.Context, _, _, status, detail, _ string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.statuses = append(a.statuses, status)

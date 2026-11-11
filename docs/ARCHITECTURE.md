@@ -1466,7 +1466,8 @@ accepted.
     to 1 MiB. Guessed candidates (the web host of the mail domain, hosts named in DNS) are not trusted: they never get
     the login and are never used or stored, also when they answer without asking for it. When one answers and no
     trusted one works, the status becomes `unconfirmed` with that address, and the user confirms it by entering it
-    as the account's `calendarUrl`.
+    as the account's `calendarUrl`. The worker sends the full address as the status report's `url` (https only; one
+    the API would refuse is left out), next to the sentence that names it, cut to 200 characters without its query.
   - Changes: `sync-collection` (RFC 6578) with the stored token when the server supports it; otherwise the `getctag`
     is compared and, when it changed, the resource etags are listed and only changed resources fetched with
     `calendar-multiget`. Every 2 minutes, and right after a write. Missing tokens (`valid-sync-token` error) fall back

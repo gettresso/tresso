@@ -31,7 +31,7 @@ type API interface {
 	CalendarObjects(ctx context.Context, accountID, calendarID string, batch api.ObjectBatch) (api.ObjectBatchResult, error)
 	ClaimCalendarOperations(ctx context.Context, accountID, workerID string) ([]api.CalendarOperation, error)
 	ReportCalendarOperation(ctx context.Context, accountID, operationID string, result api.OperationResult) error
-	CalendarStatus(ctx context.Context, accountID, workerID, status, detail string) error
+	CalendarStatus(ctx context.Context, accountID, workerID, status, detail, foundURL string) error
 }
 
 // Calendar is one calendar at the provider.
@@ -241,7 +241,7 @@ func (r *statusReporter) report(ctx context.Context, status, detail string) {
 	if r.last == status {
 		return
 	}
-	if err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, truncate(detail, maxDetail)); err != nil {
+	if err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, truncate(detail, maxDetail), ""); err != nil {
 		r.logger.Warn("reporting the calendar status failed", "error", err)
 		return
 	}

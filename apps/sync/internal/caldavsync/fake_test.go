@@ -317,6 +317,7 @@ type fakeAPI struct {
 	results    map[string]api.OperationResult
 	statuses   []string
 	details    []string
+	foundURLs  []string
 	password   string
 	// listFails answers the calendar list of that call (counted from 1) with an error; listedAt is when each came.
 	listFails map[int]bool
@@ -412,11 +413,12 @@ func (a *fakeAPI) ReportCalendarOperation(_ context.Context, _, operationID stri
 	return nil
 }
 
-func (a *fakeAPI) CalendarStatus(_ context.Context, _, _, status, detail string) error {
+func (a *fakeAPI) CalendarStatus(_ context.Context, _, _, status, detail, foundURL string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.statuses = append(a.statuses, status)
 	a.details = append(a.details, detail)
+	a.foundURLs = append(a.foundURLs, foundURL)
 	return nil
 }
 
