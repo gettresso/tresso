@@ -3,6 +3,8 @@ package imapsync
 import (
 	"encoding/json"
 	"fmt"
+
+	"tresso/sync/internal/isolate"
 )
 
 // Cursor is a folder's sync position, stored by the API as an opaque string.
@@ -15,6 +17,8 @@ type Cursor struct {
 	UIDNext       uint32 `json:"uidNext"`
 	BackfillBelow uint32 `json:"backfillBelow"`
 	HighestModSeq uint64 `json:"highestModSeq"`
+	// Pending are the folder's placeholders whose message is tried again (see package isolate).
+	Pending isolate.PendingList `json:"pending,omitempty"`
 }
 
 const cursorVersion = 1

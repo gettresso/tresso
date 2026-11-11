@@ -459,6 +459,14 @@ func TestMoveIntoAFolderCreatedSinceLinksInsteadOfDeleting(t *testing.T) {
 	if f, _ := h.api.Flags("f-new", "m2"); !f.Seen {
 		t.Error("m2 lost its flags on the move")
 	}
+	if h.api.Cursor("f-new") != "" {
+		t.Error("the new folder was walked in the round; folders are started one per step")
+	}
+	// The next step starts it.
+	if err := h.session.step(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	expectUIDs(t, h, "f-new", "m1", "m2")
 	if c := h.cursor(t, "f-new"); !c.BackfillDone {
 		t.Errorf("new folder cursor = %+v; its mail is in, nothing to backfill", c)
 	}
@@ -1023,12 +1031,15 @@ func TestDraftCopiesAreRemovedByTheirExtendedProperty(t *testing.T) {
 }
 
 // runSessions starts n sessions in a row on one run's strikes, as Run does after each failed session, and returns the
-// error of each.
-func (h *harness) runSessions(n int) []error {
-	strikes := isolate.NewStrikes()
+// error of each. now is the clock of the strikes and the placeholders' retries (nil: the real one).
+func (h *harness) runSessions(n int, strikes *isolate.Strikes, now func() time.Time) []error {
+	if strikes == nil {
+		strikes = isolate.NewStrikes()
+	}
 	var errs []error
 	for range n {
 		h.session = h.syncer.newSession(api.Account{ID: "acc"}, strikes, h.syncer.logger)
+		h.session.ingest.Now = now
 		err := h.session.refreshFolders(context.Background())
 		if err == nil {
 			err = h.session.step(context.Background(), true)
@@ -1046,23 +1057,42 @@ func TestAMessageGraphKeepsRefusingIsReplacedAndTheFolderMovesOn(t *testing.T) {
 	h.graph.add("m1", "f-inbox", 100, raw("m1"))
 	h.graph.add("m2", "f-inbox", 200, raw("m2"))
 	h.graph.add("m3", "f-inbox", 300, raw("m3"))
-	h.graph.refuseRaw = map[string]fakeRefusal{"m2": {http.StatusBadRequest, `{"error":{"code":"ErrorInvalidRequest"}}`}}
+	// A 403 for one message's content is about that message, not the mailbox.
+	h.graph.refuseRaw = map[string]fakeRefusal{"m2": {http.StatusForbidden, `{"error":{"code":"ErrorAccessDenied"}}`}}
+	now := time.Now()
+	clock := func() time.Time { return now }
+	strikes := isolate.NewStrikesWithClock(clock)
 
-	errs := h.runSessions(isolate.StrikesBeforeSkip)
-	for i, err := range errs[:len(errs)-1] {
+	for i, err := range h.runSessions(isolate.StrikesBeforeSkip+1, strikes, clock) {
 		if err == nil {
-			t.Errorf("session %d went through although m2 was refused only %d times", i+1, i+1)
+			t.Fatalf("session %d went through before m2 failed for an hour", i+1)
 		}
 	}
-	if last := errs[len(errs)-1]; last != nil {
-		t.Fatalf("session %d: %v", len(errs), last)
+	now = now.Add(isolate.MinStrikeSpan)
+	if errs := h.runSessions(1, strikes, clock); errs[0] != nil {
+		t.Fatal(errs[0])
 	}
 	expectUIDs(t, h, "f-inbox", "m1", "m2", "m3")
-	if msg, _ := h.api.Message("f-inbox", "m2"); msg.Subject != ingestmsg.PlaceholderSubject {
-		t.Errorf("m2 = %+v, want a placeholder", msg)
+	if msg, _ := h.api.Message("f-inbox", "m2"); !strings.HasPrefix(msg.Subject, ingestmsg.PlaceholderSubject) || !msg.ReceivedAt.Equal(time.Unix(200, 0).UTC()) {
+		t.Errorf("m2 = %+v, want a placeholder with the message's own date", msg)
 	}
 	if !h.cursor(t, "f-inbox").BackfillDone {
 		t.Error("the inbox backfill did not finish after the refused message")
+	}
+	if strings.Contains(h.api.StatusLog(), api.StatusAuthFailed) {
+		t.Errorf("statuses %q", h.api.StatusLog())
+	}
+
+	// Once Graph hands it over, the real message takes the placeholder's place.
+	h.graph.mu.Lock()
+	h.graph.refuseRaw = nil
+	h.graph.mu.Unlock()
+	now = now.Add(isolate.RetryFirst)
+	if errs := h.runSessions(1, strikes, clock); errs[0] != nil {
+		t.Fatal(errs[0])
+	}
+	if msg, _ := h.api.Message("f-inbox", "m2"); msg.Subject != "Message m2" {
+		t.Errorf("m2 = %q; want the real message", msg.Subject)
 	}
 }
 
@@ -1073,8 +1103,12 @@ func TestAGraphOutageReplacesNoMessage(t *testing.T) {
 	failing := `{"error":{"code":"ErrorInternalServerError"}}`
 	h.graph.refuseRaw = map[string]fakeRefusal{"m1": {http.StatusInternalServerError, failing}, "m2": {http.StatusInternalServerError, failing}}
 
-	for i, err := range h.runSessions(isolate.StrikesBeforeSkip + 1) {
-		if err == nil {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	strikes := isolate.NewStrikesWithClock(clock)
+	for i := range isolate.StrikesBeforeSkip + 2 {
+		now = now.Add(isolate.MinStrikeSpan)
+		if errs := h.runSessions(1, strikes, clock); errs[0] == nil {
 			t.Errorf("session %d went through while Graph failed every download", i+1)
 		}
 	}
@@ -1092,9 +1126,7 @@ func TestAFolderOrMessageGraphDeniesIsSkippedNotTakenForTheMailbox(t *testing.T)
 	h.graph.add("m3", "f-inbox", 300, raw("m3"))
 	h.graph.add("n1", "f-notes", 100, raw("n1"))
 	h.graph.add("a1", "f-acme", 100, raw("a1"))
-	denied := `{"error":{"code":"ErrorAccessDenied","message":"Access is denied."}}`
 	h.graph.deniedFolders = map[string]bool{"f-proj": true, "f-notes": true}
-	h.graph.refuseRaw = map[string]fakeRefusal{"m2": {http.StatusForbidden, denied}}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -1113,9 +1145,6 @@ func TestAFolderOrMessageGraphDeniesIsSkippedNotTakenForTheMailbox(t *testing.T)
 	}
 	if strings.Contains(h.api.StatusLog(), api.StatusAuthFailed) {
 		t.Errorf("statuses = %q; a denied folder or message is not a mailbox Tresso may not read", h.api.StatusLog())
-	}
-	if msg, _ := h.api.Message("f-inbox", "m2"); msg.Subject != ingestmsg.PlaceholderSubject {
-		t.Errorf("m2 = %+v, want a placeholder", msg)
 	}
 	for _, f := range h.api.ReportedFolders() {
 		if f.RemoteName == "f-acme" {

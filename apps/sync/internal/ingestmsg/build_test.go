@@ -154,7 +154,7 @@ func TestPlaceholderKeepsTheRawMessageAndDropsWhatWasParsed(t *testing.T) {
 	if got.RemoteUID != "9" || got.ModSeq != &modSeq || got.RawObjectKey != "raw/key" || got.KeyVersion != 2 || !got.Flags.Seen || !got.ReceivedAt.Equal(original.ReceivedAt) {
 		t.Errorf("placeholder lost what identifies the message: %+v", got)
 	}
-	if got.Subject != PlaceholderSubject || got.MessageID != nil || got.From.Address != "unknown@unknown.invalid" || len(got.Attachments) != 0 || got.Snippet == "" {
+	if !strings.HasPrefix(got.Subject, PlaceholderSubject) || !IsPlaceholder(got) || got.MessageID != nil || got.From.Address != "unknown@unknown.invalid" || len(got.Attachments) != 0 || got.Snippet == "" {
 		t.Errorf("placeholder kept parsed values: %+v", got)
 	}
 }
@@ -170,7 +170,7 @@ func TestUnreadableStoresANoticeThatIsUniquePerMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.RemoteUID != "7" || !first.Flags.Flagged || first.Subject != PlaceholderSubject || first.MessageID == nil || first.KeyVersion != 1 {
+	if first.RemoteUID != "7" || !first.Flags.Flagged || !strings.HasPrefix(first.Subject, PlaceholderSubject) || first.MessageID == nil || first.KeyVersion != 1 {
 		t.Errorf("unreadable = %+v", first)
 	}
 	if first.RawObjectKey == second.RawObjectKey || *first.MessageID == *second.MessageID {

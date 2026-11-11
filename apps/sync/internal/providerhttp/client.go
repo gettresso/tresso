@@ -59,6 +59,25 @@ func (e *StatusError) HasReason(reason string) bool {
 	return false
 }
 
+// Throttled reports whether err is the provider throttling or out of quota rather than refusing what was asked: 429,
+// and the reasons Gmail (a 403 with rateLimitExceeded and the like) and Graph give for it. Such an answer says
+// nothing about the item and passes.
+func Throttled(err error) bool {
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	if statusErr.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	for _, reason := range []string{"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "dailyLimitExceeded", "ApplicationThrottled", "TooManyRequests"} {
+		if statusErr.HasReason(reason) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsStatus reports whether err is a StatusError with the given status code.
 func IsStatus(err error, code int) bool {
 	var statusErr *StatusError

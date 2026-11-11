@@ -70,10 +70,12 @@ type Syncer struct {
 	workerID string
 	opts     Options
 	logger   *slog.Logger
+	// now is the clock of the strikes and the placeholders' retries (see package isolate).
+	now func() time.Time
 }
 
 func New(client API, store storage.Blobs, d Dialer, workerID string, opts Options, logger *slog.Logger) *Syncer {
-	return &Syncer{api: client, store: store, dialer: d, workerID: workerID, opts: opts, logger: logger}
+	return &Syncer{api: client, store: store, dialer: d, workerID: workerID, opts: opts, logger: logger, now: time.Now}
 }
 
 // Run keeps the account in sync until ctx ends (the lease was lost or the worker stops). A refused login is reported
@@ -85,7 +87,7 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	failures := 0
 	reported := false // whether the API took the error status of the current run of failures
 	refusals := 0
-	strikes := isolate.NewStrikes()
+	strikes := isolate.NewStrikesWithClock(s.now)
 
 	for {
 		healthy, err := s.runSession(ctx, account, strikes, logger)

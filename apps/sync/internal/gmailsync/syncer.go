@@ -116,8 +116,11 @@ func (s *Syncer) newSession(account api.Account, strikes *isolate.Strikes, logge
 		Syncer:  s,
 		account: account,
 		gmail:   NewClient(tokens, s.opts.Client),
-		ingest:  &providersync.Ingest{API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Strikes: strikes, Logger: logger},
-		logger:  logger,
+		ingest: &providersync.Ingest{
+			API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Strikes: strikes, Logger: logger,
+			PendingFolder: func(string) string { return allMailFolder },
+		},
+		logger: logger,
 	}
 }
 
@@ -130,6 +133,11 @@ func (s *session) step(ctx context.Context) error {
 	}
 	if err := s.historyRound(ctx); err != nil {
 		return err
+	}
+	if s.cursor != nil {
+		if err := s.retryPlaceholders(ctx); err != nil {
+			return err
+		}
 	}
 	if s.cursor != nil && !s.cursor.BackfillDone {
 		return s.backfill(ctx)
@@ -208,6 +216,7 @@ func (s *session) refreshFolders(ctx context.Context) error {
 		if state.RemoteName != allMailFolder {
 			continue
 		}
+		s.ingest.Load(allMailFolder, state.Cursor)
 		switch {
 		case state.Reset:
 			s.cursor = nil
@@ -238,21 +247,33 @@ type fetched struct {
 
 // fetchRaw downloads, stores and describes messages, GetConcurrency at a time. Messages deleted meanwhile are left
 // out. Each raw message is dropped as soon as it is stored. A message Gmail keeps refusing (or hands over unreadable)
-// is replaced by a placeholder without labels once it failed often enough (see package isolate); until then the
-// session ends with its error.
+// is replaced by a placeholder, with its labels, date and flags when Gmail still answers those, once it failed often
+// and long enough next to messages that came through (see package isolate); until then the session ends with its
+// error. Throttling never counts.
 func (s *session) fetchRaw(ctx context.Context, ids []string) (map[string]fetched, error) {
 	out := make(map[string]fetched, len(ids))
 	var failed []providersync.UnreadableMessage
+	labelsOf := map[string][]string{}
 	var mu sync.Mutex
+	fail := func(ctx context.Context, id string, m message, err error) {
+		if m.ID == "" {
+			// What Gmail still says about the message dates and files its placeholder.
+			if minimal, err := s.gmail.getMessage(ctx, id, "minimal"); err == nil {
+				m = minimal
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		failed = append(failed, providersync.UnreadableMessage{ID: id, ReceivedAt: m.receivedAt(), Flags: flagsOf(m.LabelIDs), Err: err})
+		labelsOf[id] = m.LabelIDs
+	}
 	err := s.each(ctx, ids, func(ctx context.Context, id string) error {
 		m, err := s.gmail.getMessage(ctx, id, "raw")
 		if providerhttp.IsStatus(err, http.StatusNotFound) {
 			return nil
 		}
 		if err != nil && providersync.AboutMessage(err) {
-			mu.Lock()
-			failed = append(failed, providersync.UnreadableMessage{ID: id, Err: err})
-			mu.Unlock()
+			fail(ctx, id, message{}, err)
 			return nil
 		}
 		if err != nil {
@@ -260,9 +281,7 @@ func (s *session) fetchRaw(ctx context.Context, ids []string) (map[string]fetche
 		}
 		raw, err := decodeRaw(m.Raw)
 		if err != nil {
-			mu.Lock()
-			failed = append(failed, providersync.UnreadableMessage{ID: id, ReceivedAt: m.receivedAt(), Flags: flagsOf(m.LabelIDs), Err: fmt.Errorf("message %s: decode raw: %w", id, err)})
-			mu.Unlock()
+			fail(ctx, id, m, fmt.Errorf("message %s: decode raw: %w", id, err))
 			return nil
 		}
 		msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, m.receivedAt(), flagsOf(m.LabelIDs), s.logger)
@@ -284,10 +303,33 @@ func (s *session) fetchRaw(ctx context.Context, ids []string) (map[string]fetche
 			return nil, err
 		}
 		for _, msg := range placeholders {
-			out[msg.RemoteUID] = fetched{message: msg}
+			out[msg.RemoteUID] = fetched{labels: labelsOf[msg.RemoteUID], message: msg}
 		}
 	}
 	return out, nil
+}
+
+// retryPlaceholders tries the messages of due placeholders again (see providersync.Ingest.RetryPlaceholders); they
+// are all kept on All Mail.
+func (s *session) retryPlaceholders(ctx context.Context) error {
+	return s.ingest.RetryPlaceholders(ctx, allMailFolder, func(ctx context.Context, id string) (*api.Message, []string, error) {
+		m, err := s.gmail.getMessage(ctx, id, "raw")
+		if providerhttp.IsStatus(err, http.StatusNotFound) {
+			return nil, nil, nil
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		raw, err := decodeRaw(m.Raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("message %s: decode raw: %w", id, err)
+		}
+		msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, m.receivedAt(), flagsOf(m.LabelIDs), s.logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &msg, foldersOf(m.LabelIDs, s.isFolder), nil
+	})
 }
 
 // labelsOf fetches the current labels of messages (format=minimal); a deleted message maps to gone = true.
