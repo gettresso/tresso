@@ -10,6 +10,7 @@ import { startTimeZoneSync, storedSentZone } from '@/platform/timeZone'
 import { releaseOtherUsersPush } from '@/platform/webPush'
 import NoticeStack from '@/components/NoticeStack.vue'
 import { problemPlacement } from '@/components/problemPlacement'
+import { useFocusReturn } from '@/components/focusReturn'
 import UpdateCard from '@/components/UpdateCard.vue'
 import { useUpdatesStore } from '@/stores/updates'
 import { useBillingStore } from '@/stores/billing'
@@ -25,8 +26,19 @@ const problemPlace = computed(() => problemPlacement(compose.draft === null ? nu
 /** The sync error the user hid; a different error shows again. */
 const hiddenSyncError = ref<string | null>(null)
 const syncProblem = computed(() => (mail.syncState === 'error' ? `Sync stopped: ${mail.syncError}` : null))
+// A sync error hidden by the user shows again on a later outage, once a pull worked in between.
+watch(
+  () => mail.syncState,
+  (state) => {
+    if (state === 'idle') {
+      hiddenSyncError.value = null
+    }
+  },
+)
 // Started with the app: it tells the user about hand-overs past their due date wherever they are.
 const handOvers = useHandOversStore()
+// The hand-over dialog gives focus back to what opened it once it has left the page.
+const handOverFocus = useFocusReturn(() => handOvers.handingOver !== null)
 // The editor is large; it loads the first time a message is written.
 const ComposeWindow = defineAsyncComponent(() => import('@/components/ComposeWindow.vue'))
 const HandOverDialog = defineAsyncComponent(() => import('@/components/HandOverDialog.vue'))
@@ -135,7 +147,7 @@ watch(
     <RouterView />
     <template v-if="auth.isAuthenticated">
       <Transition name="sink"><ComposeWindow v-if="compose.draft" /></Transition>
-      <Transition name="layer"><HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" /></Transition>
+      <Transition name="layer" @after-leave="handOverFocus.restore()"><HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" /></Transition>
       <NoticeStack />
       <UpdateCard v-if="isDesktop" />
     </template>
@@ -190,6 +202,12 @@ watch(
   .problem.with-minimized-draft {
     top: calc(var(--titlebar, 0px) + 12px);
     bottom: auto;
+    /*
+     * At the left, and no wider than the room beside a compose window (640 px plus its 24 px edge and a gap), so a
+     * tall compose window does not hide its buttons; from about 1240 px up it is fully clear.
+     */
+    max-width: min(560px, max(280px, calc(100vw - 696px)));
+    margin: 0 auto 0 0;
   }
 }
 /* On a phone an open draft covers the screen (the banner waits behind it); above a minimized draft's 64 px bar. */
