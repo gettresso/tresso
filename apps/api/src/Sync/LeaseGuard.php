@@ -33,7 +33,7 @@ final readonly class LeaseGuard
             : null;
 
         $leaseExpiresAt = $account?->getLeaseExpiresAt();
-        if (null === $account || $workerId !== $account->getLeasedBy() || null === $leaseExpiresAt || $leaseExpiresAt <= new \DateTimeImmutable()) {
+        if (null === $account || $workerId !== $account->getLeasedBy() || null === $leaseExpiresAt || $leaseExpiresAt <= new \DateTimeImmutable('now', new \DateTimeZone('UTC'))) {
             throw new NotFoundHttpException('No account with that id is leased by this worker.');
         }
 

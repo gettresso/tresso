@@ -15,6 +15,9 @@ use Doctrine\DBAL\ParameterType;
  * A worker calls lease() periodically as its heartbeat: it renews the leases it already holds and claims expired or
  * unleased accounts up to its capacity. When a worker dies its leases expire and other workers pick them up.
  * SKIP LOCKED lets many workers lease concurrently without blocking each other or double-claiming an account.
+ *
+ * Lease times come from PHP's clock in UTC, like every other stored time: the database's now() would be in its session
+ * time zone, which {@see LeaseGuard} would misread whenever the two zones differ.
  */
 final readonly class AccountLeaser
 {
@@ -31,7 +34,10 @@ final readonly class AccountLeaser
      */
     public function lease(string $workerId, int $capacity): array
     {
-        return $this->connection->transactional(function (Connection $connection) use ($workerId, $capacity): array {
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $expires = $now->add(new \DateInterval('PT'.self::LEASE_SECONDS.'S'));
+
+        return $this->connection->transactional(function (Connection $connection) use ($workerId, $capacity, $now, $expires): array {
             /** @var list<array{id: string, email_address: string, provider: string, lease_expires_at: string}> $rows */
             $rows = $connection->fetchAllAssociative(
                 \sprintf(<<<'SQL'
@@ -39,7 +45,7 @@ final readonly class AccountLeaser
                         SELECT id
                         FROM mail_account
                         WHERE status IN (:active, :error)
-                          AND (leased_by = :worker OR lease_expires_at IS NULL OR lease_expires_at < now())
+                          AND (leased_by = :worker OR lease_expires_at IS NULL OR lease_expires_at < CAST(:now AS TIMESTAMP))
                           AND (NOT :billing OR %s)
                         ORDER BY (leased_by = :worker) DESC NULLS LAST, last_synced_at ASC NULLS FIRST
                         LIMIT :capacity
@@ -47,7 +53,7 @@ final readonly class AccountLeaser
                     )
                     UPDATE mail_account AS account
                     SET leased_by = :worker,
-                        lease_expires_at = now() + make_interval(secs => :seconds)
+                        lease_expires_at = CAST(:expires AS TIMESTAMP)
                     FROM claimable
                     WHERE account.id = claimable.id
                     RETURNING account.id, account.email_address, account.provider, account.lease_expires_at
@@ -59,7 +65,8 @@ final readonly class AccountLeaser
                     'error' => MailAccountStatus::Error->value,
                     'worker' => $workerId,
                     'capacity' => $capacity,
-                    'seconds' => self::LEASE_SECONDS,
+                    'now' => $now->format('Y-m-d H:i:s'),
+                    'expires' => $expires->format('Y-m-d H:i:s'),
                     // On a server that bills, accounts of users without a trial or subscription are not synced.
                     'billing' => $this->entitlements->billingEnabled(),
                     ...$this->entitlements->parameters(),
@@ -78,7 +85,7 @@ final readonly class AccountLeaser
                 'id' => $row['id'],
                 'emailAddress' => $row['email_address'],
                 'provider' => $row['provider'],
-                'leaseExpiresAt' => new \DateTimeImmutable($row['lease_expires_at'])->format(\DATE_ATOM),
+                'leaseExpiresAt' => new \DateTimeImmutable($row['lease_expires_at'], new \DateTimeZone('UTC'))->format(\DATE_ATOM),
             ], $rows);
         });
     }
