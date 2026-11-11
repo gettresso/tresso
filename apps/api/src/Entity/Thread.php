@@ -195,23 +195,29 @@ class Thread implements TracksChanges
      * $other is merged into this conversation: a placement the user gave it carries over, unless this conversation has
      * a newer one of the user's own. A conversation the user placed and could see stays visible: a hold on this one
      * goes with it.
+     *
+     * @return bool whether the placement carried over from a conversation that was delivered: then the held messages
+     *              of this one are to be delivered too (see {@see \App\Batch\BatchDelivery::releaseThread()})
      */
-    public function adoptUserPlacement(self $other): void
+    public function adoptUserPlacement(self $other): bool
     {
         if (!$other->isClassifiedByUser()) {
-            return;
+            return false;
         }
         if ($this->isClassifiedByUser() && null !== $this->classifiedAt && (null === $other->classifiedAt || $this->classifiedAt >= $other->classifiedAt)) {
-            return;
+            return false;
         }
         $this->category = $other->category;
         $this->verdict = $other->verdict;
         $this->classificationReason = $other->classificationReason;
         $this->classifiedAt = $other->classifiedAt;
         $this->placementId = $other->placementId;
-        if (null === $other->heldUntil) {
-            $this->release($other->batchedAt);
+        if (null !== $other->heldUntil) {
+            return false;
         }
+        $this->release($other->batchedAt);
+
+        return true;
     }
 
     public function getPlacementId(): ?Uuid

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Sync\Ingest;
 
+use App\Batch\BatchDelivery;
 use App\Entity\MailAccount;
 use App\Entity\Message;
 use App\Entity\Thread;
@@ -33,6 +34,7 @@ final readonly class Threader
     public function __construct(
         private EntityManagerInterface $entityManager,
         private HandOvers $handOvers,
+        private BatchDelivery $batches,
     )
     {
     }
@@ -175,8 +177,13 @@ final readonly class Threader
         }
         $this->handOvers->threadsMerged($other, $target);
         // The survivor is the oldest conversation; where the user put the other one counts as much.
-        $target->adoptUserPlacement($other);
+        $delivered = $target->adoptUserPlacement($other);
         $this->entityManager->remove($other);
+        if ($delivered) {
+            // Visible as the user left it: none of its messages waits for a batch (and notifies) later.
+            $this->entityManager->flush();
+            $this->batches->releaseThread($target);
+        }
     }
 
     /** @param list<string> $values */
