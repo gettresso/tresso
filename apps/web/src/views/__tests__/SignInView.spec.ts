@@ -60,11 +60,10 @@ describe('SignInView', () => {
     const view = await signInView()
 
     await view.get('button.sign-in').trigger('click')
+    await vi.waitFor(() => expect(desktop.opened).toHaveLength(1))
     await flushPromises()
     await view.findAll('button').find((button) => button.text() === 'Open the browser again')!.trigger('click')
-    await flushPromises()
-
-    expect(desktop.opened).toHaveLength(2)
+    await vi.waitFor(() => expect(desktop.opened).toHaveLength(2))
     expect(desktop.opened[1]).toBe(desktop.opened[0])
     view.unmount()
     sessionStorage.clear()
