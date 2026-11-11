@@ -1403,7 +1403,12 @@ phone. It also leaves a flag in the secure store (it survives a restart and is c
 next authorization request carries `prompt=login`, so the user types the password again whatever session the browser
 holds (the server remembers sign-ins and approves its own apps without a page, so otherwise "Sign in" would go
 straight back in as the same user). A sign-in after an expired one does not ask, and when the store cannot say, the app
-asks. A store that cannot be read at launch removes nothing either: the app says so, offers Try again, and reads it
+asks. A sign-out takes effect at once, before the revocation: a request made meanwhile finds no tokens and starts no
+refresh. The flag is written first, so a sign-out cut off after that (the app killed) is finished at the next launch:
+the tokens are removed and the sign-in ends as signed out, which removes the mail too. The store's writes run one
+after another, so a removal never lands between the steps of an earlier save. Tokens of a sign-in made here are kept
+only once the previous user is forgotten and the flag cleared; while that fails, every refresh tries again before it
+saves. A store that cannot be read at launch removes nothing either: the app says so, offers Try again, and reads it
 again whenever it comes to the front.
 
 Mail on the phone: the mobile app keeps a SQLite copy (expo-sqlite, one database per user) of

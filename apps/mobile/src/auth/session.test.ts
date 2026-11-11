@@ -407,6 +407,106 @@ describe('Session', () => {
     expect(await session.loginRequired()).toBe(true)
   })
 
+  it('starts no refresh while the sign-out waits for the revocation', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore(expired())
+      const tokenEndpoint = vi.fn<Fetch>(async () => tokenResponse('access-2', 'refresh-2'))
+      const fetchImpl = vi.fn<Fetch>(async (input, init) => (String(input) === REVOKE_URL ? new Promise<Response>(() => undefined) : tokenEndpoint(input, init)))
+      const session = await restored(store, fetchImpl)
+
+      const signingOut = session.signOut()
+      await expect(session.accessToken()).rejects.toMatchObject({ status: 401 })
+      await expect(session.api('/api/v1/me')).rejects.toMatchObject({ status: 401 })
+      await vi.advanceTimersByTimeAsync(5_000)
+      await signingOut
+
+      expect(tokenEndpoint).not.toHaveBeenCalled()
+      expect(session.snapshot.tokens).toBeNull()
+      expect(store.saved).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('finishes a sign-out that was cut off at the next launch, so the mail on the phone goes too', async () => {
+    const store = memoryStore(fresh())
+    store.promptLogin = true
+    const fetchImpl = server(vi.fn<Fetch>())
+
+    const session = await restored(store, fetchImpl)
+
+    expect(session.snapshot).toMatchObject({ tokens: null, ended: 'signedOut', restored: false })
+    expect(store.saved).toBeNull()
+    expect(store.lastUser).toBeNull()
+    await vi.waitFor(() => expect(fetchImpl.revoked).toEqual(['refresh-1']))
+  })
+
+  it('says a launch after a sign-out is signed out, and one after an expired sign-in is not', async () => {
+    const afterSignOut = memoryStore()
+    afterSignOut.promptLogin = true
+    expect((await restored(afterSignOut, vi.fn<Fetch>())).snapshot.ended).toBe('signedOut')
+
+    const afterExpiry = memoryStore()
+    afterExpiry.lastUser = 'kim'
+    expect((await restored(afterExpiry, vi.fn<Fetch>())).snapshot.ended).toBeNull()
+  })
+
+  it('a refresh after a failed forget does not keep the tokens until the last user is forgotten', async () => {
+    const store = memoryStore()
+    store.lastUser = 'lisa'
+    let issued = 1
+    const refused = new Set(['access-2'])
+    const fetchImpl = vi.fn<Fetch>(async (input, init) => {
+      if (String(input).endsWith('/oauth/token')) {
+        issued++
+        return tokenResponse(`access-${issued}`, `refresh-${issued}`)
+      }
+      const token = new Headers(init!.headers).get('Authorization')!.replace('Bearer ', '')
+      return refused.has(token) ? new Response(null, { status: 401 }) : new Response(JSON.stringify({ id: 'kim' }))
+    })
+    const session = await restored(store, fetchImpl)
+    const forget = store.forgetUser.bind(store)
+    store.forgetUser = async () => {
+      throw new Error('Keychain is locked.')
+    }
+
+    await session.completeSignIn('the-code', 'the-verifier')
+    await session.me()
+    expect(session.snapshot.tokens?.accessToken).toBe('access-3')
+    expect(store.saved).toBeNull()
+    expect(store.lastUser).toBe('lisa')
+
+    store.forgetUser = forget
+    refused.add('access-3')
+    await session.me()
+
+    expect(store.lastUser).toBeNull()
+    expect(store.saved?.accessToken).toBe('access-4')
+  })
+
+  it('removes the tokens on sign-out only after a save that already started', async () => {
+    const store = memoryStore(expired())
+    const save = store.save.bind(store)
+    let release: () => void = () => undefined
+    store.save = async (tokens) => {
+      if (tokens !== null) {
+        await new Promise<void>((resolve) => (release = resolve))
+      }
+      await save(tokens)
+    }
+    const session = await restored(store, server(async () => tokenResponse('access-2', 'refresh-2')))
+
+    const refreshed = session.accessToken()
+    await vi.waitFor(() => expect(session.snapshot.tokens?.accessToken).toBe('access-2'))
+    const signingOut = session.signOut()
+    release()
+    await Promise.all([refreshed, signingOut])
+
+    expect(store.saved).toBeNull()
+    expect(session.snapshot.tokens).toBeNull()
+  })
+
   it('tells subscribers about every change', async () => {
     const session = new Session(CONFIG, memoryStore(fresh()), vi.fn<Fetch>())
     const listener = vi.fn<() => void>()
@@ -467,7 +567,9 @@ describe('Session', () => {
     await Promise.resolve()
 
     await session.signOut()
+    // Someone signs in again, as a completed sign-in leaves the store.
     store.saved = fresh('access-2')
+    store.promptLogin = false
     await session.restore()
     answer(new Response('{}', { status: 401 }))
 
