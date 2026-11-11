@@ -65,6 +65,11 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
   auth_failed: 'Sign-in failed',
   error: 'Sync problem',
 }
+
+/** Sign-in failed or sync broke: the user has to act, in Settings, before mail comes in again. */
+function failed(account: SyncedMailAccount): boolean {
+  return account.status === 'auth_failed' || account.status === 'error'
+}
 </script>
 
 <template>
@@ -152,20 +157,22 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
 
     <div class="group">
       <h2 class="group-title">Accounts</h2>
-      <RouterLink
-        v-for="account in accounts"
-        :key="account.id"
-        :to="{ name: 'account', params: { accountId: account.id } }"
-        class="item account"
-        :aria-current="inList && mailbox === account.id && smartInbox === null && !batches ? 'page' : undefined"
-      >
-        <SenderAvatar :sender="{ name: account.displayName, address: account.emailAddress }" :size="24" />
-        <span class="account-text">
-          <span class="account-name">{{ account.displayName }}</span>
-          <span class="account-address">{{ statusText[account.status] ?? account.emailAddress }}</span>
-        </span>
-        <span v-if="(unreadCounts.get(account.id) ?? 0) > 0" class="count"><TickCount :value="unreadCounts.get(account.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
-      </RouterLink>
+      <div v-for="account in accounts" :key="account.id" class="account-row">
+        <RouterLink
+          :to="{ name: 'account', params: { accountId: account.id } }"
+          class="item account"
+          :aria-current="inList && mailbox === account.id && smartInbox === null && !batches ? 'page' : undefined"
+        >
+          <SenderAvatar :sender="{ name: account.displayName, address: account.emailAddress }" :size="24" />
+          <span class="account-text">
+            <span class="account-name">{{ account.displayName }}</span>
+            <span class="account-address" :class="{ problem: failed(account) }">{{ statusText[account.status] ?? account.emailAddress }}</span>
+          </span>
+          <span v-if="(unreadCounts.get(account.id) ?? 0) > 0" class="count"><TickCount :value="unreadCounts.get(account.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
+        </RouterLink>
+        <!-- A link of its own beside the row (a link cannot hold another): where a failed account is fixed. -->
+        <RouterLink v-if="failed(account)" :to="{ name: 'settings-accounts' }" class="fix" :aria-label="`Fix ${account.displayName}`">Fix</RouterLink>
+      </div>
       <RouterLink :to="{ name: 'settings-accounts-new' }" class="add">+ Add account</RouterLink>
     </div>
 
@@ -271,6 +278,31 @@ const statusText: Record<SyncedMailAccount['status'], string | null> = {
 .account {
   min-height: 44px;
   padding: 4px 10px;
+}
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.account-row > .account {
+  flex: 1;
+  min-width: 0;
+}
+.account-address.problem {
+  color: var(--danger);
+  font-weight: 600;
+}
+.fix {
+  flex: none;
+  padding: 4px 8px;
+  border-radius: var(--radius-control);
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.fix:hover {
+  background: var(--danger-soft);
 }
 .account-text {
   display: flex;
