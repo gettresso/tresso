@@ -1,32 +1,115 @@
 import type { ProviderConnection } from '@tresso/core'
 
 /**
- * Between the tab that started a provider sign-in and the tab the provider sent back: on the web the sign-in opens in
- * a new tab, which comes back to /settings/accounts/new, finishes the sign-in there and tells the tab that started
- * it. That tab takes the outcome only for the sign-in it is waiting for (matched by the OAuth state) and says so; the
- * new tab then closes. Without an answer it shows the outcome itself.
+ * Between the tab that started a provider sign-in and the tab the provider sent back. On the web the provider's page
+ * opens in a new tab, which comes back to /settings/accounts/new, finishes the sign-in there and hands the outcome to
+ * the tab that waits for it (matched by the OAuth state). Two ways carry it, so neither order of events loses it:
+ *
+ * - a BroadcastChannel message, which a waiting tab takes at once and answers with `taken`, after which the new tab
+ *   closes;
+ * - a note in localStorage, which a waiting tab reads when it starts waiting or comes to the front, for an outcome
+ *   that arrived before it listened.
+ *
+ * A new tab that comes back signed out of Tresso cannot finish the sign-in; it says so the same two ways, so the
+ * waiting tab can tell the user instead of waiting for ever. Cancelling in the waiting tab is noted too, so the new tab
+ * does not finish a sign-in the user gave up on.
+ *
+ * Needs the sign-in shared between tabs (tokens in localStorage), or the new tab is always signed out.
  */
 const NAME = 'tresso-connect'
-/** The sign-in a tab waits for, so the tab the provider sends back knows whether to tell anyone (and wait for it). */
 const AWAITING_KEY = 'tresso.connect.awaiting'
+const CANCELLED_KEY = 'tresso.connect.cancelled'
+const OUTCOME_KEY = 'tresso.connect.outcome'
 
-type Message = { type: 'result'; state: string; result: ProviderConnection } | { type: 'taken'; state: string }
+/** How a sign-in the waiting tab started ended in the other tab. */
+export type HandedOver = { kind: 'result'; result: ProviderConnection } | { kind: 'signed-out' }
+
+type Message = { type: 'outcome'; state: string; outcome: HandedOver } | { type: 'taken'; state: string }
+
+interface Noted {
+  state: string
+  expiresAt: number
+}
+
+function storage(): Storage | null {
+  try {
+    return globalThis.localStorage ?? null
+  } catch {
+    return null
+  }
+}
+
+function read<T>(key: string): T | null {
+  try {
+    return JSON.parse(storage()?.getItem(key) ?? 'null') as T | null
+  } catch {
+    return null
+  }
+}
+
+function write(key: string, value: unknown): void {
+  try {
+    if (value === null) storage()?.removeItem(key)
+    else storage()?.setItem(key, JSON.stringify(value))
+  } catch {
+    // Without storage only the BroadcastChannel carries the outcome; a tab that missed it times out and says so.
+  }
+}
 
 function channel(): BroadcastChannel | null {
   return typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(NAME)
 }
 
+/** Notes that this browser waits for the sign-in with this state, until it expires. */
+export function markAwaiting(state: string, expiresAt: number): void {
+  write(AWAITING_KEY, { state, expiresAt } satisfies Noted)
+}
+
+export function clearAwaiting(): void {
+  write(AWAITING_KEY, null)
+}
+
+/** Whether a tab of this browser waits for the sign-in with this state. */
+export function isAwaited(state: string): boolean {
+  const noted = read<Noted>(AWAITING_KEY)
+  return noted?.state === state && typeof noted.expiresAt === 'number' && noted.expiresAt > Date.now()
+}
+
+/** Notes that the user cancelled the sign-in with this state; the tab the provider sends back does not finish it. */
+export function markCancelled(state: string, expiresAt: number): void {
+  const now = Date.now()
+  const kept = (read<Noted[]>(CANCELLED_KEY) ?? []).filter((noted) => noted.expiresAt > now && noted.state !== state)
+  write(CANCELLED_KEY, [...kept, { state, expiresAt }])
+}
+
+export function isCancelled(state: string): boolean {
+  const now = Date.now()
+  return (read<Noted[]>(CANCELLED_KEY) ?? []).some((noted) => noted.state === state && noted.expiresAt > now)
+}
+
 /**
- * Listens for outcomes other tabs finished. `take` returns true for an outcome this tab was waiting for.
+ * The outcome another tab noted for this state, taken once: it is removed when read. For a waiting tab that was not
+ * listening (or not in front) when the outcome came.
+ */
+export function takeNotedOutcome(state: string): HandedOver | null {
+  const noted = read<Noted & { outcome: HandedOver }>(OUTCOME_KEY)
+  if (noted === null || noted.state !== state || noted.expiresAt <= Date.now()) return null
+  write(OUTCOME_KEY, null)
+  return noted.outcome
+}
+
+/**
+ * Listens for outcomes other tabs report. `take` returns true for an outcome this tab was waiting for.
  *
  * @returns stops listening
  */
-export function listenForSignIns(take: (state: string, result: ProviderConnection) => boolean): () => void {
+export function listenForSignIns(take: (state: string, outcome: HandedOver) => boolean): () => void {
   const listener = channel()
   if (listener === null) return () => {}
   listener.onmessage = (event: MessageEvent<Message>) => {
     const message = event.data
-    if (message?.type === 'result' && take(message.state, message.result)) {
+    if (message?.type === 'outcome' && take(message.state, message.outcome)) {
+      write(OUTCOME_KEY, null)
       listener.postMessage({ type: 'taken', state: message.state } satisfies Message)
     }
   }
@@ -34,11 +117,13 @@ export function listenForSignIns(take: (state: string, result: ProviderConnectio
 }
 
 /**
- * Tells the other tabs how a sign-in ended.
+ * Hands an outcome to the tab that waits for this state: notes it in localStorage and posts it on the channel.
  *
+ * @param waitMs how long to wait for a tab to take it
  * @returns whether a tab took it within the wait
  */
-export function announceSignIn(state: string, result: ProviderConnection, waitMs = 1500): Promise<boolean> {
+export function handOver(state: string, outcome: HandedOver, waitMs = 1500): Promise<boolean> {
+  write(OUTCOME_KEY, { state, expiresAt: Date.now() + 15 * 60_000, outcome })
   const sender = channel()
   if (sender === null) return Promise.resolve(false)
 
@@ -52,35 +137,19 @@ export function announceSignIn(state: string, result: ProviderConnection, waitMs
     sender.onmessage = (event: MessageEvent<Message>) => {
       if (event.data?.type === 'taken' && event.data.state === state) finish(true)
     }
-    sender.postMessage({ type: 'result', state, result } satisfies Message)
+    sender.postMessage({ type: 'outcome', state, outcome } satisfies Message)
   })
 }
 
-/** Notes that this browser waits for the sign-in with this state, until it expires. */
-export function markAwaiting(state: string, expiresAt: number): void {
-  try {
-    localStorage.setItem(AWAITING_KEY, JSON.stringify({ state, expiresAt }))
-  } catch {
-    // Without storage the tab the provider sends back shows the outcome itself, as it does without a waiting tab.
-  }
-}
-
-export function clearAwaiting(): void {
-  try {
-    localStorage.removeItem(AWAITING_KEY)
-  } catch {
-    // Nothing was stored then either.
-  }
-}
-
-/** Whether a tab of this browser waits for the sign-in with this state. */
-export function isAwaited(state: string): boolean {
-  try {
-    const stored = JSON.parse(localStorage.getItem(AWAITING_KEY) ?? 'null') as { state?: unknown; expiresAt?: unknown } | null
-    return stored?.state === state && typeof stored.expiresAt === 'number' && stored.expiresAt > Date.now()
-  } catch {
-    return false
-  }
+/**
+ * For a tab the provider sent back while it is signed out of Tresso (it cannot finish the sign-in): tells the tab
+ * that waits for it, so that one says why nothing was connected. True when a tab of this browser waits for it.
+ */
+export function reportSignedOutReturn(query: Record<string, unknown>): boolean {
+  const state = query.state
+  if ((query.provider !== 'google' && query.provider !== 'microsoft') || typeof state !== 'string' || !isAwaited(state)) return false
+  void handOver(state, { kind: 'signed-out' }, 0)
+  return true
 }
 
 /** The OAuth state of an authorization URL, which the provider's answer carries back. */

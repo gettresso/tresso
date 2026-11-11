@@ -91,7 +91,7 @@ describe('connecting a provider account in the desktop app', () => {
           return Response.json({ product: 'tresso-server', apiVersion: 1, billing: false, trialDays: 0, allowUnencryptedMailServers: false })
         }
         if (url.pathname === '/api/v1/provider-authorizations' && method === 'POST') {
-          return Response.json({ authorizationUrl: AUTHORIZATION_URL, provider: 'google', expiresAt: '2026-10-19T08:15:00+00:00' }, { status: 201 })
+          return Response.json({ authorizationUrl: AUTHORIZATION_URL, provider: 'google', expiresAt: new Date(Date.now() + 900_000).toISOString() }, { status: 201 })
         }
         if (url.pathname === '/api/v1/provider-connections' && method === 'POST') {
           return Response.json({ provider: 'google', connected: 'acc-g', grant: null, connectError: null, requested: ['mail', 'calendar'], missing: [], existing: false, approvalUrl: null })

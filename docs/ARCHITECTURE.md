@@ -559,9 +559,15 @@ and a list of providers when nothing is known. A password account is checked wit
 /api/v1/mail-account-checks` and created only when the check passed; a failed check stays on its form and says which
 server failed and how. The account has one username and password for both servers, so the boards' "use the same
 username and password for outgoing mail" switch is not offered. On the web the provider's page opens in a new tab;
-that tab finishes the sign-in when the provider sends it back and hands the outcome to the tab that started it over
-a `BroadcastChannel` (matched by the OAuth state), then closes. The desktop app opens it in the system browser and
-gets the answer through its link, as before. The last step shows the account as connected as soon as sign-in is
+that tab finishes the sign-in when the provider sends it back and hands the outcome to the tab that started it,
+matched by the OAuth state: over a `BroadcastChannel`, and as a note in localStorage that the waiting tab reads when
+it starts waiting or comes to the front, so neither order of events loses it. Once the waiting tab took it the new tab
+closes; otherwise it shows the outcome itself. This needs the Tresso sign-in shared by the tabs of a browser (tokens in
+localStorage): a new tab that comes back signed out cannot finish, and tells the waiting tab, which says so. A sign-in
+that expires (15 minutes) without an answer ends the waiting with "Try again". Cancelling is noted in localStorage
+too, so the provider's tab does not finish a sign-in the user gave up. Cancelling or closing while a checked account
+is being created removes it again. The desktop app opens the provider in the system browser and gets the answer
+through its link, as before. The last step shows the account as connected as soon as sign-in is
 proven, with the name on sent mail, the first sync's progress and whether its calendars sync.
 
 ##### Registering the OAuth apps
@@ -1708,7 +1714,8 @@ The clients show it where the user looks: the account's card in Settings, Accoun
 `not_granted`, `auth_failed`, `error` and `unconfirmed` and opens by itself, and the calendar page lists every account
 whose calendars do not show, with "Allow calendar access" (one sign-in that adds the calendar scopes) for
 `not_granted`, the detail and a link to the account's settings for the others, and "Looking for the calendars" while
-an account has none yet. An IMAP account's settings show its CalDAV status and take the CalDAV address
+an account has none yet. A notice can be hidden; that is remembered in the browser per account and status, so a new
+problem shows again. An IMAP account's settings show its CalDAV status and take the CalDAV address
 (`calendarUrl`), with "Use this address" for one the worker found but may not trust on its own (`unconfirmed`). The
 worker may send that address as `url` with the status; the API keeps it while the status is `unconfirmed` and returns
 it as the account's `calendarFoundUrl`. A worker that sends only the sentence is still understood: the client then
