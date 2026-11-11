@@ -8,6 +8,12 @@ import { useMailStore } from '@/stores/mail'
 import AccountCard from '@/components/AccountCard.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
 
+/**
+ * finishesSignIn: whether this page finishes a provider sign-in that came back to it (signing an account in again, or
+ * allowing its calendars). Off under the connect dialog, which finishes the sign-ins that come back to its address.
+ */
+const props = withDefaults(defineProps<{ finishesSignIn?: boolean }>(), { finishesSignIn: true })
+
 const accounts = useAccountsStore()
 const mail = useMailStore()
 const error = ref<string | null>(null)
@@ -28,7 +34,7 @@ async function load(): Promise<void> {
 /** Finishes the sign-in the provider sent the browser back from, and says how it went. */
 async function readSignInResult(): Promise<void> {
   const query = route.query
-  if (query.provider === undefined) return
+  if (!props.finishesSignIn || query.provider === undefined) return
   // The query holds a one-time code; it leaves the address bar and the history before anything else happens.
   await router.replace({ query: {} })
 
@@ -48,13 +54,18 @@ async function readSignInResult(): Promise<void> {
 watch(
   () => route.query.provider,
   (provider) => {
-    if (provider !== undefined) void readSignInResult().then(load)
+    if (provider !== undefined && props.finishesSignIn) void readSignInResult().then(load)
   },
 )
 
 onMounted(async () => {
   await readSignInResult()
   await load()
+  try {
+    await accounts.loadServerRules()
+  } catch {
+    // Without it "None" is not offered as connection security, which only local test servers need.
+  }
 })
 // Status changes (a sign-in failure, a first sync) reach the synced copy in real time; refresh the settings then.
 watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.lastSyncedAt}`).join('|'), load)

@@ -36,4 +36,29 @@ describe('ServerFields', () => {
     expect(wrapper.get('input').attributes('aria-invalid')).toBe('true')
     expect(wrapper.text()).toContain('This server is on a private network.')
   })
+
+  it('names the protocol in the title and offers no unencrypted connection unless the server allows one', () => {
+    const wrapper = mount(ServerFields, { props: { protocol: 'imap', title: 'Incoming mail', modelValue: { host: 'imap.example.test', port: 993, security: 'tls' } } })
+
+    expect(wrapper.get('legend').text()).toBe('Incoming mail (IMAP)')
+    expect(wrapper.findAll('option').map((option) => option.attributes('value'))).toEqual(['tls', 'starttls'])
+
+    const local = mount(ServerFields, { props: { protocol: 'imap', title: 'Incoming mail', allowUnencrypted: true, modelValue: { host: 'greenmail', port: 3143, security: 'tls' } } })
+    expect(local.findAll('option').map((option) => option.attributes('value'))).toEqual(['tls', 'starttls', 'none'])
+  })
+
+  it('still shows an unencrypted connection a server has', () => {
+    const wrapper = mount(ServerFields, { props: { protocol: 'smtp', title: 'Outgoing mail', modelValue: { host: 'greenmail', port: 3025, security: 'none' } } })
+
+    expect((wrapper.get('select').element as HTMLSelectElement).value).toBe('none')
+  })
+
+  it('marks the server that failed and says how', () => {
+    const wrapper = mount(ServerFields, {
+      props: { protocol: 'imap', title: 'Incoming mail', modelValue: { host: 'imap.example.test', port: 993, security: 'tls' }, failed: true, status: { label: 'No answer', tone: 'danger' } },
+    })
+
+    expect(wrapper.get('legend .status').text()).toBe('No answer')
+    expect(wrapper.findAll('input').map((input) => input.attributes('aria-invalid'))).toEqual(['true', 'true'])
+  })
 })

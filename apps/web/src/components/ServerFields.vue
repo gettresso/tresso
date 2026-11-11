@@ -8,6 +8,15 @@ const props = defineProps<{
   title: string
   /** Validation messages by field: host, port, security. */
   errors?: Record<string, string>
+  /**
+   * Whether this server accepts unencrypted connections (MAIL_ALLOW_UNSAFE_SERVERS, local test servers only). Without
+   * it "None" is offered only for a server that has it already, so its settings still show what they are.
+   */
+  allowUnencrypted?: boolean
+  /** A short word next to the title about how checking this server went, such as "No answer". */
+  status?: { label: string; tone: 'danger' | 'neutral' } | null
+  /** Marks the server and port as the part that failed. */
+  failed?: boolean
 }>()
 const settings = defineModel<ServerSettings>({ required: true })
 const id = useId()
@@ -22,43 +31,48 @@ function setSecurity(security: ConnectionSecurity): void {
 
 <template>
   <fieldset class="server">
-    <legend>{{ title }} <span class="protocol">{{ protocol.toUpperCase() }}</span></legend>
+    <legend>
+      <span>{{ title }} ({{ protocol.toUpperCase() }})</span>
+      <span v-if="status" class="status" :class="status.tone">{{ status.label }}</span>
+    </legend>
     <div class="row">
       <label class="field host">
         <FieldLabel :name="`${protocol}.host`">Server</FieldLabel>
         <input
           :id="`${id}-host`"
+          class="mono"
           :value="settings.host"
           autocomplete="off"
           spellcheck="false"
           required
-          :aria-invalid="errors?.host ? 'true' : undefined"
+          :aria-invalid="errors?.host || failed ? 'true' : undefined"
           :aria-describedby="errors?.host ? `${id}-host-error` : undefined"
           @input="settings = { ...settings, host: ($event.target as HTMLInputElement).value.trim() }"
         />
-        <small v-if="errors?.host" :id="`${id}-host-error`" class="error">{{ errors.host }}</small>
+        <small v-if="errors?.host" :id="`${id}-host-error`" class="error" role="alert">{{ errors.host }}</small>
       </label>
       <label class="field port">
         <FieldLabel :name="`${protocol}.port`">Port</FieldLabel>
         <input
+          class="mono"
           :value="settings.port"
           type="number"
           min="1"
           max="65535"
           required
-          :aria-invalid="errors?.port ? 'true' : undefined"
+          :aria-invalid="errors?.port || failed ? 'true' : undefined"
           @input="settings = { ...settings, port: Number(($event.target as HTMLInputElement).value) }"
         />
-        <small v-if="errors?.port" class="error">{{ errors.port }}</small>
+        <small v-if="errors?.port" class="error" role="alert">{{ errors.port }}</small>
       </label>
       <label class="field security">
         <FieldLabel :name="`${protocol}.security`">Security</FieldLabel>
         <select :value="settings.security" @change="setSecurity(($event.target as HTMLSelectElement).value as ConnectionSecurity)">
           <option value="tls">SSL/TLS</option>
           <option value="starttls">STARTTLS</option>
-          <option value="none">None (not recommended)</option>
+          <option v-if="allowUnencrypted || settings.security === 'none'" value="none">None (not recommended)</option>
         </select>
-        <small v-if="errors?.security" class="error">{{ errors.security }}</small>
+        <small v-if="errors?.security" class="error" role="alert">{{ errors.security }}</small>
       </label>
     </div>
   </fieldset>
@@ -72,12 +86,32 @@ function setSecurity(security: ConnectionSecurity): void {
   min-width: 0;
 }
 legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   padding: 0 0 8px;
   font-weight: 600;
 }
-.protocol {
-  font: 500 11px var(--font-mono);
-  color: var(--ink-3);
+.status {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.status.danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.status.neutral {
+  background: var(--ground);
+  color: var(--ink-2);
+}
+.mono {
+  font-family: var(--font-mono) !important;
 }
 .row {
   display: grid;

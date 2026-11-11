@@ -467,10 +467,12 @@ Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes 
   own (`WEB_APP_URL`, `NATIVE_REDIRECT_URI`), so a client cannot send the answer anywhere else. The desktop app asks
   for `native`: it opens the provider in the system browser, as its own sign-in does, because sending its window there
   ended on the web app, another origin without the desktop app's tokens, and the user looked signed out. Calendars alone
-  are only asked for an existing account (`mailAccountId`). The web client asks for calendars only when the user
-  chooses to ("Also sync my calendars" on a new sign-in, "Allow calendar access" later): a Microsoft tenant may not
-  let its users allow them, and asking would then cost the mail too. Signing in again asks for mail and the API adds
-  what the grant allows already. The API stores a pending request (the
+  are only asked for an existing account (`mailAccountId`). The web client asks for calendars along with the mail by
+  default ("Also sync my calendars" on the sign-in step, on unless the user turns it off; "Allow calendar access"
+  later). Calendars left unticked never cost the mail (the account connects and its calendar status says
+  `not_granted`); a Microsoft tenant that refuses the whole sign-in because of the calendars answers `denied` or
+  `admin_approval_required` with `requested` naming the calendars, and the client then offers to connect mail only.
+  Signing in again asks for mail and the API adds what the grant allows already. The API stores a pending request (the
   SHA-256 of a random 256-bit `state`, the PKCE verifier, the user, the requested scopes; 15 minutes, single use) and
   answers the provider's `authorizationUrl`. `GET /api/v1/oauth-providers` lists the providers this server has an
   OAuth app for.
@@ -532,6 +534,23 @@ Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes 
   Microsoft refresh that fails for every scope the grant covers is tried again for mail alone: a user or admin who
   withdrew only the calendar consent keeps the mail, and the grant loses the calendars (status `not_granted`). A
   sign-in that adds calendars wakes the worker holding the account, so calendars start syncing right away.
+
+##### Connecting an account in the web and desktop app
+
+"Add account" (Settings, Accounts, the sidebar and the empty inbox) opens one dialog over Settings, Accounts at
+`/settings/accounts/new`, the page provider sign-ins return to. Step 1 asks for the address only (and says at once
+when it is connected already); `GET /api/v1/mail-server-settings` then names the provider, and the dialog goes to
+the easiest way to connect it: the provider's own sign-in page for Google, Outlook.com and Microsoft 365 (when this
+server has the OAuth app), an app password with Apple's or Yahoo's steps for iCloud and Yahoo, the server form
+prefilled with what was found (or `imap.<domain>` and `smtp.<domain>`) for any other address with known settings,
+and a list of providers when nothing is known. A password account is checked with `POST
+/api/v1/mail-account-checks` and created only when the check passed; a failed check stays on its form and says which
+server failed and how. The account has one username and password for both servers, so the boards' "use the same
+username and password for outgoing mail" switch is not offered. On the web the provider's page opens in a new tab;
+that tab finishes the sign-in when the provider sends it back and hands the outcome to the tab that started it over
+a `BroadcastChannel` (matched by the OAuth state), then closes. The desktop app opens it in the system browser and
+gets the answer through its link, as before. The last step shows the account as connected as soon as sign-in is
+proven, with the name on sent mail, the first sync's progress and whether its calendars sync.
 
 ##### Registering the OAuth apps
 

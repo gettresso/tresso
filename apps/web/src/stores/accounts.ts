@@ -2,8 +2,10 @@ import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { LocationQuery } from 'vue-router'
 import type {
+  CheckMailAccount,
   CompleteProviderAuthorization,
   MailAccount,
+  MailAccountCheck,
   MailAccountUpdate,
   NewMailAccount,
   OAuthProviderId,
@@ -12,6 +14,7 @@ import type {
   ProviderConnectError,
   ProviderConnection,
   ProviderFeature,
+  ServerInfo,
   StartProviderAuthorization,
   SuggestedServerSettings,
 } from '@tresso/core'
@@ -62,6 +65,13 @@ export const useAccountsStore = defineStore('accounts', () => {
     providers.value = await auth.api<OAuthProviderInfo[]>('/api/v1/oauth-providers')
   }
 
+  /** Whether this server lets mail accounts connect without TLS (local test servers only); false until known. */
+  const allowUnencrypted = ref(false)
+
+  async function loadServerRules(): Promise<void> {
+    allowUnencrypted.value = (await auth.api<ServerInfo>('/api/v1/server-info')).allowUnencryptedMailServers === true
+  }
+
   /**
    * Starts a sign-in at the provider and returns where to send the browser; it comes back to the page it left, which
    * finishes with {@link finishProviderSignIn}. With an account id, signs that account in
@@ -71,14 +81,16 @@ export const useAccountsStore = defineStore('accounts', () => {
    *
    * The desktop app asks for the answer to come back through its `tresso://` link: it opens the provider in the
    * system browser, whose tabs hold none of its tokens, so the web app there could not finish the sign-in.
+   *
+   * @param emailAddress the address typed for a new account, which the provider gets as a login hint
    */
-  async function startProviderSignIn(provider: OAuthProviderId, mailAccountId?: string, features: ProviderFeature[] = ['mail']): Promise<string> {
+  async function startProviderSignIn(provider: OAuthProviderId, mailAccountId?: string, features: ProviderFeature[] = ['mail'], emailAddress?: string): Promise<ProviderAuthorization> {
     const body: StartProviderAuthorization = { provider, features }
     if (mailAccountId !== undefined) body.mailAccountId = mailAccountId
+    if (mailAccountId === undefined && emailAddress !== undefined && emailAddress !== '') body.emailAddress = emailAddress
     if (isDesktop) body.returnTo = 'native'
-    const started = await auth.send<ProviderAuthorization>('POST', '/api/v1/provider-authorizations', body)
 
-    return started.authorizationUrl
+    return auth.send<ProviderAuthorization>('POST', '/api/v1/provider-authorizations', body)
   }
 
   /**
@@ -89,7 +101,7 @@ export const useAccountsStore = defineStore('accounts', () => {
    * @returns `browser` when the page opened in the system browser and this window waits, `left` when this tab leaves
    */
   async function openProviderSignIn(provider: OAuthProviderId, mailAccountId?: string, features?: ProviderFeature[]): Promise<'browser' | 'left'> {
-    const url = await startProviderSignIn(provider, mailAccountId, features)
+    const { authorizationUrl: url } = await startProviderSignIn(provider, mailAccountId, features)
     if (!isDesktop) {
       window.location.assign(url)
       return 'left'
@@ -105,21 +117,31 @@ export const useAccountsStore = defineStore('accounts', () => {
    */
   async function finishProviderSignIn(query: LocationQuery): Promise<ProviderConnection | null> {
     const { provider, state, code, error, connectError } = query
+    const description = query.error_description
     if (provider !== 'google' && provider !== 'microsoft') return null
     if (typeof connectError === 'string') {
-      return { provider, connected: null, grant: null, connectError: connectError as ProviderConnectError }
+      return { provider, connected: null, grant: null, connectError: connectError as ProviderConnectError, requested: [], missing: [], existing: false, approvalUrl: null }
     }
     if (typeof state !== 'string') return null
 
     const answer: CompleteProviderAuthorization = { provider, state }
     if (typeof code === 'string') answer.code = code
     if (typeof error === 'string') answer.error = error
+    if (typeof error === 'string' && typeof description === 'string') answer.errorDescription = description.slice(0, 500)
 
     return auth.send<ProviderConnection>('POST', '/api/v1/provider-connections', answer)
   }
 
-  function suggest(emailAddress: string): Promise<SuggestedServerSettings> {
-    return auth.api<SuggestedServerSettings>(`/api/v1/mail-server-settings?${new URLSearchParams({ emailAddress })}`)
+  function suggest(emailAddress: string, signal?: AbortSignal): Promise<SuggestedServerSettings> {
+    return auth.api<SuggestedServerSettings>(`/api/v1/mail-server-settings?${new URLSearchParams({ emailAddress })}`, signal ? { signal } : {})
+  }
+
+  /** Signs in to the servers of an account that is not created yet; nothing is stored. Takes up to half a minute. */
+  function check(account: CheckMailAccount, signal?: AbortSignal): Promise<MailAccountCheck> {
+    const init: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(account) }
+    if (signal) init.signal = signal
+
+    return auth.api<MailAccountCheck>('/api/v1/mail-account-checks', init)
   }
 
   // The desktop app signs another user in without a reload: nothing of the previous one may show meanwhile.
@@ -129,8 +151,26 @@ export const useAccountsStore = defineStore('accounts', () => {
       accounts.value = []
       loaded.value = false
       providers.value = []
+      allowUnencrypted.value = false
     },
   )
 
-  return { accounts, loaded, load, get, create, update, remove, suggest, providers, loadProviders, startProviderSignIn, openProviderSignIn, finishProviderSignIn }
+  return {
+    accounts,
+    loaded,
+    load,
+    get,
+    create,
+    update,
+    remove,
+    suggest,
+    check,
+    providers,
+    loadProviders,
+    allowUnencrypted,
+    loadServerRules,
+    startProviderSignIn,
+    openProviderSignIn,
+    finishProviderSignIn,
+  }
 })
