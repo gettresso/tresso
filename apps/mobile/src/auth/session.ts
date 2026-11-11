@@ -81,6 +81,13 @@ export class Session {
   private refreshing: Promise<string> | null = null
   /** Goes up whenever a sign-in ends, so a refresh that finishes afterwards cannot sign the user back in. */
   private generation = 0
+  /** Every write to the store, one after another, so a removal never lands between the steps of an earlier save. */
+  private writes: Promise<void> = Promise.resolve()
+  /**
+   * The store no longer names the previous user or a sign-out (see {@link prepareStore}). Until it does, tokens are
+   * not kept: they would open another user's mail at the next launch, or be taken for an unfinished sign-out.
+   */
+  private prepared = true
 
   constructor(
     private readonly config: OAuthClientConfig,
@@ -99,14 +106,23 @@ export class Session {
 
   /**
    * Reads the sign-in kept from the previous launch. Called again after it failed; a sign-in or sign-out made in the
-   * meantime wins over what it reads.
+   * meantime wins over what it reads. A sign-out the user asked for that was cut off (the app was killed) is finished
+   * here: it ends as signed out, so the mail on the phone is removed too.
    */
   async restore(): Promise<void> {
     const generation = this.generation
     try {
-      const tokens = await this.store.load()
-      if (generation === this.generation && this.state.tokens === null) {
+      const [tokens, signedOut] = await Promise.all([this.store.load(), this.store.loginRequired()])
+      if (generation !== this.generation || this.state.tokens !== null) {
+        return
+      }
+      if (!signedOut) {
         this.update({ tokens, restored: tokens !== null, restoreFailed: false, storageError: null })
+        return
+      }
+      this.update({ tokens: null, restored: false, restoreFailed: false, ended: 'signedOut', storageError: null })
+      if (tokens !== null) {
+        await this.finishSignOut(tokens.refreshToken)
       }
     } catch (error) {
       if (generation === this.generation && this.state.tokens === null) {
@@ -116,24 +132,14 @@ export class Session {
   }
 
   /**
-   * Exchanges the authorization code from the browser for tokens and keeps them. Who was signed in last is forgotten
-   * first, so these tokens never open another user's mail; when that fails, the tokens are not kept either.
+   * Exchanges the authorization code from the browser for tokens and keeps them. The store is prepared first (see
+   * {@link prepareStore}); while that fails, the tokens are not kept.
    */
   async completeSignIn(code: string, codeVerifier: string): Promise<void> {
     const tokens = await exchangeCode(this.config, code, codeVerifier, this.fetchImpl)
     this.update({ tokens, restored: false, restoreFailed: false, ended: null })
-    try {
-      await this.store.forgetUser()
-      await this.store.save(tokens)
-      this.update({ storageError: null })
-    } catch (error) {
-      this.update({ storageError: notKept(error) })
-    }
-    try {
-      await this.store.setLoginRequired(false)
-    } catch {
-      // Not reported: it only means the next sign-in after this one asks for the password once more.
-    }
+    this.prepared = false
+    await this.saveTokens(tokens)
   }
 
   /**
@@ -159,16 +165,25 @@ export class Session {
     const refreshToken = this.state.tokens?.refreshToken ?? null
     this.generation++
     this.refreshing = null
+    // Signed out at once: a request made while the revocation is underway finds no tokens and starts no refresh.
+    this.update({ tokens: null, restored: false, ended: 'signedOut', paymentRequired: false })
+    let failure: unknown = null
+    try {
+      // First, so a sign-out cut off from here on is finished at the next launch (see restore).
+      await this.write(() => this.store.setLoginRequired(true))
+    } catch (error) {
+      failure = error
+    }
     if (refreshToken !== null) {
       await this.revoke(refreshToken)
     }
-    this.update({ tokens: null, restored: false, ended: 'signedOut', paymentRequired: false })
     try {
-      await Promise.all([this.store.setLoginRequired(true), this.store.save(null), this.store.forgetUser()])
-      this.update({ storageError: null })
+      await this.removeSignIn()
     } catch (error) {
-      this.update({ storageError: `You are signed out here, but the sign-in could not be removed from this device: ${message(error)}` })
+      failure ??= error
     }
+    this.prepared = true
+    this.update({ storageError: failure === null ? null : `You are signed out here, but the sign-in could not be removed from this device: ${message(failure)}` })
   }
 
   async accessToken(): Promise<string> {
@@ -270,12 +285,7 @@ export class Session {
       throw new ApiError(401, 'Signed out.')
     }
     this.update({ tokens: next })
-    try {
-      await this.store.save(next)
-      this.update({ storageError: null })
-    } catch (error) {
-      this.update({ storageError: notKept(error) })
-    }
+    await this.saveTokens(next)
     return next.accessToken
   }
 
@@ -288,11 +298,69 @@ export class Session {
     this.refreshing = null
     this.update({ tokens: null, ended: 'expired', paymentRequired: false })
     try {
-      await this.store.save(null)
+      await this.write(async () => {
+        // A flag from an earlier sign-out that this sign-in could not clear would remove this user's mail next launch.
+        if (!this.prepared) {
+          await this.store.setLoginRequired(false)
+        }
+        await this.store.save(null)
+      })
+      this.prepared = true
       this.update({ storageError: null })
     } catch (error) {
       this.update({ storageError: `Your session has expired, but the sign-in could not be removed from this device: ${message(error)}` })
     }
+  }
+
+  /** Keeps a new token set, once the store is prepared for it. */
+  private async saveTokens(tokens: TokenSet): Promise<void> {
+    try {
+      await this.write(async () => {
+        if (!this.prepared) {
+          await this.prepareStore()
+        }
+        await this.store.save(tokens)
+      })
+      this.update({ storageError: null })
+    } catch (error) {
+      this.update({ storageError: notKept(error) })
+    }
+  }
+
+  /**
+   * Readies the store for the tokens of a sign-in made here: who was signed in last is forgotten, so these tokens
+   * never open another user's mail, and the flag of an earlier sign-out is cleared, so the next launch does not finish
+   * that sign-out (and the next sign-in does not ask for the password again).
+   */
+  private async prepareStore(): Promise<void> {
+    await this.store.forgetUser()
+    await this.store.setLoginRequired(false)
+    this.prepared = true
+  }
+
+  private async finishSignOut(refreshToken: string | null): Promise<void> {
+    if (refreshToken !== null) {
+      void this.revoke(refreshToken)
+    }
+    try {
+      await this.removeSignIn()
+    } catch (error) {
+      this.update({ storageError: `You are signed out here, but the sign-in could not be removed from this device: ${message(error)}` })
+    }
+  }
+
+  /** Removes the tokens and who was signed in from the store. */
+  private removeSignIn(): Promise<void> {
+    return this.write(async () => {
+      await this.store.save(null)
+      await this.store.forgetUser()
+    })
+  }
+
+  private write(operation: () => Promise<void>): Promise<void> {
+    const done = this.writes.then(operation)
+    this.writes = done.catch(() => undefined)
+    return done
   }
 
   private async revoke(refreshToken: string): Promise<void> {

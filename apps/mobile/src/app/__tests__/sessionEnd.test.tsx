@@ -183,6 +183,22 @@ describe('when the sign-in ends', () => {
     expect([...keychain.items.keys()]).toEqual(['auth.loginRequired'])
   })
 
+  it('finishes a sign-out that was cut off, also removing the mail, at the next launch', async () => {
+    keepSignIn(Date.now() + 3_600_000)
+    vi.stubGlobal('fetch', vi.fn<Fetch>(api(() => Promise.reject(new Error('no refresh in this test')))))
+    const before = launch()
+    await waitFor(() => expect(seen?.mail.userId).toBe('kim'))
+    before.unmount()
+    // The app was killed right after the sign-out wrote its flag.
+    keychain.items.set('auth.loginRequired', 'yes')
+
+    launch()
+
+    await waitFor(() => expect(disk.deleted).toEqual([KIM]))
+    expect(seen?.auth.isAuthenticated).toBe(false)
+    expect([...keychain.items.keys()]).toEqual(['auth.loginRequired'])
+  })
+
   it('asks for the password at the sign-in after a sign-out, also after a restart, and not once that sign-in completed', async () => {
     keepSignIn(Date.now() + 3_600_000)
     vi.stubGlobal('fetch', vi.fn<Fetch>(api(async () => new Response(JSON.stringify({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600 })))))
