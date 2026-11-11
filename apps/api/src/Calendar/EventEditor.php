@@ -346,6 +346,27 @@ final readonly class EventEditor
         self::touch($override, self::significantState($override) !== $before);
     }
 
+    /**
+     * Whether an override shows what its series' occurrence would: the same fields, guests (their answers aside),
+     * alarms and length.
+     */
+    private static function sameAsSeries(VEvent $override, VEvent $master): bool
+    {
+        foreach (['SUMMARY', 'DESCRIPTION', 'LOCATION', 'URL', 'STATUS', 'TRANSP', 'CLASS', 'PRIORITY', EventReader::TRAVEL] as $name) {
+            if (Props::text($override, $name) !== Props::text($master, $name)) {
+                return false;
+            }
+        }
+        $conference = static fn (VEvent $event): array => array_map(Props::value(...), Props::all($event, 'CONFERENCE'));
+        $utc = new \DateTimeZone('UTC');
+        $length = static fn (VEvent $event): int => Occurrences::endOf($event, $utc)->getTimestamp() - \DateTimeImmutable::createFromInterface(self::dtStart($event)->getDateTime($utc))->getTimestamp();
+
+        return self::attendeeState($override) === self::attendeeState($master)
+            && self::reminderState($override) === self::reminderState($master)
+            && $conference($override) === $conference($master)
+            && $length($override) === $length($master);
+    }
+
     /** @return list<string> who is invited, by name and role, and who organizes */
     private static function attendeeState(VEvent $event): array
     {
@@ -597,6 +618,11 @@ final readonly class EventEditor
                     // Changed in other ways only: it moves with the series.
                     self::shiftProperty(Props::dateTime($override, 'DTSTART'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar, $form);
                     self::shiftProperty(Props::dateTime($override, 'DTEND'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar, $form);
+                } elseif (null !== $form) {
+                    // Moved to its own time: it stays there, in the series' new form (floating or zoned), so readers in
+                    // another zone see it at the same time as the rest.
+                    self::shiftProperty(Props::dateTime($override, 'DTSTART'), 0, $masterStart->timeZone, $changes->start->timeZone, $vcalendar, $form);
+                    self::shiftProperty(Props::dateTime($override, 'DTEND'), 0, $masterStart->timeZone, $changes->start->timeZone, $vcalendar, $form);
                 }
             }
             foreach ([...Props::dateTimes($master, 'EXDATE'), ...Props::dateTimes($master, 'RDATE')] as $property) {
@@ -715,6 +741,11 @@ final readonly class EventEditor
             // values for the fields left alone, which must not undo what made this occurrence its own.
             $sameLength = self::wallClockSeconds($changes->end) - self::wallClockSeconds($changes->start) === $masterLength;
             $this->writeEdits($edited, $oldMaster, $changes, $next, $self, 0 === $shift && $sameLength);
+            if (self::atItsOwnTime($edited) && self::sameAsSeries($edited, $newMaster)) {
+                // Nothing left that makes it its own: the new series' first occurrence, which a later change of the
+                // series must reach.
+                $next->remove($edited);
+            }
         }
         self::withOrganizer($next, $object->getCalendar(), $organizer);
         self::requestConference($next, $object->getCalendar(), $changes->conferenceProvider);
