@@ -39,6 +39,7 @@ final class MailServerSettingsTest extends DatabaseTestCase
             'imap' => ['host' => 'imap.fastmail.com', 'port' => 993, 'security' => 'tls'],
             'smtp' => ['host' => 'smtp.fastmail.com', 'port' => 587, 'security' => 'starttls'],
             'authentication' => ['password', 'oauth2'],
+            'provider' => null,
         ], $settings);
     }
 
@@ -52,7 +53,57 @@ final class MailServerSettingsTest extends DatabaseTestCase
 
         self::assertSame('provider', $settings['source']);
         self::assertSame(['host' => 'mail.company.example', 'port' => 993, 'security' => 'tls'], $settings['imap']);
-        self::assertContains('https://autoconfig.company.example/mail/config-v1.1.xml?emailaddress=kim@company.example', $this->router()->requested());
+        self::assertContains('https://autoconfig.company.example/mail/config-v1.1.xml', $this->router()->requested(), 'The answer is cached for the domain, so the address is not sent.');
+        self::assertSame([], array_filter($this->router()->requested(), static fn (string $url): bool => str_contains($url, 'kim')));
+    }
+
+    public function testAPersonalizedAnswerIsNotHandedToTheNextAddress(): void
+    {
+        $personal = str_replace('%EMAILADDRESS%', 'anna@company.example', AutoconfigParserTest::FASTMAIL);
+        $this->router()->respond('https://autoconfig.company.example/mail/config-v1.1.xml', $personal);
+
+        self::assertSame('anna@company.example', $this->detect('anna@company.example')['username']);
+        self::assertSame('bob@company.example', $this->detect('bob@company.example')['username']);
+    }
+
+    public function testNamesTheProviderOfWellKnownDomains(): void
+    {
+        $expected = [
+            'kim@gmail.com' => 'google',
+            'kim@googlemail.com' => 'google',
+            'kim@outlook.com' => 'outlook',
+            'kim@hotmail.com' => 'outlook',
+            'kim@live.com' => 'outlook',
+            'kim@msn.com' => 'outlook',
+            'kim@icloud.com' => 'icloud',
+            'kim@me.com' => 'icloud',
+            'kim@mac.com' => 'icloud',
+            'kim@yahoo.com' => 'yahoo',
+            'kim@yahoo.co.uk' => 'yahoo',
+            'kim@ymail.com' => 'yahoo',
+            'kim@studio-noord.example' => null,
+        ];
+        foreach ($expected as $address => $provider) {
+            self::assertSame($provider, $this->detect($address)['provider'], $address);
+        }
+    }
+
+    public function testNamesTheProviderOfACompanyDomainByItsMailExchanger(): void
+    {
+        $mx = static::getContainer()->get(StaticMxResolver::class);
+        $mx->set('workspace.example', ['aspmx.l.google.com']);
+        $mx->set('m365.example', ['m365-example.mail.protection.outlook.com']);
+        $mx->set('personal.example', ['personal-example.olc.protection.outlook.com']);
+        $mx->set('yahoo-hosted.example', ['mta5.am0.yahoodns.net']);
+        $mx->set('apple-hosted.example', ['mx01.mail.icloud.com']);
+        $mx->set('own.example', ['mail.own.example']);
+
+        self::assertSame('google', $this->detect('kim@workspace.example')['provider']);
+        self::assertSame('m365', $this->detect('kim@m365.example')['provider']);
+        self::assertSame('outlook', $this->detect('kim@personal.example')['provider']);
+        self::assertSame('yahoo', $this->detect('kim@yahoo-hosted.example')['provider']);
+        self::assertSame('icloud', $this->detect('kim@apple-hosted.example')['provider']);
+        self::assertNull($this->detect('kim@own.example')['provider']);
     }
 
     public function testFindsHostedMailThroughTheMailExchanger(): void

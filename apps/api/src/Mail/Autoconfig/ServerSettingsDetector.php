@@ -16,7 +16,11 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * Finds the IMAP and SMTP servers for an address the way Thunderbird does: the provider's own autoconfig, then
  * Mozilla's ISPDB by domain, then ISPDB by the domain's mail exchanger (which finds hosted mail, e.g. a company
  * domain on a large provider). Requests go through a client that refuses private networks, because the domain is
- * user input.
+ * user input. Also tells which large provider handles an address ({@see self::provider()}), so the client can offer
+ * the easiest way to connect it.
+ *
+ * Answers are cached per domain, so they must not depend on the address: the address is not sent to the domain's own
+ * autoconfig (a server that personalized its answer would otherwise hand one user's login name to the next).
  */
 final readonly class ServerSettingsDetector
 {
@@ -39,8 +43,8 @@ final readonly class ServerSettingsDetector
 
     public function detect(string $emailAddress): ?DetectedServers
     {
-        $domain = strtolower(substr((string) strrchr($emailAddress, '@'), 1));
-        if (1 !== preg_match('/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $domain)) {
+        $domain = self::domainOf($emailAddress);
+        if (null === $domain) {
             return null;
         }
 
@@ -56,14 +60,59 @@ final readonly class ServerSettingsDetector
     }
 
     /**
+     * Which large provider handles mail for the address: by its domain (gmail.com, outlook.com, icloud.com, yahoo.*),
+     * otherwise by the domain's preferred mail exchanger, which finds company domains on Google Workspace or
+     * Microsoft 365. Null for everything else.
+     */
+    public function provider(string $emailAddress): ?MailServiceProvider
+    {
+        $domain = self::domainOf($emailAddress);
+        if (null === $domain) {
+            return null;
+        }
+
+        $byDomain = MailServiceProvider::forDomain($domain);
+        if (null !== $byDomain) {
+            return $byDomain;
+        }
+        $exchanger = $this->exchangers($domain)[0] ?? null;
+
+        return null === $exchanger ? null : MailServiceProvider::forMailExchanger($exchanger);
+    }
+
+    private static function domainOf(string $emailAddress): ?string
+    {
+        $domain = strtolower(substr((string) strrchr($emailAddress, '@'), 1));
+
+        return 1 === preg_match('/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $domain) ? $domain : null;
+    }
+
+    /**
+     * The domain's mail exchangers, most preferred first; cached like the settings, since both the settings lookup and
+     * {@see self::provider()} ask.
+     *
+     * @return list<string>
+     */
+    private function exchangers(string $domain): array
+    {
+        /** @var list<string> */
+        return $this->cache->get('mx.'.hash('sha256', $domain), function (ItemInterface $item) use ($domain): array {
+            $exchangers = $this->mx->resolve($domain);
+            $item->expiresAfter([] === $exchangers ? self::MISSING_TTL : self::FOUND_TTL);
+
+            return $exchangers;
+        });
+    }
+
+    /**
      * @return array{xml: string, source: string}|null
      */
     private function lookup(string $domain, string $emailAddress): ?array
     {
-        // Started together, used in order of preference.
+        // Started together, used in order of preference. Without the address: the answer is cached for the domain.
         $requests = [
-            'provider' => $this->get('https://autoconfig.'.$domain.'/mail/config-v1.1.xml', ['emailaddress' => $emailAddress]),
-            'provider-well-known' => $this->get('https://'.$domain.'/.well-known/autoconfig/mail/config-v1.1.xml', ['emailaddress' => $emailAddress]),
+            'provider' => $this->get('https://autoconfig.'.$domain.'/mail/config-v1.1.xml'),
+            'provider-well-known' => $this->get('https://'.$domain.'/.well-known/autoconfig/mail/config-v1.1.xml'),
             'ispdb' => $this->get(self::ISPDB_URL.$domain),
         ];
         try {
@@ -98,7 +147,7 @@ final readonly class ServerSettingsDetector
      */
     private function mxDomains(string $domain): array
     {
-        $exchanger = $this->mx->resolve($domain)[0] ?? null;
+        $exchanger = $this->exchangers($domain)[0] ?? null;
         if (null === $exchanger) {
             return [];
         }
@@ -114,13 +163,10 @@ final readonly class ServerSettingsDetector
         return $domains;
     }
 
-    /**
-     * @param array<string, string> $query
-     */
-    private function get(string $url, array $query = []): ?ResponseInterface
+    private function get(string $url): ?ResponseInterface
     {
         try {
-            return $this->httpClient->request('GET', $url, ['query' => $query, 'timeout' => 4, 'max_duration' => 6, 'max_redirects' => 2]);
+            return $this->httpClient->request('GET', $url, ['timeout' => 4, 'max_duration' => 6, 'max_redirects' => 2]);
         } catch (ExceptionInterface $exception) {
             $this->logger->info('Autoconfig request could not be made.', ['url' => $url, 'exception' => $exception]);
 
