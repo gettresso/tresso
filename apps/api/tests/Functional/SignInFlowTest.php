@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Tests\Functional;
 
 use App\Service\UserProvisioner;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
+use Symfony\Component\DomCrawler\Field\ChoiceFormField;
 use Symfony\Component\Console\Tester\CommandTester;
 
 /**
@@ -144,6 +146,140 @@ final class SignInFlowTest extends DatabaseTestCase
 
         self::assertResponseStatusCodeSame(400);
         self::assertSame('invalid_grant', $this->json()['error'] ?? null);
+    }
+
+    public function testKeepMeSignedInSignsTheBrowserInAgainAfterTheSession(): void
+    {
+        $this->signIn();
+        self::assertNotNull($this->client->getCookieJar()->get('REMEMBERME'), 'Keep me signed in is on by default.');
+
+        $this->dropSession();
+
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'The remember-me cookie signs the browser in again.');
+    }
+
+    public function testWithoutKeepMeSignedInTheSignInEndsWithTheSession(): void
+    {
+        $this->signIn(rememberMe: false);
+        self::assertNull($this->client->getCookieJar()->get('REMEMBERME'));
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize());
+
+        $this->dropSession();
+
+        self::assertSame('http://localhost/login', $this->authorize());
+    }
+
+    public function testAPasswordChangeEndsTheRememberedSignIn(): void
+    {
+        $this->signIn();
+        $this->connection()->executeStatement("UPDATE app_user SET password = 'another-hash' WHERE email = :email", ['email' => self::EMAIL]);
+        static::getContainer()->get(EntityManagerInterface::class)->clear();
+        $this->dropSession();
+
+        self::assertSame('http://localhost/login', $this->authorize());
+    }
+
+    public function testTheSignOutLinkOnlyShowsAPage(): void
+    {
+        $this->signIn();
+
+        $crawler = $this->client->request('GET', '/logout');
+
+        self::assertResponseIsSuccessful();
+        self::assertSelectorTextContains('h1', 'Sign out');
+        self::assertResponseHeaderSame('X-Frame-Options', 'DENY');
+        self::assertResponseHeaderSame('Referrer-Policy', 'same-origin');
+        self::assertSame(1, $crawler->filter('form[method="post"][action="/logout"]')->count());
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'Still signed in.');
+    }
+
+    public function testTheSignOutPageSignsOut(): void
+    {
+        $this->signIn();
+
+        $crawler = $this->client->request('GET', '/logout');
+        $this->client->submit($crawler->selectButton('Sign out')->form());
+
+        self::assertResponseRedirects($this->webAppUrl());
+        self::assertNull($this->client->getCookieJar()->get('REMEMBERME'), 'The remember-me cookie is cleared.');
+        self::assertSame('http://localhost/login', $this->authorize());
+    }
+
+    public function testTheWebAppSignsOutWithAFormPost(): void
+    {
+        $this->signIn();
+
+        $this->client->request('POST', '/logout', server: ['HTTP_ORIGIN' => $this->webAppUrl()]);
+
+        self::assertResponseRedirects($this->webAppUrl());
+        self::assertSame('http://localhost/login', $this->authorize());
+    }
+
+    public function testAnotherSiteCannotSignPeopleOut(): void
+    {
+        $this->signIn();
+
+        $this->client->request('POST', '/logout', server: ['HTTP_ORIGIN' => 'https://evil.example']);
+        self::assertResponseStatusCodeSame(403);
+        $this->client->request('POST', '/logout', ['_csrf_token' => 'guessed']);
+        self::assertResponseStatusCodeSame(403);
+        $this->client->request('POST', '/logout', server: ['HTTP_ORIGIN' => 'null']);
+        self::assertResponseStatusCodeSame(403);
+
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'Still signed in.');
+    }
+
+    public function testSignOutWithoutASignInGoesBackToTheApp(): void
+    {
+        $this->client->request('GET', '/logout');
+
+        self::assertResponseRedirects($this->webAppUrl());
+    }
+
+    private function signIn(bool $rememberMe = true): void
+    {
+        $crawler = $this->client->request('GET', '/login');
+        $form = $crawler->selectButton('Sign in')->form(['_username' => self::EMAIL, '_password' => self::PASSWORD]);
+        if (!$rememberMe) {
+            $checkbox = $form['_remember_me'];
+            self::assertInstanceOf(ChoiceFormField::class, $checkbox);
+            $checkbox->untick();
+        }
+        $this->client->submit($form);
+    }
+
+    /** The browser's session cookie is gone (it closed, or the session expired); other cookies stay. */
+    private function dropSession(): void
+    {
+        // The name of the session cookie in tests (MockFileSessionStorage).
+        $this->client->getCookieJar()->expire('MOCKSESSID');
+        self::assertNull($this->client->getCookieJar()->get('MOCKSESSID'));
+    }
+
+    /** Where /oauth/authorize sends the browser for the web app: the callback with a code, or the sign-in page. */
+    private function authorize(): string
+    {
+        $verifier = bin2hex(random_bytes(32));
+        $this->client->request('GET', '/oauth/authorize?'.http_build_query([
+            'response_type' => 'code',
+            'client_id' => 'web',
+            'redirect_uri' => $this->webRedirectUri(),
+            'scope' => 'mail:read',
+            'state' => 's',
+            'code_challenge' => rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '='),
+            'code_challenge_method' => 'S256',
+        ]));
+        self::assertResponseRedirects();
+
+        return (string) $this->client->getResponse()->headers->get('Location');
+    }
+
+    private function webAppUrl(): string
+    {
+        $webAppUrl = $_SERVER['WEB_APP_URL'] ?? null;
+        \assert(\is_string($webAppUrl) && '' !== $webAppUrl);
+
+        return rtrim($webAppUrl, '/');
     }
 
     private function webRedirectUri(): string

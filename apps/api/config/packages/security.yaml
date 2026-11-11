@@ -59,8 +59,19 @@ security:
                 login_path: app_login
                 check_path: app_login
                 enable_csrf: true
+            # "Keep me signed in" (on by default on the sign-in form): the browser signs in again from this cookie for
+            # 30 days after the session ended, as long as the refresh tokens of our apps. A new password ends it.
+            remember_me:
+                secret: '%kernel.secret%'
+                lifetime: 2592000
+                secure: auto
+                httponly: true
+                samesite: lax
+                signature_properties: ['password']
+            # Only a POST from Tresso gets here (App\Security\SignOutGuard); it ends the session and the cookie above.
             logout:
                 path: app_logout
+                target: '%env(WEB_APP_URL)%'
 
     access_control:
         - { path: ^/login$, roles: PUBLIC_ACCESS }
