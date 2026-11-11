@@ -32,6 +32,13 @@ framework:
             limit: 3
             interval: '1 day'
             cache_pool: cache.rate_limiter_shared
+        # Checking a mail account's servers before connecting it (POST /api/v1/mail-account-checks), per user: each
+        # check connects to a server the user named.
+        mail_account_check:
+            policy: sliding_window
+            limit: 20
+            interval: '10 minutes'
+            cache_pool: cache.rate_limiter_shared
 
 when@dev: &redis_limits
     framework:

@@ -442,6 +442,16 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   icloud.com, yahoo.*, ...) or else from the preferred mail exchanger (`*.google.com`, `*.mail.protection.outlook.com`
   for Microsoft 365, `*.olc.protection.outlook.com` for Outlook.com, `*.yahoodns.net`, `*.icloud.com`), so the client
   offers the easiest way to connect: the provider's sign-in page or an app password.
+- `POST /api/v1/mail-account-checks` (scope `settings:write`, our own apps only) checks an IMAP/SMTP account before it
+  is created, with the body of a new account minus the name: it signs in to the IMAP server and lists the folders,
+  then signs in to the SMTP server (EHLO, STARTTLS where asked for, AUTH PLAIN or LOGIN, nothing sent), each within
+  15 seconds, and answers `{imap, smtp, folders, detail}` with `ok`, `auth_failed`, `unreachable`, `certificate`,
+  `blocked`, `failed` or `not_checked` (SMTP when IMAP failed). It connects by the sync workers' rules: every address
+  of the host must be public, the connection goes to one of the addresses that were checked, and TLS is verified for
+  the host name. Nothing is stored; the web client creates the account only once a check passed, so a wrong password
+  or server never leaves a broken account behind. At most 20 checks per user in 10 minutes.
+- Changing the password, username or a server of an account in status `auth_failed` or `error` sets it `active`
+  again and wakes the worker holding it, so the new settings are tried at once.
 
 #### Provider sign-in (Gmail, Microsoft 365)
 

@@ -53,6 +53,8 @@ final class FirstPartyOnlySettingsTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(403);
         $this->client->request('GET', '/api/v1/mail-server-settings?emailAddress=kim%40other.example', server: $headers);
         self::assertResponseStatusCodeSame(403);
+        $this->client->jsonRequest('POST', '/api/v1/mail-account-checks', array_diff_key(['emailAddress' => 'kim@other.example'] + self::imapAccount(), ['displayName' => true]), $headers);
+        self::assertResponseStatusCodeSame(403, 'A check signs in with a password the caller names, at a server the caller names.');
         $this->client->request('DELETE', '/api/v1/mail-accounts/'.$this->accountId, server: $headers);
         self::assertResponseStatusCodeSame(403);
 
