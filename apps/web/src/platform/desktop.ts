@@ -9,16 +9,28 @@ import { openUrl } from '@tauri-apps/plugin-opener'
  */
 export const isDesktop = isTauri()
 
+/**
+ * The keychain commands run off the shell's main thread, so two of them could pass each other: a save and the
+ * sign-out's clear right after it would leave the tokens behind. Each one waits for the one asked for before it.
+ */
+let keychainQueue: Promise<unknown> = Promise.resolve()
+
+function inOrder<T>(command: () => Promise<T>): Promise<T> {
+  const result = keychainQueue.then(command, command)
+  keychainQueue = result.catch(() => undefined)
+  return result
+}
+
 export function loadKeychainTokens(): Promise<string | null> {
-  return invoke<string | null>('load_tokens')
+  return inOrder(() => invoke<string | null>('load_tokens'))
 }
 
 export function saveKeychainTokens(tokens: string): Promise<void> {
-  return invoke('save_tokens', { tokens })
+  return inOrder(() => invoke('save_tokens', { tokens }))
 }
 
 export function clearKeychainTokens(): Promise<void> {
-  return invoke('clear_tokens')
+  return inOrder(() => invoke('clear_tokens'))
 }
 
 export function openInBrowser(url: string): Promise<void> {
