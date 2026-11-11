@@ -167,6 +167,7 @@ final class MailAccountApiTest extends DatabaseTestCase
         $entityManager = static::getContainer()->get(EntityManagerInterface::class);
         $entityManager->wrapInTransaction(fn () => $this->account($id)->setStatus(MailAccountStatus::Error, 'Could not connect to the mail server.'));
         $hub = static::getContainer()->get(RecordingMercureHub::class);
+        self::assertInstanceOf(RecordingMercureHub::class, $hub);
         $hub->takePublished();
 
         $this->client->request('PATCH', '/api/v1/mail-accounts/'.$id, server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode([
@@ -177,7 +178,8 @@ final class MailAccountApiTest extends DatabaseTestCase
         self::assertResponseIsSuccessful();
         $body = $this->decodedResponse();
         self::assertSame('active', $body['status'] ?? null);
-        self::assertNull($body['statusDetail'] ?? 'missing');
+        self::assertArrayHasKey('statusDetail', $body);
+        self::assertNull($body['statusDetail']);
         $woken = array_filter($hub->takePublished(), static fn (array $update): bool => MercureTokens::OUTBOX_TOPIC === $update['body']['topic']);
         self::assertSame([json_encode(['mailAccountId' => $id])], array_values(array_map(static fn (array $update): string => $update['body']['data'], $woken)));
     }

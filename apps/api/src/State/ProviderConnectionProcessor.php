@@ -29,17 +29,26 @@ final readonly class ProviderConnectionProcessor implements ProcessorInterface
         $state = $data->state ?? throw new \LogicException('Validation guarantees a state.');
 
         $outcome = $this->connector->complete($this->currentUser->get(), $provider, $state, $data->code, $data->error, $data->errorDescription);
-        $values = static fn (array $features): array => array_map(static fn (ProviderFeature $feature): string => $feature->value, $features);
 
         return new ProviderConnection(
             $provider->value,
             $outcome->connected,
             $outcome->grant,
             $outcome->error?->value,
-            $values($outcome->requested),
-            $values($outcome->missing),
+            self::values($outcome->requested),
+            self::values($outcome->missing),
             $outcome->existing,
             $outcome->approvalUrl,
         );
+    }
+
+    /**
+     * @param list<ProviderFeature> $features
+     *
+     * @return list<string>
+     */
+    private static function values(array $features): array
+    {
+        return array_map(static fn (ProviderFeature $feature): string => $feature->value, $features);
     }
 }

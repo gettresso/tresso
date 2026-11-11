@@ -18,11 +18,11 @@ if (false === $imap || false === $smtp) {
     fwrite(\STDERR, $errorMessage ?? 'Cannot listen.');
     exit(1);
 }
-$port = static fn ($server): string => substr((string) strrchr((string) stream_socket_get_name($server, false), ':'), 1);
+$port = static fn (mixed $server): string => is_resource($server) ? substr((string) strrchr((string) stream_socket_get_name($server, false), ':'), 1) : '';
 echo $port($imap), ' ', $port($smtp), "\n";
 
-$line = static function ($client): string {
-    $read = fgets($client);
+$line = static function (mixed $client): string {
+    $read = is_resource($client) ? fgets($client) : false;
 
     return false === $read ? '' : rtrim($read, "\r\n");
 };
