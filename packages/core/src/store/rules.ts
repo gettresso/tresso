@@ -69,8 +69,12 @@ export function syncedDraft(local: Draft | null | undefined, draft: SyncedDraft)
  * recognised and not sent again. Returns the draft to keep, or null to delete it.
  */
 export function deletedDraft(local: Draft): Draft | null {
-  if (local.outgoingId || local.sendAttemptId) {
+  if (local.outgoingId) {
     return { ...local, pendingSave: false, remoteVersion: null }
+  }
+  if (local.sendAttemptId || local.unsureSendId) {
+    // Kept for its send only, and marked so: the follow-up removes it when the send turns out not to be what hid it.
+    return { ...local, pendingSave: false, remoteVersion: null, hiddenOnServer: true }
   }
   return local.pendingSave ? { ...local, version: 0, remoteVersion: null } : null
 }

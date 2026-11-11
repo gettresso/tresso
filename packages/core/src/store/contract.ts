@@ -453,7 +453,11 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
 
       await db.apply(page({ cursor: 11, deleted: [{ type: 'draft', id: 'd1' }] }))
 
-      expect(await db.draft('d1')).toMatchObject({ sendAttemptId: 'a1', pendingSave: false })
+      expect(await db.draft('d1')).toMatchObject({ sendAttemptId: 'a1', pendingSave: false, hiddenOnServer: true })
+      // The server bringing the draft back ends the mark.
+      const synced = { id: 'd1', mailAccountId: 'work', kind: 'new' as const, to: [], cc: [], bcc: [], subject: 'Hi', html: '<p>Hi</p>', signatureId: null, quoteHtml: '', inReplyToMessageId: null, version: 3, updatedAt: '2026-10-19T08:00:00Z', attachments: [] }
+      await db.apply(page({ cursor: 12, drafts: [synced] }))
+      expect((await db.draft('d1'))?.hiddenOnServer).toBeUndefined()
     })
 
     it('keeps a newer draft than the one a late page brings', async () => {
