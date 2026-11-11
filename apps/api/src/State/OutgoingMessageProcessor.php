@@ -14,6 +14,7 @@ use App\Entity\Draft;
 use App\Entity\MailAccount;
 use App\Entity\Message;
 use App\Entity\OutgoingMessage;
+use App\Entity\User;
 use App\Enum\DraftKind;
 use App\Enum\OutgoingStatus;
 use App\HandOver\HandOvers;
@@ -65,6 +66,19 @@ final readonly class OutgoingMessageProcessor implements ProcessorInterface
         $user = $this->currentUser->get();
 
         if ($data instanceof SendMessageInput) {
+            $id = null === $data->outgoingId ? null : Uuid::fromString($data->outgoingId);
+            // A request sent again for a message that is queued already gets it back first, whatever its send time or
+            // the age of its id says now: the answer to the first request got lost, and the mail is on its way.
+            $queued = null === $id ? null : $this->alreadyQueued($id, $user);
+            if (null !== $queued) {
+                return OutgoingMessageResource::fromEntity($queued);
+            }
+            $now = new \DateTimeImmutable();
+            $late = $data->timeViolations($now);
+            if (\count($late) > 0) {
+                throw new ValidationException($late);
+            }
+
             $account = $this->accounts->findOneOwnedBy($user, $data->mailAccountId);
             if (!$account instanceof MailAccount) {
                 throw self::invalid('mailAccountId', 'No mail account with that id.', $data->mailAccountId);
@@ -76,7 +90,6 @@ final readonly class OutgoingMessageProcessor implements ProcessorInterface
                     throw self::invalid('inReplyToMessageId', 'No message with that id.', $data->inReplyToMessageId);
                 }
             }
-            $now = new \DateTimeImmutable();
             $composition = new Composition(
                 $account,
                 self::recipients($data->to),
@@ -90,7 +103,6 @@ final readonly class OutgoingMessageProcessor implements ProcessorInterface
 
             $draftId = $data->draftId;
             $acceptUnscanned = $data->acceptUnscanned;
-            $id = null === $data->outgoingId ? null : Uuid::fromString($data->outgoingId);
             if (null !== $draftId && !$this->drafts->findOneOwnedBy($user, $draftId) instanceof Draft) {
                 throw self::invalid('draftId', 'No draft with that id.', $draftId);
             }
@@ -100,12 +112,8 @@ final readonly class OutgoingMessageProcessor implements ProcessorInterface
                 // at once take turns, so the second sees the first.
                 if (null !== $id) {
                     $this->entityManager->getConnection()->executeStatement('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))', ['key' => 'outgoing:'.$id->toRfc4122()]);
-                    $existing = $this->entityManager->find(OutgoingMessage::class, $id);
+                    $existing = $this->alreadyQueued($id, $user);
                     if (null !== $existing) {
-                        if (!$existing->getMailAccount()->getOwner()->getId()->equals($user->getId())) {
-                            throw new ConflictHttpException('This id is taken; choose another.');
-                        }
-
                         return $existing;
                     }
                 }
@@ -187,6 +195,23 @@ final readonly class OutgoingMessageProcessor implements ProcessorInterface
             $composition->sendAt,
             array_map(OutgoingAttachment::fromDraft(...), $draft->getAttachments()),
         );
+    }
+
+    /**
+     * The user's outgoing message with this id, if one is queued already. Another user's answers 409, without saying
+     * anything about it.
+     */
+    private function alreadyQueued(Uuid $id, User $user): ?OutgoingMessage
+    {
+        $existing = $this->entityManager->find(OutgoingMessage::class, $id);
+        if (null === $existing) {
+            return null;
+        }
+        if (!$existing->getMailAccount()->getOwner()->getId()->equals($user->getId())) {
+            throw new ConflictHttpException('This id is taken; choose another.');
+        }
+
+        return $existing;
     }
 
     private static function invalid(string $path, string $message, string $value): ValidationException

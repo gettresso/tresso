@@ -156,13 +156,42 @@ final class OutboxTest extends DatabaseTestCase
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM outgoing_message'));
     }
 
-    public function testAClientChosenIdMustBeAUuidV7OfNow(): void
+    public function testARetryAfterTheSendTimePassedGetsTheQueuedMessage(): void
     {
-        foreach ([Uuid::v4()->toRfc4122(), new UuidV7(UuidV7::generate(new \DateTimeImmutable('+1 hour')))->toRfc4122(), new UuidV7(UuidV7::generate(new \DateTimeImmutable('-2 days')))->toRfc4122()] as $id) {
+        $id = Uuid::v7()->toRfc4122();
+        $first = $this->send(['outgoingId' => $id, 'to' => [['address' => 'anna@finance.example']], 'sendAt' => new \DateTimeImmutable('+1 hour')->format(\DATE_ATOM)]);
+
+        // The answer got lost and the retry comes after the send time: it is not refused, the message is on its way.
+        $retry = $this->send(['outgoingId' => $id, 'to' => [['address' => 'anna@finance.example']], 'sendAt' => new \DateTimeImmutable('-10 minutes')->format(\DATE_ATOM)]);
+
+        self::assertSame($id, $first['id'] ?? null);
+        self::assertSame($id, $retry['id'] ?? null);
+        self::assertSame('scheduled', $retry['status'] ?? null);
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM outgoing_message'));
+    }
+
+    public function testASendStartedDaysAgoStillGoesOutOnce(): void
+    {
+        // The first request never arrived: the laptop was closed over a weekend.
+        $id = new UuidV7(UuidV7::generate(new \DateTimeImmutable('-3 days')))->toRfc4122();
+        $payload = ['outgoingId' => $id, 'to' => [['address' => 'anna@finance.example']]];
+
+        $first = $this->send($payload);
+        $retry = $this->send($payload);
+
+        self::assertSame($id, $first['id'] ?? null);
+        self::assertSame($id, $retry['id'] ?? null);
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM outgoing_message'));
+    }
+
+    public function testAClientChosenIdMustBeAUuidV7ThatIsNotAheadOfTheServer(): void
+    {
+        foreach ([Uuid::v4()->toRfc4122(), new UuidV7(UuidV7::generate(new \DateTimeImmutable('+1 hour')))->toRfc4122()] as $id) {
             $this->client->jsonRequest('POST', '/api/v1/outgoing-messages', ['outgoingId' => $id, 'mailAccountId' => $this->accountId, 'to' => [['address' => 'a@example.test']]], $this->kim);
             self::assertResponseStatusCodeSame(422, $id);
             self::assertSame(['outgoingId'], $this->violationPaths());
         }
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM outgoing_message'));
     }
 
     public function testRequiresSendScope(): void
