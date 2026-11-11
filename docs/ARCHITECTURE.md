@@ -1804,10 +1804,14 @@ accepted.
     self-organized invitation with the `UID` of a meeting they have not received yet holds that `UID`, and the real
     organizer's invitation is then ignored as not coming from the stored organizer. No rule fixes this: whoever stores
     a `UID` first wins under any rule. The user sees the real invitation in the mail and can still answer it there.
-  - The sender is the message's `From` address as the mail server delivered it. Tresso does not check SPF, DKIM or
-    DMARC for this yet, so a forged `From` that the receiving server let through passes these checks; they keep
-    strangers from acting for someone else, not a forger from acting for the organizer. Checking the
-    `Authentication-Results` the receiving server adds is a later step.
+  - The sender is the message's `From` address as the mail server delivered it. On Gmail and Microsoft accounts,
+    whose topmost `Authentication-Results` header is the provider's own, calendar mail that changes what the calendar
+    has (an update of a stored event, a `CANCEL`, a `REPLY`) applies by itself only when that header shows DMARC
+    passed. Otherwise it waits: the message shows it with `canApply` and `senderUnconfirmed`, and nothing in the
+    calendar changes until the user applies it. A new invitation changes nothing that is there and lands by itself.
+  - Known limit: on IMAP accounts no `Authentication-Results` header can be trusted (the sender can write one naming
+    any server), so nothing can be verified and calendar mail applies by its `From` address as before. A forged
+    `From` that the receiving server let through can then move or cancel an event whose `UID` the forger knows.
   - Calendar mail (`REQUEST`, `CANCEL` or `REPLY`) the calendar did not take by itself (outside the inbox, or from
     before the account was connected) shows `canApply`; `POST /api/v1/messages/{id}/invitation/apply` applies it on
     the user's word, with the same checks, and a second apply changes nothing. `canApply` is false while the calendar

@@ -11,10 +11,13 @@ use App\Calendar\ICalendar\Occurrences;
 use App\Calendar\ICalendar\Props;
 use App\Calendar\LocalCalendars;
 use App\Calendar\SelfAddresses;
+use App\Classification\ReceivingServers;
+use App\Classification\SenderAuthentication;
 use App\Entity\Calendar;
 use App\Entity\CalendarInvitation;
 use App\Entity\CalendarObject;
 use App\Entity\MailAccount;
+use App\Entity\MessageSignals;
 use App\Entity\User;
 use App\Enum\ItipMethod;
 use App\Repository\CalendarObjectRepository;
@@ -73,9 +76,42 @@ final readonly class InvitationApplier
             if (null === $invitation || null !== $invitation->getAppliedAt()) {
                 return;
             }
+            if ($this->senderUnconfirmed($invitation)) {
+                // Left for the user, who sees why on the message and can apply it by hand.
+                $this->logger->info('Calendar mail from a sender the provider did not confirm is not applied by itself', ['invitation' => $invitation->getId()->toRfc4122()]);
+
+                return;
+            }
             $this->applyNow($invitation);
         });
         $this->entityManager->clear();
+    }
+
+    /**
+     * Whether calendar mail that would change what the calendar has (an update, a cancellation or a reply) comes from a
+     * sender the receiving provider did not confirm: on Gmail and Microsoft accounts, whose topmost
+     * Authentication-Results header is the provider's own ({@see ReceivingServers}), DMARC must pass for the From
+     * domain, or anyone who knows an event's UID could move or cancel it with a forged From. A new invitation changes
+     * nothing that is there and stays automatic. On other (IMAP) accounts nothing can be verified, so nothing is held.
+     */
+    public function senderUnconfirmed(CalendarInvitation $invitation): bool
+    {
+        $message = $invitation->getMessage();
+        $account = $message->getMailAccount();
+        if (!ReceivingServers::trustsTopmostHeader($account)) {
+            return false;
+        }
+        $changesExisting = match ($invitation->getMethod()) {
+            ItipMethod::Cancel, ItipMethod::Reply => true,
+            ItipMethod::Request => [] !== $this->objects->findForOwnerByUid($account->getOwner(), $invitation->getUid()),
+            default => false,
+        };
+        if (!$changesExisting) {
+            return false;
+        }
+        $headers = $this->entityManager->find(MessageSignals::class, $message->getId())?->getHeaders() ?? [];
+
+        return !SenderAuthentication::dmarcPassed($headers['authentication-results'] ?? null, true);
     }
 
     /**

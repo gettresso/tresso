@@ -84,6 +84,11 @@ final readonly class MessageInvitation
          * connected, or there was no calendar to write to): POST .../invitation/apply applies it.
          */
         public bool $canApply,
+        /**
+         * The mail would change the event, but the receiving provider did not confirm that it comes from its sender
+         * (no DMARC pass on a Gmail or Microsoft account): it was not applied by itself, and the user decides.
+         */
+        public bool $senderUnconfirmed = false,
     ) {
     }
 }
