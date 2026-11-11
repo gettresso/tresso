@@ -99,7 +99,8 @@ final readonly class EventEditor
         $self = $this->selfAddresses->of($calendar->getOwner());
 
         if (null !== $moveTo && !$moveTo->getId()->equals($calendar->getId())) {
-            if (null !== $key && EditScope::All !== $scope) {
+            // A resource without its series (an invitation to one occurrence) has nothing to split from: it moves whole.
+            if (null !== $key && null !== $master && EditScope::All !== $scope) {
                 throw new EditRejected('Only the whole series can move to another calendar.');
             }
             self::requireWritable($moveTo);
@@ -658,6 +659,9 @@ final readonly class EventEditor
             } else {
                 $moved = $this->editAll($vcalendar, $master, $changes, $key, $self);
             }
+        } elseif (null !== $key) {
+            // The occurrence the user opened takes the edit, as it would without the move.
+            $this->write($this->occurrence($vcalendar, null, $key), $changes, $vcalendar, false, $self);
         }
         if (null !== $this->objects->findOneByUid($target, $object->getUid())) {
             throw new EditRejected('The other calendar already has this event.');
@@ -674,7 +678,7 @@ final readonly class EventEditor
         $this->schedule($source, $old, null, $notify && $source->getMailAccount() !== $target->getMailAccount());
         $this->schedule($target, $source->getMailAccount() === $target->getMailAccount() ? $old : null, $vcalendar, $notify);
 
-        return $rows[''];
+        return $rows[$key ?? ''] ?? $rows[''] ?? array_values($rows)[0];
     }
 
     /**
