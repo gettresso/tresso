@@ -123,13 +123,15 @@ final readonly class MailNotifier
                 $notification->hideContent(self::withoutContent($message));
             }
             $this->entityManager->persist($notification);
+            // The same mail has the same Message-ID and sender; a different mail that reuses a Message-ID notifies.
             $header = $message->getMessageIdHeader();
-            if (null !== $header && (isset($headers[$header]) || $this->notifiedRecently($user, $header, $now))) {
+            $key = null === $header ? null : $header."\n".$message->getFromAddress();
+            if (null !== $header && null !== $key && (isset($headers[$key]) || $this->notifiedRecently($user, $header, $message->getFromAddress(), $now))) {
                 $notification->drop($now);
                 continue;
             }
-            if (null !== $header) {
-                $headers[$header] = true;
+            if (null !== $key) {
+                $headers[$key] = true;
             }
             $planned[] = [$notification, $message];
         }
@@ -390,13 +392,13 @@ final readonly class MailNotifier
         return [null, false, null];
     }
 
-    /** Mail with this Message-ID notified the user lately: the same mail reaching another of their accounts. */
-    private function notifiedRecently(User $user, string $header, \DateTimeImmutable $now): bool
+    /** Mail with this Message-ID and sender notified the user lately: the same mail reaching another of their accounts. */
+    private function notifiedRecently(User $user, string $header, string $from, \DateTimeImmutable $now): bool
     {
         return false !== $this->entityManager->getConnection()->fetchOne(
             'SELECT 1 FROM mail_notification n JOIN message m ON m.id = n.message_id
-             WHERE n.user_id = :user AND m.message_id_header = :header AND n.created_at > :since',
-            ['user' => $user->getId()->toRfc4122(), 'header' => $header, 'since' => $now->modify('-'.self::FRESH)->format('Y-m-d H:i:s')],
+             WHERE n.user_id = :user AND m.message_id_header = :header AND m.from_address = :from AND n.created_at > :since',
+            ['user' => $user->getId()->toRfc4122(), 'header' => $header, 'from' => $from, 'since' => $now->modify('-'.self::FRESH)->format('Y-m-d H:i:s')],
         );
     }
 

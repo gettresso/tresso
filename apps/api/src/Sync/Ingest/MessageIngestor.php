@@ -26,7 +26,8 @@ use Doctrine\ORM\EntityManagerInterface;
 
 /**
  * Stores a batch of messages for one folder. Resending a batch changes nothing: a known (folder, uid) only refreshes
- * flags, and a message already stored for the account (same Message-ID, or same raw content) only gains a location.
+ * flags, and a message already stored for the account (same raw content, or the same Message-ID with the same sender,
+ * Date and subject) only gains a location.
  */
 final readonly class MessageIngestor
 {
@@ -62,7 +63,7 @@ final readonly class MessageIngestor
                 }
 
                 $messageId = MessageIds::normalize($input->messageId);
-                $existing = $this->findExisting($account, $messageId, $input->rawObjectKey);
+                $existing = $this->findExisting($account, $messageId, $input);
                 if (null !== $existing) {
                     // A copy a move from Tresso put here is not new: it lands instead.
                     if (!$this->changes->arrived($existing, $folder, $input->remoteUid, $input->modSeq)) {
@@ -164,15 +165,44 @@ final readonly class MessageIngestor
         $this->handOvers->messageArrived($message, $references, $input->headers, $input->junk, $folder->getRole(), new \DateTimeImmutable());
     }
 
-    private function findExisting(MailAccount $account, ?string $messageId, string $rawObjectKey): ?Message
+    /**
+     * The stored message this copy is another copy of. A Message-ID alone does not say so: devices and scripts reuse
+     * them, list servers rewrite mail, and anyone who saw a mail can copy its id. So a message with the same Message-ID
+     * counts only with the same raw content, or, for a copy the server rewrote (another folder, a list copy), with the
+     * same sender, Date header and subject. Anything else is a mail of its own.
+     */
+    private function findExisting(MailAccount $account, ?string $messageId, MessageInput $input): ?Message
     {
         $repository = $this->entityManager->getRepository(Message::class);
 
-        if (null !== $messageId) {
-            return $repository->findOneBy(['mailAccount' => $account, 'messageIdHeader' => $messageId]);
+        if (null === $messageId) {
+            return $repository->findOneBy(['mailAccount' => $account, 'rawObjectKey' => $input->rawObjectKey]);
         }
 
-        return $repository->findOneBy(['mailAccount' => $account, 'rawObjectKey' => $rawObjectKey]);
+        $from = mb_strtolower($input->from->address ?? '');
+        foreach ($repository->findBy(['mailAccount' => $account, 'messageIdHeader' => $messageId], ['id' => 'ASC']) as $candidate) {
+            if ($candidate->getRawObjectKey() === $input->rawObjectKey) {
+                return $candidate;
+            }
+            if ($candidate->getFromAddress() === $from && $candidate->getSubject() === $input->subject && self::sameDate($candidate->getSentAt(), $input->sentAt)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether two Date headers are the same. Messages stored before dates were kept in UTC hold the sender's wall clock
+     * read as UTC, so that reading counts too.
+     */
+    private static function sameDate(?\DateTimeImmutable $stored, ?\DateTimeImmutable $received): bool
+    {
+        if (null === $stored || null === $received) {
+            return $stored === $received;
+        }
+
+        return $stored == $received || $stored->format('Y-m-d H:i:s') === $received->format('Y-m-d H:i:s');
     }
 
     /**
