@@ -362,6 +362,30 @@ final class SyncCalendarTest extends DatabaseTestCase
         self::assertSame('FREQ=FORTNIGHTLY;COUNT=3', $this->connection()->fetchOne("SELECT rrule FROM calendar_event WHERE uid = 'fortnightly@company.example'"), 'Devices get the rule as written.');
     }
 
+    public function testANoteStaysWithAnEventTheProviderReportsUnderANewUid(): void
+    {
+        $home = $this->reportCalendars()[0]['id'];
+        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'changed' => [
+            ['remoteId' => self::HOME.'standup.ics', 'etag' => '"1"', 'ical' => self::object('standup@company.example', 'Standup')],
+        ]], $this->worker);
+        self::assertResponseIsSuccessful();
+        $eventId = self::string($this->occurrences($this->kim, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0]['eventId']);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId.'/note', ['text' => 'Bring the numbers'], $this->kim);
+        self::assertResponseIsSuccessful();
+
+        // The same resource, now under another UID (a provider that rewrote it).
+        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'changed' => [
+            ['remoteId' => self::HOME.'standup.ics', 'etag' => '"2"', 'ical' => self::object('standup-2@company.example', 'Standup')],
+        ]], $this->worker);
+        self::assertSame(['stored' => 1, 'removed' => 0, 'skipped' => 0], $this->decodedResponse());
+
+        $newId = self::string($this->occurrences($this->kim, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0]['eventId']);
+        self::assertNotSame($eventId, $newId);
+        $notes = $this->getJson('/api/v1/sync/changes?since=0', $this->kim)['eventNotes'];
+        self::assertIsArray($notes);
+        self::assertSame([[$newId, 'Bring the numbers']], array_map(static fn (mixed $note): array => \is_array($note) ? [$note['eventId'], $note['text']] : [], $notes));
+    }
+
     public function testASequenceLargerThanTheColumnIsStored(): void
     {
         $home = $this->reportCalendars()[0]['id'];

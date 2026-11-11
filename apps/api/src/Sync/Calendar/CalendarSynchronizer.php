@@ -9,6 +9,7 @@ use App\ApiResource\Input\Sync\Calendar\InventoryInput;
 use App\ApiResource\Input\Sync\Calendar\ObjectBatchInput;
 use App\ApiResource\Input\Sync\Calendar\RemoteObjectInput;
 use App\Calendar\CalendarStore;
+use App\Calendar\EventNotes;
 use App\Calendar\ICalendar\CalendarDocument;
 use App\Calendar\ICalendar\InvalidCalendarData;
 use App\Entity\Calendar;
@@ -37,6 +38,7 @@ final readonly class CalendarSynchronizer
         private CalendarObjectRepository $objects,
         private CalendarOperationRepository $operations,
         private CalendarStore $store,
+        private EventNotes $notes,
         private LoggerInterface $logger,
         #[Autowire(env: 'bool:MAIL_ALLOW_UNSAFE_SERVERS')]
         private bool $allowUnsafe,
@@ -176,8 +178,11 @@ final readonly class CalendarSynchronizer
             $uid = (string) array_key_first($groups);
             $vcalendar = CalendarDocument::forUid($parsed, $uid);
 
+            // The same resource under a new UID: the same event to the user, so it replaces the old object (once the
+            // new version is stored) and the user's notes go along.
+            $previous = null;
             if (null !== $object && $object->getUid() !== $uid) {
-                $this->store->remove($object, true);
+                $previous = $object;
                 $object = null;
             }
             $object ??= $this->objects->findOneByUid($calendar, $uid);
@@ -185,8 +190,13 @@ final readonly class CalendarSynchronizer
                 return false;
             }
             $object ??= new CalendarObject($calendar, $uid, '');
-            $this->store->save($object, $vcalendar, true);
+            $rows = $this->store->save($object, $vcalendar, true);
             $object->stored($remote->remoteId, $remote->etag);
+            if (null !== $previous) {
+                $notes = $this->notes->lift($previous, static fn (string $key): string => $key);
+                $this->store->remove($previous, true);
+                $this->notes->put($notes, $rows);
+            }
 
             return true;
         } catch (InvalidCalendarData $e) {

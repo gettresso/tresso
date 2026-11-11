@@ -761,6 +761,70 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertSame(['2026-10-26' => 'Second', '2026-11-02' => 'Third'], $this->notesByDay());
     }
 
+    public function testANoteOnAnOccurrenceAThisAndFutureOverrideChangedStaysWhereItShows(): void
+    {
+        $this->storeIcal('range@test', [
+            'BEGIN:VEVENT', 'UID:range@test', 'DTSTAMP:20261019T080000Z', 'DTSTART:20261019T080000Z', 'DURATION:PT30M', 'RRULE:FREQ=DAILY;COUNT=5', 'SUMMARY:Sync', 'END:VEVENT',
+            'BEGIN:VEVENT', 'UID:range@test', 'DTSTAMP:20261019T080000Z', 'RECURRENCE-ID;RANGE=THISANDFUTURE:20261021T080000Z', 'DTSTART:20261021T090000Z', 'DURATION:PT30M', 'SUMMARY:Sync, later', 'END:VEVENT',
+        ]);
+        $later = null;
+        foreach ($this->occurrences($this->kim, '2026-10-22T00:00:00+00:00', '2026-10-23T00:00:00+00:00') as $occurrence) {
+            $later = $occurrence;
+        }
+        self::assertIsArray($later);
+        self::assertSame('Sync, later', $later['summary']);
+        $this->putNote(self::string($later['eventId']), self::string($later['recurrenceId']), 'Changed by the range');
+
+        // Any change of the resource projects it again.
+        $series = $this->occurrences($this->kim, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0];
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.self::string($series['eventId']).'?scope=this&recurrenceId=20261019T080000Z', self::event($this->calendarId, [
+            'summary' => 'Sync, first',
+            'start' => ['dateTime' => '2026-10-19T08:00:00', 'timeZone' => 'UTC'],
+            'end' => ['dateTime' => '2026-10-19T08:30:00', 'timeZone' => 'UTC'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        self::assertContains([$later['eventId'], $later['recurrenceId'], 'Changed by the range'], $this->notes());
+    }
+
+    public function testTwoNotesThatMeetOnOneOccurrenceAreJoined(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=this&recurrenceId=20261026T080000Z', self::event($this->calendarId, ['summary' => 'Weekly sync, one off', ...self::secondWeek()]), $this->kim);
+        self::assertResponseIsSuccessful();
+        $override = self::string($this->decodedResponse()['id']);
+        $this->putNote($override, null, 'On the changed one');
+        // A note left on the series for that occurrence, as notes were kept before they followed their occurrence.
+        $this->connection()->insert('event_note', [
+            'id' => \Symfony\Component\Uid\Uuid::v7()->toRfc4122(), 'change_seq' => 0, 'user_id' => $this->kimId(), 'event_id' => $series['id'],
+            'occurrence_key' => '20261026T080000Z', 'text' => 'On the series', 'updated_at' => '2026-10-19 08:00:00',
+        ]);
+
+        // Any change of the resource projects it again, and the two meet on the override.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$override, self::event($this->calendarId, ['summary' => 'Weekly sync, one off again', ...self::secondWeek()]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        $notes = $this->notes();
+        self::assertCount(1, $notes);
+        self::assertSame($override, $notes[0][0]);
+        self::assertSame("On the changed one\n\nOn the series", $notes[0][2]);
+    }
+
+    public function testANoteGoesBackToTheSeriesWhenItsOverrideGoes(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=this&recurrenceId=20261026T080000Z', self::event($this->calendarId, ['summary' => 'Weekly sync, one off', ...self::secondWeek()]), $this->kim);
+        self::assertResponseIsSuccessful();
+        $override = self::string($this->decodedResponse()['id']);
+        $this->putNote($override, null, 'On the changed one');
+
+        // A new rule starts the series fresh: its override goes, the note stays with the occurrence.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=all', self::event($this->calendarId, ['recurrence' => 'FREQ=WEEKLY;COUNT=5']), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        self::assertSame(['2026-10-26' => 'On the changed one'], $this->notesByDay());
+    }
+
     public function testNotesOfADeletedEventLeaveTombstones(): void
     {
         $event = $this->create();
@@ -916,6 +980,14 @@ final class CalendarEventApiTest extends DatabaseTestCase
             'start' => ['dateTime' => '2026-10-26T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
             'end' => ['dateTime' => '2026-10-26T09:30:00', 'timeZone' => 'Europe/Amsterdam'],
         ];
+    }
+
+    private function kimId(): string
+    {
+        $id = $this->connection()->fetchOne("SELECT id FROM app_user WHERE email = 'kim@example.test'");
+        self::assertIsString($id);
+
+        return $id;
     }
 
     private function putNote(string $eventId, ?string $recurrenceId, string $text): void

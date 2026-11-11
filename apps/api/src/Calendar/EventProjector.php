@@ -112,7 +112,9 @@ final readonly class EventProjector
                 continue;
             }
             $key = $note->getOccurrenceKey();
-            $target = ('' !== $key ? ($rows[$key] ?? null) : null) ?? $rows[''] ?? null;
+            // The row that shows its occurrence; a key no row shows stays with the event (on its first row), and only
+            // a note of an event without rows goes.
+            $target = EventNotes::rowFor($rows, $key) ?? ([] === $rows ? null : array_values($rows)[0]);
             if (null === $target) {
                 $this->entityManager->remove($note);
                 continue;
