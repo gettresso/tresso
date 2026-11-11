@@ -60,8 +60,14 @@ pub fn run() {
       }
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while building tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application")
+    .run(|_app, event| {
+      // A token set the server just rotated is lost when the app quits before the keychain has it.
+      if let tauri::RunEvent::Exit = event {
+        tokens::finish_pending(std::time::Duration::from_secs(5));
+      }
+    });
 }
 
 /// On Windows and Linux a `tresso://` link starts a second process; this hands the link to the running app instead

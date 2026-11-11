@@ -28,7 +28,8 @@ tauri-plugin-opener = "2.7.2"
 tauri-plugin-notification = "2.7.0"
 tauri-plugin-updater = "2.14.1"
 tauri-plugin-process = "2.4.0"
-keyring = "4.2.0"
+# The keychain (tokens.rs): keyring's store crates directly, so a store that failed to open is tried again.
+keyring-core = "1.0.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 # Reads the "Reduce transparency" setting, so the web glass turns solid with the window's vibrancy (accessibility.rs).
@@ -38,11 +39,17 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2 = "0.6.5"
 block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSString"] }
+# The keychain each platform keeps the sign-in in (tokens.rs).
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tauri-plugin-single-instance = { version = "2.5.4", features = ["deep-link"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1.1.0"
+
 [target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }
 # Not used directly: rust-ini 0.21.2 added fields to `ParseOption`, which tauri-plugin-deep-link 2.6.2 builds without
 # them on Linux, so it no longer compiles there. Drop this pin once the plugin sets the new fields.
 rust-ini = "=0.21.1"
