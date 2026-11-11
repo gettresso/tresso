@@ -86,8 +86,10 @@ final class SyncCalendarTest extends DatabaseTestCase
         self::assertResponseIsSuccessful();
         self::assertSame('unconfirmed', $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarStatus']);
 
+        // `active` ends only a sync error: an address to confirm stays until the list shows it is solved.
         $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'active'], $this->worker);
-        self::assertResponseStatusCodeSame(422);
+        self::assertResponseIsSuccessful();
+        self::assertSame('unconfirmed', $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarStatus']);
     }
 
     public function testAnIncompleteCalendarListRemovesNothing(): void
@@ -204,27 +206,38 @@ final class SyncCalendarTest extends DatabaseTestCase
         self::assertSame([], $this->remoteCalendarNames());
     }
 
-    public function testAnAcceptedListKeepsAReportedSyncErrorUntilACalendarSyncs(): void
+    public function testAReportedSyncErrorStaysUntilTheWorkerSaysTheSyncWorksAgain(): void
     {
         $home = $this->reportCalendars()[0]['id'];
         $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'error', 'detail' => 'Calendars could not be synced; trying again.'], $this->worker);
         self::assertResponseIsSuccessful();
 
-        // The next round lists the calendars again before the failing one fails again.
+        // The next round lists the calendars again before the failing one fails again, and another one syncs.
         $this->reportCalendars();
+        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'cursor' => 'sync-token-1'], $this->worker);
         $account = $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim);
-        self::assertSame('error', $account['calendarStatus'], 'The list does not make it look active for a minute.');
+        self::assertSame('error', $account['calendarStatus'], 'Neither makes it look active for a minute.');
         self::assertSame('Calendars could not be synced; trying again.', $account['calendarStatusDetail']);
 
-        // A batch without a cursor is part of a sync, not its end.
-        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'changed' => [['remoteId' => self::HOME.'standup.ics', 'etag' => '"1"', 'ical' => self::object('standup@company.example', 'Standup')]]], $this->worker);
-        self::assertSame('error', $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarStatus']);
-
-        $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'cursor' => 'sync-token-1'], $this->worker);
+        // A round in which every calendar synced, also when none had changes.
+        $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'active'], $this->worker);
         self::assertResponseIsSuccessful();
+        self::assertSame('active', $this->decodedResponse()['status']);
         $account = $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim);
         self::assertSame('active', $account['calendarStatus']);
         self::assertNull($account['calendarStatusDetail']);
+    }
+
+    public function testActiveNeverEndsAStatusTheUserMustActOn(): void
+    {
+        $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'not_granted', 'detail' => 'Allow calendar access.'], $this->worker);
+        self::assertResponseIsSuccessful();
+
+        $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'active'], $this->worker);
+
+        self::assertResponseIsSuccessful();
+        self::assertSame('not_granted', $this->decodedResponse()['status']);
+        self::assertSame('not_granted', $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarStatus']);
     }
 
     public function testUserEditsAreWrittenByTheLeasingWorker(): void

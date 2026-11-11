@@ -70,8 +70,8 @@ final readonly class CalendarSynchronizer
             $account->setCalendarServer($input->serverUrl);
         }
         // An accepted list means the account's calendars can be reached, not that they sync: an error the worker
-        // reported about the sync stays until a calendar completes a sync ({@see objects()}), or the status would flip
-        // between error and active on every round while one calendar keeps failing.
+        // reported about the sync stays until the worker reports `active` after a round in which every calendar synced,
+        // or the status would flip between error and active on every round while one calendar keeps failing.
         if (CalendarSyncStatus::Error !== $account->getCalendarStatus()) {
             $account->setCalendarStatus(CalendarSyncStatus::Active);
         }
@@ -157,11 +157,6 @@ final readonly class CalendarSynchronizer
 
         if (null !== $input->cursor) {
             $calendar->setSyncCursor($input->cursor);
-            // The batch that carries the cursor ends a complete sync of this calendar: the sync works again.
-            $account = $calendar->getMailAccount();
-            if (null !== $account && CalendarSyncStatus::Error === $account->getCalendarStatus()) {
-                $account->setCalendarStatus(CalendarSyncStatus::Active);
-            }
         }
         $this->entityManager->flush();
 
