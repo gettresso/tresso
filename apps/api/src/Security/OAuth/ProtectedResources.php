@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace App\Security\OAuth;
 
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use App\Deployment\PublicAddresses;
+use Symfony\Component\HttpFoundation\Request;
 
 /**
  * The resources this server protects with its OAuth2 access tokens, and where each one's metadata (RFC 9728) is: the
- * API itself and the MCP endpoint. Both are served by this server, which is also their authorization server, so their
- * addresses all start with API_PUBLIC_URL.
+ * API itself and the MCP endpoint. This server is their authorization server, whose issuer is API_PUBLIC_URL.
  *
- * The MCP endpoint answers a request without a valid token with a 401 and {@see mcpChallenge()} as its
+ * The MCP endpoint lives at MCP_PUBLIC_URL (the API address unless it has a host of its own). While it also answers on
+ * the API host (MCP_ON_API_HOST), it is known under both addresses: an MCP client checks that the metadata names the
+ * URL it connected to (RFC 9728 3.3), so the metadata and the 401 challenge follow the host the request came to
+ * ({@see mcpResourceFor()}), and an authorization request may name either as its `resource`.
+ *
+ * The MCP endpoint answers a request without a valid token with a 401 and {@see mcpChallengeFor()} as its
  * `WWW-Authenticate` header, so an MCP client finds the metadata, and from there this authorization server.
  */
 final readonly class ProtectedResources
@@ -19,50 +24,61 @@ final readonly class ProtectedResources
     public const string METADATA_PATH = '/.well-known/oauth-protected-resource';
     public const string MCP_PATH = '/mcp';
 
-    private string $baseUrl;
-
-    public function __construct(
-        #[Autowire(env: 'API_PUBLIC_URL')]
-        string $apiPublicUrl,
-    ) {
-        $baseUrl = rtrim($apiPublicUrl, '/');
-        if ('' === $baseUrl) {
-            throw new \InvalidArgumentException('API_PUBLIC_URL is empty.');
-        }
-        $this->baseUrl = $baseUrl;
+    public function __construct(private PublicAddresses $addresses)
+    {
     }
 
     /** The issuer of the authorization server, and the resource identifier of the API. */
     public function issuer(): string
     {
-        return $this->baseUrl;
+        return $this->addresses->api();
     }
 
     public function apiResource(): string
     {
-        return $this->baseUrl;
+        return $this->addresses->api();
     }
 
     public function apiMetadataUrl(): string
     {
-        return $this->baseUrl.self::METADATA_PATH;
+        return $this->addresses->api().self::METADATA_PATH;
     }
 
+    /** The MCP endpoint at its own address. */
     public function mcpResource(): string
     {
-        return $this->baseUrl.self::MCP_PATH;
+        return $this->addresses->mcp().self::MCP_PATH;
+    }
+
+    /** The MCP endpoint as a request reached it: on the API host while it still answers there, else at its address. */
+    public function mcpResourceFor(Request $request): string
+    {
+        return $this->mcpBaseFor($request).self::MCP_PATH;
     }
 
     /** RFC 9728 3.1: the metadata of a resource with a path sits at the well-known path followed by that path. */
-    public function mcpMetadataUrl(): string
+    public function mcpMetadataUrlFor(Request $request): string
     {
-        return $this->baseUrl.self::METADATA_PATH.self::MCP_PATH;
+        return $this->mcpBaseFor($request).self::METADATA_PATH.self::MCP_PATH;
     }
 
     /** The `WWW-Authenticate` header for a request to the MCP endpoint without a valid token (RFC 9728 5.1). */
-    public function mcpChallenge(): string
+    public function mcpChallengeFor(Request $request): string
     {
-        return \sprintf('Bearer resource_metadata="%s"', $this->mcpMetadataUrl());
+        return \sprintf('Bearer resource_metadata="%s"', $this->mcpMetadataUrlFor($request));
+    }
+
+    /**
+     * Every identifier the MCP endpoint goes by: its own address, and the one on the API host while it answers there.
+     *
+     * @return list<string>
+     */
+    public function mcpResources(): array
+    {
+        return array_values(array_unique([
+            $this->mcpResource(),
+            ...($this->addresses->mcpOnApiHost() ? [$this->addresses->api().self::MCP_PATH] : []),
+        ]));
     }
 
     /**
@@ -73,7 +89,7 @@ final readonly class ProtectedResources
     {
         $resource = rtrim($resource, '/');
 
-        return \in_array($resource, [$this->apiResource(), $this->mcpResource()], true);
+        return \in_array($resource, [$this->apiResource(), ...$this->mcpResources()], true);
     }
 
     /**
@@ -90,5 +106,14 @@ final readonly class ProtectedResources
             'scopes_supported' => ThirdPartyClients::scopeValues(),
             'bearer_methods_supported' => ['header'],
         ];
+    }
+
+    private function mcpBaseFor(Request $request): string
+    {
+        if ($this->addresses->mcpHasItsOwnHost() && $this->addresses->mcpOnApiHost() && $this->addresses->isApiHost($request)) {
+            return $this->addresses->api();
+        }
+
+        return $this->addresses->mcp();
     }
 }

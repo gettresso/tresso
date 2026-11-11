@@ -8,6 +8,7 @@ use App\Security\OAuth\AuthorizationServerMetadata;
 use App\Security\OAuth\ProtectedResources;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
 
 /**
@@ -38,9 +39,10 @@ final class OAuthMetadataController extends AbstractController
     }
 
     #[Route(ProtectedResources::METADATA_PATH.ProtectedResources::MCP_PATH, name: 'oauth_protected_resource_metadata_mcp', methods: ['GET'])]
-    public function mcp(): JsonResponse
+    /** Names the MCP endpoint as the client reached it: on its own host, or on the API host while it answers there. */
+    public function mcp(Request $request): JsonResponse
     {
-        return $this->document($this->resources->metadata($this->resources->mcpResource(), 'Tresso MCP'));
+        return $this->document($this->resources->metadata($this->resources->mcpResourceFor($request), 'Tresso MCP'));
     }
 
     /** @param array<string, mixed> $document */

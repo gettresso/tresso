@@ -21,8 +21,10 @@ mcp:
                 stdio: false
             http:
                 path: /mcp
-                # DNS-rebinding protection: the Host (and a cross-origin Origin) must be this server's public host.
-                allowed_hosts: ['%env(key:host:url:API_PUBLIC_URL)%']
+                # DNS-rebinding protection: the Host must be the MCP endpoint's public host (MCP_PUBLIC_URL, else the
+                # API's), or the API host while /mcp still answers there (App\Deployment\McpHosts); an Origin from
+                # another site is refused.
+                allowed_hosts: '%env(mcp_hosts:MCP_PUBLIC_URL)%'
             session:
                 store: cache
                 cache_pool: mcp.session_cache
@@ -37,12 +39,12 @@ when@dev:
         servers:
             default:
                 http:
-                    # Local clients reach the dev stack on loopback, whatever API_PUBLIC_URL says.
-                    allowed_hosts: ['%env(key:host:url:API_PUBLIC_URL)%', 'localhost', '127.0.0.1', '[::1]']
+                    # Local clients reach the dev stack on loopback, whatever the public addresses say.
+                    allowed_hosts: '%env(mcp_hosts_and_loopback:MCP_PUBLIC_URL)%'
 
 when@test:
     mcp:
         servers:
             default:
                 http:
-                    allowed_hosts: ['%env(key:host:url:API_PUBLIC_URL)%', 'localhost', '127.0.0.1', '[::1]']
+                    allowed_hosts: '%env(mcp_hosts_and_loopback:MCP_PUBLIC_URL)%'

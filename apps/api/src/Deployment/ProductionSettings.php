@@ -40,6 +40,9 @@ final readonly class ProductionSettings
     /** Addresses that must be a bare origin: links, OAuth redirects and the realtime hub are built on them. */
     public const array ORIGINS = ['WEB_APP_URL', 'API_PUBLIC_URL'];
 
+    /** Addresses a server may leave empty (they then are API_PUBLIC_URL), but that must be a bare origin when set. */
+    public const array OPTIONAL_ORIGINS = ['AUTH_PUBLIC_URL', 'MCP_PUBLIC_URL'];
+
     /** The desktop app's own origins (WebKit on macOS and Linux, WebView2 on Windows). */
     public const array DESKTOP_ORIGINS = ['tauri://localhost', 'http://tauri.localhost'];
 
@@ -147,6 +150,23 @@ final readonly class ProductionSettings
         foreach (self::ORIGINS as $name) {
             if (!self::isOrigin($this->value($name))) {
                 $problems[] = \sprintf('%s must be an https address as a browser writes it (lower case, no path, trailing slash or :443), such as https://mail.example.com.', $name);
+            }
+        }
+
+        foreach (self::OPTIONAL_ORIGINS as $name) {
+            $value = $this->value($name);
+            if ('' !== $value && !self::isOrigin($value)) {
+                $problems[] = \sprintf('%s must be empty or an https address as a browser writes it (lower case, no path, trailing slash or :443), such as https://mail.example.com.', $name);
+            }
+        }
+        $mcp = $this->value('MCP_PUBLIC_URL');
+        if (self::isOrigin($mcp)) {
+            $mcpHost = PublicAddresses::hostOf($mcp);
+            foreach (['WEB_APP_URL', 'AUTH_PUBLIC_URL'] as $name) {
+                $other = $this->value($name);
+                if ('' !== $other && PublicAddresses::hostOf($other) === $mcpHost && $mcp !== $this->value('API_PUBLIC_URL')) {
+                    $problems[] = \sprintf('MCP_PUBLIC_URL needs a host of its own, not the one of %s: that host answers nothing but /mcp.', $name);
+                }
             }
         }
 
