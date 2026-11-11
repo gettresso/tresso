@@ -94,4 +94,11 @@ describe('secureTokenStore', () => {
     expect(await secureTokenStore.loginRequired()).toBe(false)
     expect(items.size).toBe(0)
   })
+
+  it('reads the refresh token on its own, also when the rest of the set is gone', async () => {
+    items.set('auth.refreshToken', 'refresh-left')
+
+    expect(await secureTokenStore.load()).toBeNull()
+    expect(await secureTokenStore.refreshToken()).toBe('refresh-left')
+  })
 })

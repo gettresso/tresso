@@ -4,9 +4,11 @@ import { ApiError, RenewalFailedError, Session, type TokenStore } from './sessio
 
 const CONFIG = { apiUrl: 'https://api.example.test/', clientId: 'mobile', redirectUri: 'tresso://auth/callback' }
 
-function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: TokenSet | null; lastUser: string | null; promptLogin: boolean; failing: boolean } {
+function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: TokenSet | null; leftover: string | null; lastUser: string | null; promptLogin: boolean; failing: boolean } {
   return {
     saved: initial,
+    /** A refresh token left without the rest of the set. */
+    leftover: null,
     lastUser: initial === null ? null : 'kim',
     promptLogin: false,
     failing: false,
@@ -18,12 +20,18 @@ function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: Tok
         throw new Error('Keychain is locked.')
       }
       this.saved = tokens
+      if (tokens === null) {
+        this.leftover = null
+      }
     },
     async forgetUser() {
       if (this.failing) {
         throw new Error('Keychain is locked.')
       }
       this.lastUser = null
+    },
+    async refreshToken() {
+      return this.leftover ?? this.saved?.refreshToken ?? null
     },
     async loginRequired() {
       return this.promptLogin
@@ -636,17 +644,19 @@ describe('Session', () => {
     expect((await restored(store, fetchImpl)).snapshot.ended).toBe('signedOut')
   })
 
-  it('finishes a sign-out cut off inside the removal, also when no loadable set is left', async () => {
+  it('finishes a sign-out cut off inside the removal, also when no loadable set is left, and revokes the refresh token it left', async () => {
     const store = memoryStore()
     store.promptLogin = true
     store.lastUser = 'kim'
-    const save = vi.spyOn(store, 'save')
+    store.leftover = 'refresh-left'
+    const fetchImpl = server(vi.fn<Fetch>())
 
-    const session = await restored(store, vi.fn<Fetch>())
+    const session = await restored(store, fetchImpl)
 
     expect(session.snapshot.ended).toBe('signedOut')
-    expect(save).toHaveBeenCalledWith(null)
+    expect(store.leftover).toBeNull()
     expect(store.lastUser).toBeNull()
+    await vi.waitFor(() => expect(fetchImpl.revoked).toEqual(['refresh-left']))
   })
 
   it('tells subscribers about every change', async () => {
