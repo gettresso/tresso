@@ -49,9 +49,13 @@ final class EventInput
     #[Assert\NotNull]
     public array $end = [];
 
-    /** An iCalendar RRULE value, e.g. FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261231T230000Z. */
+    /**
+     * An iCalendar RRULE value, e.g. FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261231T230000Z. Parts in any order and parts of
+     * other clients (X-..., RSCALE) are taken here, so a stored rule can be sent back as it is; a new rule must be one
+     * the server can expand (checked when it is saved).
+     */
     #[Assert\Length(max: 500)]
-    #[Assert\Regex('/^FREQ=(HOURLY|DAILY|WEEKLY|MONTHLY|YEARLY)(;[A-Z]+=[A-Z0-9,+\-]+)*$/', message: 'recurrence must be an iCalendar RRULE value, starting with FREQ (hourly or less often).')]
+    #[Assert\Regex('/^(?=(?:.*;)?FREQ=(HOURLY|DAILY|WEEKLY|MONTHLY|YEARLY)(;|$))[A-Z][A-Z-]*=[A-Z0-9,+\-]+(;[A-Z][A-Z-]*=[A-Z0-9,+\-]+)*$/', message: 'recurrence must be an iCalendar RRULE value with FREQ (hourly or less often).')]
     public ?string $recurrence = null;
 
     public EventStatus $status = EventStatus::Confirmed;

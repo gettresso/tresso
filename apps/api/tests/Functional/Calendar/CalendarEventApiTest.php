@@ -948,6 +948,11 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertResponseIsSuccessful();
         self::assertSame('Extended, renamed', $this->decodedResponse()['summary']);
         self::assertSame('FREQ=WEEKLY;X-FOO=1', $this->decodedResponse()['recurrence']);
+
+        // A new rule must be one the server can expand.
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($this->calendarId, ['recurrence' => 'FREQ=WEEKLY;X-FOO=1']), $this->kim);
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame('recurrence', $this->violationPath());
     }
 
     public function testManagesLocalCalendars(): void
