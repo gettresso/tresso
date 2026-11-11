@@ -269,6 +269,24 @@ export class Composer {
     this.set({ draft: null, savedAt: null, sending: false, error: null, violations: {}, conflict: false, undoable: null, attaching: [] })
   }
 
+  /**
+   * The copy was opened again for the same user (removed or closed under this window, by a sign-out in another tab,
+   * say): the open draft moves to the new copy, where it is saved and uploaded again, so typing goes on being kept.
+   * The copy keeps the version it knows, so the upload settles with the server's own (a conflict, or a new draft when
+   * the server has none). Call it only for the same user; for another one, `reset()`.
+   */
+  async rebind(): Promise<void> {
+    const store = this.deps.store()
+    const draft = this.current.draft
+    if (store === null || this.openedIn === null || store === this.openedIn || draft === null) {
+      return
+    }
+    this.openedIn = store
+    this.dirty = true
+    this.clearSaveTimer()
+    await this.save(draft)
+  }
+
   openNew(to: Address[] = []): void {
     const account = this.deps.defaultAccount()
     this.open({ ...newDraft('new', account, this.defaultSignature(account)), to })

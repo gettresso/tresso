@@ -6,6 +6,7 @@ import type { ChangePage, SyncedMessage, SyncedOutgoingMessage } from '@tresso/c
 import { deleteMailDatabase } from '@/mail/db'
 import { UNDO_SECONDS, useComposeStore } from '../compose'
 import { useMailStore } from '../mail'
+import { useAuthStore } from '../auth'
 
 const desktop = vi.hoisted(() => ({ isDesktop: false, opened: [] as string[] }))
 
@@ -255,5 +256,34 @@ describe('compose store', () => {
     await compose.followUp()
 
     expect(await mail.draft(draftId)).toBeNull()
+  })
+  it('lets go of the draft on screen when the session ends, so whoever signs in next does not get it', async () => {
+    const compose = useComposeStore()
+    compose.openNew([{ address: 'anna@finance.example', name: 'Anna' }])
+    compose.update({ subject: 'Private' })
+    compose.minimized = true
+
+    useAuthStore().tokens = null
+    await vi.waitFor(() => expect(compose.draft).toBeNull())
+
+    expect(compose.minimized).toBe(false)
+  })
+
+  it('keeps the open draft, in the new copy, when another tab removed the copy under this one', async () => {
+    const compose = useComposeStore()
+    const mail = useMailStore()
+    compose.openNew([{ address: 'anna@finance.example', name: 'Anna' }])
+    const id = compose.draft!.id
+    const pulls = mail.pulls
+
+    await deleteMailDatabase('compose-user')
+    await vi.waitFor(() => expect(mail.pulls).toBeGreaterThan(pulls))
+    compose.update({ subject: 'Still here', html: '<p>Typed after the copy was replaced</p>' })
+    await compose.saveNow()
+
+    expect(await mail.draft(id)).toMatchObject({ subject: 'Still here', html: '<p>Typed after the copy was replaced</p>' })
+    await compose.send()
+    expect(compose.error).toBeNull()
+    expect(requests.some((r) => r.method === 'POST' && r.path === '/api/v1/outgoing-messages')).toBe(true)
   })
 })
