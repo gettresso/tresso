@@ -258,6 +258,8 @@ func (s *session) ingestGroup(ctx context.Context, run *folderRun, group []imap.
 	messages = append(messages, placeholders...)
 	slices.SortFunc(messages, func(a, b api.Message) int { return cmp.Compare(uidOf(a), uidOf(b)) })
 
+	// The cursor as the API has it, before this group: a placeholder is recorded in it before it is sent.
+	stored := *run.cursor
 	advance(group)
 	send := func(ctx context.Context, messages []api.Message, cursor *string) error {
 		result, err := s.api.Messages(ctx, s.account.ID, api.MessageBatch{WorkerID: s.workerID, Folder: run.folder.RemoteName, Cursor: cursor, Messages: messages})
@@ -268,9 +270,20 @@ func (s *session) ingestGroup(ctx context.Context, run *folderRun, group []imap.
 	}
 	placed := func(uids []string) error {
 		run.cursor.Pending = run.cursor.Pending.Add(s.now(), uids...)
-		return nil
+		stored.Pending = run.cursor.Pending
+		encoded := stored.Encode()
+		_, err := s.api.Changes(ctx, s.account.ID, api.ChangeBatch{WorkerID: s.workerID, Folder: run.folder.RemoteName, Cursor: &encoded})
+		return err
 	}
-	return isolate.Batch(ctx, send, s.strikes, run.folder.RemoteName, messages, func() *string { return s.cursorString(run) }, placed, s.logger)
+	return isolate.Batch(ctx, send, s.strikes, run.folder.RemoteName, messages, func() *string { return s.cursorString(run) }, placed, s.placeholder(run), s.logger)
+}
+
+// placeholder builds the placeholder of a message of run's folder (see ingestmsg.PlaceholderFor).
+func (s *session) placeholder(run *folderRun) isolate.MakePlaceholder {
+	return func(ctx context.Context, msg api.Message) (api.Message, error) {
+		identity := fmt.Sprintf("%s\x00%d\x00%s", run.folder.RemoteName, run.cursor.UIDValidity, msg.RemoteUID)
+		return ingestmsg.PlaceholderFor(ctx, s.store, s.account.ID, identity, msg)
+	}
 }
 
 // fetchGroup downloads a group of messages. When the server refuses the FETCH (a NO, which a single damaged message
@@ -380,11 +393,15 @@ func (s *session) retryPlaceholders(ctx context.Context, run *folderRun) (bool, 
 		if err != nil {
 			return false, err
 		}
-		err = isolate.Replace(ctx, send, vanish, msg)
+		err = isolate.Replace(ctx, send, vanish, msg, s.placeholder(run))
 		switch {
 		case err == nil:
 			s.logger.Info("a placeholder was replaced by its message", "folder", folder, "uid", remoteUID)
 			run.cursor.Pending = run.cursor.Pending.Drop(remoteUID)
+			// Stored at once: a later failure must not have the replacement done again, on the real message.
+			if _, err := s.api.Changes(ctx, s.account.ID, api.ChangeBatch{WorkerID: s.workerID, Folder: folder, Cursor: s.cursorString(run)}); err != nil {
+				return false, err
+			}
 		case isolate.Classify(err) == isolate.NotRefused:
 			return false, err
 		default:

@@ -66,6 +66,11 @@ func (c *clock) strikes() *Strikes {
 	return NewStrikesWithClock(func() time.Time { return c.now })
 }
 
+// stand is the placeholder builder of these tests.
+func stand(_ context.Context, msg api.Message) (api.Message, error) {
+	return ingestmsg.Placeholder(msg), nil
+}
+
 func cursorOf(value string) func() *string {
 	return func() *string { return &value }
 }
@@ -80,7 +85,7 @@ func noteTo(placed *[]string) func([]string) error {
 func TestARefusedMessageIsReplacedAtOnceRecordedAndTheCursorStored(t *testing.T) {
 	r := &recorder{refused: map[string]int{"2": http.StatusUnprocessableEntity}}
 	var placed []string
-	if err := Batch(context.Background(), r.send, NewStrikes(), "INBOX", batch("1", "2", "3"), cursorOf("c1"), noteTo(&placed), discard); err != nil {
+	if err := Batch(context.Background(), r.send, NewStrikes(), "INBOX", batch("1", "2", "3"), cursorOf("c1"), noteTo(&placed), stand, discard); err != nil {
 		t.Fatal(err)
 	}
 	slices.Sort(r.accepted)
@@ -99,7 +104,7 @@ func TestTheCursorIsReadWhenItIsSent(t *testing.T) {
 		value := "pending=" + strings.Join(placed, ",")
 		return &value
 	}
-	if err := Batch(context.Background(), r.send, NewStrikes(), "INBOX", batch("1", "2"), cursor, noteTo(&placed), discard); err != nil {
+	if err := Batch(context.Background(), r.send, NewStrikes(), "INBOX", batch("1", "2"), cursor, noteTo(&placed), stand, discard); err != nil {
 		t.Fatal(err)
 	}
 	if r.cursor == nil || *r.cursor != "pending=2" {
@@ -114,7 +119,7 @@ func TestAMessageTheAPIFailsOnIsReplacedOnlyAfterFailingForAnHour(t *testing.T) 
 	try := func() (*recorder, error) {
 		r := &recorder{refused: map[string]int{"2": http.StatusInternalServerError}}
 		var placed []string
-		return r, Batch(context.Background(), r.send, strikes, "INBOX", batch("1", "2", "3"), cursorOf("c1"), noteTo(&placed), discard)
+		return r, Batch(context.Background(), r.send, strikes, "INBOX", batch("1", "2", "3"), cursorOf("c1"), noteTo(&placed), stand, discard)
 	}
 	for range 10 {
 		c.now = c.now.Add(5 * time.Second)
@@ -138,7 +143,7 @@ func TestNothingIsReplacedWhenEveryMessageFails(t *testing.T) {
 	for range StrikesBeforeSkip + 2 {
 		c.now = c.now.Add(MinStrikeSpan)
 		r := &recorder{refused: map[string]int{"1": http.StatusInternalServerError, "2": http.StatusInternalServerError}}
-		if err := Batch(context.Background(), r.send, strikes, "INBOX", batch("1", "2"), nil, noteTo(new([]string)), discard); err == nil || len(r.accepted) != 0 {
+		if err := Batch(context.Background(), r.send, strikes, "INBOX", batch("1", "2"), nil, noteTo(new([]string)), stand, discard); err == nil || len(r.accepted) != 0 {
 			t.Fatalf("err %v, accepted %v", err, r.accepted)
 		}
 	}
@@ -147,7 +152,7 @@ func TestNothingIsReplacedWhenEveryMessageFails(t *testing.T) {
 func TestOtherFailuresAreNotIsolated(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusConflict, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
 		r := &recorder{refused: map[string]int{"1": status}}
-		err := Batch(context.Background(), r.send, NewStrikes(), "INBOX", batch("1", "2"), nil, noteTo(new([]string)), discard)
+		err := Batch(context.Background(), r.send, NewStrikes(), "INBOX", batch("1", "2"), nil, noteTo(new([]string)), stand, discard)
 		if err == nil || r.requests != 1 {
 			t.Errorf("status %d: err %v after %d requests; want the error after one", status, err, r.requests)
 		}
@@ -155,7 +160,7 @@ func TestOtherFailuresAreNotIsolated(t *testing.T) {
 	r := &recorder{}
 	broken := errors.New("connection reset")
 	failing := func(context.Context, []api.Message, *string) error { r.requests++; return broken }
-	if err := Batch(context.Background(), failing, NewStrikes(), "INBOX", batch("1", "2"), nil, noteTo(new([]string)), discard); !errors.Is(err, broken) || r.requests != 1 {
+	if err := Batch(context.Background(), failing, NewStrikes(), "INBOX", batch("1", "2"), nil, noteTo(new([]string)), stand, discard); !errors.Is(err, broken) || r.requests != 1 {
 		t.Errorf("err %v after %d requests", err, r.requests)
 	}
 }
@@ -200,12 +205,12 @@ func TestAFailureWithNothingDeliveredNeverCounts(t *testing.T) {
 
 func TestReplaceTakesThePlaceholdersPlaceOnlyWhenTheAPITakesTheMessage(t *testing.T) {
 	r := &recorder{refused: map[string]int{"5": http.StatusUnprocessableEntity}}
-	if err := Replace(context.Background(), r.send, r.vanish, api.Message{RemoteUID: "5"}); err == nil || len(r.vanished) != 0 {
+	if err := Replace(context.Background(), r.send, r.vanish, api.Message{RemoteUID: "5"}, stand); err == nil || len(r.vanished) != 0 {
 		t.Fatalf("err %v, vanished %v; a message the API still refuses must leave the placeholder alone", err, r.vanished)
 	}
 
 	r = &recorder{}
-	if err := Replace(context.Background(), r.send, r.vanish, api.Message{RemoteUID: "5"}); err != nil {
+	if err := Replace(context.Background(), r.send, r.vanish, api.Message{RemoteUID: "5"}, stand); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(r.vanished, []string{"5"}) || !slices.Equal(r.accepted, []string{"5", "5"}) {
@@ -244,5 +249,63 @@ func TestPendingPlaceholdersAreTriedLessAndLessOften(t *testing.T) {
 	}
 	if len(many) != MaxPending {
 		t.Errorf("kept %d, want at most %d", len(many), MaxPending)
+	}
+}
+
+// folderAPI behaves like the ingest API for one folder: a uid the folder has only gets its flags refreshed (200),
+// whatever the content; storing the content of failing uids answers 500.
+type folderAPI struct {
+	stored  map[string]api.Message
+	failing map[string]bool
+}
+
+func (f *folderAPI) send(_ context.Context, messages []api.Message, _ *string) error {
+	for _, m := range messages {
+		if _, known := f.stored[m.RemoteUID]; known {
+			continue
+		}
+		if f.failing[m.RemoteUID] && !ingestmsg.IsPlaceholder(m) {
+			return &api.HTTPError{Status: http.StatusInternalServerError}
+		}
+		f.stored[m.RemoteUID] = m
+	}
+	return nil
+}
+
+func (f *folderAPI) vanish(_ context.Context, uid string) error {
+	delete(f.stored, uid)
+	return nil
+}
+
+// Fails without the fix: the first send only refreshed the placeholder's flags, the uid was removed, the real store
+// failed with 500, and the folder kept neither the message nor the placeholder.
+func TestAReplacementTheAPIFailsOnPutsThePlaceholderBack(t *testing.T) {
+	f := &folderAPI{stored: map[string]api.Message{"5": ingestmsg.Placeholder(api.Message{RemoteUID: "5"})}, failing: map[string]bool{"5": true}}
+
+	err := Replace(context.Background(), f.send, f.vanish, api.Message{RemoteUID: "5", Subject: "Real"}, stand)
+	if Classify(err) != MaybeRefused {
+		t.Fatalf("err = %v; want the API's 500 back", err)
+	}
+	if msg, ok := f.stored["5"]; !ok || !ingestmsg.IsPlaceholder(msg) {
+		t.Fatalf("uid 5 = %+v, %v; want the placeholder back", msg, ok)
+	}
+
+	f.failing = nil
+	if err := Replace(context.Background(), f.send, f.vanish, api.Message{RemoteUID: "5", Subject: "Real"}, stand); err != nil {
+		t.Fatal(err)
+	}
+	if msg := f.stored["5"]; ingestmsg.IsPlaceholder(msg) || msg.Subject != "Real" {
+		t.Errorf("uid 5 = %+v; want the real message", msg)
+	}
+}
+
+// A try after one that left the uid empty (the put-back failed) brings the placeholder back.
+func TestARefusedTryOverAnEmptyUIDPutsThePlaceholderBack(t *testing.T) {
+	f := &folderAPI{stored: map[string]api.Message{}, failing: map[string]bool{"5": true}}
+	if err := Replace(context.Background(), f.send, f.vanish, api.Message{RemoteUID: "5"}, stand); err == nil {
+		t.Fatal("no error")
+	}
+	if msg, ok := f.stored["5"]; !ok || !ingestmsg.IsPlaceholder(msg) {
+		t.Errorf("uid 5 = %+v, %v; want the placeholder", msg, ok)
 	}
 }

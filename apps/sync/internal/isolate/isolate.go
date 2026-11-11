@@ -91,6 +91,11 @@ func Key(folder, uid string) string {
 // Send ingests messages into the API, cursor (when not nil) with them.
 type Send func(ctx context.Context, messages []api.Message, cursor *string) error
 
+// MakePlaceholder builds the placeholder of msg: its uid, date and flags, with a raw notice of its own (see
+// ingestmsg.Unreadable). A raw message of its own keeps the API from taking the placeholder for the real message
+// (same raw content) when the real one is ingested later.
+type MakePlaceholder func(ctx context.Context, msg api.Message) (api.Message, error)
+
 // Refusal tells what an API error says about the messages of a batch.
 type Refusal int
 
@@ -127,7 +132,7 @@ func Classify(err error) Refusal {
 // cursor is read when it is sent (nil, or one returning nil, sends none), so it includes what placed recorded.
 // placed is called with the uids of every placeholder of the batch (those among messages and those made here) before
 // they are sent, so the caller can keep them for a later try (see Pending).
-func Batch(ctx context.Context, send Send, strikes *Strikes, folder string, messages []api.Message, cursor func() *string, placed func(uids []string) error, logger *slog.Logger) error {
+func Batch(ctx context.Context, send Send, strikes *Strikes, folder string, messages []api.Message, cursor func() *string, placed func(uids []string) error, placeholder MakePlaceholder, logger *slog.Logger) error {
 	currentCursor := func() *string {
 		if cursor == nil {
 			return nil
@@ -208,7 +213,11 @@ func Batch(ctx context.Context, send Send, strikes *Strikes, folder string, mess
 	}
 	for _, suspect := range skipped {
 		logSkipped(logger, folder, suspect.message, "the API refused it", suspect.err)
-		if err := send(ctx, []api.Message{ingestmsg.Placeholder(suspect.message)}, nil); err != nil {
+		stand, err := placeholder(ctx, suspect.message)
+		if err != nil {
+			return err
+		}
+		if err := send(ctx, []api.Message{stand}, nil); err != nil {
 			return fmt.Errorf("the placeholder of uid %s was refused too: %w", suspect.message.RemoteUID, err)
 		}
 		strikes.Forget(Key(folder, suspect.message.RemoteUID))
@@ -219,18 +228,44 @@ func Batch(ctx context.Context, send Send, strikes *Strikes, folder string, mess
 	return nil
 }
 
-// Replace puts msg, the real message, in the place of the placeholder its uid holds in a folder. The API only
-// refreshes the flags of a uid the folder already has, so the message is sent once to see whether the API takes it
-// now (when it refuses, the placeholder stays and the error is returned), then the placeholder's uid is removed and
-// the message sent again. A placeholder that is gone already costs nothing more: the first send stores the message.
-func Replace(ctx context.Context, send Send, vanish func(ctx context.Context, uid string) error, msg api.Message) error {
+// Replace puts msg, the real message, in the place of the placeholder its uid holds in a folder, all or nothing as
+// the user sees it. The ingest API keeps one message per uid and folder and only refreshes the flags of a uid the
+// folder has, so the real message cannot go in next to the placeholder: the placeholder's uid is removed first and
+// the message sent after it. When the API refuses the message then (a 500 while storing it, or what validation
+// refuses), the placeholder is put back at once and the error returned, so the next try comes later.
+//
+// The message is sent once before, while the placeholder still holds the uid: that send only refreshes flags, but a
+// message validation refuses (400, 413, 422) fails there, without the placeholder being touched.
+func Replace(ctx context.Context, send Send, vanish func(ctx context.Context, uid string) error, msg api.Message, placeholder MakePlaceholder) error {
 	if err := send(ctx, []api.Message{msg}, nil); err != nil {
+		if Classify(err) != NotRefused {
+			// Should an earlier try have left the uid empty, the placeholder goes back; over a placeholder that is
+			// there this only refreshes its flags.
+			return putBack(ctx, send, msg, placeholder, err)
+		}
 		return err
 	}
 	if err := vanish(ctx, msg.RemoteUID); err != nil {
 		return err
 	}
-	return send(ctx, []api.Message{msg}, nil)
+	err := send(ctx, []api.Message{msg}, nil)
+	if err == nil || Classify(err) == NotRefused {
+		// Not refused (no answer, a 502): the uid is free and the next try stores the message with its first send.
+		return err
+	}
+	return putBack(ctx, send, msg, placeholder, err)
+}
+
+// putBack sends msg's placeholder again after err, the API's refusal of msg, and returns err.
+func putBack(ctx context.Context, send Send, msg api.Message, placeholder MakePlaceholder, err error) error {
+	stand, buildErr := placeholder(ctx, msg)
+	if buildErr != nil {
+		return errors.Join(err, buildErr)
+	}
+	if putErr := send(ctx, []api.Message{stand}, nil); putErr != nil {
+		return errors.Join(err, fmt.Errorf("putting the placeholder back: %w", putErr))
+	}
+	return err
 }
 
 // Failed is a message the provider would not hand over.

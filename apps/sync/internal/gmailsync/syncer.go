@@ -117,7 +117,7 @@ func (s *Syncer) newSession(account api.Account, strikes *isolate.Strikes, logge
 		account: account,
 		gmail:   NewClient(tokens, s.opts.Client),
 		ingest: &providersync.Ingest{
-			API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Strikes: strikes, Logger: logger,
+			API: s.api, AccountID: account.ID, WorkerID: s.workerID, FetchBatch: s.opts.FetchBatch, Strikes: strikes, Logger: logger, Store: s.store,
 			PendingFolder: func(string) string { return allMailFolder },
 		},
 		logger: logger,
