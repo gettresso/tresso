@@ -295,7 +295,7 @@ const minDay = dayValue(new Date())
 .panel {
   min-width: 0;
   box-sizing: border-box;
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   background: var(--surface);
   -webkit-backdrop-filter: var(--glass-material);
   backdrop-filter: var(--glass-material);
@@ -359,7 +359,7 @@ h2 {
   margin: 0;
   padding: 16px;
   border: 1px dashed var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   color: var(--ink-2);
   font-size: 14px;
 }
@@ -368,7 +368,7 @@ h2 {
   padding: 0;
   list-style: none;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
 }
 .row {
   display: flex;
@@ -508,7 +508,7 @@ h2 {
   gap: 8px;
   padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   background: var(--selected);
 }
 .suggested-label {

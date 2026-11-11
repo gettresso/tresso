@@ -4,14 +4,9 @@ import type { Address } from '@tresso/core'
 
 const props = defineProps<{ sender: Address; size?: number }>()
 
-// Neutral-leaning tints; color carries no meaning here, it only tells people apart.
-const tints = [
-  ['#DDE3FB', '#1A31A8'],
-  ['#E3F2EE', '#1E5A4E'],
-  ['#FCEEE2', '#7A3704'],
-  ['#EDE7F8', '#4B2F86'],
-  ['#F3F4F6', '#4A505C'],
-] as const
+// Neutral-leaning tints (--avatar-N tokens in main.css, deep fills with light letters in the dark theme); color
+// carries no meaning here, it only tells people apart.
+const TINTS = 5
 
 const initials = computed(() => {
   const source = props.sender.name?.trim() || props.sender.address
@@ -27,15 +22,16 @@ const tint = computed(() => {
     hash = (hash * 31 + char.charCodeAt(0)) >>> 0
   }
 
-  return tints[hash % tints.length]!
+  return hash % TINTS
 })
 </script>
 
 <template>
   <span
     class="avatar"
+    :class="`tint-${tint}`"
     aria-hidden="true"
-    :style="{ width: `${size ?? 40}px`, height: `${size ?? 40}px`, background: tint[0], color: tint[1], fontSize: `${Math.round((size ?? 40) / 3)}px` }"
+    :style="{ width: `${size ?? 40}px`, height: `${size ?? 40}px`, fontSize: `${Math.round((size ?? 40) / 3)}px` }"
     >{{ initials }}</span
   >
 </template>
@@ -48,5 +44,25 @@ const tint = computed(() => {
   flex-shrink: 0;
   border-radius: 999px;
   font-weight: 700;
+}
+.tint-0 {
+  background: var(--avatar-0-fill);
+  color: var(--avatar-0-text);
+}
+.tint-1 {
+  background: var(--avatar-1-fill);
+  color: var(--avatar-1-text);
+}
+.tint-2 {
+  background: var(--avatar-2-fill);
+  color: var(--avatar-2-text);
+}
+.tint-3 {
+  background: var(--avatar-3-fill);
+  color: var(--avatar-3-text);
+}
+.tint-4 {
+  background: var(--avatar-4-fill);
+  color: var(--avatar-4-text);
 }
 </style>

@@ -462,9 +462,6 @@ textarea[aria-invalid='true'] {
   align-items: center;
   gap: 8px;
 }
-.actions .button {
-  text-decoration: none;
-}
 .spacer {
   flex: 1;
 }

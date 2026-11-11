@@ -182,9 +182,6 @@ h3 {
 .hint {
   font-size: 13px;
 }
-.header .button {
-  text-decoration: none;
-}
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -244,9 +241,6 @@ h3 {
 }
 .actions {
   text-align: right;
-}
-.actions .button {
-  text-decoration: none;
 }
 .remembered {
   display: flex;

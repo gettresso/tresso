@@ -352,9 +352,6 @@ textarea[aria-invalid='true'] {
   color: var(--ink-2);
   font-size: 13px;
 }
-.actions .button {
-  text-decoration: none;
-}
 .confirm {
   display: flex;
   flex-direction: column;
