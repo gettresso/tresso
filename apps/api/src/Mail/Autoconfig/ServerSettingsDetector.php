@@ -49,7 +49,8 @@ final readonly class ServerSettingsDetector
         }
 
         /** @var array{xml: string, source: string}|null $found */
-        $found = $this->cache->get('autoconfig.'.hash('sha256', $domain), function (ItemInterface $item) use ($domain, $emailAddress): ?array {
+        // "autoconfig2.": answers cached before the address stopped being sent may name another user; they are not read.
+        $found = $this->cache->get('autoconfig2.'.hash('sha256', $domain), function (ItemInterface $item) use ($domain, $emailAddress): ?array {
             $found = $this->lookup($domain, $emailAddress);
             $item->expiresAfter(null === $found ? self::MISSING_TTL : self::FOUND_TTL);
 

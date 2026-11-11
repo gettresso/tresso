@@ -48,8 +48,8 @@ enum MailServiceProvider: string
             return self::DOMAINS[$domain];
         }
 
-        // yahoo.com, yahoo.co.uk, yahoo.de and the other country domains.
-        return str_starts_with($domain, 'yahoo.') ? self::Yahoo : null;
+        // yahoo.com, yahoo.co.uk, yahoo.com.au, yahoo.de and the other country domains; not yahoo.mycompany.example.
+        return 1 === preg_match('/^yahoo\.(com|[a-z]{2}|co\.[a-z]{2}|com\.[a-z]{2})$/', $domain) ? self::Yahoo : null;
     }
 
     public static function forMailExchanger(string $host): ?self

@@ -28,6 +28,8 @@ final class MailServiceProviderTest extends TestCase
         yield 'yahoo abroad' => ['yahoo.co.jp', MailServiceProvider::Yahoo];
         yield 'ymail' => ['ymail.com', MailServiceProvider::Yahoo];
         yield 'a domain ending in yahoo' => ['notyahoo.com', null];
+        yield 'yahoo australia' => ['yahoo.com.au', MailServiceProvider::Yahoo];
+        yield 'a company domain under yahoo.' => ['yahoo.mycompany.example', null];
         yield 'company' => ['studio-noord.example', null];
     }
 
