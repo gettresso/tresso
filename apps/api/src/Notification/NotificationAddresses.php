@@ -9,10 +9,14 @@ use Doctrine\DBAL\Connection;
 use Symfony\Contracts\Service\ResetInterface;
 
 /**
- * Where a user may have email notifications sent: their sign-in address, and the address of each mail account they
- * proved to hold. A Google or Microsoft account was signed in with at the provider; an IMAP account counts once it
- * synced, since then the user has working credentials for that mailbox. The address of an IMAP account that never
- * synced is only what was typed in, so it could be anyone's.
+ * Where a user may have email notifications sent: their sign-in address, and the address of each Google or Microsoft
+ * account whose address the provider confirmed (the account's address equals the one of its provider grant, which
+ * comes from the provider's sign-in).
+ *
+ * An IMAP account never counts, synced or not. Its address is only what was typed in, next to a username, a password
+ * and servers chosen by the same person: a sync proves that someone can log in to that server, and a server of one's
+ * own accepts any username, so neither the sync nor a username equal to the address shows that the address is theirs.
+ * Tresso has no confirmed send-as addresses to go by either.
  */
 final class NotificationAddresses implements ResetInterface
 {
@@ -35,7 +39,8 @@ final class NotificationAddresses implements ResetInterface
 
         /** @var list<string> $accounts */
         $accounts = $this->connection->fetchFirstColumn(
-            'SELECT email_address FROM mail_account WHERE owner_id = :owner AND (provider_grant_id IS NOT NULL OR last_synced_at IS NOT NULL)',
+            'SELECT a.email_address FROM mail_account a JOIN provider_grant g ON g.id = a.provider_grant_id
+             WHERE a.owner_id = :owner AND g.owner_id = :owner AND LOWER(a.email_address) = LOWER(g.email_address)',
             ['owner' => $key],
         );
 
