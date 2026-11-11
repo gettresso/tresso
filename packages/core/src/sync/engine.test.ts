@@ -228,4 +228,41 @@ describe('SyncEngine', () => {
     expect(retryAfterMs(null, now)).toBeNull()
     expect(retryAfterMs('soon', now)).toBeNull()
   })
+
+  it('honours a Retry-After of at most an hour, and a wake does not cut it short', async () => {
+    vi.useFakeTimers()
+    try {
+      const busy = Object.assign(new Error('Too many requests'), { status: 429, retryAfterMs: 90 * 24 * 3_600_000 })
+      const fetchPage = vi.fn().mockRejectedValueOnce(busy).mockResolvedValue(page(1))
+      const engine = new SyncEngine({ fetchPage, store: new MemoryStore() })
+      await expect(engine.sync()).rejects.toThrow('Too many')
+
+      expect(engine.wake()).toBe(false)
+      await vi.advanceTimersByTimeAsync(3_599_000)
+      expect(fetchPage).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(fetchPage).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('pulls when asked to while a Retry-After waits', async () => {
+    vi.useFakeTimers()
+    try {
+      const busy = Object.assign(new Error('Too many requests'), { status: 429, retryAfterMs: 600_000 })
+      const fetchPage = vi.fn().mockRejectedValueOnce(busy).mockResolvedValue(page(1))
+      const store = new MemoryStore()
+      const engine = new SyncEngine({ fetchPage, store })
+      await expect(engine.sync()).rejects.toThrow('Too many')
+
+      await engine.sync()
+
+      expect(store.applied).toEqual([1])
+      await vi.advanceTimersByTimeAsync(600_000)
+      expect(fetchPage).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
