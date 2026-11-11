@@ -36,7 +36,7 @@ func (c *Client) findByHeader(ctx context.Context, folder, filter, name, value s
 			NextLink string `json:"@odata.nextLink"`
 		}
 		if err := c.get(ctx, link, "", &page); err != nil {
-			return nil, err
+			return nil, mapAccessError(err)
 		}
 		for _, m := range page.Value {
 			match := false
