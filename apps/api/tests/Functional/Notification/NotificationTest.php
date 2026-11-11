@@ -282,6 +282,27 @@ final class NotificationTest extends DatabaseTestCase
         self::assertSame('With Anna de Vries.', $delivered[0]['body']);
     }
 
+    public function testTheFollowUpOfAnEventWithADurationComesAtItsEnd(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/reminder-rules', [
+            'name' => 'Meetings',
+            'allDay' => false,
+            'withAttendees' => true,
+            'reminders' => [['minutesBefore' => 15, 'channels' => ['phone']]],
+            'followUp' => true,
+        ], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $this->runQueuedPlanning();
+
+        // Written with DTSTART and DURATION:PT30M, as many providers do.
+        $start = $this->inMinutes(2 * 24 * 60);
+        $this->storeInvitation('duration@finance.example', 'Budget review', $start->setTimezone(new \DateTimeZone('UTC'))->format('Ymd\THis\Z'));
+
+        $followUps = array_values(array_filter($this->notifications(), static fn (array $n): bool => 'follow_up' === $n['kind']));
+        self::assertCount(1, $followUps);
+        self::assertSame($start->modify('+30 minutes')->format(\DATE_ATOM), $this->atom($followUps[0]['fireAt']));
+    }
+
     public function testSettingsHoldWorkingHoursFocusTravelAndSnoozeChoices(): void
     {
         $settings = $this->getJson('/api/v1/notification-settings', $this->kim);
