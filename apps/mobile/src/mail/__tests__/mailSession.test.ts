@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { MAX_MESSAGES_PER_ACTION, PartialActionError, type ChangePage, type MessageActionRequest, type SyncedHandOver, type SyncedMessage, type SyncedUnsubscription, type ThreadClassificationRequest, type UnsubscribeRequest } from '@tresso/core'
+import { MAX_MESSAGES_PER_ACTION, newDraft, PartialActionError, type ChangePage, type MessageActionRequest, type SyncedHandOver, type SyncedMessage, type SyncedUnsubscription, type ThreadClassificationRequest, type UnsubscribeRequest } from '@tresso/core'
 import { databaseName, MailSession, type MailSessionDeps, type MailState } from '../mailSession'
 import type { Sql } from '../sql'
 import { memorySql } from '@tresso/core/testing/sql'
@@ -139,6 +139,46 @@ describe('MailSession', () => {
     await afterRestart.mail.switchTo(null)
 
     expect(disk.files.has(databaseName('kim'))).toBe(false)
+  })
+
+  it('an expired session closes the copy and keeps its file, with the drafts in it, for the next sign-in', async () => {
+    const disk = device()
+    const first = session(disk)
+    await first.mail.switchTo('kim')
+    await first.mail.database!.saveDraft({ ...newDraft('new', 'work', null, 'draft-1'), subject: 'Not sent yet', pendingSave: true })
+
+    await first.mail.closeCopy()
+
+    expect(first.last()).toMatchObject({ userId: null, ready: false })
+    expect(first.mail.database).toBeNull()
+    expect(disk.files.has(databaseName('kim'))).toBe(true)
+    expect(disk.open.get(databaseName('kim'))).toBe(0)
+
+    const again = session(disk)
+    await again.mail.closeCopy()
+    expect(disk.files.has(databaseName('kim'))).toBe(true)
+    await again.mail.switchTo('kim')
+    expect(again.last()).toMatchObject({ userId: 'kim', ready: true })
+    expect((await again.mail.database!.drafts()).map((draft) => draft.subject)).toEqual(['Not sent yet'])
+    await again.mail.switchTo(null)
+  })
+
+  it('removes a copy a sign-out or switch could not remove when the next launch has nobody signed in, and keeps an expired one', async () => {
+    const disk = device()
+    const first = session(disk)
+    await first.mail.switchTo('kim')
+    disk.failDelete = true
+    await first.mail.switchTo('lisa')
+    // Lisa's sign-in expires: her copy stays, Kim's still could not go.
+    await first.mail.closeCopy()
+    expect(disk.files.has(databaseName('kim'))).toBe(true)
+
+    disk.failDelete = false
+    const afterRestart = session(disk)
+    await afterRestart.mail.closeCopy()
+
+    expect(disk.files.has(databaseName('kim'))).toBe(false)
+    expect(disk.files.has(databaseName('lisa'))).toBe(true)
   })
 
   it('counts the pulls that completed, so a screen knows a missing conversation is really gone', async () => {

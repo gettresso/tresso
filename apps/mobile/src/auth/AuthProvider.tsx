@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { AppState } from 'react-native'
 import { Session, type SessionState } from '@/auth/session'
 import { secureTokenStore } from '@/auth/secureTokenStore'
 import { signInInBrowser } from '@/auth/browserSignIn'
@@ -13,9 +14,12 @@ interface Auth extends SessionState {
   isAuthenticated: boolean
   /** Signs in through the system browser; resolves false when the user closed it. */
   signIn(): Promise<boolean>
+  /** Reads the kept sign-in again, after it could not be read (see `restoreFailed`). */
+  retryRestore(): Promise<void>
   /**
-   * Removes this phone from the user's push devices, then signs out. Signed out either way; rejects when the server
-   * could not be told, so this phone may still get the user's notifications until someone signs in here again.
+   * Removes this phone from the user's push devices, then signs out, which removes the mail on the phone. Signed out
+   * either way; rejects when the server could not be told, so this phone may still get the user's notifications until
+   * someone signs in here again.
    */
   signOut(): Promise<void>
 }
@@ -34,6 +38,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void session.restore().finally(() => setRestoring(false))
   }, [session])
 
+  // A store that could not be read at launch (the Keychain not available yet, a Keystore error) is read again each
+  // time the app comes to the front, until it works or the user signs in.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && session.snapshot.restoreFailed) {
+        void session.restore()
+      }
+    })
+    return () => subscription.remove()
+  }, [session])
+
   const auth = useMemo<Auth>(
     () => ({
       ...state,
@@ -48,6 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await session.completeSignIn(authorization.code, authorization.codeVerifier)
         return true
       },
+      retryRestore: () => session.restore(),
       async signOut() {
         try {
           await forgetPushDevice((path, init) => session.api(path, init), secureDeviceId)

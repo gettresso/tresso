@@ -118,7 +118,7 @@ const MailContext = createContext<Mail | null>(null)
 
 /**
  * The signed-in user's mail on the device (see {@link MailSession}): screens read from the copy only. Signing out
- * closes the copy and removes it.
+ * closes the copy and removes it; a sign-in that expired closes it and keeps it for the next sign-in.
  */
 export function MailProvider({ children }: { children: ReactNode }) {
   const auth = useAuth()
@@ -174,29 +174,33 @@ export function MailProvider({ children }: { children: ReactNode }) {
     [auth.session],
   )
 
-  // Who is signed in decides whose copy is open. The last known user's copy opens at once, so mail on the device
-  // shows offline too; the server then confirms who it is (asked again until it answers), and a different answer
-  // switches to that user's copy, which removes the other.
+  // Who is signed in decides whose copy is open. After a launch the last known user's copy opens at once, so mail on
+  // the device shows offline too; the server then confirms who it is (asked again until it answers), and a different
+  // answer switches to that user's copy, which removes the other. Only a sign-out the user asked for removes the copy
+  // when nobody is signed in: an expired sign-in, or one that could not be read, closes it and keeps it on the phone,
+  // with the drafts that did not reach the server yet.
   useEffect(() => {
     if (auth.restoring) {
       return
     }
     if (!auth.isAuthenticated) {
-      // The token store forgets who was signed in together with the tokens.
-      void session.switchTo(null)
+      void (auth.ended === 'signedOut' ? session.switchTo(null) : session.closeCopy())
       return
     }
     let current = true
     let answered = false
     let retry: ReturnType<typeof setTimeout> | undefined
-    void SecureStore.getItemAsync(LAST_USER)
-      .then((last) => {
-        // Only until the server said who it is: its answer always wins.
-        if (current && !answered && last !== null) {
-          void session.switchTo(last)
-        }
-      })
-      .catch(() => {})
+    // Tokens from a sign-in made here may be someone else's: only the server's answer opens a copy for them.
+    if (auth.restored) {
+      void SecureStore.getItemAsync(LAST_USER)
+        .then((last) => {
+          // Only until the server said who it is: its answer always wins.
+          if (current && !answered && last !== null) {
+            void session.switchTo(last)
+          }
+        })
+        .catch(() => {})
+    }
     const lookUp = () => {
       auth.session
         .me()
@@ -220,7 +224,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
       current = false
       clearTimeout(retry)
     }
-  }, [auth.restoring, auth.isAuthenticated, auth.session, session])
+  }, [auth.restoring, auth.isAuthenticated, auth.ended, auth.restored, auth.session, session])
 
   // In the background the connection rests; back in front, the copy catches up and listens again.
   useEffect(() => {

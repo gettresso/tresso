@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { TokenSet } from '@tresso/core'
-import { ApiError, Session, type TokenStore } from './session'
+import { ApiError, RenewalFailedError, Session, type TokenStore } from './session'
 
 const CONFIG = { apiUrl: 'https://api.example.test/', clientId: 'mobile', redirectUri: 'tresso://auth/callback' }
 
-function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: TokenSet | null; failing: boolean } {
+function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: TokenSet | null; lastUser: string | null; failing: boolean } {
   return {
     saved: initial,
+    lastUser: initial === null ? null : 'kim',
     failing: false,
     async load() {
       return this.saved
@@ -16,6 +17,12 @@ function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: Tok
         throw new Error('Keychain is locked.')
       }
       this.saved = tokens
+    },
+    async forgetUser() {
+      if (this.failing) {
+        throw new Error('Keychain is locked.')
+      }
+      this.lastUser = null
     },
   }
 }
@@ -32,6 +39,23 @@ function tokenResponse(accessToken: string, refreshToken: string): Response {
 }
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+const REVOKE_URL = 'https://api.example.test/oauth/revoke'
+
+/** Answers the revocation endpoint as the server does (always 200), and everything else with `rest`. */
+function server(rest: Fetch): Fetch & { revoked: string[] } {
+  const revoked: string[] = []
+  const handler = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (String(input) === REVOKE_URL) {
+      revoked.push(new URLSearchParams(init!.body as URLSearchParams).get('token')!)
+      return new Response(null, { status: 200 })
+    }
+    return rest(input, init)
+  }
+  return Object.assign(handler, { revoked })
+}
+
+const refused = (code = 'invalid_grant') => new Response(JSON.stringify({ error: code, error_description: 'The refresh token is invalid.' }), { status: 400 })
 
 async function restored(store: TokenStore, fetchImpl: Fetch): Promise<Session> {
   const session = new Session(CONFIG, store, fetchImpl)
@@ -100,46 +124,204 @@ describe('Session', () => {
     expect(store.saved).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
   })
 
-  it('signs out when the refresh token is refused', async () => {
+  it.each(['invalid_grant', 'invalid_request'])('ends the sign-in as expired when the refresh token is refused (%s), and keeps who it was', async (code) => {
     const store = memoryStore(expired())
-    const fetchImpl = vi.fn<Fetch>(async () => new Response(JSON.stringify({ error: 'invalid_grant', error_description: 'The refresh token is invalid.' }), { status: 400 }))
-    const session = await restored(store, fetchImpl)
+    const session = await restored(store, vi.fn<Fetch>(async () => refused(code)))
 
     await expect(session.accessToken()).rejects.toThrow('The refresh token is invalid.')
 
     expect(session.snapshot.tokens).toBeNull()
+    expect(session.snapshot.ended).toBe('expired')
     expect(store.saved).toBeNull()
+    expect(store.lastUser).toBe('kim')
   })
 
-  it('signs out when the token expired and there is no refresh token', async () => {
+  it('keeps the sign-in when the refresh request fails without an answer', async () => {
+    const store = memoryStore(expired())
+    const answers: (() => Promise<Response>)[] = [() => Promise.reject(new TypeError('Network request failed')), async () => tokenResponse('access-2', 'refresh-2')]
+    const session = await restored(store, vi.fn<Fetch>(() => answers.shift()!()))
+
+    const failed = session.accessToken()
+    await expect(failed).rejects.toBeInstanceOf(RenewalFailedError)
+    await expect(failed).rejects.toThrow('The sign-in could not be renewed right now: Network request failed')
+    expect(session.snapshot.tokens?.refreshToken).toBe('refresh-1')
+    expect(session.snapshot.ended).toBeNull()
+    expect(store.saved?.refreshToken).toBe('refresh-1')
+
+    expect(await session.accessToken()).toBe('access-2')
+  })
+
+  it.each([500, 502, 503])('keeps the sign-in when the token endpoint answers %i', async (status) => {
+    const store = memoryStore(expired())
+    const session = await restored(store, vi.fn<Fetch>(async () => new Response('<html>Bad gateway</html>', { status })))
+
+    await expect(session.accessToken()).rejects.toThrow(`The sign-in could not be renewed right now: Token request failed (${status}).`)
+
+    expect(session.snapshot.tokens?.refreshToken).toBe('refresh-1')
+    expect(store.saved?.refreshToken).toBe('refresh-1')
+    expect(session.snapshot.ended).toBeNull()
+  })
+
+  it('ends the sign-in as expired when the token expired and there is no refresh token', async () => {
     const session = await restored(memoryStore(expired(null)), vi.fn<Fetch>())
 
     await expect(session.accessToken()).rejects.toThrow(ApiError)
     expect(session.snapshot.tokens).toBeNull()
+    expect(session.snapshot.ended).toBe('expired')
   })
 
-  it('stays signed out when a refresh finishes after signing out', async () => {
+  it('stays signed out when a refresh finishes after signing out, and revokes the token it brought', async () => {
     const store = memoryStore(expired())
     let respond: (response: Response) => void = () => {}
-    const fetchImpl = vi.fn<Fetch>(() => new Promise<Response>((resolve) => (respond = resolve)))
+    const tokenEndpoint = vi.fn<Fetch>(() => new Promise<Response>((resolve) => (respond = resolve)))
+    const fetchImpl = server(tokenEndpoint)
     const session = await restored(store, fetchImpl)
 
     const pending = session.accessToken()
-    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(tokenEndpoint).toHaveBeenCalledOnce())
     await session.signOut()
     respond(tokenResponse('access-2', 'refresh-2'))
 
     await expect(pending).rejects.toThrow('Signed out.')
     expect(session.snapshot.tokens).toBeNull()
     expect(store.saved).toBeNull()
+    await vi.waitFor(() => expect(fetchImpl.revoked).toEqual(['refresh-1', 'refresh-2']))
   })
 
-  it('signs out when the API says the token is no longer valid', async () => {
+  it('renews the token once and asks again when the API refuses it', async () => {
     const store = memoryStore(fresh())
-    const session = await restored(store, vi.fn<Fetch>(async () => new Response(null, { status: 401 })))
+    const fetchImpl = vi.fn<Fetch>(async (input, init) => {
+      if (String(input).endsWith('/oauth/token')) {
+        return tokenResponse('access-2', 'refresh-2')
+      }
+      const token = new Headers(init!.headers).get('Authorization')
+      return token === 'Bearer access-2' ? new Response(JSON.stringify({ id: 'kim' })) : new Response(null, { status: 401 })
+    })
+    const session = await restored(store, fetchImpl)
+
+    expect(await session.api('/api/v1/me')).toEqual({ id: 'kim' })
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(store.saved?.accessToken).toBe('access-2')
+    expect(session.snapshot.ended).toBeNull()
+  })
+
+  it('ends the sign-in as expired when the API refuses the renewed token too', async () => {
+    const store = memoryStore(fresh())
+    const fetchImpl = vi.fn<Fetch>(async (input) => (String(input).endsWith('/oauth/token') ? tokenResponse('access-2', 'refresh-2') : new Response(null, { status: 401 })))
+    const session = await restored(store, fetchImpl)
 
     await expect(session.me()).rejects.toThrow('Your session has expired. Sign in again.')
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
     expect(store.saved).toBeNull()
+    expect(store.lastUser).toBe('kim')
+    expect(session.snapshot.ended).toBe('expired')
+  })
+
+  it('keeps the sign-in when the API refuses the token and the renewal gets no answer', async () => {
+    const store = memoryStore(fresh())
+    const fetchImpl = vi.fn<Fetch>(async (input) => {
+      if (String(input).endsWith('/oauth/token')) {
+        throw new TypeError('Network request failed')
+      }
+      return new Response(null, { status: 401 })
+    })
+    const session = await restored(store, fetchImpl)
+
+    await expect(session.me()).rejects.toBeInstanceOf(RenewalFailedError)
+    expect(session.snapshot.tokens?.accessToken).toBe('access-1')
+    expect(store.saved?.accessToken).toBe('access-1')
+    expect(session.snapshot.ended).toBeNull()
+  })
+
+  it('ends the sign-in when the API refuses the token and there is no refresh token', async () => {
+    const store = memoryStore(fresh('access-1', null))
+    const fetchImpl = vi.fn<Fetch>(async () => new Response(null, { status: 401 }))
+    const session = await restored(store, fetchImpl)
+
+    await expect(session.me()).rejects.toThrow('Your session has expired. Sign in again.')
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(session.snapshot.ended).toBe('expired')
+  })
+
+  it('revokes the refresh token on sign-out, then forgets the tokens and who was signed in', async () => {
+    const store = memoryStore(fresh())
+    const fetchImpl = server(vi.fn<Fetch>())
+    const session = await restored(store, fetchImpl)
+
+    await session.signOut()
+
+    expect(fetchImpl.revoked).toEqual(['refresh-1'])
+    expect(session.snapshot.tokens).toBeNull()
+    expect(session.snapshot.ended).toBe('signedOut')
+    expect(store.saved).toBeNull()
+    expect(store.lastUser).toBeNull()
+  })
+
+  it('signs out when the server cannot be told to revoke the token', async () => {
+    const store = memoryStore(fresh())
+    const session = await restored(store, vi.fn<Fetch>(async () => Promise.reject(new TypeError('Network request failed'))))
+
+    await session.signOut()
+
+    expect(session.snapshot.ended).toBe('signedOut')
+    expect(store.saved).toBeNull()
+  })
+
+  it('does not wait long for a revocation that gets no answer', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore(fresh())
+      const session = await restored(store, vi.fn<Fetch>(() => new Promise<Response>(() => undefined)))
+
+      const signingOut = session.signOut()
+      await vi.advanceTimersByTimeAsync(5_000)
+      await signingOut
+
+      expect(store.saved).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('forgets who was signed in last before keeping a new sign-in', async () => {
+    const store = memoryStore()
+    store.lastUser = 'lisa'
+    const session = await restored(store, vi.fn<Fetch>(async () => tokenResponse('access-2', 'refresh-2')))
+
+    await session.completeSignIn('the-code', 'the-verifier')
+
+    expect(store.lastUser).toBeNull()
+    expect(session.snapshot).toMatchObject({ restored: false, ended: null })
+  })
+
+  it('tries reading the kept sign-in again after it failed', async () => {
+    const store = memoryStore(fresh())
+    const load = store.load.bind(store)
+    store.load = async () => {
+      throw new Error('Keychain is not available yet.')
+    }
+    const session = await restored(store, vi.fn<Fetch>())
+    expect(session.snapshot.restoreFailed).toBe(true)
+
+    store.load = load
+    await session.restore()
+
+    expect(session.snapshot).toMatchObject({ restoreFailed: false, restored: true, storageError: null, ended: null })
+    expect(session.snapshot.tokens?.accessToken).toBe('access-1')
+  })
+
+  it('keeps a sign-in made while the kept one was being read again', async () => {
+    const store = memoryStore(fresh('access-old'))
+    let finish: (tokens: TokenSet | null) => void = () => undefined
+    store.load = () => new Promise((resolve) => (finish = resolve))
+    const session = new Session(CONFIG, store, vi.fn<Fetch>(async () => tokenResponse('access-2', 'refresh-2')))
+
+    const reading = session.restore()
+    await session.completeSignIn('the-code', 'the-verifier')
+    finish(fresh('access-old'))
+    await reading
+
+    expect(session.snapshot.tokens?.accessToken).toBe('access-2')
   })
 
   it('passes on what the API said went wrong', async () => {
@@ -161,6 +343,21 @@ describe('Session', () => {
     await session.signOut()
     expect(session.snapshot.tokens).toBeNull()
     expect(session.snapshot.storageError).toBe('You are signed out here, but the sign-in could not be removed from this device: Keychain is locked.')
+  })
+
+  it('does not keep a new sign-in when who was signed in last cannot be forgotten', async () => {
+    const store = memoryStore()
+    store.lastUser = 'lisa'
+    const session = await restored(store, vi.fn<Fetch>(async () => tokenResponse('access-2', 'refresh-2')))
+    store.forgetUser = async () => {
+      throw new Error('Keychain is locked.')
+    }
+
+    await session.completeSignIn('the-code', 'the-verifier')
+
+    expect(session.snapshot.tokens?.accessToken).toBe('access-2')
+    expect(store.saved).toBeNull()
+    expect(session.snapshot.storageError).toContain('could not be kept on this device')
   })
 
   it('tells subscribers about every change', async () => {
@@ -204,7 +401,7 @@ describe('Session', () => {
 
   it('ignores a 402 that answers a request from before the sign-out', async () => {
     let answer: (response: Response) => void = () => undefined
-    const session = await restored(memoryStore(fresh()), vi.fn<Fetch>(() => new Promise<Response>((resolve) => (answer = resolve))))
+    const session = await restored(memoryStore(fresh()), server(() => new Promise<Response>((resolve) => (answer = resolve))))
     const request = session.api('/api/v1/me')
     await Promise.resolve()
 
@@ -218,7 +415,7 @@ describe('Session', () => {
   it('does not sign out a newer session for a 401 that answers the previous one', async () => {
     let answer: (response: Response) => void = () => undefined
     const store = memoryStore(fresh())
-    const session = await restored(store, vi.fn<Fetch>(() => new Promise<Response>((resolve) => (answer = resolve))))
+    const session = await restored(store, server(() => new Promise<Response>((resolve) => (answer = resolve))))
     const request = session.api('/api/v1/me')
     await Promise.resolve()
 

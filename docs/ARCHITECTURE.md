@@ -1392,7 +1392,15 @@ URI. expo-auth-session opens the authorization page in the system's authenticati
 through `packages/core`. `Session` (`apps/mobile/src/auth/session.ts`, plain TypeScript, unit tested) keeps the tokens
 in expo-secure-store (Keychain on iOS, Keystore-encrypted on Android) as three entries, because some iOS releases
 refuse values above about 2 KB, refreshes them before they expire with one shared request (refresh tokens rotate),
-and never lets a refresh that finishes after sign-out sign the user back in.
+and never lets a refresh that finishes after sign-out sign the user back in. A save writes the refresh token first and
+the expiry last, so one cut off at any step still loads with the newest refresh token. Only a refused refresh token
+(`invalid_grant` or `invalid_request` from `/oauth/token`) ends the sign-in: offline, a timeout or a server error keeps
+the tokens and the next request tries again. A 401 from the API renews the token once and asks once more before the
+sign-in ends. A sign-in that ends this way has expired: the tokens go, but who was signed in and their mail on the
+phone stay, so unsent drafts are still there when they sign in again. Only a sign-out the user asks for revokes the
+refresh token at the server (`/oauth/revoke`, best effort, waiting a few seconds at most) and removes the mail on the
+phone. A store that cannot be read at launch removes nothing either: the app says so, offers Try again, and reads it
+again whenever it comes to the front.
 
 Mail on the phone: the mobile app keeps a SQLite copy (expo-sqlite, one database per user) of
 the mail accounts, folders, threads and messages from the delta, with a summary per thread as the web client does
@@ -1401,8 +1409,10 @@ pulls it and the same `RealtimeClient` triggers pulls while the app is in the fo
 connection rests and the copy catches up when the app comes back. `MailSession` runs this lifecycle one switch at a
 time, awaiting every step: a copy is deleted only after it is closed (on sign-out, or when another user signs in),
 and a small index database lists every copy on the device, so one that could not be deleted is removed the next
-time. The last signed-in user is remembered, so their copy opens before the server confirms who is signed in, also
-offline. The copy is the same `SqliteMailStore` the desktop app uses (see below). Message bodies show in a web view with the same Content-Security-Policy as
+time. When nobody is signed in because the sign-in expired or could not be read, the copy is closed and kept; only
+copies marked for removal by a sign-out or a switch are removed then. The last signed-in user is remembered, so after
+a launch their copy opens before the server confirms who is signed in, also offline; a new sign-in forgets them first
+and opens a copy only once the server said who it is. The copy is the same `SqliteMailStore` the desktop app uses (see below). Message bodies show in a web view with the same Content-Security-Policy as
 the web client's frame; only links the reader taps open, in the browser, and remote images load only when the
 reader asks. Opening a conversation on the phone reads it, and its action bar archives, trashes, marks unread and
 flags it, with the same exact undo as the web client: the way an action changes messages (`actionResult`) and how to
