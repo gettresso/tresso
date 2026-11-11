@@ -347,23 +347,37 @@ final readonly class EventEditor
     }
 
     /**
-     * Whether an override shows what its series' occurrence would: the same fields, guests (their answers aside),
-     * alarms and length.
+     * Whether an override shows what its series' occurrence would: every property apart from those that place it
+     * (its times, its recurrence id) or stamp a version, the guests with their answers, the alarms and the length.
+     * Properties a provider wrote that Tresso does not model count too, so nothing is lost by dropping it.
      */
     private static function sameAsSeries(VEvent $override, VEvent $master): bool
     {
-        foreach (['SUMMARY', 'DESCRIPTION', 'LOCATION', 'URL', 'STATUS', 'TRANSP', 'CLASS', 'PRIORITY', EventReader::TRAVEL] as $name) {
-            if (Props::text($override, $name) !== Props::text($master, $name)) {
-                return false;
+        $placing = ['DTSTART', 'DTEND', 'DURATION', 'RECURRENCE-ID', 'RRULE', 'RDATE', 'EXDATE', 'EXRULE', 'DTSTAMP', 'LAST-MODIFIED', 'CREATED', 'SEQUENCE', 'ATTENDEE'];
+        $properties = static function (VEvent $event) use ($placing): array {
+            $state = [];
+            foreach ($event->children() as $child) {
+                if ($child instanceof Property && !\in_array(strtoupper($child->name), $placing, true)) {
+                    $state[] = $child->serialize();
+                }
             }
-        }
-        $conference = static fn (VEvent $event): array => array_map(Props::value(...), Props::all($event, 'CONFERENCE'));
+            sort($state);
+
+            return $state;
+        };
+        $answers = static function (VEvent $event): array {
+            $state = array_map(static fn (Property $attendee): string => Props::address(Props::value($attendee)).'|'.strtoupper(Props::param($attendee, 'PARTSTAT') ?? 'NEEDS-ACTION'), Props::all($event, 'ATTENDEE'));
+            sort($state);
+
+            return $state;
+        };
         $utc = new \DateTimeZone('UTC');
         $length = static fn (VEvent $event): int => Occurrences::endOf($event, $utc)->getTimestamp() - \DateTimeImmutable::createFromInterface(self::dtStart($event)->getDateTime($utc))->getTimestamp();
 
-        return self::attendeeState($override) === self::attendeeState($master)
+        return $properties($override) === $properties($master)
+            && self::attendeeState($override) === self::attendeeState($master)
+            && $answers($override) === $answers($master)
             && self::reminderState($override) === self::reminderState($master)
-            && $conference($override) === $conference($master)
             && $length($override) === $length($master);
     }
 
