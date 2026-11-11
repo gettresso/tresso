@@ -198,6 +198,7 @@ final class McpEndpointTest extends DatabaseTestCase
             ['POST', '/provider-authorizations', ['provider' => 'google', 'emailAddress' => 'kim@gmail.example']],
             ['POST', '/provider-connections', ['provider' => 'google', 'state' => 'a-state', 'code' => 'a-code']],
             ['POST', '/mail-accounts', self::account('kim@other.example')],
+            ['POST', '/mail-account-checks', array_diff_key(self::account('kim@other.example'), ['displayName' => true])],
             ['PATCH', '/mail-accounts/'.$account, ['password' => 'stolen-elsewhere']],
             ['DELETE', '/mail-accounts/'.$account, null],
             ['POST', '/notification-devices', ['kind' => 'expo', 'endpoint' => 'ExponentPushToken[sneaky]', 'name' => 'Sneaky']],
