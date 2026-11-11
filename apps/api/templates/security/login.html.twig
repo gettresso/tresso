@@ -17,6 +17,9 @@
             <h1 id="sign-in-title">Sign in</h1>
             <p class="lead">Every email is something to do, to hand over, or to know.</p>
 
+            {% if notice is defined and notice %}
+                <p class="error" role="alert">{{ notice }}</p>
+            {% endif %}
             {% if error %}
                 <p class="error" role="alert">{{ error.messageKey|trans(error.messageData, 'security') }}</p>
             {% endif %}

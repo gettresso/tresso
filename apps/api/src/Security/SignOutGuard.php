@@ -23,8 +23,9 @@ use Twig\Environment;
  * Runs before the firewall, whose logout listener would otherwise end the sign-in on any request to /logout:
  * - GET shows a page with a Sign out button (or, when this browser is not signed in, goes straight back to the web
  *   app). A link or a navigation never signs anyone out by itself.
- * - POST goes on to the firewall when it comes from Tresso: an Origin header of this server or of the web app (the web
- *   app signs out by submitting a form here), or, from a browser that sends no usable Origin, the page's CSRF token.
+ * - POST goes on to the firewall when it comes from Tresso: with the page's CSRF token (always enough, also behind a
+ *   proxy that hides the scheme), or with an Origin header of this server or of the web app (the web app signs out by
+ *   submitting a form here, without a token).
  *   Anything else gets the page again with a 403, and nothing happens.
  *
  * After signing out the browser goes to the web app. The firewall's own `logout.target` cannot do that: Symfony only
@@ -102,14 +103,18 @@ final readonly class SignOutGuard
         $event->setResponse($redirect);
     }
 
+    /**
+     * The page's CSRF token is always enough (it is bound to the session). An Origin of this host or of the web app is
+     * the way without one: the web app posts here from its own page, which has no token.
+     */
     private function fromTresso(Request $request): bool
     {
-        $origin = $request->headers->get('Origin');
-        if (null !== $origin && 'null' !== $origin) {
-            return \in_array($origin, [$request->getSchemeAndHttpHost(), $this->webAppUrl], true);
+        if ($this->csrfTokens->isTokenValid(new CsrfToken(self::CSRF_TOKEN_ID, $request->request->getString('_csrf_token')))) {
+            return true;
         }
+        $origin = $request->headers->get('Origin');
 
-        return $this->csrfTokens->isTokenValid(new CsrfToken(self::CSRF_TOKEN_ID, $request->request->getString('_csrf_token')));
+        return null !== $origin && \in_array($origin, [$request->getSchemeAndHttpHost(), $this->webAppUrl], true);
     }
 
     private function page(Request $request, ?string $error = null): Response

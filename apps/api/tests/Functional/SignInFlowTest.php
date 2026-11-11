@@ -258,6 +258,95 @@ final class SignInFlowTest extends DatabaseTestCase
         self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'Still signed in.');
     }
 
+    public function testTheSignOutPageTokenIsEnoughWhateverTheOrigin(): void
+    {
+        $this->signIn();
+        $crawler = $this->client->request('GET', '/logout');
+
+        // A proxy that does not pass the scheme: the browser's Origin is https, the API sees http.
+        $this->client->submit($crawler->selectButton('Sign out')->form(), [], ['HTTP_ORIGIN' => 'https://localhost']);
+
+        self::assertResponseRedirects($this->webAppUrl());
+        self::assertSame('http://localhost/login', $this->authorize());
+    }
+
+    public function testAnotherSiteCannotEndTheSignInOrSpendAttemptsThroughTheSignInForm(): void
+    {
+        $this->signIn();
+        self::assertNotNull($this->client->getCookieJar()->get('REMEMBERME'));
+
+        for ($post = 1; $post <= 6; ++$post) {
+            $this->client->request('POST', '/login', ['_username' => self::EMAIL, '_password' => 'wrong', '_csrf_token' => 'forged'], server: ['HTTP_ORIGIN' => 'https://evil.example']);
+            self::assertResponseStatusCodeSame(403);
+            self::assertSelectorTextContains('.error', 'came from another site');
+        }
+
+        self::assertNotNull($this->client->getCookieJar()->get('REMEMBERME'), 'The remember-me cookie stays.');
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'Still signed in.');
+        $this->client->getCookieJar()->clear();
+        $this->signIn(rememberMe: false);
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'None of those posts counted as a failed attempt.');
+    }
+
+    public function testPromptLoginAsksForThePasswordAgainOnceForThatRequest(): void
+    {
+        $this->signIn();
+        $verifier = bin2hex(random_bytes(32));
+        $request = $this->authorizeUrl($verifier, ['prompt' => 'login']);
+
+        $this->client->request('GET', $request);
+        self::assertResponseRedirects('http://localhost/login', null, 'A live session is not enough.');
+        self::assertNull($this->client->getCookieJar()->get('REMEMBERME'), 'The remembered sign-in ends.');
+        $this->client->followRedirect();
+        self::assertSelectorExists('input[name="_password"]');
+
+        $this->client->submit($this->client->getCrawler()->selectButton('Sign in')->form(['_username' => self::EMAIL, '_password' => self::PASSWORD]));
+        self::assertResponseRedirects();
+        $back = (string) $this->client->getResponse()->headers->get('Location');
+        self::assertStringStartsWith('http://localhost/oauth/authorize?', $back, 'Back to the same request.');
+        parse_str((string) parse_url($back, \PHP_URL_QUERY), $backQuery);
+        parse_str((string) parse_url($request, \PHP_URL_QUERY), $sentQuery);
+        ksort($backQuery);
+        ksort($sentQuery);
+        self::assertSame($sentQuery, $backQuery);
+        $this->client->followRedirect();
+
+        $location = (string) $this->client->getResponse()->headers->get('Location');
+        self::assertStringStartsWith($this->webRedirectUri().'?', $location, 'It goes on without asking again.');
+        self::assertSame(self::EMAIL, $this->meWithCode($location, $verifier));
+
+        $this->client->request('GET', $request);
+        self::assertResponseRedirects('http://localhost/login', null, 'The answer was for that one request: asking again asks again.');
+    }
+
+    public function testPromptLoginLetsAnotherUserSignIn(): void
+    {
+        static::getContainer()->get(UserProvisioner::class)->provision('lisa@example.test', 'Lisa Bakker', self::PASSWORD);
+        $this->signIn();
+        $verifier = bin2hex(random_bytes(32));
+
+        $this->client->request('GET', $this->authorizeUrl($verifier, ['prompt' => 'login']));
+        $this->client->followRedirect();
+        $this->client->submit($this->client->getCrawler()->selectButton('Sign in')->form(['_username' => 'lisa@example.test', '_password' => self::PASSWORD]));
+        $this->client->followRedirect();
+
+        self::assertSame('lisa@example.test', $this->meWithCode((string) $this->client->getResponse()->headers->get('Location'), $verifier));
+        self::assertStringStartsWith($this->webRedirectUri().'?', $this->authorize(), 'The browser is now signed in as Lisa, without asking.');
+    }
+
+    public function testAMarkOfAnotherRequestDoesNotSkipThePassword(): void
+    {
+        $this->signIn();
+        $verifier = bin2hex(random_bytes(32));
+        $this->client->request('GET', $this->authorizeUrl($verifier, ['prompt' => 'login']));
+        $this->client->followRedirect();
+        $this->client->submit($this->client->getCrawler()->selectButton('Sign in')->form(['_username' => self::EMAIL, '_password' => self::PASSWORD]));
+
+        $this->client->request('GET', $this->authorizeUrl(bin2hex(random_bytes(32)), ['prompt' => 'login', 'state' => 'other']));
+
+        self::assertResponseRedirects('http://localhost/login', null, 'Signing in answered one request, not this one.');
+    }
+
     public function testSignOutWithoutASignInGoesBackToTheApp(): void
     {
         $this->client->request('GET', '/logout');
@@ -405,6 +494,43 @@ final class SignInFlowTest extends DatabaseTestCase
         self::assertSame('invalid_grant', $this->json()['error'] ?? null, 'The response that never arrived is revoked with it.');
         $this->me(self::string($lost['access_token'] ?? null));
         self::assertResponseStatusCodeSame(401);
+    }
+
+    /**
+     * An authorization request of the web app.
+     *
+     * @param array<string, string> $extra
+     */
+    private function authorizeUrl(string $verifier, array $extra = []): string
+    {
+        return '/oauth/authorize?'.http_build_query([
+            'response_type' => 'code',
+            'client_id' => 'web',
+            'redirect_uri' => $this->webRedirectUri(),
+            'scope' => 'mail:read',
+            'state' => 's',
+            'code_challenge' => rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '='),
+            'code_challenge_method' => 'S256',
+            ...$extra,
+        ]);
+    }
+
+    /** Exchanges the code in a callback address and returns who the token belongs to. */
+    private function meWithCode(string $callback, string $verifier): string
+    {
+        parse_str((string) parse_url($callback, \PHP_URL_QUERY), $query);
+        $this->client->request('POST', '/oauth/token', [
+            'grant_type' => 'authorization_code',
+            'client_id' => 'web',
+            'redirect_uri' => $this->webRedirectUri(),
+            'code' => self::string($query['code'] ?? null),
+            'code_verifier' => $verifier,
+        ]);
+        self::assertResponseIsSuccessful();
+        $this->me(self::string($this->json()['access_token'] ?? null));
+        self::assertResponseIsSuccessful();
+
+        return self::string($this->json()['email'] ?? null);
     }
 
     /** @return array{access_token: string, refresh_token: string} */

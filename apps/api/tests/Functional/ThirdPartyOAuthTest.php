@@ -64,6 +64,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
             'scopes_supported' => self::THIRD_PARTY_SCOPES,
             'response_types_supported' => ['code'],
             'response_modes_supported' => ['query'],
+            'prompt_values_supported' => ['login'],
             'grant_types_supported' => ['authorization_code', 'refresh_token'],
             'code_challenge_methods_supported' => ['S256'],
             'token_endpoint_auth_methods_supported' => ['none'],
@@ -751,6 +752,26 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
 
         $this->client->request('POST', '/oauth/token', ['grant_type' => 'authorization_code', 'client_id' => $clientId, 'redirect_uri' => self::REDIRECT, 'code' => $code, 'code_verifier' => $verifier]);
         self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_grant', $this->decodedResponse()['error'] ?? null);
+    }
+
+    public function testARotatedRefreshTokenIsAnsweredAgainOnlyForTheSameScopeAndWithALiveConsent(): void
+    {
+        $clientId = $this->registeredClientId();
+        $token = $this->connect('kim@example.test', $clientId, ['signatures:read', 'todos:read']);
+        $rotated = $this->refresh($clientId, $token['refresh_token']);
+        self::assertResponseIsSuccessful();
+
+        self::assertSame($rotated['refresh_token'], $this->refresh($clientId, $token['refresh_token'])['refresh_token'], 'Within the grace: the same answer again.');
+
+        $this->client->request('POST', '/oauth/token', ['grant_type' => 'refresh_token', 'client_id' => $clientId, 'refresh_token' => $token['refresh_token'], 'scope' => 'todos:read']);
+        self::assertResponseStatusCodeSame(400, 'Another scope is another request: no replay, and the old token is revoked.');
+        self::assertSame('invalid_grant', $this->decodedResponse()['error'] ?? null);
+
+        // As if the user disconnected the app at this moment, before its tokens were revoked.
+        $this->connection()->executeStatement('DELETE FROM oauth_consent');
+        $this->refresh($clientId, $token['refresh_token']);
+        self::assertResponseStatusCodeSame(400, 'An app that is not ours gets nothing again without the consent.');
         self::assertSame('invalid_grant', $this->decodedResponse()['error'] ?? null);
     }
 
