@@ -10,6 +10,7 @@ use App\Entity\Message;
 use App\Entity\MessageLocation;
 use App\Entity\MessageText;
 use App\Entity\Thread;
+use App\Entity\Todo;
 use App\Mail\MessageFields;
 use App\Repository\AttachmentRepository;
 use App\Storage\BlobKey;
@@ -70,7 +71,27 @@ final class SyncIngestTest extends DatabaseTestCase
         $states = $this->folders(['INBOX' => 2]);
 
         self::assertSame([['remoteName' => 'INBOX', 'uidValidity' => 2, 'cursor' => null, 'reset' => true]], $states);
+        self::assertSame(0, $this->rows(MessageLocation::class));
+        self::assertNotNull($this->onlyMessage()->getOrphanedAt(), 'It waits for the download of the folder to find it again.');
+
+        $this->sweepOrphanedMessages();
+
         self::assertSame(0, $this->rows(Message::class));
+    }
+
+    public function testAResetFolderFindsItsMessagesAgain(): void
+    {
+        $this->folders(['INBOX' => 1]);
+        $this->messages('INBOX', [$this->message('1', ['messageId' => '<kept@x>'])]);
+        $id = $this->onlyMessage()->getId();
+
+        $this->folders(['INBOX' => 2]);
+        $this->messages('INBOX', [$this->message('31', ['messageId' => '<kept@x>'])]);
+        $this->sweepOrphanedMessages();
+
+        $message = $this->onlyMessage();
+        self::assertTrue($id->equals($message->getId()));
+        self::assertNull($message->getOrphanedAt());
     }
 
     public function testDeletedFolderTakesOnlyMessagesThatAreNowhereElse(): void
@@ -81,6 +102,7 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame(2, $this->rows(Message::class));
 
         $this->folders(['INBOX' => 1]);
+        $this->sweepOrphanedMessages();
 
         self::assertSame(1, $this->rows(Message::class));
         self::assertSame(1, $this->rows(MessageLocation::class));
@@ -388,6 +410,15 @@ final class SyncIngestTest extends DatabaseTestCase
         ]);
 
         self::assertSame(['updated' => 1, 'removed' => 2, 'unknown' => 1, 'deleted' => 1, 'unknownUids' => ['99']], $result);
+        $gone = $this->entityManager()->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'gone@x']);
+        self::assertInstanceOf(Message::class, $gone, 'It waits for its copy to show up elsewhere.');
+        self::assertNotNull($gone->getOrphanedAt());
+
+        $this->sweepOrphanedMessages('+5 minutes');
+        self::assertNotNull($this->entityManager()->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'gone@x']), 'Still within its grace period.');
+
+        $this->sweepOrphanedMessages();
+        self::assertNull($this->entityManager()->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'gone@x']));
         $keep = $this->entityManager()->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'keep@x']);
         self::assertInstanceOf(Message::class, $keep);
         self::assertTrue($keep->isSeen());
@@ -395,6 +426,61 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame(1, $keep->getThread()->getMessageCount(), 'The thread is recounted after its reply was deleted.');
         self::assertNotNull($this->entityManager()->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'moved@x']), 'Still in Archive.');
         self::assertSame('modseq=9', $this->folders(['INBOX' => 1, 'Archive' => 1])[0]['cursor'] ?? null);
+    }
+
+    public function testAMessageMovedInAnotherMailAppKeepsItsIdentityAndItsTodo(): void
+    {
+        $this->folders(['INBOX' => 1, 'Archive' => 1]);
+        $this->messages('INBOX', [$this->message('1', ['messageId' => '<moved@x>'])]);
+        $id = $this->onlyMessage()->getId()->toRfc4122();
+        $this->client->jsonRequest('POST', '/api/v1/messages/'.$id.'/todo', [], $this->userHeaders('kim@example.test', ['mail:read', 'todos:write']));
+        self::assertResponseIsSuccessful();
+        $todoId = $this->responseString('id');
+
+        // The worker sees the copy leave the inbox before its folder poll finds it in Archive.
+        self::assertSame(1, $this->changes('INBOX', ['vanished' => ['1']])['deleted']);
+        $this->sweepOrphanedMessages('+5 minutes');
+        $result = $this->messages('Archive', [$this->message('40', ['messageId' => '<moved@x>'])]);
+        $this->sweepOrphanedMessages();
+
+        self::assertSame(['stored' => 0, 'linked' => 1, 'updated' => 0], $result);
+        $message = $this->onlyMessage();
+        self::assertSame($id, $message->getId()->toRfc4122());
+        self::assertNull($message->getOrphanedAt());
+        $todo = $this->entityManager()->find(Todo::class, Uuid::fromString($todoId));
+        self::assertInstanceOf(Todo::class, $todo);
+        self::assertSame($id, $todo->getMessage()?->getId()->toRfc4122());
+    }
+
+    public function testAnOrphanIsDeletedWithATombstoneAfterItsGracePeriod(): void
+    {
+        $this->folders(['INBOX' => 1]);
+        $this->messages('INBOX', [$this->message('1', ['messageId' => '<gone@x>'])]);
+        $message = $this->onlyMessage();
+        $id = $message->getId()->toRfc4122();
+        $threadId = $message->getThread()->getId()->toRfc4122();
+        $this->changes('INBOX', ['vanished' => ['1']]);
+
+        $this->sweepOrphanedMessages();
+
+        self::assertSame(0, $this->rows(Message::class));
+        self::assertSame(0, $this->rows(Thread::class));
+        self::assertSame(1, $this->countRows("SELECT COUNT(*) FROM sync_tombstone WHERE entity_type = 'message' AND entity_id = :id", ['id' => $id]));
+        self::assertSame(1, $this->countRows("SELECT COUNT(*) FROM sync_tombstone WHERE entity_type = 'thread' AND entity_id = :id", ['id' => $threadId]));
+    }
+
+    public function testACursorOnlyChangeBatchLeavesTheMessagesAlone(): void
+    {
+        $this->folders(['INBOX' => 1]);
+        $this->messages('INBOX', [$this->message('1'), $this->message('2')]);
+        $log = static::getContainer()->get(QueryLog::class);
+        $log->clear();
+
+        $result = $this->changes('INBOX', ['cursor' => 'modseq=5']);
+
+        self::assertSame(['updated' => 0, 'removed' => 0, 'unknown' => 0, 'deleted' => 0, 'unknownUids' => []], $result);
+        $touching = array_filter($log->queries(), static fn (string $sql): bool => (bool) preg_match('/\b(FROM|UPDATE|INTO|JOIN)\s+message\b(?!_)/i', $sql));
+        self::assertSame([], array_values($touching), 'Nothing lost a folder, so no message is looked at.');
     }
 
     public function testPresenceRangesRemoveEverythingNotListed(): void

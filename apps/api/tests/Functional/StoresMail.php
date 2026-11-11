@@ -8,7 +8,14 @@ use App\Security\Crypto\UserKeys;
 use App\Storage\BlobKey;
 use App\Storage\BlobKind;
 use App\Storage\BlobVault;
+use App\Sync\Ingest\MessageJanitor;
+use App\Sync\Ingest\SweepOrphanedMessages;
+use App\Sync\Ingest\SweepOrphanedMessagesHandler;
 use Doctrine\DBAL\Connection;
+use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\Persistence\ManagerRegistry;
+use Psr\Log\NullLogger;
+use Symfony\Component\Clock\MockClock;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -39,6 +46,23 @@ trait StoresMail
     protected function keyVersionOf(string $accountId): int
     {
         return static::getContainer()->get(UserKeys::class)->current($this->accountOwner($accountId))->version;
+    }
+
+    /**
+     * Runs the sweep for messages in no folder as it runs once their grace period is over: messages whose copy did not
+     * show up elsewhere meanwhile are deleted.
+     */
+    protected function sweepOrphanedMessages(string $after = '+16 minutes'): void
+    {
+        $container = static::getContainer();
+        $handler = new SweepOrphanedMessagesHandler(
+            $container->get(EntityManagerInterface::class),
+            $container->get(MessageJanitor::class),
+            $container->get(ManagerRegistry::class),
+            new MockClock(new \DateTimeImmutable($after)),
+            new NullLogger(),
+        );
+        $handler(new SweepOrphanedMessages());
     }
 
     protected function accountOwner(string $accountId): Uuid

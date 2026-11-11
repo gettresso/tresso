@@ -47,6 +47,7 @@ class MessageLocation
         $this->message = $message;
         $this->folder = $folder;
         $this->remoteUid = $remoteUid;
+        $message->foundInFolder();
     }
 
     public function getId(): Uuid
