@@ -110,50 +110,49 @@ final readonly class SyncChangesProvider implements ProviderInterface
      * The highest change number such that the page holds at most $limit entities, but always at least one complete
      * change number.
      *
+     * Every part reads at most $limit + 1 change numbers through its (owner or account or calendar, change_seq) index,
+     * so a page costs the same however much is left after it. That gives the same answer as aggregating everything: a
+     * change number among the first $limit + 1 of all of them is among the first $limit + 1 of every part it is in.
+     *
      * @return array{int, bool} [until, hasMore]
      */
     private function boundary(string $userId, int $since, int $limit): array
     {
+        $byOwner = static fn (string $table, string $owner, string $extra = ''): string => \sprintf(
+            '(SELECT x.change_seq, COUNT(*) AS rows FROM %1$s x WHERE x.%2$s = :user AND x.change_seq > :since%3$s GROUP BY x.change_seq ORDER BY x.change_seq LIMIT :groups)',
+            $table, $owner, $extra,
+        );
+        // Per account (or calendar) of the user, so each scan follows that index in change number order.
+        $byParent = static fn (string $table, string $column, string $parent = 'mail_account'): string => \sprintf(
+            '(SELECT x.change_seq, x.rows FROM %3$s p CROSS JOIN LATERAL (
+                SELECT y.change_seq, COUNT(*) AS rows FROM %1$s y WHERE y.%2$s = p.id AND y.change_seq > :since GROUP BY y.change_seq ORDER BY y.change_seq LIMIT :groups
+             ) x WHERE p.owner_id = :user)',
+            $table, $column, $parent,
+        );
+        $parts = [
+            $byOwner('mail_account', 'owner_id'),
+            $byParent('folder', 'mail_account_id'),
+            $byParent('thread', 'mail_account_id'),
+            $byParent('message', 'mail_account_id'),
+            $byParent('outgoing_message', 'mail_account_id'),
+            $byOwner('signature', 'owner_id'),
+            $byOwner('draft', 'owner_id', ' AND x.sending_as_id IS NULL'),
+            $byOwner('category', 'owner_id'),
+            $byOwner('calendar', 'owner_id'),
+            $byParent('calendar_event', 'calendar_id', 'calendar'),
+            $byOwner('scheduled_notification', 'user_id'),
+            $byOwner('event_note', 'user_id'),
+            $byOwner('todo', 'owner_id'),
+            $byOwner('mail_notification', 'user_id'),
+            $byParent('unsubscription', 'mail_account_id'),
+            $byOwner('hand_over', 'owner_id'),
+            $byOwner('daily_brief', 'owner_id'),
+            $byOwner('sync_tombstone', 'user_id'),
+        ];
+
         /** @var list<array{change_seq: int|string, rows: int|string}> $groups */
         $groups = $this->connection->fetchAllAssociative(
-            'SELECT change_seq, SUM(rows) AS rows FROM (
-                SELECT a.change_seq, COUNT(*) AS rows FROM mail_account a WHERE a.owner_id = :user AND a.change_seq > :since GROUP BY a.change_seq
-                UNION ALL
-                SELECT f.change_seq, COUNT(*) FROM folder f JOIN mail_account a ON a.id = f.mail_account_id WHERE a.owner_id = :user AND f.change_seq > :since GROUP BY f.change_seq
-                UNION ALL
-                SELECT t.change_seq, COUNT(*) FROM thread t JOIN mail_account a ON a.id = t.mail_account_id WHERE a.owner_id = :user AND t.change_seq > :since GROUP BY t.change_seq
-                UNION ALL
-                SELECT m.change_seq, COUNT(*) FROM message m JOIN mail_account a ON a.id = m.mail_account_id WHERE a.owner_id = :user AND m.change_seq > :since GROUP BY m.change_seq
-                UNION ALL
-                SELECT o.change_seq, COUNT(*) FROM outgoing_message o JOIN mail_account a ON a.id = o.mail_account_id WHERE a.owner_id = :user AND o.change_seq > :since GROUP BY o.change_seq
-                UNION ALL
-                SELECT g.change_seq, COUNT(*) FROM signature g WHERE g.owner_id = :user AND g.change_seq > :since GROUP BY g.change_seq
-                UNION ALL
-                SELECT d.change_seq, COUNT(*) FROM draft d WHERE d.owner_id = :user AND d.change_seq > :since AND d.sending_as_id IS NULL GROUP BY d.change_seq
-                UNION ALL
-                SELECT c.change_seq, COUNT(*) FROM category c WHERE c.owner_id = :user AND c.change_seq > :since GROUP BY c.change_seq
-                UNION ALL
-                SELECT c.change_seq, COUNT(*) FROM calendar c WHERE c.owner_id = :user AND c.change_seq > :since GROUP BY c.change_seq
-                UNION ALL
-                SELECT e.change_seq, COUNT(*) FROM calendar_event e JOIN calendar c ON c.id = e.calendar_id
-                    WHERE c.owner_id = :user AND e.change_seq > :since GROUP BY e.change_seq
-                UNION ALL
-                SELECT n.change_seq, COUNT(*) FROM scheduled_notification n WHERE n.user_id = :user AND n.change_seq > :since GROUP BY n.change_seq
-                UNION ALL
-                SELECT o.change_seq, COUNT(*) FROM event_note o WHERE o.user_id = :user AND o.change_seq > :since GROUP BY o.change_seq
-                UNION ALL
-                SELECT o.change_seq, COUNT(*) FROM todo o WHERE o.owner_id = :user AND o.change_seq > :since GROUP BY o.change_seq
-                UNION ALL
-                SELECT n.change_seq, COUNT(*) FROM mail_notification n WHERE n.user_id = :user AND n.change_seq > :since GROUP BY n.change_seq
-                UNION ALL
-                SELECT u.change_seq, COUNT(*) FROM unsubscription u JOIN mail_account a ON a.id = u.mail_account_id WHERE a.owner_id = :user AND u.change_seq > :since GROUP BY u.change_seq
-                UNION ALL
-                SELECT h.change_seq, COUNT(*) FROM hand_over h WHERE h.owner_id = :user AND h.change_seq > :since GROUP BY h.change_seq
-                UNION ALL
-                SELECT b.change_seq, COUNT(*) FROM daily_brief b WHERE b.owner_id = :user AND b.change_seq > :since GROUP BY b.change_seq
-                UNION ALL
-                SELECT s.change_seq, COUNT(*) FROM sync_tombstone s WHERE s.user_id = :user AND s.change_seq > :since GROUP BY s.change_seq
-            ) changes
+            'SELECT change_seq, SUM(rows) AS rows FROM ('.implode("\n UNION ALL\n", $parts).') changes
             GROUP BY change_seq
             ORDER BY change_seq
             LIMIT :groups',
