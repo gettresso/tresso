@@ -198,6 +198,33 @@ describe('App', () => {
     wrapper.unmount()
     vi.unstubAllGlobals()
   })
+  it('writes no new message on "C" while a modal dialog is open', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: { template: '<div />' } }] })
+    await router.push('/')
+    await router.isReady()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ title: 'Unavailable' }), { status: 503 })))
+    const { useAuthStore } = await import('../stores/auth')
+    useAuthStore().tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+    const { useComposeStore } = await import('../stores/compose')
+    const openNew = vi.spyOn(useComposeStore(), 'openNew').mockImplementation(() => undefined)
+    mount(App, { global: { plugins: [router] }, attachTo: document.body })
+    await flushPromises()
+    const dialog = document.createElement('dialog')
+    const button = document.createElement('button')
+    dialog.append(button)
+    document.body.append(dialog)
+    dialog.setAttribute('open', '')
+
+    button.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', bubbles: true }))
+    expect(openNew).not.toHaveBeenCalled()
+    dialog.remove()
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', repeat: true, bubbles: true }))
+    expect(openNew).not.toHaveBeenCalled()
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', bubbles: true }))
+    expect(openNew).toHaveBeenCalledOnce()
+    vi.unstubAllGlobals()
+  })
+
   describe('a start that fails', () => {
     const me = { id: 'user-1', email: 'ada@example.com', displayName: 'Ada', createdAt: '2026-01-01T00:00:00+00:00' }
 

@@ -34,12 +34,15 @@ import TodoBlockDetail from '@/components/calendar/TodoBlockDetail.vue'
 import { inView, reducedMotion } from '@/components/calendar/genie'
 import { useCalendarStore, type CalendarViewKind, type Response } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
+import { useComposeStore } from '@/stores/compose'
+import { shortcutAllowed } from '@/mail/useMessageActions'
 import { useTodosStore } from '@/stores/todos'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import SegmentedControl from '@/components/SegmentedControl.vue'
 
 const calendar = useCalendarStore()
 const mail = useMailStore()
+const compose = useComposeStore()
 const todos = useTodosStore()
 const route = useRoute()
 const router = useRouter()
@@ -292,17 +295,16 @@ function joinMeeting(url: string): void {
   openInBrowser(url).catch((error: unknown) => (actionError.value = `The meeting could not be opened: ${errorMessage(error)}`))
 }
 
-/** T, J, K, 1 to 4, N, E and Esc, unless the user is typing or a dialog is open. */
+/** T, J, K, 1 to 4, N, E and Esc, as the other shortcuts work: not while typing, writing, in a dialog or a menu. */
 function onShortcut(event: KeyboardEvent): void {
-  if (event.metaKey || event.ctrlKey || event.altKey || editor.value !== null || deleting.value !== null) return
+  if (editor.value !== null || deleting.value !== null) return
   // Escape closes the calendar drawer first, wherever focus is (right after opening it is still on the toggle).
-  if (event.key === 'Escape' && railOpen.value) {
+  if (event.key === 'Escape' && railOpen.value && !event.metaKey && !event.ctrlKey && !event.altKey) {
     event.preventDefault()
     closeRail()
     return
   }
-  const target = event.target as HTMLElement | null
-  if (target !== null && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return
+  if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized)) return
   const key = event.key.toLowerCase()
   const view = VIEWS.find((entry) => entry.key === event.key)
   if (view !== undefined) {
