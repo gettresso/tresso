@@ -90,6 +90,9 @@ function useDefaultServer(): void {
 }
 
 async function signIn(): Promise<void> {
+  // Where the visitor was going: a screen that needs a sign-in sent them here with it, any other shows this in place.
+  // Opening the browser again keeps what was kept here.
+  keepReturnPath(route.query.returnTo ?? route.fullPath)
   await starting(() => auth.signIn())
 }
 
@@ -100,8 +103,6 @@ async function reopenBrowser(): Promise<void> {
 
 async function starting(start: () => Promise<void>): Promise<void> {
   signInError.value = null
-  // Where the visitor was going: a screen that needs a sign-in sent them here with it, any other shows this in place.
-  keepReturnPath(route.query.returnTo ?? route.fullPath)
   try {
     await start()
   } catch (error) {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
 const desktop = vi.hoisted(() => ({ isDesktop: true, opened: [] as string[] }))
 
@@ -36,7 +37,11 @@ async function signInView() {
   vi.resetModules()
   setActivePinia(createPinia())
   const { default: SignInView } = await import('@/views/SignInView.vue')
-  return mount(SignInView, { attachTo: document.body })
+  // The screen shows in place of the one the visitor went to, and keeps it for after the sign-in.
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:any(.*)*', component: { template: '<div />' } }] })
+  await router.push('/')
+  await router.isReady()
+  return mount(SignInView, { attachTo: document.body, global: { plugins: [router] } })
 }
 
 describe('SignInView', () => {
