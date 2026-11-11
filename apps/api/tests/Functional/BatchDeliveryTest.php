@@ -173,6 +173,44 @@ final class BatchDeliveryTest extends DatabaseTestCase
         self::assertSame($this->nextBatch->format(\DATE_ATOM), $thread['batchedAt']);
     }
 
+    public function testTheSweepGoesOnPastAUserWhoseReleaseFails(): void
+    {
+        $this->ingest('messages', ['folder' => 'INBOX', 'messages' => [$this->newsletter('1', 'Weekly deals', '-1 hour')]]);
+        $this->runQueued('classify');
+        $this->batchTimeHasCome();
+
+        // Lisa's held mail is the longest overdue, so the sweep comes to her first, and releasing it fails.
+        $this->createUser('lisa@example.test', 'Lisa');
+        $this->client->jsonRequest('POST', '/api/v1/mail-accounts', [
+            'emailAddress' => 'lisa@company.example',
+            'displayName' => 'Work',
+            'username' => 'lisa@company.example',
+            'password' => 'app-password-1',
+            'imap' => ['host' => 'imap.company.example', 'port' => 993, 'security' => 'tls'],
+            'smtp' => ['host' => 'smtp.company.example', 'port' => 465, 'security' => 'tls'],
+        ], $this->userHeaders('lisa@example.test', ['settings:write']));
+        $lisasAccount = $this->responseString('id');
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'w1'], $this->worker);
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$lisasAccount.'/folders', ['workerId' => 'w1', 'folders' => [['remoteName' => 'INBOX', 'displayName' => 'Inbox', 'role' => 'inbox', 'uidValidity' => 1]]], $this->worker);
+        self::assertResponseIsSuccessful();
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$lisasAccount.'/messages', ['workerId' => 'w1', 'folder' => 'INBOX', 'messages' => [
+            ['rawObjectKey' => $this->rawKeyFor($lisasAccount, 'lisa-1')] + $this->message('1', 'Lisa deals', '-1 hour'),
+        ]], $this->worker);
+        self::assertResponseIsSuccessful();
+        $connection = $this->connection();
+        foreach (['message', 'thread'] as $table) {
+            $connection->executeStatement("UPDATE {$table} SET held_until = :at WHERE mail_account_id = :account", ['at' => new \DateTimeImmutable('-1 hour', new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'), 'account' => $lisasAccount]);
+        }
+        $connection->executeStatement("CREATE FUNCTION refuse_release() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$ LANGUAGE plpgsql");
+        $connection->executeStatement("CREATE TRIGGER refuse_release BEFORE UPDATE ON message FOR EACH ROW WHEN (OLD.mail_account_id = '{$lisasAccount}') EXECUTE FUNCTION refuse_release()");
+
+        static::getContainer()->get(MessageBusInterface::class)->dispatch(new SweepBatches());
+
+        $thread = $this->threadBySubject($this->changes(0), 'Weekly deals');
+        self::assertNull($thread['heldUntil'], 'Kim\'s batch went out although Lisa\'s failed.');
+        self::assertSame($this->nextBatch->format(\DATE_ATOM), $thread['batchedAt']);
+    }
+
     public function testATimeZoneAliasBrowsersStillReportIsAccepted(): void
     {
         $this->client->jsonRequest('PUT', '/api/v1/batch-delivery', ['times' => ['09:00'], 'timeZone' => 'Asia/Calcutta'], $this->kim);
