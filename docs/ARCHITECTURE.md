@@ -39,7 +39,9 @@ self-hosted too.
 Every release publishes three images on `ghcr.io/gettresso`: `tresso-api` (FrankenPHP; the same image runs the API and,
 with another command, every Messenger worker), `tresso-sync` (the Go sync workers) and `tresso-web` (the web client on
 Caddy), each for amd64 and arm64. Nothing server-specific is built in: the web image renders `/config.js` from
-`TRESSO_API_URL` when it serves it, and the API reads everything from its environment. `compose.prod.yaml` runs them
+`TRESSO_API_URL` (and the optional `TRESSO_AUTH_URL`, where users sign in when that is not the API address) when it
+serves it, and sends a Content-Security-Policy that lets the page load code only from itself and connect only to
+itself and the API's origin; the API reads everything from its environment. `compose.prod.yaml` runs them
 with a Caddy proxy that gets the certificates, and with the services they need. Before anything else the API image runs
 `app:settings:check`, which refuses to start while a secret is missing, too short or one of the development values in
 the repository's `.env` files, since a production image would otherwise fall back to those public values. The API
@@ -159,6 +161,13 @@ Only first-party clients are approved automatically; every other app goes throug
 - **Clean-up.** A nightly job (`PurgeExpiredOAuthTokens`, 03:53) deletes expired refresh tokens, then expired access
   tokens that no remaining refresh token was issued with (disconnecting an app finds its refresh tokens through
   them), and expired authorization codes.
+
+The first-party clients keep a sign-in until the server refuses it. They refresh the access token before it expires,
+one refresh at a time (refresh tokens rotate, so a second refresh with the same token would be refused), and only an
+`invalid_grant` or `invalid_request` answer of the token endpoint, or a 401 from the API that a refresh and one retry
+do not cure, ends the session. A network error, a timeout or a 5xx keeps the tokens; the request fails with an error
+that says the next one tries again. Signing out revokes the refresh token at `POST /oauth/revoke` (RFC 7009) before the
+client forgets it, best effort: an unreachable server does not keep the user signed in.
 
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
 `settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
@@ -1219,6 +1228,20 @@ user's browser and mail app, anything else is refused. Opening an attachment and
 directly, since the app has no tabs and must not leave its own page. The window's Content-Security-Policy lets the
 local servers the sign-in screen accepts (`http://localhost`, `http://127.0.0.1`) serve images as well.
 
+The web client keeps its tokens in `localStorage` (`apps/web/src/platform/tokenStorage.ts`): one sign-in serves every
+tab of the origin and outlasts closing the browser, until the user signs out (one user per browser profile). A tab
+from before this kept them in `sessionStorage`; they move over at the next page load. A token refresh runs under a Web
+Locks lock that all tabs share (`tresso.auth.refresh`), and inside it the tab reads the stored set again first: when
+another tab refreshed meanwhile it takes that set instead of refreshing with a rotated token. A `storage` listener
+brings a sign-in, refresh or sign-out of one tab to the others; a tab whose user changed under it reloads. A browser
+without Web Locks refreshes without the lock, which is as safe as a single tab. Signing out also ends the browser
+session of the sign-in pages (`/logout` on the sign-in address), so the next sign-in asks for the password. The
+sign-in pages may live on another address than the API (`TRESSO_AUTH_URL`, `VITE_AUTH_URL`); `/oauth/authorize`
+and `/logout` go there, the token and revocation endpoints stay on the API address. Because a script injected into
+the page could read the tokens, the web image sends a Content-Security-Policy (`docker/web/Caddyfile`). When keeping
+the tokens fails (the keychain refused, the browser's storage is full or blocked), the signed-in app says so in a
+notice; the sign-in screen says so for a failed read at launch.
+
 The desktop app keeps the mail copy in SQLite instead of the web view's IndexedDB (`apps/web/src/mail/store.ts`
 picks the store). Rust commands (`apps/desktop/src-tauri/src/sql.rs`, rusqlite with SQLite bundled) open one database
 per user in the app's data folder with two connections: one writes, one reads, in WAL mode, so the lists read the last
@@ -1319,10 +1342,14 @@ protocol, so every client syncs the same way:
 Every client keeps a copy of the user's mail behind one interface, `MailStore` in `packages/core`: the browser in
 IndexedDB (`apps/web/src/mail/db.ts`), the desktop app and the phone in SQLite (`SqliteMailStore` in
 `packages/core/src/store/sqlite.ts`, behind a small `Sql` interface each client implements). One database per user,
-deleted on sign-out after it is closed. The browser's copy closes when another connection needs it gone or upgraded
+deleted after it is closed when the user signs out. A session that expired, or that ended in another tab, only closes
+the copy: it may hold drafts that never reached the server, and they upload when the same user signs in again. The
+web and desktop clients list the copies they keep (`apps/web/src/mail/copies.ts`); when another user signs in, the
+copies of the previous ones are deleted. The browser's copy closes when another connection needs it gone or upgraded
 (a sign-out or a newer version in another tab), so a delete or upgrade never waits on it. The tab then never fails
 quietly: after an upgrade elsewhere it stops and says to reload (its code cannot open the newer copy), and after a
-delete elsewhere or the browser closing the copy (site data cleared) it opens a fresh copy and syncs it again. Calls
+delete elsewhere or the browser closing the copy (site data cleared) while it is still signed in it opens a fresh copy
+and syncs it again. Calls
 on a copy closed like this say the copy is closing instead of failing on a dead connection. Next to the synced records each stores a summary per thread (senders,
 snippet, unread count, whether it is in an inbox), recomputed whenever one of its messages changes, so the inbox lists
 read a few dozen rows through an index however much mail is stored, plus the people the user exchanged mail with and
