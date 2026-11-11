@@ -258,6 +258,19 @@ class MailAccount implements TracksChanges
         return $this->leaseExpiresAt;
     }
 
+    /**
+     * Takes the account from the worker that holds it and keeps it from every worker until $until, so the holder's
+     * next heartbeat no longer returns it: that worker stops its syncer (and its calls for the account answer 404 at
+     * once). After $until the account is claimable again and a fresh syncer starts, with new credentials or servers
+     * and its failure count and backoff from zero. Without the hold the holder would claim the free account again in
+     * the same heartbeat and keep its old run.
+     */
+    public function restartSync(\DateTimeImmutable $until): void
+    {
+        $this->leasedBy = null;
+        $this->leaseExpiresAt = $until;
+    }
+
     public function getLastSyncedAt(): ?\DateTimeImmutable
     {
         return $this->lastSyncedAt;

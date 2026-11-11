@@ -19,13 +19,13 @@ use App\Enum\MailProvider;
 use App\Enum\OAuthProvider;
 use App\ProviderAuth\ProviderAccessTokens;
 use App\ProviderAuth\ProviderClient;
-use App\Realtime\RealtimeNotifier;
 use App\Repository\MailAccountRepository;
 use App\Repository\ProviderGrantRepository;
 use App\Repository\TodoRepository;
 use App\Security\CurrentUser;
 use App\Security\FirstPartyClients;
 use App\Security\Crypto\CredentialVault;
+use App\Sync\AccountLeaser;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
@@ -54,7 +54,6 @@ final readonly class MailAccountProcessor implements ProcessorInterface
         private ProviderGrantRepository $grants,
         private TodoRepository $todos,
         private Security $security,
-        private RealtimeNotifier $notifier,
     ) {
     }
 
@@ -182,12 +181,15 @@ final readonly class MailAccountProcessor implements ProcessorInterface
             $this->vault->seal($account, ['type' => 'password', 'password' => $input->password]);
         }
 
-        // New credentials or servers deserve a fresh try: the old failure no longer says anything about them, and the
-        // worker holding the account tries again now instead of after its backoff.
+        // New credentials or servers deserve a fresh session: the worker holding the account stops at its next heartbeat
+        // and the account is claimed again once the hold ends, with failures counted from zero, so a problem that
+        // continues with the new settings is reported again. The old failure no longer says anything about them.
         $changesConnection = null !== $input->password || null !== $input->imap || null !== $input->smtp || null !== $input->username;
-        if ($changesConnection && \in_array($account->getStatus(), [MailAccountStatus::AuthFailed, MailAccountStatus::Error], true)) {
-            $account->setStatus(MailAccountStatus::Active);
-            $this->notifier->outboxDue($account->getId());
+        if ($changesConnection) {
+            $account->restartSync(new \DateTimeImmutable(\sprintf('+%d seconds', AccountLeaser::LEASE_SECONDS)));
+            if (\in_array($account->getStatus(), [MailAccountStatus::AuthFailed, MailAccountStatus::Error], true)) {
+                $account->setStatus(MailAccountStatus::Active);
+            }
         }
 
         if (null !== $input->status) {

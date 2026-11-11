@@ -450,8 +450,13 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   of the host must be public, the connection goes to one of the addresses that were checked, and TLS is verified for
   the host name. Nothing is stored; the web client creates the account only once a check passed, so a wrong password
   or server never leaves a broken account behind. At most 20 checks per user in 10 minutes.
-- Changing the password, username or a server of an account in status `auth_failed` or `error` sets it `active`
-  again and wakes the worker holding it, so the new settings are tried at once.
+- Changing the password, username or a server of an account ends its lease and keeps it from every worker for one
+  lease period (90 seconds): the worker that held it no longer gets it back at its next heartbeat (every 30 seconds by
+  default), stops that account's syncer, and its calls for the account answer 404 from then on. Once the hold ends the
+  next heartbeat of any worker claims it and starts a fresh session with the new settings, its failure count and
+  backoff from zero, so a problem that continues is reported again after three failed sessions. The new settings are
+  tried within about two minutes instead of after a backoff of up to five. An account in `auth_failed` or `error` is
+  set `active` at the same time, since the old failure says nothing about the new settings.
 
 #### Provider sign-in (Gmail, Microsoft 365)
 

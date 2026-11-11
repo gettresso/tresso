@@ -47,7 +47,7 @@ export interface NewMailAccount {
 
 /**
  * JSON merge patch: omitted fields stay as they are. A new password, username or server clears a sign-in failure or a
- * sync error, and the worker tries the account again at once.
+ * sync error, and the account starts a fresh sync session within about two minutes.
  */
 export interface MailAccountUpdate {
   displayName?: string
