@@ -49,6 +49,9 @@ export const secureTokenStore: TokenStore = {
   async forgetUser() {
     await SecureStore.deleteItemAsync(LAST_USER)
   },
+  refreshToken() {
+    return SecureStore.getItemAsync(REFRESH_TOKEN)
+  },
   async loginRequired() {
     return (await SecureStore.getItemAsync(LOGIN_REQUIRED)) === 'yes'
   },

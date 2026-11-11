@@ -1415,7 +1415,7 @@ saves, and an expiry clears the flag. Accepted: when the flag can be cleared nei
 never held that sign-in, and the next launch takes the flag for the sign-out before it, so the mail of that sign-in
 goes with it. A sign-in that completes while a sign-out is still finishing wins: the sign-out removes nothing once new
 tokens are there. A launch that finds the flag also removes what a sign-out cut off inside the removal left behind (a
-refresh token or the last user), even when no complete set loads. Asking for the server's metadata gives up after
+refresh token, revoked first as far as the server can be told, or the last user), even when no complete set loads. Asking for the server's metadata gives up after
 5 seconds and signs in at the API address. A store that cannot be read at launch removes nothing either: the app says so, offers Try again, and reads it
 again whenever it comes to the front.
 

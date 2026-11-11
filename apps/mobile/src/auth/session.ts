@@ -16,6 +16,8 @@ export interface TokenStore {
   save(tokens: TokenSet | null): Promise<void>
   /** Forgets who was signed in last (see MailProvider), so their mail no longer opens before the server answers. */
   forgetUser(): Promise<void>
+  /** The kept refresh token on its own, also when the rest of the set is gone (a sign-out cut off halfway). */
+  refreshToken(): Promise<string | null>
   /** Whether the next sign-in has to ask for the password again (see {@link Session.loginRequired}). */
   loginRequired(): Promise<boolean>
   setLoginRequired(required: boolean): Promise<void>
@@ -341,8 +343,17 @@ export class Session {
   }
 
   private async finishSignOut(refreshToken: string | null): Promise<void> {
-    if (refreshToken !== null) {
-      void this.revoke(refreshToken)
+    // A sign-out cut off inside the removal can leave the refresh token without the rest of the set.
+    let leftover = refreshToken
+    if (leftover === null) {
+      try {
+        leftover = await this.store.refreshToken()
+      } catch {
+        // Unreadable: it is removed below all the same, and runs out on its own at the server.
+      }
+    }
+    if (leftover !== null) {
+      void this.revoke(leftover)
     }
     try {
       await this.removeSignIn()
