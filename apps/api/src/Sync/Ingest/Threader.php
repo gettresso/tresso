@@ -8,9 +8,11 @@ use App\Batch\BatchDelivery;
 use App\Entity\MailAccount;
 use App\Entity\Message;
 use App\Entity\Thread;
+use App\Enum\FolderRole;
 use App\HandOver\HandOvers;
 use App\Mail\SubjectNormalizer;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * Finds the conversation a new message belongs to.
@@ -18,18 +20,22 @@ use Doctrine\ORM\EntityManagerInterface;
  * 1. Headers, both directions: threads of messages it refers to (In-Reply-To, References), and threads of messages
  *    that refer to it (a reply that arrived first). When that matches several threads, they are one conversation
  *    and are merged.
- * 2. Without any references: a recent thread with the same normalized subject that shares a counterpart, someone
- *    other than the user: one of its messages is from them, or is the user's own mail to them. The user's own
- *    addresses do not count, since they are on nearly every message; otherwise every mail would join any conversation
- *    with the same subject the user once wrote in. Nor does a recipient two strangers share (an alias, billing@, a
- *    colleague in Cc): only the user's own mail counts by whom it went to. This covers clients that do not send References, without joining unrelated
- *    mails that happen to share a subject.
+ * 2. Without any references: the newest thread of the last 14 days with the same normalized subject in which one of
+ *    the people who matter took part. Mail is the user's own when it is from one of their account addresses or filed
+ *    in a Sent folder (that also covers an alias they send from elsewhere, which Tresso knows nothing else about).
+ *    - Someone else's mail joins a thread with someone else's mail from one of its own people (its sender, or whom it
+ *      went to: a reply-all of a colleague), or with the user's own mail that went to its sender (a reply).
+ *    - The user's own mail joins a thread with someone else's mail from one of its recipients (an answer), or with
+ *      the user's own mail that went to every one of its To recipients (writing again to the same people).
+ *    The user's addresses never count, as they are on nearly every message, and neither does a recipient that only
+ *    happens to be shared (an alias or billing@ two strangers wrote to, a colleague the user copies on everything).
+ *    The price: a reply without References from a new address that only copies the original recipient (Bob answers
+ *    for Anna, Cc Anna) starts its own thread.
  * 3. Otherwise a new thread.
  */
 final readonly class Threader
 {
     private const string SUBJECT_WINDOW = 'P14D';
-    private const int SUBJECT_CANDIDATES = 5;
 
     public function __construct(
         private EntityManagerInterface $entityManager,
@@ -41,10 +47,13 @@ final readonly class Threader
 
     /**
      * @param list<string> $referencedIds normalized Message-IDs this message refers to
-     * @param list<string> $counterparts  lowercased from, to and cc addresses without the user's own addresses
+     * @param list<string> $counterparts  lowercased addresses of the people on the message other than the user (its
+     *                                    sender unless it is the user's own mail, its to and cc)
+     * @param list<string> $needed        who an older own message must have gone to: the sender of someone else's
+     *                                    mail, or every To recipient of the user's own mail
      * @param list<string> $ownAddresses  the addresses of all the user's accounts, lowercased
      */
-    public function threadFor(MailAccount $account, ?string $messageId, array $referencedIds, string $subject, array $counterparts, array $ownAddresses, \DateTimeImmutable $receivedAt): Thread
+    public function threadFor(MailAccount $account, ?string $messageId, array $referencedIds, string $subject, array $counterparts, array $needed, array $ownAddresses, \DateTimeImmutable $receivedAt): Thread
     {
         $threads = $this->threadsByHeaders($account, $messageId, $referencedIds);
 
@@ -58,7 +67,7 @@ final readonly class Threader
         }
 
         if ([] === $referencedIds) {
-            $bySubject = $this->threadBySubject($account, $subject, $counterparts, $ownAddresses, $receivedAt);
+            $bySubject = $this->threadBySubject($account, $subject, $counterparts, $needed, $ownAddresses, $receivedAt);
             if (null !== $bySubject) {
                 return $bySubject;
             }
@@ -112,59 +121,63 @@ final readonly class Threader
     }
 
     /**
+     * One query: the candidates and the people condition together, newest first, so an older thread of the right
+     * people is found however many newer ones of others share its subject. It starts from the thread index on
+     * (mail_account_id, normalized_subject) and looks into each candidate through message (thread_id).
+     *
      * @param list<string> $counterparts
+     * @param list<string> $needed
      * @param list<string> $ownAddresses
      */
-    private function threadBySubject(MailAccount $account, string $subject, array $counterparts, array $ownAddresses, \DateTimeImmutable $receivedAt): ?Thread
+    private function threadBySubject(MailAccount $account, string $subject, array $counterparts, array $needed, array $ownAddresses, \DateTimeImmutable $receivedAt): ?Thread
     {
         $normalized = SubjectNormalizer::normalize($subject);
-        if ('' === $normalized || [] === $counterparts) {
+        if ('' === $normalized || ([] === $counterparts && [] === $needed)) {
             return null;
         }
 
         $window = new \DateInterval(self::SUBJECT_WINDOW);
-        /** @var list<Thread> $candidates */
-        $candidates = $this->entityManager->createQuery(
-            'SELECT t FROM App\Entity\Thread t
-             WHERE t.mailAccount = :account AND t.normalizedSubject = :subject AND t.lastMessageAt BETWEEN :from AND :until
-             ORDER BY t.lastMessageAt DESC',
-        )
-            ->setParameter('account', $account->getId(), 'uuid')
-            ->setParameter('subject', $normalized)
-            ->setParameter('from', $receivedAt->sub($window))
-            ->setParameter('until', $receivedAt->add($window))
-            ->setMaxResults(self::SUBJECT_CANDIDATES)
-            ->getResult();
-
+        $recipients = "SELECT lower(r->>'address') FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'%1\$s') = 'array' THEN m.recipients->'%1\$s' ELSE '[]'::json END) r";
+        // Own mail: from an account address, or filed in one of this account's Sent folders (by id, so the check stays
+        // a lookup of the message's own locations, never a scan of every Sent folder).
         $connection = $this->entityManager->getConnection();
-        $addresses = self::textArray($counterparts);
-        $own = self::textArray($ownAddresses);
-        foreach ($candidates as $thread) {
-            // From a counterpart, or the user's own mail to one (to or cc). Whom someone else wrote to says nothing.
-            $shared = $connection->fetchOne(
-                "SELECT 1 FROM message m
-                 WHERE m.thread_id = :thread
-                   AND (m.from_address = ANY(CAST(:addresses AS TEXT[]))
-                     OR (m.from_address = ANY(CAST(:own AS TEXT[])) AND (
-                         EXISTS (
-                             SELECT 1 FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'to') = 'array' THEN m.recipients->'to' ELSE '[]'::json END) r
-                             WHERE lower(r->>'address') = ANY(CAST(:addresses AS TEXT[]))
-                         )
-                         OR EXISTS (
-                             SELECT 1 FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'cc') = 'array' THEN m.recipients->'cc' ELSE '[]'::json END) r
-                             WHERE lower(r->>'address') = ANY(CAST(:addresses AS TEXT[]))
-                         )
-                     )))
+        /** @var list<string> $sentFolders */
+        $sentFolders = $connection->fetchFirstColumn(
+            'SELECT id FROM folder WHERE mail_account_id = :account AND role = :sent',
+            ['account' => $account->getId()->toRfc4122(), 'sent' => FolderRole::Sent->value],
+        );
+        $own = "(m.from_address = ANY(CAST(:own AS TEXT[]))
+                 OR EXISTS (SELECT 1 FROM message_location l WHERE l.message_id = m.id AND l.folder_id = ANY(CAST(:sentFolders AS UUID[]))))";
+        $threadId = $connection->fetchOne(
+            \sprintf(
+                "SELECT t.id FROM thread t
+                 WHERE t.mail_account_id = :account AND t.normalized_subject = :subject AND t.last_message_at BETWEEN :from AND :until
+                   AND EXISTS (
+                       SELECT 1 FROM message m
+                       WHERE m.thread_id = t.id
+                         AND ((NOT %1\$s AND m.from_address = ANY(CAST(:counterparts AS TEXT[])))
+                           OR (cardinality(CAST(:needed AS TEXT[])) > 0 AND %1\$s
+                               AND CAST(:needed AS TEXT[]) <@ ARRAY(%2\$s UNION ALL %3\$s)))
+                   )
+                 ORDER BY t.last_message_at DESC, t.id DESC
                  LIMIT 1",
-                ['thread' => $thread->getId()->toRfc4122(), 'addresses' => $addresses, 'own' => $own],
-            );
+                $own,
+                \sprintf($recipients, 'to'),
+                \sprintf($recipients, 'cc'),
+            ),
+            [
+                'account' => $account->getId()->toRfc4122(),
+                'subject' => $normalized,
+                'from' => $receivedAt->sub($window)->format('Y-m-d H:i:s'),
+                'until' => $receivedAt->add($window)->format('Y-m-d H:i:s'),
+                'own' => self::textArray($ownAddresses),
+                'sentFolders' => '{'.implode(',', $sentFolders).'}',
+                'counterparts' => self::textArray($counterparts),
+                'needed' => self::textArray($needed),
+            ],
+        );
 
-            if (false !== $shared) {
-                return $thread;
-            }
-        }
-
-        return null;
+        return \is_string($threadId) ? $this->entityManager->find(Thread::class, Uuid::fromString($threadId)) : null;
     }
 
     private function merge(Thread $target, Thread $other): void

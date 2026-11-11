@@ -481,6 +481,78 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame(2, $sent->getThread()->getMessageCount());
     }
 
+    public function testSubjectFallbackKeepsTheUsersMailToDifferentPeopleApartThoughTheyShareACc(): void
+    {
+        $this->folders(['INBOX' => 1, 'Sent' => 1]);
+        $kim = ['address' => 'kim@company.example'];
+        $pieter = ['address' => 'pieter@company.example'];
+
+        $this->messages('Sent', [
+            $this->message('1', ['messageId' => '<sent-1@x>', 'subject' => 'Invoice', 'from' => $kim, 'to' => [['address' => 'anna@finance.example']], 'cc' => [$pieter], 'receivedAt' => '2026-10-01T09:00:00+00:00']),
+            $this->message('2', ['messageId' => '<sent-2@x>', 'subject' => 'Invoice', 'from' => $kim, 'to' => [['address' => 'bert@supplier.example']], 'cc' => [$pieter], 'receivedAt' => '2026-10-02T09:00:00+00:00']),
+        ]);
+
+        self::assertSame(2, $this->rows(Thread::class), 'A colleague the user copies on both is not who the mail is to.');
+    }
+
+    public function testSubjectFallbackDoesNotJoinAStrangerThroughSomeoneTheUsersMailWentTo(): void
+    {
+        $this->folders(['INBOX' => 1, 'Sent' => 1]);
+        $pieter = ['address' => 'pieter@company.example'];
+
+        $this->messages('Sent', [$this->message('1', ['messageId' => '<sent-1@x>', 'subject' => 'Invoice', 'from' => ['address' => 'kim@company.example'], 'to' => [['address' => 'anna@finance.example']], 'cc' => [$pieter], 'receivedAt' => '2026-10-01T09:00:00+00:00'])]);
+        $this->messages('INBOX', [$this->message('2', ['messageId' => '<in-1@x>', 'subject' => 'Invoice', 'from' => ['address' => 'stranger@other.example'], 'to' => [['address' => 'kim@company.example']], 'cc' => [$pieter], 'receivedAt' => '2026-10-02T09:00:00+00:00'])]);
+
+        self::assertSame(2, $this->rows(Thread::class));
+    }
+
+    public function testSubjectFallbackJoinsTheUsersMailsToTheSamePerson(): void
+    {
+        $this->folders(['INBOX' => 1, 'Sent' => 1]);
+        $kim = ['address' => 'kim@company.example'];
+        $anna = ['address' => 'anna@finance.example'];
+
+        $this->messages('Sent', [
+            $this->message('1', ['messageId' => '<sent-1@x>', 'subject' => 'Invoice', 'from' => $kim, 'to' => [$anna], 'cc' => [['address' => 'pieter@company.example']], 'receivedAt' => '2026-10-01T09:00:00+00:00']),
+            $this->message('2', ['messageId' => '<sent-2@x>', 'subject' => 'Re: Invoice', 'from' => $kim, 'to' => [$anna], 'receivedAt' => '2026-10-02T09:00:00+00:00']),
+        ]);
+
+        self::assertSame(1, $this->rows(Thread::class));
+    }
+
+    public function testSubjectFallbackFindsAnOlderConversationBehindNewerOnesWithTheSameSubject(): void
+    {
+        $this->folders(['INBOX' => 1, 'Sent' => 1]);
+        $sent = [];
+        foreach (range(1, 7) as $i) {
+            $sent[] = $this->message((string) $i, ['messageId' => '<sent-'.$i.'@x>', 'subject' => 'Invoice', 'from' => ['address' => 'kim@company.example'], 'to' => [['address' => 'customer-'.$i.'@client.example']], 'receivedAt' => \sprintf('2026-10-0%dT09:00:00+00:00', $i)]);
+        }
+        $this->messages('Sent', $sent);
+        self::assertSame(7, $this->rows(Thread::class));
+
+        // The first customer answers without References, after six newer conversations with that subject.
+        $this->messages('INBOX', [$this->message('20', ['messageId' => '<answer@x>', 'subject' => 'Re: Invoice', 'from' => ['address' => 'customer-1@client.example'], 'to' => [['address' => 'kim@company.example']], 'receivedAt' => '2026-10-08T09:00:00+00:00'])]);
+
+        self::assertSame(7, $this->rows(Thread::class));
+        $first = $this->entityManager()->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'sent-1@x']);
+        self::assertInstanceOf(Message::class, $first);
+        self::assertSame(2, $first->getThread()->getMessageCount());
+    }
+
+    public function testMailInSentFromAnAliasCountsAsTheUsersOwn(): void
+    {
+        $this->folders(['INBOX' => 1, 'Sent' => 1]);
+        // Sent from an alias in another mail app: not an account address, but filed in Sent.
+        $alias = ['address' => 'kim@alias.example'];
+
+        $this->messages('Sent', [$this->message('1', ['messageId' => '<sent-1@x>', 'subject' => 'Hello', 'from' => $alias, 'to' => [['address' => 'anna@finance.example']], 'receivedAt' => '2026-10-01T09:00:00+00:00'])]);
+        $this->messages('INBOX', [$this->message('2', ['messageId' => '<in-1@x>', 'subject' => 'Hello', 'from' => ['address' => 'stranger@other.example'], 'to' => [$alias], 'receivedAt' => '2026-10-02T09:00:00+00:00'])]);
+        self::assertSame(2, $this->rows(Thread::class), 'A stranger writing to the alias does not join the mail the user sent from it.');
+
+        $this->messages('INBOX', [$this->message('3', ['messageId' => '<in-2@x>', 'subject' => 'Re: Hello', 'from' => ['address' => 'anna@finance.example'], 'to' => [$alias], 'receivedAt' => '2026-10-03T09:00:00+00:00'])]);
+        self::assertSame(2, $this->rows(Thread::class), 'Anna\'s answer joins it.');
+    }
+
     public function testSubjectFallbackDoesNotJoinStrangersWhoWroteToTheSameAddress(): void
     {
         $this->folders(['INBOX' => 1]);
@@ -782,7 +854,7 @@ final class SyncIngestTest extends DatabaseTestCase
     {
         $payload = [];
         foreach ($folders as $name => $uidValidity) {
-            $payload[] = ['remoteName' => $name, 'displayName' => $name, 'role' => 'INBOX' === $name ? 'inbox' : 'custom', 'uidValidity' => $uidValidity];
+            $payload[] = ['remoteName' => $name, 'displayName' => $name, 'role' => match ($name) { 'INBOX' => 'inbox', 'Sent' => 'sent', default => 'custom' }, 'uidValidity' => $uidValidity];
         }
         $this->client->jsonRequest('POST', $this->url('folders'), ['workerId' => 'w1', 'folders' => $payload], $this->worker);
         self::assertResponseIsSuccessful();
@@ -850,6 +922,8 @@ final class SyncIngestTest extends DatabaseTestCase
     }
 
     /**
+     * @phpstan-impure
+     *
      * @param class-string $class
      */
     private function rows(string $class): int
