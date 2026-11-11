@@ -196,6 +196,43 @@ final class CalendarEventApiTest extends DatabaseTestCase
         );
     }
 
+    public function testThisAndFollowingKeepsWhatTheUserDidNotChangeOnAChangedOccurrence(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=this&recurrenceId=20261026T080000Z', self::event($this->calendarId, [
+            'summary' => 'Planning, room 2',
+            'location' => 'Room 2',
+            'start' => ['dateTime' => '2026-10-26T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-26T10:00:00', 'timeZone' => 'Europe/Amsterdam'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        // As the web client sends it: the series' values, the occurrence's start with the series' length, and the
+        // one field the user changed.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=following&recurrenceId=20261026T080000Z', self::event($this->calendarId, [
+            'description' => 'Agenda in the doc',
+            'recurrence' => 'FREQ=WEEKLY;COUNT=4',
+            'start' => ['dateTime' => '2026-10-26T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-26T09:30:00', 'timeZone' => 'Europe/Amsterdam'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        $occurrences = $this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00');
+        self::assertSame(
+            [
+                ['Weekly sync', '', '2026-10-19T07:00:00+00:00', '2026-10-19T07:30:00+00:00'],
+                ['Planning, room 2', 'Room 2', '2026-10-26T08:00:00+00:00', '2026-10-26T09:00:00+00:00'],
+                ['Weekly sync', '', '2026-11-02T08:00:00+00:00', '2026-11-02T08:30:00+00:00'],
+                ['Weekly sync', '', '2026-11-09T08:00:00+00:00', '2026-11-09T08:30:00+00:00'],
+            ],
+            array_map(static fn (array $o): array => [$o['summary'], $o['location'], \is_array($o['start']) ? $o['start']['dateTime'] : null, \is_array($o['end']) ? $o['end']['dateTime'] : null], $occurrences),
+            'The changed occurrence keeps its own title, place and length.',
+        );
+        foreach (\array_slice($occurrences, 1) as $occurrence) {
+            self::assertSame('Agenda in the doc', $this->getJson('/api/v1/calendar-events/'.self::string($occurrence['eventId']), $this->kim)['description']);
+        }
+    }
+
     public function testMovingAllEventsToAnotherWeekdayMovesTheRuleAndKeepsTheExceptions(): void
     {
         $series = $this->create(['recurrence' => 'FREQ=WEEKLY;BYDAY=MO;COUNT=4']);

@@ -302,6 +302,87 @@ final readonly class EventEditor
     }
 
     /**
+     * Writes onto an override only the fields the user changed: those where the request differs from the series it
+     * was opened from ($oldMaster). The others keep the override's own values, and its guests keep their answers.
+     *
+     * @param list<string> $self
+     */
+    private function writeEdits(VEvent $override, VEvent $oldMaster, EventChanges $changes, VCalendar $vcalendar, array $self, bool $keepTime): void
+    {
+        $edited = clone $oldMaster;
+        $this->write($edited, $changes, $vcalendar, false, $self);
+        $changed = static fn (\Closure $state): bool => $state($oldMaster) !== $state($edited);
+        $text = static fn (string $name): \Closure => static fn (VEvent $event): ?string => Props::text($event, $name);
+        $before = self::significantState($override);
+
+        foreach (['SUMMARY' => $changes->summary, 'DESCRIPTION' => $changes->description, 'LOCATION' => $changes->location, 'URL' => $changes->url ?? ''] as $name => $value) {
+            if ($changed($text($name))) {
+                self::setText($override, $name, $value);
+            }
+        }
+        foreach (['STATUS' => $changes->status->toICalendar(), 'TRANSP' => $changes->transparency->toICalendar(), 'CLASS' => $changes->visibility->toICalendar()] as $name => $value) {
+            if ($changed($text($name))) {
+                Props::set($override, $name, $value);
+            }
+        }
+        if ($changed(self::attendeeState(...))) {
+            $this->writeAttendees($override, $changes, $self);
+        }
+        if ($changed(self::reminderState(...))) {
+            self::writeReminders($override, $changes);
+        }
+        if ($changed($text(EventReader::TRAVEL))) {
+            self::writeTravel($override, $changes->travelMinutes);
+        }
+        if ($changed($text('PRIORITY'))) {
+            self::writeImportance($override, $changes->important);
+        }
+        if ($changed(static fn (VEvent $event): array => array_map(Props::value(...), Props::all($event, 'CONFERENCE')))) {
+            self::writeConference($override, $changes->conferenceUrl);
+        }
+        if (!$keepTime) {
+            $override->remove('DURATION');
+            self::setTime($override, 'DTSTART', $changes->start, $vcalendar);
+            self::setTime($override, 'DTEND', $changes->end, $vcalendar);
+        }
+
+        self::touch($override, self::significantState($override) !== $before);
+    }
+
+    /** @return list<string> who is invited, by name and role, and who organizes */
+    private static function attendeeState(VEvent $event): array
+    {
+        $state = array_map(
+            static fn (Property $attendee): string => implode('|', [Props::address(Props::value($attendee)), Props::param($attendee, 'CN') ?? '', strtoupper(Props::param($attendee, 'ROLE') ?? 'REQ-PARTICIPANT')]),
+            Props::all($event, 'ATTENDEE'),
+        );
+        sort($state);
+        $organizer = Props::get($event, 'ORGANIZER');
+        $state[] = null === $organizer ? '' : Props::address(Props::value($organizer));
+
+        return $state;
+    }
+
+    /** @return list<string> the alarms, by what makes them ring (not their text), and whether the defaults apply */
+    private static function reminderState(VEvent $event): array
+    {
+        $state = [];
+        foreach (Props::components($event, 'VALARM') as $alarm) {
+            $trigger = Props::get($alarm, 'TRIGGER');
+            $state[] = implode('|', [
+                Props::text($alarm, 'ACTION') ?? '',
+                null === $trigger ? '' : Props::value($trigger),
+                null === $trigger ? '' : (Props::param($trigger, 'RELATED') ?? ''),
+                Props::text($alarm, EventReader::CHANNELS) ?? '',
+            ]);
+        }
+        sort($state);
+        $state[] = Props::text($event, EventReader::DEFAULT_REMINDERS) ?? '';
+
+        return $state;
+    }
+
+    /**
      * @param list<string> $self
      */
     private function writeAttendees(VEvent $event, EventChanges $changes, array $self): void
@@ -547,6 +628,9 @@ final readonly class EventEditor
         $occurrence = $this->occurrenceStart($master, $key, $vcalendar);
         $oldRule = Props::text($master, 'RRULE');
         $remaining = $this->remainingCount($master, $key);
+        $oldMaster = clone $master;
+        $masterData = EventReader::read($master, $vcalendar, $self);
+        $masterLength = self::wallClockSeconds($masterData->end) - self::wallClockSeconds($masterData->start);
 
         $uid = Uuid::v7()->toRfc4122().'@tresso';
         $next = CalendarDocument::create();
@@ -630,12 +714,10 @@ final readonly class EventEditor
         ), $next, true, $self);
         if (null !== $edited) {
             // The occurrence the user edited was changed before: its override replaces the new series' first
-            // occurrence, so it takes the edit too, at the time the user gave it. Per-occurrence answers of guests stay.
-            $this->write($edited, new EventChanges(
-                $changes->summary, $changes->description, $changes->location, $changes->url, $changes->start, $changes->end, null,
-                $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
-                $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
-            ), $next, false, $self);
+            // occurrence, so it takes the edit too, but only what the user changed. A client may send the series'
+            // values for the fields left alone, which must not undo what made this occurrence its own.
+            $sameLength = self::wallClockSeconds($changes->end) - self::wallClockSeconds($changes->start) === $masterLength;
+            $this->writeEdits($edited, $oldMaster, $changes, $next, $self, 0 === $shift && $sameLength);
         }
         self::withOrganizer($next, $object->getCalendar(), $organizer);
         self::requestConference($next, $object->getCalendar(), $changes->conferenceProvider);
