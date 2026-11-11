@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import AuthCallbackView from '@/views/AuthCallbackView.vue'
 import SignInView from '@/views/SignInView.vue'
 import router from '../index'
+import { returnablePath } from '../returnPath'
 
 describe('router', () => {
   beforeEach(() => setActivePinia(createPinia()))
@@ -66,11 +67,15 @@ describe('router', () => {
   })
 
   it('never leaves the app for a path that leads elsewhere', async () => {
-    await router.push({ name: 'unified', query: { returnTo: '//evil.example/x' } })
+    for (const returnTo of ['//evil.example/x', '/%09/evil.example', '/%2F/evil.example', '/\\evil.example']) {
+      setActivePinia(createPinia())
+      await router.push({ name: 'unified', query: { returnTo } })
 
-    await signInHere()
+      await signInHere()
 
-    expect(router.currentRoute.value.fullPath).toBe('/')
+      expect(sessionStorage.getItem('tresso.returnPath'), returnTo).toBeNull()
+      expect(router.currentRoute.value.fullPath, returnTo).toBe('/')
+    }
   })
   it('shows the Unified Inbox for a path that matches no screen', async () => {
     useAuthStore().tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
@@ -87,5 +92,13 @@ describe('router', () => {
     await router.push('/settings/nope')
 
     expect(router.currentRoute.value.name).toBe('settings-accounts')
+  })
+  it('keeps only paths that stay inside the app', () => {
+    for (const path of ['//evil.example/x', '/\\evil.example/x', '/%09/evil.example', '/\t/evil.example', '/\n//evil.example', 'https://evil.example/', 'javascript:alert(1)', '/auth/callback?code=c', '/%2F/evil.example', ['/todos/abc'], null]) {
+      expect(returnablePath(path), String(path)).toBeNull()
+    }
+    for (const path of ['/todos/abc', '/inbox/t1?from=push', '/calendar/week/2026-11-11', '/search?q=a%2Fb']) {
+      expect(returnablePath(path)).toBe(path)
+    }
   })
 })

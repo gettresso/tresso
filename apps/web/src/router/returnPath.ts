@@ -4,9 +4,36 @@
  */
 const KEY = 'tresso.returnPath'
 
-/** A path inside this app: one leading slash (not `//host`), and not the sign-in callback itself. */
+/** Starts with one slash only, and has no control characters or backslashes, which URL parsers drop or read as slashes. */
+function plainPath(path: string): boolean {
+  return path.startsWith('/') && !path.startsWith('//') && !/[\u0000-\u001f\u007f\\]/.test(path)
+}
+
+/**
+ * A path inside this app: one leading slash, no control characters or backslashes (`/\t/host` would become `//host`),
+ * neither as written nor once decoded (`/%09/host`, `/%2F/host`), still on this origin once resolved, and not the
+ * sign-in callback.
+ */
 export function returnablePath(path: unknown): string | null {
-  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//') || path.startsWith('/\\') || path.startsWith('/auth/')) {
+  if (typeof path !== 'string' || !plainPath(path)) {
+    return null
+  }
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(path)
+  } catch {
+    return null
+  }
+  if (!plainPath(decoded)) {
+    return null
+  }
+  let resolved: URL
+  try {
+    resolved = new URL(path, window.location.origin)
+  } catch {
+    return null
+  }
+  if (resolved.origin !== window.location.origin || resolved.pathname.startsWith('//') || resolved.pathname.startsWith('/auth/')) {
     return null
   }
   return path
