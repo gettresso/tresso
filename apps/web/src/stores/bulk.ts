@@ -1,4 +1,4 @@
-import { computed, ref, watch } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
   bulkActionRunning,
@@ -14,6 +14,7 @@ import {
   type SmartInboxSenders,
 } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
+import { config } from '@/config'
 import { useAuthStore } from '@/stores/auth'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
@@ -28,16 +29,43 @@ const MAX_POLL_FAILURES = 10
 const FAILED_POLL_CAP_MS = 30_000
 export const LOST_TRACK = 'Tresso lost track of the bulk action. It may still finish; the lists catch up as it does.'
 
-/** The action under way, as kept for a reload: whether it is an undo, and the folder a move goes to. */
+/**
+ * The action under way, as kept for a reload: whose it is (the server and the user, so it is never followed in another
+ * session), whether it is an undo, and the folder a move goes to.
+ */
 interface UnderWay {
   id: string
   undo: boolean
   folderName: string | null
+  server: string
+  userId: string
 }
 
+function isUnderWay(value: unknown): value is UnderWay {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+  const kept = value as Record<string, unknown>
+  return typeof kept.id === 'string' && typeof kept.undo === 'boolean' && (kept.folderName === null || typeof kept.folderName === 'string') && typeof kept.server === 'string' && typeof kept.userId === 'string'
+}
+
+/** The action kept in this tab, or null; an entry that is not one (written by an older Tresso, say) is dropped. */
 function keptUnderWay(): UnderWay | null {
   const raw = sessionStorage.getItem(UNDER_WAY_KEY)
-  return raw === null ? null : (JSON.parse(raw) as UnderWay)
+  if (raw === null) {
+    return null
+  }
+  let kept: unknown
+  try {
+    kept = JSON.parse(raw)
+  } catch {
+    kept = null
+  }
+  if (!isUnderWay(kept)) {
+    sessionStorage.removeItem(UNDER_WAY_KEY)
+    return null
+  }
+  return kept
 }
 
 function keepUnderWay(underWay: UnderWay | null): void {
@@ -48,8 +76,17 @@ function keepUnderWay(underWay: UnderWay | null): void {
   sessionStorage.setItem(UNDER_WAY_KEY, JSON.stringify(underWay))
 }
 
-function failedPollDelay(failures: number): number {
-  return Math.min(1000 * 2 ** failures, FAILED_POLL_CAP_MS)
+/** The wait after the given number of failed polls in a row: 1 s, doubling, at most FAILED_POLL_CAP_MS. */
+export function failedPollDelay(failures: number): number {
+  return Math.min(1000 * 2 ** (failures - 1), FAILED_POLL_CAP_MS)
+}
+
+/** The session the action was followed in ended (a sign-out, another user): it is left without a word. */
+class FollowEnded extends Error {
+  constructor() {
+    super('The session the bulk action belonged to ended.')
+    this.name = 'FollowEnded'
+  }
 }
 
 /**
@@ -67,9 +104,37 @@ export const useBulkStore = defineStore('bulk', () => {
   const running = ref<BulkActionState | null>(null)
   /** Asking the server to start one: a second click meanwhile must not start another. */
   const starting = ref(false)
+  /** Asking how an action followed before a reload is doing, before the first answer. */
+  const resuming = ref(false)
   /** Whether a bulk action is starting or under way; screens disable their buttons meanwhile. */
-  const busy = computed(() => starting.value || running.value !== null)
-  const progress = computed(() => (running.value === null ? (starting.value ? 'Starting…' : null) : bulkProgressText(running.value)))
+  const busy = computed(() => starting.value || resuming.value || running.value !== null)
+  const progress = computed(() => {
+    if (running.value !== null) {
+      return bulkProgressText(running.value)
+    }
+    return resuming.value ? 'Checking on the bulk action under way…' : starting.value ? 'Starting…' : null
+  })
+  /** Ends the waits of the follow under way, at a sign-out or when the store goes. */
+  let stopFollowing = new AbortController()
+
+  /** Waits, unless the follow is stopped meanwhile. */
+  function pause(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new FollowEnded())
+        return
+      }
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', ended)
+        resolve()
+      }, ms)
+      function ended(): void {
+        clearTimeout(timer)
+        reject(new FollowEnded())
+      }
+      signal.addEventListener('abort', ended, { once: true })
+    })
+  }
 
   function count(scope: BulkScope): Promise<BulkSelectionCount> {
     return auth.api<BulkSelectionCount>(`/api/v1/bulk-selection?${bulkSelectionQuery(scope)}`)
@@ -96,12 +161,15 @@ export const useBulkStore = defineStore('bulk', () => {
     }
     starting.value = true
     try {
+      const session = auth.generation
       const first = await auth.send<BulkActionState>('POST', '/api/v1/bulk-actions', request)
-      const state = await follow({ id: first.id, undo: false, folderName: folderName ?? null }, first)
+      const state = await follow(underWay(first.id, false, folderName ?? null), first, session)
       announce(state, false, folderName)
       return state
     } catch (error) {
-      compose.notify({ text: errorMessage(error), tone: 'error' })
+      if (!(error instanceof FollowEnded)) {
+        compose.notify({ text: errorMessage(error), tone: 'error' })
+      }
       return null
     } finally {
       starting.value = false
@@ -116,12 +184,15 @@ export const useBulkStore = defineStore('bulk', () => {
     }
     starting.value = true
     try {
+      const session = auth.generation
       const first = await auth.send<BulkActionState>('POST', `/api/v1/bulk-actions/${encodeURIComponent(id)}/undo`, {})
-      const state = await follow({ id: first.id, undo: true, folderName: null }, first)
+      const state = await follow(underWay(first.id, true, null), first, session)
       announce(state, true)
       return state
     } catch (error) {
-      compose.notify({ text: `Could not undo: ${errorMessage(error)}`, tone: 'error' })
+      if (!(error instanceof FollowEnded)) {
+        compose.notify({ text: `Could not undo: ${errorMessage(error)}`, tone: 'error' })
+      }
       return null
     } finally {
       starting.value = false
@@ -144,19 +215,36 @@ export const useBulkStore = defineStore('bulk', () => {
     )
   }
 
-  /** Follows an action this tab started before a reload to its end, with the notice and its undo. */
-  async function resume(): Promise<void> {
+  /** The action as kept for a reload, tied to the server and the user it belongs to. */
+  function underWay(id: string, isUndo: boolean, folderName: string | null): UnderWay | null {
+    const userId = auth.me?.id
+    // Not known yet (the server has not said who is signed in): followed now, but not kept for a reload.
+    return userId === undefined ? null : { id, undo: isUndo, folderName, server: config.apiUrl, userId }
+  }
+
+  /**
+   * Follows an action this tab started before a reload to its end, with the notice and its undo: only for the same
+   * server and user. One the server no longer knows is let go without a word.
+   */
+  async function resume(userId: string): Promise<void> {
     const kept = keptUnderWay()
     if (kept === null || busy.value) {
       return
     }
-    starting.value = true
+    if (kept.server !== config.apiUrl || kept.userId !== userId) {
+      keepUnderWay(null)
+      return
+    }
+    resuming.value = true
     try {
-      announce(await follow(kept, null), kept.undo, kept.folderName ?? undefined)
+      announce(await follow(kept, null, auth.generation), kept.undo, kept.folderName ?? undefined)
     } catch (error) {
+      if (error instanceof FollowEnded || (error instanceof ApiError && error.status === 404)) {
+        return
+      }
       compose.notify({ text: kept.undo ? `Could not undo: ${errorMessage(error)}` : errorMessage(error), tone: 'error' })
     } finally {
-      starting.value = false
+      resuming.value = false
     }
   }
 
@@ -182,8 +270,15 @@ export const useBulkStore = defineStore('bulk', () => {
    * that fails (offline, a deploy) is asked again after a growing wait, as the server goes on working; only after
    * many failures in a row does it stop following, saying so. Without `first` (a reload), it asks right away.
    */
-  async function follow(underWay: UnderWay, first: BulkActionState | null): Promise<BulkActionState> {
-    keepUnderWay(underWay)
+  async function follow(kept: UnderWay | null, first: BulkActionState | null, session: number): Promise<BulkActionState> {
+    const id = kept?.id ?? first!.id
+    const signal = stopFollowing.signal
+    // The session that asked for it ended while the request was under way.
+    const ended = (): boolean => signal.aborted || session !== auth.generation || !auth.isAuthenticated
+    if (ended()) {
+      throw new FollowEnded()
+    }
+    keepUnderWay(kept)
     let state = first
     running.value = state
     if (state !== null) {
@@ -194,15 +289,18 @@ export const useBulkStore = defineStore('bulk', () => {
     try {
       while (state === null || bulkActionRunning(state)) {
         if (failures > 0) {
-          await new Promise((resolve) => setTimeout(resolve, failedPollDelay(failures)))
+          await pause(failedPollDelay(failures), signal)
         } else if (state !== null) {
-          await new Promise((resolve) => setTimeout(resolve, bulkPollDelay(attempt++)))
+          await pause(bulkPollDelay(attempt++), signal)
         }
         try {
-          state = await auth.api<BulkActionState>(`/api/v1/bulk-actions/${encodeURIComponent(underWay.id)}`)
+          state = await auth.api<BulkActionState>(`/api/v1/bulk-actions/${encodeURIComponent(id)}`)
         } catch (error) {
-          // Signed out, or the action is not there (anymore): asking again changes nothing.
-          if (!auth.isAuthenticated || (error instanceof ApiError && (error.status === 401 || error.status === 404))) {
+          if (ended()) {
+            throw new FollowEnded()
+          }
+          // The action is not there (anymore), or the session ended: asking again changes nothing.
+          if (error instanceof ApiError && (error.status === 401 || error.status === 404)) {
             throw error
           }
           failures += 1
@@ -211,13 +309,20 @@ export const useBulkStore = defineStore('bulk', () => {
           }
           continue
         }
+        if (ended()) {
+          throw new FollowEnded()
+        }
         failures = 0
         running.value = state
         starting.value = false
+        resuming.value = false
       }
     } finally {
-      running.value = null
-      keepUnderWay(null)
+      // Another follow may have begun since a sign-out stopped this one; what is on screen is its own.
+      if (signal === stopFollowing.signal) {
+        running.value = null
+        keepUnderWay(null)
+      }
     }
     await mail.syncNow()
     if (state === null || bulkActionRunning(state)) {
@@ -227,18 +332,37 @@ export const useBulkStore = defineStore('bulk', () => {
     return state
   }
 
-  // An action this tab followed before a reload is followed again; a sign-out forgets it.
+  /** The session ended: the follow under way stops at once, and nothing of it is kept or shown. */
+  function endFollowing(): void {
+    stopFollowing.abort()
+    stopFollowing = new AbortController()
+    running.value = null
+    starting.value = false
+    resuming.value = false
+    keepUnderWay(null)
+  }
+
+  // An action this tab followed before a reload is followed again once the server said who is signed in (only for
+  // that user); signed out, nothing is followed or kept.
   watch(
-    () => auth.isAuthenticated,
-    (authenticated, before) => {
-      if (authenticated) {
-        void resume()
-      } else if (before === true) {
-        keepUnderWay(null)
+    () => auth.me?.id ?? null,
+    (userId) => {
+      if (userId !== null) {
+        void resume(userId)
       }
     },
     { immediate: true },
   )
+  watch(
+    () => auth.isAuthenticated,
+    (authenticated) => {
+      if (!authenticated) {
+        endFollowing()
+      }
+    },
+    { immediate: true },
+  )
+  onScopeDispose(() => stopFollowing.abort())
 
   return { running, busy, progress, cancel, count, senders, suggestions, start, undo }
 })

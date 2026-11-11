@@ -276,6 +276,10 @@ export const useMailStore = defineStore('mail', () => {
 
   /** Pulls changes now, e.g. right after a write or when the user asks, instead of waiting for realtime. */
   async function syncNow(): Promise<void> {
+    // No copy is syncing yet (it is still opening, say): its own start pulls, and a pull of nothing proves nothing.
+    if (engine === null) {
+      return
+    }
     await pull(() => engine?.sync())
     await refresh()
   }
