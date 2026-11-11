@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
@@ -21,6 +21,7 @@ import FieldLabel from '@/forms/FieldLabel.vue'
 import { provideRequiredFields } from '@/forms/required'
 import { todoSchema, type TodoValues } from '@/forms/todos'
 import { senderName, shortTime } from '@/mail/format'
+import { useComposeStore } from '@/stores/compose'
 import { useTodosStore } from '@/stores/todos'
 import AppIcon from '@/components/AppIcon.vue'
 
@@ -29,6 +30,7 @@ const props = defineProps<{ todo: Todo; message: SyncedMessage | null }>()
 provideRequiredFields(todoSchema)
 
 const store = useTodosStore()
+const compose = useComposeStore()
 const router = useRouter()
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -80,23 +82,50 @@ function saved(): TodoValues {
   }
 }
 
+/** A save under way: the values it writes, and whether it worked once done. Edits made meanwhile build on it. */
+interface SaveUnderWay {
+  values: TodoValues
+  done: Promise<boolean>
+}
+let inFlight: SaveUnderWay | null = null
+
+/** Edits still on the form: told against the save under way once it worked, else against the form's baseline. */
+interface UnsavedEdits {
+  current: TodoValues
+  base: TodoValues
+  inFlight: SaveUnderWay | null
+}
+
+function unsavedEdits(): UnsavedEdits | null {
+  return meta.value.dirty ? { current: { ...values } as TodoValues, base: baseline, inFlight } : null
+}
+
 // Another todo resets the form; changes from other devices show while the form has none of its own. Edits not yet
 // saved when another todo is picked are saved first, so they are not dropped without a word.
 watch(
   () => props.todo,
   (todo, previous) => {
     const switched = previous !== undefined && previous.id !== todo.id
-    const unsaved = switched && meta.value.dirty ? { todo: previous, current: { ...values } as TodoValues, base: baseline } : null
+    const unsaved = switched ? unsavedEdits() : null
     if (previous === undefined || switched || (!saving.value && !meta.value.dirty)) {
       reset(saved())
       confirmingRemoval.value = false
       error.value = null
     }
     if (unsaved !== null) {
-      void keepEdits(unsaved.todo, unsaved.current, unsaved.base)
+      void keepEdits(previous!, unsaved, (text) => (error.value = text))
     }
   },
 )
+
+// The detail closes (no todo selected, another screen): edits on the form are saved; a failure is told in a notice,
+// as the form is gone.
+onBeforeUnmount(() => {
+  const unsaved = unsavedEdits()
+  if (unsaved !== null) {
+    void keepEdits(props.todo, unsaved, (text) => compose.notify({ text, tone: 'error' }))
+  }
+})
 
 /** What the user changed in `current` against the values the form started from. */
 function changes(current: TodoValues, base: TodoValues = baseline): TodoUpdate {
@@ -110,13 +139,17 @@ function changes(current: TodoValues, base: TodoValues = baseline): TodoUpdate {
   return changed
 }
 
-/** Saves the edits made to a todo the user left for another one; says so on screen when they could not be. */
-async function keepEdits(todo: Todo, current: TodoValues, base: TodoValues): Promise<void> {
-  const checked = todoSchema.safeParse(current)
+/**
+ * Saves the edits made to a todo the user left (for another one, or by closing the detail), after a save of it still
+ * under way; `report` says why when they could not be saved.
+ */
+async function keepEdits(todo: Todo, unsaved: UnsavedEdits, report: (text: string) => void): Promise<void> {
+  const checked = todoSchema.safeParse(unsaved.current)
   if (!checked.success) {
-    error.value = `Your changes to "${todo.title}" were not saved: ${checked.error.issues[0]?.message ?? 'they are not valid.'}`
+    report(`Your changes to "${todo.title}" were not saved: ${checked.error.issues[0]?.message ?? 'they are not valid.'}`)
     return
   }
+  const base = unsaved.inFlight !== null && (await unsaved.inFlight.done) ? unsaved.inFlight.values : unsaved.base
   const changed = changes(checked.data, base)
   if (Object.keys(changed).length === 0) {
     return
@@ -124,7 +157,7 @@ async function keepEdits(todo: Todo, current: TodoValues, base: TodoValues): Pro
   try {
     await store.update(todo.id, changed)
   } catch (e) {
-    error.value = `Your changes to "${todo.title}" were not saved: ${errorMessage(e)}`
+    report(`Your changes to "${todo.title}" were not saved: ${errorMessage(e)}`)
   }
 }
 
@@ -143,11 +176,36 @@ async function run(action: () => Promise<void>): Promise<void> {
 
 const save = handleSubmit((current) =>
   run(async () => {
+    const id = props.todo.id
     const changed = changes(current)
-    if (Object.keys(changed).length > 0) {
-      await store.update(props.todo.id, changed)
+    if (Object.keys(changed).length === 0) {
+      reset(current)
+      return
     }
-    reset(current)
+    let finished!: (worked: boolean) => void
+    inFlight = { values: current, done: new Promise((resolve) => (finished = resolve)) }
+    try {
+      await store.update(id, changed)
+      finished(true)
+    } catch (e) {
+      finished(false)
+      throw e
+    } finally {
+      inFlight = null
+    }
+    // Another todo was picked meanwhile: its form is its own (and the watcher saved any edits typed after this save).
+    if (props.todo.id !== id) {
+      return
+    }
+    // The todo as the server has it now, with what another device changed meanwhile.
+    await nextTick()
+    const typedSince = changes({ ...values } as TodoValues, current)
+    if (Object.keys(typedSince).length === 0) {
+      reset(saved())
+    } else {
+      // Typed while the save ran: those edits stay on the form, now told against what was saved.
+      baseline = current
+    }
   }),
 )
 

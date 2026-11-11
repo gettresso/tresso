@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { Todo, TodoUpdate } from '@tresso/core'
+import { useComposeStore } from '@/stores/compose'
 import { useTodosStore } from '@/stores/todos'
 import TodoDetail from '../TodoDetail.vue'
 
@@ -86,5 +87,64 @@ describe('TodoDetail', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Your changes to "Call Anna" were not saved: Not now.')
+  })
+  it('shows what another device changed once the save is done', async () => {
+    const wrapper = await detail(todo('a', { title: 'Call Anna' }))
+    update.mockImplementationOnce(async (id) => {
+      // The pull after the save brings the phone's new title along.
+      await wrapper.setProps({ todo: todo('a', { title: 'Call Anna back', notes: 'About the contract' }) })
+      return todo(id)
+    })
+    await wrapper.get('textarea').setValue('About the contract')
+
+    await wrapper.get('form.detail').trigger('submit')
+    await vi.waitFor(() => expect((wrapper.get('input.title').element as HTMLInputElement).value).toBe('Call Anna back'))
+
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('About the contract')
+  })
+
+  it('keeps the form of the todo picked while a save ran, and saves what was typed after the save began', async () => {
+    let answer!: () => void
+    update.mockImplementationOnce(
+      (id) =>
+        new Promise((resolve) => {
+          answer = () => resolve(todo(id))
+        }),
+    )
+    const wrapper = await detail(todo('a', { title: 'Call Anna' }))
+    await wrapper.get('textarea').setValue('About the contract')
+    await wrapper.get('form.detail').trigger('submit')
+    await vi.waitFor(() => expect(update).toHaveBeenCalledOnce())
+
+    await wrapper.get('textarea').setValue('About the contract, and the invoice')
+    await wrapper.setProps({ todo: todo('b', { title: 'Book the train' }) })
+    answer()
+    await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(2))
+    await flushPromises()
+
+    expect(update.mock.calls).toEqual([
+      ['a', { notes: 'About the contract' }],
+      ['a', { notes: 'About the contract, and the invoice' }],
+    ])
+    expect((wrapper.get('input.title').element as HTMLInputElement).value).toBe('Book the train')
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('saves the edits when the detail closes, and says so in a notice when that fails', async () => {
+    const notify = vi.spyOn(useComposeStore(), 'notify')
+    const wrapper = await detail(todo('a', { title: 'Call Anna' }))
+    await wrapper.get('textarea').setValue('About the contract')
+
+    wrapper.unmount()
+    await flushPromises()
+    expect(update).toHaveBeenCalledExactlyOnceWith('a', { notes: 'About the contract' })
+    expect(notify).not.toHaveBeenCalled()
+
+    update.mockRejectedValueOnce(new Error('Not now.'))
+    const again = await detail(todo('a', { title: 'Call Anna' }))
+    await again.get('textarea').setValue('About the invoice')
+    again.unmount()
+    await flushPromises()
+    expect(notify).toHaveBeenCalledExactlyOnceWith({ text: 'Your changes to "Call Anna" were not saved: Not now.', tone: 'error' })
   })
 })
