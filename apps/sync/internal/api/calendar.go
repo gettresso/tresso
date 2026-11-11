@@ -145,6 +145,13 @@ const (
 	CalendarNotGranted = "not_granted"
 )
 
-func (c *Client) CalendarStatus(ctx context.Context, accountID, workerID, status, detail string) error {
-	return c.post(ctx, accountPath(accountID, "calendar-status"), map[string]any{"workerId": workerID, "status": status, "detail": detail}, nil)
+// CalendarStatus reports why the account's calendars do not sync. foundURL is the address of a calendar server the
+// user is to confirm (status unconfirmed): it is sent as "url", and left out when empty, so an API that does not know
+// the field yet gets the same request as before.
+func (c *Client) CalendarStatus(ctx context.Context, accountID, workerID, status, detail, foundURL string) error {
+	body := map[string]any{"workerId": workerID, "status": status, "detail": detail}
+	if foundURL != "" {
+		body["url"] = foundURL
+	}
+	return c.post(ctx, accountPath(accountID, "calendar-status"), body, nil)
 }

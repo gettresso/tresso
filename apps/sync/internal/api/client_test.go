@@ -364,3 +364,31 @@ func TestATokenEndpointThatNeverAnswersFailsTheCallInTime(t *testing.T) {
 		t.Errorf("Lease = %v after %v; want an error within the token timeout", err, time.Since(start))
 	}
 }
+
+// The found address goes as a field of its own, and only when there is one: an API without the field gets the same
+// request as before.
+func TestCalendarStatusSendsTheFoundAddressOnlyWhenThereIsOne(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	client := NewWithHTTPClient(srv.URL, srv.Client())
+
+	found := "https://dav.example.com/calendars/kim/?token=" + strings.Repeat("x", 300)
+	if err := client.CalendarStatus(context.Background(), "a1", "w1", CalendarUnconfirmed, "A calendar server was found.", found); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CalendarStatus(context.Background(), "a1", "w1", CalendarError, "Broken.", ""); err != nil {
+		t.Fatal(err)
+	}
+	if bodies[0]["url"] != found {
+		t.Errorf("url = %v, want the full address", bodies[0]["url"])
+	}
+	if _, sent := bodies[1]["url"]; sent || len(bodies[1]) != 3 {
+		t.Errorf("body without an address = %v; want workerId, status and detail only", bodies[1])
+	}
+}

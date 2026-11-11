@@ -29,7 +29,7 @@ type API interface {
 	CalendarObjects(ctx context.Context, accountID, calendarID string, batch api.ObjectBatch) (api.ObjectBatchResult, error)
 	ClaimCalendarOperations(ctx context.Context, accountID, workerID string) ([]api.CalendarOperation, error)
 	ReportCalendarOperation(ctx context.Context, accountID, operationID string, result api.OperationResult) error
-	CalendarStatus(ctx context.Context, accountID, workerID, status, detail string) error
+	CalendarStatus(ctx context.Context, accountID, workerID, status, detail, foundURL string) error
 }
 
 type Options struct {
@@ -124,7 +124,7 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 		switch {
 		case errors.As(err, &confirm):
 			logger.Info("a calendar server needs the user's confirmation", "url", confirm.URL, "retryIn", s.opts.NotFoundRetry)
-			status.report(ctx, api.CalendarUnconfirmed, "A calendar server was found at "+displayURL(confirm.URL)+". To sync your calendars there, confirm this address in the account settings.")
+			status.reportFound(ctx, api.CalendarUnconfirmed, unconfirmedDetail(confirm.URL), confirm.URL)
 			wait = s.opts.NotFoundRetry
 			failures = 0
 		case errors.As(err, &untrusted):
@@ -182,15 +182,40 @@ func newStatusReporter(s *Syncer, accountID string, logger *slog.Logger) *status
 }
 
 func (r *statusReporter) report(ctx context.Context, status, detail string) {
+	r.reportFound(ctx, status, detail, "")
+}
+
+// reportFound is report with the address of a calendar server the user is to confirm. The API takes it as a field of
+// its own (https, at most 2048 characters, a host with a domain); one it would refuse is left out, so the status
+// itself still goes in, and the client reads the address from the detail instead.
+func (r *statusReporter) reportFound(ctx context.Context, status, detail, foundURL string) {
 	detail = truncateText(detail, maxDetail)
 	if r.last == status {
 		return
 	}
-	if err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, detail); err != nil {
+	if !acceptableFoundURL(foundURL) {
+		foundURL = ""
+	}
+	if err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, detail, foundURL); err != nil {
 		r.logger.Warn("reporting the calendar status failed", "error", err)
 		return
 	}
 	r.last = status
+}
+
+// unconfirmedDetail is the sentence of the unconfirmed status. Web clients older than the API's calendarFoundUrl, and
+// any client talking to an API without it, read the address out of it, so its wording stays as it is.
+func unconfirmedDetail(found string) string {
+	return "A calendar server was found at " + displayURL(found) + ". To sync your calendars there, confirm this address in the account settings."
+}
+
+// acceptableFoundURL reports whether the API takes the address as calendarFoundUrl.
+func acceptableFoundURL(raw string) bool {
+	if raw == "" || len(raw) > 2048 {
+		return false
+	}
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && strings.Contains(u.Hostname(), ".") && u.User == nil
 }
 
 func (r *statusReporter) reset() {
