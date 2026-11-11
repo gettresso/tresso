@@ -109,10 +109,10 @@ class BulkAction
     /**
      * When a run last handled it (a batch, an undo batch, a wait). A run under way handles it at least every 30
      * seconds, so one that has not for a while lost its queue message: see {@see \App\Bulk\SweepBulkActionsHandler}.
-     * The column default only serves an API host on older code during a deploy; this code always sets it.
+     * Null only on a row an API host on older code inserted during a deploy; the sweep then goes by createdAt.
      */
-    #[ORM\Column(options: ['default' => 'CURRENT_TIMESTAMP'])]
-    private \DateTimeImmutable $updatedAt;
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $updatedAt;
 
     public function __construct(User $owner, MessageAction $action, ?Folder $targetFolder, BulkScope $scope, \DateTimeImmutable $now)
     {
@@ -237,7 +237,7 @@ class BulkAction
 
     public function getUpdatedAt(): \DateTimeImmutable
     {
-        return $this->updatedAt;
+        return $this->updatedAt ?? $this->createdAt;
     }
 
     /** A run handles it now. */
