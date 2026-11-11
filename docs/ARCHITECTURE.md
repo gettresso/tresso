@@ -418,7 +418,11 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   renewed by heartbeat, so a crashed worker's accounts move to another worker automatically. The worker's `/healthz`
   answers 503 until the first heartbeat and whenever the last successful one is older than two heartbeat intervals
   (or the lease timeout, when longer), so an orchestrator replaces a worker that lost the API. The worker's API token
-  request has a 15 second timeout of its own.
+  request has a 15 second timeout of its own. Each leased account says whether it is `fresh`: this worker did not
+  hold it before the heartbeat, also when the API ended the lease. A worker restarts a syncer it still runs for a
+  fresh account, so ending the lease (after the user changed the sign-in) starts the account over with fresh
+  counters at the next heartbeat (30 s at most). A lost lease stops the syncer at the next heartbeat too; the
+  connection is closed at once, also during STARTTLS, the greeting or a backoff wait.
 - **Change detection (IMAP):** `IDLE` on the inbox for instant new mail; other folders every 5 minutes. With
   `CONDSTORE`, flag changes since the last MODSEQ; without it (or in a mailbox that answers NOMODSEQ), a full flag
   check, after an IDLE update at most once a minute (a throttled update is postponed, never dropped). Changes that
@@ -427,8 +431,8 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   added since, runs the folder's presence check at once instead of waiting for the 30 minute one. A server that
   leaves UIDNEXT out of SELECT gets it from the highest UID.
 - **Folder roles (IMAP):** the special-use attributes first; a role no mailbox is marked with is guessed from the
-  name of a top-level mailbox or a direct child of INBOX ("Sent Items", "INBOX.Trash", "Verzonden items"), never from
-  a deeper one. Each role goes to one folder only.
+  name of a top-level mailbox, a direct child of INBOX or a direct child of the personal namespace prefix ("Sent
+  Items", "INBOX.Trash", "Mail/Sent", "Verzonden items"), never from a deeper one. Each role goes to one folder only.
 - **Deletions without QRESYNC:** the worker reports presence ranges ("between UID a and b only these exist") in
   chunks of 5000; the API removes the rest. Every folder is checked at session start and every 30 minutes.
 - **Gmail** (`internal/gmailsync`, Gmail API): labels are folders (remote name = label id; INBOX, SENT, DRAFT, TRASH
@@ -438,8 +442,8 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   one cursor (`historyId`, backfill page token) lives on `tresso:all`; the history id is taken before the backfill
   starts, so nothing is missed. Backfill fetches `format=raw` newest first, once per message, and files it in every
   folder its labels map to. Changes come from `history.list` every 30 s; touched messages are re-read (`format=minimal`)
-  and reported per folder. A message going into or out of Trash or Spam is removed only from the folders of the
-  labels it has or that history named, not from every label folder. When the history id has expired (404), the
+  and reported per folder. A message going into or out of Trash or Spam is removed only from the system folders
+  and the folders of the labels it has or that history named, not from every label folder. When the history id has expired (404), the
   folders are listed in full and compared with
   the API's `GET /internal/sync/accounts/{id}/folders/remote-uids` to find what was deleted.
 - **Microsoft 365 / Outlook.com** (`internal/graphsync`, Microsoft Graph): every request asks for immutable ids
@@ -447,8 +451,10 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   = folder id, display name = path), with roles from the well-known folders. Each folder has its own cursor: the
   delta link, taken before the backfill, and the backfill position (by received time, so deletions during the
   backfill do not shift pages). Folders are started (their delta walked to its end) one per step, the inbox first,
-  so the inbox is ingested before the other folders are walked; the walk's position is stored every 10 pages, so an
-  interrupted walk of a large folder continues where it stopped. A 403 for a folder's children, messages or delta
+  so the inbox is ingested before the other folders are walked, also when a round sees a removal (a message moved
+  into a folder not started yet is added there by the rescue below); the walk's position is stored every 10 pages,
+  so an interrupted walk of a large folder continues where it stopped, and a stored position Graph refuses (any 4xx
+  but 401, 403 and throttling) starts the walk over. A 403 for a folder's children, messages or delta
   (a folder the user lost access to) leaves that folder out until the folder tree is read again, and one for a
   message is handled like any message the provider will not hand over (see Isolation); only a refused top of the
   folder tree means the mailbox may not be read (`auth_failed`). The inbox delta is polled every 30 s, other
@@ -468,20 +474,33 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   connection, so DNS changes cannot redirect it). TLS 1.2+ with certificate verification, or STARTTLS.
 - **Failures:** sessions reconnect with exponential backoff (2 s to 5 min). A refused login reports `auth_failed` and
   stops until the user changes the credentials: an IMAP LOGIN answered with AUTHENTICATIONFAILED, AUTHORIZATIONFAILED
-  or EXPIRED at once, a NO without a response code once five logins in a row were refused; any other NO (UNAVAILABLE,
-  INUSE, LIMIT, SERVERBUG, ALERT and the like) is an ordinary session failure, and LOGINDISABLED or PRIVACYREQUIRED
-  asks the user to choose TLS or STARTTLS. Three failed sessions in a row report `error` with a user-safe detail.
-- **Isolation:** one message must not stop its folder. Every value sent to the ingest API is cut to the API's limits
-  and cleaned of NUL and other control characters (`internal/ingestmsg`). When the API still refuses a batch for its
-  content (400, 413, 422), the batch is sent again one message at a time and a message refused on its own is replaced
-  by a placeholder ("Message could not be imported", sender `unknown@unknown.invalid`, the raw MIME kept), logged with
-  folder, uid and Message-ID; then the cursor moves on. A 500 for one message, a message the provider will not hand
-  over (an IMAP FETCH answered NO or without a body, a Gmail or Graph 4xx or 5xx other than 401, 404 and 429) and a
-  Gmail message that cannot be decoded are retried in later sessions first and replaced after three failed sessions,
-  then by a placeholder whose raw MIME is a short notice; a 5xx only counts when other messages of the same request
-  went through, so an outage of the API or the provider never replaces anything (`internal/isolate`).
-- **Folders the server will not open:** a mailbox whose STATUS is refused is left out of the folder list; one whose
-  SELECT is refused is skipped until the next folder list (every 5 minutes), and the other folders go on.
+  or EXPIRED at once; any other NO (without a code, with ALERT, which servers use for "use an app password", or with
+  a code Tresso does not know) once five logins were refused without a login that went through in between (other
+  failures in between do not start the count over). The text of an ALERT is shown to the user in the status detail.
+  NO [UNAVAILABLE], [INUSE], [LIMIT], [SERVERBUG] and [CONTACTADMIN] are ordinary session failures, and LOGINDISABLED
+  or PRIVACYREQUIRED asks the user to choose TLS or STARTTLS. Three failed sessions in a row report `error` with a
+  user-safe detail, repeated until the API took it.
+- **Isolation:** one message must not stop its folder (`internal/isolate`). Every value sent to the ingest API is cut
+  to the API's limits and cleaned of NUL and other control characters (`internal/ingestmsg`). When the API still
+  refuses a batch for its content (400, 413, 422), the batch is sent again one message at a time and a message
+  refused on its own is replaced by a placeholder ("Message could not be imported (ref ...)", sender
+  `unknown@unknown.invalid`, the raw MIME kept), logged with folder, uid and Message-ID; then the cursor moves on.
+  Failures that may pass are only counted next to messages of the same request that went through, so an outage of
+  the API or the provider never counts: a 500 for one message, and a message the provider will not hand over (an IMAP
+  FETCH answered NO or without a body, a Gmail or Graph 4xx or 5xx other than 401, 404, 429 and the 403s of
+  throttling and quotas, a Gmail raw that cannot be decoded). Such a message is replaced only after it failed three
+  times over at least an hour, by a placeholder whose raw MIME is a short notice, dated and flagged (and for Gmail
+  filed by its labels) as the provider still says. A message failing alone in its request is never replaced; the
+  next mail in the folder joins it. A placeholder is not final: its uid is kept in the folder's cursor (`pending`,
+  at most 50, for Gmail on `tresso:all`), recorded before the placeholder is sent, and the real message is tried
+  again an hour later, then every 2, 4, ... up to 24 hours. Once the provider hands it over and the API takes it, the
+  placeholder's uid is removed and the message ingested in its place (a probe ingest first, so a message the API
+  still refuses leaves the placeholder alone).
+- **Folders the server will not open:** a mailbox whose STATUS is refused with NONEXISTENT or NOPERM is left out of
+  the folder list (the API deletes it); one whose STATUS is refused otherwise stays listed without a UIDVALIDITY (the
+  API keeps what it has) and is skipped, like one whose SELECT is refused, until the next folder list (every 5
+  minutes); the other folders go on. When the inbox, or every folder, cannot be opened the session fails, so the
+  account reports `error` instead of being in sync.
 - **Ingest:** raw MIME goes directly to object storage, encrypted with the account owner's blob key
   (`raw/<owner id>/<fp[0:2]>/<fp>`, named by the owner's content fingerprint, so duplicates within one user are
   stored once); attachments too (`attachments/<owner id>/<fp[0:2]>/<fp>`). The worker fetches the keys from
