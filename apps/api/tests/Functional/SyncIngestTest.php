@@ -149,6 +149,18 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame(1, $attachments[0]->getKeyVersion());
     }
 
+    public function testDatesWithAnOffsetAreKeptAsThatMoment(): void
+    {
+        $this->folders(['INBOX' => 1]);
+
+        $this->messages('INBOX', [$this->message('1', ['sentAt' => '2026-10-19T09:59:00+02:00', 'receivedAt' => '2026-10-19T10:00:00+02:00'])]);
+
+        $message = $this->onlyMessage();
+        self::assertSame(new \DateTimeImmutable('2026-10-19T07:59:00+00:00')->getTimestamp(), $message->getSentAt()?->getTimestamp());
+        self::assertSame(new \DateTimeImmutable('2026-10-19T08:00:00+00:00')->getTimestamp(), $message->getReceivedAt()->getTimestamp());
+        self::assertSame(new \DateTimeImmutable('2026-10-19T08:00:00+00:00')->getTimestamp(), $message->getThread()->getLastMessageAt()->getTimestamp());
+    }
+
     public function testOnlyInlineAttachmentsDoNotCountAsAttachments(): void
     {
         $this->folders(['INBOX' => 1]);

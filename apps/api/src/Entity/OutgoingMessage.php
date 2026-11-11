@@ -112,7 +112,8 @@ class OutgoingMessage implements TracksChanges
         $this->rawObjectKey = $rawObjectKey;
         $this->rawKeyVersion = $rawKeyVersion;
         $this->size = $size;
-        $this->sendAt = $sendAt;
+        // Stored without a zone and read back as UTC: an API client may send any offset.
+        $this->sendAt = self::utc($sendAt);
         $this->inReplyTo = $inReplyTo;
         $this->createdAt = $now;
         $this->status = $sendAt > $now ? OutgoingStatus::Scheduled : OutgoingStatus::Queued;
@@ -267,9 +268,14 @@ class OutgoingMessage implements TracksChanges
             return;
         }
         $this->status = OutgoingStatus::Scheduled;
-        $this->sendAt = $at;
+        $this->sendAt = self::utc($at);
         $this->lastError = mb_substr($error, 0, 500);
         $this->release();
+    }
+
+    private static function utc(\DateTimeImmutable $moment): \DateTimeImmutable
+    {
+        return $moment->setTimezone(new \DateTimeZone('UTC'));
     }
 
     private function release(): void

@@ -100,7 +100,8 @@ final readonly class MessageIngestor
     private function store(MailAccount $account, Folder $folder, MessageInput $input, ?string $messageId, array $ownAddresses): void
     {
         $from = $input->from ?? throw new \LogicException('Validation guarantees a sender.');
-        $receivedAt = $input->receivedAt ?? throw new \LogicException('Validation guarantees a received date.');
+        // In UTC like every stored time, also for the thread and the subject window below.
+        $receivedAt = ($input->receivedAt ?? throw new \LogicException('Validation guarantees a received date.'))->setTimezone(new \DateTimeZone('UTC'));
         $references = MessageIds::normalizeList([...$input->references, $input->inReplyTo], $messageId);
 
         // The people on the other side: the owner's own addresses are on nearly every message and say nothing.
