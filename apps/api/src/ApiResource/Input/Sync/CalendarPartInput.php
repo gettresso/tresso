@@ -11,8 +11,10 @@ use Symfony\Component\Validator\Constraints as Assert;
  */
 final class CalendarPartInput
 {
-    /** The METHOD parameter of the part's Content-Type, when it had one. */
-    #[Assert\Length(max: 32)]
+    /**
+     * The METHOD parameter of the part's Content-Type, when it had one. Not limited: it is the sender's text, and
+     * anything that is not an iTIP method is ignored rather than refusing the message (and with it the batch).
+     */
     public ?string $method = null;
 
     #[Assert\NotBlank]

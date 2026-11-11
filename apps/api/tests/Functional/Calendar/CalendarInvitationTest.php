@@ -85,6 +85,54 @@ final class CalendarInvitationTest extends DatabaseTestCase
         self::assertSame([$messageId], array_column($delta['calendarEvents'], 'messageId'));
     }
 
+    /**
+     * @return iterable<string, array{?string, string, bool}>
+     */
+    public static function calendarPartsThatCannotBeRecorded(): iterable
+    {
+        $valid = self::invitation('REQUEST', 0, '20261021T140000');
+        yield 'a Content-Type method longer than any iTIP method' => [str_repeat('REQUEST', 10), str_replace("METHOD:REQUEST\r\n", '', $valid), false];
+        yield 'a UID longer than the column' => [null, str_replace('UID:budget-review@finance.example', 'UID:'.str_repeat('x', 1025), $valid), false];
+        // Recorded, with the largest SEQUENCE the column holds (another event, so it does not outdate the second message).
+        yield 'a SEQUENCE larger than the column' => [null, str_replace(['SEQUENCE:0', 'UID:budget-review@'], ['SEQUENCE:3000000000', 'UID:crafted@'], $valid), true];
+        yield 'a RECURRENCE-ID that is not a date' => [null, str_replace('SEQUENCE:0', "SEQUENCE:0\r\nRECURRENCE-ID:garbage", $valid), false];
+    }
+
+    /**
+     * A calendar part the API cannot record never refuses its message: the worker would send the same batch again
+     * forever, and no later mail of the folder would arrive.
+     */
+    #[DataProvider('calendarPartsThatCannotBeRecorded')]
+    public function testACalendarPartThatCannotBeRecordedNeverStopsTheBatch(?string $partMethod, string $ical, bool $recorded): void
+    {
+        $messages = [];
+        foreach ([['Crafted', $partMethod, $ical], ['Invitation: Budget review', null, self::invitation('REQUEST', 0, '20261021T140000')]] as [$subject, $method, $part]) {
+            ++$this->uid;
+            $messages[] = [
+                'remoteUid' => (string) $this->uid,
+                'rawObjectKey' => $this->rawKeyFor($this->accountId, $subject.$this->uid),
+                'keyVersion' => 1,
+                'size' => 100,
+                'receivedAt' => new \DateTimeImmutable('+1 minute')->format(\DATE_ATOM),
+                'messageId' => '<invite-'.$this->uid.'@finance.example>',
+                'subject' => $subject,
+                'from' => ['address' => 'anna@finance.example', 'name' => null],
+                'to' => [['address' => 'kim@company.example']],
+                'calendarParts' => [['method' => $method, 'ical' => $part]],
+            ];
+        }
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$this->accountId.'/messages', ['workerId' => 'w1', 'folder' => 'INBOX', 'messages' => $messages], $this->worker);
+        self::assertResponseIsSuccessful();
+        $this->applyQueuedInvitations();
+
+        $crafted = $this->messageId('Crafted');
+        $invited = $this->messageId('Invitation: Budget review');
+        $sequences = $this->connection()->fetchFirstColumn('SELECT sequence FROM calendar_invitation WHERE message_id = :id', ['id' => $crafted]);
+        self::assertSame($recorded ? [2147483647] : [], array_map(intval(...), $sequences));
+        self::assertSame(1, (int) $this->connection()->fetchOne('SELECT COUNT(*) FROM calendar_invitation WHERE message_id = :id', ['id' => $invited]));
+        self::assertCount($recorded ? 2 : 1, $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00'));
+    }
+
     public function testAcceptingRepliesToTheOrganizerThroughTheOutbox(): void
     {
         $messageId = $this->receive('Invitation: Budget review', self::invitation('REQUEST', 0, '20261021T140000'));

@@ -6,7 +6,6 @@ namespace App\Calendar\Invitation;
 
 use App\ApiResource\Input\Sync\CalendarPartInput;
 use App\Calendar\ICalendar\CalendarDocument;
-use App\Calendar\ICalendar\InvalidCalendarData;
 use App\Calendar\ICalendar\Props;
 use App\Entity\CalendarInvitation;
 use App\Entity\Message;
@@ -16,6 +15,7 @@ use App\Realtime\AfterCommitDispatcher;
 use App\Repository\CalendarInvitationRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
+use Sabre\VObject\Component\VCalendar;
 
 /**
  * Records the calendar objects that came with a new message, at ingest, and has them applied to the user's calendars
@@ -66,24 +66,51 @@ final readonly class InvitationRecorder
     {
         try {
             $calendar = CalendarDocument::parse($ical);
-        } catch (InvalidCalendarData $e) {
-            $this->logger->info('Skipping an unreadable calendar part', ['message' => $message->getId()->toRfc4122(), 'error' => $e->getMessage()]);
+            $read = self::read($calendar, $partMethod);
+        } catch (\Throwable $e) {
+            // sabre reads most values lazily, so a malformed date or rule only fails here; whatever it is, the
+            // message is stored without its calendar part.
+            $this->logger->info('Skipping an unreadable calendar part', ['message' => $message->getId()->toRfc4122(), 'error' => $e::class.': '.$e->getMessage()]);
 
             return null;
         }
+        if (null === $read) {
+            return null;
+        }
 
+        [$method, $uid, $sequence, $recurrenceKey, $serialized] = $read;
+        $invitation = new CalendarInvitation($message, $method, $uid, $sequence, $recurrenceKey, $serialized);
+        $this->entityManager->persist($invitation);
+        if ($apply) {
+            $this->afterCommit->dispatch(new ApplyCalendarInvitation($invitation->getId()->toRfc4122()));
+        }
+
+        return $invitation;
+    }
+
+    /**
+     * What an invitation row stores of a calendar part, or null when the part is not usable iTIP or does not fit
+     * the columns (a UID longer than any calendar writes).
+     *
+     * @return array{ItipMethod, string, int, string, string}|null
+     */
+    private static function read(VCalendar $calendar, ?string $partMethod): ?array
+    {
+        // The Content-Type parameter comes from the sender as is: anything that is not an iTIP method is ignored.
         $method = ItipMethod::tryFrom(strtoupper(Props::text($calendar, 'METHOD') ?? trim((string) $partMethod)));
         $groups = CalendarDocument::eventsByUid($calendar);
         if (null === $method || 1 !== \count($groups)) {
             return null;
         }
         $uid = (string) array_key_first($groups);
-        $events = $groups[$uid];
+        if (mb_strlen($uid) > Props::MAX_UID_LENGTH) {
+            return null;
+        }
         $sequence = 0;
         $recurrenceKey = '';
         $hasMaster = false;
-        foreach ($events as $event) {
-            $sequence = max($sequence, Props::int($event, 'SEQUENCE'));
+        foreach ($groups[$uid] as $event) {
+            $sequence = max($sequence, Props::sequence($event));
             $key = CalendarDocument::recurrenceKey($event);
             if ('' === $key) {
                 $hasMaster = true;
@@ -92,12 +119,6 @@ final readonly class InvitationRecorder
             $recurrenceKey = '' === $recurrenceKey ? $key : $recurrenceKey;
         }
 
-        $invitation = new CalendarInvitation($message, $method, $uid, $sequence, $hasMaster ? '' : $recurrenceKey, $calendar->serialize());
-        $this->entityManager->persist($invitation);
-        if ($apply) {
-            $this->afterCommit->dispatch(new ApplyCalendarInvitation($invitation->getId()->toRfc4122()));
-        }
-
-        return $invitation;
+        return [$method, $uid, $sequence, $hasMaster ? '' : $recurrenceKey, $calendar->serialize()];
     }
 }
