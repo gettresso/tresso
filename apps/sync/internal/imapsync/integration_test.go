@@ -323,6 +323,8 @@ func testOptions() Options {
 	o.UpdatePresenceInterval = 0
 	o.StatusInterval = time.Second
 	o.MinBackoff = 100 * time.Millisecond
+	// A wrong password must end the run within the test, not after the ten minutes a live account waits.
+	o.RefusalSpan, o.RefusalWait = 0, 0
 	return o
 }
 
