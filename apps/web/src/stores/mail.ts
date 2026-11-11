@@ -1,4 +1,4 @@
-import { computed, ref, shallowRef, watch } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import {
   RealtimeClient,
@@ -46,6 +46,7 @@ import {
 import { ApiError } from '@/api/errors'
 import type { Contact, Conversation, Draft, ListScope } from '@/mail/db'
 import { deleteMailStore, mailCopyName, openMailStore } from '@/mail/store'
+import { forgetCopy, keptCopies, rememberCopy } from '@/mail/copies'
 import type { ClosedElsewhere } from '@/mail/db'
 import { forTheDesktop, mailNotifications, overdueNotifications } from '@/mail/mailNotifications'
 import { notifier } from '@/platform/notifier'
@@ -164,6 +165,10 @@ export const useMailStore = defineStore('mail', () => {
     if (mine !== generation) {
       return
     }
+    await removeOtherCopies(mailCopyName(forUserId))
+    if (mine !== generation) {
+      return
+    }
     userId = forUserId
     let opened!: () => void
     const opening = new Promise<void>((resolve) => {
@@ -178,6 +183,7 @@ export const useMailStore = defineStore('mail', () => {
         return
       }
       db.value = database
+      rememberCopy({ userId: forUserId, name: mailCopyName(forUserId) })
     } catch (error) {
       if (mine !== generation) {
         // Overtaken anyway (a sign-out, another user): its failure is no longer anyone's concern.
@@ -321,6 +327,10 @@ export const useMailStore = defineStore('mail', () => {
       return
     }
     await stop()
+    if (!auth.isAuthenticated) {
+      // Removed by a sign-out in another tab: this tab follows that sign-out, it does not start a new copy.
+      return
+    }
     if (reason === 'upgraded') {
       updatedElsewhere.value = 'Tresso was updated in another tab. Reload this tab to keep using it.'
       return
@@ -384,6 +394,25 @@ export const useMailStore = defineStore('mail', () => {
     await Promise.allSettled(openings)
     if (forUserId !== null && name !== null) {
       await deleteMailStore(forUserId, name)
+      forgetCopy(name)
+    }
+  }
+
+  /**
+   * Removes the copies other users left here when their session expired: once someone else signs in, they are no
+   * longer theirs to come back to. A copy that cannot be removed now stays listed and is tried again at the next start.
+   */
+  async function removeOtherCopies(keep: string): Promise<void> {
+    for (const copy of keptCopies()) {
+      if (copy.name === keep) {
+        continue
+      }
+      try {
+        await deleteMailStore(copy.userId, copy.name)
+        forgetCopy(copy.name)
+      } catch (error) {
+        console.error('Removing the mail copy another user left on this device failed', error)
+      }
     }
   }
 
@@ -732,14 +761,10 @@ export const useMailStore = defineStore('mail', () => {
     await db.value?.deleteDraft(id)
   }
 
-  watch(
-    () => auth.isAuthenticated,
-    (authenticated) => {
-      if (!authenticated) {
-        void forget()
-      }
-    },
-  )
+  // Only the user's own sign-out removes the copy. A session that expired, or that ended in another tab (which removes
+  // the copy itself when the user signed out there), only closes it: it may hold drafts that never reached the server,
+  // and they upload when the same user signs in again.
+  auth.onSessionEnd((reason) => (reason === 'signedOut' ? forget() : stop()))
 
   return {
     accounts,
