@@ -26,12 +26,19 @@ describe('the link rules of the web views', () => {
   )
 
   it('reads the reports of the frame script and ignores anything else', () => {
-    expect(frameMessage('{"height":412}')).toEqual({ kind: 'height', value: 412 })
-    expect(frameMessage('{"tap":"https://example.test/"}')).toEqual({ kind: 'tap', url: 'https://example.test/' })
-    expect(frameMessage('{"height":0}')).toBeNull()
-    expect(frameMessage('{"height":"412"}')).toBeNull()
-    expect(frameMessage('412')).toBeNull()
-    expect(frameMessage('not json')).toBeNull()
-    expect(frameMessage('null')).toBeNull()
+    const frame = (data: string) => frameMessage({ url: 'about:blank', data })
+    expect(frame('{"height":412}')).toEqual({ kind: 'height', value: 412 })
+    expect(frame('{"tap":"https://example.test/"}')).toEqual({ kind: 'tap', url: 'https://example.test/' })
+    expect(frame('{"place":640}')).toEqual({ kind: 'place', offset: 640 })
+    expect(frame('{"place":-1}')).toBeNull()
+    expect(frame('{"height":0}')).toBeNull()
+    expect(frame('{"height":"412"}')).toBeNull()
+    expect(frame('412')).toBeNull()
+    expect(frame('not json')).toBeNull()
+    expect(frame('null')).toBeNull()
+  })
+
+  it.each(['https://phish.example/landing', 'http://tracker.example/', 'data:text/html,<p>hi</p>', ''])('ignores a report sent by a page at %s, not the frame\'s own document', (url) => {
+    expect(frameMessage({ url, data: '{"tap":"https://phish.example/next"}' })).toBeNull()
   })
 })
