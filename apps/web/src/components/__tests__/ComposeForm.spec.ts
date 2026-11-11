@@ -60,4 +60,30 @@ describe('ComposeForm', () => {
     expect(wrapper.text()).toContain('Choose the account to send from.')
     wrapper.unmount()
   })
+
+  it('closes only the Send later menu on Escape, so the compose window stays', async () => {
+    const { wrapper } = setup(draft)
+    const parent = vi.fn<(event: KeyboardEvent) => void>()
+    wrapper.element.parentElement!.addEventListener('keydown', parent)
+
+    await wrapper.get('.later > button').trigger('click')
+    expect(wrapper.find('.later [role="menu"]').exists()).toBe(true)
+    await wrapper.get('#compose-later').trigger('keydown', { key: 'Escape' })
+
+    expect(wrapper.find('.later [role="menu"]').exists()).toBe(false)
+    expect(parent).not.toHaveBeenCalled()
+    wrapper.element.parentElement!.removeEventListener('keydown', parent)
+    wrapper.unmount()
+  })
+
+  it('closes the Send later menu on a press elsewhere', async () => {
+    const { wrapper } = setup(draft)
+
+    await wrapper.get('.later > button').trigger('click')
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await settle()
+
+    expect(wrapper.find('.later [role="menu"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
 })

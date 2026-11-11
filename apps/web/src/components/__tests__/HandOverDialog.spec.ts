@@ -3,6 +3,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { HandOverError, UnscannedFilesError, type HandOverInput, type SyncedMessage } from '@tresso/core'
 import { useHandOversStore } from '@/stores/handOvers'
+import type { Contact } from '@/mail/db'
+import { useMailStore } from '@/stores/mail'
 import HandOverDialog from '../HandOverDialog.vue'
 
 const message: SyncedMessage = {
@@ -135,10 +137,10 @@ describe('HandOverDialog', () => {
     const wrapper = mountDialog()
     await chooseLisa(wrapper)
 
-    await wrapper.get('[role="dialog"]').trigger('keydown', { key: 'Enter', metaKey: true })
-    await wrapper.get('[role="dialog"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    await wrapper.get('dialog').trigger('keydown', { key: 'Enter', metaKey: true })
+    await wrapper.get('dialog').trigger('keydown', { key: 'Enter', metaKey: true })
     await settle()
-    await wrapper.get('[role="dialog"]').trigger('keydown', { key: 'Enter', ctrlKey: true })
+    await wrapper.get('dialog').trigger('keydown', { key: 'Enter', ctrlKey: true })
     await settle()
 
     expect(handOver).toHaveBeenCalledTimes(1)
@@ -177,9 +179,60 @@ describe('HandOverDialog', () => {
     const close = vi.spyOn(handOvers, 'close')
     const wrapper = mountDialog()
 
-    await wrapper.get('[role="dialog"]').trigger('keydown', { key: 'Escape' })
+    // A browser turns Escape in a modal dialog into its cancel event.
+    await wrapper.get('dialog').trigger('cancel')
 
     expect(close).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('stays open while the hand-over is on its way, even on Escape', async () => {
+    let finish!: () => void
+    handOver.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)))
+    const close = vi.spyOn(handOvers, 'close')
+    const wrapper = mountDialog()
+    await chooseLisa(wrapper)
+
+    await wrapper.get('form').trigger('submit')
+    await settle()
+    await wrapper.get('dialog').trigger('cancel')
+
+    expect(close).not.toHaveBeenCalled()
+    finish()
+    wrapper.unmount()
+  })
+
+  it('opens as a modal dialog, so the page behind takes no focus', () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
+    const showModal = vi.fn<() => void>()
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { value: showModal, configurable: true, writable: true })
+    try {
+      const wrapper = mountDialog()
+      expect(showModal).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    } finally {
+      if (original) {
+        Object.defineProperty(HTMLDialogElement.prototype, 'showModal', original)
+      } else {
+        delete (HTMLDialogElement.prototype as Partial<HTMLDialogElement>).showModal
+      }
+    }
+  })
+
+  it('keeps the note when Escape closes the suggestion list', async () => {
+    const close = vi.spyOn(handOvers, 'close')
+    useMailStore().suggestContacts = vi.fn<(query: string) => Promise<Contact[]>>(async () => [{ key: 'lisa@company.example', address: 'lisa@company.example', name: 'Lisa Bakker', lastSeen: 0, messages: 1 }])
+    const wrapper = mountDialog()
+    await wrapper.get('textarea').setValue('Can you check the double charge?')
+
+    await wrapper.get('input[role="combobox"]').setValue('lis')
+    await settle()
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(true)
+    await wrapper.get('input[role="combobox"]').trigger('keydown', { key: 'Escape' })
+
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+    expect(close).not.toHaveBeenCalled()
+    expect(wrapper.get('textarea').element.value).toBe('Can you check the double charge?')
     wrapper.unmount()
   })
 })

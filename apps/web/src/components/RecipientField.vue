@@ -62,8 +62,12 @@ function keydown(event: KeyboardEvent): void {
     commit()
   } else if (event.key === 'Backspace' && text.value === '' && recipients.value.length > 0) {
     remove(recipients.value.length - 1)
-  } else if (event.key === 'Escape') {
+  } else if (event.key === 'Escape' && open.value) {
+    // Escape closes the suggestion list only. Stopped here, it does not also close the dialog or compose window the
+    // field sits in; with the list already closed it goes on to them as usual.
     open.value = false
+    event.preventDefault()
+    event.stopPropagation()
   }
 }
 
