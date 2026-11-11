@@ -40,8 +40,9 @@ Every release publishes three images on `ghcr.io/gettresso`: `tresso-api` (Frank
 with another command, every Messenger worker), `tresso-sync` (the Go sync workers) and `tresso-web` (the web client on
 Caddy), each for amd64 and arm64. Nothing server-specific is built in: the web image renders `/config.js` from
 `TRESSO_API_URL` (and the optional `TRESSO_AUTH_URL`, where users sign in when that is not the API address) when it
-serves it, and sends a Content-Security-Policy that lets the page load code only from itself and connect only to
-itself and the API's origin; the API reads everything from its environment. `compose.prod.yaml` runs them
+serves it, and sends a Content-Security-Policy that lets the page load code only from itself, connect only to itself,
+the API's origin and the realtime hub's (the API's origin, or `TRESSO_HUB_URL` when `MERCURE_PUBLIC_URL` is on another
+host), and send forms only to itself, the API and the sign-in pages; the API reads everything from its environment. `compose.prod.yaml` runs them
 with a Caddy proxy that gets the certificates, and with the services they need. Before anything else the API image runs
 `app:settings:check`, which refuses to start while a secret is missing, too short or one of the development values in
 the repository's `.env` files, since a production image would otherwise fall back to those public values. The API
@@ -164,10 +165,17 @@ Only first-party clients are approved automatically; every other app goes throug
 
 The first-party clients keep a sign-in until the server refuses it. They refresh the access token before it expires,
 one refresh at a time (refresh tokens rotate, so a second refresh with the same token would be refused), and only an
-`invalid_grant` or `invalid_request` answer of the token endpoint, or a 401 from the API that a refresh and one retry
-do not cure, ends the session. A network error, a timeout or a 5xx keeps the tokens; the request fails with an error
-that says the next one tries again. Signing out revokes the refresh token at `POST /oauth/revoke` (RFC 7009) before the
-client forgets it, best effort: an unreachable server does not keep the user signed in.
+`invalid_grant`, `invalid_request`, `invalid_client` or `unauthorized_client` answer of the token endpoint, or a 401
+from the API that a refresh and one retry do not cure, ends the session. A network error, a timeout (20 seconds for
+the whole answer) or a 5xx keeps the tokens; the request fails with an error that says the next one tries again. When
+the answer was lost (a network error or the timeout, not an error answer), the client asks once more after 2 seconds:
+the server may have rotated the token already, and answers the old one with the same new pair for 30 seconds. A device
+that sleeps longer than that between the lost answer and the retry is signed out at its next request; the client
+cannot prevent that. Signing out revokes the refresh token at `POST /oauth/revoke` (RFC 7009) before the client forgets
+it, best effort: an unreachable server does not keep the user signed in. After a sign-out (not after a session that
+expired) the device remembers it, and its next sign-in sends `prompt=login`, so the sign-in pages ask for the password
+again although they may still remember the browser; the mark goes once a sign-in completes, not when the authorization
+page is opened again.
 
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
 `settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
@@ -1234,8 +1242,13 @@ from before this kept them in `sessionStorage`; they move over at the next page 
 Locks lock that all tabs share (`tresso.auth.refresh`), and inside it the tab reads the stored set again first: when
 another tab refreshed meanwhile it takes that set instead of refreshing with a rotated token. A `storage` listener
 brings a sign-in, refresh or sign-out of one tab to the others; a tab whose user changed under it reloads. A browser
-without Web Locks refreshes without the lock, which is as safe as a single tab. Signing out also ends the browser
-session of the sign-in pages (`/logout` on the sign-in address), so the next sign-in asks for the password. The
+without Web Locks refreshes without the lock, which is as safe as a single tab. A sign-out revokes and forgets the
+tokens under the same lock, after reading the stored set again, and a refresh whose answer arrives after the stored set
+is gone drops that answer and revokes it, so a refresh in one tab never signs the user back in after a sign-out in
+another. Signing out also ends the browser session of the sign-in pages, remember-me cookie included, by submitting a
+top-level form (POST) to `/logout` on the sign-in address; the server accepts it for the app's origin and sends the
+browser back to the app. The desktop app does not open the system browser to sign out: the sign-in pages may still
+remember that browser, which is why its next sign-in asks for the password (`prompt=login`, above). The
 sign-in pages may live on another address than the API (`TRESSO_AUTH_URL`, `VITE_AUTH_URL`); `/oauth/authorize`
 and `/logout` go there, the token and revocation endpoints stay on the API address. Because a script injected into
 the page could read the tokens, the web image sends a Content-Security-Policy (`docker/web/Caddyfile`). When keeping
