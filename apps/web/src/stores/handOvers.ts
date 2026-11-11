@@ -42,6 +42,7 @@ export const useHandOversStore = defineStore('handOvers', () => {
     changed: () => {
       mail.refresh().catch((error: unknown) => console.error('Refreshing the lists failed', error))
     },
+    now: () => auth.serverNow(),
   })
   const flow = new HandOverFlow({
     composer,
@@ -57,6 +58,7 @@ export const useHandOversStore = defineStore('handOvers', () => {
     signatures: () => mail.signatures,
     sync: () => mail.syncNow(),
     explain,
+    now: () => auth.serverNow(),
   })
 
   /** The message being handed over in the dialog; null while it is closed. */

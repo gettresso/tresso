@@ -994,4 +994,19 @@ describe('Composer', () => {
     expect(sent).toHaveLength(1)
   })
 
+  it("counts the undo window on the server's clock, and offers undo for that long on this device", async () => {
+    const serverBehind = new Composer({ ...deps, now: () => Date.now() - 600_000 })
+    serverBehind.openNew([{ address: 'anna@example.test', name: null }])
+    const at = Date.now()
+
+    await serverBehind.send()
+
+    expect(Date.parse(sent[0]!.sendAt!)).toBe(at - 600_000 + 5000)
+    expect(serverBehind.state.undoable?.until).toBe(at + 5000)
+    await vi.advanceTimersByTimeAsync(4900)
+    expect(serverBehind.state.undoable).not.toBeNull()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(serverBehind.state.undoable).toBeNull()
+    serverBehind.dispose()
+  })
 })

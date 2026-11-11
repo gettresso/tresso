@@ -6,6 +6,7 @@ import {
   parseCallback,
   refreshTokens,
   revokeToken,
+  ServerClock,
   startAuthorization,
   type Me,
   type OAuthClientConfig,
@@ -689,11 +690,16 @@ export const useAuthStore = defineStore('auth', () => {
     return renew(rejected)
   }
 
-  function request(path: string, init: RequestInit, token: string): Promise<Response> {
+  /** The server's clock, as the Date header of its answers tells it (for send times it keeps, such as undo). */
+  const clock = new ServerClock()
+
+  async function request(path: string, init: RequestInit, token: string): Promise<Response> {
     const headers = new Headers(init.headers)
     headers.set('Authorization', `Bearer ${token}`)
     headers.set('Accept', 'application/json')
-    return fetch(`${config.apiUrl}${path}`, { ...init, headers })
+    const response = await fetch(`${config.apiUrl}${path}`, { ...init, headers })
+    clock.note(response.headers.get('Date'))
+    return response
   }
 
   async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -815,5 +821,6 @@ export const useAuthStore = defineStore('auth', () => {
     loadMe,
     api,
     send,
+    serverNow: () => clock.now(),
   }
 })
