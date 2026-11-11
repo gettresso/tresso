@@ -1937,7 +1937,11 @@ after. Everything lives in `apps/api/src/Notification`.
     server); an AI summary is planned. `GET /api/v1/calendar-events/{id}/brief` returns the full brief.
   - **Follow-up nudge:** at the end of a meeting with other people, to write notes: private notes on an event or an
     occurrence (`PUT /api/v1/calendar-events/{id}/note`, in the delta as `eventNotes`, never sent to a provider) and,
-    once todos exist (phase 2), todos.
+    once todos exist (phase 2), todos. A note hangs on the row that shows its occurrence and follows it: to an
+    override when the occurrence gets one, back to the series when the override goes, to the new keys when "all"
+    moves the series, to the new series of "this and following", and to the new resource when the event moves to
+    another calendar. Two notes that end up on one occurrence are joined. Notes of an event that is deleted (or
+    reappears under another `UID`) leave tombstones like other synced data.
 - **Channels:** `phone` reaches the user's Expo devices, `desktop` the desktop app and browsers with web push, `email`
   the address in the settings (or the sign-in address) from the system sender `NOTIFICATIONS_FROM`. Reminders carry
   their own channels; other kinds use the user's choice per kind (`channelsByKind` in the notification settings,
