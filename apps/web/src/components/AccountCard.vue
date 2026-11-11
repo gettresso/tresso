@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NO_UNSUBSCRIBE_ON_IMAP, oneClickUnsubscribeAvailable, providerName, signInProvider, type MailAccount } from '@tresso/core'
+import { calendarNeedsAttention, calendarStatusLabel, NO_UNSUBSCRIBE_ON_IMAP, oneClickUnsubscribeAvailable, providerName, signInProvider, type MailAccount } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { fullTime } from '@/mail/format'
 import { useAccountsStore } from '@/stores/accounts'
@@ -11,7 +11,10 @@ import ServerAccountForm from '@/components/ServerAccountForm.vue'
 const props = defineProps<{ account: MailAccount }>()
 
 const accounts = useAccountsStore()
-const open = ref(props.account.status === 'auth_failed' || props.account.status === 'error')
+// Opens by itself when something needs the user: the mail, or the calendars (not allowed, or a server to confirm).
+const open = ref(props.account.status === 'auth_failed' || props.account.status === 'error' || calendarNeedsAttention(props.account.calendarStatus))
+/** Said in the collapsed card too, so an account without calendar access shows without opening it. */
+const calendarBadge = computed(() => calendarStatusLabel(props.account.calendarStatus))
 const saving = ref(false)
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
@@ -72,7 +75,10 @@ function remove(): Promise<void> {
         <span class="name">{{ account.displayName }}</span>
         <span class="address">{{ account.emailAddress }}</span>
       </span>
-      <span class="status" :class="account.status">{{ statusLabel }}</span>
+      <span class="badges">
+        <span v-if="calendarBadge" class="status calendar">{{ calendarBadge }}</span>
+        <span class="status" :class="account.status">{{ statusLabel }}</span>
+      </span>
     </button>
 
     <div v-if="open" class="body">
@@ -152,6 +158,16 @@ function remove(): Promise<void> {
 .address {
   font-size: 13px;
   color: var(--ink-2);
+}
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.status.calendar {
+  background: var(--delegate-soft);
+  color: var(--delegate);
 }
 .status {
   padding: 2px 10px;
