@@ -14,19 +14,48 @@ use App\Entity\Calendar;
 use App\Enum\MailProvider;
 use App\Mail\MessageFields;
 use App\Security\CurrentUser;
+use App\Security\FirstPartyClients;
+use App\Security\Scope;
 use App\Unsubscribe\UnsubscribeLink;
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Connection;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Uid\Uuid;
 
 /**
  * Reads the user's changes after a change number, in pages that never split one change number.
  *
+ * Each list needs the scope its own endpoints need ({@see self::SCOPES}); a token without it gets that list empty and
+ * no `deleted` entries of its types. The cursor and the paging count every change, whatever the token holds, so the
+ * cursor means the same for every token of a user.
+ *
  * @implements ProviderInterface<SyncChanges>
  */
 final readonly class SyncChangesProvider implements ProviderInterface
 {
     private const int DEFAULT_LIMIT = 500;
+
+    /** The scope each kind of entity needs, by its change type (also the `type` of its `deleted` entries). */
+    public const array SCOPES = [
+        'mailAccount' => Scope::MailRead,
+        'folder' => Scope::MailRead,
+        'thread' => Scope::MailRead,
+        'message' => Scope::MailRead,
+        'outgoingMessage' => Scope::MailRead,
+        'draft' => Scope::MailRead,
+        'unsubscription' => Scope::MailRead,
+        'mailNotification' => Scope::MailRead,
+        'handOver' => Scope::MailRead,
+        'dailyBrief' => Scope::MailRead,
+        'calendar' => Scope::CalendarRead,
+        'calendarEvent' => Scope::CalendarRead,
+        'notification' => Scope::CalendarRead,
+        'eventNote' => Scope::CalendarRead,
+        'todo' => Scope::TodosRead,
+        'signature' => Scope::SignaturesRead,
+        'smartInbox' => Scope::SettingsRead,
+    ];
 
     public function __construct(
         private Connection $connection,
@@ -35,21 +64,26 @@ final readonly class SyncChangesProvider implements ProviderInterface
         private BuiltinSmartInboxes $builtinSmartInboxes,
         private LocalCalendars $localCalendars,
         private MessageFields $fields,
+        private Security $security,
     ) {
     }
 
     public function provide(Operation $operation, array $uriVariables = [], array $context = []): SyncChanges
     {
         $user = $this->currentUser->get();
-        // A user from before calendars gets the Tresso calendar on the first pull, so every client has one to use.
-        $this->localCalendars->ensure($user);
+        // Only our own apps keep a copy that needs these; a script or another app reading the delta changes nothing.
+        $ourApp = FirstPartyClients::signedRequest($this->security->getToken());
+        if ($ourApp) {
+            // A user from before calendars gets the Tresso calendar on the first pull, so every client has one to use.
+            $this->localCalendars->ensure($user);
+        }
         $userId = $user->getId()->toRfc4122();
         $query = $this->requests->getCurrentRequest()?->query;
         $since = (int) ($query?->get('since') ?? 0);
         $limit = (int) ($query?->get('limit') ?? self::DEFAULT_LIMIT);
 
         // A sync from the start (a new device, or a copy rebuilt) also brings smart inboxes made before they synced.
-        if (0 === $since) {
+        if (0 === $since && $ourApp) {
             $this->connection->transactional(fn () => $this->builtinSmartInboxes->syncOlder($user));
         }
 
@@ -81,29 +115,59 @@ final readonly class SyncChangesProvider implements ProviderInterface
         }
 
         $range = ['user' => $userId, 'since' => $since, 'until' => $until];
+        $granted = $this->grantedTypes();
 
         return new SyncChanges(
             cursor: $until,
             hasMore: $hasMore,
-            mailAccounts: $this->mailAccounts($range),
-            folders: $this->folders($range),
-            threads: $this->threads($range),
-            messages: $this->messages($range),
-            outgoingMessages: $this->outgoingMessages($range),
-            signatures: $this->signatures($range),
-            drafts: $this->drafts($range),
-            smartInboxes: $this->smartInboxes($range),
-            calendars: $this->calendars($range),
-            calendarEvents: $this->calendarEvents($range),
-            notifications: $this->notifications($range),
-            eventNotes: $this->eventNotes($range),
-            todos: $this->todos($range),
-            mailNotifications: $this->mailNotifications($range),
-            unsubscriptions: $this->unsubscriptions($range),
-            handOvers: $this->handOvers($range),
-            dailyBriefs: $this->dailyBriefs($range),
-            deleted: $this->deleted($range),
+            mailAccounts: $this->readIf($granted, 'mailAccount', $this->mailAccounts(...), $range),
+            folders: $this->readIf($granted, 'folder', $this->folders(...), $range),
+            threads: $this->readIf($granted, 'thread', $this->threads(...), $range),
+            messages: $this->readIf($granted, 'message', $this->messages(...), $range),
+            outgoingMessages: $this->readIf($granted, 'outgoingMessage', $this->outgoingMessages(...), $range),
+            signatures: $this->readIf($granted, 'signature', $this->signatures(...), $range),
+            drafts: $this->readIf($granted, 'draft', $this->drafts(...), $range),
+            smartInboxes: $this->readIf($granted, 'smartInbox', $this->smartInboxes(...), $range),
+            calendars: $this->readIf($granted, 'calendar', $this->calendars(...), $range),
+            calendarEvents: $this->readIf($granted, 'calendarEvent', $this->calendarEvents(...), $range),
+            notifications: $this->readIf($granted, 'notification', $this->notifications(...), $range),
+            eventNotes: $this->readIf($granted, 'eventNote', $this->eventNotes(...), $range),
+            todos: $this->readIf($granted, 'todo', $this->todos(...), $range),
+            mailNotifications: $this->readIf($granted, 'mailNotification', $this->mailNotifications(...), $range),
+            unsubscriptions: $this->readIf($granted, 'unsubscription', $this->unsubscriptions(...), $range),
+            handOvers: $this->readIf($granted, 'handOver', $this->handOvers(...), $range),
+            dailyBriefs: $this->readIf($granted, 'dailyBrief', $this->dailyBriefs(...), $range),
+            deleted: [] === $granted ? [] : $this->deleted($range, $granted),
         );
+    }
+
+    /**
+     * @param list<string>                                                                       $granted
+     * @param \Closure(array{user: string, since: int, until: int}): list<array<string, mixed>> $reader
+     * @param array{user: string, since: int, until: int}                                        $range
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function readIf(array $granted, string $type, \Closure $reader, array $range): array
+    {
+        return \in_array($type, $granted, true) ? $reader($range) : [];
+    }
+
+    /**
+     * The change types the request's token may read.
+     *
+     * @return list<string>
+     */
+    private function grantedTypes(): array
+    {
+        $granted = [];
+        foreach (self::SCOPES as $type => $scope) {
+            if ($this->security->isGranted($scope->role())) {
+                $granted[] = $type;
+            }
+        }
+
+        return $granted;
     }
 
     /**
@@ -767,10 +831,11 @@ final readonly class SyncChangesProvider implements ProviderInterface
 
     /**
      * @param array{user: string, since: int, until: int} $range
+     * @param list<string>                                $types the change types the token may read
      *
      * @return list<array{type: string, id: string}>
      */
-    private function deleted(array $range): array
+    private function deleted(array $range, array $types): array
     {
         // An event changed to end before the window leaves the clients' copies like a deleted one; a copy that
         // starts from nothing never had it.
@@ -782,8 +847,9 @@ final readonly class SyncChangesProvider implements ProviderInterface
                 UNION ALL
                 SELECT \'calendarEvent\', e.id, e.change_seq FROM calendar_event e JOIN calendar c ON c.id = e.calendar_id
                  WHERE :since > 0 AND c.owner_id = :user AND e.change_seq > :since AND e.change_seq <= :until AND e.series_ends_at <= :window
-             ) gone ORDER BY change_seq',
-            [...$range, 'window' => self::eventWindow()],
+             ) gone WHERE entity_type IN (:types) ORDER BY change_seq',
+            [...$range, 'window' => self::eventWindow(), 'types' => $types],
+            ['types' => ArrayParameterType::STRING],
         );
 
         return array_map(static fn (array $r): array => ['type' => $r['entity_type'], 'id' => $r['entity_id']], $rows);

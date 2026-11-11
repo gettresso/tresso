@@ -668,7 +668,14 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
 - `GET /api/v1/sync/changes?since=N&limit=500` (scope `mail:read`) returns mail accounts, folders (with role),
   threads (with their smart inbox, verdict and classification reason), messages (metadata, flags, folder ids, smart
   inbox and verdict, never bodies), smart inboxes, todos, hand-overs, daily briefs and `deleted` entries above N, plus the new `cursor` and
-  `hasMore`. Threads and messages also carry `heldUntil` and `batchedAt` (batched delivery, 3.7), messages the
+  `hasMore`. Every list needs the scope its own endpoints need, so a personal access token or an app that is not
+  ours gets only what the user allowed it: mail accounts, folders, threads, messages, outgoing messages, drafts,
+  unsubscriptions, mail notifications, hand-overs and daily briefs with `mail:read`; calendars, calendar events,
+  notifications and event notes with `calendar:read`; todos with `todos:read`; signatures with `signatures:read`;
+  smart inboxes with `settings:read`. A list the token may not read comes empty, and so do its `deleted` entries.
+  The cursor and the paging count every change, so the cursor is the same for every token of a user. Only our own
+  apps make the user's Tresso calendar or the older built-in smart inboxes on a pull; for any other token the delta
+  writes nothing. Threads and messages also carry `heldUntil` and `batchedAt` (batched delivery, 3.7), messages the
   `unsubscribe` method they offer (`oneClick`, `mailto` or null) and the `unsubscribeMailto` address, smart inboxes
   `batchDelivery`, and the page the user's `unsubscriptions` (one per account and sender). A page never splits one
   change number; changes made in bulk (a folder reset or deleted, messages deleted after their grace period) take a

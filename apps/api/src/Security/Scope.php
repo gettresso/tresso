@@ -109,12 +109,12 @@ enum Scope: string
     public function description(): string
     {
         return match ($this) {
-            self::MailRead => 'Read your messages, conversations and attachments in every account.',
+            self::MailRead => 'Read your messages, conversations, attachments and drafts in every account.',
             self::MailWrite => 'Archive, move, flag, mark as read and delete messages.',
             self::MailSend => 'Send messages from your accounts, in your name.',
             self::TodosRead => 'See your todos and when they are planned.',
             self::TodosWrite => 'Add, complete, change and delete todos.',
-            self::CalendarRead => 'See your calendars and events, with their guests.',
+            self::CalendarRead => 'See your calendars and events, with their guests, your notes and reminders.',
             self::CalendarWrite => 'Add, change and delete events and set your answers. Telling guests or organizers also needs Send mail.',
             self::SettingsRead => 'See your mail accounts, smart inboxes and other settings.',
             self::SettingsWrite => 'Change settings such as account names, smart inboxes, rules and notifications. Never how a mail account connects, access tokens or connected apps.',
