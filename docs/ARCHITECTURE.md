@@ -1498,9 +1498,10 @@ protocol, so every client syncs the same way:
   "Sync stopped" does not stay on a quiet mailbox until the next realtime notification. Each delay is spread by a
   fifth either way, so clients that failed together come back apart, and never shorter than a `Retry-After` the server
   sent (`retryAfterMs` on the clients' API errors; the API exposes the header to browsers). The clients run the retry
-  through their own pull, which shows it like any other, and stop the engine with the copy. `wake()` runs a waiting
-  retry at once: the web client calls it when the browser goes online and when the tab becomes visible, the phone
-  pulls whenever the app comes to the front, and the web banner has Try again.
+  through their own pull, which shows it like any other, and stop the engine with the copy. A `Retry-After` is honoured
+  for at most an hour. `wake()` runs a waiting retry at once unless the server asked to wait: the web client calls it
+  when the browser goes online and when the tab becomes visible, the phone pulls whenever the app comes to the front,
+  and the web banner has Try again, which pulls whatever the server asked.
 - `RealtimeClient` reads the hub through `fetch()` with the token as bearer, reconnects with backoff, renews the token
   before it expires, and asks for a pull on every (re)connect, because missed notifications are not replayed. The
   token's `expiresAt` is the server's time, read against the server's clock as the client knows it (`ServerClock`),
@@ -1582,9 +1583,12 @@ user first presses Send and kept with the draft in the copy (`sendAttemptId`) be
 Send again after a lost answer, also after a restart, sends the same id and the server returns the message it queued
 instead of sending it twice. The id is dropped once the server confirmed the message, when the send is cancelled or
 undone, and when the draft's text changes (an edited message is a new one). A server that refuses the id itself (a
-device clock far ahead) gets a new one on the next try. When the message with the send's id shows up in the copy
-while the draft still waits (its answer was lost), the draft is taken as on its way after all and its form closes, so
-an edit cannot send it a second time. A server that does not know the field ignores it.
+device clock far ahead) gets a new one on the next try. Queueing hides the draft on the server, which the delta reports
+as a deletion; a draft with a send under way survives that deletion, so its id does too. When the message with the
+send's id is in the copy (its answer was lost), the draft is taken as on its way after all: Send pressed again sends
+nothing, and the follow-up run after every failed send closes the form, unless something was typed there that the
+stored draft does not have (then the form stays and says the message went without it). A server that does not know
+the field ignores it.
 
 Message actions in the web client: opening a conversation reads it; the conversation's buttons archive, trash, mark
 unread, flag and move it (shortcuts E, #, U and S, not while typing or writing), and archiving, trashing or moving
@@ -1597,7 +1601,8 @@ All Mail aside) no exact undo exists, so none is offered. Each action changes th
 (`applyAction` of the mail store), so lists update at once; when the server does not take it (for a large selection, the
 batches it did not take), it is put back part by part (read, flagged, folders; `OpenActions`): a part goes back once
 no other action of this device on it is open any more, to how it was before the first of them, and only while it
-shows the newest one's result; once the delta brought the message, the server's version stays.
+shows the newest one's result; once the delta brought the message, the server's version stays. A batch the server
+took ends its entries too (`acceptAction`), since an action that changed nothing there brings no delta.
 
 Bulk actions in the web client: conversations are selected with their checkboxes (shift selects a range), by age
 from the list's Select menu, or as everything from the senders of the selected ones; the last two search the whole
@@ -2514,9 +2519,11 @@ by mail.
   scanned, the outbox's question comes back as an `UnscannedFilesError` and the clients offer "Hand over anyway",
   which forwards them with `acceptUnscanned`. When recording fails, the forward is
   cancelled and its draft thrown away. Until the forward leaves (the undo window), Undo cancels it and withdraws the
-  hand-over (`DELETE`); afterwards the hand-over stays. Hand-overs and throwing away the draft a taken-back forward
-  came back as share one composer, so they run one after another (a step that hangs holds the next for at most a
-  minute); the cancel and the withdrawal do not wait for them, since the forward leaves within seconds.
+  hand-over (`DELETE`); afterwards the hand-over stays. Hand-overs share one composer, so they run one after another;
+  each holds the next for at most a minute from when it starts, and one that runs longer keeps the composer until it
+  settles (a hand-over asked for meanwhile is refused with a message to try again). Undo and take back do not wait for
+  them: the cancel and the withdrawal go out at once and they answer when the server did; the draft the forward came
+  back as is thrown away by its id afterwards, without opening it (`Composer.discardStored`).
 - **Entity** `hand_over` (owner-scoped, tracked for the delta, tombstone type `handOver`): account, message handed
   over (SET NULL when it goes; the subject is kept), the conversation it was handed over in (followed through merges,
   SET NULL), delegate address and name, note, due date, state (`open`, `replied`, `done`), forward and its Message-ID,
