@@ -99,6 +99,9 @@ watch(
       billing.reset()
       return
     }
+    // A sign-out while this runs makes everything below about a user who is gone.
+    const session = auth.generation
+    const current = () => session === auth.generation && auth.isAuthenticated
     // Where billing stands decides what shows: the payment screen, a trial reminder, the settings page.
     billing
       .load()
@@ -106,15 +109,34 @@ watch(
       .catch((cause: unknown) => console.error('Loading billing failed', cause))
     try {
       await auth.loadMe()
+      if (!current()) {
+        return
+      }
       if (auth.me) {
         stopTimeZone = startTimeZoneSync(auth.api, storedSentZone(auth.me.id), (e) => compose.notify({ text: `Reminders may come at the wrong time: your time zone could not be saved (${errorMessage(e)}).`, tone: 'error' }))
         // Pushes someone else turned on in this browser stop once another user signs in here.
         releaseOtherUsersPush(auth.me.id).catch((e) => compose.notify({ text: `Another account's notifications may still show in this browser: ${errorMessage(e)}`, tone: 'error' }))
         await mail.start(auth.me.id)
       }
-      error.value = null
+      if (current()) {
+        error.value = null
+      }
     } catch (e) {
-      error.value = errorMessage(e)
+      if (current()) {
+        error.value = errorMessage(e)
+      }
+    }
+  },
+  { immediate: true },
+)
+
+// Keeping the sign-in fails right after a sign-in or a refresh, so while the app is on screen: the sign-in screen is
+// not, and the user would only learn of it by being signed out at the next launch.
+watch(
+  () => auth.storageError,
+  (problem) => {
+    if (problem !== null && auth.isAuthenticated) {
+      compose.notify({ text: problem, tone: 'error' }, 30_000)
     }
   },
   { immediate: true },

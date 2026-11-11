@@ -1,15 +1,69 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import App from '../App.vue'
 import { useMailStore } from '../stores/mail'
+import { useAuthStore } from '../stores/auth'
+import { useComposeStore } from '../stores/compose'
 import AppShell from '../views/AppShell.vue'
 
 describe('App', () => {
   beforeEach(() => {
     sessionStorage.clear()
     setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('does not start the mail copy for a user whose /me answer arrives after the sign-out', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: { template: '<div />' } }] })
+    await router.push('/')
+    await router.isReady()
+    let answerMe!: (response: Response) => void
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) =>
+        String(input).endsWith('/api/v1/me')
+          ? new Promise<Response>((resolve) => (answerMe = resolve))
+          : Promise.resolve(Response.json({ enabled: false, entitled: true, plans: [], organizations: [] })),
+      ),
+    )
+    vi.stubGlobal('location', { ...window.location, assign: vi.fn<(url: string) => void>() })
+    const auth = useAuthStore()
+    auth.tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+    const mail = useMailStore()
+    const start = vi.spyOn(mail, 'start').mockResolvedValue()
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await vi.waitFor(() => expect(answerMe).toBeDefined())
+
+    await auth.signOut()
+    answerMe(Response.json({ id: 'user-1', email: 'anna@example.com' }))
+    await flushPromises()
+
+    expect(auth.me).toBeNull()
+    expect(start).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('tells a signed-in user when the sign-in could not be kept on this device', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: { template: '<div />' } }] })
+    await router.push('/')
+    await router.isReady()
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})))
+    const auth = useAuthStore()
+    auth.tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+    mount(App, { global: { plugins: [router] } })
+
+    auth.storageError = 'The sign-in could not be kept on this device, so you will have to sign in again next time: denied'
+    await flushPromises()
+
+    expect(useComposeStore().notices.map((notice) => notice.text)).toContain(
+      'The sign-in could not be kept on this device, so you will have to sign in again next time: denied',
+    )
   })
 
   it('offers sign in when signed out', async () => {
