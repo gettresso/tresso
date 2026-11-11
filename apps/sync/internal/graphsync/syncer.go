@@ -14,6 +14,7 @@ package graphsync
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -164,7 +165,45 @@ func (s *session) step(ctx context.Context, all bool) error {
 			}
 		}
 	}
+	for _, run := range s.runs {
+		if run.cursor != nil && !run.denied {
+			if err := s.retryPlaceholders(ctx, run); s.deny(run, err) != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// retryPlaceholders tries the messages of the folder's due placeholders again (see
+// providersync.Ingest.RetryPlaceholders). A message that moved to another folder is dropped here: the delta of that
+// folder brings it, and this folder's delta removes the placeholder.
+func (s *session) retryPlaceholders(ctx context.Context, run *folderRun) error {
+	folder := run.folder.RemoteName
+	return s.ingest.RetryPlaceholders(ctx, folder, func(ctx context.Context, id string) (*api.Message, []string, error) {
+		item, err := s.graph.message(ctx, id)
+		if providerhttp.IsStatus(err, http.StatusNotFound) {
+			return nil, nil, nil
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		if item.ParentFolderID != folder {
+			return nil, nil, nil
+		}
+		raw, err := s.graph.raw(ctx, id)
+		if providerhttp.IsStatus(err, http.StatusNotFound) {
+			return nil, nil, nil
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		msg, err := ingestmsg.Build(ctx, s.store, s.account.ID, raw, id, item.receivedAt(), item.flags(), s.logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &msg, []string{folder}, nil
+	})
 }
 
 // deny marks run as denied when err is Graph refusing access to the folder, and returns err otherwise. A folder the
@@ -246,6 +285,7 @@ func (s *session) refreshFolders(ctx context.Context) error {
 	stateOf := make(map[string]api.FolderState, len(states))
 	for _, state := range states {
 		stateOf[state.RemoteName] = state
+		s.ingest.Load(state.RemoteName, state.Cursor)
 	}
 
 	runs := make([]*folderRun, 0, len(folders))
@@ -315,8 +355,8 @@ func (s *session) start(ctx context.Context, run *folderRun) error {
 		return nil
 	}
 	deltaLink, err := s.walkDeltaPages(ctx, link, func([]graphMessage) {}, checkpoint)
-	if resumed && deltaExpired(err) {
-		s.logger.Info("stored delta walk position expired, walking the folder from the start", "folder", run.folder.RemoteName)
+	if resumed && startLinkRefused(err) {
+		s.logger.Info("stored delta walk position refused, walking the folder from the start", "folder", run.folder.RemoteName, "error", err)
 		run.startLink = ""
 		deltaLink, err = s.walkDeltaPages(ctx, deltaStart(run.folder.RemoteName), func([]graphMessage) {}, checkpoint)
 	}
@@ -335,6 +375,20 @@ func (s *session) start(ctx context.Context, run *folderRun) error {
 	run.nextPoll = time.Now().Add(s.interval(run))
 	s.logger.Info("starting folder from scratch", "folder", run.folder.RemoteName, "resumed", resumed)
 	return nil
+}
+
+// startLinkRefused reports whether Graph refused a stored delta walk position: it expired, or Graph answers any 4xx
+// for it other than the token (401), access (403) and throttling, which say nothing about the link.
+func startLinkRefused(err error) bool {
+	if deltaExpired(err) {
+		return true
+	}
+	var statusErr *providerhttp.StatusError
+	if !errors.As(err, &statusErr) || providerhttp.Throttled(err) || errors.Is(err, providerhttp.ErrUnauthorized) {
+		return false
+	}
+	code := statusErr.StatusCode
+	return code >= 400 && code < 500 && code != http.StatusUnauthorized && code != http.StatusForbidden
 }
 
 // startCheckpointPages is how many pages of a folder's first delta walk go between two stored positions.

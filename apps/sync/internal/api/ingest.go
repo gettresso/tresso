@@ -69,7 +69,10 @@ type Message struct {
 	// Headers that tell automated, bulk and junk mail apart, by lower-cased name; see mimeparse.Message.Signals.
 	Headers map[string]string `json:"headers,omitempty"`
 	// Junk is set when the server flagged the message as junk ($Junk without $NotJunk).
-	Junk          bool           `json:"junk"`
+	Junk bool `json:"junk"`
+	// Placeholder marks a message Tresso keeps in place of one it could not import (see ingestmsg.Placeholder). It is
+	// the worker's own note and is not sent.
+	Placeholder   bool           `json:"-"`
 	CalendarParts []CalendarPart `json:"calendarParts"`
 }
 

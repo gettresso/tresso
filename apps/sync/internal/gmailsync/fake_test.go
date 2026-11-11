@@ -48,6 +48,9 @@ type fakeGmail struct {
 	draftLists int
 	// metadataGets counts header lookups (format=metadata), to show how much a duplicate check reads.
 	metadataGets int
+	// refuseRaw answers format=raw for these messages with the status and body, every time; refuseAllRaw for all.
+	refuseRaw    map[string][2]string
+	refuseAllRaw [2]string
 }
 
 type fakeMessage struct {
@@ -295,6 +298,15 @@ func (f *fakeGmail) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if q.Get("format") == "raw" {
 			f.rawGets[id]++
+			refusal, refused := f.refuseRaw[id]
+			if !refused && f.refuseAllRaw[0] != "" {
+				refusal, refused = f.refuseAllRaw, true
+			}
+			if refused {
+				status, _ := strconv.Atoi(refusal[0])
+				writeError(w, status, refusal[1])
+				return
+			}
 			out["raw"] = base64.URLEncoding.EncodeToString(m.raw)
 		} else {
 			f.minimalGets[id]++

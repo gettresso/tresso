@@ -3,16 +3,18 @@ package imapsync
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
 
+	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/netguard"
 )
 
 func TestCursorRoundTrip(t *testing.T) {
-	in := Cursor{UIDValidity: 7, UIDNext: 120, BackfillBelow: 40, HighestModSeq: 99}
+	in := Cursor{UIDValidity: 7, UIDNext: 120, BackfillBelow: 40, HighestModSeq: 99, Pending: isolate.PendingList{{UID: "3", Next: 5, Wait: 3600}}}
 	encoded := in.Encode()
 
 	out, err := DecodeCursor(&encoded)
@@ -20,7 +22,7 @@ func TestCursorRoundTrip(t *testing.T) {
 		t.Fatalf("decode: %v %v", out, err)
 	}
 	in.Version = cursorVersion
-	if *out != in {
+	if !reflect.DeepEqual(*out, in) {
 		t.Errorf("got %+v, want %+v", *out, in)
 	}
 }

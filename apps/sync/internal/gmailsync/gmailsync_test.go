@@ -12,11 +12,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/fakeapi"
+	"tresso/sync/internal/ingestmsg"
 	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/providerauth"
 	"tresso/sync/internal/providersend"
@@ -875,5 +877,101 @@ func TestDuplicateCheckIgnoresASubjectWithoutWords(t *testing.T) {
 	found, err := OpenSent(context.Background(), client).SentBefore(api.OutgoingMessage{ID: "outgoing-1", MessageID: "o1@example.test", Recipients: []string{"sam@example.test"}}, marked, time.Now().Add(-time.Hour))
 	if err != nil || !found {
 		t.Errorf("SentBefore = %v, %v", found, err)
+	}
+}
+
+// sessions starts sessions one after the other on one run's strikes and clock, each starting from what the API
+// stored, and returns the error of each.
+func (h *harness) sessions(t *testing.T, n int, strikes *isolate.Strikes, now func() time.Time) []error {
+	t.Helper()
+	var errs []error
+	for range n {
+		h.session = h.syncer.newSession(api.Account{ID: "acc"}, strikes, h.syncer.logger)
+		h.session.ingest.Now = now
+		err := h.session.refreshFolders(context.Background())
+		if err == nil {
+			err = h.session.step(context.Background())
+		}
+		errs = append(errs, err)
+	}
+	return errs
+}
+
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// Fails without the fix: a throttling 403 counted against the message, and three quick sessions replaced it.
+func TestGmailThrottlingReplacesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.gmail.add("m1", 1000, raw("m1"), "INBOX")
+	h.gmail.add("m2", 2000, raw("m2"), "INBOX")
+	h.gmail.refuseAllRaw = [2]string{"403", `{"error":{"code":403,"errors":[{"reason":"userRateLimitExceeded"}],"status":"PERMISSION_DENIED"}}`}
+	c := &clock{now: time.Now()}
+	strikes := isolate.NewStrikesWithClock(c.Now)
+
+	for range 5 {
+		c.advance(isolate.MinStrikeSpan)
+		h.sessions(t, 1, strikes, c.Now)
+	}
+	expectUIDs(t, h, "INBOX")
+	expectUIDs(t, h, allMailFolder)
+}
+
+// A message Gmail keeps refusing, next to messages that come through, gets a placeholder only after the time floor,
+// filed by its labels; once Gmail hands it over, the real message takes the placeholder's place.
+func TestAGmailPlaceholderIsFiledByItsLabelsAndReplacedLater(t *testing.T) {
+	h := newHarness(t)
+	h.gmail.addLabel("Label_1", "Projects")
+	h.gmail.add("m1", 1000, raw("m1"), "INBOX")
+	h.gmail.add("m2", 2000, raw("m2"), "INBOX", "Label_1")
+	h.gmail.add("m3", 3000, raw("m3"), "INBOX")
+	h.gmail.refuseRaw = map[string][2]string{"m2": {"400", `{"error":{"code":400,"status":"FAILED_PRECONDITION"}}`}}
+	c := &clock{now: time.Now()}
+	strikes := isolate.NewStrikesWithClock(c.Now)
+
+	for i, err := range h.sessions(t, isolate.StrikesBeforeSkip+1, strikes, c.Now) {
+		if err == nil {
+			t.Fatalf("session %d went through before the time floor", i+1)
+		}
+	}
+	c.advance(isolate.MinStrikeSpan)
+	if errs := h.sessions(t, 1, strikes, c.Now); errs[0] != nil {
+		t.Fatal(errs[0])
+	}
+	expectUIDs(t, h, "INBOX", "m1", "m2", "m3")
+	expectUIDs(t, h, "Label_1", "m2")
+	msg, _ := h.api.Message("INBOX", "m2")
+	if !strings.HasPrefix(msg.Subject, ingestmsg.PlaceholderSubject) || !msg.ReceivedAt.Equal(time.UnixMilli(2000).UTC()) {
+		t.Fatalf("m2 = %+v; want a placeholder with the message's own date", msg)
+	}
+
+	h.gmail.mu.Lock()
+	h.gmail.refuseRaw = nil
+	h.gmail.mu.Unlock()
+	c.advance(isolate.RetryFirst)
+	if errs := h.sessions(t, 1, strikes, c.Now); errs[0] != nil {
+		t.Fatal(errs[0])
+	}
+	for _, folder := range []string{"INBOX", "Label_1", allMailFolder} {
+		if msg, _ := h.api.Message(folder, "m2"); msg.Subject != "Message m2" {
+			t.Errorf("%s holds %q for m2; want the real message", folder, msg.Subject)
+		}
+	}
+	if pending := h.session.ingest.Pending(allMailFolder); len(pending) != 0 {
+		t.Errorf("pending %v after the replacement", pending)
 	}
 }

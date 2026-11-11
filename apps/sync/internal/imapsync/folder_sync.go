@@ -119,6 +119,13 @@ func (s *session) syncFolder(ctx context.Context, run *folderRun, full bool) err
 		}
 	}
 
+	// Placeholders whose message is due for another try.
+	if changed, err := s.retryPlaceholders(ctx, run); err != nil {
+		return err
+	} else if changed {
+		dirty = true
+	}
+
 	// 2. Flag changes since the last known MODSEQ.
 	if s.condStore && sel.HighestModSeq > cursor.HighestModSeq {
 		if cursor.HighestModSeq > 0 && cursor.UIDNext > 1 {
@@ -236,7 +243,7 @@ func (s *session) ingestGroup(ctx context.Context, run *folderRun, group []imap.
 	for _, buf := range fetched {
 		msg, err := buildMessage(ctx, s.store, s.account.ID, buf, s.condStoreIn(run), s.logger.With("folder", run.folder.RemoteName))
 		if errors.Is(err, errNoBody) {
-			failed = append(failed, s.unreadable(run, buf.UID, buf.InternalDate, flagsOf(buf.Flags), err, false))
+			failed = append(failed, s.unreadable(run, buf.UID, buf.InternalDate, flagsOf(buf.Flags), err))
 			continue
 		}
 		if err != nil {
@@ -259,7 +266,11 @@ func (s *session) ingestGroup(ctx context.Context, run *folderRun, group []imap.
 		}
 		return err
 	}
-	return isolate.Batch(ctx, send, s.strikes, run.folder.RemoteName, messages, s.cursorString(run), s.logger)
+	placed := func(uids []string) error {
+		run.cursor.Pending = run.cursor.Pending.Add(s.now(), uids...)
+		return nil
+	}
+	return isolate.Batch(ctx, send, s.strikes, run.folder.RemoteName, messages, func() *string { return s.cursorString(run) }, placed, s.logger)
 }
 
 // fetchGroup downloads a group of messages. When the server refuses the FETCH (a NO, which a single damaged message
@@ -276,14 +287,14 @@ func (s *session) fetchGroup(run *folderRun, group []imap.UID) (fetched []*imapF
 			case err == nil:
 				fetched = append(fetched, one...)
 			case errors.As(err, &refused):
-				failed = append(failed, s.unreadable(run, uid, time.Time{}, api.Flags{}, err, true))
+				failed = append(failed, s.unreadable(run, uid, time.Time{}, api.Flags{}, err))
 			default:
 				return nil, nil, err
 			}
 		}
 		err = nil
 	} else if err != nil && errors.As(err, &refused) {
-		failed = append(failed, s.unreadable(run, group[0], time.Time{}, api.Flags{}, err, true))
+		failed = append(failed, s.unreadable(run, group[0], time.Time{}, api.Flags{}, err))
 		fetched, err = nil, nil
 	}
 	if err != nil {
@@ -304,20 +315,84 @@ func (s *session) fetch(run *folderRun, uids []imap.UID) ([]*imapFetchBuffer, er
 	}).Collect()
 }
 
-// unreadable describes a message the server would not hand over. A refused FETCH is doubtful: the server may refuse
-// every message for a while, so it only counts next to messages that came through.
-func (s *session) unreadable(run *folderRun, uid imap.UID, receivedAt time.Time, flags api.Flags, err error, doubtful bool) isolate.Failed {
+// unreadable describes a message the server would not hand over (a refused FETCH, or one without the body). Like
+// every such failure it only counts next to messages that came through (see isolate.Unreadable). When the FETCH was
+// refused, the placeholder asks for the date and flags alone, so it does not show up as new unread mail.
+func (s *session) unreadable(run *folderRun, uid imap.UID, receivedAt time.Time, flags api.Flags, err error) isolate.Failed {
 	remoteUID := uidString(uid)
 	return isolate.Failed{
-		Folder:   run.folder.RemoteName,
-		UID:      remoteUID,
-		Err:      err,
-		Doubtful: doubtful,
+		Folder: run.folder.RemoteName,
+		UID:    remoteUID,
+		Err:    err,
 		Placeholder: func(ctx context.Context) (api.Message, error) {
+			if receivedAt.IsZero() {
+				if bufs, err := s.client.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{UID: true, Flags: true, InternalDate: true}).Collect(); err == nil && len(bufs) == 1 {
+					receivedAt, flags = bufs[0].InternalDate, flagsOf(bufs[0].Flags)
+				}
+			}
 			identity := fmt.Sprintf("%s\x00%d\x00%s", run.folder.RemoteName, run.cursor.UIDValidity, remoteUID)
 			return ingestmsg.Unreadable(ctx, s.store, s.account.ID, identity, remoteUID, receivedAt, flags)
 		},
 	}
+}
+
+// retryPlaceholders tries the messages of the folder's due placeholders again: one that the server now hands over
+// and the API takes replaces its placeholder (see isolate.Replace); one that is gone is forgotten; any other waits
+// twice as long. It reports whether the cursor changed.
+func (s *session) retryPlaceholders(ctx context.Context, run *folderRun) (bool, error) {
+	due := run.cursor.Pending.Due(s.now())
+	if len(due) == 0 {
+		return false, nil
+	}
+	folder := run.folder.RemoteName
+	send := func(ctx context.Context, messages []api.Message, cursor *string) error {
+		_, err := s.api.Messages(ctx, s.account.ID, api.MessageBatch{WorkerID: s.workerID, Folder: folder, Cursor: cursor, Messages: messages})
+		return err
+	}
+	vanish := func(ctx context.Context, uid string) error {
+		_, err := s.api.Changes(ctx, s.account.ID, api.ChangeBatch{WorkerID: s.workerID, Folder: folder, Vanished: []string{uid}})
+		return err
+	}
+	for _, remoteUID := range due {
+		uid, err := strconv.ParseUint(remoteUID, 10, 32)
+		if err != nil {
+			run.cursor.Pending = run.cursor.Pending.Drop(remoteUID)
+			continue
+		}
+		bufs, err := s.fetch(run, []imap.UID{imap.UID(uid)})
+		var refused *imap.Error
+		switch {
+		case errors.As(err, &refused):
+			run.cursor.Pending = run.cursor.Pending.Later(remoteUID, s.now())
+			continue
+		case err != nil:
+			return false, fmt.Errorf("fetch messages: %w", err)
+		case len(bufs) == 0:
+			// Expunged: the presence check removes the placeholder.
+			run.cursor.Pending = run.cursor.Pending.Drop(remoteUID)
+			continue
+		}
+		msg, err := buildMessage(ctx, s.store, s.account.ID, bufs[0], s.condStoreIn(run), s.logger.With("folder", folder))
+		if errors.Is(err, errNoBody) {
+			run.cursor.Pending = run.cursor.Pending.Later(remoteUID, s.now())
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		err = isolate.Replace(ctx, send, vanish, msg)
+		switch {
+		case err == nil:
+			s.logger.Info("a placeholder was replaced by its message", "folder", folder, "uid", remoteUID)
+			run.cursor.Pending = run.cursor.Pending.Drop(remoteUID)
+		case isolate.Classify(err) == isolate.NotRefused:
+			return false, err
+		default:
+			s.logger.Info("the API still refuses a placeholder's message", "folder", folder, "uid", remoteUID, "error", err)
+			run.cursor.Pending = run.cursor.Pending.Later(remoteUID, s.now())
+		}
+	}
+	return true, nil
 }
 
 func uidOf(m api.Message) uint64 {

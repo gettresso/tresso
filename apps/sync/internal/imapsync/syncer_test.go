@@ -19,6 +19,7 @@ import (
 
 	"tresso/sync/internal/api"
 	"tresso/sync/internal/ingestmsg"
+	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/storage/storagetest"
 )
 
@@ -31,6 +32,8 @@ type script struct {
 	statusErr map[string]error
 	// noUIDNext leaves UIDNEXT out of SELECT answers (it is sent as 0), as RFC 3501 allows.
 	noUIDNext bool
+	// fetch, when set, can refuse a FETCH (an *imap.Error) or have it answered without the body (noBody).
+	fetch func(uids []imap.UID) (err error, noBody bool)
 }
 
 func (s *script) loginErr() error {
@@ -74,6 +77,25 @@ func (s *scriptedSession) Select(name string, options *imap.SelectOptions) (*ima
 		data.UIDNext = 0
 	}
 	return data, err
+}
+
+func (s *scriptedSession) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error {
+	s.script.mu.Lock()
+	hook := s.script.fetch
+	s.script.mu.Unlock()
+	if set, ok := numSet.(imap.UIDSet); ok && hook != nil && len(options.BodySection) > 0 {
+		uids, _ := set.Nums()
+		err, noBody := hook(uids)
+		if err != nil {
+			return err
+		}
+		if noBody {
+			stripped := *options
+			stripped.BodySection = nil
+			options = &stripped
+		}
+	}
+	return s.Session.Fetch(w, numSet, options)
 }
 
 func (s *scriptedSession) Status(name string, options *imap.StatusOptions) (*imap.StatusData, error) {
@@ -120,8 +142,13 @@ func scriptedServer(t *testing.T, sc *script, folders ...string) (api.Credential
 
 func deliver(t *testing.T, user *imapmemserver.User, folder, messageID, subject string) {
 	t.Helper()
+	deliverAt(t, user, folder, messageID, subject, time.Now())
+}
+
+func deliverAt(t *testing.T, user *imapmemserver.User, folder, messageID, subject string, at time.Time) {
+	t.Helper()
 	raw := "From: anna@finance.example\r\nTo: kim@company.example\r\nSubject: " + subject + "\r\nMessage-ID: <" + messageID + ">\r\n\r\nHello.\r\n"
-	if _, err := user.Append(folder, literal(raw), &imap.AppendOptions{Time: time.Now()}); err != nil {
+	if _, err := user.Append(folder, literal(raw), &imap.AppendOptions{Time: at}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -145,8 +172,12 @@ type memAPI struct {
 	cursors     map[string]*string
 	messages    map[string]map[string]api.Message
 	statuses    []string
+	details     []string
 	refuse      func(batch api.MessageBatch) error
-	calls       int
+	// credentialsErr can fail the credentials call of a session; statusFailures fails that many status reports.
+	credentialsErr func() error
+	statusFailures int
+	calls          int
 }
 
 func newMemAPI(credentials api.Credentials) *memAPI {
@@ -154,6 +185,14 @@ func newMemAPI(credentials api.Credentials) *memAPI {
 }
 
 func (m *memAPI) Credentials(context.Context, string, string) (api.Credentials, error) {
+	m.mu.Lock()
+	hook := m.credentialsErr
+	m.mu.Unlock()
+	if hook != nil {
+		if err := hook(); err != nil {
+			return api.Credentials{}, err
+		}
+	}
 	return m.credentials, nil
 }
 
@@ -192,16 +231,24 @@ func (m *memAPI) Messages(_ context.Context, _ string, batch api.MessageBatch) (
 func (m *memAPI) Changes(_ context.Context, _ string, batch api.ChangeBatch) (api.ChangeBatchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, uid := range batch.Vanished {
+		delete(m.messages[batch.Folder], uid)
+	}
 	if batch.Cursor != nil {
 		m.cursors[batch.Folder] = batch.Cursor
 	}
 	return api.ChangeBatchResult{}, nil
 }
 
-func (m *memAPI) Status(_ context.Context, _, _, status, _ string) error {
+func (m *memAPI) Status(_ context.Context, _, _, status, detail string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.statusFailures > 0 {
+		m.statusFailures--
+		return &api.HTTPError{Method: http.MethodPost, Path: "/status", Status: http.StatusServiceUnavailable}
+	}
 	m.statuses = append(m.statuses, status)
+	m.details = append(m.details, detail)
 	return nil
 }
 
@@ -210,6 +257,12 @@ func (m *memAPI) message(folder, uid string) (api.Message, bool) {
 	defer m.mu.Unlock()
 	msg, ok := m.messages[folder][uid]
 	return msg, ok
+}
+
+func (m *memAPI) statusLog() ([]string, []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.statuses), slices.Clone(m.details)
 }
 
 func (m *memAPI) count(folder string) int {
@@ -254,7 +307,36 @@ func fastOptions() Options {
 // runSyncer runs the syncer until the test ends and returns a channel that is closed when Run returned.
 func runSyncer(t *testing.T, fake *memAPI, opts Options) <-chan struct{} {
 	t.Helper()
+	return runSyncerAt(t, fake, opts, nil)
+}
+
+// testClock is a clock the test moves forward, for the strikes and the placeholders' retries.
+type testClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newTestClock() *testClock { return &testClock{now: time.Now()} }
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// runSyncerAt is runSyncer with the clock clk (nil: the real one).
+func runSyncerAt(t *testing.T, fake *memAPI, opts Options, clk *testClock) <-chan struct{} {
+	t.Helper()
 	syncer := New(fake, storagetest.New(), plainDialer{}, "test-worker", opts, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if clk != nil {
+		syncer.now = clk.Now
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -371,7 +453,7 @@ func TestLoginErrorClassification(t *testing.T) {
 func refuseUID(uid string, status int) func(api.MessageBatch) error {
 	return func(batch api.MessageBatch) error {
 		for _, msg := range batch.Messages {
-			if msg.RemoteUID == uid && msg.Subject != ingestmsg.PlaceholderSubject {
+			if msg.RemoteUID == uid && !ingestmsg.IsPlaceholder(msg) {
 				return &api.HTTPError{Method: http.MethodPost, Path: "/messages", Status: status, Body: "refused"}
 			}
 		}
@@ -392,11 +474,11 @@ func TestAMessageTheAPIRefusesIsReplacedAndTheFolderMovesOn(t *testing.T) {
 		c := fake.cursor("INBOX")
 		return c != nil && c.BackfillDone() && fake.count("INBOX") == 3
 	})
-	if msg, _ := fake.message("INBOX", "2"); msg.Subject != ingestmsg.PlaceholderSubject || msg.RawObjectKey == "" {
+	if msg, _ := fake.message("INBOX", "2"); !ingestmsg.IsPlaceholder(msg) || msg.RawObjectKey == "" {
 		t.Errorf("uid 2 = %+v, want a placeholder that keeps the raw message", msg)
 	}
 	for _, uid := range []string{"1", "3"} {
-		if msg, _ := fake.message("INBOX", uid); msg.Subject == ingestmsg.PlaceholderSubject || msg.Subject == "" {
+		if msg, _ := fake.message("INBOX", uid); ingestmsg.IsPlaceholder(msg) || msg.Subject == "" {
 			t.Errorf("uid %s = %+v, want the message itself", uid, msg)
 		}
 	}
@@ -405,24 +487,119 @@ func TestAMessageTheAPIRefusesIsReplacedAndTheFolderMovesOn(t *testing.T) {
 	waitFor(t, "new mail after the refused message", func() bool { return fake.count("INBOX") == 4 })
 }
 
-func TestAMessageTheAPIFailsOnIsOnlyReplacedOnceItKeepsFailing(t *testing.T) {
+// Fails without the time floor: three sessions within seconds replaced the message.
+func TestAMessageTheAPIFailsOnIsOnlyReplacedOnceItKeptFailingForAnHour(t *testing.T) {
 	credentials, user := scriptedServer(t, &script{}, "INBOX")
 	for _, id := range []string{"a@x", "b@x", "c@x"} {
 		deliver(t, user, "INBOX", id, "Message "+id)
 	}
 	fake := newMemAPI(credentials)
 	fake.refuse = refuseUID("2", http.StatusInternalServerError)
+	clk := newTestClock()
 
-	runSyncer(t, fake, fastOptions())
+	runSyncerAt(t, fake, fastOptions(), clk)
+	waitFor(t, "many failed sessions", func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.calls > 40 })
+	if msg, ok := fake.message("INBOX", "2"); ok {
+		t.Fatalf("uid 2 was replaced within seconds: %+v", msg)
+	}
+	clk.advance(isolate.MinStrikeSpan)
 	waitFor(t, "the folder's backfill finished", func() bool {
 		c := fake.cursor("INBOX")
 		return c != nil && c.BackfillDone() && fake.count("INBOX") == 3
 	})
-	if msg, _ := fake.message("INBOX", "2"); msg.Subject != ingestmsg.PlaceholderSubject {
+	if msg, _ := fake.message("INBOX", "2"); !ingestmsg.IsPlaceholder(msg) {
 		t.Errorf("uid 2 = %+v, want a placeholder", msg)
 	}
 }
 
+// Fails without the fix: a placeholder was final, as the API only refreshes the flags of a uid it has.
+func TestAPlaceholderIsReplacedByItsMessageOnceTheAPITakesIt(t *testing.T) {
+	credentials, user := scriptedServer(t, &script{}, "INBOX")
+	for _, id := range []string{"a@x", "b@x"} {
+		deliver(t, user, "INBOX", id, "Message "+id)
+	}
+	fake := newMemAPI(credentials)
+	fake.refuse = refuseUID("2", http.StatusUnprocessableEntity)
+	clk := newTestClock()
+
+	runSyncerAt(t, fake, fastOptions(), clk)
+	waitFor(t, "the placeholder", func() bool { msg, _ := fake.message("INBOX", "2"); return ingestmsg.IsPlaceholder(msg) })
+	if c := fake.cursor("INBOX"); c == nil || len(c.Pending) != 1 || c.Pending[0].UID != "2" {
+		t.Fatalf("cursor %+v; the placeholder must be kept for a later try", c)
+	}
+
+	// Still refused at the first try: the placeholder stays and waits longer.
+	clk.advance(isolate.RetryFirst)
+	waitFor(t, "the first try", func() bool {
+		c := fake.cursor("INBOX")
+		return c != nil && len(c.Pending) == 1 && c.Pending[0].Wait > int64(isolate.RetryFirst/time.Second)
+	})
+	if msg, _ := fake.message("INBOX", "2"); !ingestmsg.IsPlaceholder(msg) {
+		t.Fatalf("uid 2 = %+v; a message the API still refuses must leave the placeholder", msg)
+	}
+
+	fake.mu.Lock()
+	fake.refuse = nil
+	fake.mu.Unlock()
+	clk.advance(isolate.RetryMax)
+	waitFor(t, "the real message", func() bool { msg, ok := fake.message("INBOX", "2"); return ok && !ingestmsg.IsPlaceholder(msg) })
+	if c := fake.cursor("INBOX"); c == nil || len(c.Pending) != 0 {
+		t.Errorf("cursor %+v; the replaced placeholder must be forgotten", c)
+	}
+}
+
+// Fails without the fix: a FETCH answered without bodies struck every message of the group.
+func TestAServerThatSendsNoBodiesReplacesNothing(t *testing.T) {
+	sc := &script{fetch: func([]imap.UID) (error, bool) { return nil, true }}
+	credentials, user := scriptedServer(t, sc, "INBOX")
+	for _, id := range []string{"a@x", "b@x"} {
+		deliver(t, user, "INBOX", id, "Message "+id)
+	}
+	fake := newMemAPI(credentials)
+	clk := newTestClock()
+
+	runSyncerAt(t, fake, fastOptions(), clk)
+	for range 5 {
+		clk.advance(isolate.MinStrikeSpan)
+		time.Sleep(200 * time.Millisecond)
+	}
+	if n := fake.count("INBOX"); n != 0 {
+		t.Errorf("%d messages stored while the server sent no body for any", n)
+	}
+}
+
+// A message whose FETCH the server keeps refusing, next to messages that come through, gets a placeholder with its
+// own date (not "now"), after the time floor.
+func TestAMessageTheServerKeepsRefusingGetsADatedPlaceholder(t *testing.T) {
+	refused := &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeServerBug, Text: "Internal error"}
+	sc := &script{fetch: func(uids []imap.UID) (error, bool) {
+		if slices.Contains(uids, 2) {
+			return refused, false
+		}
+		return nil, false
+	}}
+	credentials, user := scriptedServer(t, sc, "INBOX")
+	old := time.Date(2025, 3, 4, 5, 6, 7, 0, time.UTC)
+	deliver(t, user, "INBOX", "a@x", "First")
+	deliverAt(t, user, "INBOX", "b@x", "Old", old)
+	deliver(t, user, "INBOX", "c@x", "Third")
+	fake := newMemAPI(credentials)
+	clk := newTestClock()
+
+	runSyncerAt(t, fake, fastOptions(), clk)
+	waitFor(t, "several failed sessions", func() bool { return sc.loginCount() > 10 })
+	if _, ok := fake.message("INBOX", "2"); ok {
+		t.Fatal("replaced before the time floor")
+	}
+	clk.advance(isolate.MinStrikeSpan)
+	waitFor(t, "the placeholder", func() bool { msg, _ := fake.message("INBOX", "2"); return ingestmsg.IsPlaceholder(msg) })
+	if msg, _ := fake.message("INBOX", "2"); !msg.ReceivedAt.Equal(old) {
+		t.Errorf("placeholder received at %v, want the message's own %v", msg.ReceivedAt, old)
+	}
+	if fake.count("INBOX") != 3 {
+		t.Errorf("inbox holds %d", fake.count("INBOX"))
+	}
+}
 func TestAnAPIThatFailsEveryMessageSkipsNothing(t *testing.T) {
 	credentials, user := scriptedServer(t, &script{}, "INBOX")
 	for _, id := range []string{"a@x", "b@x"} {
@@ -444,7 +621,7 @@ func TestAnAPIThatFailsEveryMessageSkipsNothing(t *testing.T) {
 	fake.mu.Unlock()
 	waitFor(t, "the messages once the API works", func() bool { return fake.count("INBOX") == 2 })
 	for _, uid := range []string{"1", "2"} {
-		if msg, _ := fake.message("INBOX", uid); msg.Subject == ingestmsg.PlaceholderSubject {
+		if msg, _ := fake.message("INBOX", uid); ingestmsg.IsPlaceholder(msg) {
 			t.Errorf("uid %s was replaced although the API failed for every message", uid)
 		}
 	}

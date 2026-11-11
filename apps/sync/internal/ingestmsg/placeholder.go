@@ -14,17 +14,26 @@ import (
 )
 
 const (
-	// PlaceholderSubject is the subject of a message Tresso keeps in place of one it could not import, so the user
-	// sees that a message is missing instead of nothing.
+	// PlaceholderSubject starts the subject of a message Tresso keeps in place of one it could not import, so the
+	// user sees that a message is missing instead of nothing. A short reference follows, so the API does not thread
+	// the placeholders of different messages into one conversation.
 	PlaceholderSubject = "Message could not be imported"
-	placeholderText    = "Tresso could not import this message. It is still in your mailbox at your mail provider."
+	placeholderText    = "Tresso could not import this message yet and tries again later. It is still in your mailbox at your mail provider."
 )
+
+// IsPlaceholder reports whether msg is a placeholder.
+func IsPlaceholder(msg api.Message) bool {
+	return msg.Placeholder
+}
 
 // Placeholder stands in for a message the API refused: it keeps the raw message already stored, the uid, the dates
 // and the flags, and leaves out everything parsed from it, which is where the refused value was. The folder's cursor
-// can then move on, and the user sees which message is missing.
+// can then move on, and the user sees which message is missing. The syncers try the message again later and put it
+// in the placeholder's place once it goes in (see isolate.Replace).
 func Placeholder(msg api.Message) api.Message {
+	ref := sha256.Sum256([]byte(msg.RemoteUID + "\x00" + msg.RawObjectKey))
 	return api.Message{
+		Placeholder:   true,
 		RemoteUID:     msg.RemoteUID,
 		ModSeq:        msg.ModSeq,
 		RawObjectKey:  msg.RawObjectKey,
@@ -34,7 +43,7 @@ func Placeholder(msg api.Message) api.Message {
 		SentAt:        msg.SentAt,
 		Flags:         msg.Flags,
 		References:    []string{},
-		Subject:       PlaceholderSubject,
+		Subject:       PlaceholderSubject + " (ref " + hex.EncodeToString(ref[:4]) + ")",
 		From:          api.Address{Address: mimeparse.UnknownSender},
 		To:            []api.Address{},
 		Cc:            []api.Address{},

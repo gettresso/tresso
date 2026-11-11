@@ -107,10 +107,8 @@ func (s *session) round(ctx context.Context, due []*folderRun) error {
 				continue
 			}
 			if run.cursor == nil {
-				// Its delta starts now, so its existing mail (a moved message too) comes through its backfill.
-				if err := s.start(ctx, run); s.deny(run, err) != nil {
-					return err
-				}
+				// Not started yet: steps start one folder at a time, also now. A message moved into it is rescued
+				// below and its existing mail comes through its backfill once it is started.
 				continue
 			}
 			result, err := s.poll(ctx, run)
@@ -191,7 +189,7 @@ func (s *session) round(ctx context.Context, due []*folderRun) error {
 func (s *session) rescueMoves(ctx context.Context, results []*deltaResult) ([]*deltaResult, error) {
 	pending := map[string]*folderRun{}
 	for _, run := range s.runs {
-		if run.cursor != nil && !run.cursor.BackfillDone {
+		if !run.denied && (run.cursor == nil || !run.cursor.BackfillDone) {
 			pending[run.folder.RemoteName] = run
 		}
 	}
