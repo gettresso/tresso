@@ -26,11 +26,14 @@
   --know: #256b5d;
   --know-soft: rgb(47 156 134 / 13%);
   --unread: #2341d6;
-  /* Text on a fill whose colour comes from outside the theme (a calendar's colour): white or near black, whichever reads. */
+  /*
+   * Text on a fill whose colour comes from outside the theme (a calendar's colour): white or black, whichever reads.
+   * One of the two reaches 4.5:1 on any colour (calendar/look.ts).
+   */
   --fill-text-light: #ffffff;
-  --fill-text-dark: #16181d;
-  /* 0 in the light theme, 1 in the dark one: for values that are worked out per theme (calendar/look.ts). */
-  --theme-dark: 0;
+  --fill-text-dark: #000000;
+  /* 100% in the light theme, 0% in the dark one: picks a theme's colour out of a color-mix (calendar/look.ts). */
+  --theme-light-share: 100%;
   /* Sender avatars: five tints that only tell people apart (SenderAvatar). */
   --avatar-0-fill: #dde3fb;
   --avatar-0-text: #1a31a8;
@@ -95,7 +98,7 @@
     --know: #6cc7b2;
     --know-soft: rgb(108 199 178 / 15%);
     --unread: #8fa2ff;
-    --theme-dark: 1;
+    --theme-light-share: 0%;
     /* Deep fills with light letters, as on the dark boards. */
     --avatar-0-fill: #26305c;
     --avatar-0-text: #aeb9ff;
