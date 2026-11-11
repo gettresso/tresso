@@ -1,18 +1,42 @@
-import { exchangeCode, refreshTokens, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
+import { exchangeCode, OAuthError, refreshTokens, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
+import { revokeToken } from '@/auth/revokeToken'
 
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
 const EXPIRY_MARGIN_MS = 30_000
+/** How long a sign-out waits for the server to revoke the refresh token before it goes on without it. */
+const REVOKE_WAIT_MS = 5_000
+/** The token endpoint's answers that mean the refresh token is no longer good; anything else is tried again later. */
+const REFUSED_REFRESH = new Set(['invalid_grant', 'invalid_request'])
+const EXPIRED = 'Your session has expired. Sign in again.'
 
 /** Where the tokens are kept between launches. */
 export interface TokenStore {
   load(): Promise<TokenSet | null>
+  /** Keeps this token set, or removes the kept one (null). */
   save(tokens: TokenSet | null): Promise<void>
+  /** Forgets who was signed in last (see MailProvider), so their mail no longer opens before the server answers. */
+  forgetUser(): Promise<void>
 }
+
+/** Why the sign-in ended: the user signed out, or the server no longer accepts it. */
+export type SessionEnd = 'signedOut' | 'expired'
 
 export interface SessionState {
   tokens: TokenSet | null
   /** Keeping or forgetting the tokens failed; shown to the user. */
   storageError: string | null
+  /** The kept sign-in could not be read at launch: it may still be there, so reading it is tried again. */
+  restoreFailed: boolean
+  /**
+   * The tokens were read from the previous launch, so they belong to the user who was signed in last. Tokens from a
+   * sign-in here may belong to someone else until the server says who it is.
+   */
+  restored: boolean
+  /**
+   * How the last sign-in ended, null while signed in or when none ended in this run. Only a sign-out the user asked
+   * for removes the mail on the phone; an expired sign-in keeps it, with its unsent drafts, for the next sign-in.
+   */
+  ended: SessionEnd | null
   /** The server answered 402: the trial or subscription is over, and a notice covers the app until it is renewed. */
   paymentRequired: boolean
 }
@@ -33,15 +57,26 @@ export class ApiError extends Error {
 }
 
 /**
+ * The sign-in could not be renewed because no answer came (offline, a timeout, a server error). The tokens are kept,
+ * and the next request tries again.
+ */
+export class RenewalFailedError extends Error {
+  constructor(readonly cause: unknown) {
+    super(`The sign-in could not be renewed right now: ${message(cause)}`)
+    this.name = 'RenewalFailedError'
+  }
+}
+
+/**
  * The signed-in user's tokens: kept in the store, refreshed before they expire, and handed to API requests. Plain
  * TypeScript without React Native, so it is tested directly; the screens read it through `AuthProvider`.
  */
 export class Session {
-  private state: SessionState = { tokens: null, storageError: null, paymentRequired: false }
+  private state: SessionState = { tokens: null, storageError: null, restoreFailed: false, restored: false, ended: null, paymentRequired: false }
   private readonly listeners = new Set<() => void>()
   /** Refresh tokens rotate: two refreshes with the same one would sign the user out, so they share one request. */
   private refreshing: Promise<string> | null = null
-  /** Goes up on every sign-out, so a refresh that finishes afterwards cannot sign the user back in. */
+  /** Goes up whenever a sign-in ends, so a refresh that finishes afterwards cannot sign the user back in. */
   private generation = 0
 
   constructor(
@@ -59,25 +94,58 @@ export class Session {
     return () => this.listeners.delete(listener)
   }
 
-  /** Reads the sign-in kept from the previous launch. */
+  /**
+   * Reads the sign-in kept from the previous launch. Called again after it failed; a sign-in or sign-out made in the
+   * meantime wins over what it reads.
+   */
   async restore(): Promise<void> {
+    const generation = this.generation
     try {
-      this.update({ tokens: await this.store.load() })
+      const tokens = await this.store.load()
+      if (generation === this.generation && this.state.tokens === null) {
+        this.update({ tokens, restored: tokens !== null, restoreFailed: false, storageError: null })
+      }
     } catch (error) {
-      this.update({ storageError: `The saved sign-in could not be read: ${message(error)}` })
+      if (generation === this.generation && this.state.tokens === null) {
+        this.update({ restoreFailed: true, storageError: `The saved sign-in could not be read: ${message(error)}` })
+      }
     }
   }
 
-  /** Exchanges the authorization code from the browser for tokens and keeps them. */
+  /**
+   * Exchanges the authorization code from the browser for tokens and keeps them. Who was signed in last is forgotten
+   * first, so these tokens never open another user's mail; when that fails, the tokens are not kept either.
+   */
   async completeSignIn(code: string, codeVerifier: string): Promise<void> {
-    await this.keep(await exchangeCode(this.config, code, codeVerifier, this.fetchImpl))
+    const tokens = await exchangeCode(this.config, code, codeVerifier, this.fetchImpl)
+    this.update({ tokens, restored: false, restoreFailed: false, ended: null })
+    try {
+      await this.store.forgetUser()
+      await this.store.save(tokens)
+      this.update({ storageError: null })
+    } catch (error) {
+      this.update({ storageError: notKept(error) })
+    }
   }
 
+  /**
+   * The sign-out the user asked for: the refresh token is revoked at the server (best effort, it does not wait long),
+   * then the tokens and who was signed in are removed from the phone, and with them the mail on it (MailProvider).
+   */
   async signOut(): Promise<void> {
+    const refreshToken = this.state.tokens?.refreshToken ?? null
     this.generation++
     this.refreshing = null
-    this.update({ paymentRequired: false })
-    await this.keep(null)
+    if (refreshToken !== null) {
+      await this.revoke(refreshToken)
+    }
+    this.update({ tokens: null, restored: false, ended: 'signedOut', paymentRequired: false })
+    try {
+      await Promise.all([this.store.save(null), this.store.forgetUser()])
+      this.update({ storageError: null })
+    } catch (error) {
+      this.update({ storageError: `You are signed out here, but the sign-in could not be removed from this device: ${message(error)}` })
+    }
   }
 
   async accessToken(): Promise<string> {
@@ -88,34 +156,31 @@ export class Session {
     if (current.expiresAt - EXPIRY_MARGIN_MS > Date.now()) {
       return current.accessToken
     }
-    if (current.refreshToken === null) {
-      await this.signOut()
-      throw new ApiError(401, 'Your session has expired. Sign in again.')
-    }
-    if (this.refreshing === null) {
-      const pending: Promise<string> = this.refresh(current.refreshToken).finally(() => {
-        if (this.refreshing === pending) {
-          this.refreshing = null
-        }
-      })
-      this.refreshing = pending
-    }
-    return this.refreshing
+    return this.renew(current)
   }
 
   async api<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const headers = new Headers(init.headers)
-    headers.set('Authorization', `Bearer ${await this.accessToken()}`)
-    headers.set('Accept', 'application/json')
-
+    const token = await this.accessToken()
     const generation = this.generation
-    const response = await this.fetchImpl(`${this.config.apiUrl.replace(/\/+$/, '')}${path}`, { ...init, headers })
-    if (response.status === 401) {
-      // Only for this session: a late answer to the previous one must not sign out the user who signed in since.
-      if (generation === this.generation) {
-        await this.signOut()
+    let response = await this.send(path, init, token)
+    if (response.status === 401 && generation === this.generation) {
+      // The server refused a token that looked valid here (revoked, or the clock is off): renew it once and ask again.
+      const current = this.state.tokens
+      if (current === null) {
+        throw new ApiError(401, EXPIRED)
       }
-      throw new ApiError(401, 'Your session has expired. Sign in again.')
+      const renewed = current.accessToken === token ? await this.renew(current) : current.accessToken
+      if (generation !== this.generation) {
+        throw new ApiError(401, EXPIRED)
+      }
+      response = await this.send(path, init, renewed)
+      // Only for this session: a late answer to the previous one must not end the sign-in made since.
+      if (response.status === 401 && generation === this.generation) {
+        await this.expire()
+      }
+    }
+    if (response.status === 401) {
+      throw new ApiError(401, EXPIRED)
     }
     if (generation !== this.generation) {
       // Signed out while it was underway: the answer says nothing about the next session.
@@ -136,43 +201,96 @@ export class Session {
     return this.api<Me>('/api/v1/me')
   }
 
+  private send(path: string, init: RequestInit, token: string): Promise<Response> {
+    const headers = new Headers(init.headers)
+    headers.set('Authorization', `Bearer ${token}`)
+    headers.set('Accept', 'application/json')
+    return this.fetchImpl(`${this.config.apiUrl.replace(/\/+$/, '')}${path}`, { ...init, headers })
+  }
+
+  /** A new access token for these tokens, from one refresh shared by every request that needs it. */
+  private async renew(current: TokenSet): Promise<string> {
+    if (current.refreshToken === null) {
+      await this.expire()
+      throw new ApiError(401, EXPIRED)
+    }
+    if (this.refreshing === null) {
+      const pending: Promise<string> = this.refresh(current.refreshToken).finally(() => {
+        if (this.refreshing === pending) {
+          this.refreshing = null
+        }
+      })
+      this.refreshing = pending
+    }
+    return this.refreshing
+  }
+
   private async refresh(refreshToken: string): Promise<string> {
     const generation = this.generation
     let next: TokenSet
     try {
       next = await refreshTokens(this.config, refreshToken, this.fetchImpl)
     } catch (error) {
+      if (!(error instanceof OAuthError && error.code !== null && REFUSED_REFRESH.has(error.code))) {
+        throw new RenewalFailedError(error)
+      }
       if (generation === this.generation) {
-        await this.signOut()
+        await this.expire()
       }
       throw error
     }
     if (generation !== this.generation) {
+      // The sign-in ended while this was underway: the new refresh token is not kept, so it should not stay valid.
+      if (next.refreshToken !== null) {
+        void this.revoke(next.refreshToken)
+      }
       throw new ApiError(401, 'Signed out.')
     }
-    await this.keep(next)
+    this.update({ tokens: next })
+    try {
+      await this.store.save(next)
+      this.update({ storageError: null })
+    } catch (error) {
+      this.update({ storageError: notKept(error) })
+    }
     return next.accessToken
   }
 
-  private async keep(tokens: TokenSet | null): Promise<void> {
-    this.update({ tokens })
+  /**
+   * The server no longer accepts the sign-in. The tokens go, but who was signed in stays, and so does their mail on
+   * the phone: drafts that did not reach the server yet are still there when they sign in again.
+   */
+  private async expire(): Promise<void> {
+    this.generation++
+    this.refreshing = null
+    this.update({ tokens: null, ended: 'expired', paymentRequired: false })
     try {
-      await this.store.save(tokens)
+      await this.store.save(null)
       this.update({ storageError: null })
     } catch (error) {
-      this.update({
-        storageError:
-          tokens === null
-            ? `You are signed out here, but the sign-in could not be removed from this device: ${message(error)}`
-            : `The sign-in could not be kept on this device, so you will have to sign in again next time: ${message(error)}`,
-      })
+      this.update({ storageError: `Your session has expired, but the sign-in could not be removed from this device: ${message(error)}` })
     }
+  }
+
+  private async revoke(refreshToken: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const waited = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, REVOKE_WAIT_MS)
+    })
+    // Best effort: when the server cannot be told, the token still leaves the phone and runs out on its own.
+    const revoked = revokeToken(this.config, refreshToken, this.fetchImpl).catch(() => undefined)
+    await Promise.race([revoked, waited])
+    clearTimeout(timer)
   }
 
   private update(change: Partial<SessionState>): void {
     this.state = { ...this.state, ...change }
     this.listeners.forEach((listener) => listener())
   }
+}
+
+function notKept(error: unknown): string {
+  return `The sign-in could not be kept on this device, so you will have to sign in again next time: ${message(error)}`
 }
 
 function message(error: unknown): string {

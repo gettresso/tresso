@@ -33,7 +33,37 @@ export default function Start() {
           {auth.storageError}
         </Text>
       )}
+      {!auth.isAuthenticated && auth.restoreFailed && <RetryRestore styles={styles} />}
     </SafeAreaView>
+  )
+}
+
+/** The kept sign-in could not be read: it may still be there, and the mail on the phone is kept until it is. */
+function RetryRestore({ styles }: { styles: Styles }) {
+  const auth = useAuth()
+  const [busy, setBusy] = useState(false)
+
+  async function retry() {
+    setBusy(true)
+    try {
+      await auth.retryRestore()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <View style={styles.content}>
+      <Pressable
+        style={({ pressed }) => [styles.secondary, (pressed || busy) && styles.pressed]}
+        onPress={() => void retry()}
+        disabled={busy}
+        accessibilityRole="button"
+        accessibilityState={{ busy, disabled: busy }}
+      >
+        <Text style={styles.secondaryLabel}>{busy ? 'Reading the sign-in…' : 'Try again'}</Text>
+      </Pressable>
+    </View>
   )
 }
 

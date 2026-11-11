@@ -122,11 +122,23 @@ export class MailSession {
     return this.open?.database ?? null
   }
 
-  /** Opens this user's copy (null: nobody is signed in) and removes everyone else's. */
+  /** Opens this user's copy (null: the user signed out) and removes everyone else's. */
   switchTo(userId: string | null): Promise<void> {
     const switchId = ++this.wanted
-    this.queue = this.queue.then(() => this.apply(userId, switchId)).catch((error: unknown) => this.update({ syncState: 'error', syncError: message(error) }))
-    return this.queue
+    return this.enqueue(() => this.apply(userId, switchId))
+  }
+
+  /**
+   * Closes the open copy and keeps it on the device: the sign-in ended without the user signing out (it expired, or
+   * it could not be read), so the drafts in it are still there when the user signs in again. Copies an earlier
+   * sign-out or switch could not remove are removed now.
+   */
+  closeCopy(): Promise<void> {
+    ++this.wanted
+    return this.enqueue(async () => {
+      await this.close()
+      await this.removeMarkedCopies()
+    })
   }
 
   /** The app came to the front (listen and catch up) or went to the background (the connection rests). */
@@ -276,6 +288,11 @@ export class MailSession {
     return open === null ? Promise.resolve() : this.pull(open, () => open.engine.sync())
   }
 
+  private enqueue(step: () => Promise<void>): Promise<void> {
+    this.queue = this.queue.then(step).catch((error: unknown) => this.update({ syncState: 'error', syncError: message(error) }))
+    return this.queue
+  }
+
   private async apply(userId: string | null, switchId: number): Promise<void> {
     if (this.open?.userId === userId && userId !== null) {
       return
@@ -289,7 +306,7 @@ export class MailSession {
     const name = databaseName(userId)
     const index = await this.deps.openSql(INDEX)
     try {
-      await index.exec('CREATE TABLE IF NOT EXISTS copies (name TEXT PRIMARY KEY NOT NULL)')
+      await createIndex(index)
       await index.run('INSERT OR IGNORE INTO copies (name) VALUES (?)', [name])
     } finally {
       await index.close()
@@ -376,24 +393,47 @@ export class MailSession {
     await open.database.close()
   }
 
-  /** Deletes every listed copy except this one; one that cannot go now stays listed and is tried again next time. */
+  /**
+   * Deletes every listed copy except this one. Each is marked for removal first, so one that cannot go now is
+   * removed the next time, also when that is a {@link closeCopy} that keeps the other copies.
+   */
   private async removeCopiesExcept(keep: string | null): Promise<void> {
     const index = await this.deps.openSql(INDEX)
     try {
-      await index.exec('CREATE TABLE IF NOT EXISTS copies (name TEXT PRIMARY KEY NOT NULL)')
+      await createIndex(index)
+      if (keep !== null) {
+        await index.run('DELETE FROM removals WHERE name = ?', [keep])
+      }
       for (const { name } of await index.all<{ name: string }>('SELECT name FROM copies')) {
-        if (name === keep) {
-          continue
-        }
-        try {
-          await this.deps.deleteSql(name)
-          await index.run('DELETE FROM copies WHERE name = ?', [name])
-        } catch (error) {
-          this.update({ syncError: `A copy of mail on this device could not be removed yet: ${message(error)}` })
+        if (name !== keep) {
+          await index.run('INSERT OR IGNORE INTO removals (name) VALUES (?)', [name])
         }
       }
+      await this.removeMarked(index)
     } finally {
       await index.close()
+    }
+  }
+
+  private async removeMarkedCopies(): Promise<void> {
+    const index = await this.deps.openSql(INDEX)
+    try {
+      await createIndex(index)
+      await this.removeMarked(index)
+    } finally {
+      await index.close()
+    }
+  }
+
+  private async removeMarked(index: Sql): Promise<void> {
+    for (const { name } of await index.all<{ name: string }>('SELECT name FROM removals')) {
+      try {
+        await this.deps.deleteSql(name)
+        await index.run('DELETE FROM copies WHERE name = ?', [name])
+        await index.run('DELETE FROM removals WHERE name = ?', [name])
+      } catch (error) {
+        this.update({ syncError: `A copy of mail on this device could not be removed yet: ${message(error)}` })
+      }
     }
   }
 
@@ -419,6 +459,12 @@ export class MailSession {
     this.state = { ...this.state, ...change }
     this.deps.onState(this.state)
   }
+}
+
+/** The copies on the device, and those marked for removal (by a sign-out or a switch) that are not gone yet. */
+async function createIndex(index: Sql): Promise<void> {
+  await index.exec('CREATE TABLE IF NOT EXISTS copies (name TEXT PRIMARY KEY NOT NULL)')
+  await index.exec('CREATE TABLE IF NOT EXISTS removals (name TEXT PRIMARY KEY NOT NULL)')
 }
 
 function message(error: unknown): string {
