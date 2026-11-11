@@ -11,6 +11,8 @@ final readonly class LeasedAccount
         public string $emailAddress,
         public string $provider,
         public string $leaseExpiresAt,
+        /** This worker did not hold the account before this heartbeat: it starts the account's sync afresh. */
+        public bool $fresh = false,
     ) {
     }
 }

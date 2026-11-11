@@ -26,6 +26,9 @@ type Account struct {
 	EmailAddress   string    `json:"emailAddress"`
 	Provider       string    `json:"provider"`
 	LeaseExpiresAt time.Time `json:"leaseExpiresAt"`
+	// Fresh is set when this worker did not hold the account before this heartbeat, also when the API ended the
+	// lease (after the user changed the account's sign-in): a syncer still running for it starts over.
+	Fresh bool `json:"fresh"`
 }
 
 type LeaseResponse struct {

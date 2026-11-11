@@ -237,3 +237,38 @@ func TestTheWorkerIsHealthyOnlyWhileItsHeartbeatsGoThrough(t *testing.T) {
 		t.Error("health does not follow the age of the last heartbeat")
 	}
 }
+
+// A lease the API ended and handed back to this worker restarts the account's syncer; a renewal does not.
+func TestAFreshLeaseRestartsARunningSyncer(t *testing.T) {
+	stopped := make(chan string, 10)
+	leaser := &fakeLeaser{accounts: []api.Account{{ID: "a", Provider: "imap", Fresh: true}}}
+	m := newTestManager(leaser, stopped)
+	ctx := context.Background()
+
+	m.Heartbeat(ctx)
+	leaser.mu.Lock()
+	leaser.accounts = []api.Account{{ID: "a", Provider: "imap"}}
+	leaser.mu.Unlock()
+	m.Heartbeat(ctx)
+	select {
+	case id := <-stopped:
+		t.Fatalf("a renewal stopped %s", id)
+	default:
+	}
+
+	leaser.mu.Lock()
+	leaser.accounts = []api.Account{{ID: "a", Provider: "imap", Fresh: true}}
+	leaser.mu.Unlock()
+	m.Heartbeat(ctx)
+	select {
+	case id := <-stopped:
+		if id != "a" {
+			t.Fatalf("stopped %s", id)
+		}
+	default:
+		t.Fatal("a fresh lease did not restart the running syncer")
+	}
+	if got := m.Running(); !slices.Equal(got, []string{"a"}) {
+		t.Errorf("running %v; the account must run again", got)
+	}
+}
