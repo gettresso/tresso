@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Outbox;
 
+use App\ApiResource\Input\Outbox\SendMessageInput;
 use App\Entity\MailAccount;
 use App\Entity\OutgoingMessage;
 use App\Enum\OutgoingStatus;
@@ -17,6 +18,7 @@ use App\Storage\BlobKind;
 use App\Storage\BlobVault;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * The life of outgoing mail: queued by the user, released at its send time, claimed by the worker that leases the
@@ -43,7 +45,10 @@ final readonly class Outbox
     ) {
     }
 
-    public function queue(Composition $composition, \DateTimeImmutable $now): OutgoingMessage
+    /**
+     * @param Uuid|null $id the id the client chose (a UUIDv7, see {@see SendMessageInput::$outgoingId}); a new one otherwise
+     */
+    public function queue(Composition $composition, \DateTimeImmutable $now, ?Uuid $id = null): OutgoingMessage
     {
         $composed = $this->composer->compose($composition);
         $stored = $this->blobs->store($composition->account->getOwner()->getId(), BlobKind::Outgoing, $composed->raw);
@@ -59,6 +64,7 @@ final readonly class Outbox
             $composition->sendAt,
             $composition->inReplyTo,
             $now,
+            $id,
         );
         $this->entityManager->persist($message);
         $this->entityManager->flush();

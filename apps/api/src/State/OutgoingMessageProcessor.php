@@ -35,6 +35,7 @@ use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\Uid\Uuid;
 use Symfony\Component\Validator\ConstraintViolation;
 use Symfony\Component\Validator\ConstraintViolationList;
 
@@ -89,11 +90,25 @@ final readonly class OutgoingMessageProcessor implements ProcessorInterface
 
             $draftId = $data->draftId;
             $acceptUnscanned = $data->acceptUnscanned;
+            $id = null === $data->outgoingId ? null : Uuid::fromString($data->outgoingId);
             if (null !== $draftId && !$this->drafts->findOneOwnedBy($user, $draftId) instanceof Draft) {
                 throw self::invalid('draftId', 'No draft with that id.', $draftId);
             }
 
-            return OutgoingMessageResource::fromEntity($this->entityManager->wrapInTransaction(function () use ($composition, $now, $draftId, $user, $acceptUnscanned): OutgoingMessage {
+            return OutgoingMessageResource::fromEntity($this->entityManager->wrapInTransaction(function () use ($composition, $now, $draftId, $user, $acceptUnscanned, $id): OutgoingMessage {
+                // A request sent again (its answer got lost) gets the message the first one queued. The lock makes two
+                // at once take turns, so the second sees the first.
+                if (null !== $id) {
+                    $this->entityManager->getConnection()->executeStatement('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))', ['key' => 'outgoing:'.$id->toRfc4122()]);
+                    $existing = $this->entityManager->find(OutgoingMessage::class, $id);
+                    if (null !== $existing) {
+                        if (!$existing->getMailAccount()->getOwner()->getId()->equals($user->getId())) {
+                            throw new ConflictHttpException('This id is taken; choose another.');
+                        }
+
+                        return $existing;
+                    }
+                }
                 // Locked before anything is built, so its attachments cannot change and it is sent once.
                 $draft = null;
                 if (null !== $draftId) {
@@ -105,7 +120,7 @@ final readonly class OutgoingMessageProcessor implements ProcessorInterface
                     $composition = $this->withAttachments($composition, $draft, $acceptUnscanned);
                 }
                 try {
-                    $queued = $this->outbox->queue($composition, $now);
+                    $queued = $this->outbox->queue($composition, $now, $id);
                 } catch (MissingAttachment $exception) {
                     throw self::invalid('draftId', $exception->getMessage().' Remove it and attach it again.', $draftId ?? '');
                 }
