@@ -24,6 +24,7 @@ use App\Security\Crypto\UserKeys;
 use App\Storage\BlobKey;
 use App\Storage\BlobKind;
 use App\Sync\LeaseGuard;
+use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
@@ -83,9 +84,20 @@ final readonly class SyncIngestProcessor implements ProcessorInterface
         return $this->messages->ingest($account, $batch);
     }
 
+    /**
+     * The worker's view of the account, unless the user or the API decided otherwise meanwhile: a pause stays until the
+     * user resumes, and a refused sign-in the API saw stays until the user signs in again, whatever a session that
+     * started earlier reports. The row is locked first, so a pause committed after the lease check is seen.
+     */
     private function updateStatus(MailAccount $account, AccountStatusInput $input): AccountStatusResult
     {
         $status = $input->status ?? throw new \LogicException('Validation guarantees a status.');
+        $this->entityManager->refresh($account, LockMode::PESSIMISTIC_WRITE);
+        $current = $account->getStatus();
+        // An error would even hand the account to the leaser again, which skips refused sign-ins.
+        if (MailAccountStatus::Paused === $current || (MailAccountStatus::AuthFailed === $current && MailAccountStatus::AuthFailed !== $status)) {
+            return new AccountStatusResult($current);
+        }
         $account->setStatus($status, $input->detail);
         if (MailAccountStatus::Active === $status) {
             $account->markSynced(new \DateTimeImmutable());

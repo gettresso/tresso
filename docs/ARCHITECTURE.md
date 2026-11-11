@@ -463,7 +463,7 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   | `POST /internal/sync/accounts/{id}/folders` | The complete folder list. Answers each folder's stored cursor; a changed UIDVALIDITY resets the folder. Folders missing from the list are deleted. |
   | `POST /internal/sync/accounts/{id}/messages` | Up to 200 new messages for one folder plus the folder's cursor after the batch. A known (folder, uid) only refreshes flags; a message already stored (same raw content, or same Message-ID with the same sender, Date and subject) only gains a location. A different mail that reuses a Message-ID is stored on its own. |
   | `POST /internal/sync/accounts/{id}/changes` | Flag changes and vanished uids for one folder. A message that is in no folder anymore is deleted after a grace period (below). |
-  | `POST /internal/sync/accounts/{id}/status` | `active`, `auth_failed` or `error` with a short detail the user sees. |
+  | `POST /internal/sync/accounts/{id}/status` | `active`, `auth_failed` or `error` with a short detail the user sees. A paused account keeps its pause (pausing also ends the lease), and `active` or `error` do not undo an `auth_failed` (only the user signing in again does); the answer is the status that holds. |
 
   The cursor is opaque to the API: the worker decides what it holds (UIDNEXT, HIGHESTMODSEQ, backfill position).
 
