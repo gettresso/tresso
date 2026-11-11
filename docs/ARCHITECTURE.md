@@ -475,8 +475,10 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
 - **Failures:** sessions reconnect with exponential backoff (2 s to 5 min). A refused login reports `auth_failed` and
   stops until the user changes the credentials: an IMAP LOGIN answered with AUTHENTICATIONFAILED, AUTHORIZATIONFAILED
   or EXPIRED at once; any other NO (without a code, with ALERT, which servers use for "use an app password", or with
-  a code Tresso does not know) once five logins were refused without a login that went through in between (other
-  failures in between do not start the count over). The text of an ALERT is shown to the user in the status detail.
+  a code Tresso does not know) once five logins were refused over at least ten minutes without a login that went
+  through in between (other failures in between do not start the count over), sessions being at least a minute apart
+  while refusals are counted: servers also refuse a correct password for a while (NO [ALERT] "Too many simultaneous
+  connections"). The text of an ALERT is shown to the user in the status detail.
   NO [UNAVAILABLE], [INUSE], [LIMIT], [SERVERBUG] and [CONTACTADMIN] are ordinary session failures, and LOGINDISABLED
   or PRIVACYREQUIRED asks the user to choose TLS or STARTTLS. Three failed sessions in a row report `error` with a
   user-safe detail, repeated until the API took it.
@@ -484,7 +486,8 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   to the API's limits and cleaned of NUL and other control characters (`internal/ingestmsg`). When the API still
   refuses a batch for its content (400, 413, 422), the batch is sent again one message at a time and a message
   refused on its own is replaced by a placeholder ("Message could not be imported (ref ...)", sender
-  `unknown@unknown.invalid`, the raw MIME kept), logged with folder, uid and Message-ID; then the cursor moves on.
+  `unknown@unknown.invalid`, a short notice of its own as the raw MIME, so the API never takes it for the real
+  message by its raw content), logged with folder, uid and Message-ID; then the cursor moves on.
   Failures that may pass are only counted next to messages of the same request that went through, so an outage of
   the API or the provider never counts: a 500 for one message, and a message the provider will not hand over (an IMAP
   FETCH answered NO or without a body, a Gmail or Graph 4xx or 5xx other than 401, 404, 429 and the 403s of
@@ -492,10 +495,18 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   times over at least an hour, by a placeholder whose raw MIME is a short notice, dated and flagged (and for Gmail
   filed by its labels) as the provider still says. A message failing alone in its request is never replaced; the
   next mail in the folder joins it. A placeholder is not final: its uid is kept in the folder's cursor (`pending`,
-  at most 50, for Gmail on `tresso:all`), recorded before the placeholder is sent, and the real message is tried
-  again an hour later, then every 2, 4, ... up to 24 hours. Once the provider hands it over and the API takes it, the
-  placeholder's uid is removed and the message ingested in its place (a probe ingest first, so a message the API
-  still refuses leaves the placeholder alone).
+  at most 50, for Gmail on `tresso:all`), stored in the cursor before the placeholder is sent, and the real message
+  is tried again an hour later, then every 2, 4, ... up to 24 hours (for Graph in the folder the message is in now).
+  The ingest API keeps one message per uid and folder and only refreshes the flags of a uid the folder has, so the
+  real message cannot go in next to the placeholder: it is sent once while the placeholder holds the uid (that only
+  refreshes flags, but a message validation refuses, 400, 413 or 422, fails there and the placeholder stays), then
+  the placeholder's uid is removed and the message sent. When the API refuses it then (a 500 while storing it), the
+  placeholder is put back at once and the next try comes later. A replacement is stored in the cursor at once, so it
+  is never done again on the real message. Known limits: a todo or hand-over made from a placeholder loses its mail
+  when the real message replaces it (a new message; keeping it needs the API to update a placeholder in place); a
+  placeholder the user moved in Tresso on an IMAP account is not tried again (the move gives it a new uid); and
+  without the API change of #93 (an orphaned message is linked back when it appears again) a crash between a
+  replacement and its cursor store recreates the message.
 - **Folders the server will not open:** a mailbox whose STATUS is refused with NONEXISTENT or NOPERM is left out of
   the folder list (the API deletes it); one whose STATUS is refused otherwise stays listed without a UIDVALIDITY (the
   API keeps what it has) and is skipped, like one whose SELECT is refused, until the next folder list (every 5
@@ -804,7 +815,9 @@ Planned features hook into these steps: AI classification, assignments to teamma
 - The sync worker sends the headers the rules read (`headers`) and the junk keyword (`junk`) with each message; the
   API keeps them in `message_signals`, apart from the message row and only for messages that have any. Anyone can
   write an Authentication-Results header, so a DMARC pass counts only when the receiving server surely wrote it: at
-  Gmail and Microsoft 365 the topmost header is always theirs. A generic IMAP server may add none, and then the
+  Gmail and Microsoft 365 the topmost header is always theirs. The worker sends the topmost one whole, up to 8000
+  characters (other headers up to 1000); a longer one is cut at its last `;` before the limit, never inside a
+  comment or a quoted string. A generic IMAP server may add none, and then the
   sender's own header could name any server, the recipient's too, so on IMAP accounts a pass never overrules the
   server's spam verdict (`ReceivingServers`). A pass counts only when trusted; a failure always counts, because a
   forged failure can only send the forger's own mail to Spam. A junk keyword
