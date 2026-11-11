@@ -13,6 +13,7 @@ use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\Security\Csrf\CsrfToken;
 use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
+use Symfony\Component\Security\Http\Event\LogoutEvent;
 use Twig\Environment;
 
 /**
@@ -25,8 +26,12 @@ use Twig\Environment;
  * - POST goes on to the firewall when it comes from Tresso: an Origin header of this server or of the web app (the web
  *   app signs out by submitting a form here), or, from a browser that sends no usable Origin, the page's CSRF token.
  *   Anything else gets the page again with a 403, and nothing happens.
+ *
+ * After signing out the browser goes to the web app. The firewall's own `logout.target` cannot do that: Symfony only
+ * redirects to the host of the request there, and the web app usually has another one.
  */
-#[AsEventListener(event: KernelEvents::REQUEST, priority: self::PRIORITY)]
+#[AsEventListener(event: KernelEvents::REQUEST, method: '__invoke', priority: self::PRIORITY)]
+#[AsEventListener(event: LogoutEvent::class, method: 'backToTheApp', dispatcher: 'security.event_dispatcher.main', priority: -64)]
 final readonly class SignOutGuard
 {
     public const string PATH = '/logout';
@@ -75,6 +80,26 @@ final readonly class SignOutGuard
         }
 
         $event->setResponse($this->page($request));
+    }
+
+    /**
+     * After the firewall's own logout listeners: the default one set a redirect to "/", and the others added the
+     * cookies that clear the session and the remember-me cookie to that response, so only its target changes.
+     */
+    public function backToTheApp(LogoutEvent $event): void
+    {
+        $response = $event->getResponse();
+        if ($response instanceof RedirectResponse) {
+            $response->setTargetUrl($this->webAppUrl);
+
+            return;
+        }
+
+        $redirect = new RedirectResponse($this->webAppUrl);
+        foreach ($response?->headers->getCookies() ?? [] as $cookie) {
+            $redirect->headers->setCookie($cookie);
+        }
+        $event->setResponse($redirect);
     }
 
     private function fromTresso(Request $request): bool

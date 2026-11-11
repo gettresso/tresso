@@ -75,10 +75,10 @@ security:
                 httponly: true
                 samesite: lax
                 signature_properties: ['password']
-            # Only a POST from Tresso gets here (App\Security\SignOutGuard); it ends the session and the cookie above.
+            # Only a POST from Tresso gets here (App\Security\SignOutGuard); it ends the session and the cookie above,
+            # and SignOutGuard sends the browser back to WEB_APP_URL.
             logout:
                 path: app_logout
-                target: '%env(WEB_APP_URL)%'
 
     access_control:
         - { path: ^/login$, roles: PUBLIC_ACCESS }
