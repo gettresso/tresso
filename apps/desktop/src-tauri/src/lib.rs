@@ -89,3 +89,33 @@ fn single_instance(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri:
 fn single_instance(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
   builder
 }
+
+#[cfg(test)]
+mod tests {
+  /// The sources of one directive of the app's Content-Security-Policy.
+  fn csp_sources(directive: &str) -> Vec<String> {
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    let csp = config["app"]["security"]["csp"].as_str().unwrap();
+    csp
+      .split(';')
+      .map(str::trim)
+      .find_map(|part| part.strip_prefix(directive).filter(|rest| rest.starts_with(' ')))
+      .unwrap_or_else(|| panic!("the CSP has no {directive}"))
+      .split_whitespace()
+      .map(str::to_string)
+      .collect()
+  }
+
+  /// A server on the user's own machine (the sign-in screen accepts http://localhost) serves mail images as well.
+  #[test]
+  fn every_local_server_the_app_talks_to_may_serve_images() {
+    let images = csp_sources("img-src");
+    let local = csp_sources("connect-src").into_iter().filter(|source| source.starts_with("http://"));
+    let mut checked = 0;
+    for source in local.filter(|source| !source.starts_with("http://ipc.")) {
+      assert!(images.contains(&source), "img-src lacks {source}");
+      checked += 1;
+    }
+    assert_eq!(checked, 2);
+  }
+}
