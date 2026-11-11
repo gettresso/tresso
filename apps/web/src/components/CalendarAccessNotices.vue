@@ -13,6 +13,26 @@ import { useAccountsStore } from '@/stores/accounts'
 const props = defineProps<{ accounts: SyncedMailAccount[]; calendars: SyncedCalendar[] }>()
 
 const store = useAccountsStore()
+
+/** Notices the user hid, per account and status, in this browser: a status that changes shows again. */
+const HIDDEN_KEY = 'tresso.calendar.hiddenAccessNotices'
+function readHidden(): string[] {
+  try {
+    const stored = JSON.parse(globalThis.localStorage?.getItem(HIDDEN_KEY) ?? '[]') as unknown
+    return Array.isArray(stored) ? stored.filter((entry): entry is string => typeof entry === 'string') : []
+  } catch {
+    return []
+  }
+}
+const hidden = ref<string[]>(readHidden())
+function hide(account: SyncedMailAccount): void {
+  hidden.value = [...hidden.value, `${account.id}:${account.calendarStatus}`]
+  try {
+    globalThis.localStorage?.setItem(HIDDEN_KEY, JSON.stringify(hidden.value))
+  } catch {
+    // Hidden for this visit only.
+  }
+}
 const opening = ref<string | null>(null)
 const inBrowser = ref(false)
 const error = ref<string | null>(null)
@@ -27,7 +47,7 @@ const notices = computed<Notice[]>(() => {
   const withCalendars = new Set(props.calendars.map((calendar) => calendar.mailAccountId))
   const list: Notice[] = []
   for (const account of props.accounts) {
-    if (account.status === 'paused') continue
+    if (account.status === 'paused' || hidden.value.includes(`${account.id}:${account.calendarStatus}`)) continue
     const address = account.emailAddress
     switch (account.calendarStatus) {
       case 'not_granted':
@@ -67,6 +87,7 @@ async function allow(account: SyncedMailAccount): Promise<void> {
       <span class="text">{{ notice.text }}</span>
       <button v-if="notice.kind === 'allow'" type="button" class="button button-quiet" :disabled="opening !== null" @click="allow(notice.account)">Allow calendar access</button>
       <RouterLink v-else-if="notice.kind === 'settings'" :to="{ name: 'settings-accounts' }" class="button button-quiet">Open account settings</RouterLink>
+      <button v-if="notice.kind !== 'looking'" type="button" class="button button-quiet" :aria-label="`Hide this for ${notice.account.emailAddress}`" @click="hide(notice.account)">Hide</button>
     </li>
     <li v-if="inBrowser" class="looking" role="status">Continue in your browser. Tresso shows the result under Settings, Accounts once you have allowed it.</li>
     <li v-if="error" class="error" role="alert">{{ error }}</li>

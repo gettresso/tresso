@@ -55,7 +55,7 @@ describe('CalendarAccessNotices', () => {
     const wrapper = mountNotices([account({ calendarStatus: 'not_granted' })])
 
     expect(wrapper.text()).toContain('Tresso may not use the calendars of kim@company.example yet.')
-    await wrapper.get('button').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === 'Allow calendar access')!.trigger('click')
     await flushPromises()
 
     expect(requests.find((r) => r.path === '/api/v1/provider-authorizations')?.body).toEqual({ provider: 'microsoft', features: ['calendar'], mailAccountId: 'work' })
@@ -74,6 +74,18 @@ describe('CalendarAccessNotices', () => {
   it('says it is still looking only while an account has no calendars', () => {
     expect(mountNotices([account({ calendarStatus: 'unknown' })]).text()).toContain('Looking for the calendars of kim@company.example...')
     expect(mountNotices([account({ calendarStatus: 'unknown' })], [{ id: 'c1', mailAccountId: 'work' }]).find('li').exists()).toBe(false)
+  })
+
+  it('remembers a notice the user hid, until the status changes', async () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) })
+    const wrapper = mountNotices([account({ calendarStatus: 'not_granted' })])
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Hide')!.trigger('click')
+    expect(wrapper.find('li').exists()).toBe(false)
+
+    expect(mountNotices([account({ calendarStatus: 'not_granted' })]).find('li').exists()).toBe(false)
+    expect(mountNotices([account({ calendarStatus: 'error', calendarStatusDetail: 'Syncing the calendars failed.' })]).text()).toContain('Syncing the calendars failed.')
   })
 
   it('says nothing for accounts whose calendars sync', () => {
