@@ -180,3 +180,24 @@ func TestUnreadableStoresANoticeThatIsUniquePerMessage(t *testing.T) {
 		t.Error("the notice was not stored as the raw message")
 	}
 }
+
+// Anyone can write X-MS-Exchange-Organization-AuthAs; only Exchange Online strips it from mail arriving from outside,
+// so it is passed on for messages Exchange took in, and never otherwise.
+func TestTheExchangeAuthAsHeaderIsOnlyPassedOnForExchange(t *testing.T) {
+	raw := []byte("From: a@example.com\r\nX-MS-Exchange-Organization-AuthAs: Internal\r\nSubject: Hi\r\n\r\nBody\r\n")
+
+	msg, err := Build(context.Background(), storagetest.New(), "acc-1", raw, "1", time.Now(), api.Flags{}, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := msg.Headers["x-ms-exchange-organization-authas"]; ok {
+		t.Errorf("headers %v; the header must be left out outside Exchange", msg.Headers)
+	}
+	msg, err = BuildFromExchange(context.Background(), storagetest.New(), "acc-1", raw, "1", time.Now(), api.Flags{}, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := msg.Headers["x-ms-exchange-organization-authas"]; got != "Internal" {
+		t.Errorf("x-ms-exchange-organization-authas = %q, want Internal", got)
+	}
+}

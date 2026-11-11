@@ -42,7 +42,14 @@ const (
 var signalHeaders = []string{
 	"List-Unsubscribe", "List-Unsubscribe-Post", "List-Id", "Precedence", "Auto-Submitted", "Feedback-Id",
 	"X-Spam-Flag", "X-Spam-Status", "Authentication-Results", "X-Autoreply", "X-Autorespond",
+	// How Exchange Online took the message in (Internal: sent inside the tenant). Anyone can write it, so it is only
+	// passed on for Microsoft accounts (see ingestmsg.BuildFromExchange).
+	ExchangeAuthAs,
 }
+
+// ExchangeAuthAs is the header Exchange Online writes with how it took a message in; it strips the
+// X-MS-Exchange-Organization-* headers of mail arriving from outside.
+const ExchangeAuthAs = "X-MS-Exchange-Organization-AuthAs"
 
 type Address struct {
 	Address string

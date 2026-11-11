@@ -891,3 +891,19 @@ func TestRefusedLoginsMustSpanTenMinutesBeforeAuthFailed(t *testing.T) {
 		t.Errorf("statuses %v", fake.statuses)
 	}
 }
+
+// A sender can write X-MS-Exchange-Organization-AuthAs into any mail; an IMAP server does not strip it, so it is left
+// out.
+func TestIMAPMailDoesNotPassOnExchangesAuthAs(t *testing.T) {
+	credentials, user := scriptedServer(t, &script{}, "INBOX")
+	raw := "From: anna@company.example\r\nX-MS-Exchange-Organization-AuthAs: Internal\r\nMessage-ID: <a@x>\r\nSubject: Hi\r\n\r\nBody\r\n"
+	if _, err := user.Append("INBOX", literal(raw), &imap.AppendOptions{Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	fake := newMemAPI(credentials)
+	runSyncer(t, fake, fastOptions())
+	waitFor(t, "the message", func() bool { return fake.count("INBOX") == 1 })
+	if msg, _ := fake.message("INBOX", "1"); msg.Headers["x-ms-exchange-organization-authas"] != "" {
+		t.Errorf("headers %v", msg.Headers)
+	}
+}

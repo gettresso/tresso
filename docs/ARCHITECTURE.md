@@ -932,7 +932,11 @@ Planned features hook into these steps: AI classification, assignments to teamma
   write an Authentication-Results header, so a DMARC pass counts only when the receiving server surely wrote it: at
   Gmail and Microsoft 365 the topmost header is always theirs. The worker sends the topmost one whole, up to 8000
   characters (other headers up to 1000); a longer one is cut at its last `;` before the limit, never inside a
-  comment or a quoted string. A generic IMAP server may add none, and then the
+  comment or a quoted string. For Microsoft 365 accounts (Graph) it also sends `x-ms-exchange-organization-authas` as
+  written (`Internal` for mail sent inside the tenant, up to 1000 characters): Exchange Online strips the
+  X-MS-Exchange-Organization-* headers from mail arriving from outside (its header firewall), so there it can only be
+  Exchange's own. A sender can write it into any other mail, so it is never sent for Gmail or IMAP accounts. Known
+  limit: this rests on Exchange's documented behaviour and was not checked against a live tenant. A generic IMAP server may add none, and then the
   sender's own header could name any server, the recipient's too, so on IMAP accounts a pass never overrules the
   server's spam verdict (`ReceivingServers`). A pass counts only when trusted; a failure always counts, because a
   forged failure can only send the forger's own mail to Spam. A junk keyword
