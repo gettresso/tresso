@@ -548,6 +548,15 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
       await db.revertAction(third)
       expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm2')?.flags).toMatchObject({ seen: false })
 
+      // A late answer to an action the delta already settled leaves a newer action on the same part alone.
+      const settled = await db.applyAction(['m2'], 'markRead')
+      await db.apply(page({ cursor: 30, messages: [{ ...(await db.thread('t1'))!.messages.find((m) => m.id === 'm2')!, flags: { seen: true, flagged: false, answered: false, draft: false } }] }))
+      const newer = await db.applyAction(['m2'], 'markUnread')
+      db.acceptAction(settled)
+      await db.revertAction(newer)
+      expect((await db.thread('t1'))?.messages.find((m) => m.id === 'm2')?.flags).toMatchObject({ seen: true })
+      await db.apply(page({ cursor: 31, messages: [{ ...(await db.thread('t1'))!.messages.find((m) => m.id === 'm2')!, flags: { seen: false, flagged: false, answered: false, draft: false } }] }))
+
       const archived = await db.applyAction(['m2'], 'archive')
       const readAgain = await db.applyAction(['m2'], 'markRead')
       await db.revertAction(readAgain)

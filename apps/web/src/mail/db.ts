@@ -483,13 +483,14 @@ export class IndexedDbMailStore implements MailStore {
     }
     await tx.done
     // Noted once written: a transaction that failed leaves nothing open.
-    before.forEach((message, index) => this.openActions.applied(message, after[index]!))
-
-    return { before, after }
+    return { before, after, id: this.openActions.applied(before, after) }
   }
 
   acceptAction(applied: AppliedAction): void {
-    applied.before.forEach((message, index) => this.openActions.accepted(message, applied.after[index]!))
+    const id = applied.id
+    if (id !== undefined) {
+      applied.before.forEach((message, index) => this.openActions.accepted(id, message, applied.after[index]!))
+    }
   }
 
   /** Puts back what {@link applyAction} changed, part by part (see MailStore.revertAction). */
@@ -499,7 +500,7 @@ export class IndexedDbMailStore implements MailStore {
     for (const [index, previous] of applied.before.entries()) {
       const current = await tx.objectStore('messages').get(previous.id)
       const after = applied.after[index]
-      const reverted = current === undefined || after === undefined ? null : this.openActions.refused(current, previous, after)
+      const reverted = current === undefined || after === undefined || applied.id === undefined ? null : this.openActions.refused(applied.id, current, previous, after)
       if (reverted !== null) {
         await tx.objectStore('messages').put(reverted)
         affected.add(reverted.threadId)
