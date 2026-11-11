@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
 
 	"tresso/sync/internal/api"
 )
@@ -22,7 +21,7 @@ var ErrMessageGone = errors.New("the message is no longer in the folder")
 
 // Mailbox makes the user's changes (flags, moves) on the server, over its own connection next to the one that syncs.
 type Mailbox struct {
-	client   *imapclient.Client
+	client   *connection
 	selected string
 	validity uint32
 }
@@ -33,7 +32,7 @@ func OpenMailbox(ctx context.Context, d Dialer, credentials api.Credentials) (*M
 	if err != nil {
 		return nil, err
 	}
-	client, err := connect(ctx, d, credentials.Connection.IMAP, credentials.Connection.Username, password, make(chan struct{}, 1))
+	client, err := connect(ctx, d, credentials.Connection.IMAP, credentials.Connection.Username, password, newServerEvents())
 	if err != nil {
 		return nil, err
 	}

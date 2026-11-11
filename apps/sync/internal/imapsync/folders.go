@@ -1,6 +1,7 @@
 package imapsync
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
@@ -9,31 +10,47 @@ import (
 	"tresso/sync/internal/api"
 )
 
-// listFolders returns every selectable mailbox with its role and UIDVALIDITY.
-func listFolders(c *imapclient.Client) ([]api.Folder, error) {
+// listFolders returns every selectable mailbox with its role and UIDVALIDITY. A mailbox whose STATUS the server
+// refuses (a shared folder the user may list but not open, one deleted since the LIST, a damaged one) is left out and
+// returned in unreadable: listing it would give the user a folder nobody can fill, and failing the listing would stop
+// every other folder.
+func listFolders(c *imapclient.Client) (folders []api.Folder, unreadable map[string]error, err error) {
 	options := &imap.ListOptions{}
 	if c.Caps().Has(imap.CapSpecialUse) {
 		options.ReturnSpecialUse = true
 	}
 	mailboxes, err := c.List("", "*", options).Collect()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	folders := make([]api.Folder, 0, len(mailboxes))
+	selectable := make([]*imap.ListData, 0, len(mailboxes))
 	for _, mailbox := range mailboxes {
 		if hasAttr(mailbox.Attrs, imap.MailboxAttrNoSelect) || hasAttr(mailbox.Attrs, imap.MailboxAttrNonExistent) {
 			continue
 		}
+		selectable = append(selectable, mailbox)
+	}
+	roles := assignRoles(selectable)
+
+	folders = make([]api.Folder, 0, len(selectable))
+	for i, mailbox := range selectable {
 		status, err := c.Status(mailbox.Mailbox, &imap.StatusOptions{UIDValidity: true}).Wait()
+		if refusedByServer(err) {
+			if unreadable == nil {
+				unreadable = map[string]error{}
+			}
+			unreadable[mailbox.Mailbox] = err
+			continue
+		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		uidValidity := status.UIDValidity
 		folders = append(folders, api.Folder{
 			RemoteName:  mailbox.Mailbox,
 			DisplayName: displayName(mailbox.Mailbox, mailbox.Delim),
-			Role:        roleOf(mailbox.Mailbox, mailbox.Attrs),
+			Role:        roles[i],
 			UIDValidity: &uidValidity,
 		})
 	}
@@ -45,7 +62,13 @@ func listFolders(c *imapclient.Client) ([]api.Folder, error) {
 			break
 		}
 	}
-	return folders, nil
+	return folders, unreadable, nil
+}
+
+// refusedByServer reports whether the server answered NO: about this one command, not the connection.
+func refusedByServer(err error) bool {
+	var imapErr *imap.Error
+	return errors.As(err, &imapErr) && imapErr.Type == imap.StatusResponseTypeNo
 }
 
 var roleByAttr = map[imap.MailboxAttr]string{
@@ -66,7 +89,36 @@ var roleByName = map[string]string{
 	"archive": "archive", "archief": "archive", "archiv": "archive",
 }
 
-func roleOf(name string, attrs []imap.MailboxAttr) string {
+// assignRoles gives each mailbox its role. Every role but custom goes to one folder at most, the first that claims it:
+// the special-use attribute first, then, for a role no mailbox is marked with, the name, but only of a top-level
+// mailbox or a direct child of INBOX ("INBOX.Sent" on servers that keep everything below INBOX). A "Sent" deep in
+// the user's own folders (Projects/2019/Sent) is theirs, not where Tresso files sent mail.
+func assignRoles(mailboxes []*imap.ListData) []string {
+	roles := make([]string, len(mailboxes))
+	taken := map[string]bool{}
+	for i, mailbox := range mailboxes {
+		role := roleByAttrs(mailbox.Mailbox, mailbox.Attrs)
+		if role != "" && !taken[role] {
+			roles[i], taken[role] = role, true
+		}
+	}
+	for i, mailbox := range mailboxes {
+		if roles[i] != "" {
+			continue
+		}
+		roles[i] = "custom"
+		if hasRoleAttr(mailbox.Attrs) || !nearTheTop(mailbox.Mailbox, mailbox.Delim) {
+			continue
+		}
+		if role, ok := roleByName[leafName(mailbox.Mailbox, mailbox.Delim)]; ok && !taken[role] {
+			roles[i], taken[role] = role, true
+		}
+	}
+	return roles
+}
+
+// roleByAttrs is the role INBOX and the special-use attributes give, or "".
+func roleByAttrs(name string, attrs []imap.MailboxAttr) string {
 	if strings.EqualFold(name, "INBOX") {
 		return "inbox"
 	}
@@ -77,12 +129,27 @@ func roleOf(name string, attrs []imap.MailboxAttr) string {
 			}
 		}
 	}
-	leaf := strings.ToLower(lastSegment(name, '/'))
-	leaf = strings.ToLower(lastSegment(leaf, '.'))
-	if role, ok := roleByName[leaf]; ok {
-		return role
+	return ""
+}
+
+func hasRoleAttr(attrs []imap.MailboxAttr) bool {
+	return roleByAttrs("", attrs) != ""
+}
+
+// nearTheTop reports whether a mailbox is top-level or a direct child of INBOX.
+func nearTheTop(name string, delim rune) bool {
+	if delim == 0 {
+		return true
 	}
-	return "custom"
+	parts := strings.Split(name, string(delim))
+	return len(parts) == 1 || (len(parts) == 2 && strings.EqualFold(parts[0], "INBOX"))
+}
+
+func leafName(name string, delim rune) string {
+	if delim == 0 {
+		return strings.ToLower(name)
+	}
+	return strings.ToLower(lastSegment(name, delim))
 }
 
 func displayName(name string, delim rune) string {

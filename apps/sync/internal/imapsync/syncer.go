@@ -5,6 +5,7 @@ package imapsync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 
 	"tresso/sync/internal/api"
+	"tresso/sync/internal/isolate"
 	"tresso/sync/internal/storage"
 )
 
@@ -38,21 +40,26 @@ type Options struct {
 	StatusInterval         time.Duration // how often a healthy account reports itself
 	MinBackoff, MaxBackoff time.Duration
 	FailuresBeforeError    int // consecutive failed sessions before the user sees an error
+	// Consecutive logins refused without a response code before they count as a wrong password (auth_failed). With
+	// the backoff this spans about half a minute, so a short outage of the server's login backend does not stop the
+	// account.
+	RefusalsBeforeAuthFailed int
 }
 
 func DefaultOptions() Options {
 	return Options{
-		FetchBatch:             50,
-		MaxBatchBytes:          20 << 20,
-		BackfillBatchesPerPass: 10,
-		PresenceChunk:          5000,
-		PollInterval:           5 * time.Minute,
-		PresenceInterval:       30 * time.Minute,
-		UpdatePresenceInterval: time.Minute,
-		StatusInterval:         5 * time.Minute,
-		MinBackoff:             2 * time.Second,
-		MaxBackoff:             5 * time.Minute,
-		FailuresBeforeError:    3,
+		FetchBatch:               50,
+		MaxBatchBytes:            20 << 20,
+		BackfillBatchesPerPass:   10,
+		PresenceChunk:            5000,
+		PollInterval:             5 * time.Minute,
+		PresenceInterval:         30 * time.Minute,
+		UpdatePresenceInterval:   time.Minute,
+		StatusInterval:           5 * time.Minute,
+		MinBackoff:               2 * time.Second,
+		MaxBackoff:               5 * time.Minute,
+		FailuresBeforeError:      3,
+		RefusalsBeforeAuthFailed: 5,
 	}
 }
 
@@ -70,17 +77,28 @@ func New(client API, store storage.Blobs, d Dialer, workerID string, opts Option
 }
 
 // Run keeps the account in sync until ctx ends (the lease was lost or the worker stops). A refused login is reported
-// and ends the run: the account stops being leased until the user fixes the credentials.
+// and ends the run: the account stops being leased until the user fixes the credentials. A login refused without a
+// response code only counts as refused once it repeats RefusalsBeforeAuthFailed times in a row.
 func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	logger := s.logger.With("account", account.ID)
 	backoff := s.opts.MinBackoff
 	failures := 0
 	reported := false // whether the API took the error status of the current run of failures
+	refusals := 0
+	strikes := isolate.NewStrikes()
 
 	for {
-		healthy, err := s.runSession(ctx, account, logger)
+		healthy, err := s.runSession(ctx, account, strikes, logger)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if errors.Is(err, errLoginRefused) {
+			refusals++
+			if refusals >= max(1, s.opts.RefusalsBeforeAuthFailed) {
+				err = fmt.Errorf("%w: %w", ErrAuth, err)
+			}
+		} else {
+			refusals = 0
 		}
 		if errors.Is(err, ErrAuth) {
 			logger.Warn("login refused, account needs new credentials")
@@ -118,16 +136,17 @@ func (s *Syncer) report(ctx context.Context, account api.Account, status, detail
 type session struct {
 	*Syncer
 	account   api.Account
-	client    *imapclient.Client
+	client    *connection
 	condStore bool
-	updates   chan struct{}
+	events    *serverEvents
+	strikes   *isolate.Strikes // messages that failed in earlier sessions of this run
 	runs      []*folderRun
 	logger    *slog.Logger
 }
 
 // runSession connects, syncs everything once, then follows changes until an error. healthy reports whether the
 // initial pass completed, so a later disconnect does not count towards the error threshold.
-func (s *Syncer) runSession(ctx context.Context, account api.Account, logger *slog.Logger) (healthy bool, err error) {
+func (s *Syncer) runSession(ctx context.Context, account api.Account, strikes *isolate.Strikes, logger *slog.Logger) (healthy bool, err error) {
 	creds, err := s.api.Credentials(ctx, account.ID, s.workerID)
 	if err != nil {
 		return false, err
@@ -137,8 +156,8 @@ func (s *Syncer) runSession(ctx context.Context, account api.Account, logger *sl
 		return false, err
 	}
 
-	updates := make(chan struct{}, 1)
-	client, err := connect(ctx, s.dialer, creds.Connection.IMAP, creds.Connection.Username, password, updates)
+	events := newServerEvents()
+	client, err := connect(ctx, s.dialer, creds.Connection.IMAP, creds.Connection.Username, password, events)
 	if err != nil {
 		return false, err
 	}
@@ -147,7 +166,7 @@ func (s *Syncer) runSession(ctx context.Context, account api.Account, logger *sl
 		_ = client.Close()
 	}()
 
-	sess := &session{Syncer: s, account: account, client: client, updates: updates, logger: logger}
+	sess := &session{Syncer: s, account: account, client: client, events: events, strikes: strikes, logger: logger}
 	sess.condStore = client.Caps().Has(imap.CapCondStore)
 
 	if err := sess.refreshFolders(ctx); err != nil {
@@ -191,8 +210,11 @@ func (s *session) follow(ctx context.Context) error {
 
 		switch {
 		case reason == wakeUpdate && inbox != nil:
-			full := false
-			if !s.condStore {
+			// With CONDSTORE flag changes need no full check, but an expunge does: only the UID list shows it. Without
+			// CONDSTORE every update gets a full check anyway, throttled below.
+			expunged := s.events.expunged.Swap(false)
+			full := s.condStoreIn(inbox) && expunged
+			if !s.condStoreIn(inbox) {
 				if due := inbox.lastPresence.Add(s.opts.UpdatePresenceInterval); now.Before(due) {
 					inboxCheckDue = due
 				} else {
@@ -233,6 +255,9 @@ func (s *session) follow(ctx context.Context) error {
 // pass syncs every folder once; deletions are checked when forced or when a folder's last check is old enough.
 func (s *session) pass(ctx context.Context, forcePresence bool) error {
 	for _, run := range s.runs {
+		if run.unavailable {
+			continue
+		}
 		full := forcePresence || time.Since(run.lastPresence) >= s.opts.PresenceInterval
 		if err := s.syncFolderOrRefresh(ctx, run, full); err != nil {
 			return err
@@ -247,14 +272,22 @@ func (s *session) syncFolderOrRefresh(ctx context.Context, run *folderRun, full 
 		s.logger.Info("folder was reset on the server", "folder", run.folder.RemoteName)
 		return s.refreshFolders(ctx)
 	}
+	if errors.Is(err, errFolderUnavailable) {
+		s.logger.Warn("the server refused to open a folder; skipping it until the folder list is read again", "folder", run.folder.RemoteName, "error", err)
+		run.unavailable = true
+		return nil
+	}
 	return err
 }
 
 // refreshFolders reports the folder list and rebuilds the runs from what the API stored.
 func (s *session) refreshFolders(ctx context.Context) error {
-	folders, err := listFolders(s.client)
+	folders, unreadable, err := listFolders(s.client.Client)
 	if err != nil {
 		return err
+	}
+	for name, err := range unreadable {
+		s.logger.Warn("the server refused the status of a folder; leaving it out", "folder", name, "error", err)
 	}
 	states, err := s.api.Folders(ctx, s.account.ID, s.workerID, folders)
 	if err != nil {
@@ -292,6 +325,9 @@ func (s *session) refreshFolders(ctx context.Context) error {
 
 func (s *session) backfillPending() bool {
 	for _, run := range s.runs {
+		if run.unavailable {
+			continue
+		}
 		if run.cursor == nil || !run.cursor.BackfillDone() {
 			return true
 		}
@@ -301,7 +337,7 @@ func (s *session) backfillPending() bool {
 
 func (s *session) inbox() *folderRun {
 	for _, run := range s.runs {
-		if run.folder.Role == "inbox" {
+		if run.folder.Role == "inbox" && !run.unavailable {
 			return run
 		}
 	}
@@ -353,7 +389,7 @@ func (s *session) wait(ctx context.Context, untilPoll time.Duration) (wakeReason
 				return wakePoll, ctx.Err()
 			case <-timer.C:
 				return wakePoll, nil
-			case <-s.updates:
+			case <-s.events.updates:
 				return wakeUpdate, nil
 			case <-ticker.C:
 				if err := s.client.Noop().Wait(); err != nil {
@@ -371,7 +407,7 @@ func (s *session) wait(ctx context.Context, untilPoll time.Duration) (wakeReason
 	select {
 	case <-ctx.Done():
 	case <-timer.C:
-	case <-s.updates:
+	case <-s.events.updates:
 		reason = wakeUpdate
 	case <-s.client.Closed():
 		return wakePoll, errors.New("connection closed by server")

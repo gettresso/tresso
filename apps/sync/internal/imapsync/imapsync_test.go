@@ -3,6 +3,7 @@ package imapsync
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
@@ -48,23 +49,41 @@ func TestBackfillDone(t *testing.T) {
 func TestRoleOf(t *testing.T) {
 	cases := []struct {
 		name  string
+		delim rune
 		attrs []imap.MailboxAttr
 		want  string
 	}{
-		{"INBOX", nil, "inbox"},
-		{"inbox", nil, "inbox"},
-		{"Whatever", []imap.MailboxAttr{imap.MailboxAttrSent}, "sent"},
-		{"Bin", []imap.MailboxAttr{"\\trash"}, "trash"},
-		{"[Gmail]/All Mail", []imap.MailboxAttr{imap.MailboxAttrAll, imap.MailboxAttrHasNoChildren}, "all"},
-		{"INBOX.Sent Items", nil, "sent"},
-		{"Verzonden items", nil, "sent"},
-		{"Ongewenste e-mail", nil, "spam"},
-		{"Projects/Acme", nil, "custom"},
+		{"INBOX", '/', nil, "inbox"},
+		{"inbox", '/', nil, "inbox"},
+		{"Whatever", '/', []imap.MailboxAttr{imap.MailboxAttrSent}, "sent"},
+		{"Bin", '/', []imap.MailboxAttr{"\\trash"}, "trash"},
+		{"[Gmail]/All Mail", '/', []imap.MailboxAttr{imap.MailboxAttrAll, imap.MailboxAttrHasNoChildren}, "all"},
+		{"INBOX.Sent Items", '.', nil, "sent"},
+		{"Verzonden items", '/', nil, "sent"},
+		{"Ongewenste e-mail", '/', nil, "spam"},
+		{"Projects/Acme", '/', nil, "custom"},
 	}
 	for _, c := range cases {
-		if got := roleOf(c.name, c.attrs); got != c.want {
-			t.Errorf("roleOf(%q, %v) = %q, want %q", c.name, c.attrs, got, c.want)
+		if got := assignRoles([]*imap.ListData{{Mailbox: c.name, Delim: c.delim, Attrs: c.attrs}})[0]; got != c.want {
+			t.Errorf("role of %q %v = %q, want %q", c.name, c.attrs, got, c.want)
 		}
+	}
+}
+
+// Fails without the fix: every mailbox named like a role got it, at any depth and next to a marked one.
+func TestEachRoleGoesToOneFolderAndNamesOnlyCountNearTheTop(t *testing.T) {
+	mailboxes := []*imap.ListData{
+		{Mailbox: "INBOX", Delim: '/'},
+		{Mailbox: "Archive/Sent", Delim: '/'},
+		{Mailbox: "Sent Items", Delim: '/', Attrs: []imap.MailboxAttr{imap.MailboxAttrSent}},
+		{Mailbox: "Projects/2019/Trash", Delim: '/'},
+		{Mailbox: "Drafts", Delim: '/'},
+		{Mailbox: "Concepten", Delim: '/'},
+		{Mailbox: "Clients.Trash", Delim: '.'},
+	}
+	want := []string{"inbox", "custom", "sent", "custom", "drafts", "custom", "custom"}
+	if got := assignRoles(mailboxes); !slices.Equal(got, want) {
+		t.Errorf("roles = %v, want %v", got, want)
 	}
 }
 
@@ -101,6 +120,26 @@ func TestJunkKeywords(t *testing.T) {
 	for _, c := range cases {
 		if got := isJunk(c.flags); got != c.want {
 			t.Errorf("isJunk(%v) = %v, want %v", c.flags, got, c.want)
+		}
+	}
+}
+
+func TestExpungedBetween(t *testing.T) {
+	cases := []struct {
+		name              string
+		previous, current mailboxState
+		want              bool
+	}{
+		{"first sync of the session", mailboxState{}, mailboxState{exists: 3, uidNext: 10}, false},
+		{"nothing changed", mailboxState{exists: 3, uidNext: 10}, mailboxState{exists: 3, uidNext: 10}, false},
+		{"new mail", mailboxState{exists: 3, uidNext: 10}, mailboxState{exists: 5, uidNext: 12}, false},
+		{"one expunged", mailboxState{exists: 3, uidNext: 10}, mailboxState{exists: 2, uidNext: 10}, true},
+		{"new mail and one expunged", mailboxState{exists: 3, uidNext: 10}, mailboxState{exists: 4, uidNext: 12}, true},
+		{"moved here and away again", mailboxState{exists: 3, uidNext: 10}, mailboxState{exists: 3, uidNext: 11}, true},
+	}
+	for _, c := range cases {
+		if got := expungedBetween(c.previous, c.current); got != c.want {
+			t.Errorf("%s: expungedBetween = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

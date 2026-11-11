@@ -1,20 +1,28 @@
 package imapsync
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
 
 	"tresso/sync/internal/api"
+	"tresso/sync/internal/ingestmsg"
+	"tresso/sync/internal/isolate"
 )
 
 // errFoldersChanged means a folder's UIDVALIDITY changed mid-session: the folder list must be reported again so the
 // API can reset that folder.
 var errFoldersChanged = errors.New("folder uidvalidity changed")
+
+// errFolderUnavailable means the server refused to open a folder (SELECT answered NO). The folder is skipped until
+// the folder list is refreshed; the others go on.
+var errFolderUnavailable = errors.New("folder could not be opened")
 
 type folderRun struct {
 	folder       api.Folder
@@ -22,12 +30,31 @@ type folderRun struct {
 	lastPresence time.Time
 	// The folder as of the last sync's SELECT. A later SELECT that differs means something changed in between.
 	seen mailboxState
+	// unavailable is set when the server refused to open the folder; it is tried again with the next folder list.
+	unavailable bool
+	// modSeq is set when the last SELECT reported a HIGHESTMODSEQ: CONDSTORE works in this folder. A server with
+	// CONDSTORE may still answer NOMODSEQ for a mailbox, which then needs the full flag check.
+	modSeq bool
+}
+
+// condStoreIn reports whether flag changes in run's folder can be asked for by MODSEQ.
+func (s *session) condStoreIn(run *folderRun) bool {
+	return s.condStore && run.modSeq
 }
 
 type mailboxState struct {
 	exists        uint32
 	uidNext       uint32
 	highestModSeq uint64
+}
+
+// expungedBetween reports whether a message was expunged between two SELECTs of a folder: it holds fewer messages
+// than before plus the UIDs assigned since. previous is zero before the first sync of the session.
+func expungedBetween(previous, current mailboxState) bool {
+	if previous.uidNext == 0 || current.uidNext < previous.uidNext {
+		return false
+	}
+	return current.exists < previous.exists+(current.uidNext-previous.uidNext)
 }
 
 func stateOf(sel *imap.SelectData) mailboxState {
@@ -43,13 +70,29 @@ func stateOf(sel *imap.SelectData) mailboxState {
 // The cursor only advances after the API accepted the work it describes, so a crash never skips mail.
 func (s *session) syncFolder(ctx context.Context, run *folderRun, full bool) error {
 	sel, err := s.client.Select(run.folder.RemoteName, &imap.SelectOptions{ReadOnly: true, CondStore: s.condStore}).Wait()
+	if refusedByServer(err) {
+		return fmt.Errorf("%w: select %q: %w", errFolderUnavailable, run.folder.RemoteName, err)
+	}
 	if err != nil {
 		return fmt.Errorf("select %q: %w", run.folder.RemoteName, err)
 	}
 	uidNext := uint32(sel.UIDNext)
+	if uidNext == 0 {
+		// RFC 3501 lets a server leave UIDNEXT out. Without it nothing would ever look new: take the highest UID.
+		if uidNext, err = s.highestUIDNext(); err != nil {
+			return err
+		}
+	}
+	run.modSeq = sel.HighestModSeq > 0
 
 	if run.cursor != nil && sel.UIDValidity != run.cursor.UIDValidity {
 		return errFoldersChanged
+	}
+	// Fewer messages than the last sync left plus the UIDs added since means something was expunged in between: only
+	// the presence check finds out what. Without it a CONDSTORE server's deletions would wait for PresenceInterval.
+	// (Without CONDSTORE updates get a full check anyway, at most every UpdatePresenceInterval.)
+	if s.condStoreIn(run) && run.cursor != nil && expungedBetween(run.seen, stateOf(sel)) {
+		full = true
 	}
 	run.seen = stateOf(sel)
 
@@ -184,40 +227,102 @@ func (s *session) ingest(ctx context.Context, run *folderRun, uids []imap.UID, a
 }
 
 func (s *session) ingestGroup(ctx context.Context, run *folderRun, group []imap.UID, advance func(group []imap.UID)) error {
-	fetched, err := s.client.Fetch(imap.UIDSetNum(group...), &imap.FetchOptions{
-		UID:          true,
-		Flags:        true,
-		InternalDate: true,
-		RFC822Size:   true,
-		ModSeq:       s.condStore,
-		BodySection:  []*imap.FetchItemBodySection{{Peek: true}},
-	}).Collect()
+	fetched, failed, err := s.fetchGroup(run, group)
 	if err != nil {
-		return fmt.Errorf("fetch messages: %w", err)
+		return err
 	}
-	slices.SortFunc(fetched, func(a, b *imapFetchBuffer) int { return int(a.UID) - int(b.UID) })
 
 	messages := make([]api.Message, 0, len(fetched))
 	for _, buf := range fetched {
-		msg, err := buildMessage(ctx, s.store, s.account.ID, buf, s.condStore, s.logger.With("folder", run.folder.RemoteName))
+		msg, err := buildMessage(ctx, s.store, s.account.ID, buf, s.condStoreIn(run), s.logger.With("folder", run.folder.RemoteName))
+		if errors.Is(err, errNoBody) {
+			failed = append(failed, s.unreadable(run, buf.UID, buf.InternalDate, flagsOf(buf.Flags), err, false))
+			continue
+		}
 		if err != nil {
 			return err
 		}
 		messages = append(messages, msg)
 	}
-
-	advance(group)
-	result, err := s.api.Messages(ctx, s.account.ID, api.MessageBatch{
-		WorkerID: s.workerID,
-		Folder:   run.folder.RemoteName,
-		Cursor:   s.cursorString(run),
-		Messages: messages,
-	})
+	placeholders, err := isolate.Unreadable(ctx, s.strikes, failed, len(messages), s.logger)
 	if err != nil {
 		return err
 	}
-	s.logger.Debug("ingested", "folder", run.folder.RemoteName, "stored", result.Stored, "linked", result.Linked, "updated", result.Updated)
-	return nil
+	messages = append(messages, placeholders...)
+	slices.SortFunc(messages, func(a, b api.Message) int { return cmp.Compare(uidOf(a), uidOf(b)) })
+
+	advance(group)
+	send := func(ctx context.Context, messages []api.Message, cursor *string) error {
+		result, err := s.api.Messages(ctx, s.account.ID, api.MessageBatch{WorkerID: s.workerID, Folder: run.folder.RemoteName, Cursor: cursor, Messages: messages})
+		if err == nil {
+			s.logger.Debug("ingested", "folder", run.folder.RemoteName, "stored", result.Stored, "linked", result.Linked, "updated", result.Updated)
+		}
+		return err
+	}
+	return isolate.Batch(ctx, send, s.strikes, run.folder.RemoteName, messages, s.cursorString(run), s.logger)
+}
+
+// fetchGroup downloads a group of messages. When the server refuses the FETCH (a NO, which a single damaged message
+// causes on some servers), the messages are fetched one by one, and those still refused come back as failed.
+func (s *session) fetchGroup(run *folderRun, group []imap.UID) (fetched []*imapFetchBuffer, failed []isolate.Failed, err error) {
+	fetched, err = s.fetch(run, group)
+	var refused *imap.Error
+	if err != nil && errors.As(err, &refused) && len(group) > 1 {
+		s.logger.Warn("the server refused to fetch a group of messages; fetching them one by one", "folder", run.folder.RemoteName, "error", err)
+		fetched = nil
+		for _, uid := range group {
+			one, err := s.fetch(run, []imap.UID{uid})
+			switch {
+			case err == nil:
+				fetched = append(fetched, one...)
+			case errors.As(err, &refused):
+				failed = append(failed, s.unreadable(run, uid, time.Time{}, api.Flags{}, err, true))
+			default:
+				return nil, nil, err
+			}
+		}
+		err = nil
+	} else if err != nil && errors.As(err, &refused) {
+		failed = append(failed, s.unreadable(run, group[0], time.Time{}, api.Flags{}, err, true))
+		fetched, err = nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch messages: %w", err)
+	}
+	slices.SortFunc(fetched, func(a, b *imapFetchBuffer) int { return int(a.UID) - int(b.UID) })
+	return fetched, failed, nil
+}
+
+func (s *session) fetch(run *folderRun, uids []imap.UID) ([]*imapFetchBuffer, error) {
+	return s.client.Fetch(imap.UIDSetNum(uids...), &imap.FetchOptions{
+		UID:          true,
+		Flags:        true,
+		InternalDate: true,
+		RFC822Size:   true,
+		ModSeq:       s.condStoreIn(run),
+		BodySection:  []*imap.FetchItemBodySection{{Peek: true}},
+	}).Collect()
+}
+
+// unreadable describes a message the server would not hand over. A refused FETCH is doubtful: the server may refuse
+// every message for a while, so it only counts next to messages that came through.
+func (s *session) unreadable(run *folderRun, uid imap.UID, receivedAt time.Time, flags api.Flags, err error, doubtful bool) isolate.Failed {
+	remoteUID := uidString(uid)
+	return isolate.Failed{
+		Folder:   run.folder.RemoteName,
+		UID:      remoteUID,
+		Err:      err,
+		Doubtful: doubtful,
+		Placeholder: func(ctx context.Context) (api.Message, error) {
+			identity := fmt.Sprintf("%s\x00%d\x00%s", run.folder.RemoteName, run.cursor.UIDValidity, remoteUID)
+			return ingestmsg.Unreadable(ctx, s.store, s.account.ID, identity, remoteUID, receivedAt, flags)
+		},
+	}
+}
+
+func uidOf(m api.Message) uint64 {
+	uid, _ := strconv.ParseUint(m.RemoteUID, 10, 32)
+	return uid
 }
 
 // syncChangedFlags reports flags of messages changed since the cursor's MODSEQ.
@@ -275,7 +380,7 @@ func (s *session) reportPresence(ctx context.Context, run *folderRun, all []imap
 		}
 	}
 
-	if s.condStore || len(all[:cut]) == 0 {
+	if s.condStoreIn(run) || len(all[:cut]) == 0 {
 		return nil
 	}
 	return s.syncAllFlags(ctx, run, all[:cut])
@@ -311,6 +416,19 @@ func (s *session) sendFlagChanges(ctx context.Context, run *folderRun, changes [
 			return nil
 		}
 	}
+}
+
+// highestUIDNext is the UIDNEXT of the selected folder for a server that did not report it: one above the highest
+// UID, or 1 for an empty folder.
+func (s *session) highestUIDNext() (uint32, error) {
+	all, err := s.searchUIDs(nil)
+	if err != nil {
+		return 0, err
+	}
+	if len(all) == 0 {
+		return 1, nil
+	}
+	return uint32(all[len(all)-1]) + 1, nil
 }
 
 func (s *session) searchUIDs(set *imap.UIDSet) ([]imap.UID, error) {
