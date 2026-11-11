@@ -1,0 +1,32 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Sign out{% endblock %}
+
+{% block body %}
+    <main class="page">
+        <div class="brand">
+            <svg class="mark" width="32" height="32" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="3" y="4" width="8.5" height="5" rx="2.5" class="do"/>
+                <rect x="12.5" y="4" width="8.5" height="5" rx="2.5" class="delegate"/>
+                <rect x="9.5" y="10.5" width="5" height="10" rx="2.5" class="know"/>
+            </svg>
+            Tresso
+        </div>
+
+        <section class="card" aria-labelledby="sign-out-title">
+            <h1 id="sign-out-title">Sign out</h1>
+            <p class="lead">This browser stays signed in to Tresso until you sign out here. After that, every app asks for your password again.</p>
+
+            {% if error %}
+                <p class="error" role="alert">{{ error }}</p>
+            {% endif %}
+
+            <form class="form" method="post" action="{{ action }}">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token(csrf_token_id) }}">
+                <button type="submit" class="button">Sign out</button>
+            </form>
+        </section>
+
+        <p class="footnote"><a href="{{ web_app_url }}">Back to Tresso</a></p>
+    </main>
+{% endblock %}

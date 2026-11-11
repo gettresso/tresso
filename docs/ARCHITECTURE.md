@@ -297,6 +297,19 @@ session (firewall `main`); every API call is stateless and signed with a token. 
 ends two hours after its last request (the Redis TTL, also `gc_maxlifetime`) or when the browser closes (the cookie
 has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https.
 
+- **Keep me signed in.** The sign-in form has this checkbox, ticked by default. It sets Symfony's remember-me cookie
+  (`REMEMBERME`, `HttpOnly`, `SameSite=Lax`, `Secure` on https) for 30 days, as long as a refresh token lives, so a new
+  tab, a restarted browser or an app that signs in again passes `/oauth/authorize` without the password. The cookie is
+  signed with `APP_SECRET` and the user's password hash: a new password ends it everywhere. Unticked, the sign-in ends
+  with the session.
+- **Signing out.** `POST /logout` ends the session and clears the remember-me cookie, then sends the browser to
+  `WEB_APP_URL`. It only counts when it comes from Tresso: an `Origin` of the sign-in host itself or of `WEB_APP_URL`
+  (the web app signs out by submitting a form there), or, from a browser that sends no usable `Origin`, the CSRF token
+  of the sign-out page. Anything else gets the sign-out page with a 403 and changes nothing, so another site cannot
+  sign people out (`App\Security\SignOutGuard`, before the firewall). `GET /logout` never signs out: it shows that page
+  with a Sign out button, or goes straight back to `WEB_APP_URL` when the browser has no session and no remember-me
+  cookie. The sign-in and sign-out pages, like the consent screen, cannot be framed and are not cached.
+
 ### 3.3 Mail account credentials
 
 - OAuth (Gmail, Microsoft 365) wherever possible; IMAP/SMTP passwords as fallback.

@@ -32,6 +32,11 @@
                     <input type="password" id="password" name="_password" autocomplete="current-password" required>
                 </label>
 
+                <label class="check" for="remember-me">
+                    <input type="checkbox" id="remember-me" name="_remember_me" value="on" checked>
+                    Keep me signed in on this browser
+                </label>
+
                 <input type="hidden" name="_csrf_token" value="{{ csrf_token('authenticate') }}">
 
                 <button type="submit" class="button">Sign in</button>

@@ -151,6 +151,22 @@ body {
   border-color: var(--focus);
 }
 
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--ink);
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -263,6 +279,10 @@ body {
   color: var(--ink-3);
   font-size: 13px;
   text-align: center;
+}
+
+.footnote a {
+  color: var(--ink-2);
 }
 
 .mark .do {
