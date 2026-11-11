@@ -69,6 +69,10 @@ class MailAccountRepository extends ServiceEntityRepository
      * allowed (or the account is new) and the worker has not listed them yet. The heartbeat names them, so a worker
      * that missed the realtime wake-up after the user allowed calendars does not wait for its next retry.
      *
+     * The grant's scopes are not checked: an account without the calendar scopes is unknown only until the worker
+     * first asks for calendar credentials, which sets not_granted (SyncCredentialsProvider). Being named also starts
+     * an outbox run for the account, which finds nothing to do when there is nothing.
+     *
      * @param list<string> $accountIds
      *
      * @return list<string>
