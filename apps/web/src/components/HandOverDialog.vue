@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
 import { dueChoices, firstName, MAX_NOTE, UnscannedFilesError, type DueChoice, type SyncedMessage } from '@tresso/core'
@@ -104,16 +104,44 @@ const dialog = ref<HTMLDialogElement | null>(null)
 // A click on the backdrop closes it like Cancel.
 const backdrop = backdropClose(cancel)
 
+/** What had focus before the dialog opened (the Hand over button, or the page for H); it gets focus back after. */
+let opener: HTMLElement | null = null
+let unmounted = false
+
 onMounted(async () => {
+  opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
   // Modal: the page behind is inert, so Tab stays inside the dialog and a screen reader does not read behind it.
   dialog.value?.showModal?.()
   await nextTick()
   firstField.value?.querySelector<HTMLInputElement>('input')?.focus()
 })
+
+onBeforeUnmount(() => {
+  unmounted = true
+  if (opener?.isConnected) {
+    opener.focus()
+  }
+})
+
+/**
+ * The browser closed the dialog itself: Chromium lets a page refuse Escape (cancel) only once without a click or key
+ * in between, then closes anyway. While a hand-over is on its way the dialog comes back, so its outcome (or error)
+ * stays in view; otherwise closing it this way is Cancel.
+ */
+function closed(): void {
+  if (unmounted) {
+    return
+  }
+  if (submitting.value) {
+    dialog.value?.showModal?.()
+    return
+  }
+  handOvers.close()
+}
 </script>
 
 <template>
-  <dialog ref="dialog" class="dialog" aria-labelledby="hand-over-title" @cancel.prevent="cancel" @keydown="keydown" @pointerdown="backdrop.onPointerdown" @click="backdrop.onClick">
+  <dialog ref="dialog" class="dialog" aria-labelledby="hand-over-title" @cancel.prevent="cancel" @close="closed" @keydown="keydown" @pointerdown="backdrop.onPointerdown" @click="backdrop.onClick">
     <header class="head">
       <h2 id="hand-over-title">Hand over</h2>
       <p class="about">{{ message.subject || '(no subject)' }}, from {{ senderName(message.from) }}</p>
@@ -169,8 +197,9 @@ onMounted(async () => {
 .dialog {
   animation: pop-in var(--motion-base) var(--ease-out);
   width: min(560px, calc(100vw - 32px));
-  max-height: calc(100vh - 48px);
-  /* Opens at the same height whatever it holds, so the form does not jump when an error appears. */
+  /* Opens at the same height whatever it holds, so the form does not jump when an error appears; its bottom stays
+     16 px inside the window (10vh above it plus at most 90vh - 16px of dialog), so the footer can always be reached. */
+  max-height: calc(90vh - 16px);
   margin: 10vh auto auto;
   padding: 0;
   border: 1px solid var(--line);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, useId, watch } from 'vue'
+import { nextTick, ref, useId, watch } from 'vue'
 import { isPlausibleAddress, parseAddresses, type Address } from '@tresso/core'
 import type { Contact } from '@/mail/db'
 import { useMailStore } from '@/stores/mail'
@@ -24,6 +24,12 @@ watch(text, async (value) => {
   suggestions.value = (await mail.suggestContacts(value)).filter((contact) => !taken.has(contact.key))
   active.value = 0
   open.value = suggestions.value.length > 0
+})
+
+// The list scrolls when it is long: the option the arrow keys reach stays in sight.
+watch(active, async (index) => {
+  await nextTick()
+  document.getElementById(`${id}-option-${index}`)?.scrollIntoView?.({ block: 'nearest' })
 })
 
 function add(addresses: Address[]): void {
@@ -191,6 +197,9 @@ function paste(event: ClipboardEvent): void {
   top: 100%;
   left: 0;
   min-width: 260px;
+  /* About five names; more scroll inside the list, so a dialog or window around the field does not have to. */
+  max-height: min(240px, 40vh);
+  overflow-y: auto;
   margin: 4px 0 0;
   padding: 4px;
   list-style: none;

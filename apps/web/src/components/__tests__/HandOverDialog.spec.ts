@@ -202,6 +202,68 @@ describe('HandOverDialog', () => {
     wrapper.unmount()
   })
 
+  it('comes back when the browser closes it while the hand-over is on its way, and cancels when it is not', async () => {
+    let finish!: () => void
+    handOver.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)))
+    const close = vi.spyOn(handOvers, 'close')
+    const original = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
+    const showModal = vi.fn<() => void>()
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { value: showModal, configurable: true, writable: true })
+    try {
+      const wrapper = mountDialog()
+      await chooseLisa(wrapper)
+      await wrapper.get('form').trigger('submit')
+      await settle()
+
+      // Chromium closes a modal dialog itself on a second Escape.
+      await wrapper.get('dialog').trigger('close')
+      expect(showModal).toHaveBeenCalledTimes(2)
+      expect(close).not.toHaveBeenCalled()
+
+      finish()
+      await settle()
+      await wrapper.get('dialog').trigger('close')
+      expect(close).toHaveBeenCalled()
+      wrapper.unmount()
+    } finally {
+      if (original) {
+        Object.defineProperty(HTMLDialogElement.prototype, 'showModal', original)
+      } else {
+        delete (HTMLDialogElement.prototype as Partial<HTMLDialogElement>).showModal
+      }
+    }
+  })
+
+  it('gives focus back to what opened it', async () => {
+    // jsdom has no showModal; this one opens the dialog, so what is inside it can take focus.
+    const original = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+      value(this: HTMLDialogElement) {
+        this.setAttribute('open', '')
+      },
+      configurable: true,
+      writable: true,
+    })
+    const opener = document.createElement('button')
+    document.body.appendChild(opener)
+    opener.focus()
+    try {
+      const wrapper = mountDialog()
+      await settle()
+      expect(document.activeElement).toBe(wrapper.get('input[role="combobox"]').element)
+
+      wrapper.unmount()
+      expect(document.activeElement).toBe(opener)
+    } finally {
+      opener.remove()
+      if (original) {
+        Object.defineProperty(HTMLDialogElement.prototype, 'showModal', original)
+      } else {
+        delete (HTMLDialogElement.prototype as Partial<HTMLDialogElement>).showModal
+      }
+    }
+  })
+
   it('opens as a modal dialog, so the page behind takes no focus', () => {
     const original = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
     const showModal = vi.fn<() => void>()
