@@ -338,3 +338,29 @@ func TestClaimedOutgoingMessagesSayWhetherItIsTheLastAttempt(t *testing.T) {
 		t.Fatalf("messages = %+v, %v", messages, err)
 	}
 }
+
+// Fails without the fix: the token request had no timeout, so a token endpoint that accepted the connection and never
+// answered blocked every API call, the heartbeat included.
+func TestATokenEndpointThatNeverAnswersFailsTheCallInTime(t *testing.T) {
+	defer func(previous time.Duration) { tokenTimeout = previous }(tokenTimeout)
+	tokenTimeout = 100 * time.Millisecond
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		_, _ = w.Write([]byte(`{"leaseSeconds":90,"accounts":[]}`))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	start := time.Now()
+	_, err := New(context.Background(), srv.URL, srv.URL+"/oauth/token", "sync-worker", "secret").Lease(context.Background(), "w1", 1)
+	if err == nil || time.Since(start) > 5*time.Second {
+		t.Errorf("Lease = %v after %v; want an error within the token timeout", err, time.Since(start))
+	}
+}

@@ -100,7 +100,10 @@ type Client struct {
 // expire; a 401 drops the cached token and retries once, so a revoked token (key rotation, revocation, a restored
 // database) never blocks the worker until expiry.
 func New(ctx context.Context, baseURL, tokenURL, clientID, clientSecret string) *Client {
-	tokens := &resettableTokens{ctx: ctx, config: &clientcredentials.Config{
+	// The token request runs inside the API request's RoundTrip, where the API client's own Timeout cannot interrupt
+	// it, and every other request waits for it: it needs a timeout of its own.
+	tokenCtx := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: tokenTimeout})
+	tokens := &resettableTokens{ctx: tokenCtx, config: &clientcredentials.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		TokenURL:     tokenURL,
@@ -113,6 +116,9 @@ func New(ctx context.Context, baseURL, tokenURL, clientID, clientSecret string) 
 
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient, tokens: tokens}
 }
+
+// tokenTimeout bounds one token request.
+var tokenTimeout = 15 * time.Second
 
 type resettableTokens struct {
 	ctx    context.Context
