@@ -740,6 +740,37 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertContains('eventNote', array_column($delta['deleted'], 'type'));
     }
 
+    public function testAnUnknownScopeIsRefusedAndTheSeriesKept(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$series['id'].'?scope=thisAndFollowing&recurrenceId=20261026T080000Z', server: $this->kim);
+        self::assertResponseStatusCodeSame(422);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=bogus', self::event($this->calendarId, ['summary' => 'Renamed', 'recurrence' => 'FREQ=WEEKLY;COUNT=4']), $this->kim);
+        self::assertResponseStatusCodeSame(422);
+
+        self::assertSame(array_fill(0, 4, 'Weekly sync'), array_column($this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00'), 'summary'));
+    }
+
+    public function testAChangedOccurrenceAddressedWithoutAScopeIsOnlyThatOccurrence(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=this&recurrenceId=20261026T080000Z', self::event($this->calendarId, ['summary' => 'Weekly sync, one off', ...self::secondWeek()]), $this->kim);
+        self::assertResponseIsSuccessful();
+        $override = self::string($this->decodedResponse()['id']);
+        self::assertNotSame($series['id'], $override);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$override, self::event($this->calendarId, ['summary' => 'Weekly sync, renamed once', ...self::secondWeek()]), $this->kim);
+        self::assertResponseIsSuccessful();
+        self::assertSame(['Weekly sync', 'Weekly sync, renamed once', 'Weekly sync', 'Weekly sync'], array_column($this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00'), 'summary'));
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$override, server: $this->kim);
+        self::assertResponseStatusCodeSame(204);
+        $starts = array_map(static fn (array $o): mixed => \is_array($o['start']) ? $o['start']['dateTime'] : null, $this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00'));
+        self::assertSame(['2026-10-19T07:00:00+00:00', '2026-11-02T08:00:00+00:00', '2026-11-09T08:00:00+00:00'], $starts, 'Only that occurrence is gone.');
+        self::assertSame('FREQ=WEEKLY;COUNT=4', $this->getJson('/api/v1/calendar-events/'.$series['id'], $this->kim)['recurrence']);
+    }
+
     public function testManagesLocalCalendars(): void
     {
         $this->client->jsonRequest('POST', '/api/v1/calendars', ['name' => 'Family', 'color' => '#E0457B'], $this->kim);
@@ -759,6 +790,17 @@ final class CalendarEventApiTest extends DatabaseTestCase
 
         $this->client->request('DELETE', '/api/v1/calendars/'.$this->calendarId, server: $this->kim);
         self::assertResponseStatusCodeSame(422);
+    }
+
+    /**
+     * @return array{start: array{dateTime: string, timeZone: string}, end: array{dateTime: string, timeZone: string}}
+     */
+    private static function secondWeek(): array
+    {
+        return [
+            'start' => ['dateTime' => '2026-10-26T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-26T09:30:00', 'timeZone' => 'Europe/Amsterdam'],
+        ];
     }
 
     private function putNote(string $eventId, ?string $recurrenceId, string $text): void

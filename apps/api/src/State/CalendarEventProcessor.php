@@ -72,7 +72,7 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
             }
 
             $event = $this->event($user, $uriVariables['id'] ?? null);
-            $scope = EditScope::tryFrom((string) ($this->query('scope') ?? 'all')) ?? EditScope::All;
+            $scope = $this->scope($event);
             $recurrenceId = $this->query('recurrenceId');
 
             if ($data instanceof EventInput) {
@@ -180,6 +180,20 @@ final readonly class CalendarEventProcessor implements ProcessorInterface
         $value = $this->requests->getCurrentRequest()?->query->get($name);
 
         return \is_string($value) && '' !== $value ? $value : null;
+    }
+
+    /**
+     * The scope asked for. Without one, a changed occurrence (an override row) means itself and anything else the
+     * whole event: the id of one occurrence never reaches the whole series by default.
+     */
+    private function scope(CalendarEvent $event): EditScope
+    {
+        $scope = $this->query('scope');
+        if (null === $scope) {
+            return $event->isOverride() ? EditScope::This : EditScope::All;
+        }
+
+        return EditScope::tryFrom($scope) ?? throw self::invalid('scope', 'scope is one of this, following or all.');
     }
 
     private function flag(string $name): bool
