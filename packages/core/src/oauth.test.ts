@@ -31,6 +31,14 @@ describe('PKCE', () => {
     expect(url.searchParams.get('client_id')).toBe('web')
   })
 
+  it('asks for the password again when told to, and only then', async () => {
+    const forced = new URL((await startAuthorization(config, { prompt: 'login' })).url)
+    const plain = new URL((await startAuthorization(config)).url)
+
+    expect(forced.searchParams.get('prompt')).toBe('login')
+    expect(plain.searchParams.has('prompt')).toBe(false)
+  })
+
   it('falls back to the API address for an empty sign-in address', async () => {
     const pending = await startAuthorization({ ...config, authorizeUrl: '' })
 
