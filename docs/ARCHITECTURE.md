@@ -1583,12 +1583,16 @@ user first presses Send and kept with the draft in the copy (`sendAttemptId`) be
 Send again after a lost answer, also after a restart, sends the same id and the server returns the message it queued
 instead of sending it twice. The id is dropped once the server confirmed the message, when the send is cancelled or
 undone, and when the draft's text changes (an edited message is a new one). A server that refuses the id itself (a
-device clock far ahead) gets a new one on the next try. Queueing hides the draft on the server, which the delta reports
-as a deletion; a draft with a send under way survives that deletion, so its id does too. When the message with the
-send's id is in the copy (its answer was lost), the draft is taken as on its way after all: Send pressed again sends
-nothing, and the follow-up run after every failed send closes the form, unless something was typed there that the
-stored draft does not have (then the form stays and says the message went without it). A server that does not know
-the field ignores it.
+device clock far ahead) gets a new one on the next try, and so does any send the server answered with a refusal other
+than 408 or 409 (it queued nothing). Queueing hides the draft on the server, which the delta reports as a deletion; a
+draft with a send under way survives that deletion, so its id does too, marked as hidden on the server. When the
+message with the send's id is in the copy (its answer was lost), the draft is taken as on its way after all: Send
+pressed again sends nothing, and the follow-up run after every failed send closes the form. When it is not (the draft
+was sent or deleted on another device, or the server does not take the id), the follow-up removes the hidden draft as
+any deleted draft. Text typed since the send never goes with it: it is kept as a new draft (a new id, since the old
+one is taken on the server) and the user is told. A send dropped because the text was edited after it failed is
+remembered (`unsureSendId`): when its message shows up after all, the user is told the earlier text went out and the
+edited text is kept as a new draft. A server that does not know the field ignores it.
 
 Message actions in the web client: opening a conversation reads it; the conversation's buttons archive, trash, mark
 unread, flag and move it (shortcuts E, #, U and S, not while typing or writing), and archiving, trashing or moving
@@ -1602,7 +1606,8 @@ All Mail aside) no exact undo exists, so none is offered. Each action changes th
 batches it did not take), it is put back part by part (read, flagged, folders; `OpenActions`): a part goes back once
 no other action of this device on it is open any more, to how it was before the first of them, and only while it
 shows the newest one's result; once the delta brought the message, the server's version stays. A batch the server
-took ends its entries too (`acceptAction`), since an action that changed nothing there brings no delta.
+took ends its entries too (`acceptAction`), since an action that changed nothing there brings no delta. Entries go by
+the action's own number (`AppliedAction.id`), so a late answer to one action never ends a newer one's.
 
 Bulk actions in the web client: conversations are selected with their checkboxes (shift selects a range), by age
 from the list's Select menu, or as everything from the senders of the selected ones; the last two search the whole
@@ -2521,7 +2526,9 @@ by mail.
   cancelled and its draft thrown away. Until the forward leaves (the undo window), Undo cancels it and withdraws the
   hand-over (`DELETE`); afterwards the hand-over stays. Hand-overs share one composer, so they run one after another;
   each holds the next for at most a minute from when it starts, and one that runs longer keeps the composer until it
-  settles (a hand-over asked for meanwhile is refused with a message to try again). Undo and take back do not wait for
+  settles (a hand-over asked for meanwhile is refused with a message to try again). Every API request the clients make
+  (uploads of the user's files aside) is given up after 120 s (`withDeadline`), so a request that hangs ends as a
+  failed step instead of keeping hand-overs refused. Undo and take back do not wait for
   them: the cancel and the withdrawal go out at once and they answer when the server did; the draft the forward came
   back as is thrown away by its id afterwards, without opening it (`Composer.discardStored`).
 - **Entity** `hand_over` (owner-scoped, tracked for the delta, tombstone type `handOver`): account, message handed
