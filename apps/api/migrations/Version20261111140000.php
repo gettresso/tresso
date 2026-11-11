@@ -21,7 +21,7 @@ final class Version20261111140000 extends AbstractMigration
     {
         // this up() migration is auto-generated, please modify it to your needs
         $this->addSql('ALTER TABLE message ADD orphaned_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT NULL');
-        $this->addSql('CREATE INDEX message_orphaned ON message (orphaned_at) WHERE (orphaned_at IS NOT NULL)');
+        $this->addSql('CREATE INDEX message_orphaned ON message (mail_account_id, orphaned_at) WHERE (orphaned_at IS NOT NULL)');
     }
 
     public function down(Schema $schema): void

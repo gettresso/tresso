@@ -28,7 +28,7 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Index(columns: ['mail_account_id', 'size'])]
 #[ORM\Index(name: 'message_unclassified', columns: ['mail_account_id', 'received_at'], options: ['where' => '(classified_at IS NULL)'])]
 #[ORM\Index(name: 'message_held', columns: ['held_until'], options: ['where' => '(held_until IS NOT NULL)'])]
-#[ORM\Index(name: 'message_orphaned', columns: ['orphaned_at'], options: ['where' => '(orphaned_at IS NOT NULL)'])]
+#[ORM\Index(name: 'message_orphaned', columns: ['mail_account_id', 'orphaned_at'], options: ['where' => '(orphaned_at IS NOT NULL)'])]
 class Message implements TracksChanges
 {
     #[ORM\Id]
