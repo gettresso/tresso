@@ -104,12 +104,11 @@ const dialog = ref<HTMLDialogElement | null>(null)
 // A click on the backdrop closes it like Cancel.
 const backdrop = backdropClose(cancel)
 
-/** What had focus before the dialog opened (the Hand over button, or the page for H); it gets focus back after. */
-let opener: HTMLElement | null = null
+// Focus goes back to what opened the dialog once it has left the page (App.vue, useFocusReturn): while it is open,
+// also through its leave animation, everything outside it is inert.
 let unmounted = false
 
 onMounted(async () => {
-  opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
   // Modal: the page behind is inert, so Tab stays inside the dialog and a screen reader does not read behind it.
   dialog.value?.showModal?.()
   await nextTick()
@@ -118,9 +117,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unmounted = true
-  if (opener?.isConnected) {
-    opener.focus()
-  }
 })
 
 /**
