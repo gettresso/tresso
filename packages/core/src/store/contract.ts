@@ -460,6 +460,19 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
       expect((await db.draft('d1'))?.hiddenOnServer).toBeUndefined()
     })
 
+    it('keeps edits the server never had on a draft hidden for sending, and drops the mark when the server has it again', async () => {
+      await db.saveDraft(draft('d1', { version: 2, sendAttemptId: 'a1', pendingSave: true, subject: 'Typed offline' }))
+
+      await db.apply(page({ cursor: 11, deleted: [{ type: 'draft', id: 'd1' }] }))
+      expect(await db.draft('d1')).toMatchObject({ pendingSave: true, hiddenOnServer: true, subject: 'Typed offline' })
+
+      const synced = { id: 'd1', mailAccountId: 'work', kind: 'new' as const, to: [], cc: [], bcc: [], subject: 'Hi', html: '<p>Hi</p>', signatureId: null, quoteHtml: '', inReplyToMessageId: null, version: 2, updatedAt: '2026-10-19T08:00:00Z', attachments: [] }
+      await db.apply(page({ cursor: 12, drafts: [synced] }))
+      const back = await db.draft('d1')
+      expect(back).toMatchObject({ pendingSave: true, subject: 'Typed offline' })
+      expect(back?.hiddenOnServer).toBeUndefined()
+    })
+
     it('keeps a newer draft than the one a late page brings', async () => {
       const synced = { id: 'd1', mailAccountId: 'work', kind: 'new' as const, to: [], cc: [], bcc: [], subject: 'Newer', html: '', signatureId: null, quoteHtml: '', inReplyToMessageId: null, version: 5, updatedAt: '2026-10-19T08:00:00Z', attachments: [] }
       await db.apply(page({ cursor: 11, drafts: [synced] }))

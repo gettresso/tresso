@@ -1291,6 +1291,94 @@ describe('Composer', () => {
       expect(notices.map((notice) => notice.text)).toContain('An earlier version of "First words" reached the server after all and is on its way. What you typed since is kept as a new draft.')
     })
 
+    /** A draft the server has, edited offline and sent there, then sent or deleted on another device. */
+    async function editedOfflineThenGone(closeFirst: boolean): Promise<string> {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'On the server' })
+      await vi.advanceTimersByTimeAsync(1000)
+      const id = composer.state.draft!.id
+      api.offline = true
+      composer.update({ subject: 'Typed offline' })
+      sendFails = lost
+      await composer.send()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(await store.draft(id)).toMatchObject({ subject: 'Typed offline', pendingSave: true, sendAttemptId: tried[0]!.outgoingId })
+      if (closeFirst) {
+        composer.close()
+        await vi.advanceTimersByTimeAsync(10)
+      }
+      api.offline = false
+      sendFails = null
+      await store.apply(page({ cursor: 3, deleted: [{ type: 'draft', id }] }))
+      expect(api.calls.filter((call) => call.startsWith('create')).length).toBe(1)
+      await composer.followUp()
+      return id
+    }
+
+    it('keeps text written offline on a draft another device sent or deleted, as a new draft, with the form open', async () => {
+      const id = await editedOfflineThenGone(false)
+
+      expect(await store.draft(id)).toBeNull()
+      const kept = (await store.drafts()).find((each) => each.subject === 'Typed offline')
+      expect(kept).toMatchObject({ sendAttemptId: null, outgoingId: null })
+      expect(kept!.id).not.toBe(id)
+      expect(composer.state.draft).toMatchObject({ id: kept!.id, subject: 'Typed offline' })
+      expect(notices.map((notice) => notice.text)).toContain('"Typed offline" was sent or deleted on another device. What you wrote here since is kept as a new draft.')
+    })
+
+    it('keeps text written offline the same way when its form is closed, and says so', async () => {
+      const id = await editedOfflineThenGone(true)
+
+      expect(await store.draft(id)).toBeNull()
+      expect((await store.drafts()).find((each) => each.subject === 'Typed offline')).toMatchObject({ sendAttemptId: null, unsureSendId: null })
+      expect(notices.map((notice) => notice.text)).toContain('"Typed offline" was sent or deleted on another device. What you wrote here since is kept as a new draft.')
+    })
+
+    it('keeps text edited after a failed send when another device sent or deleted the draft', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Failed once' })
+      const id = composer.state.draft!.id
+      sendFails = new ApiFailure(502)
+      await composer.send()
+      api.offline = true
+      composer.update({ html: '<p>Edited offline</p>' })
+      await vi.advanceTimersByTimeAsync(1000)
+      composer.close()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(await store.draft(id)).toMatchObject({ unsureSendId: tried[0]!.outgoingId, pendingSave: true })
+      api.offline = false
+
+      await store.apply(page({ cursor: 3, deleted: [{ type: 'draft', id }] }))
+      await composer.followUp()
+
+      expect(await store.draft(id)).toBeNull()
+      expect((await store.drafts()).find((each) => each.html === '<p>Edited offline</p>')).toMatchObject({ unsureSendId: null, sendAttemptId: null })
+    })
+
+    it('leaves the autosave of another open draft alone when a closed one is kept as a new draft', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'First words' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      const attempt = tried[0]!.outgoingId!
+      composer.update({ html: '<p>Second thoughts</p>' })
+      await vi.advanceTimersByTimeAsync(1000)
+      composer.close()
+      await vi.advanceTimersByTimeAsync(10)
+      sendFails = null
+
+      composer.openNew()
+      composer.update({ subject: 'Another message' })
+      const other = composer.state.draft!.id
+      await store.apply(queued(id, attempt))
+      await composer.followUp()
+      await vi.advanceTimersByTimeAsync(1000)
+
+      expect(await store.draft(other)).toMatchObject({ subject: 'Another message' })
+      expect(composer.state.draft).toMatchObject({ id: other })
+    })
+
     it('is dropped by an undo, so sending again is a new send', async () => {
       composer.openNew([{ address: 'anna@example.test', name: null }])
       const id = composer.state.draft!.id

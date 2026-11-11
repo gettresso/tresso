@@ -1588,9 +1588,12 @@ than 408 or 409 (it queued nothing). Queueing hides the draft on the server, whi
 draft with a send under way survives that deletion, so its id does too, marked as hidden on the server. When the
 message with the send's id is in the copy (its answer was lost), the draft is taken as on its way after all: Send
 pressed again sends nothing, and the follow-up run after every failed send closes the form. When it is not (the draft
-was sent or deleted on another device, or the server does not take the id), the follow-up removes the hidden draft as
-any deleted draft. Text typed since the send never goes with it: it is kept as a new draft (a new id, since the old
-one is taken on the server) and the user is told. A send dropped because the text was edited after it failed is
+was sent or deleted on another device, or the server does not take the id), the follow-up removes the hidden draft
+only when the server had its exact text; text written here that the server never had (edits waiting to go up, or
+typed in its form) is kept as a new draft (a new id, since the old one is taken on the server, and without its files,
+which stay with the server's copy), whether its form is open or not, and the user is told. Sync never deletes text the
+user typed. A hidden draft is not uploaded until it is settled, and the mark goes when the server brings the draft
+back. A send dropped because the text was edited after it failed is
 remembered (`unsureSendId`): when its message shows up after all, the user is told the earlier text went out and the
 edited text is kept as a new draft. A server that does not know the field ignores it.
 

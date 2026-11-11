@@ -35,13 +35,15 @@ export function contactMatches(contact: Contact, query: string): boolean {
  */
 export function syncedDraft(local: Draft | null | undefined, draft: SyncedDraft): Draft | null {
   if (local?.pendingSave) {
-    // The text waits for its upload; the files are the server's either way.
+    // The text waits for its upload; the files are the server's either way. The server has its copy again, so a mark
+    // that it was hidden goes.
     const remoteVersion = draft.version > local.version ? draft.version : local.remoteVersion
     const attachments = draft.attachments ?? []
-    if (remoteVersion === local.remoteVersion && JSON.stringify(attachments) === JSON.stringify(local.attachments ?? [])) {
+    if (remoteVersion === local.remoteVersion && JSON.stringify(attachments) === JSON.stringify(local.attachments ?? []) && !local.hiddenOnServer) {
       return null
     }
-    return { ...local, remoteVersion, attachments }
+    const { hiddenOnServer: _back, ...kept } = local
+    return { ...kept, remoteVersion, attachments }
   }
   if (local != null && draft.version < local.version) {
     // A page the server read before this device's last upload, applied after its answer: the copy is newer already.
@@ -73,8 +75,9 @@ export function deletedDraft(local: Draft): Draft | null {
     return { ...local, pendingSave: false, remoteVersion: null }
   }
   if (local.sendAttemptId || local.unsureSendId) {
-    // Kept for its send only, and marked so: the follow-up removes it when the send turns out not to be what hid it.
-    return { ...local, pendingSave: false, remoteVersion: null, hiddenOnServer: true }
+    // Kept for its send, and marked so: the follow-up settles it when the send turns out not to be what hid it (edits
+    // the server never had stay pending and are kept then).
+    return { ...local, remoteVersion: null, hiddenOnServer: true }
   }
   return local.pendingSave ? { ...local, version: 0, remoteVersion: null } : null
 }
