@@ -26,12 +26,14 @@ if (vibrant) {
 const app = createApp(App)
 
 app.use(createPinia())
-app.use(router)
-
 // The desktop app reads the previous sign-in from the keychain before the first screen, so it never flashes the
-// sign-in screen, and takes sign-in results from the system browser as `tresso://` links.
+// sign-in screen. Before the router: installing it starts the first navigation, whose guard must see the sign-in, or
+// a reload on a signed-in screen lands on the inbox.
 const auth = useAuthStore()
 await auth.restore()
+app.use(router)
+
+// The desktop app takes sign-in results from the system browser as `tresso://` links.
 if (isDesktop) {
   await onDeepLinks((link) => {
     const route = desktopLinkRoute(link, config.redirectUri, auth.hasPendingSignIn())
