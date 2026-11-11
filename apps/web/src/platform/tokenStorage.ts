@@ -155,14 +155,15 @@ export function watchTokens(callback: (tokens: TokenSet | null) => void): () => 
 }
 
 /**
- * Runs a token refresh (or a sign-out) while no other tab runs one. Refresh tokens rotate: two tabs refreshing with the
- * same one would leave one of them with a revoked token. Without the Web Locks API (old browsers) it runs at once,
- * which is as safe as a single tab; the desktop app has one window.
+ * Runs a token refresh while no other tab runs one. Refresh tokens rotate: two tabs refreshing with the same one would
+ * leave one of them with a revoked token. Without the Web Locks API (old browsers) it runs at once, as a single tab
+ * does; the desktop app has one window.
  *
  * `waitMs` limits the wait for the lock: a tab the browser suspended while it held the lock may keep it for long.
  * When the wait runs out, or the browser refuses the lock (a SecurityError where it refuses storage to the origin),
- * `run` goes ahead without the lock; the caller checks the stored set after its request, which covers that. An error
- * of `run` itself is passed on.
+ * `run` goes ahead without the lock. That keeps the app usable, at a price: two tabs may then refresh with the same
+ * token, and the one the server refuses ends the session as expired in every tab (the mail copy stays, and signing in
+ * again is one click). An error of `run` itself is passed on.
  */
 export async function withRefreshLock<T>(run: () => Promise<T>, options: { waitMs?: number } = {}): Promise<T> {
   if (isDesktop || typeof navigator === 'undefined' || navigator.locks === undefined) {

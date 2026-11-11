@@ -31,11 +31,15 @@ vi.mock('@/platform/desktop', () => ({
   },
 }))
 
-const push = vi.hoisted(() => ({ disabled: 0, hangs: false }))
+const push = vi.hoisted(() => ({ disabled: 0, hangs: false, subscribed: false }))
 
 vi.mock('@/platform/webPush', () => ({
-  disableWebPush: async () => {
+  disableWebPush: async (send: (method: 'POST' | 'DELETE', path: string, body?: unknown) => Promise<unknown>) => {
     push.disabled += 1
+    if (push.subscribed) {
+      // As the real one does: it tells the server through the sign-out's own send.
+      await send('POST', '/api/v1/notification-devices', { kind: 'web_push' })
+    }
     if (push.hangs) {
       // A server that never answers.
       await new Promise(() => {})
@@ -304,6 +308,7 @@ describe('auth store', () => {
       // The sign-in pages are on the unreachable API here: the form would only show the browser's error page.
       expect(forms).toEqual([])
       expect(localStorage.getItem('tresso.auth.promptLogin')).not.toBeNull()
+      expect(auth.browserSessionOpen).toBe(true)
     })
 
     it('ends the browser session when the server answered the revocation, even with an error', async () => {
@@ -338,6 +343,113 @@ describe('auth store', () => {
       expect(localStorage.getItem('auth.tokens')).toBeNull()
       expect(server.revoked).toEqual(['refresh-1'])
       expect(forms).toHaveLength(1)
+    })
+
+    it('removes the tokens before the server is asked, so the sign-out holds on this device at once', async () => {
+      let revoke!: () => void
+      stubServer()
+      vi.mocked(fetch).mockImplementation((input) =>
+        String(input).endsWith('/oauth/revoke') ? new Promise<Response>((resolve) => (revoke = () => resolve(new Response(null, { status: 200 })))) : Promise.resolve(new Response(null, { status: 204 })),
+      )
+      captureForms()
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      const signingOut = auth.signOut()
+      await vi.waitFor(() => expect(revoke).toBeDefined())
+
+      expect(auth.isAuthenticated).toBe(false)
+      expect(localStorage.getItem('auth.tokens')).toBeNull()
+      revoke()
+      await signingOut
+    })
+
+    it('never signs back in through a refresh this tab started, or a call the sign-out makes, with an expired token', async () => {
+      push.subscribed = true
+      let answer!: () => void
+      const server = stubServer({
+        refresh: () =>
+          new Promise<Response>((resolve) => {
+            answer = () => resolve(Response.json({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600, token_type: 'Bearer' }))
+          }),
+        api: () => Response.json({ id: 'device-1' }),
+      })
+      captureForms()
+      localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+      const auth = await authStore()
+
+      try {
+        // A request of this tab is refreshing when the user signs out.
+        const request = auth.api('/api/v1/me')
+        await vi.waitFor(() => expect(answer).toBeDefined())
+        await auth.signOut()
+        answer()
+        await expect(request).rejects.toThrow('Not signed in.')
+      } finally {
+        push.subscribed = false
+      }
+
+      // The sign-out's own call about the pushes went with the expired token as it was, and refreshed nothing.
+      expect(server.refreshes).toEqual(['refresh-1'])
+      expect(server.calls).toEqual([{ path: '/api/v1/notification-devices', token: 'access-1' }])
+      await vi.waitFor(() => expect(server.revoked).toEqual(['refresh-1', 'refresh-2']))
+      expect(auth.tokens).toBeNull()
+      expect(auth.isAuthenticated).toBe(false)
+      expect(localStorage.getItem('auth.tokens')).toBeNull()
+    })
+
+    it('ends a sign-in page session it could not end at sign-out at the next start, once the server answers', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))))
+      const forms = captureForms()
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const before = await authStore()
+      await before.signOut()
+      expect(before.browserSessionOpen).toBe(true)
+      expect(forms).toEqual([])
+
+      // The next start, still offline: nothing is sent, the sign-in screen keeps saying so.
+      const offline = await authStore()
+      await offline.endOpenBrowserSession()
+      expect(offline.browserSessionOpen).toBe(true)
+      expect(forms).toEqual([])
+
+      // The next start with the server back.
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ name: 'Tresso' })))
+      const online = await authStore()
+      await online.endOpenBrowserSession()
+
+      expect(vi.mocked(fetch)).toHaveBeenCalledWith('http://localhost:8080/api/v1/server-info', expect.anything())
+      expect(forms).toHaveLength(1)
+      expect(forms[0]!.action).toBe('http://localhost:8080/logout')
+      expect(online.browserSessionOpen).toBe(false)
+      expect(localStorage.getItem('tresso.auth.browserSessionOpen')).toBeNull()
+    })
+
+    it('checks sign-in pages on the app\'s own address before sending the form there', async () => {
+      window.tressoConfig = { authUrl: window.location.origin }
+      const forms = captureForms()
+      const answersWith = (status: number) =>
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (input: RequestInfo | URL) => (String(input).endsWith('/logout') ? new Response('Bad gateway', { status }) : new Response(null, { status: 200 }))),
+        )
+      try {
+        answersWith(502)
+        localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+        const failing = await authStore()
+        await failing.signOut()
+        expect(forms).toEqual([])
+        expect(failing.browserSessionOpen).toBe(true)
+
+        answersWith(200)
+        const answering = await authStore()
+        await answering.endOpenBrowserSession()
+        expect(vi.mocked(fetch)).toHaveBeenCalledWith(`${window.location.origin}/logout`, expect.objectContaining({ redirect: 'manual' }))
+        expect(forms).toHaveLength(1)
+      } finally {
+        delete window.tressoConfig
+      }
     })
 
     it('says a sign-out is under way while it runs', async () => {
@@ -592,33 +704,7 @@ describe('auth store', () => {
         expect(auth.sessionEnd).toBeNull()
       })
 
-      it('waits for a refresh in another tab before signing out, and revokes the set that refresh stored', async () => {
-        stubLocks()
-        let answer!: () => void
-        const server = stubServer({
-          refresh: () =>
-            new Promise<Response>((resolve) => {
-              answer = () => resolve(Response.json({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600, token_type: 'Bearer' }))
-            }),
-          api: () => Response.json({ id: 'user-1' }),
-        })
-        captureForms()
-        localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
-        const signingOut = await authStore()
-        const refreshing = await authStore()
-
-        const request = refreshing.api('/api/v1/me')
-        await vi.waitFor(() => expect(answer).toBeDefined())
-        const signOut = signingOut.signOut()
-        answer()
-        await request
-        await signOut
-
-        expect(server.revoked).toEqual(['refresh-2'])
-        expect(localStorage.getItem('auth.tokens')).toBeNull()
-      })
-
-      it('signs out after a few seconds without the lock that a stuck refresh in another tab holds, and drops that refresh', async () => {
+      it('signs out at once while another tab refreshes, and that refresh drops and revokes its answer', async () => {
         stubLocks()
         let answer!: () => void
         const server = stubServer({
@@ -634,7 +720,7 @@ describe('auth store', () => {
         const request = stuck.api('/api/v1/me')
         await vi.waitFor(() => expect(answer).toBeDefined())
 
-        await withoutWaiting(() => signingOut.signOut())
+        await signingOut.signOut()
 
         expect(localStorage.getItem('auth.tokens')).toBeNull()
         expect(server.revoked).toEqual(['refresh-1'])
