@@ -370,6 +370,10 @@ async function toggle(todo: Todo): Promise<void> {
   text-decoration: none;
   font-weight: 600;
 }
+.email:focus-visible {
+  /* Inside the ring's own box: the source column clips anything outside it. */
+  outline-offset: -2px;
+}
 .sender {
   min-width: 0;
   overflow: hidden;

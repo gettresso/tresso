@@ -97,6 +97,8 @@ h1 {
   }
   .item {
     flex: none;
+    /* Touch size on a phone. */
+    min-height: 44px;
   }
   .content {
     padding: 24px 16px;
