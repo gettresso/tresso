@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
+use App\Security\OAuth\RefreshTokenRotation;
 use App\Service\UserProvisioner;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\DomCrawler\Field\ChoiceFormField;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\Console\Tester\CommandTester;
 
 /**
@@ -16,6 +18,8 @@ use Symfony\Component\Console\Tester\CommandTester;
  */
 final class SignInFlowTest extends DatabaseTestCase
 {
+    use ClockSensitiveTrait;
+
     private const string EMAIL = 'kim@example.test';
     private const string PASSWORD = 'correct-horse-battery-staple';
 
@@ -234,6 +238,192 @@ final class SignInFlowTest extends DatabaseTestCase
         $this->client->request('GET', '/logout');
 
         self::assertResponseRedirects($this->webAppUrl());
+    }
+
+    public function testRevokingTheRefreshTokenEndsTheSignIn(): void
+    {
+        $tokens = $this->tokens();
+
+        $this->revoke($tokens['refresh_token'], 'refresh_token');
+
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame('', $this->client->getResponse()->getContent());
+        self::assertResponseHeaderSame('Cache-Control', 'no-store, private');
+        $this->refresh($tokens['refresh_token']);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_grant', $this->json()['error'] ?? null);
+        $this->me($tokens['access_token']);
+        self::assertResponseStatusCodeSame(401, 'The access token issued with it is revoked too.');
+    }
+
+    public function testRevokingTheAccessTokenEndsItsRefreshTokenToo(): void
+    {
+        $tokens = $this->tokens();
+
+        $this->revoke($tokens['access_token'], 'access_token');
+
+        self::assertResponseStatusCodeSame(200);
+        $this->me($tokens['access_token']);
+        self::assertResponseStatusCodeSame(401);
+        $this->refresh($tokens['refresh_token']);
+        self::assertSame('invalid_grant', $this->json()['error'] ?? null);
+    }
+
+    public function testRevocationWorksWithoutAHintAndTellsNothing(): void
+    {
+        $tokens = $this->tokens();
+
+        $this->revoke('not-a-token', null);
+        self::assertResponseStatusCodeSame(200);
+        $this->revoke($tokens['refresh_token'], 'access_token');
+        self::assertResponseStatusCodeSame(200, 'A wrong hint only changes where the server looks first.');
+        $this->refresh($tokens['refresh_token']);
+        self::assertSame('invalid_grant', $this->json()['error'] ?? null);
+    }
+
+    public function testOnlyTheClientATokenWasIssuedToCanRevokeIt(): void
+    {
+        $tokens = $this->tokens();
+
+        $this->revoke($tokens['refresh_token'], 'refresh_token', 'desktop');
+
+        self::assertResponseStatusCodeSame(200, 'The answer says nothing about the token.');
+        $this->refresh($tokens['refresh_token']);
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testARevocationNeedsATokenAndAClient(): void
+    {
+        $this->client->request('POST', '/oauth/revoke', ['client_id' => 'web']);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_request', $this->json()['error'] ?? null);
+
+        $this->client->request('POST', '/oauth/revoke', ['token' => 'something']);
+        self::assertResponseStatusCodeSame(400);
+    }
+
+    public function testARefreshTokenThatJustRotatedGetsTheSameAnswerAgain(): void
+    {
+        $tokens = $this->tokens();
+        $this->refresh($tokens['refresh_token']);
+        self::assertResponseIsSuccessful();
+        $rotated = $this->json();
+
+        $this->refresh($tokens['refresh_token']);
+
+        self::assertResponseIsSuccessful();
+        $again = $this->json();
+        self::assertSame($rotated['refresh_token'] ?? null, $again['refresh_token'] ?? null, 'No second token family.');
+        self::assertSame($rotated['access_token'] ?? null, $again['access_token'] ?? null);
+        self::assertIsInt($again['expires_in'] ?? null);
+        self::assertLessThanOrEqual(3600, $again['expires_in']);
+        self::assertResponseHeaderSame('Cache-Control', 'no-store');
+        $this->me($tokens['access_token']);
+        self::assertResponseIsSuccessful('A request already sent with the old access token still goes through.');
+    }
+
+    public function testTheGraceOfARotatedRefreshTokenEnds(): void
+    {
+        $tokens = $this->tokens();
+        $this->refresh($tokens['refresh_token']);
+        $rotated = $this->json();
+
+        self::mockTime('+'.(RefreshTokenRotation::GRACE_SECONDS + 1).' seconds');
+
+        $this->refresh($tokens['refresh_token']);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_grant', $this->json()['error'] ?? null);
+        $this->me($tokens['access_token']);
+        self::assertResponseStatusCodeSame(401);
+        $this->refresh(self::string($rotated['refresh_token'] ?? null));
+        self::assertResponseIsSuccessful('The new token is unaffected.');
+    }
+
+    public function testUsingTheNewRefreshTokenEndsTheGraceOfTheOldOne(): void
+    {
+        $tokens = $this->tokens();
+        $this->refresh($tokens['refresh_token']);
+        $rotated = $this->json();
+        $this->refresh(self::string($rotated['refresh_token'] ?? null));
+        self::assertResponseIsSuccessful();
+
+        $this->refresh($tokens['refresh_token']);
+
+        self::assertSame('invalid_grant', $this->json()['error'] ?? null);
+        $this->me($tokens['access_token']);
+        self::assertResponseStatusCodeSame(401);
+    }
+
+    public function testRevokingEndsTheGraceAtOnce(): void
+    {
+        $tokens = $this->tokens();
+        $this->refresh($tokens['refresh_token']);
+        $rotated = $this->json();
+
+        $this->revoke(self::string($rotated['refresh_token'] ?? null), 'refresh_token');
+
+        $this->refresh($tokens['refresh_token']);
+        self::assertSame('invalid_grant', $this->json()['error'] ?? null);
+        $this->me($tokens['access_token']);
+        self::assertResponseStatusCodeSame(401);
+    }
+
+    public function testRevokingTheOldTokenAlsoEndsWhatItJustRotatedInto(): void
+    {
+        $tokens = $this->tokens();
+        $this->refresh($tokens['refresh_token']);
+        $lost = $this->json();
+
+        $this->revoke($tokens['refresh_token'], 'refresh_token');
+
+        $this->refresh(self::string($lost['refresh_token'] ?? null));
+        self::assertSame('invalid_grant', $this->json()['error'] ?? null, 'The response that never arrived is revoked with it.');
+        $this->me(self::string($lost['access_token'] ?? null));
+        self::assertResponseStatusCodeSame(401);
+    }
+
+    /** @return array{access_token: string, refresh_token: string} */
+    private function tokens(): array
+    {
+        $this->signIn();
+        $verifier = bin2hex(random_bytes(32));
+        $this->client->request('GET', '/oauth/authorize?'.http_build_query([
+            'response_type' => 'code',
+            'client_id' => 'web',
+            'redirect_uri' => $this->webRedirectUri(),
+            'scope' => 'mail:read',
+            'state' => 's',
+            'code_challenge' => rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '='),
+            'code_challenge_method' => 'S256',
+        ]));
+        parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
+        $this->client->request('POST', '/oauth/token', [
+            'grant_type' => 'authorization_code',
+            'client_id' => 'web',
+            'redirect_uri' => $this->webRedirectUri(),
+            'code' => self::string($query['code'] ?? null),
+            'code_verifier' => $verifier,
+        ]);
+        self::assertResponseIsSuccessful();
+        $this->client->getCookieJar()->clear();
+        $tokens = $this->json();
+
+        return ['access_token' => self::string($tokens['access_token'] ?? null), 'refresh_token' => self::string($tokens['refresh_token'] ?? null)];
+    }
+
+    private function refresh(string $refreshToken): void
+    {
+        $this->client->request('POST', '/oauth/token', ['grant_type' => 'refresh_token', 'client_id' => 'web', 'refresh_token' => $refreshToken]);
+    }
+
+    private function revoke(string $token, ?string $hint, string $clientId = 'web'): void
+    {
+        $this->client->request('POST', '/oauth/revoke', array_filter(['token' => $token, 'token_type_hint' => $hint, 'client_id' => $clientId], static fn (?string $value): bool => null !== $value));
+    }
+
+    private function me(string $accessToken): void
+    {
+        $this->client->request('GET', '/api/v1/me', server: ['HTTP_AUTHORIZATION' => 'Bearer '.$accessToken, 'HTTP_ACCEPT' => 'application/json']);
     }
 
     private function signIn(bool $rememberMe = true): void

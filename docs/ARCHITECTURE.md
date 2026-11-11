@@ -115,6 +115,23 @@ Symfony is the single OAuth2 authorization server (`league/oauth2-server-bundle`
 
 Only first-party clients are approved automatically; every other app goes through the consent screen.
 
+- **Refresh tokens rotate.** Every refresh revokes the old refresh token and its access token and issues a new pair.
+  For 30 seconds after that (`RefreshTokenRotation`, OAuth 2.0 Security BCP 4.14.2), a lost response does not end the
+  sign-in: the same public client presenting the old refresh token with the same scope gets the very response already
+  issued for it (the same new pair, `expires_in` counted from now), and the old access token keeps working, so
+  requests already sent with it do not fail. Both only while the new refresh token is live: once it is used or
+  revoked, the old ones are dead at once, and after the 30 seconds the old refresh token gets `invalid_grant` as
+  before. The issued response waits in Redis (`cache.oauth_rotation`), encrypted with `OAUTH_ENCRYPTION_KEY`.
+- **Revocation.** `POST /oauth/revoke` (RFC 7009, form encoded: `token`, optional `token_type_hint`, `client_id`) is
+  for public clients and open to browsers like the token endpoint. A refresh token takes the access token issued with
+  it along, an access token its refresh token, and a refresh token that rotated moments ago what it rotated into, so
+  signing out with a token whose refresh response never arrived still ends everything. Only tokens of the client that
+  asks are revoked, and only for clients without a secret. The answer is always 200 with an empty body, whatever the
+  token is (unknown, expired, another client's); only a request without `token` or `client_id` gets 400
+  `invalid_request`. The authorization server metadata names it as `revocation_endpoint`. Our apps call it when the
+  user signs out, before they forget the tokens; the web app then also ends the browser sign-in (see The sign-in
+  session below).
+
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
 `settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
 the planned features in 3.9.
@@ -165,8 +182,8 @@ Apps that are not ours, such as Claude, Claude Code, Cursor or the MCP Inspector
 themselves and sign in with the user's consent. `App\Security\OAuth` holds the pieces; everything is addressed from
 `API_PUBLIC_URL`, which is also the issuer.
 
-- **Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414): issuer, authorization, token and
-  registration endpoints, `scopes_supported` (only what such an app may ask for: the user scopes without `teams:*`,
+- **Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414): issuer, authorization, token,
+  registration and revocation endpoints, `scopes_supported` (only what such an app may ask for: the user scopes without `teams:*`,
   `webhooks:manage` and `sync:*`, the same set as a personal access token), response type `code`, grants
   `authorization_code` and `refresh_token`, PKCE `S256` and token endpoint authentication `none`. There is no
   `/.well-known/openid-configuration`: this server issues no ID tokens. `GET /.well-known/oauth-protected-resource`
@@ -174,7 +191,7 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   (`<API_PUBLIC_URL>/mcp`) with this server as their authorization server. `ProtectedResources` gives the MCP
   resource, its metadata URL and the `WWW-Authenticate: Bearer resource_metadata="..."` value the MCP endpoint sends
   with a 401. These documents, registering and the token endpoint answer CORS requests from any origin (without
-  cookies), for clients that run in a browser; the API itself does not.
+  cookies), for clients that run in a browser, as does revocation; the API itself does not.
 - **Registering.** `POST /oauth/register` (RFC 7591) is open to anyone, limited to 60 registrations per IPv4 address
   (also when it arrives IPv4-mapped, `::ffff:a.b.c.d`) or IPv6 /64 per hour, 200 per IPv4 /24 or IPv6 /48 and 5000 in
   total per hour (`symfony/rate-limiter`, in Redis; 429 with `Retry-After`). Only public clients: `token_endpoint_auth_method`

@@ -8,8 +8,9 @@ nelmio_cors:
         max_age: 3600
     paths:
         # What an OAuth2 or MCP client running in a browser (such as the MCP Inspector) needs before it has a token:
-        # the metadata, registering itself and the token exchange. Open to every origin, never with cookies.
-        '^/(\.well-known/oauth-|oauth/(register|token)$)':
+        # the metadata, registering itself and the token exchange, and revoking its tokens again. Open to every origin,
+        # never with cookies.
+        '^/(\.well-known/oauth-|oauth/(register|token|revoke)$)':
             origin_regex: false
             allow_origin: ['*']
             allow_methods: ['GET', 'POST', 'OPTIONS']
