@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import LogoLoader from '@/components/LogoLoader.vue'
+import TressoMark from '@/components/TressoMark.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -30,11 +31,39 @@ watch(
 </script>
 
 <template>
-  <main>
-    <p v-if="error" role="alert">
-      Sign-in failed: {{ error }}
-      <RouterLink :to="{ name: 'unified' }">Try again</RouterLink>
-    </p>
-    <p v-else role="status"><LogoLoader /> Signing you in…</p>
+  <main class="welcome">
+    <TressoMark :size="56" />
+    <template v-if="error">
+      <p class="error" role="alert">Sign-in failed: {{ error }}</p>
+      <RouterLink :to="{ name: 'unified' }" class="button button-primary">Try again</RouterLink>
+    </template>
+    <p v-else class="status" role="status"><LogoLoader /> Signing you in…</p>
   </main>
 </template>
+
+<style scoped>
+/* As the sign-in screen: centred, clear of the edges and of the macOS window buttons. */
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  min-height: 100%;
+  padding: 32px 16px;
+  text-align: center;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ink-2);
+}
+.error {
+  max-width: 560px;
+  margin: 0;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+</style>

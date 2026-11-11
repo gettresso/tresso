@@ -78,6 +78,26 @@ h1 {
   .settings {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* One row of links that scrolls sideways, so the page a link opens starts right under it. */
+  .nav {
+    flex-direction: row;
+    gap: 4px;
+    padding: 8px 12px;
+    overflow-x: auto;
+  }
+  /* Out of sight but still the page's heading for a screen reader. */
+  .nav h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .item {
+    flex: none;
+  }
   .content {
     padding: 24px 16px;
     border-left: 0;
