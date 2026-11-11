@@ -80,7 +80,9 @@ func New(client API, store storage.Blobs, d Dialer, workerID string, opts Option
 
 // Run keeps the account in sync until ctx ends (the lease was lost or the worker stops). A refused login is reported
 // and ends the run: the account stops being leased until the user fixes the credentials. A login refused without a
-// response code only counts as refused once it repeats RefusalsBeforeAuthFailed times in a row.
+// known code (see loginError) only counts as refused once it repeats RefusalsBeforeAuthFailed times without a login
+// that went through in between; other failures in between (a server that drops the connection after bad logins)
+// do not start the count over.
 func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	logger := s.logger.With("account", account.ID)
 	backoff := s.opts.MinBackoff
@@ -90,17 +92,18 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	strikes := isolate.NewStrikesWithClock(s.now)
 
 	for {
-		healthy, err := s.runSession(ctx, account, strikes, logger)
+		loggedIn, healthy, err := s.runSession(ctx, account, strikes, logger)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if loggedIn {
+			refusals = 0
 		}
 		if errors.Is(err, errLoginRefused) {
 			refusals++
 			if refusals >= max(1, s.opts.RefusalsBeforeAuthFailed) {
 				err = fmt.Errorf("%w: %w", ErrAuth, err)
 			}
-		} else {
-			refusals = 0
 		}
 		if errors.Is(err, ErrAuth) {
 			logger.Warn("login refused, account needs new credentials")
@@ -146,22 +149,23 @@ type session struct {
 	logger    *slog.Logger
 }
 
-// runSession connects, syncs everything once, then follows changes until an error. healthy reports whether the
-// initial pass completed, so a later disconnect does not count towards the error threshold.
-func (s *Syncer) runSession(ctx context.Context, account api.Account, strikes *isolate.Strikes, logger *slog.Logger) (healthy bool, err error) {
+// runSession connects, syncs everything once, then follows changes until an error. loggedIn reports whether the
+// server took the login; healthy whether the initial pass completed, so a later disconnect does not count towards
+// the error threshold.
+func (s *Syncer) runSession(ctx context.Context, account api.Account, strikes *isolate.Strikes, logger *slog.Logger) (loggedIn, healthy bool, err error) {
 	creds, err := s.api.Credentials(ctx, account.ID, s.workerID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	password, err := creds.Password()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 
 	events := newServerEvents()
 	client, err := connect(ctx, s.dialer, creds.Connection.IMAP, creds.Connection.Username, password, events)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer func() {
 		_ = client.Logout().Wait()
@@ -172,15 +176,36 @@ func (s *Syncer) runSession(ctx context.Context, account api.Account, strikes *i
 	sess.condStore = client.Caps().Has(imap.CapCondStore)
 
 	if err := sess.refreshFolders(ctx); err != nil {
-		return false, err
+		return true, false, err
 	}
 	if err := sess.pass(ctx, true); err != nil {
-		return false, err
+		return true, false, err
+	}
+	if err := sess.reachable(); err != nil {
+		return true, false, err
 	}
 	s.report(ctx, account, api.StatusActive, "", logger)
 	logger.Info("account in sync", "folders", len(sess.runs), "condstore", sess.condStore)
 
-	return true, sess.follow(ctx)
+	return true, true, sess.follow(ctx)
+}
+
+// reachable fails the session when the server refuses to open the inbox, or every folder: skipping those would leave
+// the account looking in sync while nothing syncs.
+func (s *session) reachable() error {
+	open := 0
+	for _, run := range s.runs {
+		if run.unavailable && run.folder.Role == "inbox" {
+			return fmt.Errorf("%w: the inbox", errFolderUnavailable)
+		}
+		if !run.unavailable {
+			open++
+		}
+	}
+	if open == 0 && len(s.runs) > 0 {
+		return fmt.Errorf("%w: every folder", errFolderUnavailable)
+	}
+	return nil
 }
 
 // follow waits for changes (IDLE on the inbox, or polling) and syncs what changed.
@@ -238,6 +263,9 @@ func (s *session) follow(ctx context.Context) error {
 			if err := s.pass(ctx, false); err != nil {
 				return err
 			}
+			if err := s.reachable(); err != nil {
+				return err
+			}
 			if inbox := s.inbox(); inbox != nil && !inboxCheckDue.IsZero() {
 				inboxCheckDue = time.Time{}
 				if err := s.syncFolderOrRefresh(ctx, inbox, true); err != nil {
@@ -284,13 +312,17 @@ func (s *session) syncFolderOrRefresh(ctx context.Context, run *folderRun, full 
 
 // refreshFolders reports the folder list and rebuilds the runs from what the API stored.
 func (s *session) refreshFolders(ctx context.Context) error {
-	folders, unreadable, err := listFolders(s.client.Client)
+	list, err := listFolders(s.client.Client)
 	if err != nil {
 		return err
 	}
-	for name, err := range unreadable {
-		s.logger.Warn("the server refused the status of a folder; leaving it out", "folder", name, "error", err)
+	for name, err := range list.gone {
+		s.logger.Warn("the server says a folder does not exist or may not be read; leaving it out", "folder", name, "error", err)
 	}
+	for name, err := range list.unavailable {
+		s.logger.Warn("the server refused the status of a folder; skipping it until the folder list is read again", "folder", name, "error", err)
+	}
+	folders := list.folders
 	states, err := s.api.Folders(ctx, s.account.ID, s.workerID, folders)
 	if err != nil {
 		return err
@@ -307,7 +339,7 @@ func (s *session) refreshFolders(ctx context.Context) error {
 
 	runs := make([]*folderRun, 0, len(folders))
 	for _, folder := range folders {
-		run := &folderRun{folder: folder}
+		run := &folderRun{folder: folder, unavailable: list.unavailable[folder.RemoteName] != nil}
 		state := stateOf[folder.RemoteName]
 		if !state.Reset {
 			cursor, err := DecodeCursor(state.Cursor)
