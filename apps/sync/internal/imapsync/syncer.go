@@ -40,10 +40,14 @@ type Options struct {
 	StatusInterval         time.Duration // how often a healthy account reports itself
 	MinBackoff, MaxBackoff time.Duration
 	FailuresBeforeError    int // consecutive failed sessions before the user sees an error
-	// Consecutive logins refused without a response code before they count as a wrong password (auth_failed). With
-	// the backoff this spans about half a minute, so a short outage of the server's login backend does not stop the
-	// account.
+	// Logins refused (see loginError) before they count as a wrong password (auth_failed), and how long they must
+	// span at the least: servers also refuse a correct password for a while (NO [ALERT] "Too many simultaneous
+	// connections", a login backend that is down), and auth_failed stops the account until the user types the
+	// password again. While refusals are counted, sessions are at least RefusalWait apart, so a wrong password costs
+	// about RefusalSpan / RefusalWait tries, not a burst.
 	RefusalsBeforeAuthFailed int
+	RefusalSpan              time.Duration
+	RefusalWait              time.Duration
 }
 
 func DefaultOptions() Options {
@@ -60,6 +64,8 @@ func DefaultOptions() Options {
 		MaxBackoff:               5 * time.Minute,
 		FailuresBeforeError:      3,
 		RefusalsBeforeAuthFailed: 5,
+		RefusalSpan:              10 * time.Minute,
+		RefusalWait:              time.Minute,
 	}
 }
 
@@ -89,6 +95,7 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 	failures := 0
 	reported := false // whether the API took the error status of the current run of failures
 	refusals := 0
+	var firstRefusal time.Time
 	strikes := isolate.NewStrikesWithClock(s.now)
 
 	for {
@@ -100,8 +107,11 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 			refusals = 0
 		}
 		if errors.Is(err, errLoginRefused) {
+			if refusals == 0 {
+				firstRefusal = s.now()
+			}
 			refusals++
-			if refusals >= max(1, s.opts.RefusalsBeforeAuthFailed) {
+			if refusals >= max(1, s.opts.RefusalsBeforeAuthFailed) && s.now().Sub(firstRefusal) >= s.opts.RefusalSpan {
 				err = fmt.Errorf("%w: %w", ErrAuth, err)
 			}
 		}
@@ -120,10 +130,14 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 			reported = s.report(ctx, account, api.StatusError, userFacingDetail(err), logger) == nil
 		}
 
+		wait := backoff
+		if refusals > 0 {
+			wait = max(wait, s.opts.RefusalWait)
+		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
 		backoff = min(backoff*2, s.opts.MaxBackoff)
 	}

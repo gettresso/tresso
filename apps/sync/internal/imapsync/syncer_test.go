@@ -25,11 +25,12 @@ import (
 
 // script makes the in-memory server misbehave the way real servers do: refuse logins, folders or fetches.
 type script struct {
-	mu        sync.Mutex
-	logins    int
-	login     func(attempt int) error
-	selectErr map[string]error
-	statusErr map[string]error
+	mu         sync.Mutex
+	loginTimes []time.Time
+	logins     int
+	login      func(attempt int) error
+	selectErr  map[string]error
+	statusErr  map[string]error
 	// noUIDNext leaves UIDNEXT out of SELECT answers (it is sent as 0), as RFC 3501 allows.
 	noUIDNext bool
 	// fetch, when set, can refuse a FETCH (an *imap.Error) or have it answered without the body (noBody).
@@ -40,6 +41,7 @@ func (s *script) loginErr() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.logins++
+	s.loginTimes = append(s.loginTimes, time.Now())
 	if s.login == nil {
 		return nil
 	}
@@ -301,6 +303,7 @@ func fastOptions() Options {
 	o.StatusInterval = time.Hour
 	o.MinBackoff = 10 * time.Millisecond
 	o.MaxBackoff = 20 * time.Millisecond
+	o.RefusalSpan, o.RefusalWait = 0, 0
 	return o
 }
 
@@ -848,5 +851,43 @@ func TestALostLeaseEndsTheRunAtOnce(t *testing.T) {
 				t.Errorf("Run took %v to end", took)
 			}
 		})
+	}
+}
+
+// Fails without the time floor: five refusals 2 to 16 seconds apart (half a minute) ended an account whose password
+// is right, also for NO [ALERT] "Too many simultaneous connections".
+func TestRefusedLoginsMustSpanTenMinutesBeforeAuthFailed(t *testing.T) {
+	sc := &script{login: func(int) error {
+		return no(imap.ResponseCodeAlert, "Too many simultaneous connections. (Failure)")
+	}}
+	credentials, _ := scriptedServer(t, sc, "INBOX")
+	fake := newMemAPI(credentials)
+	opts := fastOptions()
+	opts.RefusalsBeforeAuthFailed = 5
+	opts.RefusalSpan = 10 * time.Minute
+	opts.RefusalWait = 30 * time.Millisecond
+	clk := newTestClock()
+
+	done := runSyncerAt(t, fake, opts, clk)
+	waitFor(t, "eight refused logins", func() bool { return sc.loginCount() >= 8 })
+	if fake.hasStatus(api.StatusAuthFailed) {
+		t.Fatalf("auth_failed after %d refusals within a minute", sc.loginCount())
+	}
+	sc.mu.Lock()
+	for i := 1; i < len(sc.loginTimes); i++ {
+		if gap := sc.loginTimes[i].Sub(sc.loginTimes[i-1]); gap < 25*time.Millisecond {
+			t.Errorf("sessions %v apart while refusals were counted; want at least RefusalWait", gap)
+		}
+	}
+	sc.mu.Unlock()
+
+	clk.advance(11 * time.Minute)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refusals over ten minutes did not end the run")
+	}
+	if !fake.hasStatus(api.StatusAuthFailed) {
+		t.Errorf("statuses %v", fake.statuses)
 	}
 }
