@@ -226,10 +226,14 @@ final readonly class NotificationPlanner
             return [];
         }
         $start = Props::instant($instance, 'DTSTART', $context->zone);
-        $end = Props::instant($instance, 'DTEND', $context->zone) ?? ($row->isAllDay() && null !== $start ? $start->modify('+1 day') : $start);
-        if (null === $start || null === $end) {
+        if (null === $start) {
             return [];
         }
+        // DTEND, else DURATION (instances of a series keep the master's), read as the start is.
+        $endOf = Occurrences::endOf($instance, $context->zone);
+        $end = $row->isAllDay()
+            ? new \DateTimeImmutable($endOf->format('Y-m-d'), $context->zone)->setTimezone(new \DateTimeZone('UTC'))
+            : $endOf->setTimezone(new \DateTimeZone('UTC'));
 
         $occurrenceStart = Props::start($instance);
         $rule = ReminderRules::match($context->rules, $row, $context->self);
