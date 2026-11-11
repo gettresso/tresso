@@ -435,7 +435,13 @@ has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https
   by domain, then ISPDB by the parent domains of the preferred mail exchanger (which finds company domains hosted
   by a large provider). The first three are requested together. These requests go to domains users type in, so
   they run through a client that refuses private networks, with short timeouts and a 64 KB limit. Only encrypted
-  servers are suggested. Answers are cached per domain in Redis: a day when found, an hour when not.
+  servers are suggested. Answers are cached per domain in Redis: a day when found, an hour when not. Because the
+  cache is per domain, the address itself is never sent to the domain's autoconfig, and a suggested username that is
+  some other address is replaced by the one asked for. The answer also names the large provider behind the address
+  (`provider`: `google`, `outlook`, `m365`, `icloud`, `yahoo` or null), from the domain (gmail.com, outlook.com,
+  icloud.com, yahoo.*, ...) or else from the preferred mail exchanger (`*.google.com`, `*.mail.protection.outlook.com`
+  for Microsoft 365, `*.olc.protection.outlook.com` for Outlook.com, `*.yahoodns.net`, `*.icloud.com`), so the client
+  offers the easiest way to connect: the provider's sign-in page or an app password.
 
 #### Provider sign-in (Gmail, Microsoft 365)
 

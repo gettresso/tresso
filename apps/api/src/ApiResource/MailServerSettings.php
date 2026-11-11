@@ -18,7 +18,9 @@ use Symfony\Component\Validator\Constraints as Assert;
  * Suggested IMAP and SMTP settings for an address, to fill in the form for a new mail account. Found through the
  * provider's own autoconfig or Mozilla's ISPDB; `found` is false when nothing is known and the user has to enter the
  * settings. `authentication` lists how the provider lets users sign in ("password", "oauth2"). Unencrypted servers
- * are never suggested.
+ * are never suggested. `provider` names the large provider that handles the address, by its domain or its mail
+ * exchanger (google, outlook, m365, icloud, yahoo; null for any other), so the client can offer the easiest way to
+ * connect it: the provider's own sign-in page, or an app password.
  */
 #[ApiResource(
     shortName: 'MailServerSettings',
@@ -55,6 +57,8 @@ final readonly class MailServerSettings
         public ?ServerSettings $imap,
         public ?ServerSettings $smtp,
         public array $authentication,
+        /** google, outlook (Outlook.com, Hotmail, Live), m365 (Microsoft 365 work or school), icloud, yahoo, or null */
+        public ?string $provider = null,
     ) {
     }
 }
