@@ -29,8 +29,10 @@ const (
 	maxTextRead = 256 << 10
 	// UnknownSender is used when a message has no usable From, Sender or Return-Path.
 	UnknownSender = "unknown@unknown.invalid"
-	// The API takes signal header values up to this many characters.
-	signalLength = 1000
+	// The API takes signal header values up to this many characters, Authentication-Results up to
+	// authResultsLength: the receiving provider's header is long (several DKIM results, ARC) and only meaningful whole.
+	signalLength      = 1000
+	authResultsLength = 8000
 	// Calendar parts larger than this are no invitation anyone writes; they stay plain attachments.
 	maxCalendarPart = 256 << 10
 )
@@ -230,9 +232,30 @@ func signals(get func(string) string) map[string]string {
 		if out == nil {
 			out = make(map[string]string)
 		}
+		if strings.EqualFold(name, "Authentication-Results") {
+			if value = cutAtSemicolon(value, authResultsLength); value == "" {
+				continue
+			}
+			out[strings.ToLower(name)] = value
+			continue
+		}
 		out[strings.ToLower(name)] = truncate(value, signalLength)
 	}
 	return out
+}
+
+// cutAtSemicolon cuts a header longer than max characters at its last ";" before the limit, so it ends with a whole
+// result, never inside a comment or a quoted string that could hold anything; "" when there is no such ";".
+func cutAtSemicolon(value string, max int) string {
+	if utf8.RuneCountInString(value) <= max {
+		return value
+	}
+	cut := string([]rune(value)[:max])
+	i := strings.LastIndex(cut, ";")
+	if i <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(cut[:i])
 }
 
 func addressList(h gomail.Header, key string) []Address {

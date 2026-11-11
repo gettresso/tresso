@@ -404,3 +404,27 @@ func TestASinglePartMessageWithAnUnknownEncodingIsRead(t *testing.T) {
 		t.Errorf("subject %q, snippet %q, problems %v", msg.Subject, msg.Snippet, msg.Problems)
 	}
 }
+
+// Fails without the fix: the receiving provider's Authentication-Results was cut at 1000 characters, in the middle of
+// a comment whose text then read as results of its own.
+func TestAuthenticationResultsIsSentWholeOrCutAtASemicolon(t *testing.T) {
+	long := "mx.google.com; " + strings.Repeat("dkim=pass header.i=@example.com header.s=s1 header.b=abcdefgh; ", 60) + "spf=pass (google.com: domain of a@example.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=a@example.com; dmarc=pass (p=NONE) header.from=example.com"
+	msg, err := Parse([]byte("From: a@example.com\r\nAuthentication-Results: " + long + "\r\nSubject: Hi\r\n\r\nBody\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := msg.Signals["authentication-results"]; got != long {
+		t.Errorf("a header of %d characters was not sent whole: %d", len(long), len(got))
+	}
+
+	tooLong := "mx.google.com; " + strings.Repeat("dkim=pass header.i=@example.com header.s=s1 header.b=abcdefgh; ", 150) + "x=1"
+	msg, _ = Parse([]byte("From: a@example.com\r\nAuthentication-Results: " + tooLong + "\r\n\r\nBody\r\n"))
+	got := msg.Signals["authentication-results"]
+	if len(got) > 8000 || !strings.HasSuffix(got, "header.b=abcdefgh") || !strings.HasPrefix(got, "mx.google.com; ") {
+		t.Errorf("cut header ends %q (%d characters); want it cut after a whole result", got[max(0, len(got)-30):], len(got))
+	}
+
+	if cutAtSemicolon(strings.Repeat("x", 9000), 8000) != "" {
+		t.Error("a header without a ; to cut at must be left out")
+	}
+}
