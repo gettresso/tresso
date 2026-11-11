@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Security\OAuth;
 
+use App\Command\BootstrapOAuthClientsCommand;
+use App\Repository\OAuthConsentRepository;
+use App\Security\FirstPartyClients;
 use League\Bundle\OAuth2ServerBundle\Manager\ClientManagerInterface;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
@@ -15,7 +18,9 @@ use Symfony\Component\HttpKernel\KernelEvents;
 /**
  * The token endpoint's side of {@see RefreshTokenRotation}: answers a refresh with a token that rotated moments ago
  * with the response already issued for it, and records every rotation the endpoint answers. Only for public clients
- * (our apps and registered apps), which is what the grace is for; a client with a secret is left to the endpoint.
+ * (our apps and registered apps), which is what the grace is for; a client with a secret is left to the endpoint. An
+ * app that is not ours gets the answer again only while the user's consent still covers it, as for any token
+ * ({@see TokensNeedConsent}).
  */
 final readonly class RefreshTokenGrace
 {
@@ -28,6 +33,7 @@ final readonly class RefreshTokenGrace
         private IssuedTokens $tokens,
         private RefreshTokenRotation $rotation,
         private ClientManagerInterface $clients,
+        private OAuthConsentRepository $consents,
     ) {
     }
 
@@ -46,7 +52,7 @@ final readonly class RefreshTokenGrace
         $request->attributes->set(self::PRESENTED, $presented);
 
         $response = $this->rotation->replay($presented, self::scopeOf($request));
-        if (null === $response) {
+        if (null === $response || !$this->stillAllowed($presented, self::scopeOf($request))) {
             return;
         }
         $request->attributes->remove(self::PRESENTED);
@@ -105,6 +111,20 @@ final readonly class RefreshTokenGrace
         $scope = $request->request->get('scope');
 
         return \is_string($scope) ? $scope : null;
+    }
+
+    private function stillAllowed(IssuedToken $presented, ?string $scope): bool
+    {
+        if (FirstPartyClients::isFirstParty($presented->clientId) || BootstrapOAuthClientsCommand::SYNC_WORKER === $presented->clientId) {
+            return true;
+        }
+        if (null === $presented->userIdentifier) {
+            return false;
+        }
+        $consent = $this->consents->findOneForUserIdentifier($presented->userIdentifier, $presented->clientId);
+        $scopes = null === $scope ? $presented->scopes : array_values(array_filter(explode(' ', $scope), static fn (string $value): bool => '' !== $value));
+
+        return null !== $consent && $consent->covers($scopes);
     }
 
     private function isPublic(string $clientId): bool

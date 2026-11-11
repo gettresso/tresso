@@ -61,7 +61,7 @@ final readonly class IssuedTokens
             return null;
         }
 
-        return new IssuedToken(IssuedToken::REFRESH_TOKEN, $id, $client, $accessToken);
+        return new IssuedToken(IssuedToken::REFRESH_TOKEN, $id, $client, $accessToken, IssuedToken::userOf($payload['user_id'] ?? null), IssuedToken::scopesOf($payload['scopes'] ?? null));
     }
 
     public function accessToken(#[\SensitiveParameter] string $token): ?IssuedToken
@@ -92,6 +92,8 @@ final readonly class IssuedTokens
             return null;
         }
 
-        return new IssuedToken(IssuedToken::ACCESS_TOKEN, $id, $client, $id);
+        $user = $jwt->claims()->get('sub');
+
+        return new IssuedToken(IssuedToken::ACCESS_TOKEN, $id, $client, $id, '' === $user ? null : IssuedToken::userOf($user), IssuedToken::scopesOf($jwt->claims()->get('scopes')));
     }
 }
