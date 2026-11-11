@@ -66,7 +66,7 @@ final readonly class ItipMailer
                 [['address' => Props::address($message->recipient), 'name' => self::name($message->recipientName)]],
                 [],
                 [],
-                self::subject($method, $event, $message, $account),
+                self::subject($method, $event, $message),
                 self::body($method, $event, $calendar, $message, $account),
                 null !== $inReplyTo && $inReplyTo->getMailAccount()->getId()->equals($account->getId()) ? $inReplyTo : null,
                 new \DateTimeImmutable(),
@@ -92,12 +92,12 @@ final readonly class ItipMailer
         throw new SchedulingFailed(\sprintf('None of your mail accounts sends as %s, so the calendar message cannot be sent.', $address));
     }
 
-    private static function subject(ItipMethod $method, VEvent $event, ItipMessage $message, MailAccount $account): string
+    private static function subject(ItipMethod $method, VEvent $event, ItipMessage $message): string
     {
         $summary = Props::text($event, 'SUMMARY') ?? '(no title)';
 
         return match ($method) {
-            ItipMethod::Reply => self::replyStatus($event, $account)->replyLabel().': '.$summary,
+            ItipMethod::Reply => self::replyStatus($event, $message)->replyLabel().': '.$summary,
             ItipMethod::Cancel => 'Cancelled: '.$summary,
             default => ($message->sequence > 0 ? 'Updated invitation: ' : 'Invitation: ').$summary,
         };
@@ -108,7 +108,7 @@ final readonly class ItipMailer
         $summary = Props::text($event, 'SUMMARY') ?? '(no title)';
         $who = $account->getDisplayName();
         $intro = match ($method) {
-            ItipMethod::Reply => \sprintf('%s: %s.', self::replyStatus($event, $account)->replyLabel(), $who),
+            ItipMethod::Reply => \sprintf('%s: %s.', self::replyStatus($event, $message)->replyLabel(), $who),
             ItipMethod::Cancel => \sprintf('%s cancelled this event.', $who),
             default => \sprintf('%s invites you to this event.', $who),
         };
@@ -145,15 +145,21 @@ final readonly class ItipMailer
         return $value->format('l j F Y, H:i').(null === $time->timeZone ? '' : ' ('.$time->timeZone.')');
     }
 
-    private static function replyStatus(VEvent $event, MailAccount $account): ParticipationStatus
+    /**
+     * The answer a reply carries: that of the replying attendee (the message's sender, which need not be the address
+     * of the account it goes from), else of the only attendee a reply from sabre has.
+     */
+    private static function replyStatus(VEvent $event, ItipMessage $message): ParticipationStatus
     {
-        foreach (Props::all($event, 'ATTENDEE') as $attendee) {
-            if (Props::address(Props::value($attendee)) === $account->getEmailAddress()) {
+        $attendees = Props::all($event, 'ATTENDEE');
+        $sender = Props::address($message->sender);
+        foreach ($attendees as $attendee) {
+            if (Props::address(Props::value($attendee)) === $sender) {
                 return ParticipationStatus::fromICalendar(Props::param($attendee, 'PARTSTAT'));
             }
         }
 
-        return ParticipationStatus::NeedsAction;
+        return null === ($first = $attendees[0] ?? null) ? ParticipationStatus::NeedsAction : ParticipationStatus::fromICalendar(Props::param($first, 'PARTSTAT'));
     }
 
     private static function name(mixed $name): ?string

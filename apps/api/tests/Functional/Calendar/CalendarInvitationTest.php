@@ -653,7 +653,10 @@ final class CalendarInvitationTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', '/api/v1/calendar-events/'.$eventId.'/response', ['response' => 'accepted'], $this->kim);
 
         self::assertResponseIsSuccessful();
-        self::assertSame(['anna@finance.example'], $this->outgoing()[0]->getEnvelopeRecipients());
+        $outgoing = $this->outgoing();
+        self::assertSame(['anna@finance.example'], $outgoing[0]->getEnvelopeRecipients());
+        self::assertSame('Accepted: Budget review', $outgoing[0]->getSubject(), 'The subject tells the answer the calendar part carries.');
+        self::assertStringContainsString('Accepted: Kim Visser.', quoted_printable_decode($this->rawOutgoing($outgoing[0])));
     }
 
     public function testOtherUsersCannotSeeOrApplyAnInvitationOrSendFromAnAccount(): void
