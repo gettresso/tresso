@@ -12,6 +12,8 @@ use App\State\ServerInfoProvider;
 /**
  * What this server is, for an app to check before it signs in: always open, also to someone whose subscription
  * stopped. `billing` says whether this server bills its organizations (Tresso Cloud) or not (a self-hosted server).
+ * `allowUnencryptedMailServers` says whether mail accounts may connect without TLS (MAIL_ALLOW_UNSAFE_SERVERS, for
+ * local test servers only), so apps offer that choice only where it can be saved.
  */
 #[ApiResource(
     shortName: 'ServerInfo',
@@ -33,6 +35,7 @@ final readonly class ServerInfo
         public bool $billing,
         /** Days of free trial a new organization gets on a billing server; 0 elsewhere. */
         public int $trialDays,
+        public bool $allowUnencryptedMailServers = false,
     ) {
     }
 }
