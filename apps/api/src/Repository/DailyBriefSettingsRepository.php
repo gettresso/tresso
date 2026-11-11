@@ -47,7 +47,7 @@ class DailyBriefSettingsRepository extends ServiceEntityRepository
 
     /**
      * Puts a user's next brief off, after their run failed; outside any transaction, so it holds once written. The
-     * moment it was due is kept (the first time only), so the brief keeps its day ({@see DailyBriefSettings::postpone()}).
+     * moment it was due is kept in due_at (the first time only), so the brief keeps its day ({@see DailyBriefSettings::ran()}).
      */
     public function postpone(Uuid $userId, \DateTimeImmutable $until): void
     {
