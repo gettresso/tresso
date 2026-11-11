@@ -115,6 +115,7 @@ final readonly class MessageInvitationProvider implements ProviderInterface
             ItipMethod::Request === $invitation->getMethod() && null !== $row && null !== $row->getSelfPartstat() && 'outdated' !== $kind,
             $conflicts,
             null === $invitation->getAppliedAt() && \in_array($invitation->getMethod(), [ItipMethod::Request, ItipMethod::Cancel, ItipMethod::Reply], true) && null === $this->applier->blocker($invitation),
+            null === $invitation->getAppliedAt() && $this->applier->senderUnconfirmed($invitation),
         );
     }
 

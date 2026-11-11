@@ -57,6 +57,8 @@ export interface MessageInvitation {
   canRespond: boolean
   conflicts: InvitationConflict[]
   canApply: boolean
+  /** It would change the event, but the provider did not confirm it comes from its sender, so it waits for the user. */
+  senderUnconfirmed?: boolean
 }
 
 /** An occurrence that overlaps an invitation, as the API lists it. */

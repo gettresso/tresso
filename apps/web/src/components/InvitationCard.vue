@@ -186,6 +186,7 @@ function onKeydown(event: KeyboardEvent): void {
           This {{ invitation.kind === 'cancelled' ? 'cancellation' : invitation.kind === 'reply' ? 'answer' : invitation.kind === 'update' ? 'update' : 'invitation' }} is not in your calendar yet.
           <template v-if="invitation.canRespond && invitation.kind !== 'cancelled' && invitation.kind !== 'reply'">Add it before you answer, so your answer is about this version.</template>
         </p>
+        <p v-if="invitation.senderUnconfirmed" class="label">Your mail provider could not confirm who sent this, so it was not applied by itself. Apply it only if you trust it.</p>
         <button type="button" class="button button-primary" :disabled="busy" @click="apply">{{ invitation.kind === 'cancelled' ? 'Apply the cancellation' : invitation.kind === 'reply' ? 'Apply the answer' : invitation.kind === 'update' ? 'Apply the update' : 'Add to calendar' }}</button>
       </div>
       <div v-else-if="canAnswer" class="answer">

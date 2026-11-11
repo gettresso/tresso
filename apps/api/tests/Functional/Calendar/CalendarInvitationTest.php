@@ -844,6 +844,54 @@ final class CalendarInvitationTest extends DatabaseTestCase
         self::assertSame(['anna@finance.example'], $outgoing[0]->getEnvelopeRecipients());
     }
 
+    /**
+     * @return iterable<string, array{array<string, string>, bool}>
+     */
+    public static function providerVerdictsOnACancellation(): iterable
+    {
+        yield 'DMARC passed' => [['authentication-results' => 'mx.google.com; dkim=pass; spf=pass; dmarc=pass (p=REJECT) header.from=finance.example'], true];
+        yield 'DMARC failed' => [['authentication-results' => 'mx.google.com; spf=fail; dmarc=fail (p=NONE) header.from=finance.example'], false];
+        yield 'no verdict' => [[], false];
+    }
+
+    /**
+     * On Gmail and Microsoft the provider writes the topmost Authentication-Results header: calendar mail that changes
+     * an event applies by itself only when DMARC passed for the sender.
+     *
+     * @param array<string, string> $headers
+     */
+    #[DataProvider('providerVerdictsOnACancellation')]
+    public function testOnAGmailAccountOnlyAConfirmedSenderChangesAnEventByItself(array $headers, bool $applied): void
+    {
+        $this->connection()->executeStatement("UPDATE mail_account SET provider = 'gmail' WHERE id = :id", ['id' => $this->accountId]);
+        // A new invitation changes nothing that is there: it lands by itself.
+        $this->receive('Invitation: Budget review', self::invitation('REQUEST', 0, '20261021T140000'));
+        self::assertSame('confirmed', $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00')[0]['status']);
+
+        $cancel = $this->receive('Cancelled: Budget review', self::invitation('CANCEL', 1, '20261021T140000'), headers: $headers);
+
+        self::assertSame($applied ? 'cancelled' : 'confirmed', $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00')[0]['status']);
+        $invitation = $this->getJson('/api/v1/messages/'.$cancel.'/invitation', $this->kim);
+        self::assertSame(!$applied, $invitation['senderUnconfirmed']);
+        self::assertSame(!$applied, $invitation['canApply'], 'The user can still apply it.');
+        if (!$applied) {
+            $this->client->request('POST', '/api/v1/messages/'.$cancel.'/invitation/apply', server: $this->kim);
+            self::assertResponseIsSuccessful();
+            self::assertSame('cancelled', $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00')[0]['status']);
+        }
+    }
+
+    public function testOnAnImapAccountCalendarMailStillChangesAnEventByItself(): void
+    {
+        $this->receive('Invitation: Budget review', self::invitation('REQUEST', 0, '20261021T140000'));
+
+        // An IMAP server's headers prove nothing, so nothing is held.
+        $cancel = $this->receive('Cancelled: Budget review', self::invitation('CANCEL', 1, '20261021T140000'), headers: ['authentication-results' => 'mx.company.example; dmarc=fail header.from=finance.example']);
+
+        self::assertSame('cancelled', $this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-22T00:00:00+00:00')[0]['status']);
+        self::assertFalse($this->getJson('/api/v1/messages/'.$cancel.'/invitation', $this->kim)['senderUnconfirmed']);
+    }
+
     public function testANewPlaceIsSentToTheGuests(): void
     {
         $calendarId = $this->localCalendarId($this->kim);
@@ -1059,9 +1107,12 @@ final class CalendarInvitationTest extends DatabaseTestCase
     /**
      * Ingests a message with a calendar part (from Anna unless said otherwise) and applies it; returns the message id.
      */
-    private function receive(string $subject, string $ical, string $from = 'anna@finance.example', string $folder = 'INBOX', ?string $receivedAt = null): string
+    /**
+     * @param array<string, string> $headers
+     */
+    private function receive(string $subject, string $ical, string $from = 'anna@finance.example', string $folder = 'INBOX', ?string $receivedAt = null, array $headers = []): string
     {
-        $this->deliver($subject, $ical, $from, $folder, $receivedAt);
+        $this->deliver($subject, $ical, $from, $folder, $receivedAt, $headers);
         $this->applyQueuedInvitations();
 
         return $this->messageId($subject);
@@ -1069,8 +1120,10 @@ final class CalendarInvitationTest extends DatabaseTestCase
 
     /**
      * The worker reports the message; the invitation handlers it queues have not run yet.
+     *
+     * @param array<string, string> $headers
      */
-    private function deliver(string $subject, string $ical, string $from = 'anna@finance.example', string $folder = 'INBOX', ?string $receivedAt = null): void
+    private function deliver(string $subject, string $ical, string $from = 'anna@finance.example', string $folder = 'INBOX', ?string $receivedAt = null, array $headers = []): void
     {
         ++$this->uid;
         $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$this->accountId.'/messages', ['workerId' => 'w1', 'folder' => $folder, 'messages' => [[
@@ -1084,6 +1137,7 @@ final class CalendarInvitationTest extends DatabaseTestCase
             'from' => ['address' => $from, 'name' => null],
             'to' => [['address' => 'kim@company.example']],
             'calendarParts' => [['method' => null, 'ical' => $ical]],
+            'headers' => $headers,
         ]]], $this->worker);
         self::assertResponseIsSuccessful();
         $this->lastParts = [['method' => null, 'ical' => $ical]];
