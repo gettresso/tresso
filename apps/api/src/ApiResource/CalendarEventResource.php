@@ -60,8 +60,8 @@ use Symfony\Component\Validator\Constraints as Assert;
             allowCreate: false,
             parameters: [
                 'scope' => new QueryParameter(
-                    schema: ['type' => 'string', 'enum' => ['this', 'following', 'all'], 'default' => 'all'],
-                    description: 'For recurring events: this occurrence, this and following, or all occurrences.',
+                    schema: ['type' => 'string', 'enum' => ['this', 'following', 'all']],
+                    description: 'For recurring events: this occurrence, this and following, or all occurrences. Without it, "this" for a changed occurrence (an override) and "all" for anything else.',
                     constraints: [new Assert\Choice(choices: ['this', 'following', 'all'])],
                 ),
                 'recurrenceId' => new QueryParameter(
@@ -83,8 +83,8 @@ use Symfony\Component\Validator\Constraints as Assert;
             processor: CalendarEventProcessor::class,
             parameters: [
                 'scope' => new QueryParameter(
-                    schema: ['type' => 'string', 'enum' => ['this', 'following', 'all'], 'default' => 'all'],
-                    description: 'For recurring events: this occurrence, this and following, or all occurrences.',
+                    schema: ['type' => 'string', 'enum' => ['this', 'following', 'all']],
+                    description: 'For recurring events: this occurrence, this and following, or all occurrences. Without it, "this" for a changed occurrence (an override) and "all" for anything else.',
                     constraints: [new Assert\Choice(choices: ['this', 'following', 'all'])],
                 ),
                 'recurrenceId' => new QueryParameter(
