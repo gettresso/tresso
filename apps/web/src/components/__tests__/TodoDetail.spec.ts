@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import type { Todo } from '@tresso/core'
+import type { Todo, TodoUpdate } from '@tresso/core'
 import { useTodosStore } from '@/stores/todos'
 import TodoDetail from '../TodoDetail.vue'
 
@@ -29,12 +29,11 @@ function todo(id: string, extra: Partial<Todo> = {}): Todo {
 }
 
 describe('TodoDetail', () => {
-  let update: ReturnType<typeof vi.fn>
+  let update: MockInstance<(id: string, changes: TodoUpdate) => Promise<Todo>>
 
   beforeEach(() => {
     setActivePinia(createPinia())
-    update = vi.fn(async () => undefined)
-    vi.spyOn(useTodosStore(), 'update').mockImplementation(update as never)
+    update = vi.spyOn(useTodosStore(), 'update').mockImplementation(async (id) => todo(id))
   })
 
   afterEach(() => vi.restoreAllMocks())

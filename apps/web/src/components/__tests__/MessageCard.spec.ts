@@ -114,7 +114,7 @@ describe('MessageCard', () => {
       return clean
     }
     const load = vi.spyOn(mail, 'body').mockResolvedValueOnce(signed('https://api.example.test/a1?signed=morning')).mockResolvedValueOnce(signed('https://api.example.test/a1?signed=afternoon'))
-    const tab = { opener: {}, location: { href: 'about:blank' }, close: vi.fn() }
+    const tab = { opener: {}, location: { href: 'about:blank' }, close: vi.fn<() => void>() }
     const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
     const wrapper = mount(MessageCard, { props: { message: { ...message, attachmentScan: 'clean' }, expanded: true } })
     await flushPromises()
