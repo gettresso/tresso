@@ -7,6 +7,7 @@ namespace App\Tests\Functional\Calendar;
 use App\Calendar\OccurrenceExpander;
 use App\Tests\Functional\AuthenticatesUsers;
 use App\Tests\Functional\DatabaseTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 final class CalendarEventApiTest extends DatabaseTestCase
 {
@@ -788,6 +789,43 @@ final class CalendarEventApiTest extends DatabaseTestCase
         $first = $this->occurrences($this->kim, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0];
         self::assertSame(['dateTime' => '2026-10-19T08:00:00+00:00'], $first['start']);
         self::assertSame(['dateTime' => '2026-10-19T16:00:00+00:00'], $first['end'], 'Still eight hours.');
+    }
+
+    /**
+     * @return iterable<string, array{?string, ?string}>
+     */
+    public static function seriesFormChanges(): iterable
+    {
+        yield 'a floating series gets a zone' => [null, 'Europe/Amsterdam'];
+        yield 'a zoned series becomes floating' => ['Europe/Amsterdam', null];
+    }
+
+    #[DataProvider('seriesFormChanges')]
+    public function testChangingASeriesBetweenFloatingAndZonedKeepsItsExceptions(?string $from, ?string $to): void
+    {
+        $at = static fn (string $time): string => null === $from ? ':'.$time : ';TZID='.$from.':'.$time;
+        $this->storeIcal('floating@test', [
+            'BEGIN:VEVENT', 'UID:floating@test', 'DTSTAMP:20261018T080000Z', 'DTSTART'.$at('20261019T090000'), 'DTEND'.$at('20261019T093000'),
+            'RRULE:FREQ=WEEKLY;COUNT=4', 'EXDATE'.$at('20261102T090000'), 'SUMMARY:Standup', 'END:VEVENT',
+            'BEGIN:VEVENT', 'UID:floating@test', 'DTSTAMP:20261018T080000Z', 'RECURRENCE-ID'.$at('20261026T090000'), 'DTSTART'.$at('20261027T140000'), 'DTEND'.$at('20261027T143000'), 'SUMMARY:Standup, moved', 'END:VEVENT',
+        ]);
+        $seriesId = $this->occurrences($this->kim, '2026-10-19T00:00:00+02:00', '2026-10-20T00:00:00+02:00', 'Europe/Amsterdam')[0]['eventId'];
+        self::assertIsString($seriesId);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$seriesId.'?scope=all', self::event($this->calendarId, [
+            'summary' => 'Standup',
+            'recurrence' => 'FREQ=WEEKLY;COUNT=4',
+            'start' => ['dateTime' => '2026-10-19T09:00:00', 'timeZone' => $to],
+            'end' => ['dateTime' => '2026-10-19T09:30:00', 'timeZone' => $to],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        $occurrences = $this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00', 'Europe/Amsterdam');
+        self::assertSame(
+            [['Standup', '2026-10-19T07:00:00+00:00'], ['Standup, moved', '2026-10-27T13:00:00+00:00'], ['Standup', '2026-11-09T08:00:00+00:00']],
+            array_map(static fn (array $o): array => [$o['summary'], \is_array($o['start']) ? $o['start']['dateTime'] : null], $occurrences),
+            'The changed occurrence shows once, and the deleted one stays deleted.',
+        );
     }
 
     public function testManagesLocalCalendars(): void
