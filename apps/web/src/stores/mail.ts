@@ -272,6 +272,8 @@ export const useMailStore = defineStore('mail', () => {
       store: database,
       pageSize: PAGE_SIZE,
       fetchPage: (since, limit) => auth.api<ChangePage>(`/api/v1/sync/changes?since=${since}&limit=${limit}`),
+      // A failed pull is tried again by the engine, shown as any other pull ("Sync stopped" until one works).
+      retry: (run) => void pull(run),
       onApplied: (page) => {
         delivered.push(...page.mailNotifications)
         deliveredHandOvers.push(...page.handOvers)
@@ -438,6 +440,7 @@ export const useMailStore = defineStore('mail', () => {
     const stopping = realtime
     const database = db.value
     realtime = null
+    engine?.stop()
     engine = null
     notifyingSince = null
     delivered = []
