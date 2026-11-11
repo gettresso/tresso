@@ -54,17 +54,18 @@ final readonly class MessageJanitor
      */
     public function markOrphans(MailAccount $account, array $messageIds, \DateTimeImmutable $now): int
     {
-        if ([] === $messageIds) {
-            return 0;
+        $orphaned = 0;
+        foreach (array_chunk(array_values(array_unique($messageIds)), $this->chunkSize) as $chunk) {
+            $orphaned += \count($this->connection->fetchFirstColumn(
+                'UPDATE message m SET orphaned_at = :now
+                 WHERE m.id = ANY(CAST(:ids AS UUID[])) AND m.mail_account_id = :account AND m.orphaned_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM message_location l WHERE l.message_id = m.id)
+                 RETURNING m.id',
+                ['ids' => self::uuids($chunk), 'account' => $account->getId()->toRfc4122(), 'now' => self::utc($now)],
+            ));
         }
 
-        return \count($this->connection->fetchFirstColumn(
-            'UPDATE message m SET orphaned_at = :now
-             WHERE m.id = ANY(CAST(:ids AS UUID[])) AND m.mail_account_id = :account AND m.orphaned_at IS NULL
-               AND NOT EXISTS (SELECT 1 FROM message_location l WHERE l.message_id = m.id)
-             RETURNING m.id',
-            ['ids' => self::uuids($messageIds), 'account' => $account->getId()->toRfc4122(), 'now' => self::utc($now)],
-        ));
+        return $orphaned;
     }
 
     /**
