@@ -546,6 +546,8 @@ onBeforeUnmount(() => {
   font-size: 26px;
   line-height: 34px;
   font-weight: 600;
+  /* A subject that is one long token (a link, a tracking id) wraps instead of widening the pane. */
+  overflow-wrap: anywhere;
 }
 .missing,
 .state {

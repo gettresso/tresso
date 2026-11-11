@@ -137,6 +137,14 @@ describe('bulk actions', () => {
     return wrapper.get(`[aria-label^="Select Subject ${threadId}, from "]`)
   }
 
+  it('says a conversation is unread as part of its link, not only with the dot', async () => {
+    const wrapper = mountList()
+
+    const link = wrapper.get('a[href="/inbox/t1"]')
+    expect(link.text()).toContain('Unread.')
+    expect(link.get('.dot').attributes('aria-hidden')).toBe('true')
+  })
+
   it('selects with checkboxes, a shift click selects a range, and the bar counts them', async () => {
     const wrapper = mountList()
     expect(wrapper.find('[aria-label="Bulk actions"]').exists()).toBe(false)

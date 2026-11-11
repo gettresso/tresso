@@ -170,6 +170,9 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* A location that is a meeting link wraps instead of widening the panel. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .join {
   align-self: flex-start;

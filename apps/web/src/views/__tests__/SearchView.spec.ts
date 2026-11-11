@@ -136,6 +136,8 @@ describe('SearchView', () => {
     expect(row.get('mark').text()).toBe('budget')
     expect(row.classes()).not.toContain('unread')
     expect(row.get('.row').classes()).toContain('unread')
+    // Unread is heard as part of the link, not only seen in the dot.
+    expect(row.get('.row').text()).toContain('Unread.')
     expect(row.text()).toContain('Work')
     expect(wrapper.text()).toContain('2 emails, 2 attachments')
   })
@@ -188,9 +190,11 @@ describe('SearchView', () => {
     await settle()
     expect(router.currentRoute.value.query.q).toBe('budget has:attachment')
 
+    expect(wrapper.findAll('label.chip')[0]!.classes()).not.toContain('on')
     await wrapper.findAll('select')[0]!.setValue('kim@company.example')
     await settle()
     expect(router.currentRoute.value.query.q).toBe('budget has:attachment in:kim@company.example')
+    expect(wrapper.findAll('label.chip')[0]!.classes()).toContain('on')
     expect(wrapper.get('button[aria-pressed="true"]').text()).toContain('Has attachment')
     expect((wrapper.findAll('select')[0]!.element as HTMLSelectElement).value).toBe('kim@company.example')
   })
