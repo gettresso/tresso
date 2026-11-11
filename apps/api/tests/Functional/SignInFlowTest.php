@@ -9,6 +9,9 @@ use App\Service\UserProvisioner;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\DomCrawler\Field\ChoiceFormField;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\RateLimiter\RequestRateLimiterInterface;
+use Symfony\Component\Security\Http\SecurityRequestAttributes;
 use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\Console\Tester\CommandTester;
 
@@ -33,6 +36,13 @@ final class SignInFlowTest extends DatabaseTestCase
 
         $provisioner = static::getContainer()->get(UserProvisioner::class);
         $provisioner->provision(self::EMAIL, 'Kim Visser', self::PASSWORD);
+
+        // The login limits outlive a test (they are not in the database); start every test without failed attempts.
+        $limiter = static::getContainer()->get('security.login_throttling.main.limiter');
+        self::assertInstanceOf(RequestRateLimiterInterface::class, $limiter);
+        $request = Request::create('/login', 'POST', server: ['REMOTE_ADDR' => '127.0.0.1']);
+        $request->attributes->set(SecurityRequestAttributes::LAST_USERNAME, self::EMAIL);
+        $limiter->reset($request);
     }
 
     public function testMeRequiresToken(): void
@@ -150,6 +160,21 @@ final class SignInFlowTest extends DatabaseTestCase
 
         self::assertResponseStatusCodeSame(400);
         self::assertSame('invalid_grant', $this->json()['error'] ?? null);
+    }
+
+    public function testWrongPasswordsLockTheFormForAWhile(): void
+    {
+        for ($attempt = 1; $attempt <= 5; ++$attempt) {
+            $this->signIn(password: 'wrong-'.$attempt);
+            $this->client->followRedirect();
+            self::assertSelectorTextContains('.error', 'Invalid credentials', 'Attempt '.$attempt);
+        }
+
+        $this->signIn();
+        $this->client->followRedirect();
+
+        self::assertSelectorTextContains('.error', 'Too many failed login attempts');
+        self::assertSame('http://localhost/login', $this->authorize(), 'Even the right password is refused for now.');
     }
 
     public function testKeepMeSignedInSignsTheBrowserInAgainAfterTheSession(): void
@@ -426,10 +451,10 @@ final class SignInFlowTest extends DatabaseTestCase
         $this->client->request('GET', '/api/v1/me', server: ['HTTP_AUTHORIZATION' => 'Bearer '.$accessToken, 'HTTP_ACCEPT' => 'application/json']);
     }
 
-    private function signIn(bool $rememberMe = true): void
+    private function signIn(bool $rememberMe = true, string $password = self::PASSWORD): void
     {
         $crawler = $this->client->request('GET', '/login');
-        $form = $crawler->selectButton('Sign in')->form(['_username' => self::EMAIL, '_password' => self::PASSWORD]);
+        $form = $crawler->selectButton('Sign in')->form(['_username' => self::EMAIL, '_password' => $password]);
         if (!$rememberMe) {
             $checkbox = $form['_remember_me'];
             self::assertInstanceOf(ChoiceFormField::class, $checkbox);

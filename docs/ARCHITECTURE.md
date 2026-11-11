@@ -314,6 +314,9 @@ session (firewall `main`); every API call is stateless and signed with a token. 
 ends two hours after its last request (the Redis TTL, also `gc_maxlifetime`) or when the browser closes (the cookie
 has no lifetime). Its cookie is `HttpOnly`, `SameSite=Lax` and `Secure` on https.
 
+- **Password guessing.** Five wrong passwords for one address from one IP address, or 25 from one IP address, lock
+  the form for 15 minutes (Symfony's `login_throttling`, in Redis through `cache.rate_limiter_shared`, so the limit
+  holds across API instances); the page then says to try again later, and even the right password waits.
 - **Keep me signed in.** The sign-in form has this checkbox, ticked by default. It sets Symfony's remember-me cookie
   (`REMEMBERME`, `HttpOnly`, `SameSite=Lax`, `Secure` on https) for 30 days, as long as a refresh token lives, so a new
   tab, a restarted browser or an app that signs in again passes `/oauth/authorize` without the password. The cookie is
