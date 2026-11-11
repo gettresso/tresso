@@ -658,7 +658,8 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   `hasMore`. Threads and messages also carry `heldUntil` and `batchedAt` (batched delivery, 3.7), messages the
   `unsubscribe` method they offer (`oneClick`, `mailto` or null) and the `unsubscribeMailto` address, smart inboxes
   `batchDelivery`, and the page the user's `unsubscriptions` (one per account and sender). A page never splits one
-  change number. A deleted mail account implies its folders,
+  change number; changes made in bulk (a folder reset or deleted, messages deleted after their grace period) take a
+  change number per 1000 messages, so they page like any other change. A deleted mail account implies its folders,
   threads and messages are gone.
 - Clients store data in a local cache (desktop via Rust/Tauri SQLite, mobile via expo-sqlite, web via IndexedDB),
   start with `since=0`, keep the cursor, and fetch message bodies lazily.

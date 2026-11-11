@@ -4,11 +4,24 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
+use App\ApiResource\Input\Sync\FolderInput;
+use App\Entity\MailAccount;
+use App\Enum\FolderRole;
+use App\Mailbox\MailboxChanges;
 use App\Realtime\RealtimeNotifier;
 use App\Search\SearchIndexScheduler;
 use App\Sync\Change\ChangeSequencer;
+use App\Sync\Ingest\FolderSynchronizer;
+use App\Sync\Ingest\MessageJanitor;
+use App\Sync\Ingest\SweepOrphanedMessages;
+use App\Sync\Ingest\SweepOrphanedMessagesHandler;
+use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
 use Doctrine\DBAL\Exception as DBALException;
+use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\Persistence\ManagerRegistry;
+use Psr\Log\NullLogger;
+use Symfony\Component\Clock\MockClock;
 use Symfony\Component\Uid\Uuid;
 
 final class SyncChangesTest extends DatabaseTestCase
@@ -248,6 +261,54 @@ final class SyncChangesTest extends DatabaseTestCase
 
             self::assertSame($this->cursorsByFullCount($limit), $cursors, 'limit '.$limit);
         }
+    }
+
+    public function testALargeFolderDeletionIsPagedLikeAnyOtherChange(): void
+    {
+        $this->ingest('folders', ['folders' => [
+            ['remoteName' => 'INBOX', 'displayName' => 'Inbox', 'role' => 'inbox', 'uidValidity' => 1],
+            ['remoteName' => 'Archive', 'displayName' => 'Archive', 'role' => 'archive', 'uidValidity' => 1],
+            ['remoteName' => 'Projects', 'displayName' => 'Projects', 'role' => 'custom', 'uidValidity' => 1],
+        ]]);
+        $this->ingest('messages', ['folder' => 'Projects', 'messages' => array_map(fn (int $i): array => $this->message((string) $i, '<project-'.$i.'@x>', 'Project '.$i), range(1, 7))]);
+        $cursor = $this->changes(0)['cursor'];
+
+        // Chunks of two instead of a thousand, to see them with a few messages.
+        $container = static::getContainer();
+        $sequencer = new ChangeSequencer($container->get(Connection::class), $container->get(RealtimeNotifier::class), $container->get(SearchIndexScheduler::class), 2);
+        $janitor = new MessageJanitor($container->get(Connection::class), $sequencer, 2);
+        $entityManager = $container->get(EntityManagerInterface::class);
+        $account = $entityManager->find(MailAccount::class, Uuid::fromString($this->accountId));
+        self::assertInstanceOf(MailAccount::class, $account);
+        $folders = new FolderSynchronizer($entityManager, $container->get(Connection::class), $janitor, $sequencer, $container->get(MailboxChanges::class));
+        $folders->sync($account, array_map(static function (array $folder): FolderInput {
+            $input = new FolderInput();
+            $input->remoteName = $folder[0];
+            $input->displayName = $folder[0];
+            $input->role = $folder[1];
+            $input->uidValidity = 1;
+
+            return $input;
+        }, [['INBOX', FolderRole::Inbox], ['Archive', FolderRole::Archive]]));
+        $entityManager->clear();
+        new SweepOrphanedMessagesHandler($entityManager, $janitor, $container->get(ManagerRegistry::class), new MockClock(new \DateTimeImmutable('+16 minutes')), new NullLogger())(new SweepOrphanedMessages());
+
+        $pages = [];
+        do {
+            $page = $this->changes($cursor, 5);
+            $cursor = $page['cursor'];
+            $rows = 0;
+            foreach ($page as $value) {
+                $rows += \is_array($value) ? \count($value) : 0;
+            }
+            $pages[] = [$rows, $page['hasMore']];
+        } while ($page['hasMore'] && \count($pages) < 50);
+
+        self::assertGreaterThan(3, \count($pages), 'Seven messages leave their folder and go in chunks of two.');
+        foreach ($pages as [$rows, $hasMore]) {
+            self::assertLessThanOrEqual(5, $rows);
+        }
+        self::assertSame(7, $this->countRows("SELECT COUNT(*) FROM sync_tombstone WHERE entity_type = 'message'"));
     }
 
     public function testUsersOnlySeeTheirOwnChanges(): void

@@ -22,10 +22,17 @@ use Symfony\Component\Uid\Uuid;
  */
 final readonly class ChangeSequencer
 {
+    /** Rows one bulk change number covers at most, so clients page through a large change like through any other. */
+    public const int CHUNK = 1000;
+
+    /**
+     * @param positive-int $chunkSize
+     */
     public function __construct(
         private Connection $connection,
         private RealtimeNotifier $notifier,
         private SearchIndexScheduler $search,
+        private int $chunkSize = self::CHUNK,
     ) {
     }
 
@@ -55,31 +62,32 @@ final readonly class ChangeSequencer
      */
     public function tombstones(Uuid $userId, string $entityType, array $entityIds, int $seq): void
     {
-        foreach ($entityIds as $entityId) {
-            $this->connection->insert('sync_tombstone', [
-                'id' => Uuid::v7()->toRfc4122(),
-                'user_id' => $userId->toRfc4122(),
-                'entity_type' => $entityType,
-                'entity_id' => $entityId,
-                'change_seq' => $seq,
-            ]);
+        // One statement per chunk, not one per row: a deleted folder can take many thousands of messages along.
+        foreach (array_chunk($entityIds, $this->chunkSize) as $chunk) {
+            $ids = array_map(static fn (): string => Uuid::v7()->toRfc4122(), $chunk);
+            $this->connection->executeStatement(
+                'INSERT INTO sync_tombstone (id, user_id, entity_type, entity_id, change_seq)
+                 SELECT t.id, :user, :type, t.entity_id, :seq FROM unnest(CAST(:ids AS UUID[]), CAST(:entities AS UUID[])) AS t(id, entity_id)',
+                ['user' => $userId->toRfc4122(), 'type' => $entityType, 'seq' => $seq, 'ids' => '{'.implode(',', $ids).'}', 'entities' => '{'.implode(',', $chunk).'}'],
+            );
         }
     }
 
     /**
-     * Marks messages changed whose folder membership changed in bulk SQL (the ORM listener does not see those).
+     * Marks messages changed whose folder membership changed in bulk SQL (the ORM listener does not see those), with a
+     * change number per {@see CHUNK} messages: a page of the delta never splits a change number, so one number for a
+     * whole folder would make one unbounded page.
      *
      * @param list<string> $messageIds
      */
     public function touchMessages(Uuid $userId, array $messageIds): void
     {
-        if ([] === $messageIds) {
-            return;
+        foreach (array_chunk(array_values(array_unique($messageIds)), $this->chunkSize) as $chunk) {
+            $this->connection->executeStatement(
+                'UPDATE message SET change_seq = :seq WHERE id = ANY(CAST(:ids AS UUID[]))',
+                ['seq' => $this->next($userId), 'ids' => '{'.implode(',', $chunk).'}'],
+            );
         }
-        $this->connection->executeStatement(
-            'UPDATE message SET change_seq = :seq WHERE id = ANY(CAST(:ids AS UUID[]))',
-            ['seq' => $this->next($userId), 'ids' => '{'.implode(',', array_unique($messageIds)).'}'],
-        );
     }
 
     /**
