@@ -43,6 +43,13 @@ export interface Draft {
   remoteVersion: number | null
   /** Set once sent: the draft stays until the message is confirmed sent, so a failure can be edited and resent. */
   outgoingId: string | null
+  /**
+   * The id chosen when the user pressed Send (a UUIDv7, sent as `outgoingId`), kept until the server confirmed the
+   * message, the send was cancelled or undone, or the draft was edited: every try of the same send carries it, so a
+   * request whose answer was lost and is sent again (also after a restart) does not send the message twice. Absent or
+   * null while no send is under way.
+   */
+  sendAttemptId?: string | null
   /** The outgoing status the user was last told about, so each outcome is announced once. */
   noticedStatus: string | null
   updatedAt: number

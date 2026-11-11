@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SendMessageRequest } from './compose'
 import { Composer, OriginalUnavailableError, type ComposerDeps, type ComposerNotice } from './composer'
 import { DraftSync } from './drafts'
+import { uuidV7Time } from './ids'
 import { ApiFailure, FakeDraftApi } from './drafts.fake'
 import { accounts, message, page, signature } from './store/contract'
 import { memorySql } from './store/memorySql'
@@ -17,6 +18,8 @@ const original = message('m1', 't1', 'work', ['work-inbox'], '2026-10-19T08:00:0
 describe('Composer', () => {
   let store: SqliteMailStore
   let sent: SendMessageRequest[]
+  /** Every request to send, also those that failed. */
+  let tried: SendMessageRequest[]
   let cancelled: string[]
   let notices: ComposerNotice[]
   let api: FakeDraftApi
@@ -35,6 +38,7 @@ describe('Composer', () => {
     store = await SqliteMailStore.open(await memorySql())
     await store.apply(page({ cursor: 1, mailAccounts: accounts, signatures: [signature('sig-work', 'Work')] }))
     sent = []
+    tried = []
     cancelled = []
     notices = []
     sendFails = null
@@ -56,6 +60,7 @@ describe('Composer', () => {
         return { html: originalHtml, text: null, attachments: originalFiles }
       },
       send: async (request) => {
+        tried.push(request)
         await sendGate
         if (sendFails !== null) throw sendFails
         sent.push(request)
@@ -1008,5 +1013,85 @@ describe('Composer', () => {
     await vi.advanceTimersByTimeAsync(200)
     expect(serverBehind.state.undoable).toBeNull()
     serverBehind.dispose()
+  })
+
+  describe('the id of a send', () => {
+    const lost = new Error('Network request failed')
+
+    it('is a UUIDv7 of the server time, chosen once and dropped once the server has the message', async () => {
+      const serverAhead = new Composer({ ...deps, now: () => Date.now() + 120_000 })
+      serverAhead.openNew([{ address: 'anna@example.test', name: null }])
+      const id = serverAhead.state.draft!.id
+
+      await serverAhead.send()
+
+      expect(uuidV7Time(sent[0]!.outgoingId!)).toBe(Date.now() + 120_000)
+      expect(await store.draft(id)).toMatchObject({ outgoingId: 'o1', sendAttemptId: null })
+      serverAhead.dispose()
+    })
+
+    it('is reused when Send is pressed again after an answer was lost, and by the confirmation of unscanned files', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      const id = composer.state.draft!.id
+      sendFails = lost
+
+      await composer.send()
+      const first = tried[0]!.outgoingId
+      expect(first).toBeDefined()
+      expect(await store.draft(id)).toMatchObject({ sendAttemptId: first })
+
+      sendFails = new ApiFailure(422, { acceptUnscanned: 'Send it anyway?' })
+      await composer.send()
+      sendFails = null
+      await composer.sendAnyway()
+
+      expect(tried.map((request) => request.outgoingId)).toEqual([first, first, first])
+      expect(sent).toHaveLength(1)
+    })
+
+    it('survives a restart between the request and its answer', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      composer.dispose()
+
+      sendFails = null
+      const restarted = new Composer(deps)
+      await restarted.openDraft(id)
+      await restarted.send()
+
+      expect(sent[0]!.outgoingId).toBe(tried[0]!.outgoingId)
+      restarted.dispose()
+    })
+
+    it('is new once the draft was edited after a failed send', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+
+      composer.update({ subject: 'Changed my mind' })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(await store.draft(id)).toMatchObject({ sendAttemptId: null })
+      sendFails = null
+      await composer.send()
+
+      expect(sent[0]!.outgoingId).toBeDefined()
+      expect(sent[0]!.outgoingId).not.toBe(tried[0]!.outgoingId)
+    })
+
+    it('is dropped by an undo, so sending again is a new send', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      const id = composer.state.draft!.id
+      await composer.send()
+      await composer.undo()
+      expect(await store.draft(id)).toMatchObject({ sendAttemptId: null, outgoingId: null })
+
+      await composer.send()
+
+      expect(sent).toHaveLength(2)
+      expect(sent[1]!.outgoingId).not.toBe(sent[0]!.outgoingId)
+    })
   })
 })

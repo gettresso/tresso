@@ -1,5 +1,6 @@
 import { isPlausibleAddress, quotedInlineImages, quoteWithContentId, withInlineLinks, type SendMessageRequest } from './compose'
 import { AttachmentsNeedTheServer, defaultSignatureOf, editedFields, newDraft, reopenedDraft, replyDraft, sendRequest, sentOutcome, withEditsOver, withoutLink, type AttachmentFile, type DraftBase, type DraftSync } from './drafts'
+import { uuidV7 } from './ids'
 import { CopyClosingError, type Draft, type MailStore } from './store/mailStore'
 import type { Address, AttachmentAccess, DraftAttachment, MessageAttachment, MessageBody, SyncedMailAccount, SyncedMessage, SyncedOutgoingMessage, SyncedSignature } from './sync/types'
 
@@ -800,18 +801,24 @@ export class Composer {
         this.set({ conflict: true })
         throw new Error('This draft was changed on another device. Choose which version to keep first.')
       }
-      const onServer = await this.deps.drafts.uploadForSending(draft)
+      // The send's id is chosen once, when it is first tried, and kept with the draft before the request leaves: every
+      // try of the same send (Send pressed again after a lost answer, also after a restart) carries it, so the server
+      // queues the message once. Its time is the server's, which takes only an id made about now.
+      const attempt = await store.changeDraft(draft.id, (stored) => (stored === null || stored.sendAttemptId ? null : { ...stored, sendAttemptId: uuidV7(this.now()) }))
+      const attemptId = attempt?.sendAttemptId ?? uuidV7(this.now())
+      const onServer = await this.deps.drafts.uploadForSending({ ...draft, sendAttemptId: attemptId })
       if (!onServer && draft.attachments.length > 0) {
         // The files are with the server's copy of the draft: sending without it would leave them out.
         throw new AttachmentsNeedTheServer()
       }
       // Worked out after the upload: the undo window is the time between queueing and sending, on the server's clock.
       const at = sendAt ?? new Date(this.now() + this.undoSeconds * 1000)
-      const outgoing = await this.deps.send(sendRequest(draft, this.deps.signatures(), at, onServer, acceptUnscanned))
+      const outgoing = await this.deps.send(sendRequest({ ...draft, sendAttemptId: attemptId }, this.deps.signatures(), at, onServer, acceptUnscanned))
       sent = true
       this.bases.delete(draft.id)
       try {
-        await store.changeDraft(draft.id, (stored) => ({ ...(stored ?? draft), outgoingId: outgoing.id, pendingSave: false, updatedAt: Date.now() }))
+        // The server has the message: the send is over, and so is its id.
+        await store.changeDraft(draft.id, (stored) => ({ ...(stored ?? draft), outgoingId: outgoing.id, sendAttemptId: null, pendingSave: false, updatedAt: Date.now() }))
       } catch (error) {
         // The server has the message: it goes out whatever this device could note, so the form closes all the same.
         this.deps.notify({ text: `Sent, but this device could not note it (${this.deps.explain(error).message}). The draft may stay in Drafts.`, tone: 'error' }, 30000)
