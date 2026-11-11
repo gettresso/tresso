@@ -83,6 +83,16 @@ describe('the subscription of this browser', () => {
     expect(stored.has('/push-owner')).toBe(false)
   })
 
+  it('goes from the browser before the server is asked, so a sign-out that stops waiting for the server still drops it', async () => {
+    const send = vi.fn<(method: string, path: string) => Promise<{ id: string }>>(() => new Promise(() => {}))
+
+    void disableWebPush(send as never)
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalled())
+    expect(subscription!.unsubscribe).toHaveBeenCalled()
+    expect(stored.has('/push-owner')).toBe(false)
+  })
+
   it('goes when another user signs in here, and stays for the user who turned it on', async () => {
     expect(await releaseOtherUsersPush('kim')).toBe(false)
     expect(subscription!.unsubscribe).not.toHaveBeenCalled()
