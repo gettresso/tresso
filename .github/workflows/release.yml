@@ -179,37 +179,14 @@ jobs:
           shopt -s nullglob
           case "${NAME}" in
             macos-*)
-              # The file is Tresso-<version>.dmg and the disk "Tresso <version>", like the other macOS apps. Tauri
-              # names the disk after the product, so the DMG is made again with the create-dmg script Tauri left next
-              # to its own DMG and the Finder layout of tauri.conf.json. Renaming the finished disk would not do: the
-              # background in .DS_Store points at the disk by its name.
+              # Tresso-<version>.dmg with the disk "Tresso <version>", like the other macOS apps: made again from Tauri's
+              # own create-dmg script with Tauri's arguments but the disk name (scripts/ci/make-dmg.sh). Finder's
+              # AppleScript in it now and then fails to find the new disk, so a second try is allowed; each try starts
+              # clean.
               one "${bundle}"/dmg/*.dmg >/dev/null
-              script="${PWD}/${bundle}/dmg/bundle_dmg.sh"
-              if [ ! -x "${script}" ]; then
-                echo "Tauri left no ${script}: its DMG bundler changed" >&2
-                exit 1
-              fi
-              read -r app_x app_y folder_x folder_y width height background < <(node -e '
-                const dmg = require(process.argv[1]).bundle.macOS.dmg
-                const values = [dmg.appPosition.x, dmg.appPosition.y, dmg.applicationFolderPosition.x,
-                  dmg.applicationFolderPosition.y, dmg.windowSize.width, dmg.windowSize.height, dmg.background]
-                if (values.some((value) => value === undefined || /\s/.test(String(value)))) {
-                  console.error("tauri.conf.json lacks a part of bundle.macOS.dmg")
-                  process.exit(1)
-                }
-                console.log(values.join(" "))
-              ' "${PWD}/apps/desktop/src-tauri/tauri.conf.json")
-              background="${PWD}/apps/desktop/src-tauri/${background}"
-              icon="$(plutil -extract CFBundleIconFile raw "${bundle}/macos/Tresso.app/Contents/Info.plist")"
-              icon="${PWD}/${bundle}/macos/Tresso.app/Contents/Resources/${icon%.icns}.icns"
-              dmg="${PWD}/dist/Tresso-${VERSION}.dmg"
+              dmg="dist/Tresso-${VERSION}.dmg"
               volume="Tresso ${VERSION}"
-              (
-                cd "${bundle}/macos"
-                "${script}" --volname "${volume}" --icon Tresso.app "${app_x}" "${app_y}" \
-                  --app-drop-link "${folder_x}" "${folder_y}" --window-size "${width}" "${height}" \
-                  --background "${background}" --volicon "${icon}" "${dmg}" Tresso.app
-              )
+              scripts/ci/retry.sh 2 scripts/ci/make-dmg.sh "${bundle}" "${VERSION}" dist
               # The DMG must carry its Finder layout: the background and the window settings in .DS_Store.
               mount="$(mktemp -d)"
               hdiutil attach -nobrowse -readonly -mountpoint "${mount}" "${dmg}" >/dev/null
@@ -221,6 +198,7 @@ jobs:
                 fi
               done
               named="$(diskutil info "${mount}" | sed -n 's/^ *Volume Name: *//p')"
+              echo "The DMG's disk is named \"${named}\""
               if [ "${named}" != "${volume}" ]; then
                 echo "The DMG's disk is named \"${named}\", not \"${volume}\"" >&2
                 status=1
