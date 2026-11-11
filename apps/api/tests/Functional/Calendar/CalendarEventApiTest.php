@@ -667,6 +667,79 @@ final class CalendarEventApiTest extends DatabaseTestCase
         ], $ends);
     }
 
+    public function testANoteFollowsItsOccurrenceWhenItIsChanged(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->putNote($series['id'], '20261026T080000Z', 'Ask about the budget');
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=this&recurrenceId=20261026T080000Z', self::event($this->calendarId, [
+            'summary' => 'Weekly sync, longer',
+            'start' => ['dateTime' => '2026-10-26T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-26T10:00:00', 'timeZone' => 'Europe/Amsterdam'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        self::assertSame(['2026-10-26' => 'Ask about the budget'], $this->notesByDay());
+    }
+
+    public function testANoteFollowsItsOccurrenceWhenTheSeriesMoves(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->putNote($series['id'], '20261026T080000Z', 'Ask about the budget');
+        $this->putNote($series['id'], null, 'About the whole series');
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=all', self::event($this->calendarId, [
+            'recurrence' => 'FREQ=WEEKLY;COUNT=4',
+            'start' => ['dateTime' => '2026-10-19T10:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-19T10:30:00', 'timeZone' => 'Europe/Amsterdam'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        self::assertSame(['2026-10-26' => 'Ask about the budget'], $this->notesByDay());
+        self::assertContains([$series['id'], null, 'About the whole series'], $this->notes());
+    }
+
+    public function testNotesGoAlongToAnotherCalendarAndToANewSeries(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->putNote($series['id'], '20261026T080000Z', 'Second');
+        $this->putNote($series['id'], '20261102T080000Z', 'Third');
+        $this->client->jsonRequest('POST', '/api/v1/calendars', ['name' => 'Family', 'color' => '#E0457B'], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $family = $this->responseString('id');
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'], self::event($family, ['recurrence' => 'FREQ=WEEKLY;COUNT=4']), $this->kim);
+        self::assertResponseIsSuccessful();
+        $moved = self::string($this->decodedResponse()['id']);
+        self::assertSame(['2026-10-26' => 'Second', '2026-11-02' => 'Third'], $this->notesByDay());
+
+        // This and following from the third, an hour later: its note goes to the new series, the second's stays.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$moved.'?scope=following&recurrenceId=20261102T080000Z', self::event($family, [
+            'recurrence' => 'FREQ=WEEKLY;COUNT=4',
+            'start' => ['dateTime' => '2026-11-02T10:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-11-02T10:30:00', 'timeZone' => 'Europe/Amsterdam'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+        self::assertSame(['2026-10-26' => 'Second', '2026-11-02' => 'Third'], $this->notesByDay());
+    }
+
+    public function testNotesOfADeletedEventLeaveTombstones(): void
+    {
+        $event = $this->create();
+        $this->putNote($event['id'], null, 'Bring the slides');
+        $note = $this->notes();
+        self::assertCount(1, $note);
+        $cursor = $this->getJson('/api/v1/sync/changes?since=0', $this->kim)['cursor'];
+        self::assertIsInt($cursor);
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$event['id'], server: $this->kim);
+        self::assertResponseStatusCodeSame(204);
+
+        $delta = $this->getJson('/api/v1/sync/changes?since='.$cursor, $this->kim);
+        self::assertIsArray($delta['deleted']);
+        self::assertContains('eventNote', array_column($delta['deleted'], 'type'));
+    }
+
     public function testManagesLocalCalendars(): void
     {
         $this->client->jsonRequest('POST', '/api/v1/calendars', ['name' => 'Family', 'color' => '#E0457B'], $this->kim);
@@ -686,6 +759,48 @@ final class CalendarEventApiTest extends DatabaseTestCase
 
         $this->client->request('DELETE', '/api/v1/calendars/'.$this->calendarId, server: $this->kim);
         self::assertResponseStatusCodeSame(422);
+    }
+
+    private function putNote(string $eventId, ?string $recurrenceId, string $text): void
+    {
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId.'/note', ['recurrenceId' => $recurrenceId, 'text' => $text], $this->kim);
+        self::assertResponseIsSuccessful();
+    }
+
+    /**
+     * Every note as the delta has it: event, occurrence and text.
+     *
+     * @return list<array{mixed, mixed, mixed}>
+     */
+    private function notes(): array
+    {
+        $notes = $this->getJson('/api/v1/sync/changes?since=0', $this->kim)['eventNotes'];
+        self::assertIsArray($notes);
+
+        return array_values(array_map(static fn (mixed $note): array => \is_array($note) ? [$note['eventId'], $note['recurrenceId'], $note['text']] : [null, null, null], $notes));
+    }
+
+    /**
+     * The notes of shown occurrences, by the occurrence's day in Amsterdam: a note counts when its event and
+     * occurrence are the ones the occurrence carries, as clients find it.
+     *
+     * @return array<string, mixed>
+     */
+    private function notesByDay(): array
+    {
+        $notes = $this->notes();
+        $byDay = [];
+        foreach ($this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00', 'Europe/Amsterdam') as $occurrence) {
+            foreach ($notes as [$eventId, $recurrenceId, $text]) {
+                $start = $occurrence['start'];
+                if ($eventId === $occurrence['eventId'] && null !== $recurrenceId && $recurrenceId === $occurrence['recurrenceId'] && \is_array($start) && \is_string($start['dateTime'] ?? null)) {
+                    $byDay[new \DateTimeImmutable($start['dateTime'])->setTimezone(new \DateTimeZone('Europe/Amsterdam'))->format('Y-m-d')] = $text;
+                }
+            }
+        }
+        ksort($byDay);
+
+        return $byDay;
     }
 
     /**

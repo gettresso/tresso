@@ -73,6 +73,16 @@ class EventNote implements TracksChanges
         return $this->text;
     }
 
+    /**
+     * The note follows its occurrence to another row (an override that came or went, the series moved) or to the
+     * occurrence's new key.
+     */
+    public function moveTo(CalendarEvent $event, string $occurrenceKey): void
+    {
+        $this->event = $event;
+        $this->occurrenceKey = $occurrenceKey;
+    }
+
     public function write(string $text): void
     {
         $this->text = $text;
@@ -91,7 +101,8 @@ class EventNote implements TracksChanges
 
     public static function clientFields(): ?array
     {
-        return ['text'];
+        // Where it hangs counts too: clients find a note by its event and occurrence.
+        return ['text', 'event', 'occurrenceKey'];
     }
 
     public static function changeType(): string

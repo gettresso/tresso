@@ -18,11 +18,14 @@ use App\Calendar\Scheduling\SchedulingPermission;
 use App\Entity\Calendar;
 use App\Entity\CalendarEvent;
 use App\Entity\CalendarObject;
+use App\Entity\EventNote;
 use App\Entity\MailAccount;
 use App\Enum\CalendarSource;
 use App\Enum\EditScope;
 use App\Enum\ParticipationStatus;
 use App\Repository\CalendarObjectRepository;
+use App\Repository\EventNoteRepository;
+use Doctrine\ORM\EntityManagerInterface;
 use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Component\VEvent;
 use Sabre\VObject\ITip\Broker;
@@ -54,6 +57,8 @@ final readonly class EventEditor
         private SelfAddresses $selfAddresses,
         private ItipMailer $mailer,
         private SchedulingPermission $permission,
+        private EntityManagerInterface $entityManager,
+        private EventNoteRepository $notes,
     ) {
         Settings::$maxRecurrences = self::MAX_RECURRENCES;
     }
@@ -103,8 +108,9 @@ final readonly class EventEditor
         }
 
         $editedKey = '';
+        $moved = null;
         if (null === $key && null !== $master && self::isSeries($master)) {
-            $this->editAll($vcalendar, $master, $changes, null, $self);
+            $moved = $this->editAll($vcalendar, $master, $changes, null, $self);
         } elseif (null === $key) {
             $this->write($master ?? throw new EditRejected('This event no longer exists.'), $changes, $vcalendar, true, $self);
         } elseif (EditScope::This === $scope || null === $master) {
@@ -112,7 +118,7 @@ final readonly class EventEditor
             $this->write($occurrence, $changes, $vcalendar, false, $self);
             $editedKey = $key;
         } elseif (EditScope::All === $scope || $this->isFirst($master, $key)) {
-            $this->editAll($vcalendar, $master, $changes, $key, $self);
+            $moved = $this->editAll($vcalendar, $master, $changes, $key, $self);
         } else {
             $newObject = $this->split($object, $vcalendar, $master, $key, $changes, $self, $notify, $organizer);
             self::withOrganizer($vcalendar, $calendar, $organizer);
@@ -124,7 +130,10 @@ final readonly class EventEditor
 
         self::withOrganizer($vcalendar, $calendar, $organizer);
         self::requestConference($vcalendar, $calendar, $changes->conferenceProvider);
+        // The occurrences moved: their notes go along to the new keys.
+        $notes = null === $moved ? [] : $this->liftNotes($object, static fn (string $noteKey): ?string => '' === $noteKey ? null : $moved($noteKey));
         $rows = $this->store->save($object, $vcalendar, notify: $notify);
+        $this->putNotes($notes, $rows);
         $this->schedule($calendar, $old, $vcalendar, $notify);
 
         return $rows[$editedKey] ?? $rows[''] ?? array_values($rows)[0];
@@ -459,11 +468,13 @@ final readonly class EventEditor
     /**
      * "All occurrences": the series moves by the same shift the user gave the edited occurrence, and its overrides and
      * exceptions move with it. A new recurrence rule, or a switch between all-day and timed, starts the series fresh.
-     */
-    /**
+     * Returns where each occurrence key went when the occurrences moved, else null.
+     *
      * @param list<string> $self
+     *
+     * @return (\Closure(string): ?string)|null
      */
-    private function editAll(VCalendar $vcalendar, VEvent $master, EventChanges $changes, ?string $key, array $self): void
+    private function editAll(VCalendar $vcalendar, VEvent $master, EventChanges $changes, ?string $key, array $self): ?\Closure
     {
         $masterStart = EventReader::time(self::dtStart($master), $vcalendar);
         $anchor = null === $key ? $masterStart : $this->occurrenceStart($master, $key, $vcalendar);
@@ -487,6 +498,7 @@ final readonly class EventEditor
         // repeats on the new day, and its exceptions, moved by the same shift, still match.
         $rule = $fresh ? $changes->rrule : self::shiftRule($changes->rrule, self::daysBetween($anchor, $changes->start), $changes->start);
         $overrides = array_filter(CalendarDocument::events($vcalendar), static fn (VEvent $event): bool => '' !== CalendarDocument::recurrenceKey($event));
+        $moved = null;
         if ($fresh) {
             foreach ($overrides as $override) {
                 $vcalendar->remove($override);
@@ -494,6 +506,7 @@ final readonly class EventEditor
             $master->remove('EXDATE');
             $master->remove('RDATE');
         } elseif (0 !== $shift || $changes->start->timeZone !== $masterStart->timeZone) {
+            $moved = self::keyMover($masterStart, $shift, $changes->start->timeZone);
             foreach ($overrides as $override) {
                 $atItsTime = self::atItsOwnTime($override);
                 self::shiftProperty(Props::dateTime($override, 'RECURRENCE-ID'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar);
@@ -513,6 +526,8 @@ final readonly class EventEditor
             $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
             $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
         ), $vcalendar, true, $self);
+
+        return $moved;
     }
 
     /**
@@ -542,6 +557,9 @@ final readonly class EventEditor
 
         $sameKind = $occurrence->isDate === $changes->start->isDate;
         $shift = $sameKind ? self::wallClockSeconds($changes->start) - self::wallClockSeconds($occurrence) : 0;
+        // Notes on this and later occurrences go to the new series, at the keys their occurrences get there.
+        $mover = $sameKind ? self::keyMover(EventReader::time(self::dtStart($master), $vcalendar), $shift, $changes->start->timeZone) : null;
+        $notes = $this->liftNotes($object, static fn (string $noteKey): ?string => '' === $noteKey || $noteKey < $key ? null : ((null === $mover ? null : $mover($noteKey)) ?? $noteKey));
         // The new series starts where the occurrence belongs in the series, moved as far as the user moved what was
         // shown: from a moved occurrence its override's own time is not the series' time. Its override goes along,
         // moved by the same shift, so it still matches its occurrence.
@@ -618,6 +636,7 @@ final readonly class EventEditor
         self::requestConference($next, $object->getCalendar(), $changes->conferenceProvider);
 
         $rows = $this->store->save(new CalendarObject($object->getCalendar(), $uid, ''), $next, notify: $notify);
+        $this->putNotes($notes, $rows);
         $this->schedule($object->getCalendar(), null, $next, $notify);
 
         return $rows[''];
@@ -628,11 +647,12 @@ final readonly class EventEditor
      */
     private function move(CalendarObject $object, VCalendar $vcalendar, VCalendar $old, ?VEvent $master, EventChanges $changes, ?string $key, Calendar $target, bool $notify, array $self, ?MailAccount $organizer): CalendarEvent
     {
+        $moved = null;
         if (null !== $master) {
             if (null === $key) {
                 $this->write($master, $changes, $vcalendar, true, $self);
             } else {
-                $this->editAll($vcalendar, $master, $changes, $key, $self);
+                $moved = $this->editAll($vcalendar, $master, $changes, $key, $self);
             }
         }
         if (null !== $this->objects->findOneByUid($target, $object->getUid())) {
@@ -642,8 +662,11 @@ final readonly class EventEditor
         self::withOrganizer($vcalendar, $target, $organizer);
         self::requestConference($vcalendar, $target, $changes->conferenceProvider);
         $source = $object->getCalendar();
+        // Every note goes along to the new resource (removing the old one would delete them).
+        $notes = $this->liftNotes($object, static fn (string $noteKey): string => '' === $noteKey ? '' : ((null === $moved ? null : $moved($noteKey)) ?? $noteKey));
         $this->store->remove($object, notify: $notify && $source->getMailAccount() !== $target->getMailAccount());
         $rows = $this->store->save(new CalendarObject($target, $object->getUid(), ''), $vcalendar, notify: $notify);
+        $this->putNotes($notes, $rows);
         $this->schedule($source, $old, null, $notify && $source->getMailAccount() !== $target->getMailAccount());
         $this->schedule($target, $source->getMailAccount() === $target->getMailAccount() ? $old : null, $vcalendar, $notify);
 
@@ -754,16 +777,96 @@ final readonly class EventEditor
     /** Where the occurrence with this key belongs in the series: its recurrence id as a time of the series. */
     private function keyStart(VEvent $master, string $key, VCalendar $vcalendar): EventTime
     {
-        $masterStart = EventReader::time(self::dtStart($master), $vcalendar);
+        return self::keyTime(EventReader::time(self::dtStart($master), $vcalendar), $key);
+    }
+
+    /** The occurrence with this key as a time of a series that starts at $seriesStart. */
+    private static function keyTime(EventTime $seriesStart, string $key): EventTime
+    {
         $instant = RecurrenceKey::require($key);
-        if ($masterStart->isDate) {
+        if ($seriesStart->isDate) {
             return EventTime::date($instant);
         }
-        if (null === $masterStart->timeZone) {
+        if (null === $seriesStart->timeZone) {
             return EventTime::dateTime($instant, null);
         }
 
-        return EventTime::dateTime($instant->setTimezone(new \DateTimeZone($masterStart->timeZone)), $masterStart->timeZone);
+        return EventTime::dateTime($instant->setTimezone(new \DateTimeZone($seriesStart->timeZone)), $seriesStart->timeZone);
+    }
+
+    /**
+     * Where the occurrences of a series that starts at $seriesStart go when the series moves by $shift seconds of
+     * wall clock into $zone, as its overrides and exceptions do: old key to new key (null for a key that is none).
+     *
+     * @return \Closure(string): ?string
+     */
+    private static function keyMover(EventTime $seriesStart, int $shift, ?string $zone): \Closure
+    {
+        return static function (string $key) use ($seriesStart, $shift, $zone): ?string {
+            if (!RecurrenceKey::isValid($key)) {
+                return null;
+            }
+            $time = self::shiftTime(self::keyTime($seriesStart, $key), $shift, $zone);
+            $instant = $time->toInstant(new \DateTimeZone('UTC'));
+
+            return $time->isDate ? RecurrenceKey::fromDate($instant) : RecurrenceKey::fromInstant($instant);
+        };
+    }
+
+    /**
+     * Takes the object's notes off their rows before the rows change under them, for every note $to gives a key
+     * (null leaves the note where it is); {@see putNotes()} hangs them on the rows that show those occurrences after
+     * the save. They are removed first (and leave tombstones), so no row and key is ever held twice on the way.
+     *
+     * @param \Closure(string): ?string $to
+     *
+     * @return list<array{string, string}> each note's text and its new occurrence key
+     */
+    private function liftNotes(CalendarObject $object, \Closure $to): array
+    {
+        $lifted = [];
+        foreach ($this->notes->findForObject($object) as $note) {
+            $key = $to($note->getOccurrenceKey());
+            if (null === $key) {
+                continue;
+            }
+            $lifted[] = [$note->getText(), $key];
+            $this->entityManager->remove($note);
+        }
+        if ([] !== $lifted) {
+            $this->entityManager->flush();
+        }
+
+        return $lifted;
+    }
+
+    /**
+     * @param list<array{string, string}>  $lifted from {@see liftNotes()}
+     * @param array<string, CalendarEvent> $rows   the saved object's rows by recurrence key
+     */
+    private function putNotes(array $lifted, array $rows): void
+    {
+        if ([] === $lifted || [] === $rows) {
+            return;
+        }
+        /** @var array<string, EventNote> $placed */
+        $placed = [];
+        foreach ($lifted as [$text, $key]) {
+            // The override that shows the occurrence, else the series; a key no row shows stays on the first row.
+            $row = ('' !== $key ? ($rows[$key] ?? null) : null) ?? $rows[''] ?? array_values($rows)[0];
+            $slot = $row->getId()->toRfc4122().'|'.$key;
+            $note = $placed[$slot] ?? $this->notes->findFor($row, $key);
+            if (null === $note) {
+                $note = new EventNote($row, $key);
+                $note->write($text);
+                $this->entityManager->persist($note);
+            } else {
+                // Two notes for one occurrence: joined, so no text is lost.
+                $note->write(rtrim($note->getText())."\n\n".$text);
+            }
+            $placed[$slot] = $note;
+        }
+        $this->entityManager->flush();
     }
 
     private function isFirst(VEvent $master, string $key): bool
