@@ -31,11 +31,15 @@ vi.mock('@/platform/desktop', () => ({
   },
 }))
 
-const push = vi.hoisted(() => ({ disabled: 0 }))
+const push = vi.hoisted(() => ({ disabled: 0, hangs: false }))
 
 vi.mock('@/platform/webPush', () => ({
   disableWebPush: async () => {
     push.disabled += 1
+    if (push.hangs) {
+      // A server that never answers.
+      await new Promise(() => {})
+    }
   },
 }))
 
@@ -70,10 +74,38 @@ const EXPIRED: TokenSet = { accessToken: 'access-1', refreshToken: 'refresh-1', 
 function stubLocks(): void {
   const held = new Map<string, Promise<unknown>>()
   const locks = {
-    request: (name: string, run: () => Promise<unknown>) => {
+    request: (name: string, options: { signal?: AbortSignal } | (() => Promise<unknown>), callback?: () => Promise<unknown>) => {
+      const run = typeof options === 'function' ? options : callback!
+      const signal = typeof options === 'function' ? undefined : options.signal
       const previous = held.get(name) ?? Promise.resolve()
-      const mine = previous.catch(() => undefined).then(run)
-      held.set(name, mine)
+      let granted = false
+      let gaveUp = false
+      const mine = new Promise<unknown>((resolve, reject) => {
+        // A request whose signal aborts before the lock is granted leaves the queue and rejects, as browsers do.
+        signal?.addEventListener('abort', () => {
+          if (!granted) {
+            gaveUp = true
+            reject(new DOMException('The lock request was aborted.', 'AbortError'))
+          }
+        })
+        void previous
+          .catch(() => undefined)
+          .then(async () => {
+            if (gaveUp) {
+              return
+            }
+            granted = true
+            try {
+              resolve(await run())
+            } catch (error) {
+              reject(error)
+            }
+          })
+      })
+      held.set(
+        name,
+        mine.catch(() => undefined),
+      )
       return mine
     },
   }
@@ -258,7 +290,7 @@ describe('auth store', () => {
       expect(auth.sessionEnd).toBe('signedOut')
     })
 
-    it('signs out though the server cannot revoke the token', async () => {
+    it('signs out though the server cannot be reached, and stays in the app instead of leaving for an error page', async () => {
       vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))))
       const forms = captureForms()
       vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -269,7 +301,56 @@ describe('auth store', () => {
 
       expect(auth.isAuthenticated).toBe(false)
       expect(localStorage.getItem('auth.tokens')).toBeNull()
+      // The sign-in pages are on the unreachable API here: the form would only show the browser's error page.
+      expect(forms).toEqual([])
+      expect(localStorage.getItem('tresso.auth.promptLogin')).not.toBeNull()
+    })
+
+    it('ends the browser session when the server answered the revocation, even with an error', async () => {
+      stubServer()
+      vi.mocked(fetch).mockImplementation(async (input) =>
+        String(input).endsWith('/oauth/revoke') ? Response.json({ error: 'temporarily_unavailable' }, { status: 503 }) : new Response(null, { status: 204 }),
+      )
+      const forms = captureForms()
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      await auth.signOut()
+
       expect(forms).toHaveLength(1)
+    })
+
+    it('signs out within a few seconds when the server does not answer about the pushes', async () => {
+      push.hangs = true
+      const server = stubServer()
+      const forms = captureForms()
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      try {
+        await withoutWaiting(() => auth.signOut())
+      } finally {
+        push.hangs = false
+      }
+
+      expect(localStorage.getItem('auth.tokens')).toBeNull()
+      expect(server.revoked).toEqual(['refresh-1'])
+      expect(forms).toHaveLength(1)
+    })
+
+    it('says a sign-out is under way while it runs', async () => {
+      stubServer()
+      captureForms()
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      const signingOut = auth.signOut()
+      expect(auth.signingOut).toBe(true)
+      await signingOut
+
+      expect(auth.signingOut).toBe(false)
     })
 
     it('refreshes once for requests that all find the token expired, and keeps the user signed in', async () => {
@@ -535,6 +616,82 @@ describe('auth store', () => {
 
         expect(server.revoked).toEqual(['refresh-2'])
         expect(localStorage.getItem('auth.tokens')).toBeNull()
+      })
+
+      it('signs out after a few seconds without the lock that a stuck refresh in another tab holds, and drops that refresh', async () => {
+        stubLocks()
+        let answer!: () => void
+        const server = stubServer({
+          refresh: () =>
+            new Promise<Response>((resolve) => {
+              answer = () => resolve(Response.json({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600, token_type: 'Bearer' }))
+            }),
+        })
+        const forms = captureForms()
+        localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+        const signingOut = await authStore()
+        const stuck = await authStore()
+        const request = stuck.api('/api/v1/me')
+        await vi.waitFor(() => expect(answer).toBeDefined())
+
+        await withoutWaiting(() => signingOut.signOut())
+
+        expect(localStorage.getItem('auth.tokens')).toBeNull()
+        expect(server.revoked).toEqual(['refresh-1'])
+        expect(forms).toHaveLength(1)
+        answer()
+        await expect(request).rejects.toThrow('Not signed in.')
+        await vi.waitFor(() => expect(server.revoked).toEqual(['refresh-1', 'refresh-2']))
+        expect(localStorage.getItem('auth.tokens')).toBeNull()
+      })
+
+      it('refreshes and signs out when the browser refuses the lock', async () => {
+        const request = vi.fn<(name: string, options: object, run: () => Promise<unknown>) => Promise<unknown>>(async () => Promise.reject(new DOMException('The request is not allowed.', 'SecurityError')))
+        vi.stubGlobal('navigator', { ...navigator, locks: { request } })
+        const server = stubServer()
+        const forms = captureForms()
+        localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+        const auth = await authStore()
+
+        await expect(auth.api('/api/v1/me')).resolves.toEqual({ id: 'user-1' })
+        await auth.signOut()
+
+        expect(request).toHaveBeenCalled()
+        expect(server.refreshes).toEqual(['refresh-1'])
+        expect(server.revoked).toEqual(['refresh-2'])
+        expect(localStorage.getItem('auth.tokens')).toBeNull()
+        expect(forms).toHaveLength(1)
+      })
+
+      it('refreshes without the lock once another tab held it far longer than a refresh takes', async () => {
+        stubLocks()
+        const server = stubServer()
+        // A tab the browser suspended in the middle of its refresh: it never lets go.
+        void navigator.locks.request('tresso.auth.refresh', () => new Promise(() => {}))
+        localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+        const auth = await authStore()
+
+        await expect(withoutWaiting(() => auth.api('/api/v1/me'))).resolves.toEqual({ id: 'user-1' })
+
+        expect(server.refreshes).toEqual(['refresh-1'])
+        expect(auth.isAuthenticated).toBe(true)
+      })
+
+      it('stays signed in when the tab kept its own sign-in because the browser refused to share it', async () => {
+        const refusing = memoryStorage()
+        refusing.setItem = () => {
+          throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+        }
+        vi.stubGlobal('localStorage', refusing)
+        sessionStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
+        const server = stubServer()
+        const auth = await authStore()
+
+        await expect(auth.api('/api/v1/me')).resolves.toEqual({ id: 'user-1' })
+
+        expect(server.refreshes).toEqual(['refresh-1'])
+        expect(auth.isAuthenticated).toBe(true)
+        expect(auth.storageError).toContain('could not be kept on this device')
       })
 
       it('drops and revokes a refreshed set when another tab signed out while the refresh ran', async () => {

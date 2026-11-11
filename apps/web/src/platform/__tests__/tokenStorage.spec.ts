@@ -121,12 +121,49 @@ describe('where the sign-in is kept', () => {
     })
 
     it('runs a refresh under the lock all tabs share', async () => {
-      const request = vi.fn<(name: string, run: () => Promise<string>) => Promise<string>>(async (_name, run) => run())
+      type Request = (name: string, options: { signal: AbortSignal }, run: () => Promise<string>) => Promise<string>
+      const request = vi.fn<Request>(async (_name, _options, run) => run())
       vi.stubGlobal('navigator', { locks: { request } })
       const { withRefreshLock } = await storageModule()
 
       await expect(withRefreshLock(async () => 'done')).resolves.toBe('done')
-      expect(request).toHaveBeenCalledWith('tresso.auth.refresh', expect.any(Function))
+      expect(request).toHaveBeenCalledWith('tresso.auth.refresh', { signal: expect.any(AbortSignal) }, expect.any(Function))
+    })
+
+    it('runs without the lock once the wait runs out, and stops waiting for it', async () => {
+      let signal!: AbortSignal
+      type Request = (name: string, options: { signal: AbortSignal }, run: () => Promise<string>) => Promise<string>
+      const request = vi.fn<Request>(
+        (_name, options) =>
+          new Promise<string>((_, reject) => {
+            signal = options.signal
+            signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+          }),
+      )
+      vi.stubGlobal('navigator', { locks: { request } })
+      const { withRefreshLock } = await storageModule()
+
+      await expect(withRefreshLock(async () => 'done', { waitMs: 10 })).resolves.toBe('done')
+      expect(signal.aborted).toBe(true)
+    })
+
+    it('runs without the lock when the browser refuses it, but passes on an error of the work itself', async () => {
+      type Request = (name: string, options: { signal: AbortSignal }, run: () => Promise<string>) => Promise<string>
+      const refused = vi.fn<Request>(async () => Promise.reject(new DOMException('The request is not allowed.', 'SecurityError')))
+      vi.stubGlobal('navigator', { locks: { request: refused } })
+      const { withRefreshLock } = await storageModule()
+      await expect(withRefreshLock(async () => 'done')).resolves.toBe('done')
+
+      const granted = vi.fn<Request>(async (_name, _options, run) => run())
+      vi.stubGlobal('navigator', { locks: { request: granted } })
+      let runs = 0
+      await expect(
+        withRefreshLock(async () => {
+          runs++
+          throw new Error('refused')
+        }),
+      ).rejects.toThrow('refused')
+      expect(runs).toBe(1)
     })
 
     it('runs a refresh at once in a browser without the Web Locks API', async () => {
