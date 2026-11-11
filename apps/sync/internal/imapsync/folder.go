@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
 
 	"tresso/sync/internal/api"
 )
@@ -18,7 +17,7 @@ var ErrNoSentFolder = errors.New("no sent folder")
 // Folder is one special folder (Sent, Drafts) of an account, over its own connection next to the one that syncs:
 // copies are added to it and found or removed again by their Message-ID.
 type Folder struct {
-	client *imapclient.Client
+	client *connection
 	name   string
 }
 
@@ -56,16 +55,16 @@ func OpenDrafts(ctx context.Context, d Dialer, credentials api.Credentials) (*Fo
 	return &Folder{client: client, name: name}, nil
 }
 
-func openRole(ctx context.Context, d Dialer, credentials api.Credentials, role string) (*imapclient.Client, string, error) {
+func openRole(ctx context.Context, d Dialer, credentials api.Credentials, role string) (*connection, string, error) {
 	password, err := credentials.Password()
 	if err != nil {
 		return nil, "", err
 	}
-	client, err := connect(ctx, d, credentials.Connection.IMAP, credentials.Connection.Username, password, make(chan struct{}, 1))
+	client, err := connect(ctx, d, credentials.Connection.IMAP, credentials.Connection.Username, password, newServerEvents())
 	if err != nil {
 		return nil, "", err
 	}
-	folders, err := listFolders(client)
+	folders, _, err := listFolders(client.Client)
 	if err != nil {
 		_ = client.Close()
 		return nil, "", fmt.Errorf("list folders: %w", err)

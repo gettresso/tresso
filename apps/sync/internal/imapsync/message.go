@@ -2,6 +2,7 @@ package imapsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -15,11 +16,14 @@ import (
 	"tresso/sync/internal/storage"
 )
 
+// errNoBody means the server answered a FETCH without the message's content.
+var errNoBody = errors.New("server returned no body")
+
 // buildMessage stores the raw message and its attachments, then describes it for the ingest API.
 func buildMessage(ctx context.Context, store storage.Blobs, accountID string, buf *imapclient.FetchMessageBuffer, condStore bool, logger *slog.Logger) (api.Message, error) {
 	raw := buf.FindBodySection(&imap.FetchItemBodySection{Peek: true})
 	if raw == nil {
-		return api.Message{}, fmt.Errorf("uid %d: server returned no body", buf.UID)
+		return api.Message{}, fmt.Errorf("uid %d: %w", buf.UID, errNoBody)
 	}
 
 	msg, err := ingestmsg.Build(ctx, store, accountID, raw, strconv.FormatUint(uint64(buf.UID), 10), buf.InternalDate, flagsOf(buf.Flags), logger)

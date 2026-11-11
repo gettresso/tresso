@@ -277,3 +277,29 @@ func TestSetsAndClearsFlags(t *testing.T) {
 		}
 	}
 }
+
+// Fails without the fix: connect left its context.AfterFunc registered on the long-lived context, so every closed
+// connection stayed reachable until the worker stopped.
+func TestClosingAConnectionDropsItsContextHook(t *testing.T) {
+	credentials := memServer(t, imap.CapSet{imap.CapIMAP4rev1: {}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mailbox, err := OpenMailbox(ctx, plainDialer{}, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox.Close()
+	if mailbox.client.stop() {
+		t.Error("the context hook of a closed mailbox connection was still registered")
+	}
+
+	drafts, err := OpenDrafts(ctx, plainDialer{}, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drafts.Close()
+	if drafts.client.stop() {
+		t.Error("the context hook of a closed folder connection was still registered")
+	}
+}
