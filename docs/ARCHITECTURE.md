@@ -1643,10 +1643,11 @@ refuses the login does not stop mail. The account carries a calendar status of i
 `unknown`, `active`, `unsupported`, `auth_failed`, `unconfirmed`, `not_granted` (Google or Microsoft: calendars not
 allowed yet) or `error`, with a detail the user can act on), reported once per
 problem by `POST /internal/sync/accounts/{id}/calendar-status` and set back to `active` by a calendar list the API
-accepted. An `error` is about the sync itself, so a list does not clear it: the batch that carries a calendar's new
-cursor (a completed sync) does. Without that, a calendar that keeps failing would make the status flip between `error`
-and `active` every round. The worker does not say which calendar failed, so a completed sync of another calendar
-clears the error too, until the failing one reports it again.
+accepted. An `error` is about the sync itself, so a list does not clear it (a calendar that keeps failing would
+make the status flip every round). The worker ends it: after a round in which every calendar synced (also when none
+had changes) it reports `active` once, and while a calendar keeps failing it reports `error`, never `active`. The API
+takes `active` only over `error`; any other status (a login, a permission, an address to confirm) stays until a
+calendar list shows it is solved.
 
 - **CalDAV** for IMAP accounts (`apps/sync/internal/caldavsync` on a small WebDAV client in `internal/caldav`, through
   the guarded dialer). The client keeps objects as raw iCalendar text in both directions and reads colors, ctags and

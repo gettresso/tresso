@@ -93,6 +93,16 @@ final readonly class SyncCalendarProcessor implements ProcessorInterface
     private function reportStatus(MailAccount $account, CalendarStatusInput $input): CalendarStatusResult
     {
         $status = $input->status ?? throw new \LogicException('Validation guarantees a status.');
+        if (CalendarSyncStatus::Active === $status) {
+            // Only a sync error is ended this way; a status the user must act on (a login, a permission, an address to
+            // confirm) stays until the calendar list shows it is solved.
+            if (CalendarSyncStatus::Error === $account->getCalendarStatus()) {
+                $account->setCalendarStatus(CalendarSyncStatus::Active);
+                $this->entityManager->flush();
+            }
+
+            return new CalendarStatusResult($account->getCalendarStatus()->value);
+        }
         $detail = trim((string) $input->detail);
         $account->setCalendarStatus($status, '' === $detail ? null : $detail);
         $this->entityManager->flush();
