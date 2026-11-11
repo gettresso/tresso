@@ -448,6 +448,21 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame(2, $sent->getThread()->getMessageCount());
     }
 
+    public function testSubjectFallbackDoesNotJoinStrangersWhoWroteToTheSameAddress(): void
+    {
+        $this->folders(['INBOX' => 1]);
+        $billing = ['address' => 'billing@company.example'];
+        $colleague = ['address' => 'pieter@company.example'];
+
+        $this->messages('INBOX', [
+            $this->message('1', ['messageId' => '<a-1@x>', 'subject' => 'Invoice', 'from' => ['address' => 'accounts@vendor-a.example'], 'to' => [$billing], 'cc' => [$colleague], 'receivedAt' => '2026-10-01T09:00:00+00:00']),
+            $this->message('2', ['messageId' => '<b-1@x>', 'subject' => 'Invoice', 'from' => ['address' => 'accounts@vendor-b.example'], 'to' => [$billing], 'receivedAt' => '2026-10-02T09:00:00+00:00']),
+            $this->message('3', ['messageId' => '<c-1@x>', 'subject' => 'Invoice', 'from' => ['address' => 'accounts@vendor-c.example'], 'to' => [['address' => 'kim@company.example']], 'cc' => [$colleague], 'receivedAt' => '2026-10-03T09:00:00+00:00']),
+        ]);
+
+        self::assertSame(3, $this->rows(Thread::class), 'A group address or a colleague in Cc that two senders share does not make them one conversation.');
+    }
+
     public function testSubjectFallbackKeepsTheUsersMailToDifferentPeopleApart(): void
     {
         $this->folders(['INBOX' => 1, 'Sent' => 1]);

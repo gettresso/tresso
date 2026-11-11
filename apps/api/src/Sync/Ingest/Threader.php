@@ -18,9 +18,10 @@ use Doctrine\ORM\EntityManagerInterface;
  *    that refer to it (a reply that arrived first). When that matches several threads, they are one conversation
  *    and are merged.
  * 2. Without any references: a recent thread with the same normalized subject that shares a counterpart, someone
- *    other than the user: one of its messages is from them or was sent to them. The user's own addresses do not
- *    count, since they are on nearly every message; otherwise every mail would join any conversation with the same
- *    subject the user once wrote in. This covers clients that do not send References, without joining unrelated
+ *    other than the user: one of its messages is from them, or is the user's own mail to them. The user's own
+ *    addresses do not count, since they are on nearly every message; otherwise every mail would join any conversation
+ *    with the same subject the user once wrote in. Nor does a recipient two strangers share (an alias, billing@, a
+ *    colleague in Cc): only the user's own mail counts by whom it went to. This covers clients that do not send References, without joining unrelated
  *    mails that happen to share a subject.
  * 3. Otherwise a new thread.
  */
@@ -39,8 +40,9 @@ final readonly class Threader
     /**
      * @param list<string> $referencedIds normalized Message-IDs this message refers to
      * @param list<string> $counterparts  lowercased from, to and cc addresses without the user's own addresses
+     * @param list<string> $ownAddresses  the addresses of all the user's accounts, lowercased
      */
-    public function threadFor(MailAccount $account, ?string $messageId, array $referencedIds, string $subject, array $counterparts, \DateTimeImmutable $receivedAt): Thread
+    public function threadFor(MailAccount $account, ?string $messageId, array $referencedIds, string $subject, array $counterparts, array $ownAddresses, \DateTimeImmutable $receivedAt): Thread
     {
         $threads = $this->threadsByHeaders($account, $messageId, $referencedIds);
 
@@ -54,7 +56,7 @@ final readonly class Threader
         }
 
         if ([] === $referencedIds) {
-            $bySubject = $this->threadBySubject($account, $subject, $counterparts, $receivedAt);
+            $bySubject = $this->threadBySubject($account, $subject, $counterparts, $ownAddresses, $receivedAt);
             if (null !== $bySubject) {
                 return $bySubject;
             }
@@ -109,8 +111,9 @@ final readonly class Threader
 
     /**
      * @param list<string> $counterparts
+     * @param list<string> $ownAddresses
      */
-    private function threadBySubject(MailAccount $account, string $subject, array $counterparts, \DateTimeImmutable $receivedAt): ?Thread
+    private function threadBySubject(MailAccount $account, string $subject, array $counterparts, array $ownAddresses, \DateTimeImmutable $receivedAt): ?Thread
     {
         $normalized = SubjectNormalizer::normalize($subject);
         if ('' === $normalized || [] === $counterparts) {
@@ -132,23 +135,26 @@ final readonly class Threader
             ->getResult();
 
         $connection = $this->entityManager->getConnection();
-        $addresses = '{'.implode(',', array_map(static fn (string $address): string => '"'.addcslashes($address, '"\\').'"', $counterparts)).'}';
+        $addresses = self::textArray($counterparts);
+        $own = self::textArray($ownAddresses);
         foreach ($candidates as $thread) {
-            // From a counterpart, or sent to one (to or cc): the latter covers the user's own mail in the thread.
+            // From a counterpart, or the user's own mail to one (to or cc). Whom someone else wrote to says nothing.
             $shared = $connection->fetchOne(
                 "SELECT 1 FROM message m
                  WHERE m.thread_id = :thread
                    AND (m.from_address = ANY(CAST(:addresses AS TEXT[]))
-                     OR EXISTS (
-                         SELECT 1 FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'to') = 'array' THEN m.recipients->'to' ELSE '[]'::json END) r
-                         WHERE lower(r->>'address') = ANY(CAST(:addresses AS TEXT[]))
-                     )
-                     OR EXISTS (
-                         SELECT 1 FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'cc') = 'array' THEN m.recipients->'cc' ELSE '[]'::json END) r
-                         WHERE lower(r->>'address') = ANY(CAST(:addresses AS TEXT[]))
-                     ))
+                     OR (m.from_address = ANY(CAST(:own AS TEXT[])) AND (
+                         EXISTS (
+                             SELECT 1 FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'to') = 'array' THEN m.recipients->'to' ELSE '[]'::json END) r
+                             WHERE lower(r->>'address') = ANY(CAST(:addresses AS TEXT[]))
+                         )
+                         OR EXISTS (
+                             SELECT 1 FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'cc') = 'array' THEN m.recipients->'cc' ELSE '[]'::json END) r
+                             WHERE lower(r->>'address') = ANY(CAST(:addresses AS TEXT[]))
+                         )
+                     )))
                  LIMIT 1",
-                ['thread' => $thread->getId()->toRfc4122(), 'addresses' => $addresses],
+                ['thread' => $thread->getId()->toRfc4122(), 'addresses' => $addresses, 'own' => $own],
             );
 
             if (false !== $shared) {
@@ -171,5 +177,11 @@ final readonly class Threader
         // The survivor is the oldest conversation; where the user put the other one counts as much.
         $target->adoptUserPlacement($other);
         $this->entityManager->remove($other);
+    }
+
+    /** @param list<string> $values */
+    private static function textArray(array $values): string
+    {
+        return '{'.implode(',', array_map(static fn (string $value): string => '"'.addcslashes($value, '"\\').'"', $values)).'}';
     }
 }

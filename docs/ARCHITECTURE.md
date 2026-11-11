@@ -478,8 +478,9 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   In-Reply-To/References, and stored messages that refer to this one), merging threads that turn out to be one
   conversation (the oldest survives and takes over a placement the user gave another one, the newest such placement
   when there are several); without any references, a thread from the last 14 days with the same normalized subject that shares
-  a counterpart (one of its messages is from, to or cc someone on the new message other than the user; the user's
-  own addresses are on nearly every message and do not count); otherwise a new thread.
+  a counterpart, someone on the new message other than the user: one of its messages is from them, or is the user's
+  own mail to or cc them (the user's addresses are on nearly every message, and a recipient two strangers share, such
+  as billing@ or a colleague in Cc, says nothing, so neither counts); otherwise a new thread.
 - **Backfill:** newest first, in budgeted steps per folder, so the inbox is usable within seconds while history fills
   in behind and new mail is never stuck behind it. Fetches are grouped by count (50) and size (20 MB).
 - **Cursor:** per folder, opaque to the API: UIDVALIDITY, UIDNEXT, backfill position and HIGHESTMODSEQ. It only
