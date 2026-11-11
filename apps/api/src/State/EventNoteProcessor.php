@@ -15,6 +15,7 @@ use App\Repository\EventNoteRepository;
 use App\Security\CurrentUser;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 /**
  * @implements ProcessorInterface<EventNoteInput, EventNoteResource>
@@ -41,6 +42,10 @@ final readonly class EventNoteProcessor implements ProcessorInterface
 
         $this->entityManager->wrapInTransaction(function () use ($event, $key, $text): void {
             $note = $this->notes->findFor($event, $key);
+            $length = mb_strlen($text);
+            if ($length > EventNote::MAX_LENGTH && $length > mb_strlen($note?->getText() ?? '')) {
+                throw new UnprocessableEntityHttpException(\sprintf('A note holds at most %d characters.', EventNote::MAX_LENGTH));
+            }
             if ('' === $text) {
                 if (null !== $note) {
                     $this->entityManager->remove($note);
