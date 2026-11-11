@@ -135,6 +135,33 @@ describe('App', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('Signing in to kim@company.example failed')
   })
 
+  it('shows a hidden sync error again on a later outage, once a pull worked in between', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
+    await router.push('/')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    const mail = useMailStore()
+    mail.syncState = 'error'
+    mail.syncError = 'Failed to fetch'
+    await flushPromises()
+    await wrapper.get('[role="alert"] button[aria-label="Hide this message"]').trigger('click')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+
+    // A retry on its way changes nothing; a pull that worked does.
+    mail.syncState = 'syncing'
+    await flushPromises()
+    mail.syncState = 'error'
+    await flushPromises()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+
+    mail.syncState = 'idle'
+    await flushPromises()
+    mail.syncState = 'error'
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('Sync stopped: Failed to fetch')
+  })
+
   it('lets no shortcut act behind the payment screen', async () => {
     // A page of its own: the signed-in shell links to routes this test has no need for.
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: { template: '<div />' } }] })
