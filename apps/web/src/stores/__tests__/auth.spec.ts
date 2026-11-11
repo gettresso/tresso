@@ -173,6 +173,65 @@ describe('auth store', () => {
       expect(sessionStorage.getItem('auth.tokens')).toBeNull()
     })
 
+    it('opens the sign-in under way again, so the browser tab the user had already still finishes it', async () => {
+      stubTokenEndpoint()
+      const auth = await authStore()
+      const callback = await startSignIn(auth, () => desktop.opened[0]!)
+
+      await auth.reopenBrowser()
+
+      expect(desktop.opened).toEqual([desktop.opened[0], desktop.opened[0]])
+      await auth.completeSignIn(callback)
+      expect(auth.tokens?.accessToken).toBe('access-2')
+    })
+
+    it('starts a new sign-in when the browser is opened again without one under way', async () => {
+      const auth = await authStore()
+
+      await auth.reopenBrowser()
+
+      expect(desktop.opened).toHaveLength(1)
+      expect(auth.hasPendingSignIn()).toBe(true)
+      expect(auth.awaitingBrowser).toBe(true)
+    })
+
+    it('a callback with another state leaves the pending sign-in, and the right one still completes', async () => {
+      stubTokenEndpoint()
+      const auth = await authStore()
+      const callback = await startSignIn(auth, () => desktop.opened[0]!)
+
+      await expect(auth.completeSignIn('tresso://auth/callback?code=stray&state=other')).rejects.toThrow('state mismatch')
+      await expect(auth.completeSignIn('tresso://auth/callback?error=access_denied&state=other')).rejects.toThrow('state mismatch')
+      expect(auth.hasPendingSignIn()).toBe(true)
+      expect(auth.awaitingBrowser).toBe(true)
+
+      await auth.completeSignIn(callback)
+      expect(auth.tokens?.accessToken).toBe('access-2')
+      expect(auth.hasPendingSignIn()).toBe(false)
+    })
+
+    it('reports an error the authorization server sent for this sign-in, and ends it', async () => {
+      const auth = await authStore()
+      const callback = await startSignIn(auth, () => desktop.opened[0]!)
+      const state = new URL(callback).searchParams.get('state')
+
+      await expect(auth.completeSignIn(`tresso://auth/callback?error=access_denied&error_description=Denied&state=${state}`)).rejects.toThrow('Denied')
+      expect(auth.hasPendingSignIn()).toBe(false)
+      expect(auth.awaitingBrowser).toBe(false)
+    })
+
+    it('knows whether a sign-in waits for its answer', async () => {
+      stubTokenEndpoint()
+      const auth = await authStore()
+      expect(auth.hasPendingSignIn()).toBe(false)
+
+      const callback = await startSignIn(auth, () => desktop.opened[0]!)
+      expect(auth.hasPendingSignIn()).toBe(true)
+
+      await auth.completeSignIn(callback)
+      expect(auth.hasPendingSignIn()).toBe(false)
+    })
+
     it('signs in to the server the user chose, and exchanges the code there', async () => {
       stubTokenEndpoint()
       localStorage.setItem('tresso.server', 'https://mail.example.com')
