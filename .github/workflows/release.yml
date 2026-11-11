@@ -112,7 +112,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: System libraries for Tauri
-        timeout-minutes: 15
+        timeout-minutes: 20
         if: runner.os == 'Linux'
         run: scripts/ci/apt-install.sh libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 

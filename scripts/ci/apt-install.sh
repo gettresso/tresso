@@ -20,32 +20,27 @@ apt_options=(
 )
 mirror_list=/etc/apt/apt-mirrors.txt
 
+# Tried in this order. All follow Ubuntu closely; the last one of each list is the slowest to follow.
 case "$(dpkg --print-architecture)" in
-  amd64 | i386) fallback_mirror=https://mirrors.edge.kernel.org/ubuntu/ ;;
-  *) fallback_mirror=https://mirrors.mit.edu/ubuntu-ports/ ;;
+  amd64 | i386)
+    fallback_mirrors=(
+      https://mirrors.edge.kernel.org/ubuntu/
+      https://mirror.leaseweb.com/ubuntu/
+    )
+    ;;
+  *)
+    fallback_mirrors=(
+      https://ftp.tu-chemnitz.de/pub/linux/ubuntu-ports/
+      https://mirrors.mit.edu/ubuntu-ports/
+      https://mirrors.ocf.berkeley.edu/ubuntu-ports/
+    )
+    ;;
 esac
 
-# Only this first try treats any source that fails as a failure: that is what tells a dead mirror from a live one.
-if ! sudo timeout -k 10 90 apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update; then
-  echo "apt-install.sh: the runner's mirrors do not answer; using ${fallback_mirror}" >&2
-  # Some runner images read their mirrors from the list file, others name ubuntu.com hosts in the sources themselves.
-  if [ -f "${mirror_list}" ]; then
-    printf '%s\tpriority:1\n' "${fallback_mirror}" | sudo tee "${mirror_list}" >/dev/null
-  fi
-  sources=()
-  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
-    if [ -f "${file}" ]; then
-      sources+=("${file}")
-    fi
-  done
-  if [ "${#sources[@]}" -gt 0 ]; then
-    sudo sed -i -E "s#https?://([a-z0-9.-]+\\.)?(archive|security|ports)\\.ubuntu\\.com/ubuntu(-ports)?/?#${fallback_mirror}#g" "${sources[@]}"
-  fi
-  sudo timeout -k 10 240 apt-get "${apt_options[@]}" update
-
-  # Ubuntu's index files carry no expiry date, so apt takes a mirror that stopped following Ubuntu without a word.
-  # The release builds bundle these libraries, so a mirror that is days behind must fail the job.
-  newest=0
+# Ubuntu's index files carry no expiry date, so apt takes a mirror that stopped following Ubuntu without a word. The
+# release builds bundle these libraries, so a mirror whose security index is days behind does not count.
+index_is_recent() {
+  local newest=0 index stamp
   for index in /var/lib/apt/lists/*-security_InRelease; do
     if [ -f "${index}" ]; then
       stamp="$(date -d "$(sed -n 's/^Date: //p' "${index}" | head -n 1)" +%s)"
@@ -54,8 +49,41 @@ if ! sudo timeout -k 10 90 apt-get "${apt_options[@]}" -o APT::Update::Error-Mod
       fi
     fi
   done
-  if [ "${newest}" -lt "$(($(date +%s) - 7 * 24 * 3600))" ]; then
-    echo "apt-install.sh: the security index of ${fallback_mirror} is more than 7 days old; not using it" >&2
+  [ "${newest}" -ge "$(($(date +%s) - 7 * 24 * 3600))" ]
+}
+
+# Only this first try treats any source that fails as a failure: that is what tells a dead mirror from a live one.
+if ! sudo timeout -k 10 90 apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update; then
+  # Some runner images read their mirrors from the list file, others name ubuntu.com hosts in the sources.
+  sources=()
+  for file in "${mirror_list}" /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
+    /etc/apt/sources.list.d/*.sources; do
+    if [ -f "${file}" ]; then
+      sources+=("${file}")
+      sudo cp "${file}" "${file}.runner"
+    fi
+  done
+
+  switched=false
+  for mirror in "${fallback_mirrors[@]}"; do
+    echo "apt-install.sh: the runner's mirrors do not answer; trying ${mirror}" >&2
+    for file in "${sources[@]}"; do
+      if [ "${file}" = "${mirror_list}" ]; then
+        printf '%s\tpriority:1\n' "${mirror}" | sudo tee "${file}" >/dev/null
+      else
+        sudo sed -E "s#https?://([a-z0-9.-]+\\.)?(archive|security|ports)\\.ubuntu\\.com/ubuntu(-ports)?/?#${mirror}#g" \
+          "${file}.runner" | sudo tee "${file}" >/dev/null
+      fi
+    done
+    sudo rm -f /var/lib/apt/lists/*_InRelease
+    if sudo timeout -k 10 100 apt-get "${apt_options[@]}" update && index_is_recent; then
+      switched=true
+      break
+    fi
+    echo "apt-install.sh: ${mirror} does not answer or is more than 7 days behind" >&2
+  done
+  if [ "${switched}" = false ]; then
+    echo "apt-install.sh: no package mirror answers" >&2
     exit 1
   fi
 fi
