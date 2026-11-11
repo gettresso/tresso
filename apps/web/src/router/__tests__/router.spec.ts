@@ -97,8 +97,24 @@ describe('router', () => {
     for (const path of ['//evil.example/x', '/\\evil.example/x', '/%09/evil.example', '/\t/evil.example', '/\n//evil.example', 'https://evil.example/', 'javascript:alert(1)', '/auth/callback?code=c', '/%2F/evil.example', ['/todos/abc'], null]) {
       expect(returnablePath(path)).toBeNull()
     }
-    for (const path of ['/todos/abc', '/inbox/t1?from=push', '/calendar/week/2026-11-11', '/search?q=a%2Fb']) {
+    for (const path of ['/todos/abc', '/inbox/t1?from=push', '/calendar/week/2026-11-11', '/search?q=a%2Fb', '/search?q=a%5Cb']) {
       expect(returnablePath(path)).toBe(path)
+    }
+  })
+
+  it('refuses the sign-in callback in any case, as the router matches it in any case', () => {
+    for (const path of ['/auth/callback', '/AUTH/callback', '/Auth/Callback?code=c', '/x/../auth/callback']) {
+      expect(returnablePath(path)).toBeNull()
+    }
+  })
+
+  it('keeps paths inside the desktop app, which runs under a scheme of its own', () => {
+    for (const app of [new URL('tauri://localhost/'), new URL('http://tauri.localhost/')]) {
+      expect(returnablePath('/todos/abc', app)).toBe('/todos/abc')
+      expect(returnablePath('/inbox/t1?from=push', app)).toBe('/inbox/t1?from=push')
+      expect(returnablePath('//evil.example/x', app)).toBeNull()
+      expect(returnablePath('/%09/evil.example', app)).toBeNull()
+      expect(returnablePath('/AUTH/callback', app)).toBeNull()
     }
   })
 })
