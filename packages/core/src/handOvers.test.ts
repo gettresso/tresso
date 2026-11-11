@@ -296,7 +296,7 @@ describe('HandOverFlow', () => {
     cancelFails = new Error('Network request failed')
 
     await expect(flow.handOver(original, input)).rejects.toThrow(
-      new HandOverError('Network request failed The forward to Lisa Bakker could not be stopped and may still be sent, but it is not in "Waiting on".'),
+      new HandOverError('Network request failed. The forward to Lisa Bakker could not be stopped and may still be sent, but it is not in "Waiting on".'),
     )
   })
 
@@ -333,6 +333,45 @@ describe('HandOverFlow', () => {
     expect(withdrawn).toEqual(['h1'])
     expect(await store.draft(first.draftId)).toBeNull()
     expect(await store.draft(handed.draftId)).toMatchObject({ inReplyToMessageId: 'm2', outgoingId: handed.forwardId })
+  })
+
+  it('stops a forward at once on undo, also while another hand-over is still being made', async () => {
+    const first = await flow.handOver(original, input)
+    originalFiles = [{ id: 'contract', filename: 'contract.pdf', contentType: 'application/pdf', size: 100, inline: false, contentId: null, scanStatus: 'clean', access: 'allowed', scanSignature: null, scanFailure: null, url: null }]
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    drafts.duringFile = () => held
+    const handing = flow.handOver(message('m2', 't2', 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00'), input)
+    await vi.advanceTimersByTimeAsync(10)
+
+    const undoing = flow.undo(first)
+    await vi.advanceTimersByTimeAsync(10)
+
+    // The forward is stopped and the hand-over withdrawn before the other hand-over is done.
+    expect(cancelled).toEqual(['forward-1'])
+    expect(withdrawn).toEqual(['h1'])
+    release()
+    await handing
+    await undoing
+    expect(await store.draft(first.draftId)).toBeNull()
+  })
+
+  it('does not let a step that hangs hold up the next one for ever', async () => {
+    const first = await flow.handOver(original, input)
+    originalFiles = [{ id: 'contract', filename: 'contract.pdf', contentType: 'application/pdf', size: 100, inline: false, contentId: null, scanStatus: 'clean', access: 'allowed', scanSignature: null, scanFailure: null, url: null }]
+    // This hand-over's file never arrives.
+    drafts.duringFile = () => new Promise<void>(() => undefined)
+    void flow.handOver(message('m2', 't2', 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00'), input).catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(10)
+
+    let outcome: string | null = null
+    void flow.takeBack(first).then((result) => (outcome = result))
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(outcome).toBeNull()
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(outcome).toBe('undone')
+    expect(await store.draft(first.draftId)).toBeNull()
   })
 
   it('takes back both the forward and the hand-over', async () => {
