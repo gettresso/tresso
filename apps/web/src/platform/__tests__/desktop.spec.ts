@@ -52,4 +52,35 @@ describe('desktop shell bridge', () => {
     shell.answers[1]!.resolve(undefined)
     await expect(cleared).resolves.toBeUndefined()
   })
+
+  it('handles the link the app was started with once, not again after the window reloads', async () => {
+    shell.current = ['tresso://auth/callback?code=c&state=s']
+    const handled: string[] = []
+
+    await (await desktop()).onDeepLinks((url) => handled.push(url))
+    await (await desktop()).onDeepLinks((url) => handled.push(url))
+
+    expect(handled).toEqual(['tresso://auth/callback?code=c&state=s'])
+  })
+
+  it('handles every link that arrives while the app runs, also one it saw before', async () => {
+    const handled: string[] = []
+    await (await desktop()).onDeepLinks((url) => handled.push(url))
+
+    shell.listener!(['tresso://auth/callback?code=c&state=s'])
+    shell.listener!(['tresso://auth/callback?code=c&state=s'])
+
+    expect(handled).toEqual(['tresso://auth/callback?code=c&state=s', 'tresso://auth/callback?code=c&state=s'])
+  })
+
+  it('does not handle a link again after a reload once it arrived while the app ran', async () => {
+    const handled: string[] = []
+    await (await desktop()).onDeepLinks((url) => handled.push(url))
+    shell.listener!(['tresso://auth/callback?code=c&state=s'])
+
+    shell.current = ['tresso://auth/callback?code=c&state=s']
+    await (await desktop()).onDeepLinks((url) => handled.push(url))
+
+    expect(handled).toEqual(['tresso://auth/callback?code=c&state=s'])
+  })
 })

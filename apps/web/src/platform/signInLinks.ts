@@ -28,3 +28,14 @@ export function signInRoute(link: string, redirectUri: string): RouteLocationRaw
   const page = CONNECT_PAGES.get(next)
   return page === undefined ? null : { name: page, query }
 }
+
+/**
+ * Where a link the desktop app receives leads, like {@link signInRoute}, except for an answer to signing in to Tresso
+ * when no sign-in is under way in this window: one that was finished already, or a stray link from a web page. That
+ * one is ignored instead of replacing the current screen with a failed sign-in.
+ */
+export function desktopLinkRoute(link: string, redirectUri: string, signInPending: boolean): RouteLocationRaw | null {
+  const route = signInRoute(link, redirectUri)
+  const signInAnswer = route !== null && typeof route === 'object' && 'name' in route && route.name === 'auth-callback'
+  return signInAnswer && !signInPending ? null : route
+}
