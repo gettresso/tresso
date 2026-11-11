@@ -954,8 +954,8 @@ Mail judged `know` asks nothing of the user, so it does not interrupt: once a da
   (delivery key `daily_brief:{id}`, so a retry never notifies a device twice; Android channel `mail`; silent during
   quiet hours; it opens `/brief`). Email gets a digest instead of the generic notification email: the conversations
   per smart inbox with sender, snippet and a link, from the system sender (`NOTIFICATIONS_FROM`) with
-  `Auto-Submitted: auto-generated`, to the notification address (the sign-in address or one of the user's mail
-  accounts' addresses, the sign-in address when the chosen account is gone). It goes out at most once: `emailed_at`
+  `Auto-Submitted: auto-generated`, to the notification address (the sign-in address or the address of one of the user's
+  mail accounts that signed in with its provider or synced, the sign-in address when the chosen account is gone). It goes out at most once: `emailed_at`
   is set under a row lock and committed before the mail is sent, outside any transaction; a refusal by the mail server
   clears it again for Messenger's retry, and a crash in between loses that digest rather than sending it twice.
 - The brief shows each conversation's subject and snippet; AI summaries are planned (3.9).
@@ -1841,8 +1841,10 @@ after. Everything lives in `apps/api/src/Notification`.
   once do not fail on its unique key. Known limit: Expo gives no proof that the caller holds the phone, so anyone
   who learns another user's Expo push token can register it and receive that user's reminders and mail notifications until the owner's app
   registers again (each launch). Binding a registration to a challenge sent to the device is a later step (C4, with
-  the phone's push registration); web push endpoints are unguessable capability URLs. Email notifications go only to the user's sign-in address or one of
-  their mail accounts' addresses.
+  the phone's push registration); web push endpoints are unguessable capability URLs. Email notifications go only to the user's sign-in address or the address
+  of a mail account the user proved to hold: a Google or Microsoft account, or an IMAP account that synced at least
+  once (`NotificationAddresses`). An IMAP account that never synced is only an address someone typed, so choosing it
+  is a 422, and a chosen account that has not synced falls back to the sign-in address.
 - **Time zones:** quiet hours, working hours, all-day reminders and floating times (date-times without a zone) are
   read in the user's zone from the notification settings (`timeZone`, UTC until a client sets it). The web app, the
   desktop app and the phone send the device's zone the first time a user signs in there and again when they come to

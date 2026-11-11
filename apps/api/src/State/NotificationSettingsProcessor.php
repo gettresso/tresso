@@ -8,10 +8,10 @@ use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\ApiResource\Input\Notification\UpdateNotificationSettings;
 use App\ApiResource\NotificationSettingsResource;
-use App\Calendar\SelfAddresses;
 use App\Entity\NotificationPreferences;
 use App\Enum\SnoozeChoice;
 use App\Enum\TravelMode;
+use App\Notification\NotificationAddresses;
 use App\Notification\NotificationChannelChoice;
 use App\Notification\PlanUserNotifications;
 use App\Realtime\AfterCommitDispatcher;
@@ -33,7 +33,7 @@ final readonly class NotificationSettingsProcessor implements ProcessorInterface
         private NotificationPreferencesRepository $preferences,
         private CurrentUser $currentUser,
         private AfterCommitDispatcher $afterCommit,
-        private SelfAddresses $selfAddresses,
+        private NotificationAddresses $notificationAddresses,
         private DailyBriefSettingsRepository $briefSettings,
         private ClockInterface $clock,
         private TodoReplanning $todoReplanning,
@@ -61,9 +61,9 @@ final readonly class NotificationSettingsProcessor implements ProcessorInterface
             }
             if (null !== $data->emailAddress) {
                 $address = '' === trim($data->emailAddress) ? null : mb_strtolower(trim($data->emailAddress));
-                // Only addresses that are the user's own, so notifications cannot be aimed at someone else's inbox.
-                if (null !== $address && !\in_array($address, $this->selfAddresses->of($user), true)) {
-                    throw new UnprocessableEntityHttpException('Notifications can only go to your sign-in address or the address of one of your mail accounts.');
+                // Only addresses the user proved to hold, so notifications cannot be aimed at someone else's inbox.
+                if (null !== $address && !\in_array($address, $this->notificationAddresses->of($user), true)) {
+                    throw new UnprocessableEntityHttpException('Notifications can only go to your sign-in address or the address of one of your mail accounts that has synced.');
                 }
                 $preferences->setEmailAddress($address);
             }
