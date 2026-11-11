@@ -400,17 +400,28 @@ class NotificationPreferences
         }
     }
 
+    /** Records how the chosen address, chosen before proofs were recorded, turned out to be the user's. */
+    public function proveEmailAddress(NotificationAddressProof $proof): void
+    {
+        if (null !== $this->emailAddress) {
+            $this->emailAddressProof = $proof;
+        }
+    }
+
     /**
      * An address that was never shown to be the user's (chosen before that was recorded): it waits for its link from
-     * now on, and notifications go to the sign-in address until then.
+     * now on, and notifications go to the sign-in address until then. A newer pending address the user chose since
+     * wins: the old one is then dropped, not made pending.
      */
     public function moveEmailAddressToPending(): void
     {
         if (null === $this->emailAddress) {
             return;
         }
-        $this->pendingEmailAddress = $this->emailAddress;
-        $this->pendingEmailSentAt = null;
+        if (null === $this->pendingEmailAddress) {
+            $this->pendingEmailAddress = $this->emailAddress;
+            $this->pendingEmailSentAt = null;
+        }
         $this->emailAddress = null;
         $this->emailAddressProof = null;
         $this->emailAddressConfirmedAt = null;

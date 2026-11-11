@@ -893,6 +893,43 @@ final class NotificationTest extends DatabaseTestCase
         self::assertSame($old, $this->getJson('/api/v1/notification-settings', $this->kim)['pendingEmailAddress']);
     }
 
+    public function testANewerPendingAddressWinsOverAnOldUnprovenOne(): void
+    {
+        $newer = self::elsewhere('newer');
+        $this->patchSettings(['emailAddress' => $newer]);
+        $newerLink = $this->linkIn(self::getMailerMessage());
+        $this->getJson('/api/v1/notification-settings', $this->kim);
+        // An address from before proofs were recorded, still there next to the newer choice.
+        $this->connection()->executeStatement('UPDATE notification_preferences SET email_address = :old WHERE user_id = :user', ['old' => self::elsewhere('old'), 'user' => $this->user()->getId()->toRfc4122()]);
+        static::getContainer()->get(EntityManagerInterface::class)->clear();
+
+        self::assertSame('kim@example.test', static::getContainer()->get(NotificationDispatcher::class)->deliveryAddressFor($this->user()));
+
+        self::assertEmailCount(0, null, 'The newer address already has its link; the old one gets none.');
+        $settings = $this->getJson('/api/v1/notification-settings', $this->kim);
+        self::assertSame($newer, $settings['pendingEmailAddress']);
+        self::assertNull($settings['emailAddress']);
+        $this->client->request('POST', $newerLink);
+        self::assertResponseIsSuccessful('The newer link still works.');
+    }
+
+    public function testAnOldAddressThatIsProvableNowIsProvenWithoutALink(): void
+    {
+        $account = $this->imapAccount('kim@contoso.example');
+        $this->confirmByProvider($account, 'kim@contoso.example', 'microsoft');
+        $this->getJson('/api/v1/notification-settings', $this->kim);
+        // Chosen before proofs were recorded; the Microsoft account synced after the migration ran.
+        $this->connection()->executeStatement("UPDATE notification_preferences SET email_address = 'kim@contoso.example', email_address_proof = NULL WHERE user_id = :user", ['user' => $this->user()->getId()->toRfc4122()]);
+        $this->connection()->executeStatement('UPDATE mail_account SET last_synced_at = NOW() WHERE id = :id', ['id' => $account]);
+        static::getContainer()->get(EntityManagerInterface::class)->clear();
+        static::getContainer()->get(NotificationAddresses::class)->reset();
+
+        self::assertSame('kim@contoso.example', static::getContainer()->get(NotificationDispatcher::class)->deliveryAddressFor($this->user()));
+
+        self::assertEmailCount(0);
+        self::assertSame('provider', $this->connection()->fetchOne('SELECT email_address_proof FROM notification_preferences WHERE user_id = :user', ['user' => $this->user()->getId()->toRfc4122()]));
+    }
+
     public function testALinkThatCouldNotGoOutIsTriedAgainAtTheNextNotification(): void
     {
         $old = self::elsewhere('retried');
