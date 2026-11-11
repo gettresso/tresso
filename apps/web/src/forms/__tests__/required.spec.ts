@@ -11,6 +11,7 @@ describe('requiredPaths', () => {
 
   it('leaves out what may stay empty', () => {
     expect(requiredPaths(accountSchema).has('password')).toBe(false)
+    expect(requiredPaths(accountSchema).has('calendarUrl')).toBe(false)
     expect(requiredPaths(composeSchema).has('subject')).toBe(false)
     expect(requiredPaths(composeSchema).has('mailAccountId')).toBe(true)
   })

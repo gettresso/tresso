@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import FieldLabel from '@/forms/FieldLabel.vue'
 import { provideRequiredFields } from '@/forms/required'
-import { ref, watch } from 'vue'
+import { computed, ref, useId, watch } from 'vue'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
-import type { MailAccount, MailAccountUpdate, ServerSettings } from '@tresso/core'
+import { foundCalendarUrl, type MailAccount, type MailAccountUpdate, type ServerSettings } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
 import { accountSchema, serverErrors, type AccountValues } from '@/forms/accounts'
 import { useAccountsStore } from '@/stores/accounts'
 import ServerFields from '@/components/ServerFields.vue'
 
-/** The name, password and servers of an IMAP account. */
+/** The name, password and servers of an IMAP account, and the address of its calendars. */
 const props = defineProps<{ account: MailAccount; servers: { username: string; imap: ServerSettings; smtp: ServerSettings } }>()
 
 provideRequiredFields(accountSchema)
@@ -27,6 +27,7 @@ function initialValues(): AccountValues {
     password: '',
     imap: { ...props.servers.imap },
     smtp: { ...props.servers.smtp },
+    calendarUrl: props.account.calendarUrl ?? '',
   }
 }
 
@@ -39,6 +40,25 @@ const [username] = defineField('username')
 const [password] = defineField('password')
 const [imap] = defineField('imap')
 const [smtp] = defineField('smtp')
+const [calendarUrl] = defineField('calendarUrl')
+const calendarUrlId = `${useId()}-calendar-url`
+
+/** What the calendar sync says about this account's calendar server, and an address it found to confirm. */
+const calendarState = computed<{ text: string; found: string | null } | null>(() => {
+  const { calendarStatus, calendarStatusDetail } = props.account
+  switch (calendarStatus) {
+    case 'unsupported':
+      return { text: 'No calendar server found for this account. Enter its CalDAV address if your provider has one.', found: null }
+    case 'unconfirmed':
+      return { text: calendarStatusDetail ?? 'Tresso found a calendar server it cannot trust on its own. Confirm its address below.', found: foundCalendarUrl(calendarStatusDetail) }
+    case 'auth_failed':
+      return { text: calendarStatusDetail ?? 'The calendar server refused the username or password.', found: null }
+    case 'error':
+      return { text: calendarStatusDetail ?? 'Syncing the calendars failed. Tresso keeps retrying.', found: null }
+    default:
+      return null
+  }
+})
 
 function reset(): void {
   resetForm({ values: initialValues() })
@@ -52,6 +72,8 @@ function changes(values: AccountValues): MailAccountUpdate {
   if (values.password !== '') changed.password = values.password
   if (JSON.stringify(values.imap) !== JSON.stringify(props.servers.imap)) changed.imap = values.imap
   if (JSON.stringify(values.smtp) !== JSON.stringify(props.servers.smtp)) changed.smtp = values.smtp
+  // An empty address lets Tresso look for the calendar server again.
+  if (values.calendarUrl !== (props.account.calendarUrl ?? '')) changed.calendarUrl = values.calendarUrl
 
   return changed
 }
@@ -98,8 +120,18 @@ const save = handleSubmit(async (values) => {
       <small class="hint">Stored encrypted and only used to sync and send your mail.</small>
       <small v-if="errors.password" class="error">{{ errors.password }}</small>
     </label>
-    <ServerFields v-if="imap" v-model="imap" protocol="imap" title="Incoming mail" :errors="serverErrors(errors, 'imap')" />
-    <ServerFields v-if="smtp" v-model="smtp" protocol="smtp" title="Outgoing mail" :errors="serverErrors(errors, 'smtp')" />
+    <ServerFields v-if="imap" v-model="imap" protocol="imap" title="Incoming mail" :errors="serverErrors(errors, 'imap')" :allow-unencrypted="accounts.allowUnencrypted" />
+    <ServerFields v-if="smtp" v-model="smtp" protocol="smtp" title="Outgoing mail" :errors="serverErrors(errors, 'smtp')" :allow-unencrypted="accounts.allowUnencrypted" />
+    <div class="field">
+      <FieldLabel name="calendarUrl" tag="label" :for="calendarUrlId">Calendar server (CalDAV)</FieldLabel>
+      <p v-if="calendarState" class="calendar-state" :class="account.calendarStatus" role="status">
+        <span>{{ calendarState.text }}</span>
+        <button v-if="calendarState.found" type="button" class="button button-quiet" @click="calendarUrl = calendarState.found">Use this address</button>
+      </p>
+      <input :id="calendarUrlId" v-model="calendarUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Found automatically" maxlength="2048" :aria-invalid="errors.calendarUrl ? 'true' : undefined" />
+      <small class="hint">Leave empty to let Tresso find it. A new address needs the password again.</small>
+      <small v-if="errors.calendarUrl" class="error">{{ errors.calendarUrl }}</small>
+    </div>
 
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     <p v-if="message" class="done" role="status">{{ message }}</p>
@@ -126,6 +158,26 @@ const save = handleSubmit(async (values) => {
   .pair {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+.calendar-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-card);
+  background: var(--ground);
+  color: var(--ink);
+  font-weight: 400;
+}
+.calendar-state.auth_failed,
+.calendar-state.error {
+  background: var(--danger-soft);
+}
+.calendar-state span {
+  flex: 1;
+  min-width: 200px;
 }
 .actions {
   display: flex;
