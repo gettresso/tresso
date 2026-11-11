@@ -66,7 +66,7 @@ final readonly class IssuedTokens
 
     public function accessToken(#[\SensitiveParameter] string $token): ?IssuedToken
     {
-        if (2 !== substr_count($token, '.')) {
+        if ('' === $token || 2 !== substr_count($token, '.')) {
             return null;
         }
 
@@ -80,7 +80,11 @@ final readonly class IssuedTokens
         }
 
         $key = new CryptKey($this->publicKey, null, false);
-        $signedWithOurKey = new SignedWith(new Sha256(), InMemory::plainText($key->getKeyContents(), $key->getPassPhrase() ?? ''));
+        $publicKey = $key->getKeyContents();
+        if ('' === $publicKey) {
+            throw new \LogicException('The OAuth public key is empty.');
+        }
+        $signedWithOurKey = new SignedWith(new Sha256(), InMemory::plainText($publicKey, $key->getPassPhrase() ?? ''));
         if (!new Validator()->validate($jwt, $signedWithOurKey)) {
             return null;
         }

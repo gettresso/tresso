@@ -74,10 +74,11 @@ final readonly class RefreshTokenRotation
     public function replay(IssuedToken $old, ?string $scope): ?string
     {
         $entry = $this->entry(self::refreshKey($old->id));
-        if (null === $entry || $entry['client'] !== $old->clientId || $entry['scope'] !== $scope || !\is_string($entry['response'])) {
+        $sealed = $entry['response'] ?? null;
+        if (null === $entry || ($entry['client'] ?? null) !== $old->clientId || ($entry['scope'] ?? null) !== $scope || !\is_string($sealed)) {
             return null;
         }
-        $response = $this->crypt->open($entry['response']);
+        $response = $this->crypt->open($sealed);
         if (null === $response) {
             return null;
         }
@@ -90,8 +91,9 @@ final readonly class RefreshTokenRotation
         if (!\is_array($body)) {
             return null;
         }
-        if (\is_int($body['expires_in'] ?? null)) {
-            $body['expires_in'] = max(0, $body['expires_in'] - ($this->clock->now()->getTimestamp() - $entry['at']));
+        $expiresIn = $body['expires_in'] ?? null;
+        if (\is_int($expiresIn)) {
+            $body['expires_in'] = max(0, $expiresIn - ($this->clock->now()->getTimestamp() - $entry['at']));
         }
 
         return json_encode($body, \JSON_THROW_ON_ERROR | \JSON_UNESCAPED_SLASHES);

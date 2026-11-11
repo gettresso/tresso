@@ -881,10 +881,11 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $expired = $this->connect('lisa@example.test', $clientId, ['signatures:read']);
         $liveAccess = self::jti($live['access_token']);
         $expiredAccess = self::jti($expired['access_token']);
-        // Both access tokens are past their hour; only the second pair's refresh token is past its 30 days too.
-        $this->connection()->executeStatement("UPDATE oauth2_access_token SET expiry = NOW() - INTERVAL '2 hours'");
-        $this->connection()->executeStatement("UPDATE oauth2_refresh_token SET expiry = NOW() - INTERVAL '1 day' WHERE access_token = :id", ['id' => $expiredAccess]);
-        $this->connection()->executeStatement("UPDATE oauth2_authorization_code SET expiry = NOW() - INTERVAL '1 hour'");
+        // Both access tokens are past their hour; only the second pair's refresh token is past its 30 days too. Days
+        // apart, so the database's clock and zone do not matter.
+        $this->connection()->executeStatement("UPDATE oauth2_access_token SET expiry = NOW() - INTERVAL '2 days'");
+        $this->connection()->executeStatement("UPDATE oauth2_refresh_token SET expiry = NOW() - INTERVAL '2 days' WHERE access_token = :id", ['id' => $expiredAccess]);
+        $this->connection()->executeStatement("UPDATE oauth2_authorization_code SET expiry = NOW() - INTERVAL '2 days'");
         $codes = $this->countRows('SELECT COUNT(*) FROM oauth2_authorization_code');
         self::assertGreaterThan(0, $codes);
 
