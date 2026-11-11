@@ -7,7 +7,14 @@ import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
 
-const props = defineProps<{ attachments: MessageAttachment[] }>()
+const props = defineProps<{
+  attachments: MessageAttachment[]
+  /**
+   * The download links are signed and expire. Returns null while they are still good, else the attachments again
+   * with fresh links (or throws when they could not be had).
+   */
+  renewLinks?: () => Promise<MessageAttachment[]> | null
+}>()
 const mail = useMailStore()
 const failed = ref<string | null>(null)
 
@@ -45,6 +52,39 @@ async function downloadAnyway(attachment: MessageAttachment): Promise<void> {
     } else {
       opened.location.href = url
     }
+  } catch (error) {
+    opened?.close()
+    failed.value = `${attachment.filename} could not be downloaded: ${errorMessage(error)}`
+  }
+}
+
+/**
+ * Opens a file through its link, or, once the links may have expired, through a fresh one. The tab opens in the click,
+ * so the browser does not block it; the fresh link follows.
+ */
+async function download(event: MouseEvent, attachment: MessageAttachment): Promise<void> {
+  const renewing = props.renewLinks?.() ?? null
+  if (renewing === null) {
+    return
+  }
+  event.preventDefault()
+  failed.value = null
+  const opened = window.open('about:blank', '_blank')
+  if (opened !== null) {
+    opened.opener = null
+  }
+  try {
+    const fresh = (await renewing).find((other) => other.id === attachment.id)
+    if (fresh === undefined || fresh.access !== 'allowed' || fresh.url === null) {
+      opened?.close()
+      failed.value = `${attachment.filename} can no longer be downloaded from here.`
+      return
+    }
+    if (opened === null) {
+      window.location.assign(fresh.url)
+      return
+    }
+    opened.location.href = fresh.url
   } catch (error) {
     opened?.close()
     failed.value = `${attachment.filename} could not be downloaded: ${errorMessage(error)}`
@@ -103,6 +143,7 @@ function notScanned(attachment: MessageAttachment): string {
           target="_blank"
           rel="noopener noreferrer"
           :aria-label="`Download ${attachment.filename}`"
+          @click="download($event, attachment)"
           ><AppIcon name="download" :size="16"
         /></a>
         <button
