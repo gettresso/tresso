@@ -22,12 +22,23 @@ export function linkToOpen(url: string): string | null {
 export type FrameMessage = { kind: 'height'; value: number } | { kind: 'tap'; url: string } | { kind: 'place'; offset: number }
 
 /**
+ * Whether a message came from the frame's own document. iOS reports the sender's URL, which for a document loaded
+ * from a string is an `about:` URL. Android (react-native-webview on a WebView with WEB_MESSAGE_LISTENER, which every
+ * current one has) reports the sender's origin instead: a document loaded from a string has an opaque origin, which
+ * serializes as `null`; the fallback for old WebViews reports the URL again (`about:blank`). A page loaded from the
+ * web reports its own `https://host` (or its URL), so it is never taken for the frame.
+ */
+export function fromFrame(sender: string): boolean {
+  return sender === 'null' || mayLoad(sender)
+}
+
+/**
  * What the frame's script reported; null for anything else, and for any message sent by a page other than the
  * frame's own document. A navigation the app refused can still load on Android when the answer takes too long (the
  * library allows it after 250 ms), and a page loaded that way must not open links nobody tapped.
  */
 export function frameMessage(event: { url: string; data: string }): FrameMessage | null {
-  if (!mayLoad(event.url)) {
+  if (!fromFrame(event.url)) {
     return null
   }
   let parsed: unknown
