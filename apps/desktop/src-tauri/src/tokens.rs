@@ -197,6 +197,9 @@ fn load(store: &CredentialStore) -> Result<Option<String>, String> {
 
 fn save(store: &CredentialStore, value: &str, max_units: usize) -> Result<(), String> {
   let pieces = split(value, max_units);
+  if pieces.len() > MAX_PIECES {
+    return Err(format!("the sign-in is too large to keep ({} parts, at most {MAX_PIECES})", pieces.len()));
+  }
   if pieces.len() == 1 && !value.starts_with(HEADER) {
     set(store, ACCOUNT, value)?;
     remove_leftovers(store, &[(0, 0), (1, 0)]);
@@ -211,17 +214,19 @@ fn save(store: &CredentialStore, value: &str, max_units: usize) -> Result<(), St
   for (index, piece) in pieces.iter().enumerate() {
     set(store, &piece_account(slot, index), piece)?;
   }
-  remove_pieces(store, slot, pieces.len())?;
   set(store, ACCOUNT, &header(slot, pieces.len(), value.len()))?;
-  remove_leftovers(store, &[(1 - slot, 0)]);
+  // Pieces past the new count in this slot (from an older, longer value) and the other slot are no longer read.
+  remove_leftovers(store, &[(slot, pieces.len()), (1 - slot, 0)]);
   Ok(())
 }
 
 fn clear(store: &CredentialStore) -> Result<(), String> {
   // The header first: without it nothing loads, whatever pieces a cut-off clear leaves.
   delete(store, ACCOUNT)?;
-  remove_pieces(store, 0, 0)?;
-  remove_pieces(store, 1, 0)
+  // Both slots, also when the first fails, so no piece stays behind that could be removed.
+  let first = remove_pieces(store, 0, 0);
+  let second = remove_pieces(store, 1, 0);
+  first.and(second)
 }
 
 /// Removes pieces nothing points at any more. The new value is saved already, so a failure here only leaves unused
@@ -383,6 +388,56 @@ mod tests {
       assert!(get(store.as_ref(), &piece_account(slot, 0)).unwrap().is_none());
     }
     clear(store.as_ref()).unwrap();
+  }
+
+  /// Makes the next call on the entry for `account` fail.
+  fn fail_next(store: &CredentialStore, account: &str) {
+    let entry = entry(store, account).unwrap();
+    let mock: &mock::Cred = entry.as_any().downcast_ref().unwrap();
+    mock.set_error(Error::PlatformFailure("the keychain is locked".into()));
+  }
+
+  #[test]
+  fn clear_removes_the_second_slot_also_when_the_first_fails() {
+    let store = store();
+    save(store.as_ref(), &token_set(4000), 1000).unwrap();
+    set(store.as_ref(), &piece_account(1, 0), "left over").unwrap();
+    fail_next(store.as_ref(), &piece_account(0, 0));
+
+    assert!(clear(store.as_ref()).unwrap_err().contains("the keychain is locked"));
+    assert!(get(store.as_ref(), &piece_account(1, 0)).unwrap().is_none());
+    assert_eq!(load(store.as_ref()).unwrap(), None);
+  }
+
+  #[test]
+  fn a_failed_cleanup_does_not_fail_a_save() {
+    let store = store();
+    save(store.as_ref(), &token_set(4000), 1000).unwrap();
+    // The slot the next save writes holds a longer older value, whose last piece cannot be read now.
+    for index in 0..8 {
+      set(store.as_ref(), &piece_account(1, index), "older").unwrap();
+    }
+    fail_next(store.as_ref(), &piece_account(1, 3));
+    fail_next(store.as_ref(), &piece_account(0, 0));
+    let next = token_set(2500);
+
+    save(store.as_ref(), &next, 1000).unwrap();
+
+    assert_eq!(load(store.as_ref()).unwrap(), Some(next.clone()));
+    save(store.as_ref(), &token_set(10), 1000).unwrap();
+    for slot in 0..2 {
+      assert!(get(store.as_ref(), &piece_account(slot, 0)).unwrap().is_none());
+    }
+  }
+
+  #[test]
+  fn a_value_needing_more_pieces_than_a_load_accepts_is_refused() {
+    let store = store();
+    let error = save(store.as_ref(), &"x".repeat(MAX_PIECES + 1), 1).unwrap_err();
+    assert!(error.contains("too large"), "{error}");
+    assert_eq!(load(store.as_ref()).unwrap(), None);
+    save(store.as_ref(), &"x".repeat(MAX_PIECES), 1).unwrap();
+    assert_eq!(load(store.as_ref()).unwrap(), Some("x".repeat(MAX_PIECES)));
   }
 
   #[test]
