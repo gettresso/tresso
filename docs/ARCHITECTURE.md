@@ -568,8 +568,11 @@ matched by the OAuth state: over a `BroadcastChannel`, and as a note in localSto
 it starts waiting or comes to the front, so neither order of events loses it. Once the waiting tab took it the new tab
 closes; otherwise it shows the outcome itself. This needs the Tresso sign-in shared by the tabs of a browser (tokens in
 localStorage): a new tab that comes back signed out cannot finish, and tells the waiting tab, which says so. A sign-in
-that expires (15 minutes) without an answer ends the waiting with "Try again". Cancelling is noted in localStorage
-too, so the provider's tab does not finish a sign-in the user gave up. Cancelling or closing while a checked account
+that expires (15 minutes) without an answer ends the waiting with "Try again". The notes are kept per OAuth state, so
+dialogs in several tabs each get their own. Cancelling, and a waiting tab that gave up (expired, or signed out), are
+noted in localStorage too: the provider's tab then finishes nothing, also when it comes back to the page later (after
+the user signed in to Tresso there), and asks the user to start again from the dialog. A check that answers 409 (the
+user's previous check, given up, still runs on the server) is retried quietly for up to 30 seconds. Cancelling or closing while a checked account
 is being created removes it again. The desktop app opens the provider in the system browser and gets the answer
 through its link, as before. The last step shows the account as connected as soon as sign-in is
 proven, with the name on sent mail, the first sync's progress and whether its calendars sync.
@@ -1718,8 +1721,8 @@ The clients show it where the user looks: the account's card in Settings, Accoun
 `not_granted`, `auth_failed`, `error` and `unconfirmed` and opens by itself, and the calendar page lists every account
 whose calendars do not show, with "Allow calendar access" (one sign-in that adds the calendar scopes) for
 `not_granted`, the detail and a link to the account's settings for the others, and "Looking for the calendars" while
-an account has none yet. A notice can be hidden; that is remembered in the browser per account and status, so a new
-problem shows again. An IMAP account's settings show its CalDAV status and take the CalDAV address
+an account has none yet. A notice can be hidden; that is remembered in the browser per account and status for as long
+as the account keeps that status, so a problem that goes away and comes back shows again. An IMAP account's settings show its CalDAV status and take the CalDAV address
 (`calendarUrl`), with "Use this address" for one the worker found but may not trust on its own (`unconfirmed`). The
 worker may send that address as `url` with the status; the API keeps it while the status is `unconfirmed` and returns
 it as the account's `calendarFoundUrl`. A worker that sends only the sentence is still understood: the client then

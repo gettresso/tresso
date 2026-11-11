@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderConnection } from '@tresso/core'
-import { clearAwaiting, handOver, isAwaited, isCancelled, listenForSignIns, markAwaiting, markCancelled, reportSignedOutReturn, stateOf, takeNotedOutcome, type HandedOver } from '../connectChannel'
+import { abandoned, clearAwaiting, handOver, isAwaited, isCancelled, listenForSignIns, markAwaiting, markCancelled, reportSignedOutReturn, stateOf, takeNotedOutcome, type HandedOver } from '../connectChannel'
 
 const result: ProviderConnection = { provider: 'google', connected: 'acc-g', grant: null, connectError: null, requested: ['mail'], missing: [], existing: false, approvalUrl: null }
 
@@ -80,7 +80,7 @@ describe('connectChannel', () => {
     markAwaiting('state-1', Date.now() + 60_000)
     expect(isAwaited('state-1')).toBe(true)
     expect(isAwaited('state-2')).toBe(false)
-    clearAwaiting()
+    clearAwaiting('state-1')
     expect(isAwaited('state-1')).toBe(false)
     markAwaiting('state-1', Date.now() - 1)
     expect(isAwaited('state-1')).toBe(false)
@@ -91,6 +91,17 @@ describe('connectChannel', () => {
     expect(isCancelled('state-2')).toBe(false)
   })
 
+  it('keeps the sign-ins of dialogs in several tabs apart', () => {
+    markAwaiting('state-1', Date.now() + 60_000)
+    markAwaiting('state-2', Date.now() + 60_000)
+    expect(isAwaited('state-1')).toBe(true)
+    expect(isAwaited('state-2')).toBe(true)
+
+    clearAwaiting('state-2')
+    expect(isAwaited('state-1')).toBe(true)
+    expect(isAwaited('state-2')).toBe(false)
+  })
+
   it('tells the waiting tab when the provider sent back a tab that is signed out', async () => {
     const taken: HandedOver[] = []
     listen((state, outcome) => state === 'state-1' && taken.push(outcome) > 0)
@@ -99,6 +110,8 @@ describe('connectChannel', () => {
     markAwaiting('state-1', Date.now() + 60_000)
     expect(reportSignedOutReturn({ provider: 'google', state: 'state-1', code: 'c' })).toBe(true)
     await vi.waitFor(() => expect(taken).toEqual([{ kind: 'signed-out' }]))
+    expect(abandoned('state-1')).toBe('given-up')
+    expect(abandoned('state-2')).toBeNull()
   })
 
   it('works without storage, through the channel alone', async () => {

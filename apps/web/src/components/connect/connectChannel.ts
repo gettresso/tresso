@@ -31,6 +31,14 @@ interface Noted {
   expiresAt: number
 }
 
+/** Why a sign-in is no longer waited for: the user cancelled it, or the waiting tab gave up (expired, signed out). */
+export type Abandoned = 'cancelled' | 'given-up'
+
+function live<T extends Noted>(list: T[] | null, except?: string): T[] {
+  const now = Date.now()
+  return (Array.isArray(list) ? list : []).filter((noted) => noted.expiresAt > now && noted.state !== except)
+}
+
 function storage(): Storage | null {
   try {
     return globalThis.localStorage ?? null
@@ -60,31 +68,44 @@ function channel(): BroadcastChannel | null {
   return typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(NAME)
 }
 
-/** Notes that this browser waits for the sign-in with this state, until it expires. */
+/**
+ * Notes that a tab of this browser waits for the sign-in with this state, until it expires. Per state, so dialogs in
+ * several tabs each wait for their own.
+ */
 export function markAwaiting(state: string, expiresAt: number): void {
-  write(AWAITING_KEY, { state, expiresAt } satisfies Noted)
+  write(AWAITING_KEY, [...live(read<Noted[]>(AWAITING_KEY), state), { state, expiresAt }])
 }
 
-export function clearAwaiting(): void {
-  write(AWAITING_KEY, null)
+export function clearAwaiting(state: string): void {
+  write(AWAITING_KEY, live(read<Noted[]>(AWAITING_KEY), state))
 }
 
 /** Whether a tab of this browser waits for the sign-in with this state. */
 export function isAwaited(state: string): boolean {
-  const noted = read<Noted>(AWAITING_KEY)
-  return noted?.state === state && typeof noted.expiresAt === 'number' && noted.expiresAt > Date.now()
+  return live(read<Noted[]>(AWAITING_KEY)).some((noted) => noted.state === state)
 }
 
-/** Notes that the user cancelled the sign-in with this state; the tab the provider sends back does not finish it. */
-export function markCancelled(state: string, expiresAt: number): void {
-  const now = Date.now()
-  const kept = (read<Noted[]>(CANCELLED_KEY) ?? []).filter((noted) => noted.expiresAt > now && noted.state !== state)
-  write(CANCELLED_KEY, [...kept, { state, expiresAt }])
+function awaitedUntil(state: string): number {
+  return live(read<Noted[]>(AWAITING_KEY)).find((noted) => noted.state === state)?.expiresAt ?? Date.now() + 15 * 60_000
+}
+
+/**
+ * Notes that the sign-in with this state is no longer waited for: the user cancelled it, or the waiting tab gave up
+ * and told the user nothing was connected. The tab the provider sends back then finishes nothing, whenever it arrives
+ * (also after the user signed in to Tresso there).
+ */
+export function markCancelled(state: string, expiresAt: number, reason: Abandoned = 'cancelled'): void {
+  write(CANCELLED_KEY, [...live(read<(Noted & { reason?: Abandoned })[]>(CANCELLED_KEY), state), { state, expiresAt, reason }])
+}
+
+/** Why the sign-in with this state was abandoned, or null when it was not. */
+export function abandoned(state: string): Abandoned | null {
+  const noted = live(read<(Noted & { reason?: Abandoned })[]>(CANCELLED_KEY)).find((entry) => entry.state === state)
+  return noted === undefined ? null : (noted.reason ?? 'cancelled')
 }
 
 export function isCancelled(state: string): boolean {
-  const now = Date.now()
-  return (read<Noted[]>(CANCELLED_KEY) ?? []).some((noted) => noted.state === state && noted.expiresAt > now)
+  return abandoned(state) !== null
 }
 
 /**
@@ -148,6 +169,9 @@ export function handOver(state: string, outcome: HandedOver, waitMs = 1500): Pro
 export function reportSignedOutReturn(query: Record<string, unknown>): boolean {
   const state = query.state
   if ((query.provider !== 'google' && query.provider !== 'microsoft') || typeof state !== 'string' || !isAwaited(state)) return false
+  // Given up from here on: should this tab come back to the page once the user signed in to Tresso, it finishes
+  // nothing, since the waiting tab already said nothing was connected.
+  markCancelled(state, awaitedUntil(state), 'given-up')
   void handOver(state, { kind: 'signed-out' }, 0)
   return true
 }
