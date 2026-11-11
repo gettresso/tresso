@@ -615,6 +615,26 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertSame(['Sync' => false, 'Sync, later' => true], $marked);
     }
 
+    public function testOccurrencesOfEventsWithADurationLastThatLong(): void
+    {
+        $this->storeIcal('duration@test', [
+            'BEGIN:VEVENT', 'UID:duration@test', 'DTSTAMP:20261019T080000Z', 'DTSTART:20261021T140000Z', 'DURATION:PT90M', 'RRULE:FREQ=DAILY;COUNT=2', 'SUMMARY:Review', 'END:VEVENT',
+        ]);
+        $this->storeIcal('days@test', [
+            'BEGIN:VEVENT', 'UID:days@test', 'DTSTAMP:20261019T080000Z', 'DTSTART;VALUE=DATE:20261026', 'DURATION:P3D', 'SUMMARY:Offsite', 'END:VEVENT',
+        ]);
+
+        $ends = [];
+        foreach ($this->occurrences($this->kim, '2026-10-21T00:00:00+00:00', '2026-10-31T00:00:00+00:00') as $occurrence) {
+            $ends[] = [$occurrence['summary'], $occurrence['start'], $occurrence['end']];
+        }
+        self::assertSame([
+            ['Review', ['dateTime' => '2026-10-21T14:00:00+00:00'], ['dateTime' => '2026-10-21T15:30:00+00:00']],
+            ['Review', ['dateTime' => '2026-10-22T14:00:00+00:00'], ['dateTime' => '2026-10-22T15:30:00+00:00']],
+            ['Offsite', ['date' => '2026-10-26'], ['date' => '2026-10-29']],
+        ], $ends);
+    }
+
     public function testManagesLocalCalendars(): void
     {
         $this->client->jsonRequest('POST', '/api/v1/calendars', ['name' => 'Family', 'color' => '#E0457B'], $this->kim);
@@ -634,6 +654,21 @@ final class CalendarEventApiTest extends DatabaseTestCase
 
         $this->client->request('DELETE', '/api/v1/calendars/'.$this->calendarId, server: $this->kim);
         self::assertResponseStatusCodeSame(422);
+    }
+
+    /**
+     * Stores a calendar object in the Tresso calendar as a provider or CalDAV client would write it.
+     *
+     * @param list<string> $events the VEVENT lines
+     */
+    private function storeIcal(string $uid, array $events): void
+    {
+        $calendar = static::getContainer()->get(\App\Repository\CalendarRepository::class)->find($this->calendarId);
+        self::assertNotNull($calendar);
+        $ical = implode("\r\n", ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Test//EN', ...$events, 'END:VCALENDAR', '']);
+        $entityManager = static::getContainer()->get(\Doctrine\ORM\EntityManagerInterface::class);
+        $entityManager->wrapInTransaction(static fn () => static::getContainer()->get(\App\Calendar\CalendarStore::class)->save(new \App\Entity\CalendarObject($calendar, $uid, ''), \App\Calendar\ICalendar\CalendarDocument::parse($ical)));
+        $entityManager->clear();
     }
 
     /**
