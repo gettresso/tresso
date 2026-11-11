@@ -12,6 +12,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import SegmentedControl from '@/components/SegmentedControl.vue'
 
 const mail = useMailStore()
 const brief = useBriefStore()
@@ -185,10 +186,16 @@ function briefLabel(createdAt: string): string {
 
           <template v-if="entries.length > 0">
             <div class="toolbar">
-              <div role="radiogroup" aria-label="Group the brief" class="segmented">
-                <button type="button" role="radio" :aria-checked="grouping === 'smartInbox'" @click="grouping = 'smartInbox'">Per smart inbox</button>
-                <button type="button" role="radio" :aria-checked="grouping === 'sender'" @click="grouping = 'sender'">Per sender</button>
-              </div>
+              <SegmentedControl
+                label="Group the brief"
+                mode="radio"
+                :options="[
+                  { value: 'smartInbox', label: 'Per smart inbox' },
+                  { value: 'sender', label: 'Per sender' },
+                ]"
+                :selected="grouping"
+                @choose="(value) => (grouping = value)"
+              />
             </div>
 
             <section v-for="group in groups" :key="group.key" class="group" :aria-label="group.label">
@@ -362,27 +369,6 @@ h1 {
   display: flex;
   justify-content: flex-end;
 }
-.segmented {
-  display: flex;
-  padding: 3px;
-  border-radius: 8px;
-  background: var(--ground);
-}
-.segmented button {
-  height: 28px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--ink-2);
-  font: 600 12px var(--font-ui);
-  cursor: pointer;
-}
-.segmented button[aria-checked='true'] {
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: 0 1px 2px rgb(22 24 29 / 8%);
-}
 .group-title {
   margin: 4px 0 8px;
   font-size: 14px;
@@ -462,7 +448,6 @@ h1 {
   border: 1px solid var(--line-strong);
   background: var(--surface);
   color: var(--ink);
-  text-decoration: none;
 }
 .noted {
   border: 1.5px solid var(--know);

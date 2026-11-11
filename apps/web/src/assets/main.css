@@ -31,6 +31,17 @@
   --fill-text-dark: #16181d;
   /* 0 in the light theme, 1 in the dark one: for values that are worked out per theme (calendar/look.ts). */
   --theme-dark: 0;
+  /* Sender avatars: five tints that only tell people apart (SenderAvatar). */
+  --avatar-0-fill: #dde3fb;
+  --avatar-0-text: #1a31a8;
+  --avatar-1-fill: #e3f2ee;
+  --avatar-1-text: #1e5a4e;
+  --avatar-2-fill: #fceee2;
+  --avatar-2-text: #7a3704;
+  --avatar-3-fill: #ede7f8;
+  --avatar-3-text: #4b2f86;
+  --avatar-4-fill: #f3f4f6;
+  --avatar-4-text: #4a505c;
   /* What lies behind a dialog, dimmed. */
   --scrim: rgb(15 17 21 / 18%);
   /* A lit top edge and a soft shadow: what makes a translucent layer read as glass rather than as a faded panel. */
@@ -85,6 +96,17 @@
     --know-soft: rgb(108 199 178 / 15%);
     --unread: #8fa2ff;
     --theme-dark: 1;
+    /* Deep fills with light letters, as on the dark boards. */
+    --avatar-0-fill: #26305c;
+    --avatar-0-text: #aeb9ff;
+    --avatar-1-fill: #15322c;
+    --avatar-1-text: #6cc7b2;
+    --avatar-2-fill: #3a2614;
+    --avatar-2-text: #f29a55;
+    --avatar-3-fill: #2e2550;
+    --avatar-3-text: #c3b4f5;
+    --avatar-4-fill: #2a2f38;
+    --avatar-4-text: #b5bbc6;
     --glass-edge: inset 0 1px 0 rgb(255 255 255 / 12%), inset 0 0 0 1px rgb(255 255 255 / 6%);
     --raised: var(--glass-edge), 0 1px 2px rgb(0 0 0 / 30%), 0 12px 32px rgb(0 0 0 / 45%);
     --canvas-light:
@@ -203,6 +225,8 @@ button {
   border-radius: var(--radius-control);
   font-weight: 600;
   font-size: 13px;
+  /* Also on a link styled as a button. */
+  text-decoration: none;
   cursor: pointer;
   transition:
     background-color var(--motion-fast) ease,
@@ -269,13 +293,6 @@ button {
 .form-error {
   font-weight: 500;
   color: var(--danger);
-}
-.button-accent {
-  background: var(--focus);
-  color: #fff;
-}
-.button-accent:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--focus) 88%, var(--ink));
 }
 .button-danger {
   background: transparent;

@@ -306,7 +306,7 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   margin: 0 2px;
   padding: 0 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--cal) 16%, var(--paper));
   color: var(--cal-ink);
   font: 600 12px/24px var(--font-ui);
@@ -390,7 +390,7 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   padding: 4px 8px 4px 10px;
   border: 0;
   border-left: 3px solid var(--cal);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--cal) 16%, var(--paper));
   color: var(--cal-ink);
   outline: 1px solid var(--paper);
