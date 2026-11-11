@@ -507,6 +507,148 @@ describe('Session', () => {
     expect(session.snapshot.tokens).toBeNull()
   })
 
+  it('keeps a sign-in that completes while the sign-out waits for the revocation', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore(fresh())
+      const fetchImpl = vi.fn<Fetch>(async (input) => (String(input) === REVOKE_URL ? new Promise<Response>(() => undefined) : tokenResponse('access-2', 'refresh-2')))
+      const session = await restored(store, fetchImpl)
+
+      const signingOut = session.signOut()
+      await vi.advanceTimersByTimeAsync(0)
+      await session.completeSignIn('the-code', 'the-verifier')
+      await vi.advanceTimersByTimeAsync(5_000)
+      await signingOut
+
+      expect(session.snapshot.tokens?.accessToken).toBe('access-2')
+      expect(store.saved?.accessToken).toBe('access-2')
+      expect(store.promptLogin).toBe(false)
+      expect(session.snapshot.storageError).toBeNull()
+      expect((await restored(store, fetchImpl)).snapshot).toMatchObject({ ended: null, restored: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a sign-in whose save is queued behind the sign-out\'s removal, and clears the flag first', async () => {
+    const store = memoryStore(fresh())
+    const save = store.save.bind(store)
+    let release: (() => void) | null = null
+    store.save = async (tokens) => {
+      if (tokens === null) {
+        await new Promise<void>((resolve) => (release = resolve))
+      }
+      await save(tokens)
+    }
+    const session = await restored(store, server(async () => tokenResponse('access-2', 'refresh-2')))
+
+    const signingOut = session.signOut()
+    // The removal has started and waits inside the store.
+    await vi.waitFor(() => expect(release).not.toBeNull())
+    const signingIn = session.completeSignIn('the-code', 'the-verifier')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    release!()
+    await Promise.all([signingOut, signingIn])
+
+    expect(store.saved?.accessToken).toBe('access-2')
+    expect(store.promptLogin).toBe(false)
+  })
+
+  it('does not keep a new sign-in while the sign-out flag cannot be cleared, and keeps it once a refresh clears it', async () => {
+    const store = memoryStore()
+    store.promptLogin = true
+    let issued = 1
+    const refused = new Set(['access-2'])
+    const fetchImpl = vi.fn<Fetch>(async (input, init) => {
+      if (String(input).endsWith('/oauth/token')) {
+        issued++
+        return tokenResponse(`access-${issued}`, `refresh-${issued}`)
+      }
+      const token = new Headers(init!.headers).get('Authorization')!.replace('Bearer ', '')
+      return refused.has(token) ? new Response(null, { status: 401 }) : new Response(JSON.stringify({ id: 'kim' }))
+    })
+    const session = await restored(store, fetchImpl)
+    const clear = store.setLoginRequired.bind(store)
+    store.setLoginRequired = async (required) => {
+      if (!required) {
+        throw new Error('Keychain is locked.')
+      }
+      await clear(required)
+    }
+
+    await session.completeSignIn('the-code', 'the-verifier')
+    expect(store.saved).toBeNull()
+    expect(store.promptLogin).toBe(true)
+    expect(session.snapshot.storageError).toContain('could not be kept on this device')
+
+    store.setLoginRequired = clear
+    await session.me()
+
+    expect(store.promptLogin).toBe(false)
+    expect(store.saved?.accessToken).toBe('access-3')
+  })
+
+  it('clears a sign-out flag the sign-in could not clear when that sign-in expires, so its mail is kept', async () => {
+    const store = memoryStore()
+    store.promptLogin = true
+    let refuse = false
+    const fetchImpl = vi.fn<Fetch>(async (input) => {
+      if (String(input).endsWith('/oauth/token')) {
+        return refuse ? refused() : tokenResponse('access-2', 'refresh-2')
+      }
+      return new Response(null, { status: 401 })
+    })
+    const session = await restored(store, fetchImpl)
+    const clear = store.setLoginRequired.bind(store)
+    let clearing = false
+    store.setLoginRequired = async (required) => {
+      if (!required && !clearing) {
+        throw new Error('Keychain is locked.')
+      }
+      await clear(required)
+    }
+    await session.completeSignIn('the-code', 'the-verifier')
+    expect(store.promptLogin).toBe(true)
+
+    clearing = true
+    refuse = true
+    await expect(session.me()).rejects.toThrow()
+
+    expect(session.snapshot.ended).toBe('expired')
+    expect(store.promptLogin).toBe(false)
+    expect((await restored(store, fetchImpl)).snapshot.ended).toBeNull()
+  })
+
+  it('ends a sign-in that could not be kept as signed out at the next launch when its expiry could not clear the flag either', async () => {
+    const store = memoryStore()
+    store.promptLogin = true
+    const fetchImpl = vi.fn<Fetch>(async (input) => (String(input).endsWith('/oauth/token') ? new Response(JSON.stringify({ access_token: 'access-2', expires_in: 3600 })) : new Response(null, { status: 401 })))
+    const session = await restored(store, fetchImpl)
+    store.setLoginRequired = async () => {
+      throw new Error('Keychain is locked.')
+    }
+    await session.completeSignIn('the-code', 'the-verifier')
+
+    await expect(session.me()).rejects.toThrow()
+
+    // Accepted: the store never held this sign-in, and the flag of the sign-out before it is all the next launch sees.
+    expect(session.snapshot.storageError).toContain('could not be removed from this device')
+    expect((await restored(store, fetchImpl)).snapshot.ended).toBe('signedOut')
+  })
+
+  it('finishes a sign-out cut off inside the removal, also when no loadable set is left', async () => {
+    const store = memoryStore()
+    store.promptLogin = true
+    store.lastUser = 'kim'
+    const save = vi.spyOn(store, 'save')
+
+    const session = await restored(store, vi.fn<Fetch>())
+
+    expect(session.snapshot.ended).toBe('signedOut')
+    expect(save).toHaveBeenCalledWith(null)
+    expect(store.lastUser).toBeNull()
+  })
+
   it('tells subscribers about every change', async () => {
     const session = new Session(CONFIG, memoryStore(fresh()), vi.fn<Fetch>())
     const listener = vi.fn<() => void>()

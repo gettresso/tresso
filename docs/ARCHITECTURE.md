@@ -1051,7 +1051,12 @@ refresh. The flag is written first, so a sign-out cut off after that (the app ki
 the tokens are removed and the sign-in ends as signed out, which removes the mail too. The store's writes run one
 after another, so a removal never lands between the steps of an earlier save. Tokens of a sign-in made here are kept
 only once the previous user is forgotten and the flag cleared; while that fails, every refresh tries again before it
-saves. A store that cannot be read at launch removes nothing either: the app says so, offers Try again, and reads it
+saves, and an expiry clears the flag. Accepted: when the flag can be cleared neither then nor at the expiry, the store
+never held that sign-in, and the next launch takes the flag for the sign-out before it, so the mail of that sign-in
+goes with it. A sign-in that completes while a sign-out is still finishing wins: the sign-out removes nothing once new
+tokens are there. A launch that finds the flag also removes what a sign-out cut off inside the removal left behind (a
+refresh token or the last user), even when no complete set loads. Asking for the server's metadata gives up after
+5 seconds and signs in at the API address. A store that cannot be read at launch removes nothing either: the app says so, offers Try again, and reads it
 again whenever it comes to the front.
 
 Mail on the phone: the mobile app keeps a SQLite copy (expo-sqlite, one database per user) of
