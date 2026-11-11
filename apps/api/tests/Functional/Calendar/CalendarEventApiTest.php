@@ -966,6 +966,20 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertSame('Extended, renamed', $this->decodedResponse()['summary']);
         self::assertSame('FREQ=WEEKLY;X-FOO=1', $this->decodedResponse()['recurrence']);
 
+        // One occurrence a device expanded and names: taken as it names it.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$seriesId.'?scope=this&recurrenceId=20261026T070000Z', self::event($this->calendarId, [
+            'summary' => 'Extended, once',
+            'start' => ['dateTime' => '2026-10-26T08:00:00', 'timeZone' => 'UTC'],
+            'end' => ['dateTime' => '2026-10-26T08:30:00', 'timeZone' => 'UTC'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+        self::assertSame('20261026T070000Z', $this->decodedResponse()['recurrenceId']);
+        $later = $this->occurrences($this->kim, '2026-10-26T00:00:00+00:00', '2026-10-27T00:00:00+00:00');
+        self::assertSame([['Extended, once', '2026-10-26T08:00:00+00:00']], array_map(static fn (array $o): array => [$o['summary'], \is_array($o['start']) ? $o['start']['dateTime'] : null], $later));
+        // One the series cannot have (before its start) is still refused.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$seriesId.'?scope=this&recurrenceId=20261012T070000Z', self::event($this->calendarId, ['summary' => 'Before']), $this->kim);
+        self::assertResponseStatusCodeSame(422);
+
         // A new rule must be one the server can expand.
         $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($this->calendarId, ['recurrence' => 'FREQ=WEEKLY;X-FOO=1']), $this->kim);
         self::assertResponseStatusCodeSame(422);
