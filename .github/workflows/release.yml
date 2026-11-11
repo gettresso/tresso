@@ -112,12 +112,9 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: System libraries for Tauri
-        timeout-minutes: 10
+        timeout-minutes: 15
         if: runner.os == 'Linux'
-        run: |
-          # A package mirror that does not answer must fail this step in minutes, not hang the job for hours.
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        run: scripts/ci/apt-install.sh libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - run: npm ci
 
