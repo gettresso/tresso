@@ -1291,6 +1291,10 @@ desktop app, per server), so the copy opens before the server answers and the ma
 offline. A start that fails (offline, the server down, the copy refused) says so with a Retry button and tries again by
 itself: after 5 seconds, doubling up to 5 minutes, and at once when the device comes back online.
 
+A signed-out visitor who follows a link into the app (a push notification opened in a new tab, a bookmark) sees the
+sign-in screen; where they were going is kept in the tab (sessionStorage) across the trip to the authorization page,
+and the app opens there once signed in. Only paths inside the app are kept.
+
 The desktop app runs the web client unchanged; only signing in and keeping the tokens go through the shell
 (`apps/web/src/platform/desktop.ts`). It is its own OAuth client (`desktop`) with the redirect URI
 `tresso://auth/callback`: sign-in opens the authorization page in the system browser, where the user's password

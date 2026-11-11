@@ -61,13 +61,17 @@ const router = createRouter({
   ],
 })
 
-// Signed-out visitors land on the sign-in screen.
+// Signed-out visitors land on the sign-in screen, which keeps where they were going for after the sign-in.
 router.beforeEach((to) => {
   if (to.matched.some((record) => record.meta.requiresAuth) && !useAuthStore().isAuthenticated) {
     // A provider's page sent back a tab that is not signed in, which cannot finish connecting the account: the tab
-    // that waits for it is told, instead of waiting until the sign-in expires.
-    if (to.name === 'settings-accounts-new') reportSignedOutReturn(to.query)
-    return { name: 'unified' }
+    // that waits for it is told, instead of waiting until the sign-in expires. That return is not kept for after the
+    // sign-in either: its answer belongs to the tab that waits.
+    if (to.name === 'settings-accounts-new') {
+      reportSignedOutReturn(to.query)
+      return { name: 'unified' }
+    }
+    return { name: 'unified', query: { returnTo: to.fullPath } }
   }
   return true
 })

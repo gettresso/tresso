@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { takeReturnPath } from '@/router/returnPath'
 import LogoLoader from '@/components/LogoLoader.vue'
 import TressoMark from '@/components/TressoMark.vue'
 
@@ -21,7 +22,8 @@ watch(
     error.value = null
     try {
       await auth.completeSignIn(new URL(path, window.location.origin).href)
-      await router.replace({ name: 'unified' })
+      // Where the user was going before the sign-in (a link from a notification, say), else the Unified Inbox.
+      await router.replace(takeReturnPath() ?? { name: 'unified' })
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
     }

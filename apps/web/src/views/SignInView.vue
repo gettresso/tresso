@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { keepReturnPath } from '@/router/returnPath'
 import TressoMark from '@/components/TressoMark.vue'
 import { isDesktop } from '@/platform/desktop'
 import { chooseServer, defaultServer, normalizeServer, reachServer, server } from '@/platform/server'
@@ -8,6 +10,7 @@ import { config } from '@/config'
 import LogoLoader from '@/components/LogoLoader.vue'
 
 const auth = useAuthStore()
+const route = useRoute()
 const signInError = ref<string | null>(null)
 
 /** The desktop app signs in to the hosted Tresso unless the user names their own server here. */
@@ -97,6 +100,8 @@ async function reopenBrowser(): Promise<void> {
 
 async function starting(start: () => Promise<void>): Promise<void> {
   signInError.value = null
+  // Where the visitor was going: a screen that needs a sign-in sent them here with it, any other shows this in place.
+  keepReturnPath(route.query.returnTo ?? route.fullPath)
   try {
     await start()
   } catch (error) {
