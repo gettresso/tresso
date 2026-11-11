@@ -222,6 +222,26 @@ final class Occurrences
             }
         }
 
+        // A rule sabre cannot expand: devices expand it themselves and name the occurrence, which is taken as they name
+        // it (the server cannot tell it from one the rule does not have).
+        $rule = Props::text($master, 'RRULE');
+        $dtStart = Props::dateTime($master, 'DTSTART');
+        if (null !== $rule && null !== $dtStart && RecurrenceKey::isValid($key) && !self::ruleReadable($rule, \DateTimeImmutable::createFromInterface($dtStart->getDateTime($zone)))) {
+            $first = \DateTimeImmutable::createFromInterface($dtStart->getDateTime($zone));
+            $isDate = !$dtStart->hasTime();
+            $start = RecurrenceKey::require($key)->setTimezone($first->getTimezone());
+            if ($start >= $first && self::key(self::readBack($start, $isDate, true === $dtStart->isFloating()), $isDate, true === $dtStart->isFloating()) === $key) {
+                $instance = self::instance($master, $start, self::length($master, $zone));
+                unset($instance->VALARM);
+                foreach (Props::components($master, 'VALARM') as $alarm) {
+                    $instance->add(clone $alarm);
+                }
+                $calendar->add($instance);
+
+                return $instance;
+            }
+        }
+
         throw new InvalidCalendarData('The series has no occurrence at that time.');
     }
 
