@@ -1096,14 +1096,19 @@ describe('auth store', () => {
       const auth = await authStore()
       const callback = await startSignIn(auth, () => desktop.opened[0]!)
       expect(new URL(desktop.opened[0]!).searchParams.get('prompt')).toBe('login')
-      // Opening the authorization page again still asks.
+      // Opening the same sign-in in the browser again still asks: the kept page address carries the parameter.
+      await auth.reopenBrowser()
+      expect(desktop.opened[1]).toBe(desktop.opened[0])
+      expect(JSON.parse(sessionStorage.getItem('auth.pending')!).url).toBe(desktop.opened[0])
+      // So does a new sign-in started before the first one completed.
       await auth.signIn()
-      expect(new URL(desktop.opened[1]!).searchParams.get('prompt')).toBe('login')
+      expect(new URL(desktop.opened[2]!).searchParams.get('prompt')).toBe('login')
+      expect(callback).toContain('state=')
       stubTokenEndpoint()
-      await auth.completeSignIn(`${callback.split('&state=')[0]}&state=${new URL(desktop.opened[1]!).searchParams.get('state')}`)
+      await auth.completeSignIn(`tresso://auth/callback?code=the-code&state=${new URL(desktop.opened[2]!).searchParams.get('state')}`)
 
       await auth.signIn()
-      expect(new URL(desktop.opened[2]!).searchParams.has('prompt')).toBe(false)
+      expect(new URL(desktop.opened[3]!).searchParams.has('prompt')).toBe(false)
     })
 
     it('does not ask for the password again after a session that expired', async () => {
