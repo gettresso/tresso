@@ -99,6 +99,7 @@ final readonly class BulkActions
     {
         $this->oneAtATime($bulkAction->getOwner());
         $bulkAction->startUndo();
+        $bulkAction->touch(new \DateTimeImmutable());
         $this->entityManager->flush();
         $this->dispatcher->dispatch(new RunBulkAction($bulkAction->getId()->toRfc4122()));
     }
@@ -159,6 +160,8 @@ final readonly class BulkActions
         if (null === $bulkAction || !\in_array($status, [BulkActionStatus::Running, BulkActionStatus::Undoing], true)) {
             return BulkRun::Done;
         }
+        $bulkAction->touch(new \DateTimeImmutable());
+
         return BulkActionStatus::Running === $status ? $this->actBatch($bulkAction) : $this->undoBatch($bulkAction);
     }
 
