@@ -61,12 +61,12 @@ Every [release](https://github.com/gettresso/tresso/releases) has:
 
 | Platform                       | File                                                                 |
 | ------------------------------ | -------------------------------------------------------------------- |
-| macOS (Apple Silicon and Intel) | `tresso-macos-universal.dmg`, `tresso-macos-universal.app.tar.gz`   |
+| macOS (Apple Silicon and Intel) | `Tresso-<version>.dmg` (disk "Tresso <version>"), `tresso-macos-universal.app.tar.gz` |
 | Linux x86_64                   | `tresso-linux-x86_64.AppImage`, `tresso-linux-x86_64.deb`            |
 | Linux arm64                    | `tresso-linux-aarch64.AppImage`, `tresso-linux-aarch64.deb`          |
 | Windows x64                    | `tresso-windows-x64-setup.exe`, `tresso-windows-x64.msi`             |
 
-Prereleases (`v1.2.0-beta.1`) ship the Windows setup without the `.msi`, which only takes numeric versions.
+Prereleases (`v1.2.0-beta.1`) ship the Windows setup without the `.msi`, which only takes numeric versions. Releases up to 0.7.0 named the DMG `tresso-macos-universal.dmg`; the install script never uses the DMG (it installs `tresso-macos-universal.app.tar.gz`), so pinning an older release still works.
 
 The app is not signed with an Apple Developer ID yet. The install script lifts the macOS quarantine for you. When you open the `.dmg` yourself, right-click Tresso and choose **Open** the first time, or run `xattr -dr com.apple.quarantine /Applications/Tresso.app`. The AppImage needs FUSE 2 (`libfuse2`, or `libfuse2t64` on Ubuntu 24.04 and later); the `.deb` does not.
 

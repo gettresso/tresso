@@ -160,6 +160,7 @@ jobs:
         env:
           NAME: ${{ matrix.name }}
           TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.version.outputs.version }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           TAG: ${{ github.ref_type == 'tag' }}
         run: |
@@ -178,10 +179,40 @@ jobs:
           shopt -s nullglob
           case "${NAME}" in
             macos-*)
-              cp "$(one "${bundle}"/dmg/*.dmg)" "dist/tresso-${NAME}.dmg"
+              # The file is Tresso-<version>.dmg and the disk "Tresso <version>", like the other macOS apps. Tauri
+              # names the disk after the product, so the DMG is made again with the create-dmg script Tauri left next
+              # to its own DMG and the Finder layout of tauri.conf.json. Renaming the finished disk would not do: the
+              # background in .DS_Store points at the disk by its name.
+              one "${bundle}"/dmg/*.dmg >/dev/null
+              script="${PWD}/${bundle}/dmg/bundle_dmg.sh"
+              if [ ! -x "${script}" ]; then
+                echo "Tauri left no ${script}: its DMG bundler changed" >&2
+                exit 1
+              fi
+              read -r app_x app_y folder_x folder_y width height background < <(node -e '
+                const dmg = require(process.argv[1]).bundle.macOS.dmg
+                const values = [dmg.appPosition.x, dmg.appPosition.y, dmg.applicationFolderPosition.x,
+                  dmg.applicationFolderPosition.y, dmg.windowSize.width, dmg.windowSize.height, dmg.background]
+                if (values.some((value) => value === undefined || /\s/.test(String(value)))) {
+                  console.error("tauri.conf.json lacks a part of bundle.macOS.dmg")
+                  process.exit(1)
+                }
+                console.log(values.join(" "))
+              ' "${PWD}/apps/desktop/src-tauri/tauri.conf.json")
+              background="${PWD}/apps/desktop/src-tauri/${background}"
+              icon="$(plutil -extract CFBundleIconFile raw "${bundle}/macos/Tresso.app/Contents/Info.plist")"
+              icon="${PWD}/${bundle}/macos/Tresso.app/Contents/Resources/${icon%.icns}.icns"
+              dmg="${PWD}/dist/Tresso-${VERSION}.dmg"
+              volume="Tresso ${VERSION}"
+              (
+                cd "${bundle}/macos"
+                "${script}" --volname "${volume}" --icon Tresso.app "${app_x}" "${app_y}" \
+                  --app-drop-link "${folder_x}" "${folder_y}" --window-size "${width}" "${height}" \
+                  --background "${background}" --volicon "${icon}" "${dmg}" Tresso.app
+              )
               # The DMG must carry its Finder layout: the background and the window settings in .DS_Store.
               mount="$(mktemp -d)"
-              hdiutil attach -nobrowse -readonly -mountpoint "${mount}" "dist/tresso-${NAME}.dmg" >/dev/null
+              hdiutil attach -nobrowse -readonly -mountpoint "${mount}" "${dmg}" >/dev/null
               status=0
               for file in .background/background.tiff .DS_Store Tresso.app Applications; do
                 if [ ! -e "${mount}/${file}" ]; then
@@ -189,6 +220,11 @@ jobs:
                   status=1
                 fi
               done
+              named="$(diskutil info "${mount}" | sed -n 's/^ *Volume Name: *//p')"
+              if [ "${named}" != "${volume}" ]; then
+                echo "The DMG's disk is named \"${named}\", not \"${volume}\"" >&2
+                status=1
+              fi
               # Spotlight sometimes still holds the new volume for a moment.
               hdiutil detach "${mount}" >/dev/null || hdiutil detach -force "${mount}" >/dev/null
               [ "${status}" -eq 0 ] || exit 1
@@ -457,12 +493,13 @@ jobs:
         shell: bash
         env:
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           cp scripts/install.sh scripts/install.ps1 artifacts/
           cd artifacts
           expected=(
-            tresso-macos-universal.dmg
+            "Tresso-${VERSION}.dmg"
             tresso-macos-universal.app.tar.gz
             tresso-linux-x86_64.AppImage
             tresso-linux-x86_64.deb
@@ -494,6 +531,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           # What's new since the previous release, from the commit subjects. A prerelease counts from the previous tag
@@ -521,9 +559,10 @@ jobs:
           powershell -c "irm https://sherin.dev/tresso/install.ps1|iex"
           ```
 
-          Or download an installer below. Every file is listed in `SHA256SUMS`. The macOS app is not notarized yet: after
-          opening the `.dmg`, use **System Settings > Privacy & Security > Open Anyway** once.
+          Or download an installer below. Every file is listed in `SHA256SUMS`.
           EOF
+          printf '%s\n' "The macOS app is not notarized yet: after opening \`Tresso-${VERSION}.dmg\`, use" \
+            '**System Settings > Privacy & Security > Open Anyway** once.' >> notes.md
           cat notes.md
           # Exactly SHA256SUMS, the files it lists, their updater signatures and the install scripts. The Sparkle
           # signature only feeds the appcast; anything else here is a mistake.
