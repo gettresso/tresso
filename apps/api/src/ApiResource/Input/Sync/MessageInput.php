@@ -93,14 +93,20 @@ final class MessageInput
     /**
      * Headers that tell automated, bulk and junk mail apart, by lower-cased name: list-unsubscribe,
      * list-unsubscribe-post, list-id, precedence, auto-submitted, feedback-id, x-spam-flag, x-spam-status,
-     * authentication-results, x-autoreply and x-autorespond. Missing headers are left out.
+     * authentication-results, x-autoreply and x-autorespond. Missing headers are left out. Values are at most 1000
+     * characters, authentication-results at most 8000: the receiving provider's header is long (several DKIM results,
+     * ARC) and only meaningful whole, so the worker cuts it at a `;`, never inside a result.
      *
      * @var array<string, string>
      */
     #[Assert\Count(max: 20)]
-    #[Assert\All([new Assert\Type('string'), new Assert\Length(max: 1000)])]
+    #[Assert\All([new Assert\Type('string')])]
     #[Assert\Callback([self::class, 'validateHeaderNames'])]
     public array $headers = [];
+
+    /** The longest header value taken, by name; any other header takes HEADER_MAX_LENGTH. */
+    public const array HEADER_MAX_LENGTHS = ['authentication-results' => 8000];
+    public const int HEADER_MAX_LENGTH = 1000;
 
     /** The server flagged the message as junk (IMAP keyword `$Junk`, and no `$NotJunk`). */
     public bool $junk = false;
@@ -125,6 +131,12 @@ final class MessageInput
                 $context->buildViolation('Header names are lower-case letters, digits and dashes.')->atPath('headers')->addViolation();
 
                 return;
+            }
+        }
+        foreach ($headers as $name => $value) {
+            $max = self::HEADER_MAX_LENGTHS[$name] ?? self::HEADER_MAX_LENGTH;
+            if (\is_string($value) && mb_strlen($value) > $max) {
+                $context->buildViolation(\sprintf('The header "%s" is at most %d characters.', $name, $max))->atPath('headers['.$name.']')->addViolation();
             }
         }
     }

@@ -126,6 +126,7 @@ const (
 	maxSnippetLength  = 2000
 	maxBodyTextLength = 32768
 	maxSignalLength   = 1000
+	maxAuthResults    = 8000 // authentication-results, cut by mimeparse at a ";"
 	maxSignals        = 20
 	maxAttachments    = 500
 	maxCalendarParts  = 5
@@ -180,7 +181,11 @@ func signals(headers map[string]string) map[string]string {
 	}
 	out := make(map[string]string, len(headers))
 	for name, value := range headers {
-		if value = clean(value, maxSignalLength); value != "" && len(out) < maxSignals {
+		limit := maxSignalLength
+		if name == "authentication-results" {
+			limit = maxAuthResults
+		}
+		if value = clean(value, limit); value != "" && len(out) < maxSignals {
 			out[name] = value
 		}
 	}
