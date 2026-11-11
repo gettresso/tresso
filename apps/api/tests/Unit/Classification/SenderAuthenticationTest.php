@@ -26,6 +26,13 @@ final class SenderAuthenticationTest extends TestCase
         yield 'a pass in a quoted string' => ['mx.google.com; spf=pass smtp.mailfrom="a;dmarc=pass"@attacker.example; dmarc=none', false];
         yield 'a pass in a nested comment' => ['mx.google.com; spf=pass (outer (dmarc=pass) still) smtp.mailfrom=a@b.example', false];
         yield 'another result word' => ['mx.google.com; dmarc=passed', false];
+        yield 'cut inside a comment' => ['mx.google.com; spf=pass (google.com: domain of "a; dmarc=pass', false];
+        yield 'cut inside a quoted string' => ['mx.google.com; spf=pass smtp.mailfrom="a; dmarc=pass ', false];
+        yield 'a parenthesis inside a quoted string' => ['mx.google.com; x=y "a ( " ) "; dmarc=pass ;" ; dmarc=fail', false];
+        yield 'an escaped parenthesis in a comment' => ['mx.google.com; spf=pass (a \\) ; dmarc=pass) smtp.mailfrom=a@b.example', false];
+        yield 'comments three deep' => ['mx.google.com; spf=pass (a (b (c; dmarc=pass) d) e) x; dmarc=fail', false];
+        yield 'an escaped quote in a quoted string' => ['mx.google.com; spf=pass smtp.mailfrom="a\\"; dmarc=pass"@b.example; dmarc=none', false];
+        yield 'cut after the DMARC result' => ['mx.google.com; dmarc=pass (p=NONE) header.from=a.example; arc=pass (i=1 spf=pass spfdo', true];
     }
 
     #[DataProvider('headers')]

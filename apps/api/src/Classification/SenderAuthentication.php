@@ -50,12 +50,14 @@ final class SenderAuthentication
      */
     private static function entries(string $authenticationResults): array
     {
-        $value = strtolower($authenticationResults);
-        // Comments nest (RFC 5322 3.2.2): take the innermost away until none is left.
-        do {
-            $value = preg_replace('/\((?:[^()\\\\]|\\\\.)*\)/', ' ', $value, -1, $count) ?? '';
-        } while ($count > 0);
-        $value = preg_replace('/"(?:[^"\\\\]|\\\\.)*"/', ' ', $value) ?? '';
+        // One pass, left to right: a quoted string outside a comment, or a comment (they nest, and quotes mean nothing
+        // inside one). What is left of an unclosed one, as in a header that was cut, is dropped with all that follows,
+        // so text the sender chose never surfaces as a result.
+        $value = preg_replace('/"(?:[^"\\\\]|\\\\.)*"|(\((?:[^()\\\\]|\\\\.|(?1))*\))/', ' ', strtolower($authenticationResults));
+        if (null === $value) {
+            return [];
+        }
+        $value = preg_replace('/[()"].*$/s', '', $value) ?? '';
 
         return array_values(array_filter(array_map(trim(...), explode(';', $value)), static fn (string $entry): bool => '' !== $entry));
     }
