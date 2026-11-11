@@ -282,7 +282,7 @@ final class HandOverTest extends DatabaseTestCase
 
         $this->connection()->executeStatement('DELETE FROM message_location WHERE message_id = :id', ['id' => $this->originalId]);
         $janitor = static::getContainer()->get(MessageJanitor::class);
-        $this->connection()->transactional(fn () => $janitor->removeOrphans($this->account()));
+        $this->connection()->transactional(fn () => $janitor->removeOrphans($this->account(), [$this->originalId]));
         self::assertGreaterThan($seq, $this->changeSeq($id), 'Clients hear that the message is gone.');
         self::assertNull($this->get($id)['messageId']);
 
@@ -629,7 +629,7 @@ final class HandOverTest extends DatabaseTestCase
         $id = $this->handOverId();
         $this->connection()->executeStatement('DELETE FROM message_location WHERE message_id = :id', ['id' => $this->originalId]);
         $janitor = static::getContainer()->get(MessageJanitor::class);
-        $this->connection()->transactional(fn () => $janitor->removeOrphans($this->account()));
+        $this->connection()->transactional(fn () => $janitor->removeOrphans($this->account(), [$this->originalId]));
         self::assertNull($this->connection()->fetchOne('SELECT thread_id FROM hand_over WHERE id = :id', ['id' => $id]), 'The conversation is gone with its only message.');
 
         $this->ingest('2', '<reply-1@company.example>', '<'.$this->forwardMessageId().'>', 'Credit note sent', 'lisa@company.example', new \DateTimeImmutable('+1 minute')->format(\DATE_ATOM));

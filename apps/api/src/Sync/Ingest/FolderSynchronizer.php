@@ -24,6 +24,7 @@ use Symfony\Component\Validator\ConstraintViolationList;
  *   Tresso into them are undone first.
  * - A changed UIDVALIDITY invalidates every UID in that folder: its locations are dropped and the cursor reset, so
  *   the worker downloads the folder again (messages that still exist elsewhere are linked, not duplicated).
+ * - Messages left in no folder are orphaned, not deleted: the download links them again (see {@see MessageJanitor}).
  */
 final readonly class FolderSynchronizer
 {
@@ -90,15 +91,20 @@ final readonly class FolderSynchronizer
         }
 
         foreach ($existing as $deleted) {
-            $this->changes->folderRemoved($deleted);
-            $affected = [...$affected, ...$this->removeLocations($deleted)];
+            $affected = [...$affected, ...$this->changes->folderRemoved($deleted), ...$this->removeLocations($deleted)];
+            // Placeholders still there (moves done but not landed yet) go with the folder too.
+            /** @var list<string> $placeholders */
+            $placeholders = $this->connection->fetchFirstColumn('SELECT message_id FROM message_location WHERE folder_id = :folder', ['folder' => $deleted->getId()->toRfc4122()]);
+            $affected = [...$affected, ...$placeholders];
             $this->entityManager->remove($deleted);
         }
 
         $this->entityManager->flush();
-        $this->janitor->removeOrphans($account);
-        // Messages still in other folders changed their membership.
-        $this->sequencer->touchMessages($account->getOwner()->getId(), array_values(array_unique($affected)));
+        $affected = array_values(array_unique($affected));
+        // A message whose only folder was reset or deleted waits for its copy to show up again (or elsewhere).
+        $this->janitor->markOrphans($account, $affected, new \DateTimeImmutable());
+        // Every message that lost a folder changed its membership.
+        $this->sequencer->touchMessages($account->getOwner()->getId(), $affected);
 
         return $states;
     }

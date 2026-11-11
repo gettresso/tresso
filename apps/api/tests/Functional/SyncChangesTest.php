@@ -122,6 +122,12 @@ final class SyncChangesTest extends DatabaseTestCase
         $this->ingest('changes', ['folder' => 'INBOX', 'vanished' => ['2', '3']]);
         $page = $this->changes($cursor);
 
+        self::assertSame([], $page['deleted'], 'The reply waits for its copy to show up elsewhere.');
+        self::assertSame([], $this->bySubject($page['messages'], 'Re: Offsite')['folderIds'], 'Meanwhile it is in no folder.');
+
+        $this->sweepOrphanedMessages();
+        $page = $this->changes($cursor);
+
         self::assertContains(['type' => 'message', 'id' => $this->bySubject($first['messages'], 'Re: Offsite')['id']], $page['deleted']);
         self::assertSame(['Invoice'], array_column($page['messages'], 'subject'), 'Still in Archive, now only there.');
         self::assertSame([array_column($first['folders'], 'id', 'name')['Archive']], $page['messages'][0]['folderIds']);
@@ -133,6 +139,7 @@ final class SyncChangesTest extends DatabaseTestCase
     {
         $first = $this->changes(0);
         $this->ingest('changes', ['folder' => 'INBOX', 'vanished' => ['1', '2']]);
+        $this->sweepOrphanedMessages();
 
         $page = $this->changes($first['cursor']);
 

@@ -28,6 +28,7 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Index(columns: ['mail_account_id', 'size'])]
 #[ORM\Index(name: 'message_unclassified', columns: ['mail_account_id', 'received_at'], options: ['where' => '(classified_at IS NULL)'])]
 #[ORM\Index(name: 'message_held', columns: ['held_until'], options: ['where' => '(held_until IS NOT NULL)'])]
+#[ORM\Index(name: 'message_orphaned', columns: ['orphaned_at'], options: ['where' => '(orphaned_at IS NOT NULL)'])]
 class Message implements TracksChanges
 {
     #[ORM\Id]
@@ -143,6 +144,14 @@ class Message implements TracksChanges
     /** The batch that delivered this message; null when it was delivered as it came. */
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $batchedAt = null;
+
+    /**
+     * When the message lost its last folder. It is deleted once it stayed in none for
+     * {@see \App\Sync\Ingest\MessageJanitor::GRACE}, so a copy that shows up in another folder meanwhile (a move made in
+     * another mail app) keeps the message, its todo and its hand-over. Null while it is in a folder.
+     */
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $orphanedAt = null;
 
     public function __construct(
         MailAccount $mailAccount,
@@ -419,6 +428,17 @@ class Message implements TracksChanges
         }
         $this->heldUntil = null;
         $this->batchedAt = $batch;
+    }
+
+    public function getOrphanedAt(): ?\DateTimeImmutable
+    {
+        return $this->orphanedAt;
+    }
+
+    /** It is in a folder (again); see {@see MessageLocation}. */
+    public function foundInFolder(): void
+    {
+        $this->orphanedAt = null;
     }
 
     public function getChangeOwner(): User

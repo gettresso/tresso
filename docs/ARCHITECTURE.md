@@ -462,10 +462,18 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   |---|---|
   | `POST /internal/sync/accounts/{id}/folders` | The complete folder list. Answers each folder's stored cursor; a changed UIDVALIDITY resets the folder. Folders missing from the list are deleted. |
   | `POST /internal/sync/accounts/{id}/messages` | Up to 200 new messages for one folder plus the folder's cursor after the batch. A known (folder, uid) only refreshes flags; a message already stored (same Message-ID, else same raw content) only gains a location. |
-  | `POST /internal/sync/accounts/{id}/changes` | Flag changes and vanished uids for one folder. A message that is in no folder anymore is deleted. |
+  | `POST /internal/sync/accounts/{id}/changes` | Flag changes and vanished uids for one folder. A message that is in no folder anymore is deleted after a grace period (below). |
   | `POST /internal/sync/accounts/{id}/status` | `active`, `auth_failed` or `error` with a short detail the user sees. |
 
   The cursor is opaque to the API: the worker decides what it holds (UIDNEXT, HIGHESTMODSEQ, backfill position).
+
+  A message that lost its last folder (vanished, outside a presence range, its folder reset or deleted, a move from
+  Tresso undone without its source) is not deleted at once: a move made in another mail app reaches the API as the copy
+  leaving one folder and, up to a folder poll later, showing up in another, where the ingest links it by Message-ID.
+  So it is marked orphaned (`message.orphaned_at`): clients see it in no folder, search leaves it out, and a copy that
+  shows up anywhere clears the mark, so the message keeps its id, todo, hand-over and placement. A sweep every five
+  minutes deletes messages that stayed in no folder for 15 minutes (longer than the 5 minute poll), with their
+  tombstones. Only placeholders of moves that never landed within the hour are deleted at once.
 - **Threading** (API side, at ingest): first by headers in both directions (messages this one refers to through
   In-Reply-To/References, and stored messages that refer to this one), merging threads that turn out to be one
   conversation; without any references, a thread from the last 14 days with the same normalized subject that shares

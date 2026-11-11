@@ -12,7 +12,10 @@ final readonly class ChangeBatchResult
         public int $removed,
         /** Flag changes for messages that were not ingested yet; the worker should send them as new messages. */
         public int $unknown,
-        /** Messages deleted because they are in no folder anymore. */
+        /**
+         * Messages that are in no folder anymore. They are deleted once no copy showed up elsewhere within
+         * {@see MessageJanitor::GRACE}.
+         */
         public int $deleted,
         /**
          * The remote uids behind $unknown, so a worker that sends flags first (Gmail, Microsoft Graph) downloads only

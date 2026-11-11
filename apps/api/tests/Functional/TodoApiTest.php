@@ -459,6 +459,7 @@ final class TodoApiTest extends DatabaseTestCase
         $cursor = $this->changes(0)['cursor'];
 
         $this->ingest('changes', ['folder' => 'INBOX', 'vanished' => ['1'], 'cursor' => 'modseq=2']);
+        $this->sweepOrphanedMessages();
 
         $page = $this->changes($cursor);
         self::assertSame([[null, null]], array_map(static fn (array $todo): array => [$todo['messageId'], $todo['threadId']], $page['todos']));

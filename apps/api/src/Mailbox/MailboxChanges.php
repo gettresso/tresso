@@ -53,7 +53,9 @@ final readonly class MailboxChanges
      */
     public function claim(MailAccount $account, string $workerId, \DateTimeImmutable $now): array
     {
-        $gaveUp = $this->expirePlaceholders($account, $now);
+        // Copies that never showed up are gone for good; a move undone because its folder went may still show up.
+        $expired = $this->expirePlaceholders($account, $now);
+        $undone = [];
 
         $until = $now->add(new \DateInterval(self::CLAIM_TTL));
         $claimed = [];
@@ -72,7 +74,7 @@ final readonly class MailboxChanges
                 }
                 if (MailboxChangeKind::Move === $change->getKind() && (null === $change->getSourceFolder() || null === $change->getTargetFolder())) {
                     $this->undo($change, 'The folder is gone from the server.');
-                    $gaveUp = true;
+                    $undone[] = $messageId;
                     continue;
                 }
                 if (!$this->canMakeNow($change)) {
@@ -87,9 +89,8 @@ final readonly class MailboxChanges
             }
         }
         $this->entityManager->flush();
-        if ($gaveUp) {
-            $this->janitor->removeOrphans($account);
-        }
+        $this->janitor->removeOrphans($account, $expired);
+        $this->janitor->markOrphans($account, $undone, $now);
 
         return $claimed;
     }
@@ -165,9 +166,11 @@ final readonly class MailboxChanges
     public function failed(MailboxChange $change, string $workerId, string $error, bool $permanent, \DateTimeImmutable $now): void
     {
         if ($permanent || $change->getAttempts() + 1 >= self::MAX_ATTEMPTS) {
+            $messageId = $change->getMessage()->getId()->toRfc4122();
             $this->undo($change, $error);
             $this->entityManager->flush();
-            $this->janitor->removeOrphans($change->getMailAccount());
+            // A move that could not be put back (its folder was reset) leaves the message waiting for its copy.
+            $this->janitor->markOrphans($change->getMailAccount(), [$messageId], $now);
 
             return;
         }
@@ -235,13 +238,19 @@ final readonly class MailboxChanges
     /**
      * The folder is gone from the server: moves into it can no longer happen, so the messages go back where they
      * were before their placeholder copies go with the folder.
+     *
+     * @return list<string> ids of the messages whose moves were undone (one put back nowhere is in no folder now)
      */
-    public function folderRemoved(Folder $folder): void
+    public function folderRemoved(Folder $folder): array
     {
+        $messages = [];
         foreach ($this->changes->findBy(['targetFolder' => $folder]) as $move) {
+            $messages[] = $move->getMessage()->getId()->toRfc4122();
             $this->undo($move, 'The folder is gone from the server.');
         }
         $this->entityManager->flush();
+
+        return array_values(array_unique($messages));
     }
 
     private function sourceLanded(string $placeholderUid, string $remoteUid, ?int $uidValidity): void
@@ -299,9 +308,9 @@ final readonly class MailboxChanges
      * or deleted elsewhere before the folder sync saw them. Their placeholders go, and so do the moves made of them;
      * the folder sync shows the copy where it is.
      *
-     * @return bool whether anything was given up
+     * @return list<string> ids of the messages that lost a copy this way
      */
-    private function expirePlaceholders(MailAccount $account, \DateTimeImmutable $now): bool
+    private function expirePlaceholders(MailAccount $account, \DateTimeImmutable $now): array
     {
         $oldest = $now->sub(new \DateInterval(self::PLACEHOLDER_TTL));
         $expired = static function (string $placeholderUid) use ($oldest): bool {
@@ -314,7 +323,7 @@ final readonly class MailboxChanges
             return !$uuid instanceof UuidV7 || $uuid->getDateTime() <= $oldest;
         };
 
-        $gaveUp = false;
+        $gaveUp = [];
         /** @var list<MessageLocation> $placeholders */
         $placeholders = $this->entityManager->createQueryBuilder()
             ->select('l')
@@ -330,7 +339,7 @@ final readonly class MailboxChanges
                 continue;
             }
             $this->entityManager->remove($placeholder);
-            $gaveUp = true;
+            $gaveUp[] = $placeholder->getMessage()->getId()->toRfc4122();
         }
 
         /** @var list<MailboxChange> $stranded */
@@ -347,11 +356,11 @@ final readonly class MailboxChanges
             $source = (string) $move->getSourceRemoteUid();
             if (null === $this->origin($source) && $expired($source)) {
                 $this->undo($move, 'The copy it was to move never showed up.');
-                $gaveUp = true;
+                $gaveUp[] = $move->getMessage()->getId()->toRfc4122();
             }
         }
 
-        return $gaveUp;
+        return array_values(array_unique($gaveUp));
     }
 
     /**

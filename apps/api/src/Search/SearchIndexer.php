@@ -78,7 +78,23 @@ final readonly class SearchIndexer
     {
         $run = IndexRun::nothing();
         foreach ($this->documents->changedBetween($userId, $fromSeq, $toSeq, self::PAGE_SIZE) as $documents) {
-            $run = $run->then(new IndexRun(\count($documents), 0, $this->index->replace($documents)));
+            // A message in no folder waits to be found elsewhere or deleted (see MessageJanitor): it is not found
+            // meanwhile, and its next change brings it back once it is in a folder again.
+            $inFolders = [];
+            $orphans = [];
+            foreach ($documents as $document) {
+                if ([] !== $document['folderIds']) {
+                    $inFolders[] = $document;
+                } elseif (\is_string($document['id'])) {
+                    $orphans[] = $document['id'];
+                }
+            }
+            if ([] !== $inFolders) {
+                $run = $run->then(new IndexRun(\count($inFolders), 0, $this->index->replace($inFolders)));
+            }
+            if ([] !== $orphans) {
+                $run = $run->then(new IndexRun(0, \count($orphans), $this->index->delete($orphans)));
+            }
         }
 
         return $run;

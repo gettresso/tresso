@@ -14,7 +14,8 @@ use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * Applies flag changes and removals in one folder. Removing the last location of a message deletes the message.
+ * Applies flag changes and removals in one folder. A message that lost its last location is marked orphaned and
+ * deleted once no copy showed up elsewhere within {@see MessageJanitor::GRACE}.
  */
 final readonly class ChangeApplier
 {
@@ -91,13 +92,14 @@ final readonly class ChangeApplier
             }
             $this->entityManager->flush();
 
-            $deleted = $this->janitor->removeOrphans($account);
-            // Messages still in other folders changed their membership.
+            $affected = array_values(array_unique($affected));
+            $orphaned = $this->janitor->markOrphans($account, $affected, new \DateTimeImmutable());
+            // Every message that lost a folder changed its membership; an orphan shows in no folder now.
             $this->sequencer->touchMessages($account->getOwner()->getId(), $affected);
 
             $unknown = array_values(array_unique($unknown));
 
-            return new ChangeBatchResult($updated, $removed, \count($unknown), $deleted, $unknown);
+            return new ChangeBatchResult($updated, $removed, \count($unknown), $orphaned, $unknown);
         });
 
         return $result;
