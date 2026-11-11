@@ -907,6 +907,8 @@ final class CalendarInvitationTest extends DatabaseTestCase
         yield 'Microsoft: from outside, DMARC passed' => ['microsoft', ['authentication-results' => 'spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=finance.example; dkim=pass (signature was verified) header.d=finance.example;dmarc=pass action=none header.from=finance.example;compauth=pass reason=100', 'x-ms-exchange-organization-authas' => 'Anonymous'], true];
         yield 'Microsoft: from outside, DMARC failed' => ['microsoft', ['authentication-results' => 'spf=fail smtp.mailfrom=attacker.example; dmarc=fail action=none header.from=finance.example', 'x-ms-exchange-organization-authas' => 'Anonymous'], false];
         yield 'Microsoft: from within the tenant' => ['microsoft', ['x-ms-exchange-organization-authas' => 'Internal'], true];
+        yield 'Microsoft: an authenticated client, DMARC passed' => ['microsoft', ['authentication-results' => 'spf=pass smtp.mailfrom=finance.example; dmarc=pass action=none header.from=finance.example', 'x-ms-exchange-organization-authas' => 'Authenticated'], true];
+        yield 'Microsoft: an authenticated client, no DMARC verdict' => ['microsoft', ['x-ms-exchange-organization-authas' => 'Authenticated'], false];
         yield 'Microsoft: no word from Exchange' => ['microsoft', ['authentication-results' => 'spf=pass smtp.mailfrom=finance.example; dmarc=pass action=none header.from=finance.example'], false];
     }
 
