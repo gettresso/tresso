@@ -65,6 +65,13 @@ function shortcut(event: KeyboardEvent): void {
 }
 onMounted(() => window.addEventListener('keydown', shortcut))
 
+// A sign-out whose sign-in pages did not answer left this browser signed in there: once they answer, end it.
+onMounted(() => {
+  if (!auth.isAuthenticated) {
+    auth.endOpenBrowserSession().catch((cause: unknown) => console.error('Ending the session at the sign-in pages failed', cause))
+  }
+})
+
 // While the payment screen shows, no key reaches a listener: inert stops pointers and focus, but window shortcuts
 // (archive, snooze, triage, the calendar's) would still see keys, even those sent to the screen. The browser's own
 // handling (Tab, Enter and Space on a button) is not prevented, and the screen itself needs no key listener.

@@ -28,10 +28,20 @@ const PROMPT_LOGIN_KEY = 'tresso.auth.promptLogin'
 const EXPIRY_MARGIN_MS = 30_000
 /** How long the token endpoint gets to answer: a refresh holds the lock of every tab while it waits. */
 const REFRESH_TIMEOUT_MS = 20_000
-/** How long a sign-out waits for the server to revoke the refresh token before it forgets it anyway. */
+/** How long a sign-out waits for the server to revoke the refresh token. */
 const REVOKE_TIMEOUT_MS = 5_000
-/** How long a sign-out waits for the refresh lock, and for the server to stop this browser's pushes, before it goes on. */
-const SIGN_OUT_WAIT_MS = 5_000
+/**
+ * How long a sign-out waits for the server in all: revoking the refresh token and stopping this browser's pushes run
+ * side by side within it. The tokens are gone from the device before it starts.
+ */
+const SIGN_OUT_BUDGET_MS = 6_000
+/** How long the check whether the sign-in pages answer may take. */
+const PROBE_TIMEOUT_MS = 3_000
+/**
+ * Set when a sign-out could not end the browser session of the sign-in pages (they did not answer), until the logout
+ * form went out at a later start or the user signed in again.
+ */
+const BROWSER_SESSION_KEY = 'tresso.auth.browserSessionOpen'
 /**
  * How long a refresh waits for the lock: longer than a healthy holder needs (two token requests of 20 seconds and the
  * 2 second wait between them). After that the holder is stuck (a suspended tab), and this one goes on without it.
@@ -104,12 +114,59 @@ async function withTimeout<T>(ms: number, run: (fetchImpl: typeof fetch) => Prom
   }
 }
 
-/** The sign-in pages are on the API's origin, so whether the API answers says whether they would. */
-function authOnApiOrigin(): boolean {
+function originOf(url: string): string | null {
   try {
-    return new URL(config.authUrl).origin === new URL(config.apiUrl).origin
+    return new URL(url).origin
+  } catch {
+    return null
+  }
+}
+
+/** Whether a request to `url` gets any answer but a server error within the probe time. */
+async function answers(url: string, init: RequestInit = {}): Promise<boolean> {
+  try {
+    const response = await withTimeout(PROBE_TIMEOUT_MS, (fetchImpl) => fetchImpl(url, { ...init, cache: 'no-store' }))
+    // A redirect read as opaque (redirect: manual) is an answer too.
+    return response.type === 'opaqueredirect' || response.status < 500
   } catch {
     return false
+  }
+}
+
+/**
+ * Whether the sign-in pages would answer the logout form, so it does not leave the user on the browser's error page.
+ * On the app's own origin (Tresso Cloud, where a proxy serves them) a GET of /logout tells (it never signs out); on the
+ * API's origin the revocation's outcome tells, or the server-info endpoint. Another address cannot be asked (the CSP
+ * allows no connection to it), so the form goes there.
+ */
+async function signInPagesAnswer(revocationAnswered?: boolean): Promise<boolean> {
+  const signIn = originOf(config.authUrl)
+  if (signIn !== null && signIn === window.location.origin) {
+    return answers(`${config.authUrl}/logout`, { redirect: 'manual', credentials: 'same-origin' })
+  }
+  if (signIn !== null && signIn === originOf(config.apiUrl)) {
+    return revocationAnswered ?? answers(`${config.apiUrl}/api/v1/server-info`, { headers: { Accept: 'application/json' } })
+  }
+  return true
+}
+
+function browserSessionLeftOpen(): boolean {
+  try {
+    return localStorage.getItem(BROWSER_SESSION_KEY) !== null
+  } catch {
+    return false
+  }
+}
+
+function rememberBrowserSession(open: boolean): void {
+  try {
+    if (open) {
+      localStorage.setItem(BROWSER_SESSION_KEY, '1')
+    } else {
+      localStorage.removeItem(BROWSER_SESSION_KEY)
+    }
+  } catch (error) {
+    console.error('Remembering the sign-in page session on this device failed', error)
   }
 }
 
@@ -165,6 +222,15 @@ function endBrowserSession(): void {
   form.submit()
 }
 
+function jsonRequest(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): RequestInit {
+  const init: RequestInit = { method }
+  if (body !== undefined) {
+    init.headers = { 'Content-Type': method === 'PATCH' ? 'application/merge-patch+json' : 'application/json' }
+    init.body = JSON.stringify(body)
+  }
+  return init
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const tokens = ref<TokenSet | null>(initialTokens())
   const me = ref<Me | null>(null)
@@ -173,6 +239,11 @@ export const useAuthStore = defineStore('auth', () => {
   const awaitingBrowser = ref(false)
   /** Keeping or forgetting the tokens failed, e.g. the keychain refused; shown to the user. */
   const storageError = ref<string | null>(null)
+  /**
+   * The web client signed out while the sign-in pages did not answer: this browser is still signed in there. The
+   * sign-in screen says so, and the next start ends it once they answer (endOpenBrowserSession).
+   */
+  const browserSessionOpen = ref(!isDesktop && browserSessionLeftOpen())
   /** Goes up on every failure to keep or forget the tokens, so the same message is shown again when it happens again. */
   const storageFailures = ref(0)
   /**
@@ -329,6 +400,9 @@ export const useAuthStore = defineStore('auth', () => {
     const code = parseCallback(callbackUrl, pending.state)
     await store(await exchangeCode(oauthConfig, code, pending.codeVerifier))
     rememberSignOut(false)
+    // The user signed in at the sign-in pages again: that browser session is theirs now.
+    rememberBrowserSession(false)
+    browserSessionOpen.value = false
   }
 
   /**
@@ -368,45 +442,68 @@ export const useAuthStore = defineStore('auth', () => {
    * signing in again finds them on; another user signing in here drops them (releaseOtherUsersPush).
    */
   async function endSession(reason: 'signedOut' | 'expired'): Promise<void> {
-    /** Whether the server answered the revocation; an unreachable server cannot end the browser session either. */
-    let serverReached = true
-    // First, so nothing still underway (a billing check that would reload the app) acts on the session that ends.
+    // First, so nothing still underway (a billing check that would reload the app, a refresh) acts on the session that
+    // ends: their answers are dropped, a refreshed set is revoked.
     generation.value++
     refreshing = null
-    if (reason === 'signedOut') {
-      rememberSignOut(true)
-      try {
-        // Best effort, and not for long: the user is waiting to be signed out.
-        await withinTime(SIGN_OUT_WAIT_MS, disableWebPush(send))
-      } catch (error) {
-        // The subscription is gone either way (disableWebPush drops it whatever the server said).
-        console.error('Telling the server this browser signed out failed', error)
-      }
-      // Under the refresh lock if it comes soon, so a refresh in another tab does not run with the token being revoked,
-      // and the newest token is the one revoked (the stored set is read again first). Without the lock it goes on: a
-      // refresh that finishes after the tokens are gone drops and revokes its answer.
-      await withRefreshLock(
-        async () => {
-          adoptStored()
-          serverReached = await revokeQuietly(tokens.value?.refreshToken ?? null)
-          forgetSession(reason)
-          await store(null)
-        },
-        { waitMs: SIGN_OUT_WAIT_MS },
-      )
-    } else {
+    if (reason !== 'signedOut') {
       forgetSession(reason)
       await store(null)
+      await runEndHandlers(reason)
+      return
     }
-    await runEndHandlers(reason)
-    if (reason === 'signedOut' && !isDesktop && (serverReached || !authOnApiOrigin())) {
-      // The sign-in pages keep a browser session of their own (with a remember-me cookie); this ends it too. When the
-      // API, which serves them here, did not answer, the form would only leave the user on the browser's error page:
-      // the app stays, and the next sign-in asks for the password anyway (prompt=login). A separate sign-in address
-      // cannot be checked from here (the CSP allows no connection to it), so the form goes there. The desktop app
-      // leaves the system browser's session alone, see docs/ARCHITECTURE.md (3.10).
+    rememberSignOut(true)
+    // The newest set (another tab may have rotated it), taken for the server calls below before it goes.
+    const ending = adoptStored()
+    // Gone from this device at once, before the server is asked: every tab follows through the storage event, and a
+    // refresh anywhere that finishes later drops and revokes its answer. Nothing here can refresh again: the calls
+    // below use the access token as it is.
+    forgetSession(reason)
+    await store(null)
+    let revocationAnswered = false
+    const tellServer = Promise.allSettled([
+      disableWebPush(sendWith(ending?.accessToken ?? null)).catch((error: unknown) => {
+        // The subscription in the browser went before the server was asked (disableWebPush).
+        console.error('Telling the server this browser signed out failed', error)
+      }),
+      revokeQuietly(ending?.refreshToken ?? null).then((answered) => {
+        revocationAnswered = answered
+      }),
+    ])
+    await Promise.all([
+      withinTime(SIGN_OUT_BUDGET_MS, tellServer).catch((error: unknown) => {
+        console.error('The server did not confirm the sign-out in time', error)
+      }),
+      runEndHandlers(reason),
+    ])
+    if (!isDesktop) {
+      // The sign-in pages keep a browser session of their own (with a remember-me cookie); the form ends it too. The
+      // desktop app leaves the system browser's session alone, see docs/ARCHITECTURE.md (3.10).
+      await endBrowserSessionOrRemember(revocationAnswered)
+    }
+  }
+
+  /**
+   * Sends the logout form when the sign-in pages answer; otherwise the form would only leave the user on the browser's
+   * error page, so the app stays, remembers that the browser is still signed in there, and says so.
+   */
+  async function endBrowserSessionOrRemember(revocationAnswered?: boolean): Promise<void> {
+    if (await signInPagesAnswer(revocationAnswered)) {
+      rememberBrowserSession(false)
+      browserSessionOpen.value = false
       endBrowserSession()
+      return
     }
+    rememberBrowserSession(true)
+    browserSessionOpen.value = true
+  }
+
+  /** At the start of the signed-out web client: ends a sign-in page session a sign-out could not end, once it answers. */
+  async function endOpenBrowserSession(): Promise<void> {
+    if (isDesktop || !browserSessionOpen.value || tokens.value !== null) {
+      return
+    }
+    await endBrowserSessionOrRemember()
   }
 
   function forgetSession(reason: SessionEnd): void {
@@ -518,7 +615,7 @@ export const useAuthStore = defineStore('auth', () => {
         void endSession('expired')
         throw new ApiError(401, EXPIRED)
       }
-      if (session !== generation.value || followSignOutElsewhere()) {
+      if (session !== generation.value || tokens.value === null || followSignOutElsewhere()) {
         // Signed out while it ran, here or in another tab: the new set must not sign the user back in, and is revoked
         // so it is of no use to anyone.
         void revokeQuietly(next.refreshToken)
@@ -596,12 +693,24 @@ export const useAuthStore = defineStore('auth', () => {
 
   /** POST, PUT, PATCH (as JSON merge patch) or DELETE. */
   function send<T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
-    const init: RequestInit = { method }
-    if (body !== undefined) {
-      init.headers = { 'Content-Type': method === 'PATCH' ? 'application/merge-patch+json' : 'application/json' }
-      init.body = JSON.stringify(body)
+    return api<T>(path, jsonRequest(method, body))
+  }
+
+  /**
+   * `send` with one fixed access token, for the sign-out's own calls after the tokens are gone: no refresh, no retry,
+   * so nothing it does can sign the user back in.
+   */
+  function sendWith(token: string | null): <T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<T> {
+    return async <T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> => {
+      if (token === null) {
+        throw new ApiError(401, 'Not signed in.')
+      }
+      const response = await request(path, jsonRequest(method, body), token)
+      if (!response.ok) {
+        throw await ApiError.fromResponse(path, response)
+      }
+      return (response.status === 204 ? undefined : await response.json()) as T
     }
-    return api<T>(path, init)
   }
 
   async function loadMe(): Promise<void> {
@@ -619,6 +728,8 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     awaitingBrowser,
     storageError,
+    browserSessionOpen,
+    endOpenBrowserSession,
     storageFailures,
     signingOut,
     paymentRequired,

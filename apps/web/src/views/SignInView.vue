@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import TressoMark from '@/components/TressoMark.vue'
 import { isDesktop } from '@/platform/desktop'
 import { chooseServer, defaultServer, normalizeServer, reachServer, server } from '@/platform/server'
+import { config } from '@/config'
 import LogoLoader from '@/components/LogoLoader.vue'
 
 const auth = useAuthStore()
@@ -143,6 +144,9 @@ async function starting(start: () => Promise<void>): Promise<void> {
       </p>
     </template>
     <p v-if="auth.storageError" class="error" role="alert">{{ auth.storageError }}</p>
+    <p v-if="auth.browserSessionOpen" class="hint" role="status">
+      You are still signed in at the sign-in page on this browser. <a :href="`${config.authUrl}/logout`">Sign out there too.</a>
+    </p>
   </main>
 </template>
 
