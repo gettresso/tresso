@@ -29,6 +29,7 @@ use Sabre\VObject\ITip\Broker;
 use Sabre\VObject\ITip\Message as ItipMessage;
 use Sabre\VObject\Parameter;
 use Sabre\VObject\Property;
+use Sabre\VObject\Property\ICalendar\CalAddress;
 use Sabre\VObject\Property\ICalendar\Recur;
 use Sabre\VObject\Property\ICalendar\DateTime as DateTimeProperty;
 use Sabre\VObject\Settings;
@@ -223,7 +224,7 @@ final readonly class EventEditor
             $this->permission->assertMaySend();
         }
         if ($notify && !$calendar->providerSchedules()) {
-            $messages = self::itip(self::broker()->parseEvent(clone $vcalendar, self::hrefs($self), clone $old));
+            $messages = self::itip(self::broker()->parseEvent(clone $vcalendar, self::hrefs($self, $old, $vcalendar), clone $old));
             if ([] !== $messages) {
                 $this->permission->assertMaySend();
             }
@@ -805,7 +806,7 @@ final readonly class EventEditor
         $self = $this->selfAddresses->of($calendar->getOwner());
         // A null new object is how sabre's broker learns about a deletion; its docblock leaves that case out.
         /** @phpstan-ignore argument.type */
-        $messages = self::itip(self::broker()->parseEvent(null === $new ? null : clone $new, self::hrefs($self), null === $old ? null : clone $old));
+        $messages = self::itip(self::broker()->parseEvent(null === $new ? null : clone $new, self::hrefs($self, $old, $new), null === $old ? null : clone $old));
         // Only the organizer's side: attendees reply through respond(), never as a side effect of editing.
         $organizerMessages = array_values(array_filter($messages, static fn (ItipMessage $message): bool => \in_array($message->method, ['REQUEST', 'CANCEL'], true)));
         if ([] === $organizerMessages) {
@@ -1198,13 +1199,29 @@ final readonly class EventEditor
     }
 
     /**
-     * @param list<string> $addresses
+     * The user's addresses as sabre's broker compares them: it takes each ORGANIZER and ATTENDEE as sabre normalizes
+     * it (the scheme and, for mailto, the address in ASCII lower case), so a capital outside ASCII stays. Every
+     * spelling of the user's addresses in the objects is given as sabre reads it, found by the one comparison Tresso
+     * uses everywhere ({@see Props::address()}).
+     *
+     * @param list<string> $addresses lower case
      *
      * @return list<string>
      */
-    private static function hrefs(array $addresses): array
+    private static function hrefs(array $addresses, ?VCalendar ...$calendars): array
     {
-        return array_map(static fn (string $address): string => 'mailto:'.$address, $addresses);
+        $hrefs = array_map(static fn (string $address): string => 'mailto:'.$address, $addresses);
+        foreach ($calendars as $calendar) {
+            foreach (null === $calendar ? [] : CalendarDocument::events($calendar) as $event) {
+                foreach ([...Props::all($event, 'ORGANIZER'), ...Props::all($event, 'ATTENDEE')] as $property) {
+                    if ($property instanceof CalAddress && \in_array(Props::address(Props::value($property)), $addresses, true)) {
+                        $hrefs[] = $property->getNormalizedValue();
+                    }
+                }
+            }
+        }
+
+        return array_values(array_unique($hrefs));
     }
 
     private static function isSeries(VEvent $master): bool
