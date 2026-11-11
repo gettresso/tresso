@@ -304,6 +304,15 @@ function failed(account: SyncedMailAccount): boolean {
 .fix:hover {
   background: var(--danger-soft);
 }
+/* Touch size on a phone. */
+@media (max-width: 760px) {
+  .fix {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 12px;
+  }
+}
 .account-text {
   display: flex;
   flex-direction: column;

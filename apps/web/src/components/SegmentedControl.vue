@@ -92,6 +92,12 @@ const emit = defineEmits<{ choose: [value: T] }>()
   opacity: 0.55;
   cursor: default;
 }
+/* Touch size on a phone. */
+@media (max-width: 760px) {
+  .segment {
+    height: 44px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .segment:active:not(:disabled) {
     transform: none;
