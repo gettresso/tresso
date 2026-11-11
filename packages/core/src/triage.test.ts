@@ -70,6 +70,20 @@ describe('a triage round', () => {
     expect(undoTriage(state)).toBe(state)
   })
 
+  it('passes over conversations decided after one that was taken back', () => {
+    let state = startTriage(['a', 'b', 'c', 'd'])
+    state = decideTriage(state, 'do', 1)
+    state = decideTriage(state, 'know', 2)
+    state = decideTriage(state, 'know', 3)
+
+    state = undoTriage(state, 1)
+    expect(currentTriage(state)).toBe('a')
+    state = decideTriage(state, 'do', 4)
+
+    expect(currentTriage(state)).toBe('d')
+    expect(triageProgress(state)).toMatchObject({ shown: 4, total: 4, counts: { do: 1, delegate: 0, know: 2 } })
+  })
+
   it('takes back a decision by its id, not by its conversation', () => {
     let state = decideTriage(startTriage(['a', 'b']), 'do', 1)
     state = undoTriage(state, 1)

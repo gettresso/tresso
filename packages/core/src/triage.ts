@@ -141,10 +141,14 @@ export function triageProgress(state: TriageState): TriageProgress {
   return { shown: Math.min(before + 1, total), total, counts }
 }
 
-/** Moves past conversations that are gone, so the one on screen always still waits. */
+/**
+ * Moves past conversations that are gone or decided already, so the one on screen always still waits. Decided ones
+ * lie ahead when an earlier decision was taken back (an undo, a request that failed) after later ones were taken.
+ */
 function settle(state: TriageState): TriageState {
+  const decided = new Set(state.decided.map((entry) => entry.threadId))
   let position = state.position
-  while (position < state.queue.length && state.gone.has(state.queue[position]!)) {
+  while (position < state.queue.length && (state.gone.has(state.queue[position]!) || decided.has(state.queue[position]!))) {
     position += 1
   }
 

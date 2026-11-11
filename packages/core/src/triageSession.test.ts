@@ -324,6 +324,25 @@ describe('TriageSession', () => {
     expect(current(triage)).toBe('b')
   })
 
+  it('does not show conversations decided after an earlier decision that was undone', async () => {
+    const { triage, calls, notices } = session(['a', 'b', 'c', 'd'])
+    await triage.begin()
+    await decideOnScreen(triage, 'do')
+    await decideOnScreen(triage, 'know')
+    await decideOnScreen(triage, 'know')
+    await triage.idle()
+    notices[0]!.action!.run()
+    await triage.idle()
+    expect(current(triage)).toBe('a')
+    calls.length = 0
+
+    await decideOnScreen(triage, 'do')
+    await triage.idle()
+
+    expect(current(triage)).toBe('d')
+    expect(calls).toEqual(['place a do', 'markRead m-a'])
+  })
+
   it('places a handed-over conversation only once the hook says it was handed over, and goes on meanwhile', async () => {
     let handedOver!: (undo: TriageUndo | null) => void
     const { triage, calls } = session(['a', 'b'], {
