@@ -1091,7 +1091,8 @@ Mail judged `know` asks nothing of the user, so it does not interrupt: once a da
   the new day its own): a
   time or zone changed after today's brief, a late sweep in the hour the clock repeats in autumn, or a second sweep
   that claimed the row as it was committed, makes no second brief that day. A user whose brief fails is logged and
-  put off for 15 minutes, so the sweep goes on with the others. The hourly backfill goes on in batches of 500 users for
+  put off for 15 minutes, so the sweep goes on with the others; the moment it was due is kept apart (`due_at`), so a
+  retry after midnight is still the brief of the day it was due on and the next day keeps its own. The hourly backfill goes on in batches of 500 users for
   at most 30 seconds.
 - **Storage and sync:** `daily_brief` (owner, period, thread ids, made at) is a synced entity: the delta carries
   `dailyBriefs` and tombstones of type `dailyBrief`. Each user keeps the newest 14. Clients show a brief from their

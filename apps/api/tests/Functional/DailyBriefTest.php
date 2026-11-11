@@ -354,6 +354,26 @@ final class DailyBriefTest extends DatabaseTestCase
         self::assertEquals($now->modify(DailyBriefs::RETRY_AFTER)->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'), self::text($postponed));
     }
 
+    public function testARunRetriedAfterMidnightKeepsTheDayItWasDueOn(): void
+    {
+        $kim = ['user' => $this->kimsId()];
+        $this->connection()->executeStatement("UPDATE daily_brief_settings SET deliver_at = '23:50', next_run_at = '2026-11-16 23:50:00' WHERE user_id = :user", $kim);
+        $this->connection()->executeStatement("UPDATE daily_brief_settings SET next_run_at = '2027-11-16 00:00:00' WHERE user_id <> :user", $kim);
+        // Kim's zone is broken for the first run, so it fails and is tried again after midnight.
+        $this->connection()->executeStatement("UPDATE notification_preferences SET time_zone = 'Mars/Olympus' WHERE user_id = :user", $kim);
+        $briefs = static::getContainer()->get(DailyBriefs::class);
+
+        self::assertSame(0, $briefs->sweep(new \DateTimeImmutable('2026-11-16T23:55:00+00:00')));
+        $settings = $this->connection()->fetchAssociative('SELECT next_run_at, due_at FROM daily_brief_settings WHERE user_id = :user', $kim);
+        self::assertSame(['next_run_at' => '2026-11-17 00:10:00', 'due_at' => '2026-11-16 23:50:00'], $settings);
+
+        $this->connection()->executeStatement("UPDATE notification_preferences SET time_zone = 'UTC' WHERE user_id = :user", $kim);
+        self::assertSame(1, $briefs->sweep(new \DateTimeImmutable('2026-11-17T00:10:00+00:00')));
+
+        $settings = $this->connection()->fetchAssociative('SELECT next_run_at, due_at, last_due_day FROM daily_brief_settings WHERE user_id = :user', $kim);
+        self::assertSame(['next_run_at' => '2026-11-17 23:50:00', 'due_at' => null, 'last_due_day' => '2026-11-16'], $settings, 'The brief due on the 17th still comes.');
+    }
+
     public function testNothingToKnowMakesNoBriefButTheNextBriefIsPlanned(): void
     {
         $this->ingest('messages', ['folder' => 'INBOX', 'messages' => [$this->message('3', 'Can you review this?')]]);

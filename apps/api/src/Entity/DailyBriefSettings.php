@@ -36,6 +36,13 @@ class DailyBriefSettings
     #[ORM\Column]
     private \DateTimeImmutable $nextRunAt;
 
+    /**
+     * While a failed run waits for its retry (then in nextRunAt): the moment the brief was due. The brief keeps the
+     * day it was due on, however late the retry comes. Null otherwise.
+     */
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $dueAt = null;
+
     /** The last brief covered mail classified up to here; null before the first run. */
     #[ORM\Column(nullable: true)]
     private ?\DateTimeImmutable $coveredUntil = null;
@@ -91,6 +98,7 @@ class DailyBriefSettings
      */
     public function reschedule(string $timeZone, \DateTimeImmutable $now): void
     {
+        $this->dueAt = null;
         $this->nextRunAt = BriefTime::nextRun($this->deliverAt, $timeZone, $now, $this->lastDueDay);
     }
 
@@ -101,7 +109,7 @@ class DailyBriefSettings
     public function ran(\DateTimeImmutable $until, string $timeZone, \DateTimeImmutable $now): void
     {
         $this->coveredUntil = $until;
-        $this->lastDueDay = BriefTime::localDay($this->nextRunAt, $timeZone);
+        $this->lastDueDay = BriefTime::localDay($this->dueAt ?? $this->nextRunAt, $timeZone);
         $this->reschedule($timeZone, $now);
     }
 
@@ -116,6 +124,21 @@ class DailyBriefSettings
      */
     public function isDueBriefMade(string $timeZone): bool
     {
-        return null !== $this->lastDueDay && BriefTime::localDay($this->nextRunAt, $timeZone) <= $this->lastDueDay;
+        return null !== $this->lastDueDay && BriefTime::localDay($this->dueAt ?? $this->nextRunAt, $timeZone) <= $this->lastDueDay;
+    }
+
+    /**
+     * The run failed: it is tried again at $until, as the brief that was due before. The sweep writes the same in SQL
+     * ({@see \App\Repository\DailyBriefSettingsRepository::postpone()}), since a failed flush leaves no entity to use.
+     */
+    public function postpone(\DateTimeImmutable $until): void
+    {
+        $this->dueAt ??= $this->nextRunAt;
+        $this->nextRunAt = $until;
+    }
+
+    public function getDueAt(): ?\DateTimeImmutable
+    {
+        return $this->dueAt;
     }
 }
