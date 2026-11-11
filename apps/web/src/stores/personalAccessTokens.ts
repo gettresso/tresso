@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { CreatedPersonalAccessToken, NewPersonalAccessToken, PersonalAccessToken } from '@tresso/core'
 import { useAuthStore } from '@/stores/auth'
@@ -28,6 +28,14 @@ export const usePersonalAccessTokensStore = defineStore('personalAccessTokens', 
     await auth.send<void>('DELETE', `/api/v1/personal-access-tokens/${encodeURIComponent(id)}`)
     await load()
   }
+
+  // The desktop app signs another user in without a reload: nothing of the previous one may show meanwhile.
+  watch(
+    () => auth.generation,
+    () => {
+      tokens.value = []
+    },
+  )
 
   return { tokens, load, create, revoke }
 })
