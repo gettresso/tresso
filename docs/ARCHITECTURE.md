@@ -1243,20 +1243,28 @@ from before this kept them in `sessionStorage`; they move over at the next page 
 Locks lock that all tabs share (`tresso.auth.refresh`), and inside it the tab reads the stored set again first: when
 another tab refreshed meanwhile it takes that set instead of refreshing with a rotated token. A `storage` listener
 brings a sign-in, refresh or sign-out of one tab to the others; a tab whose user changed under it reloads. A browser
-without Web Locks refreshes without the lock, which is as safe as a single tab. A sign-out revokes and forgets the
-tokens under the same lock, after reading the stored set again, and a refresh whose answer arrives after the stored set
-is gone drops that answer and revokes it, so a refresh in one tab never signs the user back in after a sign-out in
-another. The waits are bounded, as a tab the browser suspended while it held the lock may hold it for long: a sign-out
-waits up to 5 seconds for the lock (and up to 5 seconds for the server to stop the pushes), a refresh up to 60 seconds
-(a healthy holder needs at most 42); then each goes on without the lock, as it does when the browser refuses the lock,
-and the check of the stored set after a refresh keeps that safe. While a sign-out runs its button says so; a failure is
-shown. Signing out also ends the browser session of the sign-in pages, remember-me cookie included, by submitting a
-top-level form (POST) to `/logout` on the sign-in address; the server accepts it for the app's origin and sends the
-browser back to the app. When the sign-in pages are on the API's address and the API did not answer the revocation,
-the form is not sent (it would only show the browser's error page): the app shows its sign-in screen, and the next
-sign-in asks for the password. A separate sign-in address cannot be checked from the page (the CSP allows no
-connection to it), so the form goes there whatever the API did. The desktop app does not open the system browser to sign out: the sign-in pages may still
-remember that browser, which is why its next sign-in asks for the password (`prompt=login`, above). The
+without Web Locks refreshes without the lock, as a single tab does. A refresh waits up to 60 seconds for the lock (a
+healthy holder needs at most 42); after that, or when the browser refuses the lock, it goes on without it. That keeps
+the app usable when a tab the browser suspended in the middle of its refresh holds the lock, at a price: when the
+holder's timers stood still, two tabs can refresh with the same token at once, and the one the server refuses ends the
+session as expired in every tab. The mail copy and its drafts stay, and signing in again is one click (the sign-in
+pages still remember the browser).
+
+A sign-out removes the tokens from the device first, so it holds at once in every tab (the storage event), and only
+then tells the server: revoking the refresh token and stopping this browser's pushes run side by side, within 6
+seconds in all, with the tokens taken before they went, so nothing the sign-out does can refresh. A refresh anywhere
+that finishes after the tokens are gone, also one this tab started before the sign-out, drops its answer and revokes
+it. While a sign-out runs its button says so; a failure is shown. Signing out also ends the browser session of the
+sign-in pages, remember-me cookie included, by submitting a top-level form (POST) to `/logout` on the sign-in address;
+the server accepts it for the app's origin and sends the browser back to the app. The form is sent only when the
+sign-in pages answer, as it would otherwise leave the user on the browser's error page: on the API's origin the
+revocation's outcome tells, on the app's own origin (Tresso Cloud, where a proxy serves them) a GET of `/logout`
+tells, and another address cannot be asked (the CSP allows no connection to it), so the form goes there. When they did
+not answer, the browser is still signed in there: the device remembers it, the sign-in screen says so with a link to
+the sign-out page, and the next start of the signed-out app sends the form once they answer. Until then the next
+sign-in asks for the password (`prompt=login`); a browser that refuses storage loses both marks, and someone at that
+browser who removes `prompt=login` from the authorization address gets in without the password.
+The desktop app does not open the system browser to sign out: the sign-in pages may still remember that browser, which is why its next sign-in asks for the password (`prompt=login`, above). The
 sign-in pages may live on another address than the API (`TRESSO_AUTH_URL`, `VITE_AUTH_URL`); `/oauth/authorize`
 and `/logout` go there, the token and revocation endpoints stay on the API address. Because a script injected into
 the page could read the tokens, the web image sends a Content-Security-Policy (`docker/web/Caddyfile`). When keeping
