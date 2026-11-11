@@ -142,7 +142,7 @@ async function toggle(todo: Todo): Promise<void> {
             <RouterLink :to="{ name: 'todo', params: { todoId: todo.id } }" class="title"><span class="title-text">{{ todo.title }}</span></RouterLink>
             <span class="source">
               <RouterLink v-if="emailOf(todo)" :to="{ name: 'unified-thread', params: { threadId: emailOf(todo)!.threadId } }" class="email">
-                <AppIcon name="mail" :size="14" /> {{ senderName(emailOf(todo)!.from) }}
+                <AppIcon name="mail" :size="14" /> <span class="sender" :title="senderName(emailOf(todo)!.from)">{{ senderName(emailOf(todo)!.from) }}</span>
               </RouterLink>
               <template v-else-if="todo.messageId !== null">From an email</template>
               <template v-else>Added by you</template>
@@ -352,17 +352,28 @@ async function toggle(todo: Todo): Promise<void> {
   }
 }
 .source {
+  /* A long sender name is cut short, so the title keeps its room. */
+  max-width: 180px;
+  overflow: hidden;
   color: var(--ink-2);
   font-size: 13px;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .email {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  max-width: 100%;
+  min-width: 0;
   color: var(--do);
   text-decoration: none;
   font-weight: 600;
+}
+.sender {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pill {
   padding: 2px 8px;

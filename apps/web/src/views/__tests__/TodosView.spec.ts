@@ -154,6 +154,8 @@ describe('TodosView', () => {
     const budget = wrapper.findAll('.row')[1]!
     expect(budget.get('.email').text()).toBe('Anna de Vries')
     expect(budget.get('.email').attributes('href')).toBe('/inbox/t1')
+    // A long name is cut short on screen; the full name stays at hand.
+    expect(budget.get('.email .sender').attributes('title')).toBe('Anna de Vries')
     expect(budget.get('.pill').text()).toBe('Automatic')
     expect(budget.get('.due').text()).toBe('Today 17:00')
     expect(wrapper.findAll('.row')[0]!.get('.due').classes()).toContain('overdue')
