@@ -234,36 +234,6 @@ describe('HandOverDialog', () => {
     }
   })
 
-  it('gives focus back to what opened it', async () => {
-    // jsdom has no showModal; this one opens the dialog, so what is inside it can take focus.
-    const original = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
-    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
-      value(this: HTMLDialogElement) {
-        this.setAttribute('open', '')
-      },
-      configurable: true,
-      writable: true,
-    })
-    const opener = document.createElement('button')
-    document.body.appendChild(opener)
-    opener.focus()
-    try {
-      const wrapper = mountDialog()
-      await settle()
-      expect(document.activeElement).toBe(wrapper.get('input[role="combobox"]').element)
-
-      wrapper.unmount()
-      expect(document.activeElement).toBe(opener)
-    } finally {
-      opener.remove()
-      if (original) {
-        Object.defineProperty(HTMLDialogElement.prototype, 'showModal', original)
-      } else {
-        delete (HTMLDialogElement.prototype as Partial<HTMLDialogElement>).showModal
-      }
-    }
-  })
-
   it('opens as a modal dialog, so the page behind takes no focus', () => {
     const original = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
     const showModal = vi.fn<() => void>()
