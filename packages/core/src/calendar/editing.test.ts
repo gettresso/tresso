@@ -49,6 +49,19 @@ describe('edit scopes', () => {
 })
 
 describe('editor values', () => {
+  it("opens an event whose zone the platform does not know in the reader's zone, saving the time the user saw", () => {
+    const unknown = calendarEvent('unknown', 'cal', {
+      start: { dateTime: '2026-10-05T09:00:00', timeZone: 'Nowhere/Invalid' },
+      end: { dateTime: '2026-10-05T10:00:00', timeZone: 'Nowhere/Invalid' },
+    })
+    const [occurrence] = expandOccurrences([unknown], Date.UTC(2026, 9, 1), Date.UTC(2026, 9, 21), AMS)
+
+    expect(inputFromOccurrence(occurrence!, AMS)).toMatchObject({
+      start: { dateTime: '2026-10-05T09:00:00', timeZone: AMS },
+      end: { dateTime: '2026-10-05T10:00:00', timeZone: AMS },
+    })
+  })
+
   it('starts from the occurrence the user opened, in the event zone', () => {
     expect(inputFromOccurrence(third!, 'Asia/Tokyo')).toMatchObject({
       start: { dateTime: '2026-10-19T09:00:00', timeZone: AMS },

@@ -132,7 +132,7 @@ export interface ExpandedRange {
 }
 
 /** A zone the platform knows: the event's own, else the reader's. */
-function zoneOr(zone: string | null, readerZone: string): string {
+export function zoneOr(zone: string | null, readerZone: string): string {
   return zone !== null && isTimeZone(zone) ? zone : readerZone
 }
 

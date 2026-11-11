@@ -126,7 +126,7 @@ export function valuesFromInput(input: EventInput, fallbackZone: string): EventV
   const allDay = 'date' in input.start
   const startWall = parseWall(allDay ? start.date : `${start.date}T${start.time}`) ?? Date.now()
   const shownEnd = allDay ? lastDay(end.date) : end.date
-  const repeatEnd = endOf(input.recurrence)
+  const repeatEnd = endOf(input.recurrence, 'dateTime' in input.start ? input.start.timeZone : null)
   const repeat = presetOf(input.recurrence, startWall)
   const repeatFields = {
     repeat,

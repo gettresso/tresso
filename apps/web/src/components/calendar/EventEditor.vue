@@ -158,12 +158,14 @@ watch(
   },
 )
 
+/** The zone the series' end is read in: the one ruleOf writes it in. */
+const ruleZone = computed(() => (values.allDay || !values.timeZone ? null : values.timeZone))
 const startWall = computed(() => parseWall(values.allDay ? values.startDate : `${values.startDate}T${values.startTime}`) ?? Date.now())
 const presets = computed<{ value: RepeatPreset; label: string }[]>(() => {
   const options: RepeatPreset[] = ['none', 'daily', 'weekdays', 'weekly', 'biweekly', 'monthlyByDay', 'monthlyByDate', 'yearly']
   const list = options.map((value) => ({ value, label: presetLabel(value, startWall.value) }))
   if (values.repeat === 'custom') {
-    list.push({ value: 'custom', label: values.customRule === '' ? 'Custom' : describeRule(values.customRule) })
+    list.push({ value: 'custom', label: values.customRule === '' ? 'Custom' : describeRule(values.customRule, ruleZone.value) })
   }
   return list
 })
@@ -318,7 +320,7 @@ onMounted(() => {
 
 const repeatSummary = computed(() => {
   const rule = ruleOf(values as EventValues)
-  return rule === null ? null : describeRule(rule)
+  return rule === null ? null : describeRule(rule, ruleZone.value)
 })
 </script>
 

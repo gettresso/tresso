@@ -32,6 +32,21 @@ describe('repeat presets', () => {
     expect(endOf('FREQ=DAILY;UNTIL=20261231T225959Z')).toEqual({ kind: 'until', date: '2026-12-31' })
   })
 
+  it("reads the end of a timed series back on the date it falls on in the series' zone", () => {
+    for (const zone of ['America/New_York', 'Asia/Tokyo', 'Europe/Amsterdam']) {
+      const rule = withEnd('FREQ=DAILY', { kind: 'until', date: '2026-12-31' }, false, zone)
+      expect(endOf(rule, zone)).toEqual({ kind: 'until', date: '2026-12-31' })
+    }
+    expect(withEnd('FREQ=DAILY', { kind: 'until', date: '2026-12-31' }, false, 'America/New_York')).toBe('FREQ=DAILY;UNTIL=20270101T045959Z')
+    // Another app's UNTIL: the start of the last occurrence, 08:00 in Tokyo on 31 December.
+    expect(endOf('FREQ=DAILY;UNTIL=20261230T230000Z', 'Asia/Tokyo')).toEqual({ kind: 'until', date: '2026-12-31' })
+    expect(describeRule('FREQ=DAILY;UNTIL=20270101T045959Z', 'America/New_York')).toBe('Every day, until 31 December 2026')
+    // Dates, floating times and an unknown zone are read as written.
+    expect(endOf('FREQ=DAILY;UNTIL=20261231', 'Asia/Tokyo')).toEqual({ kind: 'until', date: '2026-12-31' })
+    expect(endOf('FREQ=DAILY;UNTIL=20261231T235959', 'Asia/Tokyo')).toEqual({ kind: 'until', date: '2026-12-31' })
+    expect(endOf('FREQ=DAILY;UNTIL=20261231T225959Z', 'Nowhere/Invalid')).toEqual({ kind: 'until', date: '2026-12-31' })
+  })
+
   it('compares rules the way the server does', () => {
     expect(sameRule('FREQ=WEEKLY;BYDAY=MO;INTERVAL=2', ' freq=weekly;interval=2;byday=MO ')).toBe(true)
     // The server tells these apart, so the editor does too.
