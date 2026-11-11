@@ -95,6 +95,12 @@ describe('todos', () => {
       expect(parseQuickAdd('Send the slides tomorrow at 5pm', now)).toEqual({ title: 'Send the slides', dueDate: '2026-10-21', dueTime: '17:00' })
     })
 
+    it('finds 29 February in the next year that has one, and no date for a day no year has', () => {
+      expect(parseQuickAdd('Renew passport 29 feb', new Date(2027, 2, 1))).toEqual({ title: 'Renew passport', dueDate: '2028-02-29', dueTime: null })
+      expect(parseQuickAdd('Renew passport 29 feb', new Date(2028, 1, 1))).toEqual({ title: 'Renew passport', dueDate: '2028-02-29', dueTime: null })
+      expect(parseQuickAdd('Renew passport 31 apr', new Date(2027, 2, 1))).toMatchObject({ dueDate: null })
+    })
+
     it('finds a day of a month, next year once it has passed', () => {
       expect(parseQuickAdd('Pay rent 27 oct', now)).toEqual({ title: 'Pay rent', dueDate: '2026-10-27', dueTime: null })
       expect(parseQuickAdd('Renew passport march 3', now)).toEqual({ title: 'Renew passport', dueDate: '2027-03-03', dueTime: null })

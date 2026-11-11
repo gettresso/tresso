@@ -88,6 +88,23 @@ describe('parseAddresses', () => {
       { address: 'lisa@x.example', name: 'Lisa B' },
     ])
   })
+
+  it('keeps quoted names with commas and semicolons together, as Outlook copies them', () => {
+    expect(parseAddresses('"Doe, John" <john@example.com>; "Smith; Ann" <ann@example.com>,\n"O\\"Brien, Pat" <pat@example.com>')).toEqual([
+      { address: 'john@example.com', name: 'Doe, John' },
+      { address: 'ann@example.com', name: 'Smith; Ann' },
+      { address: 'pat@example.com', name: 'O"Brien, Pat' },
+    ])
+    expect(parseAddresses('a@b.c, d@e.f')).toEqual([
+      { address: 'a@b.c', name: null },
+      { address: 'd@e.f', name: null },
+    ])
+    // A quote that never closes is no name: the separators count.
+    expect(parseAddresses('"Doe, a@b.c')).toEqual([
+      { address: '"Doe', name: null },
+      { address: 'a@b.c', name: null },
+    ])
+  })
 })
 
 describe('composeBody', () => {
