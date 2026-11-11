@@ -53,11 +53,15 @@ const router = createRouter({
             { path: 'batches', name: 'settings-batches', component: () => import('@/views/SettingsBatchesView.vue') },
             { path: 'updates', name: 'settings-updates', component: () => import('@/views/SettingsUpdatesView.vue') },
             { path: 'billing', name: 'settings-billing', component: () => import('@/views/SettingsBillingView.vue') },
+            // A settings page that does not exist (a mistyped or outdated link) shows the first one.
+            { path: ':pathMatch(.*)*', redirect: { name: 'settings-accounts' } },
           ],
         },
       ],
     },
     { path: '/auth/callback', name: 'auth-callback', component: () => import('@/views/AuthCallbackView.vue') },
+    // Any other path (a mistyped or outdated link) shows the Unified Inbox rather than an empty window.
+    { path: '/:pathMatch(.*)*', redirect: { name: 'unified' } },
   ],
 })
 
