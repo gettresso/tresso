@@ -1055,7 +1055,7 @@ describe('Composer', () => {
       serverAhead.dispose()
     })
 
-    it('is reused when Send is pressed again after an answer was lost, and by the confirmation of unscanned files', async () => {
+    it('is reused when Send is pressed again after an answer was lost, and ends with an answer that queued nothing', async () => {
       composer.openNew([{ address: 'anna@example.test', name: null }])
       const id = composer.state.draft!.id
       sendFails = lost
@@ -1064,13 +1064,19 @@ describe('Composer', () => {
       const first = tried[0]!.outgoingId
       expect(first).toBeDefined()
       expect(await store.draft(id)).toMatchObject({ sendAttemptId: first })
+      sendFails = new ApiFailure(502)
+      await composer.send()
+      expect(tried[1]!.outgoingId).toBe(first)
 
+      // A refusal says the server queued nothing: that send is over, and the confirmation is a new one.
       sendFails = new ApiFailure(422, { acceptUnscanned: 'Send it anyway?' })
       await composer.send()
+      expect(tried[2]!.outgoingId).toBe(first)
+      expect(await store.draft(id)).toMatchObject({ sendAttemptId: null })
       sendFails = null
       await composer.sendAnyway()
 
-      expect(tried.map((request) => request.outgoingId)).toEqual([first, first, first])
+      expect(tried[3]!.outgoingId).not.toBe(first)
       expect(sent).toHaveLength(1)
     })
 
@@ -1187,7 +1193,7 @@ describe('Composer', () => {
       expect(composer.state.draft).toBeNull()
     })
 
-    it('keeps the form, saying so, when something was typed while the lost send was recognised', async () => {
+    it('keeps what was typed while the lost send was recognised as a new draft, saying so', async () => {
       composer.openNew([{ address: 'anna@example.test', name: null }])
       composer.update({ subject: 'Once' })
       const id = composer.state.draft!.id
@@ -1205,8 +1211,84 @@ describe('Composer', () => {
 
       await composer.followUp()
 
-      expect(composer.state.draft).toMatchObject({ id, html: '<p>One more thing</p>' })
-      expect(notices.map((notice) => notice.text)).toContain('"Once" reached the server after all and is on its way, without what you typed since.')
+      expect(composer.state.draft).toMatchObject({ html: '<p>One more thing</p>' })
+      expect(composer.state.draft!.id).not.toBe(id)
+      expect(await store.draft(id)).toMatchObject({ outgoingId: attempt })
+      expect(notices.map((notice) => notice.text)).toContain('"Once" reached the server after all and is on its way, without what you typed since. That is kept as a new draft.')
+    })
+
+    it("removes a draft kept for its send once the deletion turns out to be another device's", async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Sent from the laptop' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      await vi.advanceTimersByTimeAsync(1000)
+
+      // Sent (or deleted) on another device: the server hides the draft; no message with this device's id comes.
+      await store.apply(page({ cursor: 3, deleted: [{ type: 'draft', id }] }))
+      expect(await store.draft(id)).toMatchObject({ hiddenOnServer: true })
+      await composer.followUp()
+
+      expect(await store.draft(id)).toBeNull()
+      expect(composer.state.draft).toBeNull()
+      expect(notices.map((notice) => notice.text)).toContain('"Sent from the laptop" was sent or deleted on another device.')
+    })
+
+    it('keeps what was typed on such a draft as a new draft, without the send', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Typed on' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      await vi.advanceTimersByTimeAsync(1000)
+      await store.apply(page({ cursor: 3, deleted: [{ type: 'draft', id }] }))
+      composer.update({ html: '<p>More</p>' })
+
+      await composer.followUp()
+
+      expect(await store.draft(id)).toBeNull()
+      const kept = (await store.drafts()).find((each) => each.html === '<p>More</p>')
+      expect(kept).toMatchObject({ subject: 'Typed on', sendAttemptId: null, outgoingId: null })
+      expect(kept!.id).not.toBe(id)
+      expect(composer.state.draft).toMatchObject({ id: kept!.id, html: '<p>More</p>' })
+    })
+
+    it('does not keep a draft for ever on a server that does not take the send id', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Old server' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      await vi.advanceTimersByTimeAsync(1000)
+
+      // The message is queued under the server's own id.
+      await store.apply(page({ cursor: 3, deleted: [{ type: 'draft', id }], outgoingMessages: [{ ...outgoing('scheduled'), id: 'server-chosen' }] }))
+      await composer.followUp()
+
+      expect(await store.draft(id)).toBeNull()
+      expect(composer.state.draft).toBeNull()
+    })
+
+    it('says when an earlier version went out after all, keeping what was typed since as a new draft', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'First words' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      const attempt = tried[0]!.outgoingId!
+      composer.update({ html: '<p>Second thoughts</p>' })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(await store.draft(id)).toMatchObject({ sendAttemptId: null, unsureSendId: attempt })
+
+      await store.apply(queued(id, attempt))
+      await composer.followUp()
+
+      expect(await store.draft(id)).toMatchObject({ outgoingId: attempt, unsureSendId: null })
+      const kept = (await store.drafts()).find((each) => each.html === '<p>Second thoughts</p>' && each.id !== id)
+      expect(kept).toMatchObject({ outgoingId: null, sendAttemptId: null })
+      expect(composer.state.draft).toMatchObject({ id: kept!.id })
+      expect(notices.map((notice) => notice.text)).toContain('An earlier version of "First words" reached the server after all and is on its way. What you typed since is kept as a new draft.')
     })
 
     it('is dropped by an undo, so sending again is a new send', async () => {

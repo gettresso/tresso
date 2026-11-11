@@ -146,7 +146,7 @@ export function sentOutcome(draft: Draft, outgoing: SyncedOutgoingMessage | null
 
 /** Editing a message that failed to send makes it a draft again; sending it again is a new send, with a new id. */
 export function reopenedDraft(draft: Draft): Draft {
-  return draft.outgoingId === null ? draft : { ...draft, outgoingId: null, noticedStatus: null, pendingSave: true, sendAttemptId: null }
+  return draft.outgoingId === null ? draft : { ...draft, outgoingId: null, noticedStatus: null, pendingSave: true, sendAttemptId: null, unsureSendId: null }
 }
 
 /**
@@ -521,13 +521,18 @@ function withVersion(draft: Draft, version: number): Draft {
  * stays, and so do the files: the screen does not know either for sure.
  */
 export function withEdits(stored: Draft | null, edited: Draft): Draft {
+  // Whether the server still has its copy is the stored draft's to know, not the form's.
+  const { hiddenOnServer: _formSays, ...fields } = edited
   return {
-    ...edited,
+    ...fields,
     version: stored?.version ?? edited.version,
     remoteVersion: stored?.remoteVersion ?? null,
     attachments: stored?.attachments ?? edited.attachments,
-    // A send under way keeps its id while the text stays the same; an edited message is a new one.
+    // A send under way keeps its id while the text stays the same; an edited message is a new one, and the earlier send
+    // is remembered as one that may have gone out.
     sendAttemptId: stored !== null && editedFields(stored) === editedFields(edited) ? (stored.sendAttemptId ?? null) : null,
+    unsureSendId: stored === null ? null : editedFields(stored) === editedFields(edited) ? (stored.unsureSendId ?? null) : (stored.sendAttemptId ?? stored.unsureSendId ?? null),
+    ...(stored?.hiddenOnServer ? { hiddenOnServer: true } : {}),
   }
 }
 

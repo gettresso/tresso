@@ -50,6 +50,18 @@ export interface Draft {
    * null while no send is under way.
    */
   sendAttemptId?: string | null
+  /**
+   * The delta reported the server's copy gone while a send was under way here (see deletedDraft): kept so the send can
+   * be recognised. When the message with the send's id does not show up, the deletion was someone else's (sent or
+   * deleted on another device, or a server that does not take the id), and the follow-up removes the draft.
+   */
+  hiddenOnServer?: boolean
+  /**
+   * The id of a send whose answer never came, dropped because the text was edited since (an edited message is a new
+   * one): that send may still have reached the server. When its message shows up, the user is told the earlier text
+   * went out, and the draft's text is kept as a new draft.
+   */
+  unsureSendId?: string | null
   /** The outgoing status the user was last told about, so each outcome is announced once. */
   noticedStatus: string | null
   updatedAt: number
