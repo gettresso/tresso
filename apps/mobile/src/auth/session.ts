@@ -121,9 +121,8 @@ export class Session {
         return
       }
       this.update({ tokens: null, restored: false, restoreFailed: false, ended: 'signedOut', storageError: null })
-      if (tokens !== null) {
-        await this.finishSignOut(tokens.refreshToken)
-      }
+      // Also without a loadable set: a sign-out cut off inside the removal can leave a refresh token or the last user.
+      await this.finishSignOut(tokens?.refreshToken ?? null)
     } catch (error) {
       if (generation === this.generation && this.state.tokens === null) {
         this.update({ restoreFailed: true, storageError: `The saved sign-in could not be read: ${message(error)}` })
@@ -182,8 +181,11 @@ export class Session {
     } catch (error) {
       failure ??= error
     }
-    this.prepared = true
-    this.update({ storageError: failure === null ? null : `You are signed out here, but the sign-in could not be removed from this device: ${message(failure)}` })
+    // A sign-in completed during the revocation: its own write prepared the store and kept its tokens, and its state
+    // is not this sign-out's to report on.
+    if (this.state.tokens === null) {
+      this.update({ storageError: failure === null ? null : `You are signed out here, but the sign-in could not be removed from this device: ${message(failure)}` })
+    }
   }
 
   async accessToken(): Promise<string> {
@@ -349,9 +351,15 @@ export class Session {
     }
   }
 
-  /** Removes the tokens and who was signed in from the store. */
+  /**
+   * Removes the tokens and who was signed in from the store, unless a sign-in completed since: its own write, queued
+   * after this one or already done, forgets the previous user, clears the sign-out flag and keeps its tokens.
+   */
   private removeSignIn(): Promise<void> {
     return this.write(async () => {
+      if (this.state.tokens !== null) {
+        return
+      }
       await this.store.save(null)
       await this.store.forgetUser()
     })
