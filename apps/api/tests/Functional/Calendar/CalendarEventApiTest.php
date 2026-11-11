@@ -159,8 +159,40 @@ final class CalendarEventApiTest extends DatabaseTestCase
             array_map(static fn (array $o): ?string => \is_array($o['start']) && \is_string($o['start']['dateTime'] ?? null) ? $o['start']['dateTime'] : null, $occurrences),
             'The rest of the series stays on Monday at 09:00, and the moved Tuesday shows once.',
         );
-        self::assertSame(['Weekly sync, renamed', 'Weekly sync, renamed'], \array_slice(array_column($occurrences, 'summary'), 2));
+        self::assertSame(['Weekly sync, renamed', 'Weekly sync, renamed', 'Weekly sync, renamed'], \array_slice(array_column($occurrences, 'summary'), 1), 'The moved Tuesday takes the new title too.');
         self::assertSame([true, true, true], array_column(\array_slice($occurrences, 1), 'recurring'));
+    }
+
+    public function testThisAndFollowingFromAChangedOccurrenceGivesThatOccurrenceTheEdit(): void
+    {
+        $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=this&recurrenceId=20261026T080000Z', self::event($this->calendarId, [
+            'summary' => 'Planning, room 2',
+            'location' => 'Room 2',
+            'start' => ['dateTime' => '2026-10-26T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-26T09:30:00', 'timeZone' => 'Europe/Amsterdam'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=following&recurrenceId=20261026T080000Z', self::event($this->calendarId, [
+            'summary' => 'Planning, final',
+            'location' => 'Room 7',
+            'recurrence' => 'FREQ=WEEKLY;COUNT=4',
+            'start' => ['dateTime' => '2026-10-26T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-26T10:00:00', 'timeZone' => 'Europe/Amsterdam'],
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+
+        $occurrences = $this->occurrences($this->kim, '2026-10-01T00:00:00+00:00', '2026-12-01T00:00:00+00:00');
+        self::assertSame(
+            [
+                ['Weekly sync', '', '2026-10-19T07:00:00+00:00', '2026-10-19T07:30:00+00:00'],
+                ['Planning, final', 'Room 7', '2026-10-26T08:00:00+00:00', '2026-10-26T09:00:00+00:00'],
+                ['Planning, final', 'Room 7', '2026-11-02T08:00:00+00:00', '2026-11-02T09:00:00+00:00'],
+                ['Planning, final', 'Room 7', '2026-11-09T08:00:00+00:00', '2026-11-09T09:00:00+00:00'],
+            ],
+            array_map(static fn (array $o): array => [$o['summary'], $o['location'], \is_array($o['start']) ? $o['start']['dateTime'] : null, \is_array($o['end']) ? $o['end']['dateTime'] : null], $occurrences),
+        );
     }
 
     public function testMovingAllEventsToAnotherWeekdayMovesTheRuleAndKeepsTheExceptions(): void

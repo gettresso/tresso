@@ -553,6 +553,7 @@ final readonly class EventEditor
             $end = $changes->end;
         }
 
+        $edited = null;
         foreach (CalendarDocument::events($vcalendar) as $override) {
             $overrideKey = CalendarDocument::recurrenceKey($override);
             if ('' === $overrideKey || $overrideKey < $key) {
@@ -572,6 +573,9 @@ final readonly class EventEditor
                 self::shiftProperty(Props::dateTime($moved, 'DTEND'), $shift, $occurrence->timeZone, $changes->start->timeZone, $next);
             }
             $next->add($moved);
+            if ($overrideKey === $key) {
+                $edited = $moved;
+            }
         }
         foreach (['EXDATE', 'RDATE'] as $name) {
             foreach (Props::dateTimes($master, $name) as $property) {
@@ -601,6 +605,15 @@ final readonly class EventEditor
             $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
             $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
         ), $next, true, $self);
+        if (null !== $edited) {
+            // The occurrence the user edited was changed before: its override replaces the new series' first
+            // occurrence, so it takes the edit too, at the time the user gave it. Per-occurrence answers of guests stay.
+            $this->write($edited, new EventChanges(
+                $changes->summary, $changes->description, $changes->location, $changes->url, $changes->start, $changes->end, null,
+                $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
+                $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
+            ), $next, false, $self);
+        }
         self::withOrganizer($next, $object->getCalendar(), $organizer);
         self::requestConference($next, $object->getCalendar(), $changes->conferenceProvider);
 
