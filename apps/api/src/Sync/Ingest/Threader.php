@@ -17,8 +17,11 @@ use Doctrine\ORM\EntityManagerInterface;
  * 1. Headers, both directions: threads of messages it refers to (In-Reply-To, References), and threads of messages
  *    that refer to it (a reply that arrived first). When that matches several threads, they are one conversation
  *    and are merged.
- * 2. Without any references: a recent thread with the same normalized subject that shares a participant. This
- *    covers clients that do not send References, without joining unrelated mails that happen to share a subject.
+ * 2. Without any references: a recent thread with the same normalized subject that shares a counterpart, someone
+ *    other than the user: one of its messages is from them or was sent to them. The user's own addresses do not
+ *    count, since they are on nearly every message; otherwise every mail would join any conversation with the same
+ *    subject the user once wrote in. This covers clients that do not send References, without joining unrelated
+ *    mails that happen to share a subject.
  * 3. Otherwise a new thread.
  */
 final readonly class Threader
@@ -35,9 +38,9 @@ final readonly class Threader
 
     /**
      * @param list<string> $referencedIds normalized Message-IDs this message refers to
-     * @param list<string> $participants  lowercased from, to and cc addresses
+     * @param list<string> $counterparts  lowercased from, to and cc addresses without the user's own addresses
      */
-    public function threadFor(MailAccount $account, ?string $messageId, array $referencedIds, string $subject, array $participants, \DateTimeImmutable $receivedAt): Thread
+    public function threadFor(MailAccount $account, ?string $messageId, array $referencedIds, string $subject, array $counterparts, \DateTimeImmutable $receivedAt): Thread
     {
         $threads = $this->threadsByHeaders($account, $messageId, $referencedIds);
 
@@ -51,7 +54,7 @@ final readonly class Threader
         }
 
         if ([] === $referencedIds) {
-            $bySubject = $this->threadBySubject($account, $subject, $participants, $receivedAt);
+            $bySubject = $this->threadBySubject($account, $subject, $counterparts, $receivedAt);
             if (null !== $bySubject) {
                 return $bySubject;
             }
@@ -105,12 +108,12 @@ final readonly class Threader
     }
 
     /**
-     * @param list<string> $participants
+     * @param list<string> $counterparts
      */
-    private function threadBySubject(MailAccount $account, string $subject, array $participants, \DateTimeImmutable $receivedAt): ?Thread
+    private function threadBySubject(MailAccount $account, string $subject, array $counterparts, \DateTimeImmutable $receivedAt): ?Thread
     {
         $normalized = SubjectNormalizer::normalize($subject);
-        if ('' === $normalized || [] === $participants) {
+        if ('' === $normalized || [] === $counterparts) {
             return null;
         }
 
@@ -128,12 +131,27 @@ final readonly class Threader
             ->setMaxResults(self::SUBJECT_CANDIDATES)
             ->getResult();
 
+        $connection = $this->entityManager->getConnection();
+        $addresses = '{'.implode(',', array_map(static fn (string $address): string => '"'.addcslashes($address, '"\\').'"', $counterparts)).'}';
         foreach ($candidates as $thread) {
-            $shared = (int) $this->entityManager->createQuery(
-                'SELECT COUNT(m.id) FROM App\Entity\Message m WHERE m.thread = :thread AND m.fromAddress IN (:participants)',
-            )->setParameter('thread', $thread->getId(), 'uuid')->setParameter('participants', $participants)->getSingleScalarResult();
+            // From a counterpart, or sent to one (to or cc): the latter covers the user's own mail in the thread.
+            $shared = $connection->fetchOne(
+                "SELECT 1 FROM message m
+                 WHERE m.thread_id = :thread
+                   AND (m.from_address = ANY(CAST(:addresses AS TEXT[]))
+                     OR EXISTS (
+                         SELECT 1 FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'to') = 'array' THEN m.recipients->'to' ELSE '[]'::json END) r
+                         WHERE lower(r->>'address') = ANY(CAST(:addresses AS TEXT[]))
+                     )
+                     OR EXISTS (
+                         SELECT 1 FROM json_array_elements(CASE WHEN json_typeof(m.recipients->'cc') = 'array' THEN m.recipients->'cc' ELSE '[]'::json END) r
+                         WHERE lower(r->>'address') = ANY(CAST(:addresses AS TEXT[]))
+                     ))
+                 LIMIT 1",
+                ['thread' => $thread->getId()->toRfc4122(), 'addresses' => $addresses],
+            );
 
-            if ($shared > 0) {
+            if (false !== $shared) {
                 return $thread;
             }
         }

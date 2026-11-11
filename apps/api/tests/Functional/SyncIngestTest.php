@@ -340,6 +340,37 @@ final class SyncIngestTest extends DatabaseTestCase
         self::assertSame([2, 1, 1], array_map(static fn (Thread $t): int => $t->getMessageCount(), $threads));
     }
 
+    public function testSubjectFallbackDoesNotJoinAStrangerToAConversationTheUserWroteIn(): void
+    {
+        $this->folders(['INBOX' => 1, 'Sent' => 1]);
+        $kim = ['address' => 'kim@company.example'];
+
+        $this->messages('Sent', [$this->message('1', ['messageId' => '<sent-1@x>', 'subject' => 'Budget', 'from' => $kim, 'to' => [['address' => 'anna@finance.example']], 'receivedAt' => '2026-10-01T09:00:00+00:00'])]);
+        $this->messages('INBOX', [$this->message('2', ['messageId' => '<in-1@x>', 'subject' => 'Budget', 'from' => ['address' => 'stranger@other.example'], 'to' => [$kim], 'receivedAt' => '2026-10-02T09:00:00+00:00'])]);
+
+        self::assertSame(2, $this->rows(Thread::class), 'Only the user is on both, so they are not one conversation.');
+
+        $this->messages('INBOX', [$this->message('3', ['messageId' => '<in-2@x>', 'subject' => 'Re: Budget', 'from' => ['address' => 'Anna@Finance.example'], 'to' => [$kim], 'receivedAt' => '2026-10-03T09:00:00+00:00'])]);
+
+        self::assertSame(2, $this->rows(Thread::class), 'Anna answers without References and joins the mail the user sent her.');
+        $sent = $this->entityManager()->getRepository(Message::class)->findOneBy(['messageIdHeader' => 'sent-1@x']);
+        self::assertInstanceOf(Message::class, $sent);
+        self::assertSame(2, $sent->getThread()->getMessageCount());
+    }
+
+    public function testSubjectFallbackKeepsTheUsersMailToDifferentPeopleApart(): void
+    {
+        $this->folders(['INBOX' => 1, 'Sent' => 1]);
+        $kim = ['address' => 'kim@company.example'];
+
+        $this->messages('Sent', [
+            $this->message('1', ['messageId' => '<sent-1@x>', 'subject' => 'Invoice', 'from' => $kim, 'to' => [['address' => 'anna@finance.example']], 'receivedAt' => '2026-10-01T09:00:00+00:00']),
+            $this->message('2', ['messageId' => '<sent-2@x>', 'subject' => 'Invoice', 'from' => $kim, 'to' => [['address' => 'bert@supplier.example']], 'receivedAt' => '2026-10-02T09:00:00+00:00']),
+        ]);
+
+        self::assertSame(2, $this->rows(Thread::class));
+    }
+
     public function testChangesUpdateFlagsAndRemoveMessages(): void
     {
         $this->folders(['INBOX' => 1, 'Archive' => 1]);

@@ -20,6 +20,7 @@ use App\Enum\FolderRole;
 use App\HandOver\HandOvers;
 use App\Mail\MessageFields;
 use App\Mailbox\MailboxChanges;
+use App\Repository\MailAccountRepository;
 use App\Repository\MailboxChangeRepository;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -39,6 +40,7 @@ final readonly class MessageIngestor
         private InvitationRecorder $invitations,
         private HandOvers $handOvers,
         private MessageFields $fields,
+        private MailAccountRepository $accounts,
     ) {
     }
 
@@ -48,6 +50,7 @@ final readonly class MessageIngestor
             $folder = $this->folders->get($account, $batch->folder);
             $stored = $linked = $updated = 0;
             $pendingFlags = $this->mailboxChanges->messagesWithPendingFlags($account);
+            $ownAddresses = $this->ownAddresses($account);
 
             foreach ($batch->messages as $input) {
                 $location = $this->entityManager->getRepository(MessageLocation::class)->findOneBy(['folder' => $folder, 'remoteUid' => $input->remoteUid]);
@@ -77,7 +80,7 @@ final readonly class MessageIngestor
                     continue;
                 }
 
-                $this->store($account, $folder, $input, $messageId);
+                $this->store($account, $folder, $input, $messageId, $ownAddresses);
                 ++$stored;
             }
 
@@ -90,17 +93,21 @@ final readonly class MessageIngestor
         });
     }
 
-    private function store(MailAccount $account, Folder $folder, MessageInput $input, ?string $messageId): void
+    /**
+     * @param array<string, true> $ownAddresses the owner's account addresses, lowercased
+     */
+    private function store(MailAccount $account, Folder $folder, MessageInput $input, ?string $messageId, array $ownAddresses): void
     {
         $from = $input->from ?? throw new \LogicException('Validation guarantees a sender.');
         $receivedAt = $input->receivedAt ?? throw new \LogicException('Validation guarantees a received date.');
         $references = MessageIds::normalizeList([...$input->references, $input->inReplyTo], $messageId);
 
-        $participants = array_values(array_unique(array_map(
-            static fn (AddressInput $address): string => mb_strtolower($address->address),
-            [$from, ...$input->to, ...$input->cc],
-        )));
-        $thread = $this->threader->threadFor($account, $messageId, $references, $input->subject, $participants, $receivedAt);
+        // The people on the other side: the owner's own addresses are on nearly every message and say nothing.
+        $counterparts = array_values(array_filter(
+            array_unique(array_map(static fn (AddressInput $address): string => mb_strtolower($address->address), [$from, ...$input->to, ...$input->cc])),
+            static fn (string $address): bool => !isset($ownAddresses[$address]),
+        ));
+        $thread = $this->threader->threadFor($account, $messageId, $references, $input->subject, $counterparts, $receivedAt);
 
         $keyVersion = $input->keyVersion ?? throw new \LogicException('Validation guarantees a key version.');
         $message = new Message($account, $thread, $messageId, $input->subject, $from->address, $from->name, $receivedAt, $input->rawObjectKey, $keyVersion);
@@ -166,6 +173,19 @@ final readonly class MessageIngestor
         }
 
         return $repository->findOneBy(['mailAccount' => $account, 'rawObjectKey' => $rawObjectKey]);
+    }
+
+    /**
+     * @return array<string, true> the addresses of all the owner's accounts, lowercased
+     */
+    private function ownAddresses(MailAccount $account): array
+    {
+        $own = [mb_strtolower($account->getEmailAddress()) => true];
+        foreach ($this->accounts->findOwnedBy($account->getOwner()) as $other) {
+            $own[mb_strtolower($other->getEmailAddress())] = true;
+        }
+
+        return $own;
     }
 
     private function addLocation(Message $message, Folder $folder, MessageInput $input): void
