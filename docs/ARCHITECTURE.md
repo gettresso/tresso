@@ -1614,7 +1614,8 @@ Edits of recurring events follow what Google Calendar, Outlook and Apple Calenda
 - **All:** the master changes by the shift the user gave the edited occurrence, measured from where that occurrence
   is shown (a moved occurrence's own start). That shift also moves every
   override's `recurrence_id` and every `EXDATE` and `RDATE`, so exceptions stay attached to their occurrences;
-  overrides keep their own changed fields. A changed recurrence rule, or a switch between all-day and timed, starts
+  overrides keep their own changed fields. When the series changes between floating and zoned, those values take its
+  new form too, so their keys still meet the series'. The end keeps its own time zone. A changed recurrence rule, or a switch between all-day and timed, starts
   the series fresh: its overrides and exceptions belong to occurrences that no longer exist and are dropped.
 - Every change to time, place, status or the recurrence raises `SEQUENCE`, which is what tells attendees' clients
   that an update supersedes the previous one (RFC 5546). Which iTIP messages a change needs (requests to new and

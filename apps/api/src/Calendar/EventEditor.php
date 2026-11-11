@@ -508,17 +508,20 @@ final readonly class EventEditor
             $master->remove('RDATE');
         } elseif (0 !== $shift || $changes->start->timeZone !== $masterStart->timeZone) {
             $moved = self::keyMover($masterStart, $shift, $changes->start->timeZone);
+            // A floating series that gets a zone (or a zoned one that loses it): its exceptions take the new form, or
+            // their keys would no longer meet the series' (a wall clock read as UTC against an instant).
+            $form = (null === $masterStart->timeZone) === (null === $changes->start->timeZone) ? null : null === $changes->start->timeZone;
             foreach ($overrides as $override) {
                 $atItsTime = self::atItsOwnTime($override);
-                self::shiftProperty(Props::dateTime($override, 'RECURRENCE-ID'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar);
+                self::shiftProperty(Props::dateTime($override, 'RECURRENCE-ID'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar, $form);
                 if ($atItsTime) {
                     // Changed in other ways only: it moves with the series.
-                    self::shiftProperty(Props::dateTime($override, 'DTSTART'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar);
-                    self::shiftProperty(Props::dateTime($override, 'DTEND'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar);
+                    self::shiftProperty(Props::dateTime($override, 'DTSTART'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar, $form);
+                    self::shiftProperty(Props::dateTime($override, 'DTEND'), $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar, $form);
                 }
             }
             foreach ([...Props::dateTimes($master, 'EXDATE'), ...Props::dateTimes($master, 'RDATE')] as $property) {
-                self::shiftProperty($property, $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar);
+                self::shiftProperty($property, $shift, $masterStart->timeZone, $changes->start->timeZone, $vcalendar, $form);
             }
         }
 
@@ -991,23 +994,25 @@ final readonly class EventEditor
      * another ($zone). Values given in UTC are read on the series' wall clock first, so they move with the series and
      * stay in UTC.
      */
-    private static function shiftProperty(?DateTimeProperty $property, int $seconds, ?string $from, ?string $zone, VCalendar $vcalendar): void
+    private static function shiftProperty(?DateTimeProperty $property, int $seconds, ?string $from, ?string $zone, VCalendar $vcalendar, ?bool $toFloating = null): void
     {
         if (null === $property) {
             return;
         }
         $zoned = $property->hasTime() && !$property->isFloating();
         $utc = $zoned && null === Props::param($property, 'TZID');
+        // The form it ends in: its own, unless the series changes between floating and zoned (then it follows).
+        $floating = $toFloating ?? !$zoned;
         $values = [];
         foreach ($property->getDateTimes(new \DateTimeZone('UTC')) as $value) {
             if ($utc && null !== $from) {
                 $value = \DateTimeImmutable::createFromInterface($value)->setTimezone(new \DateTimeZone($from));
             }
             $wallClock = new \DateTimeImmutable($value->format('Y-m-d H:i:s'), new \DateTimeZone('UTC'))->modify(\sprintf('%+d seconds', $seconds));
-            $shifted = $zoned && null !== ($zone ?? $from)
+            $shifted = !$floating && null !== ($zone ?? $from)
                 ? new \DateTimeImmutable($wallClock->format('Y-m-d H:i:s'), new \DateTimeZone($zone ?? $from))
                 : $wallClock;
-            $values[] = $utc ? $shifted->setTimezone(new \DateTimeZone('UTC')) : $shifted;
+            $values[] = $utc && !$floating ? $shifted->setTimezone(new \DateTimeZone('UTC')) : $shifted;
         }
         if (!$property->hasTime()) {
             $property->setDateTimes($values);
@@ -1015,8 +1020,8 @@ final readonly class EventEditor
 
             return;
         }
-        $property->setDateTimes($values, $property->isFloating());
-        if (!$utc && null !== $zone && !$property->isFloating() && 'UTC' !== $zone) {
+        $property->setDateTimes($values, $floating);
+        if (!$utc && null !== $zone && !$floating && 'UTC' !== $zone) {
             VTimezoneBuilder::ensure($vcalendar, $zone, $values[0]);
         }
     }
