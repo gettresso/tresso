@@ -671,6 +671,29 @@ func TestTrashAndRestoreThroughHistory(t *testing.T) {
 }
 
 // Fails without the fix: the resync listed label folders with Trash and Spam included, keeping a trashed message in
+// Fails without the fix: trashing one message sent a removal to every label folder of the account.
+func TestTrashingAMessageOnlyAsksItsOwnFoldersToRemoveIt(t *testing.T) {
+	h := newHarness(t)
+	for i := range 50 {
+		h.gmail.addLabel(fmt.Sprintf("Label_%d", i+10), fmt.Sprintf("Label %d", i))
+	}
+	h.gmail.addLabel("Label_1", "Projects/Acme")
+	h.gmail.add("m1", 1000, raw("m1"), "INBOX")
+	h.gmail.add("m4", 4000, raw("m4"), "INBOX", "Label_1")
+	h.start(t)
+
+	before := h.api.VanishRequests()
+	h.gmail.addLabels("m4", "TRASH")
+	h.step(t)
+
+	expectUIDs(t, h, "INBOX", "m1")
+	expectUIDs(t, h, "Label_1")
+	expectUIDs(t, h, "TRASH", "m4")
+	if requests := h.api.VanishRequests() - before; requests > 4 {
+		t.Errorf("trashing one message made %d removal requests; only Inbox, its label and All Mail had it", h.api.VanishRequests()-before)
+	}
+}
+
 // its labels.
 func TestResyncKeepsTrashedMessagesOutOfTheirLabels(t *testing.T) {
 	h := backfilled(t)
