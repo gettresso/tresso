@@ -126,19 +126,4 @@ class DailyBriefSettings
     {
         return null !== $this->lastDueDay && BriefTime::localDay($this->dueAt ?? $this->nextRunAt, $timeZone) <= $this->lastDueDay;
     }
-
-    /**
-     * The run failed: it is tried again at $until, as the brief that was due before. The sweep writes the same in SQL
-     * ({@see \App\Repository\DailyBriefSettingsRepository::postpone()}), since a failed flush leaves no entity to use.
-     */
-    public function postpone(\DateTimeImmutable $until): void
-    {
-        $this->dueAt ??= $this->nextRunAt;
-        $this->nextRunAt = $until;
-    }
-
-    public function getDueAt(): ?\DateTimeImmutable
-    {
-        return $this->dueAt;
-    }
 }
