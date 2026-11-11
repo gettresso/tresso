@@ -1619,7 +1619,8 @@ Edits of recurring events follow what Google Calendar, Outlook and Apple Calenda
 - Every change to time, place, status or the recurrence raises `SEQUENCE`, which is what tells attendees' clients
   that an update supersedes the previous one (RFC 5546). Which iTIP messages a change needs (requests to new and
   current attendees, cancellations to removed ones, a reply to the organizer) is decided by sabre/vobject's iTIP
-  broker from the object before and after the change.
+  broker from the object before and after the change. The broker is given the editor's own list of significant
+  properties, so a new place (`LOCATION`) reaches the guests too; sabre's list leaves it out.
 
 Writes to provider calendars are optimistic: the row changes at once (clients see it in the delta), and an outbound
 **calendar operation** (`PUT` or `DELETE` of one resource, with the `etag` it was based on) is queued for the
