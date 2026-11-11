@@ -415,11 +415,20 @@ Microsoft (Microsoft Entra admin center, App registrations):
 Goal: fast synchronisation that scales horizontally to billions of accounts' worth of messages.
 
 - **Leasing:** workers call `POST /internal/sync/leases` to claim a batch of accounts. Leases expire and are
-  renewed by heartbeat, so a crashed worker's accounts move to another worker automatically.
+  renewed by heartbeat, so a crashed worker's accounts move to another worker automatically. The worker's `/healthz`
+  answers 503 until the first heartbeat and whenever the last successful one is older than two heartbeat intervals
+  (or the lease timeout, when longer), so an orchestrator replaces a worker that lost the API. The worker's API token
+  request has a 15 second timeout of its own.
 - **Change detection (IMAP):** `IDLE` on the inbox for instant new mail; other folders every 5 minutes. With
-  `CONDSTORE`, flag changes since the last MODSEQ; without it, a full flag check, after an IDLE update at most once a
-  minute (a throttled update is postponed, never dropped). Changes that happen between a sync and the next IDLE are
-  caught by comparing the inbox's EXISTS, UIDNEXT and MODSEQ at re-selection.
+  `CONDSTORE`, flag changes since the last MODSEQ; without it (or in a mailbox that answers NOMODSEQ), a full flag
+  check, after an IDLE update at most once a minute (a throttled update is postponed, never dropped). Changes that
+  happen between a sync and the next IDLE are caught by comparing the inbox's EXISTS, UIDNEXT and MODSEQ at
+  re-selection. With CONDSTORE an EXPUNGE notification, or fewer messages than the last sync left plus the UIDs
+  added since, runs the folder's presence check at once instead of waiting for the 30 minute one. A server that
+  leaves UIDNEXT out of SELECT gets it from the highest UID.
+- **Folder roles (IMAP):** the special-use attributes first; a role no mailbox is marked with is guessed from the
+  name of a top-level mailbox or a direct child of INBOX ("Sent Items", "INBOX.Trash", "Verzonden items"), never from
+  a deeper one. Each role goes to one folder only.
 - **Deletions without QRESYNC:** the worker reports presence ranges ("between UID a and b only these exist") in
   chunks of 5000; the API removes the rest. Every folder is checked at session start and every 30 minutes.
 - **Gmail** (`internal/gmailsync`, Gmail API): labels are folders (remote name = label id; INBOX, SENT, DRAFT, TRASH
@@ -429,28 +438,50 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   one cursor (`historyId`, backfill page token) lives on `tresso:all`; the history id is taken before the backfill
   starts, so nothing is missed. Backfill fetches `format=raw` newest first, once per message, and files it in every
   folder its labels map to. Changes come from `history.list` every 30 s; touched messages are re-read (`format=minimal`)
-  and reported per folder. When the history id has expired (404), the folders are listed in full and compared with
+  and reported per folder. A message going into or out of Trash or Spam is removed only from the folders of the
+  labels it has or that history named, not from every label folder. When the history id has expired (404), the
+  folders are listed in full and compared with
   the API's `GET /internal/sync/accounts/{id}/folders/remote-uids` to find what was deleted.
 - **Microsoft 365 / Outlook.com** (`internal/graphsync`, Microsoft Graph): every request asks for immutable ids
   (`Prefer: IdType="ImmutableId"`), so a message keeps its id when it moves. Folders are the folder tree (remote name
   = folder id, display name = path), with roles from the well-known folders. Each folder has its own cursor: the
   delta link, taken before the backfill, and the backfill position (by received time, so deletions during the
-  backfill do not shift pages). The inbox delta is polled every 30 s, other folders every 5 minutes; a round with
+  backfill do not shift pages). Folders are started (their delta walked to its end) one per step, the inbox first,
+  so the inbox is ingested before the other folders are walked; the walk's position is stored every 10 pages, so an
+  interrupted walk of a large folder continues where it stopped. A 403 for a folder's children, messages or delta
+  (a folder the user lost access to) leaves that folder out until the folder tree is read again, and one for a
+  message is handled like any message the provider will not hand over (see Isolation); only a refused top of the
+  folder tree means the mailbox may not be read (`auth_failed`). The inbox delta is polled every 30 s, other
+  folders every 5 minutes; a round with
   removals re-reads the folder tree first and applies every folder's additions before any removal, so a move links
   the message to its new folder instead of deleting it. An expired delta link (410, `syncStateNotFound`) restarts the
   folder's delta and compares with the API's remote uids. "Answered" is not available through delta.
 - **Both providers:** flag changes go first (`changes`), and only the uids the API answers as `unknownUids` are
   downloaded (Gmail raw, Graph `$value`) and ingested; a message entering another folder is downloaded once more and
   linked to the stored one by Message-ID. Requests are rate limited per account (Gmail 200 quota units/s, Graph
-  15/s), 429 and 5xx are retried with Retry-After, and a refused access token is renewed once through
+  15/s), 429 and 5xx are retried with Retry-After (5xx only for GET, PUT and DELETE), a broken connection or a timed-out
+  attempt too for GET, PUT and DELETE (a POST may have taken effect), and a refused access token is renewed once through
   `credentials?rejected=1` (a second refusal, or missing scopes, reports `auth_failed`). Change notifications (Gmail
   Pub/Sub, Graph webhooks) need a public endpoint and are not used yet; polling covers both.
 - **Connections** go through a guarded dialer that resolves the host and refuses private, loopback, link-local,
   CGNAT, NAT64, 6to4 and documentation ranges at connect time (the API checks at save time, the worker again on every
   connection, so DNS changes cannot redirect it). TLS 1.2+ with certificate verification, or STARTTLS.
 - **Failures:** sessions reconnect with exponential backoff (2 s to 5 min). A refused login reports `auth_failed` and
-  stops until the user changes the credentials; three failed sessions in a row report `error` with a user-safe
-  detail.
+  stops until the user changes the credentials: an IMAP LOGIN answered with AUTHENTICATIONFAILED, AUTHORIZATIONFAILED
+  or EXPIRED at once, a NO without a response code once five logins in a row were refused; any other NO (UNAVAILABLE,
+  INUSE, LIMIT, SERVERBUG, ALERT and the like) is an ordinary session failure, and LOGINDISABLED or PRIVACYREQUIRED
+  asks the user to choose TLS or STARTTLS. Three failed sessions in a row report `error` with a user-safe detail.
+- **Isolation:** one message must not stop its folder. Every value sent to the ingest API is cut to the API's limits
+  and cleaned of NUL and other control characters (`internal/ingestmsg`). When the API still refuses a batch for its
+  content (400, 413, 422), the batch is sent again one message at a time and a message refused on its own is replaced
+  by a placeholder ("Message could not be imported", sender `unknown@unknown.invalid`, the raw MIME kept), logged with
+  folder, uid and Message-ID; then the cursor moves on. A 500 for one message, a message the provider will not hand
+  over (an IMAP FETCH answered NO or without a body, a Gmail or Graph 4xx or 5xx other than 401, 404 and 429) and a
+  Gmail message that cannot be decoded are retried in later sessions first and replaced after three failed sessions,
+  then by a placeholder whose raw MIME is a short notice; a 5xx only counts when other messages of the same request
+  went through, so an outage of the API or the provider never replaces anything (`internal/isolate`).
+- **Folders the server will not open:** a mailbox whose STATUS is refused is left out of the folder list; one whose
+  SELECT is refused is skipped until the next folder list (every 5 minutes), and the other folders go on.
 - **Ingest:** raw MIME goes directly to object storage, encrypted with the account owner's blob key
   (`raw/<owner id>/<fp[0:2]>/<fp>`, named by the owner's content fingerprint, so duplicates within one user are
   stored once); attachments too (`attachments/<owner id>/<fp[0:2]>/<fp>`). The worker fetches the keys from
@@ -511,7 +542,10 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   recipients are added as a Bcc header, which both providers strip; Gmail replies carry the thread id of the message
   they answer), files a copy in Sent (except at providers that do that themselves, Gmail and Microsoft included) and
   reports sent, retry (4xx, connection problems, a wrong password: up to 6 attempts over about 4.5 hours) or failed
-  (5xx). A message claimed again after an unreported attempt is first looked up, so it is never sent twice; the
+  (5xx). The outcome report is sent up to three times when the API cannot be reached or answers 5xx. A message
+  claimed again after an unreported attempt is first looked up, so it is never sent twice; when the lookup cannot be
+  made (Sent cannot be opened or searched) nothing is sent and the message is retried, and only an IMAP account
+  without any Sent folder sends without looking; the
   outcome and its text reach the user in the delta as `outgoingMessages` (`lastError`).
   - IMAP accounts: the Sent folder by Message-ID.
   - Gmail may replace the Message-ID, so its sends carry `X-Tresso-Outgoing-Id` (a SHA-256 of the outbox id and the
@@ -1449,7 +1483,9 @@ accepted.
   (`internal/ical`, a small content-line reader and writer; sabre stays the one full implementation, in the API), so
   they go through the same ingest, inventory and write cycle as CalDAV resources. The calendar list says
   `providerSchedules`, and per calendar which meetings it can make (`conferenceProviders`). Every minute, and right
-  after a write or a sign-in that allowed calendars:
+  after a write or a sign-in that allowed calendars (every heartbeat also names leased Gmail and Microsoft accounts
+  whose calendar status is still `unknown`, so a missed wake-up after allowing calendars costs at most one
+  heartbeat, not the hour a `not_granted` account waits otherwise):
   - One resource is a single event, or a recurring series with its changed and cancelled occurrences (overrides and
     `EXDATE`s in one object, as RFC 5545 has it).
   - **Google:** `calendarList` (calendars the user can only see free/busy of are left out; `writer`/`owner` are
@@ -1499,9 +1535,19 @@ accepted.
     provider's version, which stays in the old calendar, and the create is held back as a conflict),
     and the update after it is conditional on the moved event's ETag. `events.move` makes the target calendar the
     organizer, so the API refuses to move a meeting with guests between calendars of one Google account and says why.
-    A 403 means calendars are not allowed only for the calendar list (unless it is a rate limit, which is retried like
-    any failure) or a token without the scopes; on one calendar it skips that calendar, and on a write it is a
-    refusal.
+    A 403 means calendars are not allowed (`not_granted`, sign in again) only for a token without the scopes (Google
+    `insufficientPermissions`); the API hands out a calendar token only for a grant that has them, so any other refused
+    calendar list (Graph answers `ErrorAccessDenied` alike for a missing scope and for a mailbox or tenant that does
+    not allow it) is `error` with the provider's code, and a rate limit is retried like any failure. On one calendar a
+    403 skips that calendar, and on a write it is a refusal. An event the provider refuses to hand over (4xx) is left
+    out and the cursor moves on (a later change names it again); one it fails on (5xx) is left out too, but the cursor
+    stays, so the calendar's next sync asks for it again. Connection errors, throttling and lost access end the sync
+    as before.
+  - **A calendar that keeps failing** (for CalDAV accounts as well) is backed off on its own: the wait doubles from
+    the sync interval up to 30 minutes, and after three failures in a row the account's calendar status is `error`
+    naming the calendar, repeated after every accepted calendar list (which sets `active`) until it syncs again. The
+    other calendars go on at their own pace. A CalDAV session that synced resets the failure count and backoff of the
+    account, as the provider syncers do.
   - **Scheduling:** both providers send invitations, updates, cancellations and replies themselves, so the API sends
     no iTIP mail for these calendars and puts no incoming invitation into them (the provider does). The calendar
     operation carries `notify` (false when the user said not to tell anyone; folded writes notify when any of them
