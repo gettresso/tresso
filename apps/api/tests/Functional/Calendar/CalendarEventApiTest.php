@@ -810,6 +810,23 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertSame("On the changed one\n\nOn the series", $notes[0][2]);
     }
 
+    public function testANoteJoinedPastTheLimitCanBeSavedAgainAsLongAsItIs(): void
+    {
+        $event = $this->create();
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$event['id'].'/note', ['text' => str_repeat('a', 100001)], $this->kim);
+        self::assertResponseStatusCodeSame(422);
+        $this->putNote($event['id'], null, str_repeat('a', 100000));
+
+        // Two notes joined when their occurrences met.
+        $joined = str_repeat('a', 100000)."\n\n".str_repeat('b', 50000);
+        $this->connection()->executeStatement('UPDATE event_note SET text = :text', ['text' => $joined]);
+
+        $this->putNote($event['id'], null, $joined);
+        $this->putNote($event['id'], null, substr($joined, 0, -10));
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$event['id'].'/note', ['text' => $joined.'more'], $this->kim);
+        self::assertResponseStatusCodeSame(422);
+    }
+
     public function testANoteGoesBackToTheSeriesWhenItsOverrideGoes(): void
     {
         $series = $this->create(['recurrence' => 'FREQ=WEEKLY;COUNT=4']);

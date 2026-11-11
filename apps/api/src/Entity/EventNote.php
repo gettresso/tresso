@@ -19,6 +19,9 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Index(columns: ['user_id', 'change_seq'])]
 class EventNote implements TracksChanges
 {
+    /** What the user may write; a note joined from two may be longer, and may be saved again as long as it is. */
+    public const int MAX_LENGTH = 100000;
+
     #[ORM\Id]
     #[ORM\Column(type: UuidType::NAME)]
     private Uuid $id;
