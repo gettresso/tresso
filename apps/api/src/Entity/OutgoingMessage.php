@@ -103,8 +103,9 @@ class OutgoingMessage implements TracksChanges
         \DateTimeImmutable $sendAt,
         ?Message $inReplyTo,
         \DateTimeImmutable $now,
+        ?Uuid $id = null,
     ) {
-        $this->id = Uuid::v7();
+        $this->id = $id ?? Uuid::v7();
         $this->mailAccount = $mailAccount;
         $this->messageIdHeader = $messageIdHeader;
         $this->subject = $subject;

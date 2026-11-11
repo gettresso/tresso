@@ -18,6 +18,7 @@ use Lcobucci\JWT\Token\Plain;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Uid\UuidV7;
 
 final class OutboxTest extends DatabaseTestCase
 {
@@ -139,6 +140,29 @@ final class OutboxTest extends DatabaseTestCase
 
         $this->client->jsonRequest('POST', '/api/v1/outgoing-messages', ['mailAccountId' => $this->accountId, 'to' => [['address' => 'a@example.test', 'name' => "Evil\r\nBcc: x@example.test"]]], $this->kim);
         self::assertResponseStatusCodeSame(422);
+    }
+
+    public function testSendingAgainWithTheSameIdQueuesTheMessageOnce(): void
+    {
+        $id = Uuid::v7()->toRfc4122();
+        $payload = ['outgoingId' => $id, 'to' => [['address' => 'anna@finance.example']]];
+
+        $first = $this->send($payload);
+        // The answer got lost; the client sends the same request again.
+        $second = $this->send($payload);
+
+        self::assertSame($id, $first['id'] ?? null);
+        self::assertSame($id, $second['id'] ?? null);
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM outgoing_message'));
+    }
+
+    public function testAClientChosenIdMustBeAUuidV7OfNow(): void
+    {
+        foreach ([Uuid::v4()->toRfc4122(), new UuidV7(UuidV7::generate(new \DateTimeImmutable('+1 hour')))->toRfc4122(), new UuidV7(UuidV7::generate(new \DateTimeImmutable('-2 days')))->toRfc4122()] as $id) {
+            $this->client->jsonRequest('POST', '/api/v1/outgoing-messages', ['outgoingId' => $id, 'mailAccountId' => $this->accountId, 'to' => [['address' => 'a@example.test']]], $this->kim);
+            self::assertResponseStatusCodeSame(422, $id);
+            self::assertSame(['outgoingId'], $this->violationPaths());
+        }
     }
 
     public function testRequiresSendScope(): void
