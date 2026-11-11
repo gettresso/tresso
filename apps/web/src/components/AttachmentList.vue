@@ -60,7 +60,8 @@ async function downloadAnyway(attachment: MessageAttachment): Promise<void> {
 
 /**
  * Opens a file through its link, or, once the links may have expired, through a fresh one. The tab opens in the click,
- * so the browser does not block it; the fresh link follows.
+ * so the browser does not block it; the fresh link follows. The desktop app has no tabs and must not leave its own
+ * page: the file opens in the user's browser.
  */
 async function download(event: MouseEvent, attachment: MessageAttachment): Promise<void> {
   const renewing = props.renewLinks?.() ?? null
@@ -69,7 +70,7 @@ async function download(event: MouseEvent, attachment: MessageAttachment): Promi
   }
   event.preventDefault()
   failed.value = null
-  const opened = window.open('about:blank', '_blank')
+  const opened = isDesktop ? null : window.open('about:blank', '_blank')
   if (opened !== null) {
     opened.opener = null
   }
@@ -80,11 +81,13 @@ async function download(event: MouseEvent, attachment: MessageAttachment): Promi
       failed.value = `${attachment.filename} can no longer be downloaded from here.`
       return
     }
-    if (opened === null) {
+    if (isDesktop) {
+      await openInBrowser(fresh.url)
+    } else if (opened === null) {
       window.location.assign(fresh.url)
-      return
+    } else {
+      opened.location.href = fresh.url
     }
-    opened.location.href = fresh.url
   } catch (error) {
     opened?.close()
     failed.value = `${attachment.filename} could not be downloaded: ${errorMessage(error)}`

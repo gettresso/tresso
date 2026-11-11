@@ -109,6 +109,23 @@ describe('AttachmentList', () => {
     expect(window.location.href).toBe(before)
   })
 
+  it('opens a renewed link in the browser in the desktop app, which neither opens a window nor leaves its page', async () => {
+    desktop.isDesktop = true
+    const open = vi.spyOn(window, 'open')
+    const before = window.location.href
+    const renewed = attachment('1', { url: 'http://localhost:8080/content/attachments/1?_hash=fresh' })
+    const wrapper = mount(AttachmentList, {
+      props: { attachments: [attachment('1', { url: 'http://localhost:8080/content/attachments/1?_hash=old' })], renewLinks: () => Promise.resolve([renewed]) },
+    })
+
+    await wrapper.get('a[aria-label="Download file-1.pdf"]').trigger('click')
+    await flushPromises()
+
+    expect(desktop.opened).toEqual(['http://localhost:8080/content/attachments/1?_hash=fresh'])
+    expect(open).not.toHaveBeenCalled()
+    expect(window.location.href).toBe(before)
+  })
+
   it('offers nothing for unscanned files on a server that requires scans', () => {
     const wrapper = mount(AttachmentList, { props: { attachments: [attachment('1', { scanStatus: 'failed', access: 'blocked', scanFailure: 'unavailable', url: null })] } })
 
