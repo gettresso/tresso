@@ -12,6 +12,8 @@ enum ConnectError: string
 {
     /** The user cancelled or refused at the provider. */
     case Denied = 'denied';
+    /** The user's organization lets its users allow only apps an administrator approved, and Tresso is not one yet. */
+    case AdminApprovalRequired = 'admin_approval_required';
     /** The sign-in took too long, was already used, or was not started by this browser. */
     case Expired = 'expired';
     /** The browser is signed in to Tresso as someone other than the user who started the sign-in. */

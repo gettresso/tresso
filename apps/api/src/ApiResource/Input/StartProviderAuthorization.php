@@ -26,6 +26,14 @@ final class StartProviderAuthorization
     #[Assert\Unique]
     public array $features = [ProviderFeature::Mail];
 
+    /**
+     * The address the user typed for a new account. The provider gets it as a login hint, so its page starts with
+     * that account instead of a list of every account the browser knows.
+     */
+    #[Assert\Email(mode: Assert\Email::VALIDATION_MODE_STRICT)]
+    #[Assert\Length(max: 320)]
+    public ?string $emailAddress = null;
+
     /** Signing in again for this mail account (after a failed sign-in, or to allow more). */
     #[Assert\Uuid]
     public ?string $mailAccountId = null;

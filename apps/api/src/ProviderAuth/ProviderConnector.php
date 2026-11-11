@@ -36,6 +36,14 @@ final readonly class ProviderConnector
 {
     public const string ADD_PATH = '/settings/accounts/new';
     public const string ACCOUNTS_PATH = '/settings/accounts';
+    public const int MAX_ERROR_DESCRIPTION = 500;
+
+    /**
+     * Microsoft's answers when the user's organization must approve the app first: AADSTS90094 (admin consent
+     * required), AADSTS65001 (no consent, and the user may not give it) and AADSTS900941 (admin consent required for
+     * the requested permissions).
+     */
+    private const array ADMIN_APPROVAL_CODES = ['AADSTS90094', 'AADSTS65001', 'AADSTS900941'];
 
     public function __construct(
         private EntityManagerInterface $entityManager,
@@ -53,10 +61,11 @@ final readonly class ProviderConnector
      * @param list<ProviderFeature> $features
      * @param MailAccount|null      $mailAccount signing in again for this account
      * @param ProviderReturnTarget  $returnTo    the app the provider's answer goes back to
+     * @param string|null           $loginHint   the address the user typed for a new account
      *
      * @return array{url: string, expiresAt: \DateTimeImmutable}
      */
-    public function start(User $owner, OAuthProvider $provider, array $features, ?MailAccount $mailAccount, ProviderReturnTarget $returnTo): array
+    public function start(User $owner, OAuthProvider $provider, array $features, ?MailAccount $mailAccount, ProviderReturnTarget $returnTo, ?string $loginHint = null): array
     {
         if (!$this->settings->isConfigured($provider)) {
             throw new \LogicException(\sprintf('%s sign-in is not configured.', $provider->label()));
@@ -72,7 +81,8 @@ final readonly class ProviderConnector
 
         $state = self::randomToken();
         $verifier = self::randomToken();
-        $request = new ProviderAuthorizationRequest($state, $owner, $provider, $features, $scopes, $verifier, $mailAccount?->getId()->toRfc4122(), $returnTo);
+        $loginHint = $mailAccount?->getEmailAddress() ?? (null === $loginHint ? null : mb_strtolower(trim($loginHint)));
+        $request = new ProviderAuthorizationRequest($state, $owner, $provider, $features, $scopes, $verifier, $mailAccount?->getId()->toRfc4122(), $returnTo, $loginHint);
 
         $this->entityManager->createQuery('DELETE FROM '.ProviderAuthorizationRequest::class.' r WHERE r.expiresAt <= :now')
             ->setParameter('now', new \DateTimeImmutable())
@@ -83,7 +93,7 @@ final readonly class ProviderConnector
         $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
 
         return [
-            'url' => $this->client->authorizationUrl($provider, $scopes, $state, $challenge, $mailAccount?->getEmailAddress()),
+            'url' => $this->client->authorizationUrl($provider, $scopes, $state, $challenge, $loginHint),
             'expiresAt' => $request->getExpiresAt(),
         ];
     }
@@ -99,6 +109,11 @@ final readonly class ProviderConnector
     public function returnFrom(OAuthProvider $provider, array $query): ConnectResult
     {
         $state = $query['state'] ?? null;
+        // An administrator who approved Tresso for their organization (the link of a refused sign-in, see complete())
+        // comes back without a state: Microsoft sends admin_consent=True.
+        if (OAuthProvider::Microsoft === $provider && !\is_string($state) && 'true' === strtolower((string) (\is_string($query['admin_consent'] ?? null) ? $query['admin_consent'] : ''))) {
+            return new ConnectResult(self::ADD_PATH, ['provider' => $provider->value, 'adminConsent' => 'granted']);
+        }
         $request = \is_string($state) && '' !== $state ? $this->entityManager->find(ProviderAuthorizationRequest::class, ProviderAuthorizationRequest::hashState($state)) : null;
         if (!\is_string($state) || null === $request || $request->getProvider() !== $provider) {
             return new ConnectResult(self::ADD_PATH, ['provider' => $provider->value, 'connectError' => ConnectError::Expired->value]);
@@ -114,6 +129,10 @@ final readonly class ProviderConnector
                 $answer[$key] = $query[$key];
             }
         }
+        // Microsoft says only here why it refused (an AADSTS code), for instance that an administrator must approve.
+        if (isset($answer['error']) && \is_string($query['error_description'] ?? null) && '' !== $query['error_description']) {
+            $answer['error_description'] = mb_substr($query['error_description'], 0, self::MAX_ERROR_DESCRIPTION);
+        }
 
         return new ConnectResult($path, $answer, $request->getReturnTo());
     }
@@ -122,9 +141,12 @@ final readonly class ProviderConnector
      * Finishes a sign-in with the provider's answer, for the signed-in user who hands it in. Never throws for things
      * the user or provider did: the outcome says what happened.
      */
-    public function complete(User $user, OAuthProvider $provider, string $state, ?string $code, ?string $error): ConnectOutcome
+    public function complete(User $user, OAuthProvider $provider, string $state, ?string $code, ?string $error, ?string $errorDescription = null): ConnectOutcome
     {
         $request = '' !== $state ? $this->entityManager->find(ProviderAuthorizationRequest::class, ProviderAuthorizationRequest::hashState($state)) : null;
+        // Read before the request is used up, so a failure can still say what was asked for.
+        $requested = null !== $request && $request->getProvider() === $provider ? $request->getFeatures() : [];
+        $loginHint = $request?->getLoginHint();
 
         try {
             if (null === $request || $request->getProvider() !== $provider) {
@@ -143,7 +165,7 @@ final readonly class ProviderConnector
                 throw new ConnectFailed(ConnectError::Expired);
             }
             if (null !== $error && '' !== $error) {
-                throw new ConnectFailed('access_denied' === $error ? ConnectError::Denied : ConnectError::Failed, \sprintf('The provider answered %s.', $error));
+                throw new ConnectFailed(self::providerError($provider, $error, $errorDescription), \sprintf('The provider answered %s.', $error));
             }
             if (null === $code || '' === $code) {
                 throw new ConnectFailed(ConnectError::Failed, 'The provider sent no code.');
@@ -153,8 +175,29 @@ final readonly class ProviderConnector
         } catch (ConnectFailed $e) {
             $this->logger->info('Connecting a provider account failed.', ['provider' => $provider->value, 'error' => $e->error->value, 'reason' => $e->getMessage()]);
 
-            return ConnectOutcome::failed($e->error);
+            $approvalUrl = ConnectError::AdminApprovalRequired === $e->error ? $this->settings->adminConsentUrl($loginHint) : null;
+
+            return ConnectOutcome::failed($e->error, $requested, $approvalUrl);
         }
+    }
+
+    /**
+     * Why the provider refused: the user said no, their organization has to approve Tresso first, or something else.
+     */
+    private static function providerError(OAuthProvider $provider, string $error, ?string $description): ConnectError
+    {
+        if (OAuthProvider::Microsoft === $provider) {
+            if ('consent_required' === $error) {
+                return ConnectError::AdminApprovalRequired;
+            }
+            foreach (self::ADMIN_APPROVAL_CODES as $code) {
+                if (null !== $description && 1 === preg_match('/\b'.$code.'\b/', $description)) {
+                    return ConnectError::AdminApprovalRequired;
+                }
+            }
+        }
+
+        return 'access_denied' === $error ? ConnectError::Denied : ConnectError::Failed;
     }
 
     /**
@@ -201,19 +244,22 @@ final readonly class ProviderConnector
             }
             $this->logger->info('A provider sign-in left out a feature.', ['provider' => $provider->value, 'feature' => $feature->value]);
         }
+        $requested = $request->getFeatures();
 
         $owner = $request->getOwner();
         $forMail = \in_array(ProviderFeature::Mail, $request->getFeatures(), true);
         // Everything that can refuse the sign-in is checked before the transaction: nothing may be written then, and
         // an exception inside it would close the entity manager.
         $mailAccount = $forMail ? $this->mailAccountFor($request, $identity) : null;
+        // A new sign-in (not one for an account) that found the address connected already: it signs that one in again.
+        $existing = null !== $mailAccount && null === $request->getMailAccountId();
         $grant = $this->grants->findOneFor($owner, $provider, $identity->subject);
         if (null === $tokens->refreshToken && (null === $grant || null === $this->tokens->refreshToken($grant))) {
             throw new ConnectFailed(ConnectError::Failed, \sprintf('%s returned no refresh token.', $provider->label()));
         }
 
         // One transaction for the grant and the account, so change numbers for client sync commit in order.
-        return $this->entityManager->wrapInTransaction(function () use ($request, $tokens, $identity, $granted, $grant, $mailAccount, $forMail): ConnectOutcome {
+        return $this->entityManager->wrapInTransaction(function () use ($request, $tokens, $identity, $granted, $grant, $mailAccount, $forMail, $requested, $existing): ConnectOutcome {
             $owner = $request->getOwner();
             $provider = $request->getProvider();
 
@@ -229,8 +275,12 @@ final readonly class ProviderConnector
             $this->tokens->store($grant, $tokens);
             $this->entityManager->flush();
 
+            // What was asked for and is still not covered, also counting what the grant held before.
+            $covered = ProviderScopes::coveredFeatures($provider, $grant->getScopes());
+            $missing = array_values(array_filter($requested, static fn (ProviderFeature $feature): bool => !\in_array($feature, $covered, true)));
+
             if (!$forMail) {
-                return ConnectOutcome::grant($grant->getId()->toRfc4122());
+                return ConnectOutcome::grant($grant->getId()->toRfc4122(), $requested, $missing);
             }
 
             if (null === $mailAccount) {
@@ -249,16 +299,20 @@ final readonly class ProviderConnector
                 $this->entityManager->flush();
             }
 
-            if (\in_array(ProviderFeature::Calendar, ProviderScopes::coveredFeatures($provider, $grant->getScopes()), true)) {
+            if (\in_array(ProviderFeature::Calendar, $covered, true)) {
                 if (CalendarSyncStatus::NotGranted === $mailAccount->getCalendarStatus()) {
                     $mailAccount->setCalendarStatus(CalendarSyncStatus::Unknown);
                     $this->entityManager->flush();
                 }
                 // The worker holding the account waits for calendar access; this wakes it.
                 $this->notifier->outboxDue($mailAccount->getId());
+            } elseif (\in_array(ProviderFeature::Calendar, $missing, true)) {
+                // Calendars asked for and left unticked: said now, not only once the worker first asks for a token.
+                $mailAccount->setCalendarStatus(CalendarSyncStatus::NotGranted, ProviderAccessTokens::notGrantedDetail($provider, ProviderFeature::Calendar));
+                $this->entityManager->flush();
             }
 
-            return ConnectOutcome::connected($mailAccount->getId()->toRfc4122());
+            return ConnectOutcome::connected($mailAccount->getId()->toRfc4122(), $requested, $missing, $existing);
         });
     }
 

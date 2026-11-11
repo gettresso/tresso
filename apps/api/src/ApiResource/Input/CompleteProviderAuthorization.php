@@ -26,4 +26,8 @@ final class CompleteProviderAuthorization
     /** The provider's error code (for example access_denied), when the user did not. */
     #[Assert\Length(max: 128)]
     public ?string $error = null;
+
+    /** The provider's explanation of the error, as the callback passed it on (Microsoft puts its AADSTS code here). */
+    #[Assert\Length(max: 500)]
+    public ?string $errorDescription = null;
 }

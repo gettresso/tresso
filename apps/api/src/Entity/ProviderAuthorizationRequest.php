@@ -51,6 +51,10 @@ class ProviderAuthorizationRequest
     #[ORM\Column(length: 36, nullable: true)]
     private ?string $mailAccountId;
 
+    /** The address the user typed for a new account; the provider gets it as a login hint. */
+    #[ORM\Column(length: 320, nullable: true)]
+    private ?string $loginHint = null;
+
     /** Where the callback sends the provider's answer. */
     #[ORM\Column(length: 16, enumType: ProviderReturnTarget::class, options: ['default' => ProviderReturnTarget::Web->value])]
     private ProviderReturnTarget $returnTo;
@@ -62,8 +66,9 @@ class ProviderAuthorizationRequest
      * @param list<ProviderFeature> $features
      * @param list<string>          $requestedScopes
      */
-    public function __construct(string $state, User $owner, OAuthProvider $provider, array $features, array $requestedScopes, string $codeVerifier, ?string $mailAccountId, ProviderReturnTarget $returnTo)
+    public function __construct(string $state, User $owner, OAuthProvider $provider, array $features, array $requestedScopes, string $codeVerifier, ?string $mailAccountId, ProviderReturnTarget $returnTo, ?string $loginHint = null)
     {
+        $this->loginHint = $loginHint;
         $this->stateHash = self::hashState($state);
         $this->owner = $owner;
         $this->provider = $provider;
@@ -115,6 +120,11 @@ class ProviderAuthorizationRequest
     public function getMailAccountId(): ?string
     {
         return $this->mailAccountId;
+    }
+
+    public function getLoginHint(): ?string
+    {
+        return $this->loginHint;
     }
 
     public function getReturnTo(): ProviderReturnTarget

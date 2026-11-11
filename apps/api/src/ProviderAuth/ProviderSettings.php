@@ -88,6 +88,24 @@ final readonly class ProviderSettings
         };
     }
 
+    /**
+     * Where an administrator of a Microsoft organization approves Tresso for all its users: in this installation's
+     * tenant when it is registered for one, otherwise in the organization of the address (any directory when unknown).
+     * Microsoft sends the administrator back to the callback afterwards.
+     */
+    public function adminConsentUrl(?string $emailAddress): string
+    {
+        $domain = null === $emailAddress ? '' : strtolower(substr((string) strrchr($emailAddress, '@'), 1));
+        $tenant = \in_array(strtolower($this->tenant()), ['common', 'organizations', 'consumers'], true)
+            ? ('' !== $domain ? $domain : 'organizations')
+            : $this->tenant();
+
+        return 'https://login.microsoftonline.com/'.rawurlencode($tenant).'/adminconsent?'.http_build_query([
+            'client_id' => $this->clientId(OAuthProvider::Microsoft),
+            'redirect_uri' => $this->redirectUri(OAuthProvider::Microsoft),
+        ], '', '&', \PHP_QUERY_RFC3986);
+    }
+
     private function tenant(): string
     {
         return '' === $this->microsoftTenant ? 'common' : $this->microsoftTenant;

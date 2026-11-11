@@ -65,7 +65,7 @@ final readonly class ProviderAuthorizationProcessor implements ProcessorInterfac
             throw self::violation($data, 'features', 'Allow calendars for a connected account: name it in mailAccountId, or ask for mail too.', implode(',', array_map(static fn (ProviderFeature $feature): string => $feature->value, $data->features)));
         }
 
-        $started = $this->connector->start($owner, $provider, $data->features, $mailAccount, $data->returnTo);
+        $started = $this->connector->start($owner, $provider, $data->features, $mailAccount, $data->returnTo, null === $mailAccount ? $data->emailAddress : null);
 
         return new ProviderAuthorization($started['url'], $provider->value, $started['expiresAt']);
     }

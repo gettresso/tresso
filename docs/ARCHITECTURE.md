@@ -461,8 +461,9 @@ signed-in provider account, shared by every feature that uses it: mail, and the 
 Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes to the same grant.
 
 - **Start:** `POST /api/v1/provider-authorizations` (scope `settings:write`) with `{"provider": "google" | "microsoft",
-  "features": ["mail", "calendar"], "mailAccountId": <optional, to sign in again or allow more>, "returnTo": "web" |
-  "native"}`. `returnTo` (default `web`) says which app gets the provider's answer; the URL behind each is the server's
+  "features": ["mail", "calendar"], "mailAccountId": <optional, to sign in again or allow more>, "emailAddress":
+  <optional, the address typed for a new account>, "returnTo": "web" | "native"}`. The address (or the account's,
+  when signing in again) goes to the provider as `login_hint`, so its page starts with that account. `returnTo` (default `web`) says which app gets the provider's answer; the URL behind each is the server's
   own (`WEB_APP_URL`, `NATIVE_REDIRECT_URI`), so a client cannot send the answer anywhere else. The desktop app asks
   for `native`: it opens the provider in the system browser, as its own sign-in does, because sending its window there
   ended on the web app, another origin without the desktop app's tokens, and the user looked signed out. Calendars alone
@@ -475,7 +476,8 @@ Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes 
   OAuth app for.
 - **Callback:** the provider redirects the browser to `<API_PUBLIC_URL>/connect/<provider>/callback`. That route is
   public and only passes the answer on: it redirects to the web app (`/settings/accounts/new`, or `/settings/accounts`
-  when signing in again) with `provider`, `state` and the provider's `code` or `error`, or straight away with
+  when signing in again) with `provider`, `state` and the provider's `code` or `error` (with `error_description`,
+  at most 500 characters, where Microsoft says why), or straight away with
   `connectError=expired` for a state that expired or that it does not know (an unknown one always to the web app).
   For `returnTo: native` the same query goes to `NATIVE_REDIRECT_URI` (`tresso://auth/callback`) with that page in
   `next`; the desktop app opens only those two pages from such a link. It does not depend on the API's browser session (the one used
@@ -490,9 +492,16 @@ Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes 
   mailbox address from Graph `/me`), checks that the mail scopes were granted (users can untick them; calendars left
   unticked are allowed later, and only the calendar status says so),
   creates or updates the grant and creates the mail account (or signs an existing one in again), and answers
-  `{provider, connected: <account id>, grant: <grant id, when only calendars were allowed>, connectError: <code>}`
-  (codes: `denied`, `expired`, `different_user`, `scopes_missing`, `wrong_account`, `already_connected`,
-  `unverified_address`, `no_mailbox`, `failed`). ID tokens come straight from the token endpoint
+  `{provider, connected: <account id>, grant: <grant id, when only calendars were allowed>, connectError: <code>,
+  requested: <features asked for>, missing: <features asked for and not allowed>, existing: <a new sign-in found the
+  account connected already>, approvalUrl}` (codes: `denied`, `admin_approval_required`, `expired`, `different_user`,
+  `scopes_missing`, `wrong_account`, `already_connected`, `unverified_address`, `no_mailbox`, `failed`). Calendars
+  asked for and left unticked set the account's calendar status to `not_granted` right away. Microsoft's
+  `consent_required`, or an `error_description` with AADSTS90094, AADSTS65001 or AADSTS900941, means the user's
+  organization only allows apps an administrator approved: the answer is `admin_approval_required` with
+  `approvalUrl`, Microsoft's admin consent page for the organization of the typed address (or this installation's
+  tenant). An administrator who approves comes back through the callback with `admin_consent=True`, which leads to
+  `/settings/accounts/new?provider=microsoft&adminConsent=granted`. ID tokens come straight from the token endpoint
   over TLS, so their claims are used without a signature check (OpenID Connect Core 3.1.3.7); the audience is checked.
 - **Grants** (`provider_grant`): owner, provider, the provider's stable account id, the scopes the provider confirmed
   (Microsoft's normalized to lowercase without the `https://graph.microsoft.com/` prefix) and the tokens, sealed with

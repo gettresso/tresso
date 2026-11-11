@@ -120,7 +120,12 @@ trait ConnectsProviderAccounts
      */
     private function connectionInput(array $passedOn): array
     {
-        return array_intersect_key($passedOn, array_flip(['provider', 'state', 'code', 'error']));
+        $input = array_intersect_key($passedOn, array_flip(['provider', 'state', 'code', 'error']));
+        if (isset($passedOn['error_description'])) {
+            $input['errorDescription'] = $passedOn['error_description'];
+        }
+
+        return $input;
     }
 
     /**

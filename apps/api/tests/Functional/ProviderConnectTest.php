@@ -249,7 +249,7 @@ final class ProviderConnectTest extends DatabaseTestCase
 
         self::assertResponseStatusCodeSame(200);
         $account = $this->onlyAccount();
-        self::assertSame(['provider' => 'google', 'connected' => $account->getId()->toRfc4122(), 'grant' => null, 'connectError' => null], $this->decodedResponse());
+        self::assertSame(['provider' => 'google', 'connected' => $account->getId()->toRfc4122(), 'grant' => null, 'connectError' => null, 'requested' => ['mail'], 'missing' => [], 'existing' => false, 'approvalUrl' => null], $this->decodedResponse());
         self::assertSame(0, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]), 'The state works once.');
     }
 
@@ -274,7 +274,7 @@ final class ProviderConnectTest extends DatabaseTestCase
 
         self::assertResponseStatusCodeSame(200);
         $account = $this->onlyAccount();
-        self::assertSame(['provider' => 'google', 'connected' => $account->getId()->toRfc4122(), 'grant' => null, 'connectError' => null], $this->decodedResponse());
+        self::assertSame(['provider' => 'google', 'connected' => $account->getId()->toRfc4122(), 'grant' => null, 'connectError' => null, 'requested' => ['mail'], 'missing' => [], 'existing' => false, 'approvalUrl' => null], $this->decodedResponse());
         self::assertSame('kim@gmail.example', $account->getEmailAddress());
     }
 
@@ -318,15 +318,86 @@ final class ProviderConnectTest extends DatabaseTestCase
 
     public function testRefusingAtTheProviderSaysSo(): void
     {
-        $query = $this->start('google');
+        $query = $this->start('google', features: ['mail', 'calendar']);
 
         $answer = $this->providerRedirect('google', ['state' => $query['state'], 'error' => 'access_denied', 'error_description' => 'The user said no.']);
-        self::assertSame(self::WEB.'/settings/accounts/new?'.http_build_query(['provider' => 'google', 'state' => $query['state'], 'error' => 'access_denied']), $answer['location']);
+        self::assertSame(self::WEB.'/settings/accounts/new?'.http_build_query(['provider' => 'google', 'state' => $query['state'], 'error' => 'access_denied', 'error_description' => 'The user said no.']), $answer['location']);
 
         $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
         self::assertResponseStatusCodeSame(200);
-        self::assertSame('denied', $this->decodedResponse()['connectError'] ?? null);
+        $response = $this->decodedResponse();
+        self::assertSame('denied', $response['connectError'] ?? null);
+        self::assertSame(['mail', 'calendar'], $response['requested'] ?? null, 'Says what was asked for, so the client can offer mail alone.');
+        self::assertNull($response['approvalUrl'] ?? 'missing');
         self::assertSame(0, $this->entityManager()->getRepository(ProviderAuthorizationRequest::class)->count([]));
+    }
+
+    public function testAWorkAccountWhoseOrganizationMustApproveSaysSoWithTheApprovalLink(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'microsoft', 'emailAddress' => 'Kim@Company.example', 'features' => ['mail', 'calendar']], $this->user);
+        self::assertResponseStatusCodeSame(201);
+        parse_str((string) parse_url($this->responseString('authorizationUrl'), \PHP_URL_QUERY), $query);
+        self::assertIsString($query['state'] ?? null);
+
+        $answer = $this->providerRedirect('microsoft', [
+            'state' => $query['state'],
+            'error' => 'access_denied',
+            'error_description' => 'AADSTS90094: Admin consent is required for the permissions requested by this application.',
+        ]);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+
+        self::assertResponseStatusCodeSame(200);
+        $response = $this->decodedResponse();
+        self::assertSame('admin_approval_required', $response['connectError'] ?? null);
+        self::assertSame(
+            'https://login.microsoftonline.com/company.example/adminconsent?client_id=test-microsoft-client&redirect_uri=http%3A%2F%2Flocalhost%2Fconnect%2Fmicrosoft%2Fcallback',
+            $response['approvalUrl'] ?? null,
+        );
+    }
+
+    public function testConsentRequiredAtMicrosoftAlsoAsksForApproval(): void
+    {
+        $query = $this->start('microsoft');
+        $answer = $this->providerRedirect('microsoft', ['state' => $query['state'], 'error' => 'consent_required']);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+
+        self::assertSame('admin_approval_required', $this->decodedResponse()['connectError'] ?? null);
+        self::assertStringStartsWith('https://login.microsoftonline.com/organizations/adminconsent?', (string) ($this->decodedResponse()['approvalUrl'] ?? ''), 'Without an address, any organization.');
+    }
+
+    public function testAnAdministratorsApprovalReturnsToTheConnectPage(): void
+    {
+        $answer = $this->providerRedirect('microsoft', ['admin_consent' => 'True', 'tenant' => '9188040d-6c67-4c5b-b112-36a304b66dad']);
+
+        self::assertSame(self::WEB.'/settings/accounts/new?provider=microsoft&adminConsent=granted', $answer['location']);
+    }
+
+    public function testANewSignInPassesTheTypedAddressAsLoginHint(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'google', 'emailAddress' => 'kim@gmail.example'], $this->user);
+        self::assertResponseStatusCodeSame(201);
+        parse_str((string) parse_url($this->responseString('authorizationUrl'), \PHP_URL_QUERY), $query);
+
+        self::assertSame('kim@gmail.example', $query['login_hint'] ?? null);
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'google', 'emailAddress' => 'not an address'], $this->user);
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['emailAddress'], $this->violationPaths());
+    }
+
+    public function testANewSignInForAConnectedAddressSaysItWasConnectedAlready(): void
+    {
+        $id = $this->connectGoogle()->getId()->toRfc4122();
+
+        $query = $this->start('google');
+        $this->googleTokens(access: 'google-access-2', refresh: 'google-refresh-2');
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-2']);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+
+        $response = $this->decodedResponse();
+        self::assertSame($id, $response['connected'] ?? null);
+        self::assertTrue($response['existing'] ?? null);
+        self::assertSame(1, $this->entityManager()->getRepository(MailAccount::class)->count([]));
     }
 
     public function testFinishingValidatesItsInput(): void
@@ -352,15 +423,37 @@ final class ProviderConnectTest extends DatabaseTestCase
         self::assertSame(0, $this->entityManager()->getRepository(ProviderGrant::class)->count([]));
     }
 
-    public function testCalendarsLeftUntickedStillConnectTheMail(): void
+    public function testCalendarsLeftUntickedStillConnectTheMailAndSaySo(): void
     {
         $query = $this->start('google', features: ['mail', 'calendar']);
         $this->googleTokens();
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1']);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
 
-        self::assertStringContainsString('connected=', $this->returnFromProvider('google', $query['state']));
-        $grant = $this->onlyAccount()->getProviderGrant();
+        $response = $this->decodedResponse();
+        self::assertIsString($response['connected'] ?? null);
+        self::assertSame(['mail', 'calendar'], $response['requested'] ?? null);
+        self::assertSame(['calendar'], $response['missing'] ?? null);
+        self::assertFalse($response['existing'] ?? null);
+        $this->entityManager()->clear();
+        $account = $this->onlyAccount();
+        self::assertSame('not_granted', $account->getCalendarStatus()->value, 'Said at once, not only when the worker first asks.');
+        self::assertSame('Tresso is not allowed to use the calendars of this account yet. Allow it by signing in with Google again.', $account->getCalendarStatusDetail());
+        $grant = $account->getProviderGrant();
         self::assertInstanceOf(ProviderGrant::class, $grant);
         self::assertNotContains('https://www.googleapis.com/auth/calendar.events', $grant->getScopes());
+    }
+
+    public function testAllowedCalendarsAreNotMissing(): void
+    {
+        $query = $this->start('google', features: ['mail', 'calendar']);
+        $this->googleTokens(scope: 'openid '.self::GMAIL_SCOPE.' '.self::GOOGLE_CALENDAR_SCOPES);
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1']);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+
+        self::assertSame([], $this->decodedResponse()['missing'] ?? null);
+        $this->entityManager()->clear();
+        self::assertSame('unknown', $this->onlyAccount()->getCalendarStatus()->value);
     }
 
     public function testAllowingCalendarsLaterKeepsTheMailAndWakesTheWorker(): void
