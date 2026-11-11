@@ -64,7 +64,7 @@ final class PublicHostsTest extends DatabaseTestCase
         $query = http_build_query([
             'response_type' => 'code',
             'client_id' => 'web',
-            'redirect_uri' => $this->callback(),
+            'redirect_uri' => $this->webCallback(),
             'scope' => 'mail:read',
             'state' => 'moved',
             'code_challenge' => rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '='),
@@ -83,14 +83,14 @@ final class PublicHostsTest extends DatabaseTestCase
         $this->client->submit($crawler->selectButton('Sign in')->form(['_username' => 'kim@example.test', '_password' => self::DEFAULT_PASSWORD]));
         $this->client->request('GET', 'http://app.localhost/oauth/authorize?'.$query);
         $location = (string) $this->client->getResponse()->headers->get('Location');
-        self::assertStringStartsWith($this->callback().'?', $location);
+        self::assertStringStartsWith($this->webCallback().'?', $location);
         parse_str((string) parse_url($location, \PHP_URL_QUERY), $answer);
         self::assertIsString($answer['code'] ?? null);
 
         $this->client->request('POST', 'http://localhost/oauth/token', [
             'grant_type' => 'authorization_code',
             'client_id' => 'web',
-            'redirect_uri' => $this->callback(),
+            'redirect_uri' => $this->webCallback(),
             'code' => $answer['code'],
             'code_verifier' => $verifier,
         ]);
@@ -165,7 +165,7 @@ final class PublicHostsTest extends DatabaseTestCase
         $this->client->disableReboot();
     }
 
-    private function callback(): string
+    private function webCallback(): string
     {
         $webAppUrl = $_SERVER['WEB_APP_URL'] ?? null;
         self::assertIsString($webAppUrl);
