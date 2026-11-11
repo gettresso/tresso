@@ -81,6 +81,21 @@ describe('ComposeForm', () => {
     wrapper.unmount()
   })
 
+  it('gives focus back to the Send later button when it closes the menu', async () => {
+    const { wrapper } = setup(draft)
+    const button = wrapper.get('.later > button')
+
+    await button.trigger('click')
+    await settle()
+    expect(document.activeElement).toBe(wrapper.find('.later [role="menuitem"]').element)
+    await button.trigger('click')
+    await settle()
+
+    expect(wrapper.find('.later [role="menu"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(button.element)
+    wrapper.unmount()
+  })
+
   it('closes the Send later menu on a press elsewhere', async () => {
     const { wrapper } = setup(draft)
 
