@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SendMessageRequest } from './compose'
-import { Composer, type ComposerNotice } from './composer'
+import { Composer, OriginalUnavailableError, type ComposerDeps, type ComposerNotice } from './composer'
 import { DraftSync } from './drafts'
 import { ApiFailure, FakeDraftApi } from './drafts.fake'
 import { accounts, message, page, signature } from './store/contract'
@@ -26,6 +26,8 @@ describe('Composer', () => {
   let sendGate: Promise<void> | null
   let currentStore: SqliteMailStore | null
   let changes: number
+  let bodyFails: unknown
+  let deps: ComposerDeps
   let composer: Composer
 
   beforeEach(async () => {
@@ -42,13 +44,17 @@ describe('Composer', () => {
     api = new FakeDraftApi()
     originalFiles = []
     originalHtml = '<p>Numbers?</p>'
-    composer = new Composer({
+    bodyFails = null
+    deps = {
       store: () => currentStore,
       drafts: new DraftSync(() => currentStore, api),
       accounts: () => accounts,
       signatures: () => [signature('sig-work', 'Work')],
       defaultAccount: () => 'work',
-      body: async () => ({ html: originalHtml, text: null, attachments: originalFiles }),
+      body: async () => {
+        if (bodyFails !== null) throw bodyFails
+        return { html: originalHtml, text: null, attachments: originalFiles }
+      },
       send: async (request) => {
         await sendGate
         if (sendFails !== null) throw sendFails
@@ -62,7 +68,8 @@ describe('Composer', () => {
       notify: (notice) => notices.push(notice),
       explain: (error) => ({ message: error instanceof Error ? error.message : String(error), violations: error instanceof ApiFailure ? error.violations : {} }),
       changed: () => (changes += 1),
-    })
+    }
+    composer = new Composer(deps)
   })
 
   afterEach(() => {
@@ -672,6 +679,13 @@ describe('Composer', () => {
     await vi.advanceTimersByTimeAsync(1000)
     expect(changes).toBe(afterFirst)
 
+    composer.update({ subject: 'Three' })
+    composer.close()
+    await vi.advanceTimersByTimeAsync(10)
+    expect(changes).toBe(afterFirst + 1)
+
+    // Put away without edits, nothing changed in the copy.
+    await composer.openDraft((await store.drafts())[0]!.id)
     composer.close()
     await vi.advanceTimersByTimeAsync(10)
     expect(changes).toBe(afterFirst + 1)
@@ -821,4 +835,163 @@ describe('Composer', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect((await store.draft(id))!.attachments.map((attachment) => attachment.id)).toEqual(['other-file', 'second'])
   })
+
+  /** A draft saved by this device (version 1 on the server), then saved by another device as version 2 with other text. */
+  async function changedElsewhere(): Promise<string> {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'Mine' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const id = composer.state.draft!.id
+    expect(await store.draft(id)).toMatchObject({ version: 1, pendingSave: false })
+    api.drafts.set(id, { ...api.drafts.get(id)!, subject: 'Theirs', version: 2 })
+    await store.apply(page({ cursor: 2, drafts: [api.drafts.get(id)!] }))
+    return id
+  }
+
+  it("does not overwrite another device's newer version when an idle draft is edited, but asks which to keep", async () => {
+    const id = await changedElsewhere()
+
+    composer.update({ html: '<p>Typed here</p>' })
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(composer.state.conflict).toBe(true)
+    expect(await store.draft(id)).toMatchObject({ subject: 'Mine', html: '<p>Typed here</p>', version: 1, remoteVersion: 2, pendingSave: true })
+    expect(api.drafts.get(id)).toMatchObject({ subject: 'Theirs', version: 2 })
+    expect(api.calls.filter((call) => call.startsWith('update'))).toEqual([])
+  })
+
+  it("does not send an idle draft over another device's newer version", async () => {
+    const id = await changedElsewhere()
+
+    expect(await composer.send()).toBeNull()
+
+    expect(sent).toEqual([])
+    expect(composer.state).toMatchObject({ conflict: true, error: 'This draft was changed on another device. Choose which version to keep first.' })
+    expect(api.drafts.get(id)).toMatchObject({ subject: 'Theirs', version: 2 })
+  })
+
+  it("shows another device's version in an idle form, and closes one sent or deleted there", async () => {
+    const id = await changedElsewhere()
+
+    await composer.followUp()
+
+    expect(composer.state.draft).toMatchObject({ id, subject: 'Theirs', version: 2 })
+    expect(notices.map((notice) => notice.text)).toContain('"Theirs" was changed on another device. It shows that version now.')
+
+    await store.apply(page({ cursor: 3, deleted: [{ type: 'draft', id }] }))
+    await composer.followUp()
+
+    expect(composer.state.draft).toBeNull()
+    expect(await store.draft(id)).toBeNull()
+  })
+
+  it('keeps edits typed while the copy is read, rather than showing what was stored before them', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'First' })
+    await vi.advanceTimersByTimeAsync(1000)
+    composer.update({ subject: 'Second' })
+    // The copy is read (still "First") while "Second" waits to be saved; it is saved before the read comes back.
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const draft = store.draft.bind(store)
+    vi.spyOn(store, 'draft').mockImplementationOnce(async (id) => {
+      const stale = await draft(id)
+      await gate
+      return stale
+    })
+    const refreshing = composer.refreshOpen()
+    await vi.advanceTimersByTimeAsync(1000)
+    release()
+    await refreshing
+
+    expect(composer.state.draft).toMatchObject({ subject: 'Second' })
+  })
+
+  it('does not write back an unedited draft that was deleted on another device while it was open', async () => {
+    const id = await changedElsewhere()
+    await composer.openDraft(id)
+    await store.apply(page({ cursor: 3, deleted: [{ type: 'draft', id }] }))
+
+    composer.close()
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(await store.draft(id)).toBeNull()
+  })
+
+  it('keeps the draft of an undone message a draft in the copy, whatever opens next', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    composer.update({ subject: 'Undone' })
+    const id = composer.state.draft!.id
+    await composer.send()
+
+    await composer.undo()
+    composer.openNew()
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(await store.draft(id)).toMatchObject({ subject: 'Undone', outgoingId: null })
+  })
+
+  it('makes the draft of a message cancelled elsewhere (the Outbox, another device) a draft again', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    const id = composer.state.draft!.id
+    await composer.send()
+    const before = changes
+
+    await store.apply(page({ cursor: 2, outgoingMessages: [outgoing('cancelled')] }))
+    await composer.followUp()
+
+    expect(await store.draft(id)).toMatchObject({ outgoingId: null, noticedStatus: null })
+    expect(changes).toBeGreaterThan(before)
+  })
+
+  it('opens a reply whose original could not be loaded, saying the quote is incomplete', async () => {
+    bodyFails = new Error('Timed out')
+
+    await composer.openReply(original, 'reply')
+
+    expect(composer.state.draft).toMatchObject({ kind: 'reply', inReplyToMessageId: 'm1' })
+    expect(composer.state.error).toBe('The original message could not be loaded (Timed out), so the quote is incomplete.')
+  })
+
+  it('does not open a forward whose original could not be loaded', async () => {
+    bodyFails = new Error('Timed out')
+
+    await composer.openReply(original, 'forward')
+    expect(composer.state.draft).toBeNull()
+    expect(notices.at(-1)).toMatchObject({ tone: 'error', text: 'The message could not be forwarded: it could not be loaded (Timed out).' })
+
+    await expect(composer.openReply(original, 'forward', { strict: true })).rejects.toBeInstanceOf(OriginalUnavailableError)
+    expect(composer.state.draft).toBeNull()
+  })
+
+  it('says why a conflict could not be settled, and keeps it to try again', async () => {
+    const id = await changedElsewhere()
+    composer.update({ html: '<p>Typed here</p>' })
+    await vi.advanceTimersByTimeAsync(1000)
+    api.offline = true
+
+    await composer.resolveConflict('mine')
+
+    expect(composer.state).toMatchObject({ conflict: true, error: 'The versions could not be compared: Network request failed' })
+    api.offline = false
+    await composer.resolveConflict('mine')
+    expect(composer.state.conflict).toBe(false)
+    expect(api.drafts.get(id)).toMatchObject({ html: '<p>Typed here</p>', version: 3 })
+  })
+
+  it('treats a message the server took as sent, also when noting it on this device fails', async () => {
+    composer.openNew([{ address: 'anna@example.test', name: null }])
+    const changeDraft = store.changeDraft.bind(store)
+    vi.spyOn(store, 'changeDraft').mockImplementation((id, change) => (sent.length > 0 ? Promise.reject(new Error('disk full')) : changeDraft(id, change)))
+
+    const outgoingMessage = await composer.send()
+
+    expect(outgoingMessage).toMatchObject({ id: 'o1' })
+    expect(composer.state).toMatchObject({ draft: null, error: null, sending: false })
+    expect(composer.state.undoable?.outgoingId).toBe('o1')
+    expect(notices.at(-1)).toMatchObject({ tone: 'error', text: 'Sent, but this device could not note it (disk full). The draft may stay in Drafts.' })
+    expect(await composer.send()).toBeNull()
+    expect(sent).toHaveLength(1)
+  })
+
 })

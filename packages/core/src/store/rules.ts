@@ -55,14 +55,15 @@ export function syncedDraft(local: Draft | null | undefined, draft: SyncedDraft)
 
 /**
  * What a draft the server deleted leaves on this device: a sent one stays until its outcome is known (the server keeps
- * it meanwhile, version and files, so an undo or a failure brings it back); unsaved edits stay too. Returns the draft
- * to keep, or null to delete it.
+ * it meanwhile, version and files, so an undo or a failure brings it back); unsaved edits stay too, as a new draft:
+ * the server's copy they build on is gone, and so is any newer version of another device that was noted on them.
+ * Returns the draft to keep, or null to delete it.
  */
 export function deletedDraft(local: Draft): Draft | null {
   if (local.outgoingId) {
     return { ...local, pendingSave: false, remoteVersion: null }
   }
-  return local.pendingSave ? local : null
+  return local.pendingSave ? { ...local, version: 0, remoteVersion: null } : null
 }
 
 /** A draft as stored by an earlier version of the app, with what it did not know yet. */

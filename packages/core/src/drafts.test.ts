@@ -148,6 +148,61 @@ describe('DraftSync', () => {
     expect(await sync.resolveConflict('d1', 'theirs')).toMatchObject({ subject: 'Elsewhere again', version: 9, remoteVersion: null, pendingSave: false })
   })
 
+  it('settles a conflict whose other version is gone by keeping the edits here as a new draft', async () => {
+    await store.saveDraft(draft('d1', { pendingSave: true }))
+    await sync.upload('d1')
+    await store.saveDraft({ ...(await store.draft('d1'))!, subject: 'Here', pendingSave: true, remoteVersion: 3, updatedAt: 2 })
+    api.drafts.delete('d1')
+
+    expect(await sync.resolveConflict('d1', 'mine')).toMatchObject({ subject: 'Here', version: 1, remoteVersion: null, pendingSave: false })
+    expect(api.calls).toEqual(['create d1', 'create d1'])
+
+    await store.saveDraft({ ...(await store.draft('d1'))!, subject: 'Again', pendingSave: true, remoteVersion: 4, updatedAt: 3 })
+    api.drafts.delete('d1')
+    expect(await sync.resolveConflict('d1', 'theirs')).toMatchObject({ subject: 'Again', remoteVersion: null })
+  })
+
+  it('still says why a conflict cannot be settled when the server cannot be reached', async () => {
+    await store.saveDraft(draft('d1', { pendingSave: true, version: 1, remoteVersion: 3 }))
+    api.offline = true
+
+    await expect(sync.resolveConflict('d1', 'mine')).rejects.toThrow('Network request failed')
+    expect(await store.draft('d1')).toMatchObject({ remoteVersion: 3 })
+  })
+
+  it('recognises a create the server has already (its answer was lost), and goes on from there', async () => {
+    await store.saveDraft(draft('d1', { pendingSave: true }))
+    await sync.upload('d1')
+    // The copy here never got the answer: it still has version 0.
+    await store.saveDraft({ ...(await store.draft('d1'))!, version: 0, pendingSave: true })
+
+    await sync.upload('d1')
+
+    expect(await store.draft('d1')).toMatchObject({ version: 1, pendingSave: false, remoteVersion: null })
+    expect(conflicts).toBe(0)
+
+    // Edited before the lost answer was known: the edits go up on the server's first version.
+    await store.saveDraft({ ...(await store.draft('d1'))!, version: 0, subject: 'Edited', pendingSave: true, updatedAt: 2 })
+    await sync.upload('d1')
+
+    expect(api.calls).toEqual(['create d1', 'create d1', 'create d1', 'update d1 @1'])
+    expect(api.drafts.get('d1')).toMatchObject({ subject: 'Edited', version: 2 })
+    expect(await store.draft('d1')).toMatchObject({ version: 2, pendingSave: false, remoteVersion: null })
+  })
+
+  it("notes another device's later version when a create is refused, rather than writing over it", async () => {
+    await store.saveDraft(draft('d1', { pendingSave: true }))
+    await sync.upload('d1')
+    api.drafts.set('d1', { ...api.drafts.get('d1')!, subject: 'Elsewhere', version: 4 })
+    await store.saveDraft({ ...(await store.draft('d1'))!, version: 0, subject: 'Here', pendingSave: true, updatedAt: 2 })
+
+    await sync.upload('d1')
+
+    expect(await store.draft('d1')).toMatchObject({ subject: 'Here', version: 0, remoteVersion: 4, pendingSave: true })
+    expect(conflicts).toBe(1)
+    expect(api.drafts.get('d1')).toMatchObject({ subject: 'Elsewhere' })
+  })
+
   it('makes a draft deleted on another device a new one again', async () => {
     await store.saveDraft(draft('d1', { pendingSave: true }))
     await sync.upload('d1')
@@ -251,6 +306,7 @@ describe('writing mail', () => {
     expect(sentOutcome(sent, outgoing('sent'))).toBe('sent')
     expect(sentOutcome(sent, outgoing('failed'))).toBe('failed')
     expect(sentOutcome(sent, outgoing('scheduled'))).toBe('other')
+    expect(sentOutcome(sent, outgoing('cancelled'))).toBe('cancelled')
     expect(sentOutcome({ ...sent, noticedStatus: 'failed' }, outgoing('failed'))).toBeNull()
     expect(sentOutcome(sent, null)).toBeNull()
     expect(sentOutcome(draft('d2'), outgoing('sent'))).toBeNull()
