@@ -2,11 +2,30 @@
 framework:
     secret: '%env(APP_SECRET)%'
 
-    # Note that the session will be started ONLY if you read or write from it.
-    session: true
+    # The browser session of the sign-in pages (firewall `main`: /login, /oauth/authorize and the consent screen), the
+    # only place a session is started. Kept in Redis, so every API instance sees the same session and a deploy signs
+    # nobody out. It ends two hours after the last request or when the browser closes; "Keep me signed in" (the
+    # remember-me cookie in security.yaml) signs the browser in again for 30 days after that.
+    session:
+        handler_id: app.session_handler
+        cookie_lifetime: 0
+        cookie_secure: auto
+        cookie_httponly: true
+        cookie_samesite: lax
+        gc_maxlifetime: 7200
 
     #esi: true
     #fragments: true
+
+services:
+    app.session_redis:
+        class: Redis
+        factory: ['Symfony\Component\Cache\Adapter\RedisAdapter', 'createConnection']
+        arguments: ['%env(REDIS_URL)%', { lazy: true }]
+    # Redis expires a session two hours after its last request (the ttl), so no garbage collection is needed.
+    app.session_handler:
+        class: Symfony\Component\HttpFoundation\Session\Storage\Handler\RedisSessionHandler
+        arguments: ['@app.session_redis', { prefix: 'session:', ttl: 7200 }]
 
 when@test:
     framework:
