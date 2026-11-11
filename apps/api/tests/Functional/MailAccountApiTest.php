@@ -6,7 +6,9 @@ namespace App\Tests\Functional;
 
 use App\Entity\MailAccount;
 use App\Enum\MailAccountStatus;
+use App\Realtime\MercureTokens;
 use App\Security\Crypto\CredentialVault;
+use App\Tests\Support\RecordingMercureHub;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
 
@@ -154,6 +156,43 @@ final class MailAccountApiTest extends DatabaseTestCase
 
         $entityManager->clear();
         self::assertSame('app-password-2', static::getContainer()->get(CredentialVault::class)->open($this->account($id))['password']);
+    }
+
+    public function testNewServerSettingsClearASyncErrorAndWakeTheWorker(): void
+    {
+        $headers = $this->userHeaders('kim@example.test', self::READ_WRITE);
+        $this->client->jsonRequest('POST', '/api/v1/mail-accounts', $this->imapPayload(), $headers);
+        $id = $this->responseString('id');
+
+        $entityManager = static::getContainer()->get(EntityManagerInterface::class);
+        $entityManager->wrapInTransaction(fn () => $this->account($id)->setStatus(MailAccountStatus::Error, 'Could not connect to the mail server.'));
+        $hub = static::getContainer()->get(RecordingMercureHub::class);
+        $hub->takePublished();
+
+        $this->client->request('PATCH', '/api/v1/mail-accounts/'.$id, server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode([
+            'password' => 'app-password-2',
+            'imap' => ['host' => 'imap2.company.example', 'port' => 993, 'security' => 'tls'],
+        ], \JSON_THROW_ON_ERROR));
+
+        self::assertResponseIsSuccessful();
+        $body = $this->decodedResponse();
+        self::assertSame('active', $body['status'] ?? null);
+        self::assertNull($body['statusDetail'] ?? 'missing');
+        $woken = array_filter($hub->takePublished(), static fn (array $update): bool => MercureTokens::OUTBOX_TOPIC === $update['body']['topic']);
+        self::assertSame([json_encode(['mailAccountId' => $id])], array_values(array_map(static fn (array $update): string => $update['body']['data'], $woken)));
+    }
+
+    public function testRenamingKeepsASyncError(): void
+    {
+        $headers = $this->userHeaders('kim@example.test', self::READ_WRITE);
+        $this->client->jsonRequest('POST', '/api/v1/mail-accounts', $this->imapPayload(), $headers);
+        $id = $this->responseString('id');
+        static::getContainer()->get(EntityManagerInterface::class)->wrapInTransaction(fn () => $this->account($id)->setStatus(MailAccountStatus::Error, 'Could not connect to the mail server.'));
+
+        $this->client->request('PATCH', '/api/v1/mail-accounts/'.$id, server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: '{"displayName":"Work mail"}');
+
+        self::assertResponseIsSuccessful();
+        self::assertSame('error', $this->decodedResponse()['status'] ?? null);
     }
 
     public function testUserCanPauseButNotSetSystemStatuses(): void

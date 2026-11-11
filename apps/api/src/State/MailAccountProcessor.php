@@ -19,6 +19,7 @@ use App\Enum\MailProvider;
 use App\Enum\OAuthProvider;
 use App\ProviderAuth\ProviderAccessTokens;
 use App\ProviderAuth\ProviderClient;
+use App\Realtime\RealtimeNotifier;
 use App\Repository\MailAccountRepository;
 use App\Repository\ProviderGrantRepository;
 use App\Repository\TodoRepository;
@@ -53,6 +54,7 @@ final readonly class MailAccountProcessor implements ProcessorInterface
         private ProviderGrantRepository $grants,
         private TodoRepository $todos,
         private Security $security,
+        private RealtimeNotifier $notifier,
     ) {
     }
 
@@ -178,9 +180,14 @@ final readonly class MailAccountProcessor implements ProcessorInterface
 
         if (null !== $input->password) {
             $this->vault->seal($account, ['type' => 'password', 'password' => $input->password]);
-            if (MailAccountStatus::AuthFailed === $account->getStatus()) {
-                $account->setStatus(MailAccountStatus::Active);
-            }
+        }
+
+        // New credentials or servers deserve a fresh try: the old failure no longer says anything about them, and the
+        // worker holding the account tries again now instead of after its backoff.
+        $changesConnection = null !== $input->password || null !== $input->imap || null !== $input->smtp || null !== $input->username;
+        if ($changesConnection && \in_array($account->getStatus(), [MailAccountStatus::AuthFailed, MailAccountStatus::Error], true)) {
+            $account->setStatus(MailAccountStatus::Active);
+            $this->notifier->outboxDue($account->getId());
         }
 
         if (null !== $input->status) {
