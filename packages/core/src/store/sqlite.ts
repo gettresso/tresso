@@ -394,6 +394,10 @@ export class SqliteMailStore implements MailStore {
     })
   }
 
+  acceptAction(applied: AppliedAction): void {
+    applied.before.forEach((message, index) => this.openActions.accepted(message, applied.after[index]!))
+  }
+
   revertAction(applied: AppliedAction): Promise<void> {
     return this.write(() =>
       this.sql.transaction(async (tx) => {
