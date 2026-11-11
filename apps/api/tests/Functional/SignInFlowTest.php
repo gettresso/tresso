@@ -342,7 +342,7 @@ final class SignInFlowTest extends DatabaseTestCase
         self::assertSame($rotated['access_token'] ?? null, $again['access_token'] ?? null);
         self::assertIsInt($again['expires_in'] ?? null);
         self::assertLessThanOrEqual(3600, $again['expires_in']);
-        self::assertResponseHeaderSame('Cache-Control', 'no-store');
+        self::assertTrue($this->client->getResponse()->headers->hasCacheControlDirective('no-store'));
         $this->me($tokens['access_token']);
         self::assertResponseIsSuccessful('A request already sent with the old access token still goes through.');
     }
