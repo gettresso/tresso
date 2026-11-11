@@ -428,3 +428,19 @@ func TestAuthenticationResultsIsSentWholeOrCutAtASemicolon(t *testing.T) {
 		t.Error("a header without a ; to cut at must be left out")
 	}
 }
+
+// Fails without the fix: the cut took the last ";" of the first 8000 characters also inside a comment or a quoted
+// string, leaving text a sender may control at the end.
+func TestTheCutSkipsSemicolonsInCommentsAndQuotedStrings(t *testing.T) {
+	head := "mx.google.com; spf=pass smtp.mailfrom=a@example.com; dkim=pass header.i=@example.com"
+	comment := " (" + strings.Repeat("a; ", 20) + "dmarc=pass) "
+	quoted := `x="` + strings.Repeat("b; ", 20) + `dmarc=pass"`
+	value := head + comment + quoted + strings.Repeat("z", 200)
+
+	if got := cutAtSemicolon(value, len(head)+len(comment)+len(quoted)+10); got != "mx.google.com; spf=pass smtp.mailfrom=a@example.com" {
+		t.Errorf("cut = %q; want it at the last ; outside comments and quoted strings", got)
+	}
+	if got := cutAtSemicolon(`a=1; b=2 (it\)s; still a comment; ) c=3`+strings.Repeat("z", 50), 40); got != "a=1" {
+		t.Errorf("cut = %q; an escaped ) does not end the comment", got)
+	}
+}

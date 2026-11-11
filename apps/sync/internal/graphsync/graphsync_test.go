@@ -1230,3 +1230,63 @@ func TestGraphMailPassesOnExchangesAuthAs(t *testing.T) {
 		t.Errorf("headers %v", msg.Headers)
 	}
 }
+
+// placeholderForM2 runs sessions until m2 of the inbox is a placeholder (Graph refuses its content for an hour), then
+// lets Graph hand it over again. It returns the run's strikes and a clock the caller moves.
+func placeholderForM2(t *testing.T, h *harness) (*isolate.Strikes, *time.Time, func() time.Time) {
+	t.Helper()
+	h.graph.add("m1", "f-inbox", 100, raw("m1"))
+	h.graph.add("m2", "f-inbox", 200, raw("m2"))
+	h.graph.refuseRaw = map[string]fakeRefusal{"m2": {http.StatusBadRequest, `{"error":{"code":"ErrorInvalidRequest"}}`}}
+	now := time.Now()
+	clock := func() time.Time { return now }
+	strikes := isolate.NewStrikesWithClock(clock)
+	h.runSessions(isolate.StrikesBeforeSkip+1, strikes, clock)
+	now = now.Add(isolate.MinStrikeSpan)
+	if errs := h.runSessions(1, strikes, clock); errs[0] != nil {
+		t.Fatal(errs[0])
+	}
+	if msg, _ := h.api.Message("f-inbox", "m2"); !ingestmsg.IsPlaceholder(msg) && !strings.HasPrefix(msg.Subject, ingestmsg.PlaceholderSubject) {
+		t.Fatalf("m2 = %+v, want a placeholder", msg)
+	}
+	h.graph.mu.Lock()
+	h.graph.refuseRaw = nil
+	h.graph.mu.Unlock()
+	return strikes, &now, clock
+}
+
+// Fails without the fix: a message that moved to another folder was dropped from the retries, and its placeholder
+// was never replaced.
+func TestAMovedPlaceholderIsReplacedInTheFolderTheMessageIsInNow(t *testing.T) {
+	h := newHarness(t)
+	strikes, now, clock := placeholderForM2(t, h)
+	h.graph.moveQuietly("m2", "f-notes")
+	*now = now.Add(isolate.RetryFirst)
+
+	if errs := h.runSessions(1, strikes, clock); errs[0] != nil {
+		t.Fatal(errs[0])
+	}
+	if msg, ok := h.api.Message("f-notes", "m2"); !ok || msg.Subject != "Message m2" {
+		t.Errorf("f-notes m2 = %+v, %v; want the real message there", msg, ok)
+	}
+	if pending := h.session.ingest.Pending("f-inbox"); len(pending) != 0 {
+		t.Errorf("pending %v; the replaced placeholder must be forgotten", pending)
+	}
+}
+
+func TestAPlaceholderWhoseMessageMovedOutOfSightIsForgotten(t *testing.T) {
+	h := newHarness(t)
+	strikes, now, clock := placeholderForM2(t, h)
+	h.graph.moveQuietly("m2", "f-elsewhere")
+	*now = now.Add(isolate.RetryFirst)
+
+	if errs := h.runSessions(1, strikes, clock); errs[0] != nil {
+		t.Fatal(errs[0])
+	}
+	if got := h.api.UIDs("f-elsewhere"); len(got) != 0 {
+		t.Errorf("ingested into a folder the session does not sync: %v", got)
+	}
+	if pending := h.session.ingest.Pending("f-inbox"); len(pending) != 0 {
+		t.Errorf("pending %v; want the entry dropped", pending)
+	}
+}

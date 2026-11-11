@@ -816,8 +816,10 @@ Planned features hook into these steps: AI classification, assignments to teamma
   API keeps them in `message_signals`, apart from the message row and only for messages that have any. Anyone can
   write an Authentication-Results header, so a DMARC pass counts only when the receiving server surely wrote it: at
   Gmail and Microsoft 365 the topmost header is always theirs. The worker sends the topmost one whole, up to 8000
-  characters (other headers up to 1000); a longer one is cut at its last `;` before the limit, never inside a
-  comment or a quoted string. For Microsoft 365 accounts (Graph) it also sends `x-ms-exchange-organization-authas` as
+  characters (other headers up to 1000); a longer one is cut at its last `;` before the limit that is outside
+  comments and quoted strings, so the cut never leaves part of a comment or quoted string. Deploy the API before
+  the worker: an API older than this answers 422 to such a header, which makes that message a placeholder until
+  the next try an hour later. For Microsoft 365 accounts (Graph) it also sends `x-ms-exchange-organization-authas` as
   written (`Internal` for mail sent inside the tenant, up to 1000 characters): Exchange Online strips the
   X-MS-Exchange-Organization-* headers from mail arriving from outside (its header firewall), so there it can only be
   Exchange's own. A sender can write it into any other mail, so it is never sent for Gmail or IMAP accounts. Known

@@ -251,18 +251,37 @@ func signals(get func(string) string) map[string]string {
 	return out
 }
 
-// cutAtSemicolon cuts a header longer than max characters at its last ";" before the limit, so it ends with a whole
-// result, never inside a comment or a quoted string that could hold anything; "" when there is no such ";".
+// cutAtSemicolon cuts a header longer than max characters at its last ";" before the limit that is outside comments
+// and quoted strings (RFC 5322), so it ends with a whole result, never inside text that could hold anything; "" when
+// there is no such ";".
 func cutAtSemicolon(value string, max int) string {
-	if utf8.RuneCountInString(value) <= max {
+	runes := []rune(value)
+	if len(runes) <= max {
 		return value
 	}
-	cut := string([]rune(value)[:max])
-	i := strings.LastIndex(cut, ";")
-	if i <= 0 {
+	cut, depth, quoted, escaped := -1, 0, false, false
+	for i, r := range runes[:max] {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && (quoted || depth > 0):
+			escaped = true
+		case quoted:
+			quoted = r != '"'
+		case r == '"' && depth == 0:
+			quoted = true
+		case r == '(':
+			depth++
+		case r == ')' && depth > 0:
+			depth--
+		case r == ';' && depth == 0:
+			cut = i
+		}
+	}
+	if cut <= 0 {
 		return ""
 	}
-	return strings.TrimSpace(cut[:i])
+	return strings.TrimSpace(string(runes[:cut]))
 }
 
 func addressList(h gomail.Header, key string) []Address {
