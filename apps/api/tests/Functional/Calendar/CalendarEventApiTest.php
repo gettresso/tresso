@@ -771,6 +771,25 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertSame('FREQ=WEEKLY;COUNT=4', $this->getJson('/api/v1/calendar-events/'.$series['id'], $this->kim)['recurrence']);
     }
 
+    public function testSavingAllOccurrencesKeepsTheEndInItsOwnZone(): void
+    {
+        $flight = [
+            'summary' => 'Flight',
+            'recurrence' => 'FREQ=WEEKLY;COUNT=2',
+            'start' => ['dateTime' => '2026-10-19T10:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-19T12:00:00', 'timeZone' => 'America/New_York'],
+        ];
+        $series = $this->create($flight);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$series['id'].'?scope=all', self::event($this->calendarId, ['summary' => 'Flight to New York'] + $flight), $this->kim);
+        self::assertResponseIsSuccessful();
+        self::assertSame(['dateTime' => '2026-10-19T12:00:00', 'timeZone' => 'America/New_York'], $this->decodedResponse()['end']);
+
+        $first = $this->occurrences($this->kim, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0];
+        self::assertSame(['dateTime' => '2026-10-19T08:00:00+00:00'], $first['start']);
+        self::assertSame(['dateTime' => '2026-10-19T16:00:00+00:00'], $first['end'], 'Still eight hours.');
+    }
+
     public function testManagesLocalCalendars(): void
     {
         $this->client->jsonRequest('POST', '/api/v1/calendars', ['name' => 'Family', 'color' => '#E0457B'], $this->kim);

@@ -491,7 +491,8 @@ final readonly class EventEditor
                 ? EventTime::date(self::wallClock($masterStart))
                 : EventTime::dateTime(new \DateTimeImmutable(self::wallClock($masterStart)->format('Y-m-d').' '.self::wallClock($changes->start)->format('H:i:s'), new \DateTimeZone('UTC')), $changes->start->timeZone);
         }
-        $newEnd = self::shiftTime($newStart, $length, $newStart->timeZone);
+        // The end keeps its own zone (a flight that lands in another one); the editor's length is between wall clocks.
+        $newEnd = self::shiftTime($newStart, $length, $sameKind ? $changes->end->timeZone : $newStart->timeZone);
 
         $fresh = !$sameKind || self::normalizeRule($changes->rrule) !== self::normalizeRule($oldRule);
         // Moved to another day with the rule left alone: the weekdays and days of the month move along, so the series
