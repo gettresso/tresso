@@ -602,7 +602,10 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   once. `GET /api/v1/bulk-actions/{id}` reports the progress (`running`, `done`, `failed`); a smart inbox or target
   folder deleted meanwhile stops the run and keeps what it did, as does a run that still fails after its retries
   (marked with plain SQL, since the failed batch closed the entity manager; the listener never throws, so the
-  consumer keeps running). A stopped action can still be undone.
+  consumer keeps running). A stopped action can still be undone. A run only goes on through its next queue message, so
+  a sweep every five minutes queues a new run for an action under way that no run handled for ten minutes (its
+  message was lost, say because the queue was unreachable right after the action was saved); a second runner is
+  harmless, as each batch takes the action's row lock.
   `GET /api/v1/bulk-selection` counts a scope (conversations, messages, accounts) before the user confirms.
 - **Their undo** works like a single action's (`undoPlan` in `packages/core`): each batch records, per message it
   moved, where it went and the one folder it came from (`bulk_action_move`); messages that came from several folders,

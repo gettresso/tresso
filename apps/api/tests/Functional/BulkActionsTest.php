@@ -8,6 +8,8 @@ use App\Bulk\BulkActionHandler;
 use App\Bulk\BulkActions;
 use App\Bulk\BulkRun;
 use App\Bulk\BulkSelection;
+use App\Bulk\SweepBulkActions;
+use App\Bulk\SweepBulkActionsHandler;
 use App\Bulk\RunBulkAction;
 use App\Mailbox\MessageActions;
 use App\Realtime\AfterCommitDispatcher;
@@ -449,6 +451,27 @@ final class BulkActionsTest extends DatabaseTestCase
         self::assertTrue($stopped['canUndo']);
         $this->client->jsonRequest('POST', '/api/v1/bulk-actions/'.$bulk['id'].'/undo', [], $this->kim);
         self::assertResponseStatusCodeSame(202, 'the user is not blocked: the undo starts');
+    }
+
+    public function testAnActionWhoseQueueMessageGotLostIsPickedUpAgain(): void
+    {
+        $this->newsletters('Deals', 'news@shop.example', 2);
+        $bulk = $this->start(['in' => 'smartInbox', 'smartInboxId' => $this->smartInboxId('advertise'), 'action' => 'archive']);
+        self::assertResponseStatusCodeSame(202);
+        self::assertCount(1, $this->takeQueued(), 'The queue loses this message.');
+
+        $sweep = static::getContainer()->get(SweepBulkActionsHandler::class);
+        $sweep(new SweepBulkActions());
+        self::assertSame([], $this->takeQueued(), 'A fresh action has its runner still.');
+
+        $this->connection()->executeStatement("UPDATE bulk_action SET updated_at = updated_at - INTERVAL '1 hour'");
+        $sweep(new SweepBulkActions());
+        $this->runQueued();
+
+        self::assertSame('done', $this->bulkAction($bulk['id'])['status']);
+        self::assertSame(['Archive'], $this->foldersOf('Deals 1'));
+        $this->start(['in' => 'smartInbox', 'smartInboxId' => $this->smartInboxId('advertise'), 'action' => 'markRead']);
+        self::assertResponseStatusCodeSame(202, 'The next one may start.');
     }
 
     public function testTheUserCanStopIt(): void
