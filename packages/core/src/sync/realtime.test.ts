@@ -39,6 +39,7 @@ describe('RealtimeClient', () => {
   afterEach(async () => {
     await client?.stop()
     client = null
+    vi.useRealTimers()
   })
 
   it('subscribes with the token as bearer and reports cursors', async () => {
@@ -97,21 +98,96 @@ describe('RealtimeClient', () => {
   })
 
   it('renews the token before it expires without reporting an error', async () => {
+    vi.useFakeTimers()
     const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
       const hub = stream()
       init?.signal?.addEventListener('abort', () => hub.response.body?.cancel().catch(() => {}))
       return hub.response
     })
-    const fetchAccess = vi.fn().mockResolvedValueOnce(access('short', 10)).mockResolvedValue(access('long'))
+    const fetchAccess = vi.fn().mockResolvedValueOnce(access('short', 120_000)).mockResolvedValue(access('long'))
     const onError = vi.fn()
     const onConnected = vi.fn()
-    client = new RealtimeClient({ fetchAccess, onCursor: () => {}, onConnected, onError, fetch, renewBefore: 0 })
+    client = new RealtimeClient({ fetchAccess, onCursor: () => {}, onConnected, onError, fetch, idleTimeout: 3_600_000 })
 
     client.start()
-    await until(() => onConnected.mock.calls.length === 2)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(onConnected).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(60_000)
 
+    expect(onConnected).toHaveBeenCalledTimes(2)
     expect(onError).not.toHaveBeenCalled()
     expect(fetchAccess).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not ask for tokens in a loop when the device clock runs ahead of the server', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const hub = stream()
+      init?.signal?.addEventListener('abort', () => hub.response.body?.cancel().catch(() => {}))
+      return hub.response
+    })
+    // An hour ahead: every token looks expired already.
+    const fetchAccess = vi.fn(async () => access('t', -3_600_000))
+    const onError = vi.fn()
+    client = new RealtimeClient({ fetchAccess, onCursor: () => {}, onError, fetch })
+
+    client.start()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(fetchAccess).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(fetchAccess).toHaveBeenCalledTimes(2)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('waits before asking again when a token is renewed before the hub even answered', async () => {
+    vi.useFakeTimers()
+    // The hub never answers; the request ends only when it is aborted.
+    const fetch = vi.fn(
+      (_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))),
+    )
+    const fetchAccess = vi.fn(async () => access('t', -3_600_000))
+    client = new RealtimeClient({ fetchAccess, onCursor: () => {}, fetch, retryDelays: [10_000], idleTimeout: 3_600_000 })
+
+    client.start()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(fetchAccess).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(9_000)
+    expect(fetchAccess).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(fetchAccess).toHaveBeenCalledTimes(2)
+  })
+
+  it('takes a stream that went silent for dead and connects again, while heartbeats keep it open', async () => {
+    vi.useFakeTimers()
+    const hubs: ReturnType<typeof stream>[] = []
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const hub = stream()
+      hubs.push(hub)
+      init?.signal?.addEventListener('abort', () => hub.response.body?.cancel().catch(() => {}))
+      return hub.response
+    })
+    const fetchAccess = vi.fn(async () => access('t'))
+    const onError = vi.fn()
+    const onConnected = vi.fn()
+    client = new RealtimeClient({ fetchAccess, onCursor: () => {}, onConnected, onError, fetch, retryDelays: [1_000] })
+
+    client.start()
+    await vi.advanceTimersByTimeAsync(10)
+    expect(onConnected).toHaveBeenCalledTimes(1)
+    // A heartbeat comment every 40 s keeps it open.
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(40_000)
+      hubs[0]!.send(':\n')
+    }
+    expect(onError).not.toHaveBeenCalled()
+
+    // Then nothing: the connection died without being closed.
+    await vi.advanceTimersByTimeAsync(100_000)
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'The realtime hub went quiet.' }))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(fetchAccess).toHaveBeenCalledTimes(2)
+    expect(onConnected).toHaveBeenCalledTimes(2)
   })
 
   it('stops listening on stop', async () => {
