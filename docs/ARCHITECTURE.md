@@ -1495,15 +1495,22 @@ protocol, so every client syncs the same way:
 - `SyncEngine` pulls the delta into a `SyncStore` (each page and its cursor in one transaction). Pulls never overlap;
   a request during a pull makes it go round once more. A pull that failed is tried again by the engine itself after
   2 s, 5 s, 15 s and then every minute until one works (not after a 401, 402 or 403, nor while the copy closes), so
-  "Sync stopped" does not stay on a quiet mailbox until the next realtime notification. The clients run the retry
-  through their own pull, which shows it like any other, and stop the engine with the copy.
+  "Sync stopped" does not stay on a quiet mailbox until the next realtime notification. Each delay is spread by a
+  fifth either way, so clients that failed together come back apart, and never shorter than a `Retry-After` the server
+  sent (`retryAfterMs` on the clients' API errors; the API exposes the header to browsers). The clients run the retry
+  through their own pull, which shows it like any other, and stop the engine with the copy. `wake()` runs a waiting
+  retry at once: the web client calls it when the browser goes online and when the tab becomes visible, the phone
+  pulls whenever the app comes to the front, and the web banner has Try again.
 - `RealtimeClient` reads the hub through `fetch()` with the token as bearer, reconnects with backoff, renews the token
   before it expires, and asks for a pull on every (re)connect, because missed notifications are not replayed. The
-  token's `expiresAt` is the server's time read against the device's clock, so a token is used at least 30 s before
-  it is renewed (a clock that runs ahead would otherwise make every token look expired, and the client would ask for
-  tokens in a loop), and a renewal before the hub even answered waits a moment before the next try. A stream that
-  stays silent for 100 s (two and a half of the hub's 40 s heartbeats) is taken for dead and opened again, since a
-  connection lost without being closed (a laptop that slept, a proxy that dropped it) never ends a read.
+  token's `expiresAt` is the server's time, read against the server's clock as the client knows it (`ServerClock`),
+  and a token is used at least 30 s before it is renewed whatever the clocks say (otherwise a clock that runs ahead
+  makes every token look expired and the client asks for tokens in a loop); a renewal before the hub even answered
+  waits a moment before the next try. A stream that stays silent for two and a half of the hub's heartbeats is taken
+  for dead and opened again, since a connection lost without being closed (a laptop that slept, a proxy that dropped
+  it) never ends a read. The token answer says the heartbeat (`heartbeat`, seconds, from `MERCURE_HEARTBEAT_SECONDS`,
+  which the Caddyfile gives the hub too; 40 by default); without it the client takes 100 s, and with a heartbeat of 0
+  only the token renewal ends a dead stream.
 - `mailFrameDocument` wraps a sanitized body in the document for the sandboxed frame, with its Content-Security-Policy.
 
 Every client keeps a copy of the user's mail behind one interface, `MailStore` in `packages/core`: the browser in
@@ -1555,7 +1562,11 @@ window asks whether to keep this version or take the other one. Drafts written b
 uploaded after the update. The composer remembers the text and version each open draft was opened on: while nothing
 typed waits to be saved, another device's version that the delta brings replaces the form (with a notice), and a
 draft sent or deleted there closes it; edits typed on the older text are not laid over the newer version but noted as
-a conflict (also when sending), and closing a draft without edits writes nothing. When the other version is gone by
+a conflict (also when sending), and closing a draft without edits writes nothing (the lists are told all the same,
+since autosaves do not tell them). Only a version past the one the form builds on replaces it, and the copy never
+takes a draft from a page that is older than the one it has (a page the server read before this device's last upload
+that arrives after its answer). Texts are compared with the recipients as the server keeps them (trimmed, an empty name
+none), so the device's own save does not come back looking like another's. When the other version is gone by
 the time the user chooses (sent or deleted on another device, which also clears the version noted on the edits), the
 edits here become a new draft; a choice that fails (offline) says so and can be made again. A create the server
 already has (its answer was lost, or a rebuilt copy reset the draft to version 0) is recognised by its text rather
@@ -1563,13 +1574,17 @@ than retried for ever. A cancelled message (Undo, or Cancel in the Outbox, on an
 the copy at once, so it shows in Drafts whatever the user does next. A forward whose original cannot be loaded is not
 opened (a hand-over then sends nothing); a reply opens quoting the snippet and says the quote is incomplete. The few
 seconds of the undo window are a send time on the server's clock (`ComposerDeps.now`, `ServerClock` from the `Date`
-header of answers) while the notice counts them on the device's. A message the server took counts as sent also when
+header of answers, set against the middle of the request's round trip, ignoring answers that took over two seconds,
+and taken for the device's own while the two agree within two seconds, so a right clock never shortens the window)
+while the notice counts them on the device's. A message the server took counts as sent also when
 noting it on the device fails. Every send carries an `outgoingId`: a UUIDv7 on the server's clock, chosen when the
 user first presses Send and kept with the draft in the copy (`sendAttemptId`) before the request leaves, so pressing
 Send again after a lost answer, also after a restart, sends the same id and the server returns the message it queued
 instead of sending it twice. The id is dropped once the server confirmed the message, when the send is cancelled or
-undone, and when the draft's text changes (an edited message is a new one). A server that does not know the field
-ignores it.
+undone, and when the draft's text changes (an edited message is a new one). A server that refuses the id itself (a
+device clock far ahead) gets a new one on the next try. When the message with the send's id shows up in the copy
+while the draft still waits (its answer was lost), the draft is taken as on its way after all and its form closes, so
+an edit cannot send it a second time. A server that does not know the field ignores it.
 
 Message actions in the web client: opening a conversation reads it; the conversation's buttons archive, trash, mark
 unread, flag and move it (shortcuts E, #, U and S, not while typing or writing), and archiving, trashing or moving
@@ -1580,8 +1595,9 @@ triage, in the reading pane and in the bulk bar. The undo moves back only what t
 into the one folder it came from (`fromFolderId` on the move); for a message that was in several folders (Gmail's
 All Mail aside) no exact undo exists, so none is offered. Each action changes the local copy first
 (`applyAction` of the mail store), so lists update at once; when the server does not take it (for a large selection, the
-batches it did not take), it is put back part by part (read, flagged, folders), each part only while it still shows
-what the action made of it, so a second action on the same messages or a change the delta brought is kept.
+batches it did not take), it is put back part by part (read, flagged, folders; `OpenActions`): a part goes back once
+no other action of this device on it is open any more, to how it was before the first of them, and only while it
+shows the newest one's result; once the delta brought the message, the server's version stays.
 
 Bulk actions in the web client: conversations are selected with their checkboxes (shift selects a range), by age
 from the list's Select menu, or as everything from the senders of the selected ones; the last two search the whole
@@ -2498,7 +2514,9 @@ by mail.
   scanned, the outbox's question comes back as an `UnscannedFilesError` and the clients offer "Hand over anyway",
   which forwards them with `acceptUnscanned`. When recording fails, the forward is
   cancelled and its draft thrown away. Until the forward leaves (the undo window), Undo cancels it and withdraws the
-  hand-over (`DELETE`); afterwards the hand-over stays.
+  hand-over (`DELETE`); afterwards the hand-over stays. Hand-overs and throwing away the draft a taken-back forward
+  came back as share one composer, so they run one after another (a step that hangs holds the next for at most a
+  minute); the cancel and the withdrawal do not wait for them, since the forward leaves within seconds.
 - **Entity** `hand_over` (owner-scoped, tracked for the delta, tombstone type `handOver`): account, message handed
   over (SET NULL when it goes; the subject is kept), the conversation it was handed over in (followed through merges,
   SET NULL), delegate address and name, note, due date, state (`open`, `replied`, `done`), forward and its Message-ID,
