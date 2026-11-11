@@ -165,10 +165,6 @@ export const useMailStore = defineStore('mail', () => {
     if (mine !== generation) {
       return
     }
-    await removeOtherCopies(mailCopyName(forUserId))
-    if (mine !== generation) {
-      return
-    }
     userId = forUserId
     let opened!: () => void
     const opening = new Promise<void>((resolve) => {
@@ -327,8 +323,9 @@ export const useMailStore = defineStore('mail', () => {
       return
     }
     await stop()
-    if (!auth.isAuthenticated) {
-      // Removed by a sign-out in another tab: this tab follows that sign-out, it does not start a new copy.
+    if (!auth.isAuthenticated || auth.followSignOutElsewhere()) {
+      // Removed by a sign-out in another tab (whose storage event may not have arrived yet): this tab follows that
+      // sign-out, it does not start a new copy.
       return
     }
     if (reason === 'upgraded') {
@@ -400,11 +397,16 @@ export const useMailStore = defineStore('mail', () => {
 
   /**
    * Removes the copies other users left here when their session expired: once someone else signs in, they are no
-   * longer theirs to come back to. A copy that cannot be removed now stays listed and is tried again at the next start.
+   * longer theirs to come back to. Only for a user the server confirmed (/me), never for an id remembered from before:
+   * a stale id would otherwise remove the copy, and the unsent drafts, of the user who is signed in. The copy open now
+   * stays too; it is removed once it is closed, at a later call. A copy that cannot be removed now stays listed and is
+   * tried again the next time.
    */
-  async function removeOtherCopies(keep: string): Promise<void> {
+  async function removeOtherUsersCopies(confirmedUserId: string): Promise<void> {
+    const keep = mailCopyName(confirmedUserId)
+    const open = userId === null ? null : mailCopyName(userId)
     for (const copy of keptCopies()) {
-      if (copy.name === keep) {
+      if (copy.name === keep || copy.name === open) {
         continue
       }
       try {
@@ -767,6 +769,7 @@ export const useMailStore = defineStore('mail', () => {
   auth.onSessionEnd((reason) => (reason === 'signedOut' ? forget() : stop()))
 
   return {
+    removeOtherUsersCopies,
     accounts,
     listKey,
     allFolders,

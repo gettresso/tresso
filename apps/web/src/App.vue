@@ -117,6 +117,11 @@ watch(
         // Pushes someone else turned on in this browser stop once another user signs in here.
         releaseOtherUsersPush(auth.me.id).catch((e) => compose.notify({ text: `Another account's notifications may still show in this browser: ${errorMessage(e)}`, tone: 'error' }))
         await mail.start(auth.me.id)
+        if (!current()) {
+          return
+        }
+        // The server confirmed who is signed in: copies other users left here can go.
+        await mail.removeOtherUsersCopies(auth.me.id)
       }
       if (current()) {
         error.value = null
@@ -133,10 +138,10 @@ watch(
 // Keeping the sign-in fails right after a sign-in or a refresh, so while the app is on screen: the sign-in screen is
 // not, and the user would only learn of it by being signed out at the next launch.
 watch(
-  () => auth.storageError,
-  (problem) => {
-    if (problem !== null && auth.isAuthenticated) {
-      compose.notify({ text: problem, tone: 'error' }, 30_000)
+  () => auth.storageFailures,
+  () => {
+    if (auth.storageError !== null && auth.isAuthenticated) {
+      compose.notify({ text: auth.storageError, tone: 'error' }, 30_000)
     }
   },
   { immediate: true },
