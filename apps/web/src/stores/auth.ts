@@ -8,6 +8,7 @@ import {
   revokeToken,
   ServerClock,
   startAuthorization,
+  withDeadline,
   type Me,
   type OAuthClientConfig,
   type TokenSet,
@@ -704,6 +705,13 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+    // A request that hangs is given up after a while, so what waits on it (a hand-over, say) fails instead of waiting for
+    // ever. Uploads of the user's files may rightly take longer and keep only the caller's own signal.
+    const upload = init.body instanceof FormData || init.body instanceof Blob
+    return upload ? answer<T>(path, init) : withDeadline((signal) => answer<T>(path, { ...init, signal }), init.signal)
+  }
+
+  async function answer<T>(path: string, init: RequestInit): Promise<T> {
     const session = generation.value
     const sent = await accessToken()
     let response = await request(path, init, sent)

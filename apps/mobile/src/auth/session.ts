@@ -1,4 +1,4 @@
-import { exchangeCode, OAuthError, refreshTokens, retryAfterMs, ServerClock, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
+import { exchangeCode, OAuthError, refreshTokens, retryAfterMs, ServerClock, withDeadline, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
 import { revokeToken } from '@/auth/revokeToken'
 
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
@@ -206,6 +206,13 @@ export class Session {
   }
 
   async api<T>(path: string, init: RequestInit = {}): Promise<T> {
+    // A request that hangs is given up after a while, so what waits on it (a hand-over, say) fails instead of waiting for
+    // ever. Uploads of the user's files may rightly take longer and keep only the caller's own signal.
+    const upload = init.body instanceof FormData || (typeof Blob !== 'undefined' && init.body instanceof Blob)
+    return upload ? this.answer<T>(path, init) : withDeadline((signal) => this.answer<T>(path, { ...init, signal }), init.signal)
+  }
+
+  private async answer<T>(path: string, init: RequestInit): Promise<T> {
     const token = await this.accessToken()
     const generation = this.generation
     let response = await this.send(path, init, token)
