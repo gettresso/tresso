@@ -138,6 +138,14 @@ final class MailServerSettingsTest extends DatabaseTestCase
         self::assertSame('lisa@fastmail.com', $settings['username']);
     }
 
+    public function testAnswersCachedBeforeTheAddressWasLeftOutAreNotRead(): void
+    {
+        $personal = str_replace('%EMAILADDRESS%', 'anna@company.example', AutoconfigParserTest::FASTMAIL);
+        static::getContainer()->get('cache.mail_autoconfig')->get('autoconfig.'.hash('sha256', 'company.example'), static fn (): array => ['xml' => $personal, 'source' => 'provider']);
+
+        self::assertFalse($this->detect('bob@company.example')['found'], 'The old entry is not read; nothing else is known.');
+    }
+
     public function testRejectsInvalidAddresses(): void
     {
         $this->client->request('GET', '/api/v1/mail-server-settings?emailAddress=not-an-address', server: $this->kim);
