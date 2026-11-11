@@ -1029,7 +1029,10 @@ Inbox.
 The mobile app (Expo Router, screens in `apps/mobile/src/app`) is the `mobile` OAuth client with the same redirect
 URI. expo-auth-session opens the authorization page in the system's authentication browser
 (ASWebAuthenticationSession on iOS, Custom Tabs on Android) with PKCE and checks the state; the code is exchanged
-through `packages/core`. `Session` (`apps/mobile/src/auth/session.ts`, plain TypeScript, unit tested) keeps the tokens
+through `packages/core`. The page it opens is the `authorization_endpoint` the server names in its authorization
+server metadata (`/.well-known/oauth-authorization-server` on the API), so a server with a separate sign-in address
+(`AUTH_PUBLIC_URL`) is followed; when the metadata cannot be read, the app opens the API's `/oauth/authorize`, which
+sends the browser on. The token and revocation endpoints stay on the API. `Session` (`apps/mobile/src/auth/session.ts`, plain TypeScript, unit tested) keeps the tokens
 in expo-secure-store (Keychain on iOS, Keystore-encrypted on Android) as three entries, because some iOS releases
 refuse values above about 2 KB, refreshes them before they expire with one shared request (refresh tokens rotate),
 and never lets a refresh that finishes after sign-out sign the user back in. A save writes the refresh token first and
