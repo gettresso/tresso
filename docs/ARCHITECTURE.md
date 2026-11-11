@@ -1558,8 +1558,10 @@ older than a week, a month, three months or a year, after asking with the count 
 does the same for that sender at once. Clean up in the sidebar shows the cleanup suggestions, each with what its rule
 found and one button. The server works through the action; the web client asks how it is doing (soon at first, then
 every four seconds), shows the progress, pulls the delta when it is done and says how it went with the undo
-(`apps/web/src/stores/bulk.ts`), with a Stop button while it runs. One bulk action runs at a time: the buttons are
-disabled from the first click.
+(`apps/web/src/stores/bulk.ts`), with a Stop button while it runs. A poll that fails (offline, a deploy) is asked
+again after a growing wait; after ten failures in a row the client says it lost track of the action and pulls. The
+action under way is kept in the tab (sessionStorage), so after a reload it is followed again to its result and undo.
+One bulk action runs at a time: the buttons are disabled from the first click.
 
 Triage (`packages/core/src/triage.ts` for the state, `triageSession.ts` for the round; the web client and the phone
 run the same code): a round over the conversations in the inboxes that wait for a decision (`needsTriage`: in an

@@ -15,6 +15,7 @@ import { useFocusReturn } from '@/components/focusReturn'
 import UpdateCard from '@/components/UpdateCard.vue'
 import { useUpdatesStore } from '@/stores/updates'
 import { useBillingStore } from '@/stores/billing'
+import { useBulkStore } from '@/stores/bulk'
 import { TRIAL_REMINDER_DAYS, trialDaysLeft, type BillingStatus } from '@tresso/core'
 import { isDesktop } from '@/platform/desktop'
 import { vibrant } from '@/platform/vibrancy'
@@ -45,6 +46,8 @@ const ComposeWindow = defineAsyncComponent(() => import('@/components/ComposeWin
 const HandOverDialog = defineAsyncComponent(() => import('@/components/HandOverDialog.vue'))
 const PaymentScreen = defineAsyncComponent(() => import('@/components/PaymentScreen.vue'))
 const billing = useBillingStore()
+// Started with the app: a bulk action this tab followed before a reload is followed again to its result and undo.
+useBulkStore()
 const router = useRouter()
 
 /** Reminds an owner a few days before their own trial ends, once per launch. */

@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import type { BulkActionState } from '@tresso/core'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
-import { useBulkStore } from '../bulk'
+import { LOST_TRACK, useBulkStore } from '../bulk'
 
 function state(override: Partial<BulkActionState>): BulkActionState {
   return {
@@ -33,6 +33,8 @@ describe('bulk store', () => {
   const requests: { method: string; path: string; body: unknown }[] = []
   let replies: Record<string, BulkActionState[]>
   let refuse: string | null
+  /** Polls of the action that fail as if offline, before the server answers again. */
+  let failPolls: number
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -40,6 +42,7 @@ describe('bulk store', () => {
     setActivePinia(createPinia())
     requests.length = 0
     refuse = null
+    failPolls = 0
     replies = {}
     vi.stubGlobal(
       'fetch',
@@ -47,6 +50,10 @@ describe('bulk store', () => {
         const url = new URL(String(input))
         const method = init?.method ?? 'GET'
         requests.push({ method, path: `${url.pathname}${url.search}`, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+        if (method === 'GET' && url.pathname.startsWith('/api/v1/bulk-actions/') && failPolls > 0) {
+          failPolls -= 1
+          throw new TypeError('Failed to fetch')
+        }
         if (refuse !== null) {
           return new Response(JSON.stringify({ detail: refuse }), { status: 422 })
         }
@@ -185,5 +192,63 @@ describe('bulk store', () => {
 
     expect(last(useComposeStore().notices)).toMatchObject({ text: 'action: kim@home.example has no Archive folder.', tone: 'error' })
     expect(useMailStore().syncNow).not.toHaveBeenCalled()
+  })
+  it('keeps following an action when a poll fails, and still offers the undo', async () => {
+    replies['POST /api/v1/bulk-actions'] = [state({})]
+    replies['GET /api/v1/bulk-actions/b1'] = [state({ conversations: 200 }), state({ status: 'done', conversations: 312, changed: 330, canUndo: true })]
+    const bulk = useBulkStore()
+    const compose = useComposeStore()
+
+    const done = bulk.start({ in: 'smartInbox', smartInboxId: 's1', action: 'archive' })
+    await vi.advanceTimersByTimeAsync(500)
+    failPolls = 1
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(bulk.busy).toBe(true)
+    expect(bulk.progress).toBe('Archiving: 200 conversations done')
+    await vi.advanceTimersByTimeAsync(2000)
+
+    expect((await done)?.status).toBe('done')
+    expect(useMailStore().syncNow).toHaveBeenCalledOnce()
+    expect(compose.notices.some((notice) => notice.tone === 'error')).toBe(false)
+    expect(last(compose.notices)).toMatchObject({ text: 'Archived: 312 conversations.', action: { label: 'Undo' } })
+    expect(sessionStorage.getItem('tresso.bulkAction')).toBeNull()
+  })
+
+  it('stops following after many failed polls in a row, says so, and still pulls', async () => {
+    replies['POST /api/v1/bulk-actions'] = [state({})]
+    failPolls = 10
+    const bulk = useBulkStore()
+    const notify = vi.spyOn(useComposeStore(), 'notify')
+
+    const done = bulk.start({ in: 'inbox', action: 'archive' })
+    await vi.advanceTimersByTimeAsync(10 * 30_000)
+
+    expect(await done).toBeNull()
+    expect(bulk.busy).toBe(false)
+    expect(useMailStore().syncNow).toHaveBeenCalledOnce()
+    expect(notify).toHaveBeenCalledExactlyOnceWith({ text: LOST_TRACK, tone: 'error' })
+  })
+
+  it('follows an action again after a reload of the tab, to its result and its undo', async () => {
+    replies['POST /api/v1/bulk-actions'] = [state({})]
+    replies['GET /api/v1/bulk-actions/b1'] = [state({ conversations: 200 })]
+    const done = useBulkStore().start({ in: 'smartInbox', smartInboxId: 's1', action: 'move', folderId: 'f1' }, 'Receipts')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(JSON.parse(sessionStorage.getItem('tresso.bulkAction')!)).toEqual({ id: 'b1', undo: false, folderName: 'Receipts' })
+    void done
+
+    // The page loads again: new stores, the action still kept in the tab.
+    setActivePinia(createPinia())
+    vi.spyOn(useMailStore(), 'syncNow').mockResolvedValue()
+    replies['GET /api/v1/bulk-actions/b1'] = [state({ action: 'move', folderId: 'f1', status: 'done', conversations: 312, changed: 330, canUndo: true })]
+    const bulk = useBulkStore()
+    expect(bulk.busy).toBe(true)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(bulk.busy).toBe(false)
+    expect(useMailStore().syncNow).toHaveBeenCalledOnce()
+    expect(last(useComposeStore().notices)).toMatchObject({ action: { label: 'Undo' } })
+    expect(last(useComposeStore().notices)?.text).toContain('312')
+    expect(sessionStorage.getItem('tresso.bulkAction')).toBeNull()
   })
 })
