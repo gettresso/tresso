@@ -1942,8 +1942,12 @@ after. Everything lives in `apps/api/src/Notification`.
     once todos exist (phase 2), todos. A note hangs on the row that shows its occurrence and follows it: to an
     override when the occurrence gets one, back to the series when the override goes, to the new keys when "all"
     moves the series, to the new series of "this and following", and to the new resource when the event moves to
-    another calendar. Two notes that end up on one occurrence are joined. Notes of an event that is deleted (or
-    reappears under another `UID`) leave tombstones like other synced data.
+    another calendar. An occurrence changed by an override with `RANGE=THISANDFUTURE` keeps its note on that override's
+    row, as the occurrences answer shows it. A resource the provider reports under a new `UID` (the same href) is the
+    same event, and its notes go along. A note whose occurrence no longer exists stays with the event. Two notes that
+    end up on one occurrence are joined. Notes of an event that is deleted leave tombstones like other synced data;
+    so do those of an event moved to another calendar outside Tresso, which reaches Tresso as a delete in one calendar
+    and a new event in another and cannot be told apart from those.
 - **Channels:** `phone` reaches the user's Expo devices, `desktop` the desktop app and browsers with web push, `email`
   the address in the settings (or the sign-in address) from the system sender `NOTIFICATIONS_FROM`. Reminders carry
   their own channels; other kinds use the user's choice per kind (`channelsByKind` in the notification settings,
