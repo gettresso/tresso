@@ -46,6 +46,9 @@ export const secureTokenStore: TokenStore = {
     await SecureStore.setItemAsync(ACCESS_TOKEN, tokens.accessToken)
     await SecureStore.setItemAsync(EXPIRES_AT, String(tokens.expiresAt))
   },
+  async rememberUser(userId) {
+    await SecureStore.setItemAsync(LAST_USER, userId)
+  },
   async forgetUser() {
     await SecureStore.deleteItemAsync(LAST_USER)
   },

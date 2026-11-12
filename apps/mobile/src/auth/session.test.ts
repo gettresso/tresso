@@ -24,6 +24,12 @@ function memoryStore(initial: TokenSet | null = null): TokenStore & { saved: Tok
         this.leftover = null
       }
     },
+    async rememberUser(userId) {
+      if (this.failing) {
+        throw new Error('Keychain is locked.')
+      }
+      this.lastUser = userId
+    },
     async forgetUser() {
       if (this.failing) {
         throw new Error('Keychain is locked.')
@@ -438,6 +444,36 @@ describe('Session', () => {
 
     expect(store.lastUser).toBeNull()
     expect(session.snapshot).toMatchObject({ restored: false, ended: null })
+  })
+
+  it('remembers who signed in only after the store forgot the previous user, also when forgetting is slow', async () => {
+    const store = memoryStore()
+    store.lastUser = 'lisa'
+    let release: () => void = () => undefined
+    const forget = store.forgetUser.bind(store)
+    store.forgetUser = () => new Promise<void>((resolve) => (release = () => resolve(forget())))
+    const session = await restored(store, vi.fn<Fetch>(async () => tokenResponse('access-2', 'refresh-2')))
+
+    const signingIn = session.completeSignIn('the-code', 'the-verifier')
+    await vi.waitFor(() => expect(session.snapshot.tokens?.accessToken).toBe('access-2'))
+    const remembered = session.rememberUser('kim')
+    release()
+    await Promise.all([signingIn, remembered])
+
+    expect(store.lastUser).toBe('kim')
+    expect(store.saved?.accessToken).toBe('access-2')
+  })
+
+  it('does not remember who was signed in for a sign-in that ended before it was written', async () => {
+    const store = memoryStore(fresh())
+    const session = await restored(store, server(vi.fn<Fetch>()))
+    store.lastUser = null
+
+    const remembered = session.rememberUser('kim')
+    await session.signOut()
+    await remembered
+
+    expect(store.lastUser).toBeNull()
   })
 
   it('tries reading the kept sign-in again after it failed', async () => {
