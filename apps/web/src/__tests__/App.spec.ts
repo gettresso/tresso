@@ -317,6 +317,18 @@ describe('App', () => {
       vi.unstubAllGlobals()
     })
 
+    it('says the mail on screen is kept on this device while it cannot reach the server', async () => {
+      const { router } = await signedIn([offline], 'user-1')
+      const wrapper = mount(App, { global: { plugins: [router] } })
+      useMailStore().ready = true
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Showing mail kept on this device. Tresso is still connecting.')
+      expect(wrapper.text()).not.toContain('could not start')
+      expect(wrapper.findAll('button').some((button) => button.text() === 'Try again')).toBe(true)
+      vi.unstubAllGlobals()
+    })
+
     it('opens no copy before the server answers when no user was confirmed for the tokens', async () => {
       const { router, start } = await signedIn([offline])
       mount(App, { global: { plugins: [router] } })
@@ -340,6 +352,10 @@ describe('App', () => {
       const { router, start } = await signedIn([answered], 'user-0')
       const { useComposeStore } = await import('../stores/compose')
       const reset = vi.spyOn(useComposeStore(), 'reset')
+      const { useHandOversStore } = await import('../stores/handOvers')
+      const handOversReset = vi.spyOn(useHandOversStore(), 'reset')
+      const { useBulkStore } = await import('../stores/bulk')
+      const bulkReset = vi.spyOn(useBulkStore(), 'reset')
       mount(App, { global: { plugins: [router] } })
       await flushPromises()
 
@@ -349,6 +365,9 @@ describe('App', () => {
       ])
       expect(reset).toHaveBeenCalledOnce()
       expect(reset.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[1]!)
+      expect(handOversReset).toHaveBeenCalledOnce()
+      expect(bulkReset).toHaveBeenCalledOnce()
+      expect(bulkReset.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[1]!)
       vi.unstubAllGlobals()
     })
 

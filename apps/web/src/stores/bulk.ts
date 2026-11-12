@@ -341,7 +341,10 @@ export const useBulkStore = defineStore('bulk', () => {
     return state
   }
 
-  /** The session ended: the follow under way stops at once, and nothing of it is kept or shown. */
+  /**
+   * The session ended (or the copy of another user than the one kept is about to open): the follow under way stops at
+   * once, and nothing of it is kept or shown.
+   */
   function endFollowing(): void {
     stopFollowing.abort()
     stopFollowing = new AbortController()
@@ -373,5 +376,5 @@ export const useBulkStore = defineStore('bulk', () => {
   )
   onScopeDispose(() => stopFollowing.abort())
 
-  return { running, busy, progress, cancel, count, senders, suggestions, start, undo }
+  return { running, busy, progress, cancel, count, senders, suggestions, start, undo, reset: endFollowing }
 })
