@@ -183,6 +183,39 @@ class ChatAccount implements TracksChanges
         $this->relayOfflineSince = null;
     }
 
+    /**
+     * The relay was just heard from. That alone is no change for clients; it is when the relay was offline, which it is
+     * then no longer.
+     */
+    public function heardFromRelay(\DateTimeImmutable $now): void
+    {
+        $this->relaySeenAt = $now;
+        if (!$this->relayOnline) {
+            $this->relayOnline = true;
+            $this->relayOfflineSince = null;
+        }
+    }
+
+    /**
+     * What the relay reports of the bridge. A value that is the same as before is not assigned, so a report that
+     * changes nothing is no change for clients.
+     */
+    public function reportBridge(ChatBridgeState $bridge, ChatLinkState $link, ?\DateTimeImmutable $linkedAt, ?bool $loopbackOnly): void
+    {
+        if ($bridge !== $this->bridgeState) {
+            $this->bridgeState = $bridge;
+        }
+        if ($link !== $this->linkState) {
+            $this->linkState = $link;
+        }
+        if ($linkedAt?->getTimestamp() !== $this->linkedAt?->getTimestamp()) {
+            $this->linkedAt = $linkedAt;
+        }
+        if ($loopbackOnly !== $this->loopbackOnly) {
+            $this->loopbackOnly = $loopbackOnly;
+        }
+    }
+
     public function getBridgeState(): ChatBridgeState
     {
         return $this->bridgeState;

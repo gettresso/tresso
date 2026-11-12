@@ -11,6 +11,7 @@ use App\ApiResource\ChatAccountResource;
 use App\ApiResource\Input\Chat\ConnectChatAccount;
 use App\ApiResource\Input\Chat\UpdateChatAccount;
 use App\Chat\ChatFields;
+use App\Chat\ChatOwnerLock;
 use App\Chat\ChatViews;
 use App\Entity\Chat;
 use App\Entity\ChatAccount;
@@ -41,6 +42,7 @@ final readonly class ChatAccountProcessor implements ProcessorInterface
         private ChatFields $fields,
         private ChatViews $views,
         private ChangeSequencer $sequencer,
+        private ChatOwnerLock $ownerLock,
         private CurrentUser $currentUser,
     ) {
     }
@@ -57,7 +59,9 @@ final readonly class ChatAccountProcessor implements ProcessorInterface
 
         $owned = $this->owned($user, $uriVariables);
 
-        return $this->entityManager->wrapInTransaction(function () use ($owned, $data, $operation): ?ChatAccountResource {
+        return $this->entityManager->wrapInTransaction(function () use ($user, $owned, $data, $operation): ?ChatAccountResource {
+            // The owner first, then the account, as every chat write takes them ({@see ChatOwnerLock}).
+            $this->ownerLock->lock($user->getId());
             $account = $this->entityManager->find(ChatAccount::class, $owned->getId(), LockMode::PESSIMISTIC_WRITE)
                 ?? throw new NotFoundHttpException('Chat account not found.');
 
@@ -88,7 +92,7 @@ final readonly class ChatAccountProcessor implements ProcessorInterface
     private function connect(User $user, ConnectChatAccount $data, \DateTimeImmutable $now): ChatAccount
     {
         // Two first connects of one user take turns, so the second finds the account the first made.
-        $this->connection->executeQuery('SELECT id FROM app_user WHERE id = :id FOR UPDATE', ['id' => $user->getId()->toRfc4122()]);
+        $this->ownerLock->lock($user->getId());
 
         $deviceId = Uuid::fromString($data->deviceId);
         $deviceName = trim($data->deviceName);

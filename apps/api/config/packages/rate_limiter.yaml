@@ -39,6 +39,13 @@ framework:
             limit: 20
             interval: '10 minutes'
             cache_pool: cache.rate_limiter_shared
+        # WhatsApp replies queued per user (App\Chat\ChatQueue), from every device and token together: far above a
+        # person writing, low enough that a runaway client or tool cannot flood the user's chats from their number.
+        chat_reply:
+            policy: sliding_window
+            limit: 100
+            interval: '10 minutes'
+            cache_pool: cache.rate_limiter_shared
 
 when@dev: &redis_limits
     framework:
@@ -64,6 +71,12 @@ when@test:
                 policy: sliding_window
                 limit: 70
                 interval: '1 hour'
+                cache_pool: cache.rate_limiter_shared
+            # Low enough for a test to reach; every test user is new, so no test inherits another's count.
+            chat_reply:
+                policy: sliding_window
+                limit: 8
+                interval: '10 minutes'
                 cache_pool: cache.rate_limiter_shared
         cache:
             pools:

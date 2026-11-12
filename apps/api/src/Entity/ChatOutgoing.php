@@ -114,6 +114,34 @@ class ChatOutgoing implements TracksChanges
         return $this->sentAt;
     }
 
+    /** The relay took it to send: it is not handed out again ({@see \App\Chat\ChatQueue}). */
+    public function claim(\DateTimeImmutable $now): void
+    {
+        $this->status = ChatOutgoingStatus::Sending;
+        $this->claimedAt = $now;
+    }
+
+    public function markSent(\DateTimeImmutable $now): void
+    {
+        $this->status = ChatOutgoingStatus::Sent;
+        $this->error = null;
+        $this->sentAt = $now;
+    }
+
+    public function markFailed(ChatOutgoingError $error): void
+    {
+        $this->status = ChatOutgoingStatus::Failed;
+        $this->error = $error;
+    }
+
+    /** The user pressed Try again: it waits for the relay as a new reply would. */
+    public function retry(): void
+    {
+        $this->status = ChatOutgoingStatus::Waiting;
+        $this->error = null;
+        $this->claimedAt = null;
+    }
+
     public function getChangeOwner(): User
     {
         return $this->chatAccount->getOwner();

@@ -141,6 +141,42 @@ class Chat implements TracksChanges
         return $this->leftOut;
     }
 
+    /** A message at $at came in or went out: the last message time only moves forward. */
+    public function messageAt(\DateTimeImmutable $at): void
+    {
+        if ($at > $this->lastMessageAt) {
+            $this->lastMessageAt = $at;
+        }
+    }
+
+    /**
+     * The user has seen the chat up to $at. Only moves forward, so two devices never undo each other.
+     */
+    public function readThrough(\DateTimeImmutable $at): void
+    {
+        if (null === $this->readThrough || $at > $this->readThrough) {
+            $this->readThrough = $at;
+        }
+    }
+
+    /**
+     * Archives the chat up to $at (only forward, as {@see readThrough()}), or puts it back in the inbox with null.
+     */
+    public function archiveThrough(?\DateTimeImmutable $at): void
+    {
+        if (null === $at) {
+            $this->archivedThrough = null;
+        } elseif (null === $this->archivedThrough || $at > $this->archivedThrough) {
+            $this->archivedThrough = $at;
+        }
+    }
+
+    /** Through {@see \App\State\ChatProcessor} only, which removes what a left-out chat had. */
+    public function setLeftOut(bool $leftOut): void
+    {
+        $this->leftOut = $leftOut;
+    }
+
     public function getChangeOwner(): User
     {
         return $this->chatAccount->getOwner();

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Chat;
 
+use App\Entity\Chat;
 use App\Entity\ChatAccount;
+use App\Entity\ChatOutgoing;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -12,9 +14,9 @@ use Symfony\Component\Uid\Uuid;
  * the delta (from rows read in SQL) and for the REST resources (from entities). Times are ATOM strings.
  *
  * @phpstan-type AccountView array{id: string, channel: string, address: ?string, displayName: ?string, relayDeviceId: string, relayDeviceName: string, relayOnline: bool, relayOfflineSince: ?string, bridge: string, link: string, linkedAt: ?string, loopbackOnly: ?bool, includeGroups: bool, notify: bool}
- * @phpstan-type ChatView array{id: string, chatAccountId: string, jid: string, name: ?string, kind: string, lastMessageAt: ?string, readThrough: ?string, archivedThrough: ?string, leftOut: bool}
- * @phpstan-type MessageView array{id: string, chatId: string, chatAccountId: string, waId: string, fromMe: bool, sentAt: ?string, sender: array{id: string, name: ?string}|null, text: string, mediaKind: ?string, mediaName: ?string, mediaSize: ?int}
- * @phpstan-type OutgoingView array{id: string, chatId: string, chatAccountId: string, text: string, status: string, error: ?string, createdAt: ?string, claimedAt: ?string, sentAt: ?string}
+ * @phpstan-type ChatView array{id: string, chatAccountId: string, jid: string, name: ?string, kind: string, lastMessageAt: string, readThrough: ?string, archivedThrough: ?string, leftOut: bool}
+ * @phpstan-type MessageView array{id: string, chatId: string, chatAccountId: string, waId: string, fromMe: bool, sentAt: string, sender: array{id: string, name: ?string}|null, text: string, mediaKind: ?string, mediaName: ?string, mediaSize: ?int}
+ * @phpstan-type OutgoingView array{id: string, chatId: string, chatAccountId: string, text: string, status: string, error: ?string, createdAt: string, claimedAt: ?string, sentAt: ?string}
  */
 final readonly class ChatViews
 {
@@ -87,6 +89,42 @@ final readonly class ChatViews
     }
 
     /**
+     * @return ChatView
+     */
+    public function chat(Chat $chat): array
+    {
+        return [
+            'id' => $chat->getId()->toRfc4122(),
+            'chatAccountId' => $chat->getChatAccount()->getId()->toRfc4122(),
+            'jid' => $this->fields->jid($chat),
+            'name' => $this->fields->name($chat),
+            'kind' => $chat->getKind()->value,
+            'lastMessageAt' => self::requiredDate($chat->getLastMessageAt()),
+            'readThrough' => self::date($chat->getReadThrough()),
+            'archivedThrough' => self::date($chat->getArchivedThrough()),
+            'leftOut' => $chat->isLeftOut(),
+        ];
+    }
+
+    /**
+     * @return OutgoingView
+     */
+    public function outgoing(ChatOutgoing $outgoing): array
+    {
+        return [
+            'id' => $outgoing->getId()->toRfc4122(),
+            'chatId' => $outgoing->getChat()->getId()->toRfc4122(),
+            'chatAccountId' => $outgoing->getChatAccount()->getId()->toRfc4122(),
+            'text' => $this->fields->outgoingText($outgoing),
+            'status' => $outgoing->getStatus()->value,
+            'error' => $outgoing->getError()?->value,
+            'createdAt' => self::requiredDate($outgoing->getCreatedAt()),
+            'claimedAt' => self::date($outgoing->getClaimedAt()),
+            'sentAt' => self::date($outgoing->getSentAt()),
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $row {@see CHAT_COLUMNS}
      *
      * @return ChatView
@@ -101,7 +139,7 @@ final readonly class ChatViews
             'jid' => $this->fields->open($owner, ChatField::Jid, $id, self::text($row['sealed_jid'])) ?? throw new \LogicException('A sealed value opens to a value.'),
             'name' => $this->fields->open($owner, ChatField::Name, $id, self::nullableText($row['sealed_name'])),
             'kind' => self::text($row['kind']),
-            'lastMessageAt' => self::date($row['last_message_at']),
+            'lastMessageAt' => self::requiredDate($row['last_message_at']),
             'readThrough' => self::date($row['read_through']),
             'archivedThrough' => self::date($row['archived_through']),
             'leftOut' => (bool) $row['left_out'],
@@ -123,7 +161,7 @@ final readonly class ChatViews
             'chatAccountId' => self::text($row['chat_account_id']),
             'waId' => $this->fields->open($owner, ChatField::MessageWaId, $id, self::text($row['sealed_wa_id'])) ?? throw new \LogicException('A sealed value opens to a value.'),
             'fromMe' => (bool) $row['from_me'],
-            'sentAt' => self::date($row['sent_at']),
+            'sentAt' => self::requiredDate($row['sent_at']),
             'sender' => ChatFields::decodeSender($this->fields->open($owner, ChatField::MessageSender, $id, self::nullableText($row['sealed_sender']))),
             'text' => $this->fields->open($owner, ChatField::MessageText, $id, self::text($row['sealed_text'])) ?? throw new \LogicException('A sealed value opens to a value.'),
             'mediaKind' => self::nullableText($row['media_kind']),
@@ -148,13 +186,19 @@ final readonly class ChatViews
             'text' => $this->fields->open($owner, ChatField::OutgoingText, $id, self::text($row['sealed_text'])) ?? throw new \LogicException('A sealed value opens to a value.'),
             'status' => self::text($row['status']),
             'error' => self::nullableText($row['error']),
-            'createdAt' => self::date($row['created_at']),
+            'createdAt' => self::requiredDate($row['created_at']),
             'claimedAt' => self::date($row['claimed_at']),
             'sentAt' => self::date($row['sent_at']),
         ];
     }
 
     /** Stored without a zone and read in the default one, as the ORM reads it: entities and SQL rows give one string. */
+    /** A NOT NULL column: always a time. */
+    private static function requiredDate(mixed $value): string
+    {
+        return self::date($value) ?? throw new \UnexpectedValueException('Expected a time from the database.');
+    }
+
     private static function date(mixed $value): ?string
     {
         if ($value instanceof \DateTimeInterface) {
