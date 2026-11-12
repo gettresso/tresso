@@ -1300,23 +1300,104 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         expect(await db.cursor()).toBe(40)
       })
 
-      it('refuses a page with a chat time that is no time, storing none of it, and names no chat text', async () => {
-        const bad = page({
+      it('stores a page with chat times that are no times, sorting those rows last, so the sync goes on', async () => {
+        const odd = page({
           cursor: 41,
-          chats: [chat('eva', 'acct', { jid: '31666666666@s.whatsapp.net', lastMessageAt: at(30) })],
-          chatMessages: [chatMessage('e1', 'eva', 'acct', 'yesterday', { text: 'Secret plans' })],
+          chats: [chat('eva', 'acct', { jid: '31666666666@s.whatsapp.net', lastMessageAt: 'garbage' }), { ...chat('fay', 'acct', { jid: '31677777777@s.whatsapp.net' }), lastMessageAt: null as unknown as string }],
+          chatMessages: [chatMessage('e1', 'eva', 'acct', 'yesterday', { text: 'Secret plans' }), chatMessage('e2', 'eva', 'acct', at(30))],
+          chatOutgoing: [chatOutgoing('r9', 'eva', 'acct', { createdAt: 'soon' })],
+          messages: [message('m9', 't1', 'work', ['work-inbox'], '2026-10-19T11:00:00+00:00')],
         })
 
-        const error = await db.apply(bad).then(
-          () => null,
-          (thrown: unknown) => thrown,
+        await db.apply(odd)
+
+        expect(await db.cursor()).toBe(41)
+        expect((await db.thread('t1'))?.messages.map((m) => m.id)).toContain('m9')
+        expect(await listed()).toEqual(['bram', 'anna', 'group', 'fay', 'eva'])
+        expect((await db.chat('fay'))?.chat.lastMessageAt).toBe('')
+        const eva = await db.chat('eva')
+        expect(eva?.messages.map((m) => m.id).sort()).toEqual(['e1', 'e2'])
+        expect((await db.chats()).find((summary) => summary.chat.id === 'eva')?.newest?.id).toBe('e2')
+        expect(eva?.outgoing.map((o) => o.id)).toEqual(['r9'])
+      })
+
+      it('stores a chat row a newer server shapes differently as far as it can be read', async () => {
+        const newer = page({
+          cursor: 41,
+          chatAccounts: [{ ...chatAccount('acct-new'), channel: 'signal', bridge: 'paused', link: 'expired', notify: undefined, includeGroups: undefined } as unknown as SyncedChatAccount, { channel: 'whatsapp' } as unknown as SyncedChatAccount],
+          chats: [
+            { id: 'odd', chatAccountId: 'acct', jid: '120363000000000000@g.us', kind: 'community', lastMessageAt: at(20) } as unknown as SyncedChat,
+            { jid: 'nobody@s.whatsapp.net' } as unknown as SyncedChat,
+          ],
+          chatMessages: [
+            { ...chatMessage('o1', 'odd', 'acct', at(20)), mediaKind: 'sticker', mediaName: 'x.webp', sender: { name: 'No id' }, reactions: ['+1'] } as unknown as SyncedChatMessage,
+            { id: 'o2', chatId: 'odd', chatAccountId: 'acct', sentAt: at(19) } as unknown as SyncedChatMessage,
+          ],
+          chatOutgoing: [{ ...chatOutgoing('r8', 'odd', 'acct'), status: 'scheduled', error: 'rate_limited' } as unknown as SyncedChatOutgoing],
+        })
+
+        await db.apply(newer)
+
+        expect(await db.cursor()).toBe(41)
+        expect(await db.chatAccounts()).toContainEqual({ ...chatAccount('acct-new'), channel: 'signal', bridge: 'stopped', link: 'unknown', notify: false, includeGroups: true })
+        expect(ids(await db.chatAccounts())).toEqual(['acct', 'acct-new'])
+        const odd = await db.chat('odd')
+        expect(odd?.chat).toEqual({ id: 'odd', chatAccountId: 'acct', jid: '120363000000000000@g.us', kind: 'group', name: null, lastMessageAt: at(20), readThrough: null, archivedThrough: null, leftOut: false })
+        expect(odd?.messages).toEqual([
+          { id: 'o2', chatId: 'odd', chatAccountId: 'acct', waId: '', fromMe: false, sender: null, text: '', sentAt: at(19), mediaKind: null, mediaName: null, mediaSize: null },
+          { ...chatMessage('o1', 'odd', 'acct', at(20)), mediaKind: 'document', mediaName: 'x.webp', sender: null },
+        ])
+        // Neither sent again nor offered to retry.
+        expect(odd?.outgoing[0]).toMatchObject({ id: 'r8', status: 'sending', error: 'refused' })
+        expect(ids(await db.waitingOutgoing())).toEqual(['r2'])
+      })
+
+      it('drops messages and replies that come in the same page as the removal of their chat or account', async () => {
+        await db.apply(
+          page({
+            cursor: 41,
+            chatMessages: [chatMessage('a9', 'anna', 'acct', at(9)), chatMessage('x1', 'xavi', 'acct-x', at(9))],
+            chatOutgoing: [chatOutgoing('r7', 'anna', 'acct')],
+            deleted: [
+              { type: 'chat', id: 'anna' },
+              { type: 'chatAccount', id: 'acct-x' },
+            ],
+          }),
         )
 
-        expect(error).toBeInstanceOf(Error)
-        expect(String((error as Error).message)).not.toContain('Secret')
-        expect(String((error as Error).message)).not.toContain('yesterday')
-        expect(await db.chat('eva')).toBeNull()
-        expect(await db.cursor()).toBe(40)
+        expect(await db.chat('anna')).toBeNull()
+        expect(ids(await db.waitingOutgoing())).toEqual([])
+        // Were they still there, the chat or account arriving again would show them.
+        await db.apply(page({ cursor: 42, chatAccounts: [chatAccount('acct-x')], chats: [chat('anna', 'acct', { jid: '31611111111@s.whatsapp.net' }), chat('xavi', 'acct-x')] }))
+        expect((await db.chat('anna'))?.messages).toEqual([])
+        expect((await db.chat('anna'))?.outgoing).toEqual([])
+        expect((await db.chat('xavi'))?.messages).toEqual([])
+      })
+
+      it('keeps a message of the page when the same page removes its chat and brings it back', async () => {
+        await db.apply(page({ cursor: 41, chats: [chat('anna', 'acct', { jid: '31611111111@s.whatsapp.net', lastMessageAt: at(9) })], chatMessages: [chatMessage('a9', 'anna', 'acct', at(9))], deleted: [{ type: 'chat', id: 'anna' }] }))
+
+        expect(ids((await db.chat('anna'))!.messages)).toEqual(['a9'])
+      })
+
+      it('keeps a cancelled reply where it is, never as waiting, and drops it by its tombstone', async () => {
+        await db.apply(page({ cursor: 41, chatOutgoing: [chatOutgoing('r2', 'anna', 'acct', { createdAt: at(7), status: 'cancelled' })] }))
+
+        expect((await db.chat('anna'))?.outgoing.find((o) => o.id === 'r2')?.status).toBe('cancelled')
+        expect(await db.waitingOutgoing()).toEqual([])
+
+        await db.apply(page({ cursor: 42, deleted: [{ type: 'chatOutgoing', id: 'r2' }] }))
+        expect(ids((await db.chat('anna'))!.outgoing)).toEqual(['r1'])
+      })
+
+      it('refuses a time that is no time from this device itself, which is a mistake in the relay', async () => {
+        await expect(db.putChatMessages([chatMessage('w1', 'anna', 'acct', 'yesterday', { text: 'Secret plans' })])).rejects.toThrow(/sentAt is not a time/)
+        await expect(db.putChats([chat('w', 'acct', { lastMessageAt: 'never' })])).rejects.toThrow(/lastMessageAt is not a time/)
+        await expect(db.putChatOutgoing([chatOutgoing('w2', 'anna', 'acct', { createdAt: 'later' })])).rejects.toThrow(/createdAt is not a time/)
+        const error = await db.putChatMessages([chatMessage('w1', 'anna', 'acct', 'yesterday', { text: 'Secret plans' })]).catch((thrown: unknown) => thrown as Error)
+        expect(error?.message).not.toContain('Secret')
+        expect(error?.message).not.toContain('yesterday')
+        expect(ids((await db.chat('anna'))!.messages)).toEqual(['a1', 'a2', 'a3'])
       })
 
       it('writes nothing of a chat to the console', async () => {

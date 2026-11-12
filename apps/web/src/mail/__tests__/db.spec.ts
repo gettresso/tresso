@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openDB } from 'idb'
+import { backfillChats, CHAT_BACKFILL } from '@tresso/core'
 import { accounts, chat, chatAccount, chatMessage, chatOutgoing, describeMailStore, page, signature } from '@tresso/core/testing'
 import { databaseName, deleteMailDatabase, IndexedDbMailStore } from '../db'
 
@@ -34,6 +35,36 @@ describe('IndexedDbMailStore', () => {
 
     expect(await db.cursor()).toBe(0)
     expect(await db.mailAccounts()).toEqual([])
+    await db.close()
+  })
+
+  it('syncs again from the start after a resync, also when a pull that began before stores a page meanwhile', async () => {
+    const db = await IndexedDbMailStore.open(USER)
+    await db.apply(page({ cursor: 10, mailAccounts: accounts }))
+    // A pull that began from the stored cursor before the resync was asked for.
+    expect(await db.cursor()).toBe(10)
+    await db.resyncFromStart()
+    await db.apply(page({ cursor: 11 }))
+
+    expect(await db.cursor()).toBe(0)
+    await db.apply(page({ cursor: 12, hasMore: true }))
+    expect(await db.cursor()).toBe(12)
+    expect(await db.mailAccounts()).toEqual(accounts.slice().sort((a, b) => a.displayName.localeCompare(b.displayName)))
+    await db.close()
+  })
+
+  it('checks once for chats after the update and syncs from the start only when the server holds one', async () => {
+    const db = await IndexedDbMailStore.open(USER)
+    await db.apply(page({ cursor: 10, mailAccounts: accounts }))
+    await db.setChatMeta(CHAT_BACKFILL, '1')
+
+    expect(await backfillChats(db, async () => [])).toBe('no-chats')
+    expect(await db.cursor()).toBe(10)
+
+    await db.setChatMeta(CHAT_BACKFILL, '1')
+    expect(await backfillChats(db, async () => [{ id: 'acct' }])).toBe('resync')
+    expect(await db.cursor()).toBe(0)
+    expect(await db.chatMeta(CHAT_BACKFILL)).toBeNull()
     await db.close()
   })
 

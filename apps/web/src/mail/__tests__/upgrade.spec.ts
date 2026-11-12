@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it } from 'vitest'
 import { openDB, type IDBPDatabase } from 'idb'
+import { CHAT_BACKFILL } from '@tresso/core'
 import { accounts, chat, chatAccount, chatMessage, draft, message, page, thread } from '@tresso/core/testing'
 import { databaseName, deleteMailDatabase, IndexedDbMailStore } from '../db'
 
@@ -172,7 +173,7 @@ function createVersion11(database: IDBPDatabase): void {
 }
 
 describe('IndexedDbMailStore upgrade to chats', () => {
-  it('adds the chat stores to a version 11 copy, keeping its mail, and syncs again to bring the chats', async () => {
+  it('adds the chat stores to a version 11 copy, keeping its mail and its cursor, marked to check for chats', async () => {
     const name = 'upgrade-chats'
     const v11 = await openDB(databaseName(name), 11, { upgrade: (database) => createVersion11(database) })
     await v11.put('mailAccounts', accounts[0]!)
@@ -185,12 +186,13 @@ describe('IndexedDbMailStore upgrade to chats', () => {
 
     const db = await IndexedDbMailStore.open(name)
     try {
-      expect(db.afterUpdate).toBe(true)
+      expect(db.afterUpdate).toBe(false)
       expect(await db.mailAccounts()).toEqual([accounts[0]])
       expect((await db.thread('t1'))?.messages.map((m) => m.id)).toEqual(['m1'])
       expect(await db.draft('unsent')).toMatchObject({ pendingSave: true, version: 3 })
       expect(await db.syncedAt()).toBe(1_700_000_000_000)
-      expect(await db.cursor()).toBe(0)
+      expect(await db.chatMeta(CHAT_BACKFILL)).toBe('1')
+      expect(await db.cursor()).toBe(30)
       expect(await db.chats()).toEqual([])
 
       const at = '2026-11-12T10:00:00+00:00'

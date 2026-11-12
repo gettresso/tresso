@@ -13,7 +13,8 @@ export type ChatOutgoingError = 'bridge_stopped' | 'not_linked' | 'refused' | 'u
 
 export interface SyncedChatAccount {
   id: string
-  channel: ChatChannel
+  /** `whatsapp` today. A channel a newer server adds is kept as it came, so compare with ChatChannel values. */
+  channel: ChatChannel | (string & {})
   /** Own number, digits only. */
   address: string | null
   displayName: string | null
@@ -31,9 +32,11 @@ export interface SyncedChatAccount {
 
 /**
  * The shapes below are the wire format of the four chat lists of GET /api/v1/sync/changes (`ChatViews` in the API),
- * and the rows both mail stores keep. Times are ISO 8601 strings. The API types `lastMessageAt`, `sentAt` and
- * `createdAt` as nullable because one date helper serves every column, but their columns are NOT NULL, so a row
- * always carries them.
+ * and the rows both mail stores keep. Times are ISO 8601 strings. That `lastMessageAt`, `sentAt` and `createdAt` are
+ * never null is the client's assumption: the API types them nullable (one date helper serves every column) although
+ * their columns are NOT NULL. A delta row that breaks it, or carries an unknown value or lacks a field (a newer
+ * server), is still stored as far as it can be read (see the `fromDelta` readers in rows.ts): a time that is missing
+ * becomes `''` and sorts last, so one odd row never stops the sync.
  *
  * Rows that exist only on this device (the "Only this Mac" mode, no server) belong to a chat account whose id starts
  * with {@link LOCAL_CHAT_PREFIX}; see `chatOnlyHere`.
