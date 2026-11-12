@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
@@ -119,7 +119,9 @@ describe('AppShell', () => {
       const signOut = vi.spyOn(useAuthStore(), 'signOut').mockResolvedValue()
       const router = makeRouter()
       await router.push('/')
-      const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
+      // In the document, so focus can be followed.
+      const wrapper = mount({ template: '<RouterView />' }, { attachTo: document.body, global: { plugins: [router] } })
+      onTestFinished(() => wrapper.unmount())
       await flushPromises()
       const button = (label: string) => wrapper.findAll('button').find((candidate) => candidate.text() === label)!
       return { wrapper, signOut, button }
@@ -137,18 +139,79 @@ describe('AppShell', () => {
       expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
     })
 
-    it('asks first, and stays signed in on Cancel', async () => {
+    it('asks first, and stays signed in on Cancel, with the focus back on Sign out', async () => {
       const { wrapper, signOut, button } = await signedIn()
       vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([unsent('d1'), unsent('d2')])
 
-      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      const signOutButton = wrapper.get<HTMLButtonElement>('nav.sidebar .sign-out')
+      signOutButton.element.focus()
+      await signOutButton.trigger('click')
       await flushPromises()
 
       expect(wrapper.get('[role="alertdialog"]').text()).toContain('2 drafts on this device were never saved to the server. Sign out and delete them?')
+      button('Cancel').element.focus()
       await button('Cancel').trigger('click')
       await flushPromises()
       expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
       expect(signOut).not.toHaveBeenCalled()
+      expect(document.activeElement).toBe(signOutButton.element)
+    })
+
+    it('asks before signing out when the drafts on this device cannot be checked, without offering to save them', async () => {
+      const { wrapper, signOut, button } = await signedIn()
+      vi.spyOn(useMailStore(), 'unsavedDrafts').mockRejectedValue(new Error('The mail copy could not be opened.'))
+
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+
+      const dialog = wrapper.get('[role="alertdialog"]')
+      expect(dialog.text()).toContain('Tresso could not check this device for drafts that were never saved to the server (The mail copy could not be opened.).')
+      expect(button('Try to save them first')).toBeUndefined()
+      expect(signOut).not.toHaveBeenCalled()
+      await button('Sign out anyway').trigger('click')
+      await flushPromises()
+      expect(signOut).toHaveBeenCalledOnce()
+    })
+
+    it('brings the dialog back when the browser closes it while the drafts are being saved, and cancels otherwise', async () => {
+      const { wrapper, signOut, button } = await signedIn()
+      vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([unsent('d1'), unsent('d2')])
+      let saved!: (left: never[]) => void
+      vi.spyOn(useMailStore(), 'saveUnsavedDrafts').mockImplementation(() => new Promise((resolve) => (saved = resolve)))
+
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+      const dialog = wrapper.get<HTMLDialogElement>('dialog')
+      const showModal = vi.fn<() => void>()
+      dialog.element.showModal = showModal
+      await button('Try to save them first').trigger('click')
+      await flushPromises()
+
+      // Chromium closes the dialog itself on a second Escape: while saving it comes back.
+      await dialog.trigger('close')
+      expect(showModal).toHaveBeenCalledOnce()
+      expect(wrapper.find('[role="alertdialog"]').exists()).toBe(true)
+
+      saved([])
+      await flushPromises()
+      expect(signOut).toHaveBeenCalledOnce()
+    })
+
+    it('takes the browser closing the dialog as Cancel when nothing is being saved', async () => {
+      const { wrapper, signOut } = await signedIn()
+      vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([unsent('d1')])
+
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+      await wrapper.get('dialog').trigger('close')
+      await flushPromises()
+
+      expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+      expect(signOut).not.toHaveBeenCalled()
+      // The question can be asked again.
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[role="alertdialog"]').exists()).toBe(true)
     })
 
     it('signs out anyway when the user says so', async () => {
@@ -190,7 +253,7 @@ describe('AppShell', () => {
 
       const dialog = wrapper.get('[role="alertdialog"]')
       expect(dialog.text()).toContain('1 draft on this device was never saved to the server.')
-      expect(dialog.get('[role="alert"]').text()).toBe('Saving did not work for all of them. Try again once you are online, or sign out anyway.')
+      expect(dialog.get('[role="alert"]').text()).toBe('Saving it did not work. Try again once you are online, or sign out anyway.')
       expect(signOut).not.toHaveBeenCalled()
     })
   })

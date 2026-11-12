@@ -75,8 +75,9 @@ onMounted(() => {
       </div>
     </section>
     <UnsavedDraftsDialog
-      v-if="signOut.unsaved.value !== null"
-      :count="signOut.unsaved.value"
+      v-if="signOut.question.value !== null"
+      :count="signOut.question.value.count"
+      :check-error="signOut.question.value.checkError"
       :saving="signOut.saving.value"
       :failed="signOut.saveFailed.value"
       @save="signOut.saveFirst"
