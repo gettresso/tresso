@@ -15,12 +15,18 @@ import { listen } from '@tauri-apps/api/event'
 /** The event the shell sends every change of the bridge's state on (EVENT in whatsapp.rs). */
 export const WHATSAPP_EVENT = 'whatsapp'
 
-export type BridgeProcess = 'owned' | 'attached' | 'stopped'
+export type BridgeProcess = 'owned' | 'stopped'
 export type BridgeLink = 'linked' | 'unlinked' | 'waiting_for_scan' | 'unknown'
-export type BridgeFailure = 'not_built' | 'exited' | 'port_busy'
+/**
+ * `not_built`: no built bridge in the folder. `exited`: it stopped three times within a minute. `port_busy`: another
+ * bridge or program holds the port. `unprotected`: a bridge answers without Tresso's token (upstream whatsapp-mcp, or
+ * one started in a terminal), so anything on the Mac could send through it (docs/whatsapp-bridge.md). `unsafe`: the
+ * binary or its folder can be changed by another user.
+ */
+export type BridgeFailure = 'not_built' | 'exited' | 'port_busy' | 'unprotected' | 'unsafe'
 
 export interface BridgeState {
-  /** `owned`: Tresso started it. `attached`: it already ran, Tresso never stops it. */
+  /** `owned`: Tresso started it (Tresso uses no bridge it did not start). */
   process: BridgeProcess
   port: number | null
   /** Whether its REST API listens on 127.0.0.1 only; null while unknown. */
@@ -38,6 +44,8 @@ export interface BridgeInspection {
   built: boolean
   /** The bridge ran once and has a store. */
   hasStore: boolean
+  /** The binary and its folder belong to this user and nobody else may write them; else it is not started. */
+  safe: boolean
 }
 
 export interface WhatsAppConfig {
@@ -51,7 +59,7 @@ export interface WhatsAppConfig {
   leftOut: string[]
 }
 
-/** A row of the bridge's store, as the shell reads it (the same shape as `BridgeRow` in packages/core/src/chat). */
+/** A row of the bridge's store, as the shell reads it. Text and file names are cut at 65536 characters. */
 export interface BridgeRow {
   rowid: number
   id: string
@@ -70,6 +78,8 @@ export interface BridgeRow {
 export interface BridgeRows {
   rows: BridgeRow[]
   maxRowid: number
+  /** Names the store and its numbering; when it changes, a rowid cursor means nothing and reading starts at 0. */
+  storeId: string
 }
 
 export interface WhatsAppIdentity {
