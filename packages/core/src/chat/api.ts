@@ -20,8 +20,9 @@ export type ChatProblemCode = 'not_the_relay' | 'already_going_out' | 'id_taken'
 
 /**
  * A failed chat request as a ChatApi implementation rejects with it: the HTTP status, the problem's `code` when the
- * body named one, and how long the server asked to wait (Retry-After, in ms). Any error with a numeric `status` and
- * these fields serves; this class is one. Its message never quotes a request: no text, name, JID or number.
+ * body named one, how long the server asked to wait (Retry-After, in ms), and a 422's violations by property path
+ * (`messages[3].text`), in the shape of the web client's ApiError. Any error with a numeric `status` and these fields
+ * serves; this class is one. Its message never quotes a request: no text, name, JID or number.
  */
 export class ChatApiError extends Error {
   constructor(
@@ -29,18 +30,28 @@ export class ChatApiError extends Error {
     message: string,
     readonly code: ChatProblemCode | (string & {}) | null = null,
     readonly retryAfterMs: number | null = null,
+    /** Messages per property path; only the paths are ever read (chatApiFailure). */
+    readonly violations: Record<string, string> = {},
   ) {
     super(message)
     this.name = 'ChatApiError'
   }
 }
 
+export interface ChatApiFailure {
+  status: number
+  code: string | null
+  retryAfterMs: number | null
+  /** The property paths a 422 named (`messages[3].text`, `deviceId`); never their messages or values. */
+  violationPaths: string[]
+}
+
 /** What a chat request failed with, read from any error a ChatApi rejects with; null for one without a status (network). */
-export function chatApiFailure(error: unknown): { status: number; code: string | null; retryAfterMs: number | null } | null {
+export function chatApiFailure(error: unknown): ChatApiFailure | null {
   if (typeof error !== 'object' || error === null) {
     return null
   }
-  const { status, code, retryAfterMs } = error as { status?: unknown; code?: unknown; retryAfterMs?: unknown }
+  const { status, code, retryAfterMs, violations } = error as { status?: unknown; code?: unknown; retryAfterMs?: unknown; violations?: unknown }
   if (typeof status !== 'number' || !Number.isInteger(status)) {
     return null
   }
@@ -48,7 +59,19 @@ export function chatApiFailure(error: unknown): { status: number; code: string |
     status,
     code: typeof code === 'string' ? code : null,
     retryAfterMs: typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) ? retryAfterMs : null,
+    violationPaths: violationPaths(violations),
   }
+}
+
+/** Paths from `{path: message}` (the web client's ApiError) or a problem body's `[{propertyPath}]`. */
+function violationPaths(violations: unknown): string[] {
+  if (Array.isArray(violations)) {
+    return violations.flatMap((violation: unknown) => {
+      const path = typeof violation === 'object' && violation !== null ? (violation as { propertyPath?: unknown }).propertyPath : undefined
+      return typeof path === 'string' ? [path] : []
+    })
+  }
+  return typeof violations === 'object' && violations !== null ? Object.keys(violations) : []
 }
 
 /** PUT /api/v1/chat-accounts/whatsapp (ConnectChatAccount): makes the account, or makes this desktop its relay. */
@@ -191,9 +214,11 @@ export interface UpdateChatRequest {
 }
 
 /**
- * The chat endpoints, one method per endpoint. An implementation sends the request as `JSON.stringify(request)` (the
- * relay builds its batches by that size) and rejects with an error chatApiFailure can read (ChatApiError, or one with
- * the same fields) when the server answers otherwise than with success.
+ * The chat endpoints, one method per endpoint. An implementation sends the request as exactly `JSON.stringify(request)`
+ * (the relay builds its batches by that size; a PATCH as `application/merge-patch+json`) and rejects with an error
+ * chatApiFailure can read (ChatApiError, or one with the same fields: status, code, retryAfterMs, violations by path)
+ * when the server answers otherwise than with success. It never retries `claimReply` by itself: a claim sent again
+ * takes the next reply, and the first stays `sending` until the sweep fails it.
  */
 export interface ChatApi {
   /** GET /api/v1/chat-accounts. */
