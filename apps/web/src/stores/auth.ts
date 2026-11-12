@@ -638,8 +638,8 @@ export const useAuthStore = defineStore('auth', () => {
         if (session !== generation.value) {
           throw new ApiError(401, 'Not signed in.')
         }
-        // The rule all clients share: only an answer that says the sign-in itself is over ends it. Anything else
-        // (offline, a timeout, a 5xx, a server that does not know the app for a moment) may work on the next try.
+        // The rule all clients share (refreshRefusalEndsSession): only the token endpoint's answer that the sign-in or
+        // this client is over ends it. Anything else (offline, a timeout, a 5xx) may work on the next try.
         if (!refreshRefusalEndsSession(error)) {
           throw new SignInRenewalError(error)
         }
