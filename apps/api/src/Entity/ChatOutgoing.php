@@ -58,6 +58,21 @@ class ChatOutgoing implements TracksChanges
     private ?\DateTimeImmutable $sentAt = null;
 
     /**
+     * The device that claimed it to send; internal, never sent to clients. Null until a claim, and again after a final
+     * result or Try again.
+     */
+    #[ORM\Column(type: UuidType::NAME, nullable: true)]
+    private ?Uuid $claimedBy = null;
+
+    /**
+     * The secret of the claim, handed only to the claiming relay, which names it in its result; internal, never sent to
+     * clients. Random and short-lived (it ends with a final result or Try again), so it is stored as it is, not sealed:
+     * reading it from the database gives nothing the reader could not do with that access anyway.
+     */
+    #[ORM\Column(length: 43, nullable: true)]
+    private ?string $claimToken = null;
+
+    /**
      * Made by {@see \App\Chat\ChatFields::newOutgoing()}, which seals the text for $id.
      */
     public function __construct(Uuid $id, Chat $chat, string $sealedText, \DateTimeImmutable $now)
@@ -114,17 +129,35 @@ class ChatOutgoing implements TracksChanges
         return $this->sentAt;
     }
 
+    public function getClaimedBy(): ?Uuid
+    {
+        return $this->claimedBy;
+    }
+
+    public function getClaimToken(): ?string
+    {
+        return $this->claimToken;
+    }
+
+    /** Final: the claim ends. */
     public function markSent(\DateTimeImmutable $now): void
     {
         $this->status = ChatOutgoingStatus::Sent;
         $this->error = null;
         $this->sentAt = $now;
+        $this->endClaim();
     }
 
+    /**
+     * Final, except `unconfirmed`: then the claim stays, so its relay can still say that the reply went out.
+     */
     public function markFailed(ChatOutgoingError $error): void
     {
         $this->status = ChatOutgoingStatus::Failed;
         $this->error = $error;
+        if (ChatOutgoingError::Unconfirmed !== $error) {
+            $this->endClaim();
+        }
     }
 
     /** The user pressed Try again: it waits for the relay as a new reply would. */
@@ -133,6 +166,13 @@ class ChatOutgoing implements TracksChanges
         $this->status = ChatOutgoingStatus::Waiting;
         $this->error = null;
         $this->claimedAt = null;
+        $this->endClaim();
+    }
+
+    private function endClaim(): void
+    {
+        $this->claimedBy = null;
+        $this->claimToken = null;
     }
 
     public function getChangeOwner(): User
@@ -142,7 +182,7 @@ class ChatOutgoing implements TracksChanges
 
     public static function clientFields(): ?array
     {
-        return null;
+        return ['chat', 'sealedText', 'status', 'error', 'createdAt', 'claimedAt', 'sentAt'];
     }
 
     public static function changeType(): string

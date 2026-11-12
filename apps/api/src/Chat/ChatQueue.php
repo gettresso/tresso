@@ -39,8 +39,8 @@ use Symfony\Component\Validator\ConstraintViolationList;
  *   reply still `sending` after {@see CLAIM_LEASE} becomes `failed` with `unconfirmed`
  *   ({@see SweepChatRelaysHandler}), and only the user's Try again sends it once more. Sending twice is worse than
  *   asking.
- * - A result names its claim and is final: only the claim it names takes it, the same result again is answered as the
- *   first time, and `sent: true` still wins over `unconfirmed` of the same claim ({@see report()}).
+ * - A result names its claim by the claim's token and is final: only that claim takes it, the same result again is
+ *   answered as the first time, and `sent: true` still wins over `unconfirmed` of the same claim ({@see report()}).
  *
  * Every write locks the owner first ({@see ChatOwnerLock}). Every way a reply ends reaches the devices: sent and failed
  * (also by the sweep) as the row with its new state in the delta, a cancelled reply as a removal (tombstone
@@ -103,9 +103,11 @@ final readonly class ChatQueue
                 }
                 // A reply the user cancelled (or that went with a chat left out) is gone, and its removal is all that is
                 // left of it: a repeat of the request that queued it must not queue it again.
+                // The type is written into the statement, not bound, so the planner sees that the partial index on it
+                // applies (sync_tombstone_chat_outgoing) for a generic plan too.
                 if (false !== $this->connection->fetchOne(
-                    'SELECT 1 FROM sync_tombstone WHERE user_id = :user AND entity_type = :type AND entity_id = :id',
-                    ['user' => $user->getId()->toRfc4122(), 'type' => ChatOutgoing::changeType(), 'id' => $id->toRfc4122()],
+                    \sprintf("SELECT 1 FROM sync_tombstone WHERE user_id = :user AND entity_type = '%s' AND entity_id = :id", ChatOutgoing::changeType()),
+                    ['user' => $user->getId()->toRfc4122(), 'id' => $id->toRfc4122()],
                 )) {
                     throw ChatProblem::cancelled();
                 }
@@ -130,29 +132,37 @@ final readonly class ChatQueue
     }
 
     /**
-     * The oldest reply of the account that waits, now `sending`; null when none waits. Inside the relay's transaction.
+     * The oldest reply of the account that waits, now `sending` for its relay, and the claim's token; null when none
+     * waits. Inside the relay's transaction.
+     *
+     * @return array{ChatOutgoing, string}|null
      */
-    public function claim(ChatAccount $account, \DateTimeImmutable $now): ?ChatOutgoing
+    public function claim(ChatAccount $account, \DateTimeImmutable $now): ?array
     {
-        $id = $this->claims->claim($account->getOwner()->getId(), $account->getId(), $now);
+        $claim = $this->claims->claim($account->getOwner()->getId(), $account->getId(), $account->getRelayDeviceId(), $now);
+        if (null === $claim) {
+            return null;
+        }
+        $outgoing = $this->entityManager->find(ChatOutgoing::class, Uuid::fromString($claim['id'])) ?? throw new \LogicException('A claimed reply exists.');
 
-        return null === $id ? null : $this->entityManager->find(ChatOutgoing::class, Uuid::fromString($id));
+        return [$outgoing, $claim['token']];
     }
 
     /**
-     * Takes a result for a reply. It is bound to the claim it reports on (`claimedAt` as the claim answered it): a
-     * result of an earlier claim, or for a reply nobody claimed, is refused.
+     * Takes a result for a reply. It must name the claim it reports on: the claim's token, which only the claiming relay
+     * got, compared in constant time.
      *
-     * - A reply being sent takes the result.
-     * - The same result again (its answer got lost) is answered as the first time.
+     * - A reply being sent takes the result of its claim.
      * - `sent: true` over `unconfirmed` of the same claim is taken: the reply did go out, and Try again would send it
-     *   twice. Any other result over a final one is refused (409 `result_final`).
+     *   twice.
      * - A desktop that no longer relays the account may still say that a reply it claimed went out ($fromRelay false):
-     *   `sent: true` with its claim only; anything else is 409 `not_the_relay`.
+     *   `sent: true`, with its claim's token, from the device that claimed it; anything else is 409 `not_the_relay`.
+     * - A result that changes nothing (the same result again, after its answer got lost) is answered as the first time;
+     *   the claim may have ended with it, so no token is asked. Any other is refused: 409 `result_final`.
      *
      * Inside the relay's transaction.
      */
-    public function report(ChatAccount $account, mixed $outgoingId, RelayResult $result, bool $fromRelay, \DateTimeImmutable $now): ChatOutgoing
+    public function report(ChatAccount $account, mixed $outgoingId, RelayResult $result, string $deviceId, bool $fromRelay, \DateTimeImmutable $now): ChatOutgoing
     {
         $outgoing = \is_string($outgoingId) && Uuid::isValid($outgoingId)
             ? $this->entityManager->find(ChatOutgoing::class, Uuid::fromString($outgoingId), LockMode::PESSIMISTIC_WRITE)
@@ -165,18 +175,14 @@ final readonly class ChatQueue
         }
         $this->entityManager->refresh($outgoing);
         $sent = $result->sent ?? throw new \LogicException('Validation guarantees a result.');
-        $claim = $result->claimedAt ?? throw new \LogicException('Validation guarantees the claim.');
-        $sameClaim = $outgoing->getClaimedAt()?->getTimestamp() === $claim->getTimestamp();
-        if (!$fromRelay && (!$sameClaim || !$sent)) {
-            throw ChatProblem::notTheRelay();
-        }
-        if (!$sameClaim) {
-            throw ChatProblem::resultFinal();
-        }
+        $token = $outgoing->getClaimToken();
+        $claimedBy = $outgoing->getClaimedBy();
+        $theClaim = null !== $token && hash_equals($token, $result->claimToken)
+            && ($fromRelay || (null !== $claimedBy && Uuid::isValid($deviceId) && $claimedBy->equals(Uuid::fromString($deviceId))));
 
         $status = $outgoing->getStatus();
         $wentOutAfterAll = $sent && ChatOutgoingStatus::Failed === $status && ChatOutgoingError::Unconfirmed === $outgoing->getError();
-        if (ChatOutgoingStatus::Sending === $status || $wentOutAfterAll) {
+        if ($theClaim && ($fromRelay || $sent) && (ChatOutgoingStatus::Sending === $status || $wentOutAfterAll)) {
             if ($sent) {
                 $outgoing->markSent($now);
                 $outgoing->getChat()->messageAt($now);
@@ -191,7 +197,7 @@ final readonly class ChatQueue
             return $outgoing;
         }
 
-        throw ChatProblem::resultFinal();
+        throw $fromRelay ? ChatProblem::resultFinal() : ChatProblem::notTheRelay();
     }
 
     /**

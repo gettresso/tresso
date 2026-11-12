@@ -2974,8 +2974,9 @@ chat's JID and WhatsApp id, so it never needs either readable.
   (`DELETE /api/v1/chat-outgoing/{id}`) and trying it again (`POST /api/v1/chat-outgoing/{id}/retry`) need
   `CHAT_SEND`; Tresso's own chat state (`PATCH /api/v1/chats/{id}`: `readThrough`, `archivedThrough`, `leftOut`) needs
   `CHAT_MANAGE`. Everything is loaded through the signed-in user: another user's id is a 404.
-- **Messages.** At most 200 messages, 200 chats and 8 MB a call (413 with `"code": "too_large"` above that, checked
-  before the body is decoded; the relay sends fewer at once); a text up to 65,536 characters (what the desktop cuts at)
+- **Messages.** At most 200 messages, 200 chats and 8 MB a call (413 with `"code": "too_large"` above that: an announced
+  length is checked before the body is read, and a body without one is read up to one byte past the limit, never whole;
+  the relay sends fewer at once; a 429 of the import limit says in `Retry-After` when to send the next); a text up to 65,536 characters (what the desktop cuts at)
   and 262,144 bytes. Batches are limited per account (`chat_relay_import`: a token bucket of 1,200 batches, refilled
   with 120 a minute, so a first import of a large history goes through and a looping relay does not). A batch is stored
   in one transaction, whole or not at all, and answers counts and per message `stored`, `known` (the server had it: a
@@ -2994,10 +2995,14 @@ chat's JID and WhatsApp id, so it never needs either readable.
   chat is a 404 whatever the id), and the id of a reply that was cancelled or went with a chat left out is 409
   `cancelled` for good (its tombstone is the record). At most 100 replies per user in 10 minutes (429). The relay
   claims the oldest waiting reply of its account (`waiting` to `sending`); a claimed reply is never handed out again.
-  The claim answers `claimedAt`, and the result carries it back: a result for another claim is 409 `result_final`. A
-  result is final: the same result again is a 200, another is 409 `result_final`, except that `sent: true` wins over
-  `unconfirmed` of the same claim (it did go out, and Try again would send it twice). A desktop that no longer relays
-  the account may still report `sent: true` for its own claim, nothing else (409 `not_the_relay`). `sent: false` carries
+  The claim answers a `claimToken` (16 random bytes, hex), kept with the reply beside the claiming device
+  (`claim_token`, `claimed_by`) and never in the delta or any other answer; it is short-lived and random, so it is
+  stored as it is, not sealed. The result must carry it back (compared in constant time): another token is 409
+  `result_final`. A result is final and ends the claim: the same result again is a 200 (it changes nothing, so no token
+  is asked), another is 409 `result_final`, except that `sent: true` wins over `unconfirmed` of the same claim (it did go
+  out, and Try again would send it twice); `unconfirmed` keeps the claim for that, and Try again ends it. A desktop that
+  no longer relays the account may still report `sent: true` for a claim it made, with that claim's token and its own
+  device id, nothing else (409 `not_the_relay`). `sent: false` carries
   the shell's reason (`bridge_stopped`, `not_linked`, `refused`, `unconfirmed`); nothing sends a failed reply again until
   the user's Try again. Cancelling deletes a waiting or failed reply (a tombstone); a reply being sent or sent is 409
   `already_going_out`.

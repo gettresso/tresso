@@ -324,7 +324,7 @@ final class ChatRelayTest extends DatabaseTestCase
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM chat'));
     }
 
-    public function testABatchLargerThanEightMegabytesIs413(): void
+    public function testABatchLargerThanEightMegabytesIs413WithoutALength(): void
     {
         $messages = array_map(static fn (int $i): array => self::waMessage('M'.$i, str_repeat('a', 65_536)), range(1, 130));
 
@@ -333,6 +333,14 @@ final class ChatRelayTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(413);
         self::assertSame('too_large', $this->decodedResponse()['code'] ?? null);
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_message'));
+    }
+
+    public function testABatchAnnouncedLargerThanEightMegabytesIs413BeforeItIsRead(): void
+    {
+        $this->client->request('POST', '/api/v1/chat-accounts/'.$this->accountId.'/relay/messages', server: $this->desktop + ['CONTENT_TYPE' => 'application/json', 'CONTENT_LENGTH' => (string) (8 * 1024 * 1024 + 1)], content: '{"deviceId":"'.self::MAC.'","chats":[],"messages":[]}');
+
+        self::assertResponseStatusCodeSame(413);
+        self::assertSame('too_large', $this->decodedResponse()['code'] ?? null);
     }
 
     public function testALargeBatchGetsAChangeNumberPerMegabyteSoADeltaPageStaysSmall(): void
@@ -361,6 +369,8 @@ final class ChatRelayTest extends DatabaseTestCase
         $this->relay('messages', ['chats' => [], 'messages' => [self::waMessage('M31', 'Hi')]]);
 
         self::assertResponseStatusCodeSame(429);
+        self::assertTrue($this->client->getResponse()->headers->has('Retry-After'));
+        self::assertGreaterThan(0, (int) $this->client->getResponse()->headers->get('Retry-After'), 'The relay knows when to send the next one.');
         self::assertSame(30, $this->countRows('SELECT COUNT(*) FROM chat_message'));
     }
 
@@ -373,7 +383,7 @@ final class ChatRelayTest extends DatabaseTestCase
         $rows = $this->chatRowCounts();
         $seq = $this->kimsChangeSeq();
 
-        foreach (['status' => ['bridge' => 'stopped', 'link' => 'unlinked'], 'messages' => ['chats' => [], 'messages' => [self::waMessage('M2', 'Bye')]], 'outgoing/claim' => [], 'outgoing/'.$replyId.'/result' => ['sent' => true, 'claimedAt' => '2026-11-12T10:00:00+00:00']] as $path => $body) {
+        foreach (['status' => ['bridge' => 'stopped', 'link' => 'unlinked'], 'messages' => ['chats' => [], 'messages' => [self::waMessage('M2', 'Bye')]], 'outgoing/claim' => [], 'outgoing/'.$replyId.'/result' => ['sent' => true, 'claimToken' => 'no-claim']] as $path => $body) {
             $this->relay($path, ['deviceId' => self::OTHER_MAC] + $body);
             self::assertResponseStatusCodeSame(409, $path);
             self::assertSame('not_the_relay', $this->decodedResponse()['code'] ?? null, $path);
@@ -488,7 +498,7 @@ final class ChatRelayTest extends DatabaseTestCase
         $replyId = $this->responseString('id');
         $rows = $this->chatRowCounts();
 
-        foreach (['status' => ['bridge' => 'stopped', 'link' => 'unlinked'], 'messages' => ['chats' => [], 'messages' => [self::waMessage('M2', 'Bye')]], 'outgoing/claim' => [], 'outgoing/'.$replyId.'/result' => ['sent' => true, 'claimedAt' => '2026-11-12T10:00:00+00:00']] as $path => $body) {
+        foreach (['status' => ['bridge' => 'stopped', 'link' => 'unlinked'], 'messages' => ['chats' => [], 'messages' => [self::waMessage('M2', 'Bye')]], 'outgoing/claim' => [], 'outgoing/'.$replyId.'/result' => ['sent' => true, 'claimToken' => 'no-claim']] as $path => $body) {
             $this->relay($path, $body, $headers);
             self::assertResponseStatusCodeSame($status, $path);
         }

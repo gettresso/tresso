@@ -15,9 +15,10 @@ use Symfony\Component\Validator\Context\ExecutionContextInterface;
  */
 final class RelayResult extends RelayRequest
 {
-    /** The claim this result is for: `claimedAt` as the claim answered it. */
-    #[Assert\NotNull]
-    public ?\DateTimeImmutable $claimedAt = null;
+    /** The claim this result is for: `claimToken` as the claim answered it. */
+    #[Assert\NotBlank]
+    #[Assert\Length(max: 64)]
+    public string $claimToken = '';
 
     #[Assert\NotNull]
     public ?bool $sent = null;

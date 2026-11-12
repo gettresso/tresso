@@ -28,9 +28,12 @@ final readonly class ChatClaims
     }
 
     /**
-     * The id of the reply now `sending`, claimed at $now; null when none waits. Inside a transaction.
+     * The reply now `sending`, claimed at $now by $deviceId: its id and the claim's token, which only the claiming relay
+     * gets and its result must name. Null when none waits. Inside a transaction.
+     *
+     * @return array{id: string, token: string}|null
      */
-    public function claim(Uuid $owner, Uuid $accountId, \DateTimeImmutable $now): ?string
+    public function claim(Uuid $owner, Uuid $accountId, Uuid $deviceId, \DateTimeImmutable $now): ?array
     {
         $this->ownerLock->lock($owner);
         $id = $this->connection->fetchOne(
@@ -40,11 +43,19 @@ final readonly class ChatClaims
         if (!\is_string($id)) {
             return null;
         }
+        $token = bin2hex(random_bytes(16));
         $this->connection->executeStatement(
-            'UPDATE chat_outgoing SET status = :sending, claimed_at = :now, change_seq = :seq WHERE id = :id',
-            ['sending' => ChatOutgoingStatus::Sending->value, 'now' => ChatTime::stored($now)->format('Y-m-d H:i:s'), 'seq' => $this->sequencer->next($owner), 'id' => $id],
+            'UPDATE chat_outgoing SET status = :sending, claimed_at = :now, claimed_by = :device, claim_token = :token, change_seq = :seq WHERE id = :id',
+            [
+                'sending' => ChatOutgoingStatus::Sending->value,
+                'now' => ChatTime::stored($now)->format('Y-m-d H:i:s'),
+                'device' => $deviceId->toRfc4122(),
+                'token' => $token,
+                'seq' => $this->sequencer->next($owner),
+                'id' => $id,
+            ],
         );
 
-        return $id;
+        return ['id' => $id, 'token' => $token];
     }
 }

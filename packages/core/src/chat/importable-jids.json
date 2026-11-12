@@ -1,5 +1,5 @@
 {
-  "description": "WhatsApp JIDs and whether Tresso takes them as a chat (importableChat in format.ts, App\\Chat\\ChatJid in apps/api). Both tests read this list; canonical is the form the server stores.",
+  "description": "WhatsApp JIDs and whether Tresso takes them as a chat, with the form the server stores (canonical). apps/api reads these cases in tests/Unit/Chat/ChatJidTest.php against App\\Chat\\ChatJid; format.test.ts (importableChat) is to read them too once PR #110, which changes that test file, is merged.",
   "cases": [
     {
       "jid": "31612345678@s.whatsapp.net",
