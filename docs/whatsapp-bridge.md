@@ -49,6 +49,21 @@ does not run `go` itself (a GUI app's `PATH` usually lacks it); when the folder 
 the command above. A bridge built from upstream, or from the fork before its token check, is refused as
 `unprotected` until it is built again from the fork.
 
+## Closing the bridge's port
+
+Settings, WhatsApp says `Running, open to your network on port <port>` when the bridge listens on more than
+127.0.0.1, and `Port in use` when another program already listens on the bridge's port. Both usually mean a bridge
+that is not the fork's, or one started by hand in Terminal. To find it:
+
+```sh
+lsof -nP -iTCP:8741 -sTCP:LISTEN   # the fork's port
+lsof -nP -iTCP:8080 -sTCP:LISTEN   # upstream's port
+```
+
+The line names the program and its process id. Quit it in the Terminal window it runs in (Control-C), or with
+`kill <pid>`. Then build the bridge from the fork (above), which only listens on 127.0.0.1, choose its folder in
+Tresso, and choose Start again. Tresso never opens the port itself and only talks to 127.0.0.1.
+
 The Python MCP server of whatsapp-mcp (`whatsapp.py`) calls the same API: with a token set it needs to send the
 header as well, or be pointed at a bridge started without `WHATSAPP_BRIDGE_TOKEN`. A bridge Tresso starts always has
 one, so an AI app's MCP server cannot use that bridge until it sends the token.
