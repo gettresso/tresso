@@ -258,6 +258,42 @@ describe('Session', () => {
     }
   })
 
+  it('tells the requests waiting on a refresh that the session expired when it expired meanwhile', async () => {
+    let answerB: (response: Response) => void = () => undefined
+    let answerRefresh: (response: Response) => void = () => undefined
+    let refreshes = 0
+    const fetchImpl = vi.fn<Fetch>(async (input, init) => {
+      const url = String(input)
+      const token = new Headers(init?.headers).get('Authorization')
+      if (url.endsWith('/oauth/token')) {
+        refreshes++
+        return refreshes === 1 ? tokenResponse('access-2', 'refresh-2') : new Promise<Response>((resolve) => (answerRefresh = resolve))
+      }
+      if (url.endsWith('/a')) {
+        return new Response('{}', { status: token === 'Bearer access-2' ? 200 : 401 })
+      }
+      if (url.endsWith('/b') && token === 'Bearer access-1') {
+        return new Promise<Response>((resolve) => (answerB = resolve))
+      }
+      return new Response(null, { status: 401 })
+    })
+    const session = await restored(memoryStore(fresh()), fetchImpl)
+
+    // b goes out with the first token; a renews it; c is refused the new one and starts a second refresh.
+    const b = session.api('/api/v1/b')
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+    await session.api('/api/v1/a')
+    const c = session.api('/api/v1/c')
+    await vi.waitFor(() => expect(refreshes).toBe(2))
+    // b is refused the first token and the renewed one too: the session expires while c waits on its refresh.
+    answerB(new Response(null, { status: 401 }))
+    await expect(b).rejects.toMatchObject({ status: 401, message: 'Your session has expired. Sign in again.' })
+    answerRefresh(tokenResponse('access-3', 'refresh-3'))
+
+    await expect(c).rejects.toMatchObject({ status: 401, message: 'Your session has expired. Sign in again.' })
+    expect(session.snapshot.ended).toBe('expired')
+  })
+
   it('does not ask again for a lost refresh answer once the user signed out', async () => {
     vi.useFakeTimers()
     try {
@@ -423,13 +459,22 @@ describe('Session', () => {
     vi.useFakeTimers()
     try {
       const store = memoryStore(fresh())
-      const session = await restored(store, vi.fn<Fetch>(() => new Promise<Response>(() => undefined)))
+      let signal: AbortSignal | undefined
+      const session = await restored(
+        store,
+        vi.fn<Fetch>((_input, init) => {
+          signal = init?.signal ?? undefined
+          return new Promise<Response>(() => undefined)
+        }),
+      )
 
       const signingOut = session.signOut()
       await vi.advanceTimersByTimeAsync(5_000)
       await signingOut
 
       expect(store.saved).toBeNull()
+      // Given up, not left pending: Android would keep a request on a dead connection open for ever.
+      expect(signal?.aborted).toBe(true)
     } finally {
       vi.useRealTimers()
     }
@@ -492,12 +537,34 @@ describe('Session', () => {
     const store = memoryStore(fresh())
     const session = await restored(store, server(vi.fn<Fetch>()))
     store.lastUser = null
+    const remember = vi.spyOn(store, 'rememberUser')
 
     const remembered = session.rememberUser('kim')
     await session.signOut()
     await remembered
 
+    expect(remember).not.toHaveBeenCalled()
     expect(store.lastUser).toBeNull()
+  })
+
+  it('keeps the tokens of a sign-in whose own write could not prepare the store when it remembers the user', async () => {
+    const store = memoryStore()
+    store.lastUser = 'lisa'
+    store.promptLogin = true
+    const session = await restored(store, vi.fn<Fetch>(async () => tokenResponse('access-2', 'refresh-2')))
+    const forget = store.forgetUser.bind(store)
+    store.forgetUser = async () => {
+      throw new Error('Keychain is locked.')
+    }
+    await session.completeSignIn('the-code', 'the-verifier')
+    expect(store.saved).toBeNull()
+    store.forgetUser = forget
+
+    await session.rememberUser('kim')
+
+    expect(store).toMatchObject({ lastUser: 'kim', promptLogin: false })
+    expect(store.saved).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
+    expect(session.snapshot.storageError).toBeNull()
   })
 
   it('tries reading the kept sign-in again after it failed', async () => {
@@ -741,6 +808,56 @@ describe('Session', () => {
     expect(store.saved).toBeNull()
     expect(store.lastUser).toBeNull()
     await vi.waitFor(() => expect(fetchImpl.revoked).toEqual(['refresh-1']))
+  })
+
+  it('removes the push device of a sign-out that was cut off at the next launch, before the revocation', async () => {
+    const store = memoryStore(fresh())
+    store.promptLogin = true
+    const removedWith: (string | null)[] = []
+    const fetchImpl = server(
+      vi.fn<Fetch>(async (_input, init) => {
+        removedWith.push(new Headers(init?.headers).get('Authorization'))
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const forget = vi.fn(async (api: <T>(path: string, init?: RequestInit) => Promise<T>) => {
+      expect(fetchImpl.revoked).toEqual([])
+      await api<void>('/api/v1/notification-devices/d1', { method: 'DELETE' })
+    })
+    const session = new Session(CONFIG, store, fetchImpl)
+
+    await session.restore(forget)
+    expect(session.snapshot).toMatchObject({ tokens: null, ended: 'signedOut', signingOut: true })
+
+    await vi.waitFor(() => expect(session.snapshot.signingOut).toBe(false))
+    expect(forget).toHaveBeenCalledOnce()
+    expect(removedWith).toEqual(['Bearer access-1'])
+    expect(fetchImpl.revoked).toEqual(['refresh-1'])
+    expect(store.saved).toBeNull()
+  })
+
+  it('renews the refresh token a cut-off removal left to remove the push device at the next launch, and revokes the new one', async () => {
+    const store = memoryStore()
+    store.promptLogin = true
+    store.leftover = 'refresh-left'
+    const removedWith: (string | null)[] = []
+    const fetchImpl = server(
+      vi.fn<Fetch>(async (input, init) => {
+        if (String(input).endsWith('/oauth/token')) {
+          return tokenResponse('access-2', 'refresh-2')
+        }
+        removedWith.push(new Headers(init?.headers).get('Authorization'))
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const session = new Session(CONFIG, store, fetchImpl)
+
+    await session.restore((api) => api<void>('/api/v1/notification-devices/d1', { method: 'DELETE' }))
+
+    await vi.waitFor(() => expect(fetchImpl.revoked).toEqual(['refresh-2']))
+    expect(removedWith).toEqual(['Bearer access-2'])
+    expect(store.saved).toBeNull()
+    expect(store.leftover).toBeNull()
   })
 
   it('says a launch after a sign-out is signed out, and one after an expired sign-in is not', async () => {
