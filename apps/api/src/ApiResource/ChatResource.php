@@ -49,7 +49,11 @@ final readonly class ChatResource
         public ?string $readThrough,
         /** The chat is out of the inbox while its last message is not after this. */
         public ?string $archivedThrough,
-        /** Nothing of a left-out chat is on the server or relayed. */
+        /**
+         * The user left the chat out: its messages and replies are removed from the server and the relay stores none
+         * from then on. The chat itself stays (its sealed JID and name, no longer renamed), so the relay knows to leave
+         * it out and the user can take it in again.
+         */
         public bool $leftOut,
     ) {
     }

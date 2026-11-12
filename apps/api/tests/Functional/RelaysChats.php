@@ -72,6 +72,25 @@ trait RelaysChats
     }
 
     /**
+     * The relay's result for a reply, for the claim the reply holds now unless the body names one.
+     *
+     * @param array<string, mixed>       $body
+     * @param array<string, string>|null $headers
+     */
+    protected function report(string $replyId, array $body, ?array $headers = null): void
+    {
+        $this->relay('outgoing/'.$replyId.'/result', $body + ['claimedAt' => $this->claimOf($replyId)], $headers);
+    }
+
+    /** When the reply was claimed, as the claim answered it; a time of no claim when nobody claimed it. */
+    protected function claimOf(string $replyId): string
+    {
+        $at = $this->connection()->fetchOne('SELECT claimed_at FROM chat_outgoing WHERE id = :id', ['id' => $replyId]);
+
+        return \is_string($at) ? new \DateTimeImmutable($at)->format(\DATE_ATOM) : '2026-11-12T10:00:00+00:00';
+    }
+
+    /**
      * Stores messages through the relay and returns its answer.
      *
      * @param list<array<string, mixed>> $messages

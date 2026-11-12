@@ -40,6 +40,9 @@ final readonly class SyncChangesProvider implements ProviderInterface
 {
     private const int DEFAULT_LIMIT = 500;
 
+    /** Sealed text of chat messages that counts as one row of a page: 500 rows hold about 2 MB of it. */
+    private const int CHAT_MESSAGE_BYTES = 4096;
+
     /** The scope each kind of entity needs, by its change type (also the `type` of its `deleted` entries). */
     public const array SCOPES = [
         'mailAccount' => Scope::MailRead,
@@ -224,11 +227,11 @@ final readonly class SyncChangesProvider implements ProviderInterface
             $table, $owner, $extra,
         );
         // Per account (or calendar) of the user, so each scan follows that index in change number order.
-        $byParent = static fn (string $table, string $column, string $parent = 'mail_account'): string => \sprintf(
+        $byParent = static fn (string $table, string $column, string $parent = 'mail_account', string $rows = 'COUNT(*)'): string => \sprintf(
             '(SELECT x.change_seq, x.rows FROM %3$s p CROSS JOIN LATERAL (
-                SELECT y.change_seq, COUNT(*) AS rows FROM %1$s y WHERE y.%2$s = p.id AND y.change_seq > :since GROUP BY y.change_seq ORDER BY y.change_seq LIMIT :groups
+                SELECT y.change_seq, %4$s AS rows FROM %1$s y WHERE y.%2$s = p.id AND y.change_seq > :since GROUP BY y.change_seq ORDER BY y.change_seq LIMIT :groups
              ) x WHERE p.owner_id = :user)',
-            $table, $column, $parent,
+            $table, $column, $parent, $rows,
         );
         $parts = [
             $byOwner('mail_account', 'owner_id'),
@@ -250,7 +253,10 @@ final readonly class SyncChangesProvider implements ProviderInterface
             $byOwner('daily_brief', 'owner_id'),
             $byOwner('chat_account', 'owner_id'),
             $byParent('chat', 'chat_account_id', 'chat_account'),
-            $byParent('chat_message', 'chat_account_id', 'chat_account'),
+            // A chat message counts as one row per CHAT_MESSAGE_BYTES of sealed text (it is sent opened), so a page of
+            // long messages stays as small as one of short ones; a relay batch has a change number per megabyte of text
+            // ({@see \App\Chat\ChatIngestor::CHANGE_BYTES}), so a page can end between them.
+            $byParent('chat_message', 'chat_account_id', 'chat_account', 'SUM(1 + octet_length(y.sealed_text) / '.self::CHAT_MESSAGE_BYTES.')'),
             $byParent('chat_outgoing', 'chat_account_id', 'chat_account'),
             $byOwner('sync_tombstone', 'user_id'),
         ];

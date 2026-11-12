@@ -14,6 +14,8 @@ use Symfony\Component\Uid\Uuid;
  */
 #[ORM\Entity(readOnly: true)]
 #[ORM\Index(columns: ['user_id', 'change_seq'])]
+// A WhatsApp reply's id is refused once its reply was removed ({@see \App\Chat\ChatQueue::queue()}): this finds that removal.
+#[ORM\Index(name: 'sync_tombstone_chat_outgoing', columns: ['user_id', 'entity_id'], options: ['where' => "((entity_type)::text = 'chatOutgoing'::text)"])]
 class SyncTombstone
 {
     #[ORM\Id]

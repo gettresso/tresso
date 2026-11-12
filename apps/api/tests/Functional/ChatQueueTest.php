@@ -171,7 +171,7 @@ final class ChatQueueTest extends DatabaseTestCase
 
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(200);
-        self::assertSame(['id' => $first, 'chatId' => $this->chatId, 'chatJid' => self::JID, 'text' => 'One'], $this->decodedResponse());
+        self::assertSame(['id' => $first, 'chatId' => $this->chatId, 'chatJid' => self::JID, 'text' => 'One', 'claimedAt' => $this->claimOf($first)], $this->decodedResponse());
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(200);
         self::assertSame($second, $this->decodedResponse()['id'] ?? null, 'A claimed reply is not handed out again.');
@@ -196,7 +196,7 @@ final class ChatQueueTest extends DatabaseTestCase
         $id = $this->claimedReply('Count me in!');
         $cursor = $this->delta(0)['cursor'];
 
-        $this->relay('outgoing/'.$id.'/result', ['sent' => true]);
+        $this->report($id, ['sent' => true]);
 
         self::assertResponseStatusCodeSame(200);
         $reply = $this->decodedResponse();
@@ -206,11 +206,11 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame([$reply], $page['chatOutgoing']);
         self::assertSame($reply['sentAt'], $page['chats'][0]['lastMessageAt'] ?? null, 'The chat moves up with the reply.');
 
-        $this->relay('outgoing/'.$id.'/result', ['sent' => true]);
+        $this->report($id, ['sent' => true]);
         self::assertResponseStatusCodeSame(200, 'The same result again (its answer got lost).');
         self::assertSame($reply, $this->decodedResponse());
 
-        $this->relay('outgoing/'.$id.'/result', ['sent' => false, 'error' => 'refused']);
+        $this->report($id, ['sent' => false, 'error' => 'refused']);
         self::assertResponseStatusCodeSame(409);
         self::assertSame('result_final', $this->decodedResponse()['code'] ?? null);
 
@@ -239,14 +239,14 @@ final class ChatQueueTest extends DatabaseTestCase
     {
         $id = $this->claimedReply('Count me in!');
 
-        $this->relay('outgoing/'.$id.'/result', ['sent' => false, 'error' => $error]);
+        $this->report($id, ['sent' => false, 'error' => $error]);
 
         self::assertResponseStatusCodeSame(200);
         self::assertSame('failed', $this->decodedResponse()['status'] ?? null);
         self::assertSame($error, $this->decodedResponse()['error'] ?? null);
-        $this->relay('outgoing/'.$id.'/result', ['sent' => false, 'error' => $error]);
+        $this->report($id, ['sent' => false, 'error' => $error]);
         self::assertResponseStatusCodeSame(200, 'The same result again.');
-        $this->relay('outgoing/'.$id.'/result', ['sent' => true]);
+        $this->report($id, ['sent' => true]);
         self::assertResponseStatusCodeSame(409, 'Another result is refused.');
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(204, 'Nothing sends a failed reply again by itself.');
@@ -266,11 +266,11 @@ final class ChatQueueTest extends DatabaseTestCase
         $id = $this->queueReply($this->chatId, 'Hi')['id'] ?? null;
         self::assertIsString($id);
 
-        $this->relay('outgoing/'.$id.'/result', ['sent' => true]);
+        $this->report($id, ['sent' => true]);
 
         self::assertResponseStatusCodeSame(409);
         self::assertSame('result_final', $this->decodedResponse()['code'] ?? null);
-        $this->relay('outgoing/'.Uuid::v7()->toRfc4122().'/result', ['sent' => true]);
+        $this->report(Uuid::v7()->toRfc4122(), ['sent' => true]);
         self::assertResponseStatusCodeSame(404);
     }
 
@@ -282,6 +282,7 @@ final class ChatQueueTest extends DatabaseTestCase
         yield 'sent with an error' => [['sent' => true, 'error' => 'refused']];
         yield 'not sent without an error' => [['sent' => false]];
         yield 'no outcome' => [[]];
+        yield 'no claim' => [['sent' => true, 'claimedAt' => null]];
     }
 
     /**
@@ -292,7 +293,7 @@ final class ChatQueueTest extends DatabaseTestCase
     {
         $id = $this->claimedReply('Hi');
 
-        $this->relay('outgoing/'.$id.'/result', $result);
+        $this->report($id, $result);
 
         self::assertResponseStatusCodeSame(422);
         self::assertSame('sending', $this->delta(0)['chatOutgoing'][0]['status'] ?? null);
@@ -313,11 +314,16 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame('unconfirmed', $page['chatOutgoing'][0]['error'] ?? null);
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(204, 'It may have gone out: it is never handed out again by itself.');
-        $this->relay('outgoing/'.$fresh.'/result', ['sent' => true]);
+        $this->report($fresh, ['sent' => true]);
         self::assertResponseStatusCodeSame(200, 'A reply within its lease is left alone.');
-        $this->relay('outgoing/'.$stuck.'/result', ['sent' => true]);
-        self::assertResponseStatusCodeSame(409, 'A result after the lease is not taken.');
         self::assertSame(['offline' => 0, 'unconfirmed' => 0], $this->sweep());
+        $this->report($stuck, ['sent' => false, 'error' => 'refused']);
+        self::assertResponseStatusCodeSame(409, 'A late failure does not overwrite what the sweep said.');
+        $this->report($stuck, ['sent' => true]);
+        self::assertResponseStatusCodeSame(200, 'It went out after all: the truth wins, and Try again cannot send it twice.');
+        self::assertSame('sent', $this->decodedResponse()['status'] ?? null);
+        $this->report($stuck, ['sent' => true]);
+        self::assertResponseStatusCodeSame(200);
     }
 
     public function testCancelsAReplyThatWaitsOrFailed(): void
@@ -333,7 +339,7 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame([['type' => 'chatOutgoing', 'id' => $waiting]], $this->delta($cursor)['deleted']);
 
         $failed = $this->claimedReply('Hi');
-        $this->relay('outgoing/'.$failed.'/result', ['sent' => false, 'error' => 'not_linked']);
+        $this->report($failed, ['sent' => false, 'error' => 'not_linked']);
         $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$failed, server: $this->web);
         self::assertResponseStatusCodeSame(204);
 
@@ -364,12 +370,12 @@ final class ChatQueueTest extends DatabaseTestCase
             $this->relay('outgoing/claim');
             self::assertSame($id, $this->decodedResponse()['id'] ?? null);
         }
-        $this->relay('outgoing/'.$sent.'/result', ['sent' => true]);
+        $this->report($sent, ['sent' => true]);
         $page = $this->delta($cursor);
         $cursor = $page['cursor'];
         self::assertSame('sent', array_column($page['chatOutgoing'], 'status', 'id')[$sent] ?? null);
 
-        $this->relay('outgoing/'.$refused.'/result', ['sent' => false, 'error' => 'refused']);
+        $this->report($refused, ['sent' => false, 'error' => 'refused']);
         $page = $this->delta($cursor);
         $cursor = $page['cursor'];
         self::assertSame([['id' => $refused, 'status' => 'failed', 'error' => 'refused']], array_map(static fn (array $row): array => ['id' => $row['id'] ?? null, 'status' => $row['status'] ?? null, 'error' => $row['error'] ?? null], $page['chatOutgoing']));
@@ -387,6 +393,83 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame([['type' => 'chatOutgoing', 'id' => $cancelled]], $page['deleted']);
     }
 
+    public function testACancelledReplyIsNeverQueuedAgain(): void
+    {
+        $id = self::newReplyId();
+        $this->queueReply($this->chatId, 'Never mind', $id);
+        self::assertResponseStatusCodeSame(201);
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$id, server: $this->web);
+        self::assertResponseStatusCodeSame(204);
+
+        // The answer to the first request got lost, and the client sends it again.
+        $this->queueReply($this->chatId, 'Never mind', $id);
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('cancelled', $this->decodedResponse()['code'] ?? null);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'));
+        $this->relay('outgoing/claim');
+        self::assertResponseStatusCodeSame(204, 'Nothing goes out.');
+    }
+
+    public function testTheRepliesOfALeftOutChatAreNeverQueuedAgain(): void
+    {
+        $id = self::newReplyId();
+        $this->queueReply($this->chatId, 'Count me in!', $id);
+        self::assertResponseStatusCodeSame(201);
+        foreach (['{"leftOut":true}', '{"leftOut":false}'] as $change) {
+            $this->client->request('PATCH', '/api/v1/chats/'.$this->chatId, server: $this->web + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: $change);
+            self::assertResponseIsSuccessful();
+        }
+
+        $this->queueReply($this->chatId, 'Count me in!', $id);
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('cancelled', $this->decodedResponse()['code'] ?? null);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'));
+    }
+
+    public function testAResultOfAnEarlierClaimIsRefused(): void
+    {
+        $id = $this->claimedReply('Hi');
+        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = claimed_at - INTERVAL '1 minute' WHERE id = :id", ['id' => $id]);
+        $earlier = $this->claimOf($id);
+        $this->report($id, ['sent' => false, 'error' => 'bridge_stopped']);
+        self::assertResponseStatusCodeSame(200);
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$id.'/retry', [], $this->web);
+        self::assertResponseStatusCodeSame(200);
+        $this->relay('outgoing/claim');
+        self::assertSame($id, $this->decodedResponse()['id'] ?? null);
+
+        $this->report($id, ['sent' => true, 'claimedAt' => $earlier]);
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('result_final', $this->decodedResponse()['code'] ?? null);
+        self::assertSame('sending', $this->delta(0)['chatOutgoing'][0]['status'] ?? null, 'The claim that holds it now decides.');
+        $this->report($id, ['sent' => true]);
+        self::assertResponseStatusCodeSame(200);
+    }
+
+    public function testADesktopThatNoLongerRelaysMayStillSayItsReplyWentOut(): void
+    {
+        $sent = $this->claimedReply('Sent');
+        $failed = $this->claimedReply('Failed');
+        $this->connectWhatsApp($this->userHeaders('kim@example.test', ['mail:read', 'mail:write'], 'desktop'), self::OTHER_MAC);
+
+        $this->report($failed, ['sent' => false, 'error' => 'refused']);
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('not_the_relay', $this->decodedResponse()['code'] ?? null, 'Only that it went out.');
+        $this->report($sent, ['sent' => true, 'claimedAt' => '2026-11-12T10:00:00+00:00']);
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('not_the_relay', $this->decodedResponse()['code'] ?? null, 'Only with its own claim.');
+
+        $this->report($sent, ['sent' => true]);
+
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame('sent', $this->decodedResponse()['status'] ?? null);
+        $replies = array_column($this->delta(0)['chatOutgoing'], 'status', 'id');
+        self::assertSame('sending', $replies[$failed] ?? null);
+    }
+
     public function testAnotherUserReachesNoneOfIt(): void
     {
         $waiting = $this->queueReply($this->chatId, 'Hi')['id'] ?? null;
@@ -395,6 +478,8 @@ final class ChatQueueTest extends DatabaseTestCase
 
         $this->queueReply($this->chatId, 'Let me in', headers: $lisa);
         self::assertResponseStatusCodeSame(404);
+        $this->queueReply($this->chatId, 'Let me in', $waiting, $lisa);
+        self::assertResponseStatusCodeSame(404, 'The chat is looked up first: Kim\'s reply id tells Lisa nothing.');
         $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$waiting, server: $lisa);
         self::assertResponseStatusCodeSame(404);
         $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$waiting.'/retry', [], $lisa);
