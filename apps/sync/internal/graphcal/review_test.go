@@ -154,6 +154,28 @@ func TestGraphNeverSaysCalendarsAreNotAllowed(t *testing.T) {
 	}
 }
 
+func TestAWriteGraphRefusesWith403SaysTheCalendarIsReadOnly(t *testing.T) {
+	graph := newFakeGraph(t)
+	graph.put(single("ev10", "Lunch"))
+	fake := calsynctest.NewAPI(owner)
+	run(t, graph, fake)
+	calsynctest.Eventually(t, "the sync", func() bool { _, ok := fake.Objects(defaultCalendar)["ev10"]; return ok })
+	object := fake.Objects(defaultCalendar)["ev10"]
+	graph.mu.Lock()
+	graph.failures["PATCH /events/ev10"] = http.StatusForbidden
+	graph.mu.Unlock()
+
+	remoteID, etag := "ev10", object.ETag
+	renamed := strings.Replace(object.Ical, "SUMMARY:Lunch", "SUMMARY:Brunch", 1)
+	fake.Queue(api.CalendarOperation{ID: "rename", Kind: "put", CalendarRemoteID: defaultCalendar, UID: "uid-ev10", RemoteID: &remoteID, IfMatch: &etag, Ical: &renamed, Notify: true})
+	calsynctest.Eventually(t, "the write", func() bool { _, ok := fake.Result("rename"); return ok })
+
+	r, _ := fake.Result("rename")
+	if r.Outcome != api.OperationFailed || r.Error == nil || *r.Error != "Outlook refused the change: the calendar is read-only for you." {
+		t.Fatalf("a 403 on a write names the calendar's own permission, not a bare status: %+v", r)
+	}
+}
+
 func TestAnOccurrenceThatKeepsFailingStillReportsGraphsVersion(t *testing.T) {
 	graph := newFakeGraph(t)
 	master, occurrences := weekly("ev8")
