@@ -192,7 +192,7 @@ export const useMailStore = defineStore('mail', () => {
    * What has to be written into the copy before it closes when a session ends without a sign-out (expired, or ended
    * in another tab): the draft on screen, so typing since the last autosave is kept with the copy.
    */
-  const beforeKeptClose = new Set<() => Promise<void>>()
+  const beforeKeptClose = new Set<{ write: () => Promise<void>; letGo: () => void }>()
   /** The close of a kept copy under way (closeKept); a start waits for it, so none meets the copy half closed. */
   let closingKept: Promise<void> | null = null
 
@@ -463,13 +463,14 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /** Stops syncing and closes the copy; a start still under way gives up. */
-  async function stop(): Promise<void> {
+  /** `closeWaitMs` bounds how long the close waits for writes and reads under way (see MailStore.close). */
+  async function stop(options: { closeWaitMs?: number } = {}): Promise<void> {
     generation += 1
-    await teardown()
+    await teardown(options)
   }
 
   /** Everything is cleared before the first wait, so a start that runs meanwhile begins from a clean state. */
-  async function teardown(): Promise<void> {
+  async function teardown(options: { closeWaitMs?: number } = {}): Promise<void> {
     const stopping = realtime
     const database = db.value
     realtime = null
@@ -502,7 +503,7 @@ export const useMailStore = defineStore('mail', () => {
     latestBrief.value = null
     outbox.value = []
     await stopping?.stop()
-    await database?.close()
+    await database?.close(options.closeWaitMs === undefined ? undefined : { waitMs: options.closeWaitMs })
   }
 
   /** Stops syncing and removes the local copy, so nothing stays behind on a shared computer. */
@@ -998,17 +999,20 @@ export const useMailStore = defineStore('mail', () => {
 
   /**
    * Registers what is written into the copy before it closes at the end of a session that keeps it (expired, or
-   * ended in another tab); returns the function that removes it again.
+   * ended in another tab), and what lets go of it on screen: `letGo` runs once the write is done or its time is up,
+   * before the copy closes, so nothing of the session that ended can reach the next one's copy. Returns the function
+   * that removes both again.
    */
-  function beforeKeptCopyCloses(write: () => Promise<void>): () => void {
-    beforeKeptClose.add(write)
-    return () => beforeKeptClose.delete(write)
+  function beforeKeptCopyCloses(write: () => Promise<void>, letGo: () => void): () => void {
+    const hook = { write, letGo }
+    beforeKeptClose.add(hook)
+    return () => beforeKeptClose.delete(hook)
   }
 
   /**
    * A session ended without a sign-out: what is still being written goes into the copy first, while it is open, and
-   * then it closes. The writes get {@link KEPT_SAVE_LIMIT_MS}; a write that does not settle by then (storage that
-   * hangs) does not keep the copy open. The users of this session are no longer the ones a later sign-out removes the
+   * then it closes. The writes get {@link KEPT_SAVE_LIMIT_MS}, and so does the close itself; a write that does not
+   * settle by then (storage that hangs) does not keep the copy open, and what was on screen is let go either way. The users of this session are no longer the ones a later sign-out removes the
    * copy of: that is whoever starts next (a sign-out before the next start must not remove this copy for someone else).
    */
   function closeKept(): Promise<void> {
@@ -1021,7 +1025,8 @@ export const useMailStore = defineStore('mail', () => {
       const late = new Promise<'late'>((resolve) => {
         timer = setTimeout(() => resolve('late'), KEPT_SAVE_LIMIT_MS)
       })
-      const writes = Promise.allSettled([...beforeKeptClose].map(async (write) => write())).then((results) => {
+      const hooks = [...beforeKeptClose]
+      const writes = Promise.allSettled(hooks.map(async (hook) => hook.write())).then((results) => {
         for (const result of results) {
           if (result.status === 'rejected') {
             console.error('Saving what was being written before the mail copy closed failed', result.reason)
@@ -1035,8 +1040,18 @@ export const useMailStore = defineStore('mail', () => {
         }
       } finally {
         clearTimeout(timer)
+        // Done or not: what is on screen goes now, so a write that is still under way cannot carry it into the copy
+        // of whoever starts next.
+        for (const hook of hooks) {
+          try {
+            hook.letGo()
+          } catch (error) {
+            console.error('Letting go of what was being written failed', error)
+          }
+        }
       }
-      await stop()
+      // The close is bounded too: on the desktop it waits for the writes under way, which may never answer.
+      await stop({ closeWaitMs: KEPT_SAVE_LIMIT_MS })
     })()
     const settled = closing.finally(() => {
       if (closingKept === settled) {

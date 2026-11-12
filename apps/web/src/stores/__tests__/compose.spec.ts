@@ -5,7 +5,7 @@ import { reactive } from 'vue'
 import type { ChangePage, SyncedMessage, SyncedOutgoingMessage } from '@tresso/core'
 import { deleteMailDatabase } from '@/mail/db'
 import { UNDO_SECONDS, useComposeStore } from '../compose'
-import { useMailStore } from '../mail'
+import { KEPT_SAVE_LIMIT_MS, useMailStore } from '../mail'
 import { useAuthStore } from '../auth'
 
 const desktop = vi.hoisted(() => ({ isDesktop: false, opened: [] as string[] }))
@@ -309,7 +309,7 @@ describe('compose store', () => {
     const id = compose.draft!.id
     // Keeps the copy open after the session ended, until the answer was handled.
     let release!: () => void
-    mail.beforeKeptCopyCloses(() => new Promise<void>((resolve) => (release = resolve)))
+    mail.beforeKeptCopyCloses(() => new Promise<void>((resolve) => (release = resolve)), () => undefined)
 
     const sending = compose.send()
     await vi.waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/api/v1/outgoing-messages')).toBe(true))
@@ -325,6 +325,38 @@ describe('compose store', () => {
     // Signed in again: the draft still carries the send's id, so Send again cannot queue the message a second time.
     await mail.start('compose-user')
     expect(await mail.draft(id)).toMatchObject({ sendAttemptId: attempt })
+  })
+
+  it('lets go of the draft on screen when writing it into the kept copy does not finish in time, so the next user never gets it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const compose = useComposeStore()
+    const mail = useMailStore()
+    compose.openNew([{ address: 'anna@finance.example', name: 'Anna' }])
+    compose.update({ subject: 'Not for the next user', html: '<p>Private</p>' })
+    // The copy's write of the draft never answers.
+    const copy = mail.currentStore()!
+    vi.spyOn(copy, 'saveDraft').mockImplementation(() => new Promise<never>(() => undefined))
+    vi.spyOn(copy, 'changeDraft').mockImplementation(() => new Promise<never>(() => undefined))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+    // The session ended in another tab, which then signs in as someone else.
+    window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
+    await vi.advanceTimersByTimeAsync(KEPT_SAVE_LIMIT_MS)
+    vi.useRealTimers()
+    await vi.waitFor(() => expect(compose.draft).toBeNull())
+    await vi.waitFor(() => expect(mail.ready).toBe(false))
+
+    useAuthStore().tokens = { accessToken: 'other-token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }
+    await mail.start('other-user')
+    try {
+      await vi.waitFor(() => expect(mail.ready).toBe(true))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(compose.draft).toBeNull()
+      expect(await mail.drafts()).toEqual([])
+    } finally {
+      await mail.stop()
+      await deleteMailDatabase('other-user')
+    }
   })
 
   it('keeps what was typed in the copy when the session ended in another tab', async () => {
