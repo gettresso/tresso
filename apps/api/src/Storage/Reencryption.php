@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Storage;
 
+use App\Chat\ChatField;
+use App\Chat\ChatFields;
 use App\Entity\Attachment;
 use App\Entity\MailAccount;
 use App\Entity\ProviderGrant;
@@ -34,7 +36,7 @@ final readonly class Reencryption
              OR u.data_key_version < (SELECT MAX(k.version) FROM user_key k WHERE k.owner_id = u.id)
              OR EXISTS (SELECT 1 FROM user_key k WHERE k.owner_id = u.id AND k.version < u.data_key_version))';
 
-    public const array STEPS = ['credentials', 'messages', 'attachments', 'draftFiles', 'outgoing', 'bodyTexts', 'snippets', 'notificationBodies'];
+    public const array STEPS = ['credentials', 'messages', 'attachments', 'draftFiles', 'outgoing', 'bodyTexts', 'snippets', 'notificationBodies', 'chatFields'];
 
     public function __construct(
         private Connection $connection,
@@ -44,6 +46,7 @@ final readonly class Reencryption
         private ObjectStorage $storage,
         private CredentialVault $credentials,
         private MessageFields $fields,
+        private ChatFields $chatFields,
         private UploadCollector $uploads,
         private LoggerInterface $logger,
     ) {
@@ -74,6 +77,7 @@ final readonly class Reencryption
                 'bodyTexts' => $this->bodyTexts($owner, $current, $batch, $until),
                 'snippets' => $this->snippets($owner, $current, $batch, $until),
                 'notificationBodies' => $this->notificationBodies($owner, $current, $batch, $until),
+                'chatFields' => $this->chatFields($owner, $current, $batch, $until),
             };
             $failed += $stepFailed;
             $progress($step, $moved, $stepFailed);
@@ -139,6 +143,14 @@ final readonly class Reencryption
             'notificationBodies' => self::count($this->connection->fetchOne(
                 "SELECT COUNT(*) FROM mail_notification WHERE user_id = :owner AND ((sealed_body IS NULL AND body <> '') OR sealed_body NOT LIKE :sealed)",
                 $parameters,
+            )),
+            // Every sealed chat column, counted per column: a row with two old values is two values to reseal.
+            'chatFields' => self::count($this->connection->fetchOne(
+                'SELECT '.implode(' + ', array_map(
+                    static fn (ChatField $field): string => \sprintf('(SELECT COUNT(*) FROM %1$s AND x.%2$s IS NOT NULL AND x.%2$s NOT LIKE :sealed)', $field->ownedRows(), $field->column()),
+                    ChatField::cases(),
+                )),
+                ['owner' => $parameters['owner'], 'sealed' => $parameters['sealed']],
             )),
         ];
     }
@@ -474,6 +486,43 @@ final readonly class Reencryption
                 );
             },
         );
+    }
+
+    /**
+     * What chats say and who they are with ({@see ChatField}), sealed with an older key: resealed with the current one,
+     * column by column. Nothing a client sees changes, so no change number is taken.
+     *
+     * @return array{int, int}
+     */
+    private function chatFields(Uuid $owner, int $current, int $batch, ?\DateTimeImmutable $until): array
+    {
+        $moved = $failed = 0;
+        foreach (ChatField::cases() as $field) {
+            [$fieldMoved, $fieldFailed] = $this->walk(
+                \sprintf(
+                    'SELECT x.id, x.%2$s AS sealed FROM %1$s AND x.%2$s IS NOT NULL AND x.%2$s NOT LIKE :sealed AND x.id > CAST(:after AS UUID) ORDER BY x.id LIMIT :batch',
+                    $field->ownedRows(),
+                    $field->column(),
+                ),
+                $owner,
+                $current,
+                $batch,
+                $until,
+                function (array $row) use ($owner, $field): bool {
+                    $id = Uuid::fromString(self::string($row['id']));
+                    $sealed = self::string($row['sealed']);
+
+                    return 1 === $this->connection->executeStatement(
+                        \sprintf('UPDATE %1$s SET %2$s = :sealed WHERE id = :id AND %2$s = :old', $field->table(), $field->column()),
+                        ['sealed' => $this->chatFields->reseal($owner, $field, $id, $sealed), 'id' => $id->toRfc4122(), 'old' => $sealed],
+                    );
+                },
+            );
+            $moved += $fieldMoved;
+            $failed += $fieldFailed;
+        }
+
+        return [$moved, $failed];
     }
 
     /**
