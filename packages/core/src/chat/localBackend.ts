@@ -169,9 +169,10 @@ export class LocalChatBackend implements ChatBackend {
 
   /**
    * Stores messages by id (storing one again replaces it) and their chats: `lastMessageAt` only moves forward, an
-   * existing chat keeps its name when none is given and its read and archive times, and the first import marks each
-   * chat read through its newest message so history does not arrive unread. A chat the copy holds as left out takes
-   * nothing.
+   * existing chat keeps its name when none is given and its read and archive times. The first import marks a chat that
+   * had nothing unread (made in this import, or read through its last message) read through its newest message, so
+   * history does not arrive unread; a chat with unread messages, also one never read, stays as it is (as the server's
+   * `ChatIngestor` does). A chat the copy holds as left out takes nothing.
    */
   ingest(chats: IncomingChat[], messages: IncomingMessage[], firstImport: boolean): Promise<void> {
     return this.locked(async () => {
@@ -214,7 +215,7 @@ export class LocalChatBackend implements ChatBackend {
           kind: chat?.kind ?? existing?.kind ?? chatKindOf(jid),
           name: chat?.name ?? existing?.name ?? null,
           lastMessageAt,
-          readThrough: firstImport ? later(existing?.readThrough ?? null, lastMessageAt) : (existing?.readThrough ?? null),
+          readThrough: firstImport && nothingUnread(existing) ? lastMessageAt : (existing?.readThrough ?? null),
           archivedThrough: existing?.archivedThrough ?? null,
           leftOut: false,
         })
@@ -259,7 +260,7 @@ export class LocalChatBackend implements ChatBackend {
       }
       await this.store.setChatMeta(LOCAL_SENDING, JSON.stringify({ id: row.id, chatId: row.chatId }))
       await this.store.putChatOutgoing([{ ...row, status: 'sending', error: null, claimedAt: new Date(this.now()).toISOString() }])
-      return { id: row.id, chatJid: jid, text: row.text, token: null }
+      return { id: row.id, chatId: row.chatId, chatJid: jid, text: row.text, token: null }
     })
   }
 
@@ -269,8 +270,7 @@ export class LocalChatBackend implements ChatBackend {
    */
   report(reply: ClaimedReply, result: ReplyResult): Promise<void> {
     return this.locked(async () => {
-      const chatId = localChatId(reply.chatJid)
-      const row = await outgoingRow(this.store, chatId, reply.id)
+      const row = await outgoingRow(this.store, reply.chatId, reply.id)
       if (row !== null && row.status === 'sending') {
         if (result.sent) {
           const sentAt = new Date(this.now()).toISOString()
@@ -345,6 +345,14 @@ function readCursor(value: string): RelayCursor | null {
 function timeOf(value: string): number {
   const at = Date.parse(value)
   return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at
+}
+
+/** Whether a chat had nothing unread before this import: new, or read through its last message. */
+function nothingUnread(chat: SyncedChat | null): boolean {
+  if (chat === null) {
+    return true
+  }
+  return chat.readThrough !== null && timeOf(chat.readThrough) >= timeOf(chat.lastMessageAt)
 }
 
 /** The later of two times; `value` when `current` is null or does not parse. */

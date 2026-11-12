@@ -1,5 +1,5 @@
 import { CopyClosingError } from '../store/mailStore'
-import { chatKindOf, importable, phoneLabel } from './format'
+import { canonicalChatJid, chatKindOf, importable, phoneLabel } from './format'
 import type { BridgeRow, ChatKind, ChatMedia, ChatMediaKind, ChatOutgoingError, ChatSender } from './types'
 
 /** Rows read from the bridge's store per round (the shell's maximum). */
@@ -12,8 +12,12 @@ export const RELAY_ERROR_DELAY = 15_000
 const NAMES_PER_CALL = 500
 /** A sender id the shell can look up: digits only (a phone number or a LID), as `valid_sender_id` in whatsapp.rs. */
 const SENDER_ID = /^[0-9]{1,32}$/
-/** The largest epoch ms a Date holds. */
-const MAX_TIME = 8.64e15
+/** A WhatsApp id or a sender id as the server takes it: 1 to 128 visible ASCII characters (`ChatIngestor::ID`). */
+const WA_ID = /^[\x21-\x7E]{1,128}$/
+/** The earliest message time the server takes (`ChatTime`); older is a broken timestamp. */
+const EARLIEST = Date.UTC(2009, 0, 1)
+/** How far ahead of the clock a message time may be, as the server takes it. */
+const AHEAD = 24 * 60 * 60 * 1000
 
 /** One read of the bridge's store (see `whatsapp_read` in the desktop shell). */
 export interface BridgePage {
@@ -60,6 +64,7 @@ export interface RelayCursor {
 }
 
 export interface IncomingChat {
+  /** In the one form the server stores (canonicalChatJid). */
   jid: string
   /** The chat's name in the bridge's store; null when it has none. */
   name: string | null
@@ -67,6 +72,7 @@ export interface IncomingChat {
 }
 
 export interface IncomingMessage {
+  /** In the one form the server stores (canonicalChatJid). */
   chatJid: string
   /** WhatsApp's id of the message, unique within its chat. */
   waId: string
@@ -82,6 +88,7 @@ export interface IncomingMessage {
 /** A reply the backend handed out to send; it is `sending` until its result is reported. */
 export interface ClaimedReply {
   id: string
+  chatId: string
   chatJid: string
   text: string
   /** What the backend needs back with the result (the server's claim token); null when nothing. */
@@ -144,6 +151,8 @@ export type RelayStep = 'prepare' | 'read' | 'names' | 'store' | 'claim' | 'repo
 export interface ChatRelayOptions {
   bridge: ChatBridge
   backend: ChatBackend
+  /** Epoch ms now; a message more than a day ahead of it is not brought in. */
+  now: () => number
   /** Runs `run` after `ms`; returns the function that cancels it. */
   schedule: (run: () => void, ms: number) => () => void
   /** After each round that stored something: chats and messages stored in this session. */
@@ -168,9 +177,11 @@ type RelayState = 'idle' | 'running' | 'stopped'
  * Reading: by rowid from the cursor. The cursor moves only after the backend stored the rows, so a crash in between
  * reads them again, which the backend's idempotence makes harmless. A row the bridge stores again gets a higher rowid
  * and is read again the same way. A store that was replaced or renumbered (its id changed, or its highest rowid fell
- * below the cursor) is read again from 0. What is left out is decided before anything is stored: chats that are not a
- * direct chat or a group, groups when they are not brought in, chats the user left out, messages before
- * `importSince`, without a time or without anything to show.
+ * below the cursor) is read again from 0. What is left out is decided before anything is stored, the way the server
+ * decides it for "All my devices": chats that are not a direct chat or a group, groups when they are not brought in,
+ * chats the user left out, messages before `importSince`, without a time or with one before 2009 or more than a day
+ * ahead, without a WhatsApp id the server takes, or without anything to show. JIDs are passed on in one form
+ * (canonicalChatJid).
  *
  * Sending: after each import, the waiting replies one at a time, oldest first: claim, send, report. A send is never
  * repeated by the relay: a result that could not be reported is kept and reported again first in the next round, and
@@ -382,13 +393,15 @@ export class ChatRelay {
 
   /** The rows Tresso takes, as the backend stores them; one message per chat and WhatsApp id (the newest row). */
   private async incoming(rows: BridgeRow[], settings: RelaySettings): Promise<{ chats: IncomingChat[]; messages: IncomingMessage[] }> {
-    const taken = new Map<string, { row: BridgeRow; sentAt: number; media: ChatMedia | null }>()
+    const latest = this.options.now() + AHEAD
+    const taken = new Map<string, { row: BridgeRow; jid: string; sentAt: number; media: ChatMedia | null }>()
     for (const row of rows) {
       const sentAt = row.sentAt
-      if (row.id === '' || sentAt === null || !Number.isFinite(sentAt) || Math.abs(sentAt) > MAX_TIME || sentAt < settings.importSince) {
+      if (!WA_ID.test(row.id) || sentAt === null || !Number.isFinite(sentAt) || sentAt < EARLIEST || sentAt > latest || sentAt < settings.importSince) {
         continue
       }
-      if (!importable(row.chatJid, settings.includeGroups, settings.leftOut)) {
+      const jid = canonicalChatJid(row.chatJid)
+      if (jid === null || !importable(row.chatJid, settings.includeGroups, settings.leftOut)) {
         continue
       }
       const media = mediaOf(row)
@@ -396,21 +409,20 @@ export class ChatRelay {
         // A row with nothing to show (a reaction or a kind of message the bridge keeps without content).
         continue
       }
-      taken.set(`${row.chatJid}\n${row.id}`, { row, sentAt, media })
+      taken.set(`${jid}\n${row.id}`, { row, jid, sentAt, media })
     }
     const senders = [...taken.values()].filter(({ row }) => groupSender(row)).map(({ row }) => row.sender)
     await this.lookUp(senders)
 
     const chats = new Map<string, IncomingChat>()
     const messages: IncomingMessage[] = []
-    for (const { row, sentAt, media } of taken.values()) {
-      const kind = chatKindOf(row.chatJid)
-      const chat = chats.get(row.chatJid)
+    for (const { row, jid, sentAt, media } of taken.values()) {
+      const chat = chats.get(jid)
       if (chat === undefined || (chat.name === null && row.chatName !== null)) {
-        chats.set(row.chatJid, { jid: row.chatJid, name: row.chatName, kind })
+        chats.set(jid, { jid, name: row.chatName, kind: chatKindOf(jid) })
       }
       messages.push({
-        chatJid: row.chatJid,
+        chatJid: jid,
         waId: row.id,
         fromMe: row.fromMe,
         sender: groupSender(row) ? this.sender(row.sender) : null,
@@ -478,9 +490,9 @@ export class ChatRelay {
   }
 }
 
-/** A message of someone else in a group, the only kind that carries a sender. */
+/** A message of someone else in a group, the only kind that carries a sender (when its id is one the server takes). */
 function groupSender(row: BridgeRow): boolean {
-  return !row.fromMe && row.sender !== '' && chatKindOf(row.chatJid) === 'group'
+  return !row.fromMe && WA_ID.test(row.sender) && chatKindOf(row.chatJid) === 'group'
 }
 
 const MEDIA_KINDS: readonly string[] = ['image', 'video', 'audio', 'document'] satisfies ChatMediaKind[]

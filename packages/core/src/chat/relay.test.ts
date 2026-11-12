@@ -195,7 +195,7 @@ describe('ChatRelay with the local backend', () => {
   function makeRelay(on: SqliteMailStore = store): ChatRelay {
     backend = new Wrapped(new LocalChatBackend(on, config, identity, () => NOW))
     errors = []
-    relay = new ChatRelay({ bridge, backend, schedule: scheduler.schedule, onError: (error, step) => errors.push({ error, step }) })
+    relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: scheduler.schedule, onError: (error, step) => errors.push({ error, step }) })
     return relay
   }
 
@@ -363,6 +363,8 @@ describe('ChatRelay with the local backend', () => {
     bridge.add('NOTIME', DIRECT, { sentAt: null })
     bridge.add('EMPTY', DIRECT, { text: '  ' })
     bridge.add('', DIRECT)
+    bridge.add('BAD ID', DIRECT)
+    bridge.add('AHEAD', DIRECT, { sentAt: NOW + 25 * 60 * 60 * 1000 })
 
     await relay.pollNow()
 
@@ -371,7 +373,7 @@ describe('ChatRelay with the local backend', () => {
     expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, OTHER)).toBeNull()
     expect(bridge.nameCalls).toEqual([])
     // Left out rows still move the cursor: they are decided, not pending.
-    expect((await storedCursor())?.rowid).toBe(9)
+    expect((await storedCursor())?.rowid).toBe(11)
   })
 
   it('stores nothing more for a chat the copy holds as left out', async () => {
@@ -385,6 +387,17 @@ describe('ChatRelay with the local backend', () => {
     const chat = await store.chat(localChatId(DIRECT))
     expect(chat?.chat.leftOut).toBe(true)
     expect(chat?.messages).toEqual([])
+  })
+
+  it('keeps one chat per JID in the form the server stores, whatever form the bridge wrote', async () => {
+    bridge.add('A1', '31612345678:12@s.whatsapp.net')
+    bridge.add('A2', '31612345678@S.WhatsApp.Net')
+    bridge.add('G1', '120363000000000001@G.US', { sender: '31611111111' })
+
+    await relay.pollNow()
+
+    expect((await store.chats()).map((summary) => summary.chat.jid).sort()).toEqual([GROUP, DIRECT])
+    expect(await messageIds()).toEqual([`wa:${GROUP}:G1`, `wa:${DIRECT}:A1`, `wa:${DIRECT}:A2`])
   })
 
   it('looks up each group sender once per session, in batches the shell takes', async () => {
@@ -609,7 +622,7 @@ describe('ChatRelay with the local backend', () => {
   it('stops by itself when the chats are removed while it runs', async () => {
     const stoppedFor: unknown[] = []
     backend = new Wrapped(new LocalChatBackend(store, config, identity, () => NOW))
-    relay = new ChatRelay({ bridge, backend, schedule: scheduler.schedule, onError: (error, step) => errors.push({ error, step }), onStopped: (reason) => stoppedFor.push(reason) })
+    relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: scheduler.schedule, onError: (error, step) => errors.push({ error, step }), onStopped: (reason) => stoppedFor.push(reason) })
     bridge.add('A1', DIRECT)
     relay.start()
     scheduler.fire()
@@ -629,7 +642,7 @@ describe('ChatRelay with the local backend', () => {
 
   it('stops quietly when the copy closes at sign-out', async () => {
     const stoppedFor: unknown[] = []
-    relay = new ChatRelay({ bridge, backend, schedule: scheduler.schedule, onError: (error, step) => errors.push({ error, step }), onStopped: (reason) => stoppedFor.push(reason) })
+    relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: scheduler.schedule, onError: (error, step) => errors.push({ error, step }), onStopped: (reason) => stoppedFor.push(reason) })
     bridge.add('A1', DIRECT)
     relay.start()
     await store.close()
@@ -660,7 +673,7 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
     const bridge = new FakeBridge()
     bridge.add('A1', DIRECT)
     const scheduler = fakeScheduler()
-    const relay = new ChatRelay({ bridge, backend: backendOf({ ingest: async () => Promise.reject(new ChatRelayRetryLater(60_000)) }), schedule: scheduler.schedule })
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend: backendOf({ ingest: async () => Promise.reject(new ChatRelayRetryLater(60_000)) }), schedule: scheduler.schedule })
     relay.start()
     scheduler.fire()
     await vi.waitFor(() => expect(scheduler.active()).toHaveLength(1))
@@ -680,7 +693,7 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
           return null
         }
         claimed = true
-        return { id: 'r1', chatJid: DIRECT, text: 'hi', token: 'claim-1' }
+        return { id: 'r1', chatId: 'c1', chatJid: DIRECT, text: 'hi', token: 'claim-1' }
       },
       report: async (reply, result) => {
         expect(reply.token).toBe('claim-1')
@@ -689,7 +702,7 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
     })
     const scheduler = fakeScheduler()
     const steps: RelayStep[] = []
-    const relay = new ChatRelay({ bridge, backend, schedule: scheduler.schedule, onError: (_error, step) => steps.push(step) })
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: scheduler.schedule, onError: (_error, step) => steps.push(step) })
     relay.start()
     scheduler.fire()
     await vi.waitFor(() => expect(scheduler.active()).toHaveLength(1))
@@ -706,6 +719,7 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
     const reads: number[] = []
     bridge.read = async (after) => (reads.push(after), null)
     const relay = new ChatRelay({
+      now: () => NOW,
       bridge,
       backend: backendOf({
         prepare: async () => {

@@ -73,6 +73,17 @@ describe('LocalChatBackend', () => {
     expect((await store.chats())[0]).toMatchObject({ unread: 1, chat: { lastMessageAt: iso(1), readThrough: iso(-5) } })
   })
 
+  it('leaves a chat with unread messages unread during a first import, as the server does', async () => {
+    const other = '31687654321@s.whatsapp.net'
+    await backend.ingest([direct, { jid: other, name: null, kind: 'direct' }], [incoming('A1', DIRECT, -10), incoming('B1', other, -10)], false)
+    await setLocalChatState(store, localChatId(other), { readThrough: iso(-10) })
+
+    await backend.ingest([direct, { jid: other, name: null, kind: 'direct' }], [incoming('A0', DIRECT, -20), incoming('B0', other, -20), incoming('B2', other, -1)], true)
+
+    expect((await store.chat(localChatId(DIRECT)))!.chat.readThrough).toBeNull()
+    expect((await store.chat(localChatId(other)))!.chat.readThrough).toBe(iso(-1))
+  })
+
   it('stores nothing for a chat left out in the copy', async () => {
     await backend.ingest([direct], [incoming('A1', DIRECT, -10)], false)
     await setLocalChatState(store, localChatId(DIRECT), { leftOut: true })
@@ -106,7 +117,7 @@ describe('LocalChatBackend', () => {
 
       const claimed = await backend.claimNext()
 
-      expect(claimed).toEqual({ id: '0193a000-0000-7000-8000-000000000001', chatJid: DIRECT, text: 'first', token: null })
+      expect(claimed).toEqual({ id: '0193a000-0000-7000-8000-000000000001', chatId: localChatId(DIRECT), chatJid: DIRECT, text: 'first', token: null })
       const row = (await store.chat(localChatId(DIRECT)))!.outgoing[0]!
       expect(row).toMatchObject({ status: 'sending', claimedAt: new Date(NOW).toISOString() })
       expect(JSON.parse((await store.chatMeta(LOCAL_SENDING))!)).toEqual({ id: row.id, chatId: localChatId(DIRECT) })
