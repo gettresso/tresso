@@ -133,8 +133,9 @@ export const useMailStore = defineStore('mail', () => {
   const db = shallowRef<MailStore | null>(null)
   let userId: string | null = null
   /**
-   * The user of the last start, kept apart from the claim (`userId`): a start whose open or first read failed gives the
-   * claim back so it can be tried again, but a sign-out must still remove that user's copy.
+   * The user of the last confirmed start, kept apart from the claim (`userId`): a start whose open or first read failed
+   * gives the claim back so it can be tried again, but a sign-out must still remove that user's copy. Never the user of
+   * a copy only opened unconfirmed.
    */
   let lastUser: string | null = null
   let engine: SyncEngine | null = null
@@ -159,19 +160,56 @@ export const useMailStore = defineStore('mail', () => {
   let generation = 0
   /** Opens of a copy under way, with the close of one that was overtaken; removing a copy waits for them. */
   const openings = new Set<Promise<void>>()
+  /** The open and first read of the copy claimed now, settled either way; a confirmed start of the same user waits for it. */
+  let openPhase: Promise<void> = Promise.resolve()
+  /** The open copy is kept current (its user was confirmed): pulls, uploads and the realtime stream run. */
+  let syncing = false
 
-  async function start(forUserId: string): Promise<void> {
+  /**
+   * Opens the user's copy and, once the server confirmed the user, keeps it current. A start that is not `confirmed`
+   * (the user the tokens were last confirmed for, before `/me` answered in this page load) only opens and reads the
+   * copy: no pull, no upload, no realtime stream, and a sign-out does not remove it. Starting the same user again with
+   * `confirmed` then begins the sync on the copy already open.
+   */
+  async function start(forUserId: string, options: { confirmed?: boolean } = {}): Promise<void> {
+    const confirmed = options.confirmed !== false
     if (userId === forUserId) {
+      if (!confirmed || syncing) {
+        return
+      }
+      // The copy of this user is open (or opening) unconfirmed: once it is, the sync begins on it.
+      const mine = generation
+      await openPhase
+      if (mine === generation && userId === forUserId && db.value !== null && !syncing) {
+        lastUser = forUserId
+        await beginSync(mine, db.value)
+      }
       return
     }
     // Claimed before anything is awaited, so a sign-out (or another start) while the old copy closes overtakes it.
     const mine = ++generation
-    lastUser = forUserId
+    if (confirmed) {
+      lastUser = forUserId
+    }
     await teardown()
     if (mine !== generation) {
       return
     }
     userId = forUserId
+    const phase = openAndRead(mine, forUserId, confirmed)
+    openPhase = phase.then(
+      () => undefined,
+      () => undefined,
+    )
+    const database = await phase
+    if (database === null || !confirmed) {
+      return
+    }
+    await beginSync(mine, database)
+  }
+
+  /** Opens the copy and reads it onto the screens; null when a sign-out or another start overtook it meanwhile. */
+  async function openAndRead(mine: number, forUserId: string, confirmed: boolean): Promise<MailStore | null> {
     let opened!: () => void
     const opening = new Promise<void>((resolve) => {
       opened = resolve
@@ -179,17 +217,17 @@ export const useMailStore = defineStore('mail', () => {
     openings.add(opening)
     let database: MailStore
     try {
-      database = await openMailStore(forUserId, (reason) => void closedElsewhere(mine, forUserId, reason))
+      database = await openMailStore(forUserId, (reason) => void closedElsewhere(mine, forUserId, reason, confirmed))
       if (mine !== generation) {
         await database.close()
-        return
+        return null
       }
       db.value = database
       rememberCopy({ userId: forUserId, name: mailCopyName(forUserId) })
     } catch (error) {
       if (mine !== generation) {
         // Overtaken anyway (a sign-out, another user): its failure is no longer anyone's concern.
-        return
+        return null
       }
       // Not claimed after all, so starting the same user again (the app retries) opens the copy anew.
       userId = null
@@ -208,10 +246,15 @@ export const useMailStore = defineStore('mail', () => {
       throw error
     }
     if (mine !== generation) {
-      return
+      return null
     }
     ready.value = true
+    return database
+  }
 
+  /** Keeps the open copy current: the first pull, pending drafts, and the realtime stream for what comes next. */
+  async function beginSync(mine: number, database: MailStore): Promise<void> {
+    syncing = true
     engine = new SyncEngine({
       store: database,
       pageSize: PAGE_SIZE,
@@ -224,7 +267,7 @@ export const useMailStore = defineStore('mail', () => {
         void notifyOverdue()
       },
     })
-    realtime = new RealtimeClient({
+    const stream = new RealtimeClient({
       fetchAccess: () => auth.api<RealtimeAccess>('/api/v1/realtime/token'),
       onCursor: (cursor) => void pull(() => engine?.notify(cursor)),
       onConnected: () => {
@@ -236,6 +279,7 @@ export const useMailStore = defineStore('mail', () => {
         live.value = false
       },
     })
+    realtime = stream
     await pull(() => engine?.sync())
     if (mine !== generation) {
       return
@@ -243,7 +287,7 @@ export const useMailStore = defineStore('mail', () => {
     await refresh()
     synced.value = true
     void uploadPendingDrafts()
-    realtime.start()
+    stream.start()
   }
 
   /**
@@ -347,7 +391,7 @@ export const useMailStore = defineStore('mail', () => {
    * The copy closed under this tab. Upgraded by a newer Tresso in another tab: this tab stops and says to reload.
    * Deleted (a sign-out in another tab) or closed by the browser: this tab opens a fresh copy and syncs it again.
    */
-  async function closedElsewhere(opened: number, forUserId: string, reason: ClosedElsewhere): Promise<void> {
+  async function closedElsewhere(opened: number, forUserId: string, reason: ClosedElsewhere, confirmed: boolean): Promise<void> {
     if (opened !== generation) {
       return
     }
@@ -362,7 +406,8 @@ export const useMailStore = defineStore('mail', () => {
       return
     }
     try {
-      await start(forUserId)
+      // Opened again as it was: kept current only when its user was confirmed (or has been since).
+      await start(forUserId, { confirmed: confirmed || lastUser === forUserId })
     } catch (error) {
       syncState.value = 'error'
       syncError.value = `The mail on this device was removed elsewhere and could not be opened again: ${error instanceof Error ? error.message : String(error)}`
@@ -391,6 +436,7 @@ export const useMailStore = defineStore('mail', () => {
     live.value = false
     ready.value = false
     synced.value = false
+    syncing = false
     accounts.value = []
     allFolders.value = []
     signatures.value = []
@@ -412,8 +458,9 @@ export const useMailStore = defineStore('mail', () => {
 
   /** Stops syncing and removes the local copy, so nothing stays behind on a shared computer. */
   async function forget(): Promise<void> {
-    // Also the copy of a start that failed to open or read it (it gave its claim back, see lastUser).
-    const forUserId = userId ?? lastUser
+    // The copy of the user the server confirmed, also when its start failed to open or read it (see lastUser). A copy
+    // open unconfirmed (an id kept from before) is only closed: it may be someone else's, with their unsent drafts.
+    const forUserId = lastUser
     lastUser = null
     // Named now: by the time the copy is closed, the user may be signed in to another server under the same id.
     const name = forUserId === null ? null : mailCopyName(forUserId)
@@ -737,8 +784,9 @@ export const useMailStore = defineStore('mail', () => {
     await db.value?.saveDraft(JSON.parse(JSON.stringify(draft)) as Draft)
   }
 
+  // Drafts go to the server only from a copy whose user was confirmed; an unconfirmed copy is only read.
   const draftSync = new DraftSync(
-    () => db.value,
+    () => (syncing ? db.value : null),
     {
       create: (id, request) => auth.send<SyncedDraft>('POST', '/api/v1/drafts', { ...request, draftId: id }),
       update: (id, request, expectedVersion) => auth.send<SyncedDraft>('PUT', `/api/v1/drafts/${encodeURIComponent(id)}`, { ...request, expectedVersion }),

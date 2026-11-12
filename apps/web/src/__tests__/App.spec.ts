@@ -1,7 +1,6 @@
 import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { config } from '@/config'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import App from '../App.vue'
 import { useMailStore } from '../stores/mail'
@@ -229,7 +228,7 @@ describe('App', () => {
     const me = { id: 'user-1', email: 'ada@example.com', displayName: 'Ada', createdAt: '2026-01-01T00:00:00+00:00' }
 
     /** A signed-in tab whose server answers /me with what `answers` says, one per call, and 200 to the rest. */
-    async function signedIn(answers: (() => Response)[]) {
+    async function signedIn(answers: (() => Response)[], knownUserId?: string) {
       const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'unified', component: { template: '<div />' } }] })
       await router.push('/')
       await router.isReady()
@@ -249,7 +248,7 @@ describe('App', () => {
       )
       const { useAuthStore } = await import('../stores/auth')
       const auth = useAuthStore()
-      auth.tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+      auth.tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000, ...(knownUserId === undefined ? {} : { userId: knownUserId }) }
       const mail = useMailStore()
       const start = vi.spyOn(mail, 'start').mockResolvedValue()
       return { router, start, fetchMe, auth }
@@ -272,7 +271,7 @@ describe('App', () => {
       window.dispatchEvent(new Event('online'))
       await flushPromises()
 
-      expect(start).toHaveBeenCalledWith('user-1')
+      expect(start).toHaveBeenCalledWith('user-1', { confirmed: true })
       expect(wrapper.text()).not.toContain('could not start')
       vi.unstubAllGlobals()
     })
@@ -285,7 +284,7 @@ describe('App', () => {
       await wrapper.get('[role="alert"] button').trigger('click')
       await flushPromises()
 
-      expect(start).toHaveBeenCalledWith('user-1')
+      expect(start).toHaveBeenCalledWith('user-1', { confirmed: true })
       expect(wrapper.text()).not.toContain('could not start')
       vi.unstubAllGlobals()
     })
@@ -303,24 +302,22 @@ describe('App', () => {
       expect(start).not.toHaveBeenCalled()
       await vi.advanceTimersByTimeAsync(5_000)
 
-      expect(start).toHaveBeenCalledWith('user-1')
+      expect(start).toHaveBeenCalledWith('user-1', { confirmed: true })
       expect(wrapper.text()).not.toContain('could not start')
       vi.useRealTimers()
       vi.unstubAllGlobals()
     })
 
-    it('opens the copy of the user last confirmed here before the server answers', async () => {
-      sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: config.apiUrl, userId: 'user-1' }))
-      const { router, start } = await signedIn([offline])
+    it('opens the copy of the user last confirmed for the tokens before the server answers, only to read it', async () => {
+      const { router, start } = await signedIn([offline], 'user-1')
       mount(App, { global: { plugins: [router] } })
       await flushPromises()
 
-      expect(start).toHaveBeenCalledWith('user-1')
+      expect(start).toHaveBeenCalledExactlyOnceWith('user-1', { confirmed: false })
       vi.unstubAllGlobals()
     })
 
-    it('opens no copy kept for another server', async () => {
-      sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: 'https://elsewhere.example', userId: 'user-1' }))
+    it('opens no copy before the server answers when no user was confirmed for the tokens', async () => {
       const { router, start } = await signedIn([offline])
       mount(App, { global: { plugins: [router] } })
       await flushPromises()
@@ -329,36 +326,35 @@ describe('App', () => {
       vi.unstubAllGlobals()
     })
 
-    it('starts as if nothing was kept when the kept user cannot be read', async () => {
-      sessionStorage.setItem('tresso.signedInUser', '{not json')
-      const { router, start } = await signedIn([answered])
-      const wrapper = mount(App, { global: { plugins: [router] } })
+    it('keeps the confirmed user with the tokens', async () => {
+      const { router, auth } = await signedIn([answered])
+      mount(App, { global: { plugins: [router] } })
       await flushPromises()
 
-      expect(start).toHaveBeenCalledExactlyOnceWith('user-1')
-      expect(JSON.parse(sessionStorage.getItem('tresso.signedInUser')!)).toEqual({ server: config.apiUrl, userId: 'user-1' })
-      expect(wrapper.text()).not.toContain('could not start')
+      expect(auth.knownUserId).toBe('user-1')
+      expect(auth.tokens).toMatchObject({ accessToken: 'access-1', userId: 'user-1' })
       vi.unstubAllGlobals()
     })
 
     it('lets go of the draft on screen before it opens the copy of another user than the one kept', async () => {
-      sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: config.apiUrl, userId: 'user-0' }))
-      const { router, start } = await signedIn([answered])
+      const { router, start } = await signedIn([answered], 'user-0')
       const { useComposeStore } = await import('../stores/compose')
       const reset = vi.spyOn(useComposeStore(), 'reset')
       mount(App, { global: { plugins: [router] } })
       await flushPromises()
 
-      expect(start.mock.calls).toEqual([['user-0'], ['user-1']])
+      expect(start.mock.calls).toEqual([
+        ['user-0', { confirmed: false }],
+        ['user-1', { confirmed: true }],
+      ])
       expect(reset).toHaveBeenCalledOnce()
       expect(reset.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[1]!)
       vi.unstubAllGlobals()
     })
 
-    it('forgets the user, and stops trying, once signed out', async () => {
+    it('stops trying once signed out', async () => {
       vi.useFakeTimers()
-      sessionStorage.setItem('tresso.signedInUser', JSON.stringify({ server: config.apiUrl, userId: 'user-1' }))
-      const { router, start, auth, fetchMe } = await signedIn([offline, answered])
+      const { router, start, auth, fetchMe } = await signedIn([offline, answered], 'user-1')
       mount(App, { global: { plugins: [router] } })
       await flushPromises()
 
@@ -366,7 +362,6 @@ describe('App', () => {
       await flushPromises()
       await vi.advanceTimersByTimeAsync(600_000)
 
-      expect(sessionStorage.getItem('tresso.signedInUser')).toBeNull()
       expect(fetchMe).toHaveBeenCalledOnce()
       expect(start).toHaveBeenCalledOnce()
       vi.useRealTimers()

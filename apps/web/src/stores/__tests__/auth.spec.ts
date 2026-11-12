@@ -546,6 +546,38 @@ describe('auth store', () => {
       expect(JSON.parse(localStorage.getItem('auth.tokens')!)).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
     })
 
+    it('keeps the user the server confirmed next to the tokens, and carries it over a refresh', async () => {
+      stubServer()
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+      expect(auth.knownUserId).toBeNull()
+
+      await auth.loadMe()
+      expect(auth.knownUserId).toBe('user-1')
+      expect(JSON.parse(localStorage.getItem('auth.tokens')!)).toMatchObject({ accessToken: 'access-1', userId: 'user-1' })
+
+      auth.tokens = { ...auth.tokens!, expiresAt: Date.now() - 1000 }
+      await auth.api('/api/v1/accounts')
+      expect(JSON.parse(localStorage.getItem('auth.tokens')!)).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2', userId: 'user-1' })
+      expect(auth.knownUserId).toBe('user-1')
+    })
+
+    it('keeps no user for tokens that another tab replaced while the server was asked', async () => {
+      let answer!: () => void
+      stubServer({ api: (_path, token) => new Promise((resolve) => (answer = () => resolve(Response.json({ id: token === 'access-1' ? 'user-1' : 'user-2' })))) })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      const loading = auth.loadMe()
+      await vi.waitFor(() => expect(answer).toBeDefined())
+      // Another tab signed in as someone else meanwhile.
+      auth.tokens = { accessToken: 'access-9', refreshToken: 'refresh-9', expiresAt: Date.now() + 3_600_000 }
+      answer()
+      await loading
+
+      expect(auth.knownUserId).toBeNull()
+    })
+
     it('keeps the tokens when the token endpoint cannot be reached, and says it tries again', async () => {
       const server = stubServer({ refresh: () => Promise.reject(new TypeError('Failed to fetch')) })
       localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))

@@ -9,7 +9,6 @@ import { useHandOversStore } from '@/stores/handOvers'
 import { useMailStore } from '@/stores/mail'
 import { startTimeZoneSync, storedSentZone } from '@/platform/timeZone'
 import { releaseOtherUsersPush } from '@/platform/webPush'
-import { forgetSignedInUser, rememberSignedInUser, signedInUser } from '@/mail/signedInUser'
 import NoticeStack from '@/components/NoticeStack.vue'
 import { problemPlacement } from '@/components/problemPlacement'
 import { useFocusReturn } from '@/components/focusReturn'
@@ -134,19 +133,20 @@ function cancelRetry(): void {
 }
 
 /**
- * Starts the signed-in session: who the user is, then their mail copy. The copy of the user last confirmed here opens
- * at once, before the server answers, so the mail is there when the app starts offline. A start that fails (offline,
- * the server down, the copy refused) says so with a Retry button and tries again by itself: after a growing wait, and
- * at once when the device is back online.
+ * Starts the signed-in session: who the user is, then their mail copy. The copy of the user the server last confirmed
+ * for these tokens opens at once, before it answers, so the mail is there when the app starts offline; until the
+ * server confirms that user it is only read (no sync, no upload, nothing removed). A start that fails (offline, the
+ * server down, the copy refused) says so with a Retry button and tries again by itself: after a growing wait, and at
+ * once when the device is back online.
  */
 async function startSession(): Promise<void> {
   cancelRetry()
   const run = ++startRun
   starting = true
   try {
-    const known = signedInUser()
+    const known = auth.knownUserId
     // Settled here and awaited below, so its failure is reported once, with the rest of the start.
-    const early = known === null ? Promise.resolve() : mail.start(known)
+    const early = known === null ? Promise.resolve() : mail.start(known, { confirmed: false })
     const openedEarly = early.then(
       () => null,
       (cause: unknown) => cause,
@@ -156,7 +156,6 @@ async function startSession(): Promise<void> {
       return
     }
     if (auth.me) {
-      rememberSignedInUser(auth.me.id)
       if (stopTimeZone === null) {
         stopTimeZone = startTimeZoneSync(auth.api, storedSentZone(auth.me.id), (e) => compose.notify({ text: `Reminders may come at the wrong time: your time zone could not be saved (${errorMessage(e)}).`, tone: 'error' }))
       }
@@ -169,7 +168,7 @@ async function startSession(): Promise<void> {
       } else if (known !== null) {
         compose.reset()
       }
-      await mail.start(auth.me.id)
+      await mail.start(auth.me.id, { confirmed: true })
       if (run !== startRun || !auth.isAuthenticated) {
         return
       }
@@ -221,7 +220,6 @@ watch(
     startRun += 1
     starting = false
     if (!authenticated) {
-      forgetSignedInUser()
       billing.reset()
       return
     }

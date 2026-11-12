@@ -92,6 +92,18 @@ describe('where the sign-in is kept', () => {
       expect(parseTokens(JSON.stringify({ accessToken: 'a', refreshToken: null, expiresAt: 1 }))).toEqual({ accessToken: 'a', refreshToken: null, expiresAt: 1 })
     })
 
+    it('keeps the confirmed user with the tokens, and reads an entry from before without one', async () => {
+      const { tokenStorage, parseTokens, initialTokens } = await storageModule()
+
+      await tokenStorage.save({ ...TOKENS, userId: 'user-1' })
+
+      expect(initialTokens()).toEqual({ ...TOKENS, userId: 'user-1' })
+      expect(tokenStorage.peek()).toEqual({ ...TOKENS, userId: 'user-1' })
+      expect(parseTokens(JSON.stringify(TOKENS))).toEqual(TOKENS)
+      // An id that is not one reads as none: the tokens still sign in, the copy waits for the server.
+      expect(parseTokens(JSON.stringify({ ...TOKENS, userId: 42 }))).toEqual(TOKENS)
+    })
+
     it('reads as signed out when the browser refuses storage', async () => {
       vi.stubGlobal('localStorage', {
         getItem: () => {
@@ -189,6 +201,15 @@ describe('where the sign-in is kept', () => {
       expect(tokenStorage.peek()).toBeUndefined()
       expect(initialTokens()).toBeNull()
       expect(localStorage.getItem('auth.tokens')).toBeNull()
+    })
+
+    it('keeps the confirmed user in the keychain value next to the tokens', async () => {
+      const { tokenStorage } = await storageModule()
+
+      await tokenStorage.save({ ...TOKENS, userId: 'user-1' })
+
+      expect(JSON.parse(desktop.keychain!)).toEqual({ ...TOKENS, userId: 'user-1' })
+      expect(await tokenStorage.load()).toEqual({ ...TOKENS, userId: 'user-1' })
     })
 
     it('says so when the keychain holds something it cannot read', async () => {
