@@ -89,6 +89,8 @@ onMounted(() => window.addEventListener('keydown', shortcut))
 onMounted(() => {
   if (!auth.isAuthenticated) {
     auth.endOpenBrowserSession().catch((cause: unknown) => console.error('Ending the session at the sign-in pages failed', cause))
+    // Mail a sign-out could not remove (the sign-in screen says so) goes now that nothing uses it.
+    void mail.removeLeftCopies()
   }
 })
 

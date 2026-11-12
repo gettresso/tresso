@@ -50,12 +50,15 @@ function page(cursor: number, extra: Partial<ChangePage> = {}): ChangePage {
 
 describe('compose store', () => {
   let pages: ChangePage[]
+  /** The server refuses the session's token. */
+  let expired: boolean
   const requests: { method: string; path: string; body: unknown }[] = []
 
   beforeEach(async () => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
     setActivePinia(createPinia())
     requests.length = 0
+    expired = false
     pages = [
       page(1, {
         mailAccounts: [
@@ -71,6 +74,7 @@ describe('compose store', () => {
         const method = init?.method ?? 'GET'
         requests.push({ method, path: url.pathname, body: init?.body instanceof FormData ? init.body : init?.body ? JSON.parse(String(init.body)) : undefined })
         const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+        if (expired) return json({ detail: 'Invalid token.' }, 401)
         if (url.pathname === '/api/v1/sync/changes') {
           const since = Number(url.searchParams.get('since'))
           return json(pages.find((p) => p.cursor > since) ?? page(since))
@@ -257,16 +261,56 @@ describe('compose store', () => {
 
     expect(await mail.draft(draftId)).toBeNull()
   })
-  it('lets go of the draft on screen when the session ends, so whoever signs in next does not get it', async () => {
+  it('lets go of the draft on screen when the user signs out, so whoever signs in next does not get it', async () => {
     const compose = useComposeStore()
     compose.openNew([{ address: 'anna@finance.example', name: 'Anna' }])
     compose.update({ subject: 'Private' })
     compose.minimized = true
 
-    useAuthStore().tokens = null
+    const auth = useAuthStore()
+    auth.sessionEnd = 'signedOut'
+    auth.tokens = null
     await vi.waitFor(() => expect(compose.draft).toBeNull())
 
     expect(compose.minimized).toBe(false)
+  })
+
+  it('keeps what was typed since the last autosave in the copy when the session expires, then lets the draft go', async () => {
+    const compose = useComposeStore()
+    const mail = useMailStore()
+    const auth = useAuthStore()
+    compose.openNew([{ address: 'anna@finance.example', name: 'Anna' }])
+    const id = compose.draft!.id
+    // Typed a moment ago: the autosave waits for typing to stop and has not run yet.
+    compose.update({ subject: 'Half written', html: '<p>Typed just before the session ended</p>' })
+    expired = true
+
+    // The server refuses the token and there is no refresh token: the session ends as expired.
+    await expect(auth.api('/api/v1/me')).rejects.toThrow('Your session has expired.')
+    await vi.waitFor(() => expect(compose.draft).toBeNull())
+    expect(auth.sessionEnd).toBe('expired')
+    await vi.waitFor(() => expect(mail.ready).toBe(false))
+
+    // The same user signs in again: the copy was kept, with the text.
+    await mail.start('compose-user')
+    expect(await mail.draft(id)).toMatchObject({ subject: 'Half written', html: '<p>Typed just before the session ended</p>', pendingSave: true })
+  })
+
+  it('keeps what was typed in the copy when the session ended in another tab', async () => {
+    const compose = useComposeStore()
+    const mail = useMailStore()
+    compose.openNew([{ address: 'anna@finance.example', name: 'Anna' }])
+    const id = compose.draft!.id
+    compose.update({ subject: 'Typed here', html: '<p>Still typing</p>' })
+
+    // The other tab's session expired: its storage event reaches this one.
+    window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
+    await vi.waitFor(() => expect(compose.draft).toBeNull())
+    expect(useAuthStore().sessionEnd).toBe('elsewhere')
+    await vi.waitFor(() => expect(mail.ready).toBe(false))
+
+    await mail.start('compose-user')
+    expect(await mail.draft(id)).toMatchObject({ subject: 'Typed here', html: '<p>Still typing</p>' })
   })
 
   it('keeps the open draft, in the new copy, when another tab removed the copy under this one', async () => {

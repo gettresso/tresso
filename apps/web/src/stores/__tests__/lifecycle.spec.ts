@@ -27,6 +27,10 @@ const copies = vi.hoisted(() => ({
   closedElsewhere: new Map<string, (reason: 'deleted' | 'upgraded' | 'terminated') => void>(),
   /** Changes the store a test opens, e.g. to make a read fail. */
   afterOpen: null as ((store: MailStore) => void) | null,
+  /** Removing a copy fails with this, as when the desktop shell refuses while a read still uses it. */
+  deleteFails: null as Error | null,
+  /** The copies the device lists (IndexedDB databases), as copiesOnDevice reports them. */
+  onDevice: [] as { userId: string; name: string }[],
 }))
 
 vi.mock('@/mail/store', () => ({
@@ -55,7 +59,11 @@ vi.mock('@/mail/store', () => ({
   },
   mailCopyName: (userId: string) => copies.names.get(userId) ?? `copy-${userId}`,
   // As the desktop shell does: a copy that is still open cannot be removed.
+  copiesOnDevice: async () => copies.onDevice,
   deleteMailStore: async (userId: string, name: string) => {
+    if (copies.deleteFails !== null) {
+      throw copies.deleteFails
+    }
     copies.deletedNames.push(name)
     const open = copies.opening.filter((id) => id === userId).length - copies.closed.filter((id) => id === userId).length
     if (open > 0) {
@@ -101,6 +109,8 @@ describe('the mail copy across sign-out and sign-in', () => {
     copies.deletedNames = []
     copies.closedElsewhere.clear()
     copies.afterOpen = null
+    copies.deleteFails = null
+    copies.onDevice = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -256,6 +266,78 @@ describe('the mail copy across sign-out and sign-in', () => {
 
     expect(copies.deleted).toEqual(['anna'])
     expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'ben', name: 'copy-ben' }])
+  })
+
+  it('marks a copy that could not be removed at a sign-out, says so, and removes it at the next start', async () => {
+    vi.stubGlobal('location', { ...window.location, assign: vi.fn<(url: string) => void>() })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { useAuthStore } = await import('../auth')
+    const auth = useAuthStore()
+    const mail = useMailStore()
+    await mail.start('anna')
+    copies.deleteFails = new Error('The mail copy is still in use.')
+
+    await auth.signOut()
+
+    expect(auth.isAuthenticated).toBe(false)
+    expect(copies.deleted).toEqual([])
+    expect(mail.removalError).toBe('Your mail could not be removed from this device (The mail copy is still in use.). Tresso removes it the next time it starts.')
+    expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'anna', name: 'copy-anna', remove: true }])
+
+    // The next start of the signed-out app, with nothing using the copy any more.
+    setActivePinia(createPinia())
+    copies.deleteFails = null
+    const next = useMailStore()
+    await next.removeLeftCopies()
+
+    expect(copies.deleted).toEqual(['anna'])
+    expect(next.removalError).toBeNull()
+    expect(localStorage.getItem('tresso.mail.copies')).toBeNull()
+  })
+
+  it('leaves a copy kept on purpose (an expired session) alone at the start of the signed-out app', async () => {
+    const mail = useMailStore()
+    await mail.start('anna')
+    await mail.stop()
+
+    await mail.removeLeftCopies()
+
+    expect(copies.deleted).toEqual([])
+    expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'anna', name: 'copy-anna' }])
+  })
+
+  it('removes copies an earlier release left without listing them, once the server confirmed another user', async () => {
+    // Copies from before the list: Anna's (another user) and Ben's own, which stays for him.
+    copies.onDevice = [
+      { userId: 'anna', name: 'copy-anna' },
+      { userId: 'ben', name: 'copy-ben' },
+    ]
+    const mail = useMailStore()
+    await mail.start('ben')
+
+    await mail.removeOtherUsersCopies('ben')
+
+    expect(copies.deleted).toEqual(['anna'])
+    expect(copies.deletedNames).not.toContain('copy-ben')
+    expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'ben', name: 'copy-ben' }])
+  })
+
+  it("does not remove the copy of an expired session when the next user signs out before the server confirmed them", async () => {
+    vi.stubGlobal('location', { ...window.location, assign: vi.fn<(url: string) => void>() })
+    const { useAuthStore } = await import('../auth')
+    const auth = useAuthStore()
+    const mail = useMailStore()
+    // Anna's copy opened before the server answered (the desktop app at launch), then her session expired.
+    await mail.start('anna', { confirmed: false })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ title: 'Unauthorized' }, { status: 401 })))
+    await expect(auth.api('/api/v1/me')).rejects.toThrow('Your session has expired.')
+    await vi.waitFor(() => expect(copies.closed).toEqual(['anna']))
+
+    // Ben signs in in the same window and signs out before /me answered: no copy of his was opened yet.
+    auth.tokens = { accessToken: 'ben-token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }
+    await auth.signOut()
+
+    expect(copies.deleted).toEqual([])
   })
 
   it('never removes the copy of the signed-in user for a remembered id that /me then contradicts', async () => {

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useMailStore } from '@/stores/mail'
 import { keepReturnPath } from '@/router/returnPath'
 import TressoMark from '@/components/TressoMark.vue'
 import { isDesktop } from '@/platform/desktop'
@@ -10,6 +11,7 @@ import { config } from '@/config'
 import LogoLoader from '@/components/LogoLoader.vue'
 
 const auth = useAuthStore()
+const mail = useMailStore()
 const route = useRoute()
 const signInError = ref<string | null>(null)
 
@@ -115,6 +117,8 @@ async function starting(start: () => Promise<void>): Promise<void> {
   <main class="welcome">
     <TressoMark :size="56" />
     <h1>Every email is something to do, to hand over, or to know.</h1>
+    <!-- Why the user is back here when they did not sign out: the server ended the sign-in. -->
+    <p v-if="auth.sessionEnd === 'expired'" class="hint" role="status">Your sign-in ended. Sign in again; your mail on this device is kept.</p>
     <template v-if="auth.awaitingBrowser">
       <p class="hint" role="status">Continue in your browser. Tresso opens again once you have signed in.</p>
       <button type="button" class="button button-quiet" @click="reopenBrowser">Open the browser again</button>
@@ -150,6 +154,7 @@ async function starting(start: () => Promise<void>): Promise<void> {
       </p>
     </template>
     <p v-if="auth.storageError" class="error" role="alert">{{ auth.storageError }}</p>
+    <p v-if="mail.removalError" class="error" role="alert">{{ mail.removalError }}</p>
     <p v-if="auth.browserSessionOpen" class="hint" role="status">
       You are still signed in at the sign-in page on this browser. <a :href="`${config.authUrl}/logout`">Sign out there too.</a>
     </p>

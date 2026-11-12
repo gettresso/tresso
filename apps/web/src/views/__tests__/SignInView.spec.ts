@@ -149,6 +149,31 @@ describe('SignInView', () => {
     expect(localStorage.getItem('tresso.server')).toBeNull()
   })
 
+  it('says why the user is back when the sign-in ended without a sign-out, and nothing after a sign-out', async () => {
+    const view = await signInView()
+    const { useAuthStore } = await import('@/stores/auth')
+    const auth = useAuthStore()
+    expect(view.text()).not.toContain('Your sign-in ended.')
+
+    auth.sessionEnd = 'expired'
+    await flushPromises()
+    expect(view.get('[role="status"]').text()).toBe('Your sign-in ended. Sign in again; your mail on this device is kept.')
+
+    auth.sessionEnd = 'signedOut'
+    await flushPromises()
+    expect(view.text()).not.toContain('Your sign-in ended.')
+  })
+
+  it('says when the mail of a signed-out user could not be removed from this device', async () => {
+    const view = await signInView()
+    const { useMailStore } = await import('@/stores/mail')
+
+    useMailStore().removalError = 'Your mail could not be removed from this device (busy). Tresso removes it the next time it starts.'
+    await flushPromises()
+
+    expect(view.get('[role="alert"]').text()).toBe('Your mail could not be removed from this device (busy). Tresso removes it the next time it starts.')
+  })
+
   it('offers no server choice in the browser, which talks to the server that serves it', async () => {
     desktop.isDesktop = false
     const view = await signInView()
