@@ -72,18 +72,21 @@ type Styles = ReturnType<typeof makeStyles>
 function SignIn({ styles }: { styles: Styles }) {
   const auth = useAuth()
   const theme = useTheme()
-  const [busy, setBusy] = useState(false)
+  const [signingIn, setSigningIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // A sign-out still telling the server (a few seconds at most) finishes first: the sign-in would ask for the
+  // password of the user who just left.
+  const busy = signingIn || auth.signingOut
 
   async function signIn() {
-    setBusy(true)
+    setSigningIn(true)
     setError(null)
     try {
       await auth.signIn()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setBusy(false)
+      setSigningIn(false)
     }
   }
 
@@ -100,7 +103,7 @@ function SignIn({ styles }: { styles: Styles }) {
         accessibilityState={{ busy, disabled: busy }}
       >
         {busy && <LogoLoader size={18} color={theme.onAccent} />}
-        <Text style={styles.primaryLabel}>{busy ? 'Signing in…' : 'Sign in'}</Text>
+        <Text style={styles.primaryLabel}>{auth.signingOut ? 'Signing out…' : signingIn ? 'Signing in…' : 'Sign in'}</Text>
       </Pressable>
       {error !== null && (
         <Text style={styles.error} accessibilityRole="alert">
@@ -179,8 +182,14 @@ function SignedIn({ styles }: { styles: Styles }) {
                 <Text style={styles.secondaryLabel}>Drafts {drafts}</Text>
               </Pressable>
             )}
-            <Pressable style={({ pressed }) => [styles.secondary, pressed && styles.pressed]} onPress={signOut} accessibilityRole="button">
-              <Text style={styles.secondaryLabel}>Sign out</Text>
+            <Pressable
+              style={({ pressed }) => [styles.secondary, (pressed || auth.signingOut) && styles.pressed]}
+              onPress={signOut}
+              disabled={auth.signingOut}
+              accessibilityRole="button"
+              accessibilityState={{ busy: auth.signingOut, disabled: auth.signingOut }}
+            >
+              <Text style={styles.secondaryLabel}>{auth.signingOut ? 'Signing out…' : 'Sign out'}</Text>
             </Pressable>
           </View>
         }
