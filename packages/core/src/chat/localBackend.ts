@@ -506,6 +506,52 @@ export function setLocalChatState(store: MailStore, chatId: string, change: Loca
   })
 }
 
+/** What the desktop keeps on the "Only this Mac" account row for the chat screens: the bridge's state and Notify me. */
+export type LocalChatAccountState = Partial<Pick<SyncedChatAccount, 'bridge' | 'link' | 'linkedAt' | 'loopbackOnly' | 'notify'>>
+
+/**
+ * Brings the account row of the "Only this Mac" mode up to date with the bridge (running, linked) and the user's Notify
+ * me, through the same queue as every other write, so it never passes a write of the relay. Does nothing while the row
+ * does not exist yet (the relay's first round makes it, keeping what is set here afterwards). Returns the row as
+ * stored, or null.
+ */
+export function setLocalChatAccount(store: MailStore, change: LocalChatAccountState): Promise<SyncedChatAccount | null> {
+  return serialized(store, async () => {
+    const account = (await store.chatAccounts()).find((row) => row.id === LOCAL_CHAT_ACCOUNT) ?? null
+    if (account === null) {
+      return null
+    }
+    const next: SyncedChatAccount = { ...account, ...change }
+    if (JSON.stringify(next) !== JSON.stringify(account)) {
+      await store.putChatAccount(next)
+    }
+    return next
+  })
+}
+
+/**
+ * Removes the group chats of the "Only this Mac" mode with their messages and replies, when the user stops bringing
+ * groups in. A group the user left out keeps its row (and with it the mark). Save the config first and stop the relay:
+ * one that still holds a page read before would store it again.
+ */
+export function removeLocalGroupChats(store: MailStore): Promise<number> {
+  return serialized(store, async () => {
+    const groups = (await store.chats()).filter(({ chat }) => chat.chatAccountId === LOCAL_CHAT_ACCOUNT && chat.kind === 'group')
+    for (const { chat } of groups) {
+      await store.removeChat(chat.id)
+    }
+    return groups.length
+  })
+}
+
+/**
+ * Makes the relay read the bridge's store again from the start, as a first import (history arrives read): when groups
+ * are brought in again, the rows it passed over are behind its cursor. Stop the relay first.
+ */
+export function resetLocalCursor(store: MailStore): Promise<void> {
+  return serialized(store, () => store.setChatMeta(LOCAL_CURSOR, null))
+}
+
 /**
  * Removes the chats of the "Only this Mac" mode with the relay's values: on disconnect and when the account goes.
  * Stop the relay first; every LocalChatBackend made before refuses to write afterwards, so nothing comes back.
