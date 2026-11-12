@@ -2,6 +2,7 @@ import type { MailStore } from '../store/mailStore'
 import {
   RELAY_MAX_BYTES,
   RELAY_MAX_CHATS,
+  RELAY_MAX_FIELD,
   RELAY_MAX_MESSAGES,
   chatApiFailure,
   type ChatApi,
@@ -67,13 +68,30 @@ export const RELAY_MIN_BATCH_BYTES = 64 * 1024
  */
 export const RELAY_MAX_REFUSED = 3
 
+/**
+ * An `ingest` that cannot go on without passing messages over for a cause that is not theirs: more refusals than
+ * RELAY_MAX_REFUSED (`too_many_refused`), or messages the server refuses only because their chat's entry had to be left
+ * out (`chat_refused`). The cursor holds and the relay tries again later; the UI can show the import as stuck. It
+ * carries counts only.
+ */
+export class ChatRelayImportStuck extends Error {
+  constructor(
+    readonly reason: 'too_many_refused' | 'chat_refused',
+    /** Messages that would have been refused. */
+    readonly refused: number,
+  ) {
+    super(reason === 'too_many_refused' ? 'The import is stuck: more messages were refused than one bad row explains.' : 'The import is stuck: the server refused a chat its messages need.')
+    this.name = 'ChatRelayImportStuck'
+  }
+}
+
 /** Problems the backend saw and went past; counts only, no content (ServerChatBackend.problems). */
 export type ServerChatProblem = 'row_refused' | 'result_refused'
 
 /** RFC 4122 as the server's strict Assert\Uuid takes it: version 1 to 8, variant 10xx. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-/** A violation path about one message or one chat of a batch. */
-const ROW_PATH = /^(messages|chats)\[([0-9]+)\](?:[.[]|$)/
+/** A violation path about one message or one chat of a batch, with the field it names (`messages[3].chatJid`). */
+const ROW_PATH = /^(messages|chats)\[([0-9]+)\](?:\.([A-Za-z]+))?(?:[.[]|$)/
 
 export interface ServerChatBackendOptions {
   api: ChatApi
@@ -114,14 +132,17 @@ interface Item {
  * chat.
  *
  * Batches: at most RELAY_MAX_MESSAGES messages and RELAY_MAX_CHATS chats, and at most RELAY_MAX_BYTES bytes of the
- * request as JSON in UTF-8, each with the chats of its messages.
+ * request as JSON in UTF-8, each with the chats of its messages. Texts and names are cut to RELAY_MAX_FIELD code points.
  * - 413: the batches left are made again at half the size of the request that got it (at least RELAY_MIN_BATCH_BYTES,
  *   and half as many messages), and stay that size for this backend; a single message still answered 413 is refused.
- * - 422 naming rows (`messages[i]...`, `chats[i]...`): the messages named are refused, a chat named is sent without its
- *   entry (the server may know it), and the rest goes again. Paths that name nothing in the batch: halved down to one
- *   message, which is refused. A 422 with no paths, or one naming anything else (`deviceId`), rejects as it came.
- * - At most RELAY_MAX_REFUSED messages are refused that way per `ingest`; one more rejects with a plain error, so the
- *   cursor holds. A batch-wide cause therefore costs a few calls and drops nothing.
+ * - 422 naming rows (`messages[i]...`, `chats[i]...`): the messages named are refused and the rest goes again. A chat
+ *   entry named for its name alone goes again without a name; one named otherwise goes without its entry (the server
+ *   may know the chat). A message then refused for want of that chat (`messages[i].chatJid`) is not passed over: the
+ *   call rejects with ChatRelayImportStuck. Paths that name nothing in the batch: halved down to one message, which is
+ *   refused. A 422 with no paths, or one naming anything else (`deviceId`), rejects as it came.
+ * - At most RELAY_MAX_REFUSED messages are refused that way per `ingest`; one more rejects with ChatRelayImportStuck,
+ *   so the cursor holds. A batch-wide cause therefore costs a few calls and drops nothing. What was refused is told
+ *   (`row_refused`) only when the `ingest` resolves.
  *
  * Errors: 409 `not_the_relay` and 404 (the account is gone) reject with ChatRelayStopped, 429 with ChatRelayRetryLater
  * after Retry-After, 403 with ChatRelayRetryLater after RELAY_RETRY_MAX (the token lacks access; no point asking every
@@ -212,7 +233,7 @@ export class ServerChatBackend implements ChatBackend {
     const described = new Map<string, { value: RelayChat; bytes: number }>()
     for (const chat of chats) {
       if (!described.has(chat.jid)) {
-        const value: RelayChat = { jid: chat.jid, name: chat.name, kind: chat.kind }
+        const value: RelayChat = { jid: chat.jid, name: cutRelayField(chat.name), kind: chat.kind }
         described.set(chat.jid, { value, bytes: relayBodyBytes(value) })
       }
     }
@@ -222,7 +243,9 @@ export class ServerChatBackend implements ChatBackend {
     })
     const storedNow: string[] = []
     try {
-      await this.sendAll(items, described, firstImport, counts, storedNow)
+      const refused = await this.sendAll(items, described, firstImport, counts, storedNow)
+      // Told only once nothing more can undo it: a rejected ingest passes nothing over.
+      this.problem('row_refused', refused)
     } catch (error) {
       for (const key of storedNow) {
         this.storedBefore.add(key)
@@ -355,7 +378,8 @@ export class ServerChatBackend implements ChatBackend {
   }
 
   /** Sends the messages in batches, in their order, as the class comment says. */
-  private async sendAll(items: Item[], described: Map<string, { value: RelayChat; bytes: number }>, firstImport: boolean, counts: IngestCounts, storedNow: string[]): Promise<void> {
+  /** Returns how many messages it refused itself. */
+  private async sendAll(items: Item[], described: Map<string, { value: RelayChat; bytes: number }>, firstImport: boolean, counts: IngestCounts, storedNow: string[]): Promise<number> {
     let remaining = items
     /** Messages per batch: halved by a 413 at the smallest size, and while halving towards a row a 422 does not name. */
     let countLimit = RELAY_MAX_MESSAGES
@@ -365,11 +389,10 @@ export class ServerChatBackend implements ChatBackend {
     let refusedHere = 0
     const refuse = (count: number): void => {
       if (refusedHere + count > RELAY_MAX_REFUSED) {
-        throw new Error('More messages were refused than one bad row explains; the relay tries again later.')
+        throw new ChatRelayImportStuck('too_many_refused', refusedHere + count)
       }
       refusedHere += count
       counts.refused += count
-      this.problem('row_refused', count)
     }
 
     while (remaining.length > 0) {
@@ -399,13 +422,25 @@ export class ServerChatBackend implements ChatBackend {
           throw error
         }
         if (named.messages.size > 0 || named.chats.size > 0) {
+          // A message refused only for want of its chat, after that chat's entry was left out: the client's doing.
+          const chatless = [...named.messages].filter(([index, field]) => field === 'chatJid' && withoutEntry.has(batch[index]!.value.chatJid))
+          if (chatless.length > 0) {
+            throw new ChatRelayImportStuck('chat_refused', chatless.length)
+          }
           if (named.messages.size > 0) {
             refuse(named.messages.size)
-            const bad = new Set([...named.messages].map((index) => batch[index]))
+            const bad = new Set([...named.messages.keys()].map((index) => batch[index]))
             remaining = remaining.filter((item) => !bad.has(item))
           }
-          for (const jid of named.chats) {
-            withoutEntry.add(jid)
+          for (const [jid, fields] of named.chats) {
+            const entry = described.get(jid)
+            if (entry !== undefined && fields.size === 1 && fields.has('name') && entry.value.name !== null) {
+              // Only its name: the entry goes again without one (the server keeps the name it has).
+              const value: RelayChat = { ...entry.value, name: null }
+              described.set(jid, { value, bytes: relayBodyBytes(value) })
+            } else {
+              withoutEntry.add(jid)
+            }
           }
           continue
         }
@@ -428,6 +463,7 @@ export class ServerChatBackend implements ChatBackend {
         countLimit = Math.max(1, Math.min(countLimit, Math.ceil(remaining.length / 2)))
       }
     }
+    return refusedHere
   }
 
   /** Counts a batch's answer; a message stored by an earlier failed `ingest` counts as stored, not known. */
@@ -498,22 +534,28 @@ function chatsOf(batch: Item[], described: Map<string, { value: RelayChat }>, wi
  * The rows a 422 names: message indexes and chat JIDs of the request. Null when it names no path, or one that is not
  * about a row (the device id, the request's shape): then no row is to blame.
  */
-function namedRows(failure: ChatApiFailure, request: RelayMessagesRequest): { messages: Set<number>; chats: Set<string> } | null {
+function namedRows(failure: ChatApiFailure, request: RelayMessagesRequest): { messages: Map<number, string>; chats: Map<string, Set<string>> } | null {
   if (failure.violationPaths.length === 0) {
     return null
   }
-  const messages = new Set<number>()
-  const chats = new Set<string>()
+  /** Message index to the field named (the first, when several are). */
+  const messages = new Map<number, string>()
+  /** Chat JID to the fields named. */
+  const chats = new Map<string, Set<string>>()
   for (const path of failure.violationPaths) {
     const match = ROW_PATH.exec(path)
     if (match === null) {
       return null
     }
     const index = Number(match[2])
+    const field = match[3] ?? ''
     if (match[1] === 'messages' && index < request.messages.length) {
-      messages.add(index)
+      if (!messages.has(index) || field === 'chatJid') {
+        messages.set(index, field)
+      }
     } else if (match[1] === 'chats' && index < request.chats.length) {
-      chats.add(request.chats[index]!.jid)
+      const jid = request.chats[index]!.jid
+      chats.set(jid, (chats.get(jid) ?? new Set()).add(field))
     }
   }
   return { messages, chats }
@@ -549,11 +591,34 @@ function relayMessage(message: IncomingMessage): RelayMessage {
     chatJid: message.chatJid,
     waId: message.waId,
     fromMe: message.fromMe,
-    sender: message.sender === null ? null : { id: message.sender.id, name: message.sender.name },
-    text: message.text,
+    sender: message.sender === null ? null : { id: message.sender.id, name: cutRelayField(message.sender.name) },
+    text: cutRelayField(message.text),
     sentAt: message.sentAt,
-    media: message.media === null ? null : { kind: message.media.kind, name: message.media.name, size: message.media.size },
+    media: message.media === null ? null : { kind: message.media.kind, name: cutRelayField(message.media.name), size: message.media.size },
   }
+}
+
+/**
+ * A text or name cut to RELAY_MAX_FIELD code points, on a code point boundary, as the server takes it. The shell cuts
+ * in the store before decoding, and bytes that are not UTF-8 decode to more characters than it counted.
+ */
+export function cutRelayField<T extends string | null>(value: T): T {
+  if (value === null || value.length <= RELAY_MAX_FIELD) {
+    // UTF-16 units are never fewer than code points.
+    return value
+  }
+  let points = 0
+  for (let i = 0; i < value.length; i += 1) {
+    if (points === RELAY_MAX_FIELD) {
+      return value.slice(0, i) as T
+    }
+    const unit = value.charCodeAt(i)
+    if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < value.length && (value.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      i += 1
+    }
+    points += 1
+  }
+  return value
 }
 
 /** What the relay must do on a failed relay call; the error as it came when it is nothing the relay acts on. */

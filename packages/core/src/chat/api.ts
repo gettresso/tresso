@@ -12,6 +12,8 @@ export const RELAY_MAX_MESSAGES = 200
 export const RELAY_MAX_CHATS = 200
 /** RelayMessages::MAX_BYTES: bytes of a `relay/messages` body; a larger one is 413 `too_large`. */
 export const RELAY_MAX_BYTES = 8 * 1024 * 1024
+/** RelayChat::MAX_FIELD: code points of a text or name in a batch (and RelayMessage::MAX_FIELD_BYTES, four times it, in bytes). */
+export const RELAY_MAX_FIELD = 65_536
 /** QueueReply::MAX_TEXT: characters of a reply, trimmed. */
 export const QUEUE_REPLY_MAX_TEXT = 4096
 
