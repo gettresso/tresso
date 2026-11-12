@@ -1624,6 +1624,22 @@ device after the update" until that pull is done. The browser's store upgrades i
 again from the start, which it says the same way. A resync (after a change the server refused could not be put back) makes the next pull start from the
 beginning, and holds across a restart and against a pull that was already running.
 
+Both stores keep WhatsApp chats next to the mail (`chatAccounts`, `chats`, `chatMessages`, `chatOutgoing`, in the
+shape of the delta's chat lists, `packages/core/src/chat/types.ts`): a list of chats newest first with each chat's
+newest message and unread count (incoming messages after `readThrough`), the Unified Inbox's part of it (not archived,
+not left out), one chat with its messages and replies, the replies waiting to be sent, and a few values the relay keeps
+(`chatMeta`, in `meta` under `chat:`). A page's chat rows each stand on their own, so a message that arrives before its
+chat is kept and shows once the chat does, and a page given twice stores nothing twice; a removed chat account takes
+its chats, messages and replies (also a message whose chat never arrived), a removed chat its messages and replies.
+An account has one chat per JID: a chat made again under a new id replaces the old one with what it held. A chat row
+whose time does not parse fails the whole page (IndexedDB aborts the transaction), and the error names the field, never
+the value; the stores log nothing of a chat. In the "Only this Mac" mode the desktop app writes its chats into the copy
+itself, under a chat account whose id starts with `wa:` (`chatOnlyHere`): a rebuilt copy keeps those rows and the chat
+values, like drafts that exist only here, since no pull brings them back. Sign-out deletes them with the copy. Chats
+moved the SQLite copy to schema 10 (`MIGRATIONS[9]` adds the chat tables in place) and the IndexedDB copy to version
+12; both keep their rows and sync again from the start, because a copy of the version before received the chat lists
+and dropped them.
+
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
 whether the conversation is in an inbox or junk folder, and date (`ListScope`: an inbox or a smart inbox).
 Conversations in the Spam smart inbox stay out of the inboxes, also when the server left them there
