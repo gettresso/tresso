@@ -324,8 +324,8 @@ function readFirstImport(value: unknown): FirstImport | undefined {
   if (typeof value !== 'object' || value === null) {
     return undefined
   }
-  const { through, startedAt, quietSince } = value as Partial<Record<keyof FirstImport, unknown>>
-  return wholeNumber(through) && wholeNumber(startedAt) && wholeNumber(quietSince) ? { through, startedAt, quietSince } : undefined
+  const { through, ranFor, quietFor } = value as Partial<Record<keyof FirstImport, unknown>>
+  return wholeNumber(through) && wholeNumber(ranFor) && wholeNumber(quietFor) ? { through, ranFor, quietFor } : undefined
 }
 
 function wholeNumber(value: unknown): value is number {

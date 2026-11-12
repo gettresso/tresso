@@ -1672,10 +1672,12 @@ it sends every row again, which the server answers with `known`; the server back
 of what it sent so a re-read costs no upload.
 
 The first import runs from the first read until the store had no new rows for 60 seconds, since after linking the
-bridge's history sync streams in over minutes, and ends at the latest 30 minutes after it began; a message that
-arrives within it lands as read. The cursor keeps when it began, the store's highest rowid seen and when the store last
-grew, so a restart takes the import up again: the quiet time is then measured anew (the bridge may just be catching up)
-and the 30 minutes count from the first start. Each batch of it goes to the backend as `firstImport` and no batch goes as
+bridge's history sync streams in over minutes, and ends at the latest once the relay ran 30 minutes during it; a
+message that arrives within it lands as read. Both times count only the time the relay ran: each round adds the time
+since this session's previous round, at most 30 seconds (ten poll intervals), so time the app was quit or the Mac
+slept counts as no more than that and a clock that went back counts as nothing. The cursor keeps the store's highest
+rowid seen, the running time and the quiet time, so a restart takes the import up again, also a day later: the quiet
+time is then measured anew (the bridge may just be catching up) and the running time goes on from where it was. Each batch of it goes to the backend as `firstImport` and no batch goes as
 live before it ended (the server honours `firstImport` until the first batch without it). It marks a chat that had
 nothing unread read through its newest message, as the server does; later rows are live and arrive unread.
 

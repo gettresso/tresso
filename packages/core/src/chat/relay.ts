@@ -16,8 +16,14 @@ export const RELAY_RETRY_MAX = 10 * 60_000
  * in over minutes, and all of it is history.
  */
 export const FIRST_IMPORT_QUIET = 60_000
-/** The first import ends at the latest this long after it began; rows after that are live. */
+/** The first import ends at the latest once the relay ran this long during it; rows after that are live. */
 export const FIRST_IMPORT_MAX = 30 * 60_000
+/**
+ * The most running time one round adds to the first import's clocks: a few poll intervals. A longer gap is a laptop
+ * asleep, an app that was quit, or a clock that jumped, and counts as no more than this; a clock that went back counts
+ * as nothing.
+ */
+export const FIRST_IMPORT_STEP_MAX = 10 * RELAY_INTERVAL
 /** How long a sender without a known name waits before it is looked up again (contacts arrive after messages). */
 export const NAME_RETRY = 5 * 60_000
 /** Sender ids per name lookup (the shell's maximum). */
@@ -63,14 +69,17 @@ export interface ChatBridge {
   send(recipient: string, text: string): Promise<BridgeSendResult>
 }
 
-/** The first import while it runs; times are epoch ms of the relay's clock. */
+/**
+ * The first import while it runs. Its times are running time in ms, added up round by round (at most
+ * FIRST_IMPORT_STEP_MAX a round), so time the app was quit or the Mac slept, and a clock that jumps, do not count.
+ */
 export interface FirstImport {
   /** The store's highest rowid as last seen: every row up to it is history. */
   through: number
-  /** When the first import began; it ends FIRST_IMPORT_MAX after this at the latest. */
-  startedAt: number
-  /** When the store last grew (or this session took the import up); it ends FIRST_IMPORT_QUIET after this. */
-  quietSince: number
+  /** How long the relay ran during the first import; it ends at FIRST_IMPORT_MAX at the latest. */
+  ranFor: number
+  /** How long the relay ran since the store last grew (or this session took the import up); it ends at FIRST_IMPORT_QUIET. */
+  quietFor: number
 }
 
 /** Where the relay is in the bridge's store. */
@@ -264,7 +273,8 @@ function noSkips(): Record<SkipReason, number> {
  *
  * The first import: from the first read until the store had no new rows for FIRST_IMPORT_QUIET (the history sync after
  * linking streams in over minutes), and at most FIRST_IMPORT_MAX after it began. All of it goes to the backend as
- * `firstImport`; nothing goes as live before it ended. A restart during it measures the quiet time anew.
+ * `firstImport`; nothing goes as live before it ended. Both times count only the time the relay ran (FirstImport), and
+ * a restart during it measures the quiet time anew.
  *
  * Sending: after each import, the waiting replies one at a time, oldest first: claim, send, report. A send is never
  * repeated by the relay: a result that could not be reported is kept and reported again first in the next round, and
@@ -278,6 +288,8 @@ export class ChatRelay {
   private step: RelayStep = 'prepare'
   /** Whether this session took up a first import an earlier one began (its quiet time is then measured anew). */
   private firstImportTakenUp = false
+  /** When this session last advanced the first import's clocks; null before it did. */
+  private firstImportAt: number | null = null
   /** Senders with a known name; kept for the session. */
   private readonly names = new Map<string, SenderLookup>()
   /** Senders without a known name: what was found, and when to ask again. */
@@ -443,7 +455,7 @@ export class ChatRelay {
     let storeId = page.storeId
     if (saved === null) {
       rowid = 0
-      firstImport = { through: page.maxRowid, startedAt: now, quietSince: now }
+      firstImport = { through: page.maxRowid, ranFor: 0, quietFor: 0 }
       this.firstImportTakenUp = true
     } else if (saved.storeId !== page.storeId || page.maxRowid < saved.rowid) {
       // Replaced or renumbered: the rowids read before mean nothing now. Everything is read again; what is stored
@@ -467,16 +479,22 @@ export class ChatRelay {
     }
 
     if (firstImport !== null) {
+      // Running time since this session last counted, kept to one step: a gap is sleep or a quit app, a negative one a
+      // clock that went back.
+      const step = this.firstImportAt === null ? 0 : Math.min(FIRST_IMPORT_STEP_MAX, Math.max(0, now - this.firstImportAt))
+      this.firstImportAt = now
+      firstImport.ranFor += step
+      firstImport.quietFor += step
       if (!this.firstImportTakenUp) {
         // Taken up after a restart: the bridge may only now be catching up, so the quiet time starts again.
         this.firstImportTakenUp = true
-        firstImport.quietSince = now
+        firstImport.quietFor = 0
       }
       if (page.maxRowid > firstImport.through) {
         firstImport.through = page.maxRowid
-        firstImport.quietSince = now
+        firstImport.quietFor = 0
       }
-      if (now - firstImport.startedAt >= FIRST_IMPORT_MAX) {
+      if (firstImport.ranFor >= FIRST_IMPORT_MAX) {
         // Too long: what comes from here on is live, so a message that arrives later is never marked read.
         firstImport = null
       }
@@ -498,7 +516,7 @@ export class ChatRelay {
       this.progress.refused += counts.refused
     }
     const nextRowid = Math.max(rowid, rows[rows.length - 1]?.rowid ?? rowid)
-    if (firstImport !== null && !full && nextRowid >= firstImport.through && now - firstImport.quietSince >= FIRST_IMPORT_QUIET) {
+    if (firstImport !== null && !full && nextRowid >= firstImport.through && firstImport.quietFor >= FIRST_IMPORT_QUIET) {
       // Caught up, and the store was quiet long enough: the history is in. Every later batch is live.
       firstImport = null
     }
