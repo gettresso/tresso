@@ -1,3 +1,4 @@
+import { chatMedia } from './rows'
 import type {
   ChatKind,
   ChatOutgoingError,
@@ -141,10 +142,11 @@ export function accountSubtitle(
 /** The text of a message on one line, or a word for its media when it has no text. */
 function messageText(message: SyncedChatMessage): string {
   const text = labelText(message.text)
-  if (text !== '' || message.media === null) {
+  const media = chatMedia(message)
+  if (text !== '' || media === null) {
     return text
   }
-  switch (message.media.kind) {
+  switch (media.kind) {
     case 'image':
       return 'Photo'
     case 'video':
@@ -152,7 +154,7 @@ function messageText(message: SyncedChatMessage): string {
     case 'audio':
       return 'Voice message'
     case 'document': {
-      const name = nameText(message.media.name)
+      const name = nameText(media.name)
       return name === '' ? 'File' : `File: ${name}`
     }
     default:
