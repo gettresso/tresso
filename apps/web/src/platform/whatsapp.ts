@@ -1,3 +1,4 @@
+import type { BridgeRow } from '@tresso/core'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
@@ -59,23 +60,8 @@ export interface WhatsAppConfig {
   leftOut: string[]
 }
 
-/** A row of the bridge's store, as the shell reads it. Text and file names are cut at 65536 characters. */
-export interface BridgeRow {
-  rowid: number
-  id: string
-  chatJid: string
-  chatName: string | null
-  sender: string
-  text: string
-  /** Epoch milliseconds; null when the store's timestamp did not parse. */
-  sentAt: number | null
-  fromMe: boolean
-  mediaType: string | null
-  filename: string | null
-  fileLength: number | null
-}
-
 export interface BridgeRows {
+  /** Text and file names are cut at 65536 characters. */
   rows: BridgeRow[]
   maxRowid: number
   /** Names the store and its numbering; when it changes, a rowid cursor means nothing and reading starts at 0. */
