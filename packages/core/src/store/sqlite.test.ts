@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { describeMailStore, draft, firstPage, message, page } from './contract'
+import { chat, chatAccount, chatMessage, chatOutgoing, describeMailStore, draft, firstPage, message, page } from './contract'
 import { CopyClosingError } from './mailStore'
 import { memorySql } from './memorySql'
 import type { Sql } from './sql'
-import { SCHEMA_VERSION, SqliteMailStore } from './sqlite'
+import { MIGRATIONS, SCHEMA_VERSION, SqliteMailStore } from './sqlite'
 
 describeMailStore(
   'SQLite',
@@ -281,6 +281,103 @@ describe('SqliteMailStore', () => {
 
     expect(reopened.upgrade).toBe('rebuilt')
     expect(await reopened.cursor()).toBe(0)
+  })
+
+  describe('chats', () => {
+    const at = '2026-11-12T10:00:00+00:00'
+    const localChat = 'wa:31655555555@s.whatsapp.net'
+
+    /** A copy as version 9 left it: the same tables without the chat ones, which version 10 added. */
+    async function makeVersion9(): Promise<void> {
+      await sql.exec('DROP TABLE chat_accounts; DROP TABLE chats; DROP TABLE chat_messages; DROP TABLE chat_outgoing')
+      await sql.run("UPDATE meta SET value = '9' WHERE key = 'schema'")
+    }
+
+    it('is at version 10, with a step from 9', () => {
+      expect(SCHEMA_VERSION).toBe(10)
+      expect(MIGRATIONS[9]?.resync).toBe(true)
+    })
+
+    it('brings a version 9 copy with mail to version 10 in place, keeping its rows, and fetches the chats it skipped', async () => {
+      await db.saveDraft(draft('synced', { version: 2 }))
+      await db.saveDraft(draft('unsent', { pendingSave: true, version: 3 }))
+      await db.markSynced(1_700_000_000_000)
+      await makeVersion9()
+
+      const reopened = await SqliteMailStore.open(sql)
+
+      expect(reopened.upgrade).toBe('migrated')
+      expect(reopened.afterUpdate).toBe(true)
+      expect(await sql.first<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'")).toEqual({ value: '10' })
+      // Kept: mail, lists, drafts with their server versions, when it last synced.
+      expect((await reopened.inbox(null, 10)).map((c) => c.threadId)).toEqual(['t1', 't3'])
+      expect((await reopened.thread('t1'))?.messages.map((m) => m.id)).toEqual(['m2', 'm1'])
+      expect(await reopened.draft('synced')).toMatchObject({ version: 2 })
+      expect(await reopened.draft('unsent')).toMatchObject({ pendingSave: true, version: 3 })
+      expect(await reopened.syncedAt()).toBe(1_700_000_000_000)
+      // A pull from the start brings the chats a version 9 copy dropped.
+      expect(await reopened.cursor()).toBe(0)
+      await reopened.apply(
+        page({ cursor: 50, chatAccounts: [chatAccount('acct')], chats: [chat('anna', 'acct', { lastMessageAt: at })], chatMessages: [chatMessage('a1', 'anna', 'acct', at)] }),
+      )
+      expect((await reopened.chat('anna'))?.messages.map((m) => m.id)).toEqual(['a1'])
+      expect(await reopened.cursor()).toBe(50)
+      expect((await SqliteMailStore.open(sql)).upgrade).toBe('none')
+    })
+
+    it('keeps the chats that exist only on this device, and the chat values, through a rebuild', async () => {
+      await db.apply(
+        page({
+          cursor: 11,
+          chatAccounts: [chatAccount('acct')],
+          chats: [chat('anna', 'acct', { lastMessageAt: at })],
+          chatMessages: [chatMessage('a1', 'anna', 'acct', at)],
+          chatOutgoing: [chatOutgoing('0193a000-0000-7000-8000-000000000001', 'anna', 'acct')],
+        }),
+      )
+      await db.putChatAccount(chatAccount('wa:account'))
+      await db.putChats([chat(localChat, 'wa:account', { jid: '31655555555@s.whatsapp.net', lastMessageAt: at, readThrough: at })])
+      await db.putChatMessages([chatMessage(`${localChat}:X1`, localChat, 'wa:account', at, { text: 'Only here' })])
+      await db.putChatOutgoing([chatOutgoing('0193a000-0000-7000-8000-0000000000aa', localChat, 'wa:account')])
+      await db.setChatMeta('cursor', '812')
+      await sql.run("UPDATE meta SET value = '1' WHERE key = 'schema'")
+
+      const rebuilt = await SqliteMailStore.open(sql)
+
+      expect(rebuilt.upgrade).toBe('rebuilt')
+      expect(await rebuilt.cursor()).toBe(0)
+      // What the server holds comes back with the pull from the start; what only this Mac holds stays.
+      expect((await rebuilt.chatAccounts()).map((a) => a.id)).toEqual(['wa:account'])
+      expect(await rebuilt.chat('anna')).toBeNull()
+      const kept = await rebuilt.chat(localChat)
+      expect(kept?.chat).toMatchObject({ jid: '31655555555@s.whatsapp.net', readThrough: at })
+      expect(kept?.messages.map((m) => m.text)).toEqual(['Only here'])
+      expect((await rebuilt.waitingOutgoing()).map((o) => o.id)).toEqual(['0193a000-0000-7000-8000-0000000000aa'])
+      expect(await rebuilt.chatMeta('cursor')).toBe('812')
+    })
+
+    it('keeps the chats of this device when a rebuild comes from a copy without chat tables', async () => {
+      await makeVersion9()
+      await sql.run("UPDATE meta SET value = '1' WHERE key = 'schema'")
+
+      const rebuilt = await SqliteMailStore.open(sql)
+
+      expect(rebuilt.upgrade).toBe('rebuilt')
+      expect(await rebuilt.chatAccounts()).toEqual([])
+      await rebuilt.putChatAccount(chatAccount('wa:account'))
+      expect((await rebuilt.chatAccounts()).map((a) => a.id)).toEqual(['wa:account'])
+    })
+
+    it('keeps the chats of this device when a pull starts again from the start', async () => {
+      await db.putChatAccount(chatAccount('wa:account'))
+      await db.putChats([chat(localChat, 'wa:account', { lastMessageAt: at })])
+      await db.resyncFromStart()
+
+      await db.apply(page({ cursor: 3, chatAccounts: [chatAccount('acct')] }))
+
+      expect((await db.chatAccounts()).map((a) => a.id)).toEqual(['acct', 'wa:account'])
+      expect(await db.chat(localChat)).not.toBeNull()
+    })
   })
 
   it('is no update when the copy is new', async () => {

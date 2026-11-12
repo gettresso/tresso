@@ -1,5 +1,6 @@
 import type { AppliedAction, MessageAction } from '../actions'
 import type { SyncedCalendar, SyncedCalendarEvent } from '../calendar/types'
+import type { ChatSummary, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from '../chat/types'
 import type { Verdict } from '../domain'
 import type { ConversationSummary, ListScope } from '../sync/conversation'
 import type { SyncStore } from '../sync/engine'
@@ -205,6 +206,45 @@ export interface MailStore extends SyncStore {
   todo(id: string): Promise<SyncedTodo | null>
   /** The todos made from the emails of a thread, in list order. */
   todosOfThread(threadId: string): Promise<SyncedTodo[]>
+  /**
+   * The chat accounts (one per channel), by id. Chats come from the delta, or in the "Only this Mac" mode from the
+   * desktop's own relay through the put and remove methods below; both kinds live side by side (see chatOnlyHere).
+   */
+  chatAccounts(): Promise<SyncedChatAccount[]>
+  /**
+   * Chats newest first (by `lastMessageAt`, then id), each with its newest message and its unread count (incoming
+   * messages after `readThrough`, see unreadCount). A chat the user left out is never listed. `inboxOnly` keeps the
+   * chats the Unified Inbox shows (see inInbox); `limit` cuts the list after filtering.
+   */
+  chats(options?: { inboxOnly?: boolean; limit?: number }): Promise<ChatSummary[]>
+  /** A chat with its messages oldest first and its replies oldest first (see compareChatOutgoing), or null. */
+  chat(id: string): Promise<{ chat: SyncedChat; messages: SyncedChatMessage[]; outgoing: SyncedChatOutgoing[] } | null>
+  /** The chat of an account with this JID, also one left out; null when there is none. */
+  chatByJid(chatAccountId: string, jid: string): Promise<SyncedChat | null>
+  /** Chats in the Unified Inbox (see inInbox) with at least one unread incoming message. */
+  unreadChatCount(): Promise<number>
+  /** Replies waiting to be sent, oldest first (see compareChatOutgoing). */
+  waitingOutgoing(): Promise<SyncedChatOutgoing[]>
+  putChatAccount(account: SyncedChatAccount): Promise<void>
+  /**
+   * Stores chats as given. A chat of the same account and JID under another id is gone with its messages and replies:
+   * an account has one chat per JID, so that one was removed and made again.
+   */
+  putChats(chats: SyncedChat[]): Promise<void>
+  /** Stores messages by id: storing one again replaces it, never adds a second. */
+  putChatMessages(messages: SyncedChatMessage[]): Promise<void>
+  putChatOutgoing(rows: SyncedChatOutgoing[]): Promise<void>
+  /** Removes a chat account with its chats, their messages and replies. */
+  removeChatAccount(id: string): Promise<void>
+  /** Removes a chat with its messages and replies. */
+  removeChat(id: string): Promise<void>
+  /**
+   * A value the chat relay keeps with the copy (its cursor in the bridge's store, say); null when unset. Kept apart
+   * from the mail copy's own values, and through a rebuild of the copy like the chats that exist only here.
+   */
+  chatMeta(key: string): Promise<string | null>
+  /** Sets a chat value; null removes it. */
+  setChatMeta(key: string, value: string | null): Promise<void>
   /**
    * Finishes the writes under way and closes the copy; it takes no more writes. With `waitMs`, writes and reads that
    * have not finished by then are no longer waited for: the copy closes anyway (said in a log line), so storage that
