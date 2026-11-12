@@ -135,8 +135,8 @@ final readonly class InvitationApplier
      * sender wrote by Exchange's own X-MS-Exchange-Organization-AuthAs, which Exchange Online's header firewall
      * removes from mail arriving from outside the organization and sets itself: `Internal` is mail sent within the
      * tenant (which gets no Authentication-Results); any other value (`Authenticated`, `Anonymous`, `Partner`) needs
-     * Exchange's Authentication-Results to show DMARC passed. Without the header (the worker does not send it yet)
-     * nothing is confirmed. This rests on Exchange's documented header firewall, not on a check against a
+     * Exchange's Authentication-Results to show DMARC passed. The worker sends that header for mail it reads through
+     * Graph; without it (mail ingested by an older worker) nothing is confirmed. This rests on Exchange's documented header firewall, not on a check against a
      * live tenant.
      *
      * @param array<string, string> $headers
