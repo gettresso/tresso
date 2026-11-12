@@ -247,6 +247,44 @@ func TestAWrongPasswordReachesTheUser(t *testing.T) {
 	}
 }
 
+func TestAWakeReportsAWrongPasswordAgain(t *testing.T) {
+	server := newFakeServer(t, true)
+	fake := newFakeAPI(server.server.URL + "/dav/")
+	fake.password = "wrong"
+	syncer := New(fake, plainDialer{}, "w1", Options{AllowHTTP: true, MinBackoff: time.Hour, MaxBackoff: time.Hour, NotFoundRetry: time.Hour}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- syncer.Run(ctx, api.Account{ID: "a1"}) }()
+	defer func() { cancel(); <-done }()
+	reported := func(n int) bool {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			fake.mu.Lock()
+			got := len(fake.statuses)
+			fake.mu.Unlock()
+			if got >= n {
+				return true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false
+	}
+
+	if !reported(1) {
+		t.Fatal("the refused login was not reported")
+	}
+	// The API may have changed the status meanwhile; a wake is how it says so, and the same refusal is told again.
+	syncer.Trigger("a1")
+	if !reported(2) {
+		t.Fatal("the refused login was not reported again after a wake")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.statuses) != 2 || fake.statuses[1] != api.CalendarAuthFailed {
+		t.Fatalf("statuses = %v", fake.statuses)
+	}
+}
+
 func TestAnUpdateWithoutAKnownETagIsNoFalseConflict(t *testing.T) {
 	server := newFakeServer(t, true)
 	server.put(calendarPath+"standup.ics", event("standup", "Standup"))

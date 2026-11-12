@@ -216,6 +216,9 @@ func (s *Syncer) Run(ctx context.Context, account api.Account) error {
 			return ctx.Err()
 		case <-time.After(wait):
 		case <-wake:
+			// A wake is how the API says the status may have changed (a sign-in again sets it to unknown), and the
+			// problems above are reported before any calendar list could tell: the next one is reported again.
+			status.forget()
 		}
 	}
 }

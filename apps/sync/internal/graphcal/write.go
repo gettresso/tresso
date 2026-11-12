@@ -629,9 +629,8 @@ func (s *session) failure(ctx context.Context, operation api.CalendarOperation, 
 	case errors.Is(err, providerhttp.ErrUnauthorized), errors.Is(err, api.ErrReauthorize), errors.Is(err, api.ErrNotGranted):
 		return api.OperationResult{Outcome: api.OperationRetry, Error: text("Microsoft refused Tresso's access to this calendar.")}, err
 	case errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusForbidden:
-		// The token covers the calendars (the list was read with it), so a 403 on one write is that calendar's:
-		// shared with the user to read only, or taken back.
-		return s.refused(ctx, operation, "Outlook refused the change: the calendar is read-only for you.")
+		// Graph does not say why; a calendar shared to read only is the common cause, not the only one.
+		return s.refused(ctx, operation, "Microsoft refused the change (403). The calendar may be read-only for you.")
 	case errors.As(err, &statusErr) && statusErr.StatusCode >= 400 && statusErr.StatusCode < 500 && statusErr.StatusCode != http.StatusTooManyRequests:
 		return s.refused(ctx, operation, fmt.Sprintf("Outlook refused the event (HTTP %d).", statusErr.StatusCode))
 	case errors.As(err, &statusErr):
