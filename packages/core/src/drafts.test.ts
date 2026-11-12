@@ -204,6 +204,15 @@ describe('DraftSync', () => {
     expect(api.drafts.get('d1')).toMatchObject({ subject: 'Elsewhere' })
   })
 
+  it('uploads nothing of a draft hidden on the server until it is settled', async () => {
+    await store.saveDraft(draft('d1', { version: 2, pendingSave: true, sendAttemptId: 'a1', hiddenOnServer: true }))
+
+    await sync.upload('d1')
+    await sync.uploadPending()
+
+    expect(api.calls).toEqual([])
+  })
+
   it('makes a draft deleted on another device a new one again', async () => {
     await store.saveDraft(draft('d1', { pendingSave: true }))
     await sync.upload('d1')
