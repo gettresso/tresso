@@ -45,8 +45,8 @@ import {
 } from '@tresso/core'
 import { ApiError } from '@/api/errors'
 import type { Contact, Conversation, Draft, ListScope } from '@/mail/db'
-import { deleteMailStore, mailCopyName, openMailStore } from '@/mail/store'
-import { forgetCopy, keptCopies, rememberCopy } from '@/mail/copies'
+import { copiesOnDevice, deleteMailStore, mailCopyName, openMailStore } from '@/mail/store'
+import { forgetCopy, keptCopies, listFoundCopies, markForRemoval, rememberCopy } from '@/mail/copies'
 import type { ClosedElsewhere } from '@/mail/db'
 import { forTheDesktop, mailNotifications, overdueNotifications } from '@/mail/mailNotifications'
 import { notifier } from '@/platform/notifier'
@@ -179,6 +179,17 @@ export const useMailStore = defineStore('mail', () => {
   let openPhase: Promise<void> = Promise.resolve()
   /** The open copy is kept current (its user was confirmed): pulls, uploads and the realtime stream run. */
   let syncing = false
+  /**
+   * The mail of a user who signed out could not be removed from this device (the desktop refuses while a read still
+   * uses the copy, the browser's storage failed). The sign-in screen says so; the copy is marked and removed at the
+   * next start. Null when nothing was left behind.
+   */
+  const removalError = ref<string | null>(null)
+  /**
+   * What has to be written into the copy before it closes when a session ends without a sign-out (expired, or ended
+   * in another tab): the draft on screen, so typing since the last autosave is kept with the copy.
+   */
+  const beforeKeptClose = new Set<() => Promise<void>>()
 
   /**
    * Opens the user's copy and, once the server confirmed the user, keeps it current. A start that is not `confirmed`
@@ -290,7 +301,8 @@ export const useMailStore = defineStore('mail', () => {
       },
     })
     const stream = new RealtimeClient({
-      fetchAccess: () => auth.api<RealtimeAccess>('/api/v1/realtime/token'),
+      // Aborted when the stream stops, so a sign-out does not wait for a token request that hangs.
+      fetchAccess: (signal) => auth.api<RealtimeAccess>('/api/v1/realtime/token', { signal }),
       now: () => auth.serverNow(),
       onCursor: (cursor) => void pull(() => engine?.notify(cursor)),
       onConnected: () => {
@@ -493,8 +505,48 @@ export const useMailStore = defineStore('mail', () => {
     // A copy still opening (at launch, say) is closed by its start once it sees it was overtaken; only then can it go.
     await Promise.allSettled(openings)
     if (forUserId !== null && name !== null) {
-      await deleteMailStore(forUserId, name)
+      try {
+        await deleteMailStore(forUserId, name)
+      } catch (error) {
+        // Left on the device: marked, so the next start removes it, and said on the sign-in screen.
+        markForRemoval({ userId: forUserId, name })
+        removalError.value = leftBehind(error)
+        throw error
+      }
       forgetCopy(name)
+      removalError.value = null
+    }
+  }
+
+  function leftBehind(error: unknown): string {
+    return `Your mail could not be removed from this device (${error instanceof Error ? error.message : String(error)}). Tresso removes it the next time it starts.`
+  }
+
+  /**
+   * At the start of the signed-out app: removes the copies whose removal failed when their user signed out. Copies
+   * kept on purpose (an expired session) stay. One that still cannot go stays marked and is said again.
+   */
+  async function removeLeftCopies(): Promise<void> {
+    let failure: unknown = null
+    for (const copy of keptCopies().filter((kept) => kept.remove === true)) {
+      try {
+        await deleteMailStore(copy.userId, copy.name)
+        forgetCopy(copy.name)
+      } catch (error) {
+        console.error('Removing the mail a signed-out user left on this device failed', error)
+        failure = error
+      }
+    }
+    removalError.value = failure === null ? null : leftBehind(failure)
+  }
+
+  /** Lists the copies on this device that the list does not know yet (left by an earlier release), except the user's own. */
+  async function listUnknownCopies(confirmedUserId: string): Promise<void> {
+    try {
+      listFoundCopies((await copiesOnDevice()).filter((copy) => copy.userId !== confirmedUserId))
+    } catch (error) {
+      // Only copies of an earlier release are missed; the next start looks again.
+      console.error('Looking for mail copies on this device failed', error)
     }
   }
 
@@ -506,6 +558,7 @@ export const useMailStore = defineStore('mail', () => {
    * tried again the next time.
    */
   async function removeOtherUsersCopies(confirmedUserId: string): Promise<void> {
+    await listUnknownCopies(confirmedUserId)
     const keep = mailCopyName(confirmedUserId)
     const open = userId === null ? null : mailCopyName(userId)
     for (const copy of keptCopies()) {
@@ -519,6 +572,8 @@ export const useMailStore = defineStore('mail', () => {
         console.error('Removing the mail copy another user left on this device failed', error)
       }
     }
+    // What a sign-out left behind is gone now, or no longer the signed-in user's concern.
+    removalError.value = null
   }
 
   async function refresh(): Promise<void> {
@@ -870,6 +925,28 @@ export const useMailStore = defineStore('mail', () => {
     return (await db.value?.drafts()) ?? []
   }
 
+  /** Drafts with edits that never reached the server (written offline, say): a sign-out would delete them. */
+  async function unsavedDrafts(): Promise<Draft[]> {
+    return (await drafts()).filter((draft) => draft.pendingSave)
+  }
+
+  /**
+   * Tries to bring the drafts that never reached the server up, for at most `ms`; the upload goes on after that, its
+   * outcome no longer awaited. Returns the drafts still not on the server.
+   */
+  async function saveUnsavedDrafts(ms: number): Promise<Draft[]> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms)
+    })
+    try {
+      await Promise.race([uploadPendingDrafts().catch(() => undefined), late])
+    } finally {
+      clearTimeout(timer)
+    }
+    return unsavedDrafts()
+  }
+
   async function draft(id: string): Promise<Draft | null> {
     return (await db.value?.draft(id)) ?? null
   }
@@ -878,13 +955,44 @@ export const useMailStore = defineStore('mail', () => {
     await db.value?.deleteDraft(id)
   }
 
+  /**
+   * Registers what is written into the copy before it closes at the end of a session that keeps it (expired, or
+   * ended in another tab); returns the function that removes it again.
+   */
+  function beforeKeptCopyCloses(write: () => Promise<void>): () => void {
+    beforeKeptClose.add(write)
+    return () => beforeKeptClose.delete(write)
+  }
+
+  /**
+   * A session ended without a sign-out: what is still being written goes into the copy first, while it is open, and
+   * then it closes. The users of this session are no longer the ones a later sign-out removes the copy of: that is
+   * whoever starts next (a sign-out before the next start must not remove this copy for someone else).
+   */
+  async function closeKept(): Promise<void> {
+    lastUser = null
+    openedUnconfirmed = null
+    const results = await Promise.allSettled([...beforeKeptClose].map(async (write) => write()))
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.error('Saving what was being written before the mail copy closed failed', result.reason)
+      }
+    }
+    await stop()
+  }
+
   // Only the user's own sign-out removes the copy. A session that expired, or that ended in another tab (which removes
   // the copy itself when the user signed out there), only closes it: it may hold drafts that never reached the server,
   // and they upload when the same user signs in again.
-  auth.onSessionEnd((reason) => (reason === 'signedOut' ? forget() : stop()))
+  auth.onSessionEnd((reason) => (reason === 'signedOut' ? forget() : closeKept()))
 
   return {
     removeOtherUsersCopies,
+    removeLeftCopies,
+    removalError,
+    beforeKeptCopyCloses,
+    unsavedDrafts,
+    saveUnsavedDrafts,
     accounts,
     listKey,
     allFolders,

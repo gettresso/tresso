@@ -46,6 +46,29 @@ export async function deleteMailStore(userId: string, name: string = mailCopyNam
   await deleteMailDatabase(userId)
 }
 
+const COPY_PREFIX = databaseName('')
+
+/**
+ * The mail copies this device can list, by user and name: the IndexedDB databases named `tresso-mail-<userId>`, in the
+ * browser and in the desktop app's web view (where they are copies from before the desktop kept mail in SQLite).
+ * `indexedDB.databases()` is in every browser Tresso supports; where it is missing, nothing can be listed. The
+ * desktop's SQLite copies cannot be listed: the shell's commands open, close and delete a copy by name, but have none
+ * that lists its data folder.
+ */
+export async function copiesOnDevice(): Promise<{ userId: string; name: string }[]> {
+  if (typeof indexedDB === 'undefined' || typeof indexedDB.databases !== 'function') {
+    return []
+  }
+  const found: { userId: string; name: string }[] = []
+  for (const database of await indexedDB.databases()) {
+    const name = database.name
+    if (name !== undefined && name.startsWith(COPY_PREFIX) && name.length > COPY_PREFIX.length) {
+      found.push({ userId: name.slice(COPY_PREFIX.length), name })
+    }
+  }
+  return found
+}
+
 /**
  * The desktop copy of a user on the server the app talks to now. User ids are only unique per server, and a copy whose
  * session expired stays on disk, so a copy from another server (a restored backup, a staging clone) is never reused.

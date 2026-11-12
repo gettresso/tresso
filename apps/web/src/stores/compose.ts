@@ -159,15 +159,26 @@ export const useComposeStore = defineStore('compose', () => {
     () => void composer.followUp(),
   )
 
-  // The session ended: what was being written goes no further, so whoever signs in next never sees it.
+  // The user signed out: what was being written goes no further, so whoever signs in next never sees it; the copy it
+  // would be saved in is deleted anyway.
   watch(
     () => auth.isAuthenticated,
     (authenticated) => {
-      if (!authenticated) {
+      if (!authenticated && auth.sessionEnd === 'signedOut') {
         reset()
       }
     },
   )
+
+  // A session that ended without a sign-out (expired, or ended in another tab) keeps the copy so that unsent text
+  // survives: the typing since the last autosave goes into it before it closes, and only then is the form let go.
+  mail.beforeKeptCopyCloses(async () => {
+    try {
+      await composer.saveNow()
+    } finally {
+      reset()
+    }
+  })
 
   // The copy was opened again for the same user (removed or closed under this tab): the open draft moves to it, so
   // typing is kept and Send works. Before another user's copy opens, the draft on screen was let go: by the sign-out,
