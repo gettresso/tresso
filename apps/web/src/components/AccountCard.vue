@@ -31,7 +31,9 @@ const problem = computed(() => props.account.status === 'auth_failed' || props.a
 const statusLabel = computed(
   () =>
     ({
-      active: props.account.lastSyncedAt === null ? 'Connecting' : 'Syncing',
+      // The server's sync of this account with its provider: its first one, or on. The words of the sidebar's status
+      // (getting your mail) are kept, and nothing says it connects for longer than a connection takes.
+      active: props.account.lastSyncedAt === null ? 'Getting mail' : 'Active',
       paused: 'Paused',
       auth_failed: 'Sign-in failed',
       error: 'Sync problem',

@@ -11,6 +11,7 @@ import BulkBar from '@/components/BulkBar.vue'
 import ClassificationMenu from '@/components/ClassificationMenu.vue'
 import MenuButton from '@/components/MenuButton.vue'
 import SearchField from '@/components/SearchField.vue'
+import SyncNotice from '@/components/SyncNotice.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import { collapseLeave, expandEnter } from '@/components/listMotion'
 import LogoLoader from '@/components/LogoLoader.vue'
@@ -119,6 +120,7 @@ const days = computed(() => {
         </span>
       </div>
       <slot name="aside" />
+      <SyncNotice />
       <SearchField />
     </header>
 

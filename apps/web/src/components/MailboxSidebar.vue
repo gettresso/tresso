@@ -14,7 +14,7 @@ import { useTodosStore } from '@/stores/todos'
 import type { SidebarPage } from '@/components/sidebarPage'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import TickCount from '@/components/TickCount.vue'
-import LogoLoader from '@/components/LogoLoader.vue'
+import SyncStatusLine from '@/components/SyncStatusLine.vue'
 
 const props = defineProps<{
   displayName: string
@@ -30,7 +30,6 @@ const props = defineProps<{
   batches: boolean
   /** When the next batch comes, e.g. "13:00"; null while unknown. */
   nextBatch: string | null
-  live: boolean
   /** A page of its own on screen instead of a list of mail. */
   page?: SidebarPage
 }>()
@@ -181,7 +180,7 @@ function failed(account: SyncedMailAccount): boolean {
       <span class="label">Settings</span>
     </RouterLink>
 
-    <p class="live" :class="{ on: live }" role="status"><LogoLoader v-if="!live" size="12" class="connecting" />{{ live ? 'Up to date' : 'Connecting…' }}</p>
+    <SyncStatusLine :status="mail.syncStatus" />
   </nav>
 </template>
 
@@ -354,25 +353,5 @@ function failed(account: SyncedMailAccount): boolean {
 }
 .settings {
   margin-top: auto;
-}
-.live {
-  margin: 0;
-  padding: 0 10px;
-  font-size: 12px;
-  color: var(--ink-3);
-}
-.live.on::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 6px;
-  border-radius: 999px;
-  background: var(--know);
-  vertical-align: middle;
-}
-.connecting {
-  margin-right: 6px;
-  vertical-align: -1px;
 }
 </style>
