@@ -8,6 +8,10 @@ import { listen } from '@tauri-apps/api/event'
  * 127.0.0.1; the relay logic that uses these lives in packages/core/src/chat. Outside macOS every command but
  * `whatsappAvailable` rejects with `unsupported`.
  *
+ * Every command answers `unsupported` too while WhatsApp is not turned on for this Mac (whatsapp.rs). The shell does not
+ * know which user its tokens belong to, so binding a config to the confirmed user is this client's rule
+ * (stores/whatsappRelay.ts).
+ *
  * Errors are rejections with a string: a code the caller can act on (`busy`, `no_store`, `not_chosen`, `no_folder`,
  * `bridge_stopped`, `not_found`, `not_media`, `failed`, `refused`, `mismatch`, `too_large`, `unsupported`) or a
  * sentence for anything else.
@@ -112,6 +116,8 @@ export function whatsAppShell(shell: WhatsAppShell = tauriShell) {
     saveConfig: (userId: string, config: WhatsAppConfig) => shell.invoke<void>('whatsapp_config_save', { userId, config }),
     /** On disconnect and sign-out; stops the bridge Tresso started from that folder. */
     clearConfig: (userId: string) => shell.invoke<void>('whatsapp_config_clear', { userId }),
+    /** Once the server confirmed the user: every other user's config goes, with the folders only they named. */
+    keepOnlyConfig: (userId: string) => shell.invoke<void>('whatsapp_config_keep_only', { userId }),
     /** The folder dialog; null when cancelled. Only a folder picked here can be used. */
     chooseFolder: () => shell.invoke<string | null>('whatsapp_choose_folder'),
     inspect: (folder: string) => shell.invoke<BridgeInspection>('whatsapp_inspect', { folder }),

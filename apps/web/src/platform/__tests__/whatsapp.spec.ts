@@ -40,6 +40,7 @@ describe('the WhatsApp shell commands', () => {
       [() => whatsapp.loadConfig('u1'), 'whatsapp_config_load', { userId: 'u1' }],
       [() => whatsapp.saveConfig('u1', config), 'whatsapp_config_save', { userId: 'u1', config }],
       [() => whatsapp.clearConfig('u1'), 'whatsapp_config_clear', { userId: 'u1' }],
+      [() => whatsapp.keepOnlyConfig('u1'), 'whatsapp_config_keep_only', { userId: 'u1' }],
       [() => whatsapp.chooseFolder(), 'whatsapp_choose_folder', undefined],
       [() => whatsapp.inspect(folder), 'whatsapp_inspect', { folder }],
       [() => whatsapp.start(folder), 'whatsapp_start', { folder }],
