@@ -972,13 +972,19 @@ export const useMailStore = defineStore('mail', () => {
   async function closeKept(): Promise<void> {
     lastUser = null
     openedUnconfirmed = null
+    // No pull starts while the draft is written: the session is over.
+    engine?.stop()
+    const mine = generation
     const results = await Promise.allSettled([...beforeKeptClose].map(async (write) => write()))
     for (const result of results) {
       if (result.status === 'rejected') {
         console.error('Saving what was being written before the mail copy closed failed', result.reason)
       }
     }
-    await stop()
+    // A start that came meanwhile (the next sign-in in the desktop window) closed this copy itself; its own stays.
+    if (mine === generation) {
+      await stop()
+    }
   }
 
   // Only the user's own sign-out removes the copy. A session that expired, or that ended in another tab (which removes
