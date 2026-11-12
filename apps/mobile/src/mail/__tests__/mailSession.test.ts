@@ -99,6 +99,47 @@ describe('MailSession', () => {
     expect(mail.database).toBeNull()
   })
 
+  it('says how far the first sync of the phone got, and when it is done, in the words of the other clients', async () => {
+    const disk = device()
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const fetchPage = async (since: number) => {
+      if (since === 0) {
+        return { ...page(500, { hasMore: true, mailAccounts: [account] }), latest: 1000 }
+      }
+      await held
+      return { ...page(1000), latest: 1000 }
+    }
+    const { mail, last, states } = session(disk, fetchPage)
+
+    await mail.switchTo('kim')
+    await vi.waitFor(() => expect(last().status.text).toBe('Getting your mail, 50%'))
+    expect(last().status).toMatchObject({ kind: 'firstSync', fraction: 0.5 })
+    expect(states.map((state) => state.status.text)).toContain('Opening your mail…')
+
+    release()
+    // No realtime in this test: up to date, but not live.
+    await vi.waitFor(() => expect(last().status.kind).toBe('reconnecting'))
+    expect(last().status.text).toMatch(/^Reconnecting… Last synced /)
+
+    await mail.switchTo(null)
+    expect(last().status).toMatchObject({ kind: 'closed', text: '' })
+  })
+
+  it('says the sync stopped when a pull fails, and when the phone last synced once it opens again', async () => {
+    const disk = device()
+    const first = session(disk)
+    await first.mail.switchTo('kim')
+    await vi.waitFor(() => expect(first.last().syncState).toBe('idle'))
+    await first.mail.closeCopy()
+
+    const second = session(disk, () => Promise.reject(new Error('Network down')))
+    await second.mail.switchTo('kim')
+    await vi.waitFor(() => expect(second.last().status.kind).toBe('error'))
+    expect(second.last().status.text).toMatch(/^Sync stopped\. Last synced /)
+    await second.mail.switchTo(null)
+  })
+
   it('aborts a realtime token request under way at sign-out, so removing the copy does not wait for it', async () => {
     const disk = device()
     let signal: AbortSignal | null = null

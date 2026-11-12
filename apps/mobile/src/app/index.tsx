@@ -7,6 +7,7 @@ import { useLatestBrief } from '@/brief/useDailyBrief'
 import { useNotices } from '@/components/Notices'
 import { Icon } from '@/components/Icon'
 import { InboxList } from '@/components/InboxList'
+import { SyncStatusBar } from '@/components/SyncStatusBar'
 import { useComposer } from '@/compose/ComposerProvider'
 import { useMail } from '@/mail/MailProvider'
 import { useTheme, type Theme } from '@/theme'
@@ -158,10 +159,8 @@ function SignedIn({ styles }: { styles: Styles }) {
               <Text style={styles.heading} accessibilityRole="header">
                 Unified Inbox
               </Text>
-              <Text style={styles.body}>
-                {accounts === 1 ? '1 account' : `${accounts} accounts`}
-                {mail.live ? '' : ' · not live'}
-              </Text>
+              <Text style={styles.body}>{accounts === 1 ? '1 account' : `${accounts} accounts`}</Text>
+              <SyncStatusBar status={mail.status} />
             </View>
             {brief.left > 0 && (
               <Pressable style={({ pressed }) => [styles.secondary, pressed && styles.pressed]} onPress={() => router.push('/brief')} accessibilityRole="button" accessibilityLabel={`Daily brief, ${brief.left} to note`}>

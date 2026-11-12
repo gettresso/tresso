@@ -19,6 +19,8 @@ import {
   CopyClosingError,
   DraftSync,
   SqliteMailStore,
+  SyncStatusMachine,
+  type SyncStatus,
   unsubscribeOffer,
   type DraftApi,
   type SyncedUnsubscription,
@@ -46,6 +48,8 @@ export interface MailState {
   syncError: string | null
   /** The realtime connection is up, so changes arrive as they happen. */
   live: boolean
+  /** What the inbox says about the sync (see describeSync): getting the mail, catching up, up to date, reconnecting. */
+  status: SyncStatus
   /**
    * Pulls of the delta that completed: a screen opened from a notification waits for one after it opened before it
    * says a conversation is not there (it may not have reached the copy yet).
@@ -97,6 +101,9 @@ interface Open {
   told: Set<string>
 }
 
+/** The status while no copy is open. */
+export const NO_STATUS: SyncStatus = { kind: 'closed', text: '', fraction: null, remaining: null, notice: null, announcement: '' }
+
 export function databaseName(userId: string): string {
   return `mail-${userId}.db`
 }
@@ -107,7 +114,9 @@ export function databaseName(userId: string): string {
  * deleted once it is closed and a sign-out during opening leaves nothing behind.
  */
 export class MailSession {
-  private state: MailState = { userId: null, ready: false, synced: false, version: 0, syncState: 'idle', syncError: null, live: false, pulls: 0 }
+  private state: MailState = { userId: null, ready: false, synced: false, version: 0, syncState: 'idle', syncError: null, live: false, pulls: 0, status: NO_STATUS }
+  /** The facts of the sync of the open copy, told as one status (shared with the web and desktop clients). */
+  private readonly status = new SyncStatusMachine({ onChange: (status) => this.update({ status }) })
   private queue: Promise<void> = Promise.resolve()
   /** Goes up with every switch asked for: a switch that a newer one replaced stops where it is. */
   private wanted = 0
@@ -156,6 +165,7 @@ export class MailSession {
       void this.pull(open, () => open.engine.sync())
     } else {
       this.update({ live: false })
+      this.status.streamStopped()
       void open.realtime.stop()
     }
   }
@@ -315,15 +325,20 @@ export class MailSession {
     } finally {
       await index.close()
     }
+    this.status.opening()
     const sql = await this.deps.openSql(name)
     let database: SqliteMailStore
+    let lastSyncedAt: number | null
     try {
       database = await SqliteMailStore.open(sql)
+      lastSyncedAt = await database.syncedAt()
     } catch (error) {
+      this.status.closed()
       await sql.close()
       throw error
     }
     if (switchId !== this.wanted) {
+      this.status.closed()
       await sql.close()
       return
     }
@@ -336,6 +351,11 @@ export class MailSession {
       retry: (run) => {
         if (this.open?.engine === engine) {
           void this.pull(this.open, run)
+        }
+      },
+      onProgress: (progress) => {
+        if (this.open?.engine === engine) {
+          this.status.progress(progress)
         }
       },
       onApplied: (page) => {
@@ -363,15 +383,22 @@ export class MailSession {
           void this.pull(open, () => engine.notify(cursor))
         }
       },
+      onConnecting: () => {
+        if (open !== null && this.open === open) {
+          this.status.streamConnecting()
+        }
+      },
       onConnected: () => {
         if (open !== null && this.open === open) {
           this.update({ live: true })
+          this.status.streamLive()
           void this.pull(open, () => engine.sync())
         }
       },
       onError: () => {
         if (open !== null && this.open === open) {
           this.update({ live: false })
+          this.status.streamRetrying()
         }
       },
     })
@@ -379,6 +406,7 @@ export class MailSession {
     const opened = open
     this.open = opened
     this.update({ userId, ready: true, synced: false, version: this.state.version + 1, syncError: null })
+    this.status.opened({ confirmed: true, afterUpdate: database.afterUpdate, lastSyncedAt })
     // Not awaited: the copy on the device shows right away, and a switch (a sign-out) does not wait for the pull.
     void this.pull(opened, () => engine.sync()).then(() => {
       if (this.open === opened) {
@@ -399,6 +427,7 @@ export class MailSession {
       return
     }
     this.update({ userId: null, ready: false, synced: false, live: false, syncState: 'idle' })
+    this.status.closed()
     open.engine.stop()
     await open.realtime.stop()
     // Waits for a page being stored, not for one on its way over the network: that one is refused when it arrives.
@@ -458,10 +487,12 @@ export class MailSession {
       await run()
       if (this.open === open) {
         open.tellingSince ??= Date.now()
+        this.status.synced()
         this.update({ syncState: 'idle', syncError: null, pulls: this.state.pulls + 1 })
       }
     } catch (error) {
       if (this.open === open) {
+        this.status.failed(message(error))
         this.update({ syncState: 'error', syncError: message(error) })
       }
     }

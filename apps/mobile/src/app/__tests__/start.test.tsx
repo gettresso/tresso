@@ -23,6 +23,7 @@ const { auth, mail } = vi.hoisted(() => ({
     handOvers: async () => [],
     version: 0,
     live: true,
+    status: { kind: 'catchingUp', text: 'Catching up: 12,400 changes to go', fraction: 0.4, remaining: 12_400, notice: 'Catching up on changes. What you see may be out of date until it is done.', announcement: 'Catching up, 25%' },
   },
 }))
 vi.mock('@/auth/AuthProvider', () => ({ useAuth: () => auth }))
@@ -99,5 +100,15 @@ describe('the start screen', () => {
 
     fireEvent.click(button('Sign out'))
     expect(auth.signOut).toHaveBeenCalledOnce()
+  })
+
+  it('says under the title how far the sync is, and that the list may be out of date meanwhile', () => {
+    auth.isAuthenticated = true
+    render(<Start />)
+
+    expect(screen.getByText('Catching up: 12,400 changes to go')).toBeTruthy()
+    expect(screen.getByText('Catching up on changes. What you see may be out of date until it is done.')).toBeTruthy()
+    expect(screen.getByTestId('sync-progress')).toBeTruthy()
+    expect(screen.queryByText(/not live/)).toBeNull()
   })
 })
