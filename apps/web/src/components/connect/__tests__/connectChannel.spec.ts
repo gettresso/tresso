@@ -76,6 +76,24 @@ describe('connectChannel', () => {
     expect(taken).toHaveLength(1)
   })
 
+  it('removes an outcome no tab took once it expired, when the next sign-in starts waiting', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      expect(await handOver('state-1', { kind: 'result', result }, 0)).toBe(false)
+      expect(localStorage.getItem('tresso.connect.outcome')).not.toBeNull()
+
+      // A fresh outcome stays for the tab that waits for it.
+      markAwaiting('state-2', Date.now() + 15 * 60_000)
+      expect(localStorage.getItem('tresso.connect.outcome')).not.toBeNull()
+
+      vi.setSystemTime(Date.now() + 16 * 60_000)
+      markAwaiting('state-3', Date.now() + 15 * 60_000)
+      expect(localStorage.getItem('tresso.connect.outcome')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('notes the sign-in a tab waits for, and the ones the user cancelled, until they expire', () => {
     markAwaiting('state-1', Date.now() + 60_000)
     expect(isAwaited('state-1')).toBe(true)

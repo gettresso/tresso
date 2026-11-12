@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { SyncedCalendar, SyncedMailAccount } from '@tresso/core'
+import { useMailStore } from '@/stores/mail'
 import CalendarAccessNotices from '../CalendarAccessNotices.vue'
 
 function account(overrides: Partial<SyncedMailAccount>): SyncedMailAccount {
@@ -88,6 +89,21 @@ describe('CalendarAccessNotices', () => {
     expect(mountNotices([account({ calendarStatus: 'error', calendarStatusDetail: 'Syncing the calendars failed.' })]).text()).toContain('Syncing the calendars failed.')
     // The status changed meanwhile; when calendars are not allowed again later, that shows again.
     expect(mountNotices([account({ calendarStatus: 'not_granted' })]).text()).toContain('Tresso may not use the calendars of kim@company.example yet.')
+  })
+
+  it('forgets hidden notices of accounts that are gone, once the first pull is over', async () => {
+    const values = new Map<string, string>([['tresso.calendar.hiddenAccessNotices', JSON.stringify(['gone:not_granted', 'work:not_granted'])]])
+    vi.stubGlobal('localStorage', { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) })
+    const mail = useMailStore()
+
+    // Still loading: an account not in the list may only be on its way.
+    mountNotices([account({ calendarStatus: 'not_granted' })])
+    expect(JSON.parse(values.get('tresso.calendar.hiddenAccessNotices')!)).toEqual(['gone:not_granted', 'work:not_granted'])
+
+    // Removed, or another user's of this browser: its entry goes; the hidden notice of a listed account stays.
+    mail.synced = true
+    await flushPromises()
+    expect(JSON.parse(values.get('tresso.calendar.hiddenAccessNotices')!)).toEqual(['work:not_granted'])
   })
 
   it('says nothing for accounts whose calendars sync', () => {

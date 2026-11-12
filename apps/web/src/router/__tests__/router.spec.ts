@@ -57,6 +57,19 @@ describe('router', () => {
     expect(router.currentRoute.value.params.threadId).toBe('t1')
   })
 
+  it("keeps a provider's one-time code out of the address bar and the return path when it meets a signed-out tab", async () => {
+    await router.push('/settings/accounts?provider=microsoft&state=state-1&code=one-time-code')
+
+    expect(router.currentRoute.value.name).toBe('unified')
+    expect(router.currentRoute.value.fullPath).not.toContain('one-time-code')
+    expect(router.currentRoute.value.query.returnTo).toBe('/settings/accounts')
+
+    await signInHere()
+
+    // Back on the accounts page, where the account still says what it needs; nothing is finished with an old code.
+    expect(router.currentRoute.value.fullPath).toBe('/settings/accounts')
+  })
+
   it('goes to the Unified Inbox after a sign-in started there', async () => {
     sessionStorage.setItem('tresso.returnPath', '/todos/old')
     await router.push('/')
