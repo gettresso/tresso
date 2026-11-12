@@ -7,6 +7,9 @@
 **/.env.*.local
 apps/api/vendor
 apps/api/var
+# Test code: the production image runs with APP_ENV=prod, loads tests/ nowhere (only when@test config does) and
+# dumps the autoloader without autoload-dev; development bind-mounts apps/api instead of copying it.
+apps/api/tests
 apps/api/config/jwt/*.pem
 apps/web/dist
 apps/desktop/src-tauri/target
