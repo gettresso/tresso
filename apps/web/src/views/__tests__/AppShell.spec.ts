@@ -112,4 +112,86 @@ describe('AppShell', () => {
     expect(home!.get('.account-address').classes()).not.toContain('problem')
     expect(home!.find('a.fix').exists()).toBe(false)
   })
+
+  describe('signing out with drafts that never reached the server', () => {
+    async function signedIn() {
+      useAuthStore().tokens = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 60_000 }
+      const signOut = vi.spyOn(useAuthStore(), 'signOut').mockResolvedValue()
+      const router = makeRouter()
+      await router.push('/')
+      const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
+      await flushPromises()
+      const button = (label: string) => wrapper.findAll('button').find((candidate) => candidate.text() === label)!
+      return { wrapper, signOut, button }
+    }
+    const unsent = (id: string) => ({ id, pendingSave: true }) as Awaited<ReturnType<ReturnType<typeof useMailStore>['unsavedDrafts']>>[number]
+
+    it('signs out at once when every draft is on the server', async () => {
+      const { wrapper, signOut } = await signedIn()
+      vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([])
+
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+
+      expect(signOut).toHaveBeenCalledOnce()
+      expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+    })
+
+    it('asks first, and stays signed in on Cancel', async () => {
+      const { wrapper, signOut, button } = await signedIn()
+      vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([unsent('d1'), unsent('d2')])
+
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.get('[role="alertdialog"]').text()).toContain('2 drafts on this device were never saved to the server. Sign out and delete them?')
+      await button('Cancel').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+      expect(signOut).not.toHaveBeenCalled()
+    })
+
+    it('signs out anyway when the user says so', async () => {
+      const { wrapper, signOut, button } = await signedIn()
+      vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([unsent('d1')])
+
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('[role="alertdialog"]').text()).toContain('1 draft on this device was never saved to the server. Sign out and delete it?')
+      await button('Sign out anyway').trigger('click')
+      await flushPromises()
+
+      expect(signOut).toHaveBeenCalledOnce()
+    })
+
+    it('tries to save them first, and signs out once they reached the server', async () => {
+      const { wrapper, signOut, button } = await signedIn()
+      vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([unsent('d1'), unsent('d2')])
+      const save = vi.spyOn(useMailStore(), 'saveUnsavedDrafts').mockResolvedValue([])
+
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+      await button('Try to save them first').trigger('click')
+      await flushPromises()
+
+      expect(save).toHaveBeenCalledWith(15_000)
+      expect(signOut).toHaveBeenCalledOnce()
+    })
+
+    it('asks again when saving did not bring them all up, and does not sign out by itself', async () => {
+      const { wrapper, signOut, button } = await signedIn()
+      vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([unsent('d1'), unsent('d2')])
+      vi.spyOn(useMailStore(), 'saveUnsavedDrafts').mockResolvedValue([unsent('d2')])
+
+      await wrapper.get('nav.sidebar .sign-out').trigger('click')
+      await flushPromises()
+      await button('Try to save them first').trigger('click')
+      await flushPromises()
+
+      const dialog = wrapper.get('[role="alertdialog"]')
+      expect(dialog.text()).toContain('1 draft on this device was never saved to the server.')
+      expect(dialog.get('[role="alert"]').text()).toBe('Saving did not work for all of them. Try again once you are online, or sign out anyway.')
+      expect(signOut).not.toHaveBeenCalled()
+    })
+  })
 })

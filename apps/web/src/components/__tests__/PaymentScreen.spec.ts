@@ -5,6 +5,7 @@ import type { BillingStatus } from '@tresso/core'
 import PaymentScreen from '@/components/PaymentScreen.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useBillingStore } from '@/stores/billing'
+import { useMailStore } from '@/stores/mail'
 
 const ENDED: BillingStatus = {
   enabled: true,
@@ -84,7 +85,25 @@ describe('PaymentScreen', () => {
 
     const screen = mount(PaymentScreen)
     await screen.findAll('button').find((button) => button.text() === 'Sign out')!.trigger('click')
+    await flushPromises()
 
     expect(signOut).toHaveBeenCalled()
+  })
+
+  it('asks before a sign-out deletes drafts that never reached the server', async () => {
+    const auth = useAuthStore()
+    const signOut = vi.spyOn(auth, 'signOut').mockResolvedValue()
+    vi.spyOn(useBillingStore(), 'load').mockResolvedValue(ENDED)
+    vi.spyOn(useMailStore(), 'unsavedDrafts').mockResolvedValue([{ id: 'd1', pendingSave: true } as Awaited<ReturnType<ReturnType<typeof useMailStore>['unsavedDrafts']>>[number]])
+
+    const screen = mount(PaymentScreen)
+    await screen.findAll('button').find((button) => button.text() === 'Sign out')!.trigger('click')
+    await flushPromises()
+
+    expect(screen.get('[role="alertdialog"]').text()).toContain('1 draft on this device was never saved to the server. Sign out and delete it?')
+    expect(signOut).not.toHaveBeenCalled()
+    await screen.findAll('button').find((button) => button.text() === 'Sign out anyway')!.trigger('click')
+    await flushPromises()
+    expect(signOut).toHaveBeenCalledOnce()
   })
 })
