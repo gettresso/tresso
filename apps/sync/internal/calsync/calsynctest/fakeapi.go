@@ -35,6 +35,10 @@ type API struct {
 	queued      map[string]api.CalendarOperation // every write ever queued, by id
 	statuses    []string
 	details     []string
+	// status is the account's calendar status as the API keeps it: a list makes it active unless it is an error.
+	status string
+	// OmitListStatus answers a calendar list without the status, as an API that does not send it.
+	OmitListStatus bool
 	// RefuseActive answers an active status with 422, as an API that does not know it; activeAsked counts them.
 	RefuseActive bool
 	activeAsked  int
@@ -66,7 +70,7 @@ func (a *API) Grant() {
 	a.NotGranted = false
 }
 
-func (a *API) Calendars(_ context.Context, _ string, list api.CalendarList) ([]api.CalendarState, error) {
+func (a *API) Calendars(_ context.Context, _ string, list api.CalendarList) (api.CalendarListAnswer, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.lists = append(a.lists, list)
@@ -84,7 +88,20 @@ func (a *API) Calendars(_ context.Context, _ string, list api.CalendarList) ([]a
 		}
 		states = append(states, state)
 	}
-	return states, nil
+	if a.status != api.CalendarError {
+		a.status = api.CalendarActive
+	}
+	if a.OmitListStatus {
+		return api.CalendarListAnswer{Calendars: states}, nil
+	}
+	return api.CalendarListAnswer{Calendars: states, Status: a.status}, nil
+}
+
+// SetStatus changes the account's calendar status as the API would on its own, such as when the user signs in again.
+func (a *API) SetStatus(status string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status = status
 }
 
 func (a *API) CalendarInventory(_ context.Context, _, calendarID, _ string, objects []api.RemoteObject, partial bool) (api.InventoryResult, error) {
@@ -172,6 +189,9 @@ func (a *API) CalendarStatus(_ context.Context, _, _, status, detail, _ string) 
 	}
 	a.statuses = append(a.statuses, status)
 	a.details = append(a.details, detail)
+	if status != api.CalendarActive || a.status == api.CalendarError {
+		a.status = status
+	}
 	return nil
 }
 

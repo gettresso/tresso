@@ -78,6 +78,7 @@ final class SyncCalendarTest extends DatabaseTestCase
         self::assertSame('active', $account['status'], 'Mail is not affected.');
 
         $this->reportCalendars();
+        self::assertSame('active', $this->decodedResponse()['calendarStatus'] ?? null, 'The list answer says the login problem is gone.');
         $account = $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim);
         self::assertSame('active', $account['calendarStatus']);
         self::assertNull($account['calendarStatusDetail']);
@@ -241,6 +242,7 @@ final class SyncCalendarTest extends DatabaseTestCase
 
         // The next round lists the calendars again before the failing one fails again, and another one syncs.
         $this->reportCalendars();
+        self::assertSame('error', $this->decodedResponse()['calendarStatus'] ?? null, 'The list answer tells the worker its error stands, so it need not report it again.');
         $this->client->jsonRequest('POST', $this->base().'/calendars/'.$home.'/objects', ['workerId' => 'w1', 'cursor' => 'sync-token-1'], $this->worker);
         $account = $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim);
         self::assertSame('error', $account['calendarStatus'], 'Neither makes it look active for a minute.');

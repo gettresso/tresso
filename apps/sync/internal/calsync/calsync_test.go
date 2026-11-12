@@ -213,6 +213,79 @@ func TestACalendarThatKeepsFailingIsBackedOffAndReported(t *testing.T) {
 	}
 }
 
+// Fails without the fix: the same error was posted to the API after every round while one calendar kept failing.
+func TestAnErrorThatStaysIsReportedOnceAndAgainOnlyWhenItChanges(t *testing.T) {
+	var mu sync.Mutex
+	failing := map[string]bool{"broken": true}
+	provider := &fakeProvider{
+		calendars: calendarsOf("broken", "other", "own"),
+		changes: func(calendar Calendar) (Changes, error) {
+			mu.Lock()
+			fails := failing[calendar.RemoteID]
+			mu.Unlock()
+			if fails {
+				return Changes{}, &providerhttp.StatusError{Method: "GET", URL: "/events", StatusCode: http.StatusInternalServerError}
+			}
+			return Changes{Unchanged: true}, nil
+		},
+	}
+	fake := calsynctest.NewAPI("kim@example.com")
+	opts := quick
+	opts.Interval, opts.MaxBackoff = 5*time.Millisecond, 20*time.Millisecond
+	start(t, provider, fake, opts)
+
+	calsynctest.Eventually(t, "the error status", func() bool { return len(fake.Statuses()) > 0 })
+	listed := len(provider.listings())
+	calsynctest.Eventually(t, "more rounds", func() bool { return len(provider.listings()) >= listed+8 })
+	if statuses := fake.Statuses(); len(statuses) != 1 {
+		t.Fatalf("statuses = %v; an error the API holds already is not posted again", statuses)
+	}
+
+	// A second calendar fails too: the text changes, so it is reported again.
+	mu.Lock()
+	failing["other"] = true
+	mu.Unlock()
+	calsynctest.Eventually(t, "the changed error", func() bool { return len(fake.Statuses()) == 2 })
+	if details := fake.Details(); details[1] != `2 calendars could not be synced ("broken" and others); trying again.` {
+		t.Fatalf("details = %v", details)
+	}
+
+	// The user signs in again: the API sets the status to unknown and the next list makes it active, while both
+	// calendars still fail, so the error is reported once more.
+	fake.SetStatus("unknown")
+	calsynctest.Eventually(t, "the error after the sign-in", func() bool { return len(fake.Statuses()) == 3 })
+	listed = len(provider.listings())
+	calsynctest.Eventually(t, "more rounds", func() bool { return len(provider.listings()) >= listed+8 })
+	if statuses := fake.Statuses(); len(statuses) != 3 || statuses[2] != api.CalendarError {
+		t.Fatalf("statuses = %v", statuses)
+	}
+}
+
+func TestAnAPIThatDoesNotSayTheStatusGetsTheErrorEveryRound(t *testing.T) {
+	provider := &fakeProvider{
+		calendars: calendarsOf("broken", "own"),
+		changes: func(calendar Calendar) (Changes, error) {
+			if calendar.RemoteID == "broken" {
+				return Changes{}, &providerhttp.StatusError{Method: "GET", URL: "/events", StatusCode: http.StatusInternalServerError}
+			}
+			return Changes{Unchanged: true}, nil
+		},
+	}
+	fake := calsynctest.NewAPI("kim@example.com")
+	fake.OmitListStatus = true
+	opts := quick
+	opts.Interval, opts.MaxBackoff = 5*time.Millisecond, 20*time.Millisecond
+	start(t, provider, fake, opts)
+
+	// Without the status the worker cannot know whether the API still holds the error, so it says it again.
+	calsynctest.Eventually(t, "the error said again", func() bool { return len(fake.Statuses()) >= 3 })
+	for _, status := range fake.Statuses() {
+		if status != api.CalendarError {
+			t.Fatalf("statuses = %v", fake.Statuses())
+		}
+	}
+}
+
 type fetchSession struct {
 	fakeSession
 	fetch func(ids []string) ([]Object, error)
@@ -253,7 +326,7 @@ func TestEventsTheProviderRefusesAreLeftOutAndOnlyAPassingFailureKeepsTheCursor(
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = r.upload(context.Background(), Calendar{RemoteCalendar: api.RemoteCalendar{RemoteID: "own"}}, states[0], nil, []string{"one", "two", "three"}, nil, "c1")
+			err = r.upload(context.Background(), Calendar{RemoteCalendar: api.RemoteCalendar{RemoteID: "own"}}, states.Calendars[0], nil, []string{"one", "two", "three"}, nil, "c1")
 			if (err != nil) != c.transient {
 				t.Errorf("upload = %v", err)
 			}
@@ -365,7 +438,7 @@ func TestTheCursorStaysWhenEveryEventIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.upload(context.Background(), Calendar{RemoteCalendar: api.RemoteCalendar{RemoteID: "own"}}, states[0], nil, []string{"one", "two"}, nil, "c1"); err == nil || fake.Cursor("own") != "" {
+	if err := r.upload(context.Background(), Calendar{RemoteCalendar: api.RemoteCalendar{RemoteID: "own"}}, states.Calendars[0], nil, []string{"one", "two"}, nil, "c1"); err == nil || fake.Cursor("own") != "" {
 		t.Errorf("upload = %v, cursor %q; want an error and no cursor", err, fake.Cursor("own"))
 	}
 }

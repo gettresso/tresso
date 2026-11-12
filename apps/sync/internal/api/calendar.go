@@ -33,6 +33,14 @@ type CalendarState struct {
 	Cursor   *string `json:"cursor"`
 }
 
+// CalendarListAnswer is the API's answer to a calendar list: its state per calendar, and the account's calendar status
+// after the list (the list keeps `error` and makes any other status `active`). Status is empty from an API that does
+// not send it.
+type CalendarListAnswer struct {
+	Calendars []CalendarState `json:"calendars"`
+	Status    string          `json:"calendarStatus"`
+}
+
 // RemoteObject is one calendar resource; Ical is set when it was fetched.
 type RemoteObject struct {
 	RemoteID string  `json:"remoteId"`
@@ -94,13 +102,11 @@ const (
 	OperationRetry    = "retry"
 )
 
-func (c *Client) Calendars(ctx context.Context, accountID string, list CalendarList) ([]CalendarState, error) {
+func (c *Client) Calendars(ctx context.Context, accountID string, list CalendarList) (CalendarListAnswer, error) {
 	list.Calendars = nonNil(list.Calendars)
-	var out struct {
-		Calendars []CalendarState `json:"calendars"`
-	}
+	var out CalendarListAnswer
 	err := c.post(ctx, accountPath(accountID, "calendars"), list, &out)
-	return out.Calendars, err
+	return out, err
 }
 
 // CalendarInventory hands a listing of a calendar to the API, which names what to fetch. A complete listing also

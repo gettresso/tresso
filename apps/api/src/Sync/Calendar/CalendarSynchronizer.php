@@ -118,7 +118,7 @@ final readonly class CalendarSynchronizer
         return new CalendarListResult(array_values(array_map(
             static fn (Calendar $calendar): array => ['remoteId' => (string) $calendar->getRemoteId(), 'id' => $calendar->getId()->toRfc4122(), 'cursor' => $calendar->getSyncCursor()],
             $seen,
-        )));
+        )), $account->getCalendarStatus()->value);
     }
 
     public function inventory(Calendar $calendar, InventoryInput $input): InventoryResult

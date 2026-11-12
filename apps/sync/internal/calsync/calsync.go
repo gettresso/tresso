@@ -26,7 +26,7 @@ import (
 type API interface {
 	CalendarCredentials(ctx context.Context, accountID, workerID string) (api.Credentials, error)
 	RefreshCalendarCredentials(ctx context.Context, accountID, workerID string) (api.Credentials, error)
-	Calendars(ctx context.Context, accountID string, list api.CalendarList) ([]api.CalendarState, error)
+	Calendars(ctx context.Context, accountID string, list api.CalendarList) (api.CalendarListAnswer, error)
 	CalendarInventory(ctx context.Context, accountID, calendarID, workerID string, objects []api.RemoteObject, partial bool) (api.InventoryResult, error)
 	CalendarObjects(ctx context.Context, accountID, calendarID string, batch api.ObjectBatch) (api.ObjectBatchResult, error)
 	ClaimCalendarOperations(ctx context.Context, accountID, workerID string) ([]api.CalendarOperation, error)
@@ -234,21 +234,32 @@ type statusReporter struct {
 	syncer    *Syncer
 	accountID string
 	logger    *slog.Logger
-	last      string
-	recovery  calfailures.Recovery
+	// last and lastDetail are the problem this reporter told the API about, while the API still holds it.
+	last       string
+	lastDetail string
+	recovery   calfailures.Recovery
 }
 
-// report tells the API about a calendar problem once, not on every retry.
+// report tells the API about a calendar problem once, not on every retry: again only when it changes.
 func (r *statusReporter) report(ctx context.Context, status, detail string) {
-	if r.last == status {
+	detail = truncate(detail, maxDetail)
+	if r.last == status && r.lastDetail == detail {
 		return
 	}
-	if err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, truncate(detail, maxDetail), ""); err != nil {
+	if err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, detail, ""); err != nil {
 		r.logger.Warn("reporting the calendar status failed", "error", err)
 		return
 	}
-	r.last = status
+	r.last, r.lastDetail = status, detail
 	r.recovery.Problem()
+}
+
+// listed takes the account's calendar status from the API's answer to a calendar list. The reported problem stands
+// only while the API still has that status; an API that does not send it gets the problem reported again.
+func (r *statusReporter) listed(status string) {
+	if status == "" || status != r.last {
+		r.forget()
+	}
 }
 
 // recovered tells the API, once, that every calendar synced again (see calfailures.Recovery).
@@ -260,7 +271,7 @@ func (r *statusReporter) recovered(ctx context.Context) {
 
 // forget is for a status someone else reported (or that the calendar list cleared).
 func (r *statusReporter) forget() {
-	r.last = ""
+	r.last, r.lastDetail = "", ""
 }
 
 // calendarTokens hands out access tokens that carry the calendar scopes.
@@ -298,10 +309,10 @@ func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan s
 		if err := r.writeAll(ctx); err != nil {
 			return healthy, err
 		}
-		// A calendar list the API accepted made the status active there; calendars that keep failing make it an
-		// error again.
+		// A calendar list the API accepted made the status active there unless it was an error; calendars that keep
+		// failing make it an error again, reported only when the API does not hold that error already.
 		healthy = true
-		status.forget()
+		status.listed(r.listStatus)
 		if detail, failing := failing.Detail(); failing {
 			status.report(ctx, api.CalendarError, detail)
 		} else if r.clean {
@@ -328,6 +339,8 @@ type run struct {
 	failing *calfailures.Tracker
 	// clean is set by syncAll when every calendar was synced and none failed.
 	clean bool
+	// listStatus is the account's calendar status the API answered the last calendar list with.
+	listStatus string
 }
 
 func (r *run) syncAll(ctx context.Context) error {
@@ -344,10 +357,12 @@ func (r *run) syncAll(ctx context.Context) error {
 	for _, calendar := range calendars {
 		list.Calendars = append(list.Calendars, calendar.RemoteCalendar)
 	}
-	states, err := r.syncer.api.Calendars(ctx, r.account.ID, list)
+	answer, err := r.syncer.api.Calendars(ctx, r.account.ID, list)
 	if err != nil {
 		return err
 	}
+	states := answer.Calendars
+	r.listStatus = answer.Status
 	r.calendars = make(map[string]Calendar, len(calendars))
 	listed := make(map[string]bool, len(calendars))
 	for _, calendar := range calendars {
