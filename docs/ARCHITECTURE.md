@@ -1641,8 +1641,9 @@ id starts with `wa:` (`chatOnlyHere`): a rebuilt copy keeps those rows and the c
 here, since no pull brings them back. Sign-out deletes them with the copy. Chats moved the SQLite copy to schema 10
 (`MIGRATIONS[9]` adds the chat tables in place) and the IndexedDB copy to version 12, both keeping their rows and their
 cursor. A copy of the version before may have received chat lists and dropped them, so the update marks it
-(`chat:backfill`), and at the next session start, before the first pull, the web and phone apps ask the server for chat
-accounts once (`backfillChats`): only when there is one does the copy sync again from the start. A token without chat
+(`chat:backfill`), and at the next session start the web and phone apps ask the server for chat accounts once
+(`backfillChats`), beside the first pull so a slow answer never holds back the mail: only when there is one does the
+copy sync again from the start (a resync asked while a pull runs makes the next pull begin from 0). A token without chat
 access counts as none; a failed request asks again at the next start. An account made after the check has change
 numbers above the cursor, so the normal pull brings it.
 
