@@ -14,10 +14,37 @@ import { classifiedByUser, contactMatches, deletedDraft, draftOnlyHere, mergeCon
 import type { Sql, SqlValue } from './sql'
 
 /**
- * Raised whenever the copy changes shape. A copy made by another version is emptied and synced again from the start,
- * so nothing it skipped stays missing; drafts that exist only on this device are carried over.
+ * Raised whenever the copy changes shape. A copy made by an older version is brought up to date in place when every
+ * step from its version to this one is in {@link MIGRATIONS}; otherwise (and for a copy of a newer version) it is
+ * emptied and synced again from the start, so nothing it skipped stays missing; drafts that exist only on this device
+ * are carried over.
  */
 export const SCHEMA_VERSION = 9
+
+/**
+ * A step that brings a copy of one version to the next, in place. Its statements run in the transaction of all steps.
+ * `resync` says the new shape holds data the old copy never stored (a new kind of entity, a field it did not keep): the
+ * copy then syncs again from the start, while what it holds stays on screen and is overwritten page by page. A step
+ * that only adds what can be filled from the stored rows (an index, a column read out of `json`) sets it false.
+ */
+export interface SchemaMigration {
+  sql: string
+  resync: boolean
+}
+
+/**
+ * The in-place steps, by the version they start from: `MIGRATIONS[8]` would bring a copy of version 8 to 9. Every
+ * raise of SCHEMA_VERSION adds the step from the version before when the change can be made in place (new tables and
+ * indexes with CREATE IF NOT EXISTS as in SCHEMA, new columns with ALTER TABLE), so an update does not empty the copy.
+ * A version without a step is rebuilt. None exist yet: the shapes before 9 are older than any release.
+ */
+export const MIGRATIONS: Readonly<Record<number, SchemaMigration>> = {}
+
+/**
+ * What opening did to a copy of an older version: nothing to say (`none`: the same version, a new copy, or steps that
+ * needed no new sync), brought up in place and syncing again from the start (`migrated`), or emptied (`rebuilt`).
+ */
+export type CopyUpgrade = 'none' | 'migrated' | 'rebuilt'
 
 /** Rows a filtered list scan reads at a time. */
 const LIST_PAGE = 500
@@ -124,18 +151,52 @@ export class SqliteMailStore implements MailStore {
   private constructor(
     private readonly sql: Sql,
     resyncing: boolean,
+    /** What opening did to a copy of another version; see afterUpdate. */
+    readonly upgrade: CopyUpgrade,
   ) {
     this.resyncing = resyncing
   }
 
-  static async open(sql: Sql): Promise<SqliteMailStore> {
+  /**
+   * Opens a copy, bringing one of another version to this one: in place with the steps in `migrations` (MIGRATIONS;
+   * tests give their own, with the version they bring a copy to), else by a rebuild.
+   */
+  static async open(sql: Sql, options: { migrations?: Readonly<Record<number, SchemaMigration>>; version?: number } = {}): Promise<SqliteMailStore> {
+    const target = options.version ?? SCHEMA_VERSION
     await sql.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)')
     const version = await sql.first<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['schema'])
-    if (version === null || Number(version.value) !== SCHEMA_VERSION) {
-      await rebuild(sql)
+    let upgrade: CopyUpgrade = 'none'
+    if (version === null) {
+      // A new copy (or one from before the version was kept): built from nothing, which is no update.
+      await rebuild(sql, target)
+    } else if (Number(version.value) !== target) {
+      const steps = stepsBetween(Number(version.value), target, options.migrations ?? MIGRATIONS)
+      if (steps === null) {
+        await rebuild(sql, target)
+        upgrade = 'rebuilt'
+      } else {
+        upgrade = (await migrate(sql, steps, target)) ? 'migrated' : 'none'
+      }
     }
     const resync = await sql.first<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['resync'])
-    return new SqliteMailStore(sql, resync !== null)
+    return new SqliteMailStore(sql, resync !== null, upgrade)
+  }
+
+  /** An update changed the copy's shape when it was opened, and it syncs again from the start (see MailStore). */
+  get afterUpdate(): boolean {
+    return this.upgrade !== 'none'
+  }
+
+  async syncedAt(): Promise<number | null> {
+    const row = await this.reader.first<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['syncedAt'])
+    const at = row === null ? NaN : Number(row.value)
+    return Number.isFinite(at) ? at : null
+  }
+
+  markSynced(at: number): Promise<void> {
+    return this.write(async () => {
+      await this.sql.run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', ['syncedAt', String(at)])
+    })
   }
 
   /** Refuses further writes and resolves once the ones under way are in, so the database can be closed. */
@@ -737,8 +798,42 @@ export class SqliteMailStore implements MailStore {
   }
 }
 
+/** The steps from one version to a later one, in order; null when one is missing or the copy is of a newer version. */
+function stepsBetween(from: number, to: number, migrations: Readonly<Record<number, SchemaMigration>>): SchemaMigration[] | null {
+  if (!Number.isSafeInteger(from) || from > to) {
+    return null
+  }
+  const steps: SchemaMigration[] = []
+  for (let version = from; version < to; version++) {
+    const step = migrations[version]
+    if (step === undefined) {
+      return null
+    }
+    steps.push(step)
+  }
+  return steps
+}
+
+/**
+ * Runs the steps in one transaction and marks the copy for a sync from the start when one of them asks for it, which it
+ * returns. Kept rows stay; a failed step leaves the copy as it was.
+ */
+async function migrate(sql: Sql, steps: SchemaMigration[], target: number): Promise<boolean> {
+  const resync = steps.some((step) => step.resync)
+  await sql.transaction(async (tx) => {
+    for (const step of steps) {
+      await tx.exec(step.sql)
+    }
+    await tx.run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', ['schema', String(target)])
+    if (resync) {
+      await tx.run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', ['resync', '1'])
+    }
+  })
+  return resync
+}
+
 /** Drops every table and builds the current shape in one go, keeping the drafts that exist only on this device. */
-async function rebuild(sql: Sql): Promise<void> {
+async function rebuild(sql: Sql, version: number = SCHEMA_VERSION): Promise<void> {
   await sql.transaction(async (tx) => {
     const hasDrafts = (await tx.first('SELECT name FROM sqlite_master WHERE type = ? AND name = ?', ['table', 'drafts'])) !== null
     const kept = hasDrafts ? (await tx.all<JsonRow>('SELECT json FROM drafts')).map((row) => parse<Draft>(row)).filter(draftOnlyHere) : []
@@ -746,7 +841,7 @@ async function rebuild(sql: Sql): Promise<void> {
       await tx.exec(`DROP TABLE IF EXISTS ${table}`)
     }
     await tx.exec(SCHEMA)
-    await tx.run('INSERT INTO meta (key, value) VALUES (?, ?)', ['schema', String(SCHEMA_VERSION)])
+    await tx.run('INSERT INTO meta (key, value) VALUES (?, ?)', ['schema', String(version)])
     for (const draft of kept) {
       // The server version they built on may be gone with the old copy; uploading starts from scratch.
       await writeDraft(tx, { ...draft, version: 0, remoteVersion: null })

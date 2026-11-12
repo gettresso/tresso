@@ -117,9 +117,9 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
     const fraction = progressOf(pull, origin)
     const percent = fraction === null ? null : Math.floor(fraction * 100)
     const quarter = fraction === null ? null : Math.floor(fraction * 4) * 25
-    const items = NUMBER.format(pull.items)
+    const items = `${NUMBER.format(pull.items)} ${pull.items === 1 ? 'item' : 'items'}`
     if (facts.afterUpdate) {
-      return status('updating', percent !== null ? `${UPDATING}, ${percent}%` : pull.items > 0 ? `${UPDATING}, ${items} items so far` : `${UPDATING}…`, {
+      return status('updating', percent !== null ? `${UPDATING}, ${percent}%` : pull.items > 0 ? `${UPDATING}, ${items} so far` : `${UPDATING}…`, {
         fraction,
         remaining,
         notice: 'Tresso is updating your mail on this device. What you see may be out of date until it is done.',
@@ -127,7 +127,7 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
       })
     }
     if (origin === 0) {
-      return status('firstSync', percent !== null ? `Getting your mail, ${percent}%` : pull.items > 0 ? `Syncing… ${items} items so far` : 'Getting your mail…', {
+      return status('firstSync', percent !== null ? `Getting your mail, ${percent}%` : pull.items > 0 ? `Syncing… ${items} so far` : 'Getting your mail…', {
         fraction,
         remaining,
         notice: 'Your mail is still arriving on this device. What you see may be incomplete until it is done.',
@@ -137,7 +137,7 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
     const morePages = pull.hasMore === true || pull.pages > 1
     const far = latest === null ? morePages : latest - origin > BEHIND_CHANGES
     if (far || (stale && morePages)) {
-      const text = remaining === null ? `Syncing… ${items} items so far` : remaining === 0 ? 'Catching up: almost done' : `Catching up: ${NUMBER.format(remaining)} ${remaining === 1 ? 'change' : 'changes'} to go`
+      const text = remaining === null ? `Syncing… ${items} so far` : remaining === 0 ? 'Catching up: almost done' : `Catching up: ${NUMBER.format(remaining)} ${remaining === 1 ? 'change' : 'changes'} to go`
       return status('catchingUp', text, {
         fraction,
         remaining,

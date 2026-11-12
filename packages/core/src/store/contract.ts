@@ -212,6 +212,15 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
       expect(await db.cursor()).toBe(10)
     })
 
+    it('keeps when it last synced, which a new copy does not know yet', async () => {
+      expect(await db.syncedAt()).toBeNull()
+      expect(db.afterUpdate).toBe(false)
+
+      await db.markSynced(1_700_000_000_000)
+
+      expect(await db.syncedAt()).toBe(1_700_000_000_000)
+    })
+
     it('lists inbox threads of all accounts, newest first, without archived ones', async () => {
       const inbox = await db.inbox(null, 50)
 

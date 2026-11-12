@@ -181,6 +181,8 @@ describe('SqliteMailStore', () => {
 
     const reopened = await SqliteMailStore.open(sql)
 
+    expect(reopened.afterUpdate).toBe(true)
+    expect(reopened.upgrade).toBe('rebuilt')
     expect(await reopened.cursor()).toBe(0)
     expect(await reopened.inbox(null, 10)).toEqual([])
     expect(await sql.first<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'")).toEqual({ value: String(SCHEMA_VERSION) })
@@ -198,5 +200,76 @@ describe('SqliteMailStore', () => {
 
     expect(await reopened.cursor()).toBe(0)
     expect(await reopened.drafts()).toEqual([])
+  })
+
+  it('opens a copy of its own version as it is, which is no update', async () => {
+    await db.markSynced(1_700_000_000_000)
+
+    const reopened = await SqliteMailStore.open(sql)
+
+    expect(reopened.afterUpdate).toBe(false)
+    expect(await reopened.cursor()).toBe(10)
+    expect(await reopened.syncedAt()).toBe(1_700_000_000_000)
+  })
+
+  it('brings a copy of the version before up to date in place, keeping its mail on screen while it syncs again', async () => {
+    await db.saveDraft(draft('synced', { version: 2 }))
+    const reopened = await SqliteMailStore.open(sql, {
+      version: SCHEMA_VERSION + 1,
+      migrations: { [SCHEMA_VERSION]: { sql: 'CREATE TABLE IF NOT EXISTS extra (id TEXT PRIMARY KEY NOT NULL)', resync: true } },
+    })
+
+    expect(reopened.afterUpdate).toBe(true)
+    expect(reopened.upgrade).toBe('migrated')
+    expect(await sql.first<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'")).toEqual({ value: String(SCHEMA_VERSION + 1) })
+    expect(await sql.first("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'extra'")).not.toBeNull()
+    // Kept: the lists, every draft with its server version.
+    expect((await reopened.inbox(null, 10)).map((c) => c.threadId)).toEqual(['t1', 't3'])
+    expect(await reopened.draft('synced')).toMatchObject({ version: 2 })
+    // And synced again from the start, which a restart before it is done does not forget.
+    expect(await reopened.cursor()).toBe(0)
+    expect(await (await SqliteMailStore.open(sql, { version: SCHEMA_VERSION + 1 })).cursor()).toBe(0)
+    await reopened.apply(page({ cursor: 12 }))
+    expect(await reopened.cursor()).toBe(12)
+  })
+
+  it('takes a step that needs no new sync quietly', async () => {
+    const reopened = await SqliteMailStore.open(sql, {
+      version: SCHEMA_VERSION + 1,
+      migrations: { [SCHEMA_VERSION]: { sql: 'CREATE INDEX IF NOT EXISTS threads_by_account ON threads (mail_account_id)', resync: false } },
+    })
+
+    expect(reopened.afterUpdate).toBe(false)
+    expect(await reopened.cursor()).toBe(10)
+  })
+
+  it('rebuilds when a step on the way is missing, and leaves the copy as it was when a step fails', async () => {
+    const broken = await SqliteMailStore.open(sql, { version: SCHEMA_VERSION + 1, migrations: { [SCHEMA_VERSION]: { sql: 'CREATE TABLE threads (id TEXT)', resync: true } } }).catch((error: unknown) => error)
+    expect(broken).toBeInstanceOf(Error)
+    expect(await sql.first<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'")).toEqual({ value: String(SCHEMA_VERSION) })
+    expect(await sql.first("SELECT value FROM meta WHERE key = 'resync'")).toBeNull()
+
+    const rebuilt = await SqliteMailStore.open(sql, { version: SCHEMA_VERSION + 2, migrations: { [SCHEMA_VERSION]: { sql: 'SELECT 1', resync: false } } })
+
+    expect(rebuilt.upgrade).toBe('rebuilt')
+    expect(rebuilt.afterUpdate).toBe(true)
+    expect(await rebuilt.cursor()).toBe(0)
+    expect(await rebuilt.inbox(null, 10)).toEqual([])
+  })
+
+  it('rebuilds a copy of a newer version, which this one cannot read', async () => {
+    await sql.run(`UPDATE meta SET value = '${SCHEMA_VERSION + 1}' WHERE key = 'schema'`)
+
+    const reopened = await SqliteMailStore.open(sql)
+
+    expect(reopened.upgrade).toBe('rebuilt')
+    expect(await reopened.cursor()).toBe(0)
+  })
+
+  it('is no update when the copy is new', async () => {
+    const fresh = await SqliteMailStore.open(await memorySql())
+
+    expect(fresh.afterUpdate).toBe(false)
+    expect(await fresh.syncedAt()).toBeNull()
   })
 })
