@@ -1,11 +1,17 @@
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase, type IDBPTransaction, type StoreNames } from 'idb'
 import {
   actionResult,
+  CHAT_BACKFILL,
+  chatAccountFromDelta,
+  chatFromDelta,
   chatInstant,
+  chatMessageFromDelta,
+  chatOutgoingFromDelta,
+  deltaInstant,
   compareChatMessages,
   compareChatOutgoing,
   CopyClosingError,
-  inInbox,
+  optionalInstant,
   classifiedByUser,
   compareTodos,
   compareHandOvers,
@@ -141,7 +147,7 @@ interface MailSchema extends DBSchema {
   calendarEvents: { key: string; value: StoredCalendarEvent; indexes: { bySeries: [string, string]; byCalendar: string; bySeriesStart: number; bySeriesEnd: number } }
   chatAccounts: { key: string; value: SyncedChatAccount }
   chats: { key: string; value: StoredChat; indexes: { byLast: [number, number]; byJid: [string, string]; byAccount: string } }
-  chatMessages: { key: string; value: StoredChatMessage; indexes: { byChat: [string, number]; byAccount: string } }
+  chatMessages: { key: string; value: StoredChatMessage; indexes: { byChat: [string, number]; byChatIncoming: [string, number, number]; byAccount: string } }
   chatOutgoing: { key: string; value: SyncedChatOutgoing; indexes: { byChat: string; byStatus: [string, string]; byAccount: string } }
 }
 
@@ -157,6 +163,9 @@ interface StoredChat {
   leftOut: 0 | 1
   /** `chat.lastMessageAt` in epoch ms. */
   lastMessageAt: number
+  /** `chat.readThrough` and `chat.archivedThrough` in epoch ms; null when unset or no time, as the SQLite store keeps them. */
+  readThrough: number | null
+  archivedThrough: number | null
   chat: SyncedChat
 }
 
@@ -165,6 +174,8 @@ interface StoredChatMessage {
   id: string
   chatId: string
   chatAccountId: string
+  /** 1 for a message from someone else: the unread counts read only those, through `byChatIncoming`. */
+  incoming: 0 | 1
   sentAt: number
   message: SyncedChatMessage
 }
@@ -237,6 +248,12 @@ export class IndexedDbMailStore implements MailStore {
   private readonly openActions = new OpenActions()
   /** Raised by every page that changed calendars or events; see calendarChanges. */
   private calendarRevision = 0
+  /**
+   * Set by resyncFromStart until a pull reads the cursor: pages of a pull that began before keep being stored but
+   * do not move the cursor, so the next pull still begins from the start. The cursor is gone from the copy already,
+   * so this holds across a restart too.
+   */
+  private resyncPending = false
 
   /** Why the connection closed under this tab, if it did; every call then says the copy is closing. */
   private closedElsewhere: ClosedElsewhere | null = null
@@ -368,15 +385,22 @@ export class IndexedDbMailStore implements MailStore {
           chats.createIndex('byAccount', 'chatAccountId')
           const chatMessages = database.createObjectStore('chatMessages', { keyPath: 'id' })
           chatMessages.createIndex('byChat', ['chatId', 'sentAt'])
+          chatMessages.createIndex('byChatIncoming', ['chatId', 'incoming', 'sentAt'])
           chatMessages.createIndex('byAccount', 'chatAccountId')
           const chatOutgoing = database.createObjectStore('chatOutgoing', { keyPath: 'id' })
           chatOutgoing.createIndex('byChat', 'chatId')
           chatOutgoing.createIndex('byStatus', ['status', 'id'])
           chatOutgoing.createIndex('byAccount', 'chatAccountId')
         }
-        // Outgoing mail, contacts, signatures, drafts, smart inboxes, todos, unsubscriptions, hand-overs, daily briefs,
-        // calendars and chats come from the delta: an existing copy keeps what it has and syncs again from the start.
-        if (oldVersion >= 1) {
+        if (oldVersion === 11) {
+          // Only chats are new, and syncing everything again for them is a waste while hardly anyone has chats on the
+          // server: the copy is marked instead, and the session start syncs from the start only when the server
+          // holds a chat account (see backfillChats). An account made after that check has change numbers above the
+          // cursor, so the normal pull brings it.
+          await transaction.objectStore('meta').put('1', CHAT_META + CHAT_BACKFILL)
+        } else if (oldVersion >= 1) {
+          // Outgoing mail, contacts, signatures, drafts, smart inboxes, todos, unsubscriptions, hand-overs, daily briefs
+          // and calendars come from the delta: an older copy keeps what it has and syncs again from the start.
           await transaction.objectStore('meta').delete('cursor')
           upgraded = true
         }
@@ -393,7 +417,14 @@ export class IndexedDbMailStore implements MailStore {
   }
 
   async cursor(): Promise<number> {
+    // The sync engine reads the cursor once per pull: from here on, that pull's pages begin from the start.
+    this.resyncPending = false
     return (await this.numberMeta('cursor')) ?? 0
+  }
+
+  async resyncFromStart(): Promise<void> {
+    this.resyncPending = true
+    await this.db.delete('meta', 'cursor')
   }
 
   async syncedAt(): Promise<number | null> {
@@ -559,25 +590,42 @@ export class IndexedDbMailStore implements MailStore {
     }
     // Each row stands on its own: a message stored before its chat (pages follow change numbers, and a chat changes
     // again with every message) is kept and shows once the chat arrives.
+    // A row a newer server shapes differently is stored as far as it can be read, and one without an id is left out:
+    // one odd row must not stop the sync (see the fromDelta readers).
     for (const account of page.chatAccounts ?? []) {
-      await tx.objectStore('chatAccounts').put(account)
+      const row = chatAccountFromDelta(account)
+      if (row !== null) {
+        await tx.objectStore('chatAccounts').put(row)
+      }
     }
     for (const chat of page.chats ?? []) {
-      await writeChat(tx, chat)
+      const row = chatFromDelta(chat)
+      if (row !== null) {
+        await writeChat(tx, row, deltaInstant)
+      }
     }
     for (const message of page.chatMessages ?? []) {
-      await writeChatMessage(tx, message)
+      const row = chatMessageFromDelta(message)
+      if (row !== null) {
+        await writeChatMessage(tx, row, deltaInstant)
+      }
     }
     for (const outgoing of page.chatOutgoing ?? []) {
-      await writeChatOutgoing(tx, outgoing)
+      const row = chatOutgoingFromDelta(outgoing)
+      if (row !== null) {
+        await writeChatOutgoing(tx, row, deltaInstant)
+      }
     }
+    await dropRemovedInPage(tx, page)
 
     const lists = await listFoldersOf(tx)
     for (const threadId of affected) {
       await refreshConversation(tx, threadId, lists)
     }
 
-    await tx.objectStore('meta').put(page.cursor, 'cursor')
+    if (!this.resyncPending) {
+      await tx.objectStore('meta').put(page.cursor, 'cursor')
+    }
   }
 
   /**
@@ -1004,7 +1052,7 @@ export class IndexedDbMailStore implements MailStore {
     const listed = IDBKeyRange.bound([0, -Infinity], [0, Infinity])
     for (let cursor = await tx.objectStore('chats').index('byLast').openCursor(listed, 'prev'); cursor !== null && found.length < limit; cursor = await cursor.continue()) {
       const stored = cursor.value
-      if (options.inboxOnly !== true || inInbox(stored.chat)) {
+      if (options.inboxOnly !== true || inChatInbox(stored)) {
         found.push(await chatSummary(tx, stored))
       }
     }
@@ -1032,7 +1080,8 @@ export class IndexedDbMailStore implements MailStore {
     const tx: ChatReadTx = this.db.transaction(['chats', 'chatMessages'])
     let count = 0
     for (const stored of await tx.objectStore('chats').index('byLast').getAll(IDBKeyRange.bound([0, -Infinity], [0, Infinity]))) {
-      if (inInbox(stored.chat) && (await unreadIn(tx, stored.chat)) > 0) {
+      // The first unread message is enough: a key cursor stops there.
+      if (inChatInbox(stored) && (await tx.objectStore('chatMessages').index('byChatIncoming').openKeyCursor(unreadRange(stored))) !== null) {
         count += 1
       }
     }
@@ -1053,7 +1102,7 @@ export class IndexedDbMailStore implements MailStore {
     const tx = this.db.transaction(CHAT_STORES, 'readwrite')
     await allOrNothing(tx, async () => {
       for (const chat of chats) {
-        await writeChat(tx, chat)
+        await writeChat(tx, chat, chatInstant)
       }
     })
   }
@@ -1062,7 +1111,7 @@ export class IndexedDbMailStore implements MailStore {
     const tx = this.db.transaction(CHAT_STORES, 'readwrite')
     await allOrNothing(tx, async () => {
       for (const message of messages) {
-        await writeChatMessage(tx, message)
+        await writeChatMessage(tx, message, chatInstant)
       }
     })
   }
@@ -1071,7 +1120,7 @@ export class IndexedDbMailStore implements MailStore {
     const tx = this.db.transaction(CHAT_STORES, 'readwrite')
     await allOrNothing(tx, async () => {
       for (const row of rows) {
-        await writeChatOutgoing(tx, row)
+        await writeChatOutgoing(tx, row, chatInstant)
       }
     })
   }
@@ -1262,33 +1311,71 @@ async function chatSummary(tx: ChatReadTx, stored: StoredChat): Promise<ChatSumm
   const range = IDBKeyRange.bound([stored.id, -Infinity], [stored.id, Infinity])
   // Newest by time, then by id descending, as the SQLite store picks it.
   const newest = await tx.objectStore('chatMessages').index('byChat').openCursor(range, 'prev')
-  return { chat: stored.chat, newest: newest?.value.message ?? null, unread: await unreadIn(tx, stored.chat), lastMessageAt: stored.lastMessageAt }
+  const unread = await tx.objectStore('chatMessages').index('byChatIncoming').count(unreadRange(stored))
+  return { chat: stored.chat, newest: newest?.value.message ?? null, unread, lastMessageAt: stored.lastMessageAt }
 }
 
-/** Incoming messages after `readThrough`, as unreadCount counts them; all of them when it is null or no time. */
-async function unreadIn(tx: ChatReadTx, chat: SyncedChat): Promise<number> {
-  const readThrough = chat.readThrough === null ? Number.NaN : Date.parse(chat.readThrough)
-  const range = Number.isNaN(readThrough) ? IDBKeyRange.bound([chat.id, -Infinity], [chat.id, Infinity]) : IDBKeyRange.bound([chat.id, readThrough], [chat.id, Infinity], true)
-  return (await tx.objectStore('chatMessages').index('byChat').getAll(range)).filter((row) => !row.message.fromMe).length
+/** The incoming messages after `readThrough` (all incoming ones without it), as unreadCount counts them. */
+function unreadRange(stored: StoredChat): IDBKeyRange {
+  return stored.readThrough === null ? IDBKeyRange.bound([stored.id, 1, -Infinity], [stored.id, 1, Infinity]) : IDBKeyRange.bound([stored.id, 1, stored.readThrough], [stored.id, 1, Infinity], true)
 }
 
-async function writeChat(tx: ChatTx, chat: SyncedChat): Promise<void> {
+/** Whether the Unified Inbox shows the chat: not archived through its newest message (see inInbox); as SQLite reads it. */
+function inChatInbox(stored: StoredChat): boolean {
+  return stored.leftOut === 0 && (stored.archivedThrough === null || stored.lastMessageAt > stored.archivedThrough)
+}
+
+/** How a write reads a row's times: strictly for rows of this device, leniently for rows of the delta. */
+type ReadTime = (value: string, field: string) => number
+
+/**
+ * Removals run before the rows of a page, so a message or reply in the same page as its chat's (or account's) removal
+ * would stay behind, never shown. Once the rows are in, those go too, unless the page brought the chat or account back.
+ */
+async function dropRemovedInPage(tx: ChatTx, page: ChangePage): Promise<void> {
+  for (const deleted of page.deleted) {
+    if (deleted.type === 'chat' && (await tx.objectStore('chats').get(deleted.id)) === undefined) {
+      await deleteChat(tx, deleted.id)
+    }
+    if (deleted.type === 'chatAccount' && (await tx.objectStore('chatAccounts').get(deleted.id)) === undefined) {
+      await deleteChatAccount(tx, deleted.id)
+    }
+  }
+}
+
+async function writeChat(tx: ChatTx, chat: SyncedChat, time: ReadTime): Promise<void> {
   const store = tx.objectStore('chats')
-  const lastMessageAt = chatInstant(chat.lastMessageAt, 'lastMessageAt')
+  const lastMessageAt = time(chat.lastMessageAt, 'lastMessageAt')
   // One chat per account and JID: another one with this JID was removed and made again, so it goes with what it held.
   const other = await store.index('byJid').get([chat.chatAccountId, chat.jid])
   if (other !== undefined && other.id !== chat.id) {
     await deleteChat(tx, other.id)
   }
-  await store.put({ id: chat.id, chatAccountId: chat.chatAccountId, jid: chat.jid, leftOut: chat.leftOut ? 1 : 0, lastMessageAt, chat })
+  await store.put({
+    id: chat.id,
+    chatAccountId: chat.chatAccountId,
+    jid: chat.jid,
+    leftOut: chat.leftOut ? 1 : 0,
+    lastMessageAt,
+    readThrough: optionalInstant(chat.readThrough),
+    archivedThrough: optionalInstant(chat.archivedThrough),
+    chat,
+  })
 }
 
-async function writeChatMessage(tx: ChatTx, message: SyncedChatMessage): Promise<void> {
-  await tx.objectStore('chatMessages').put({ id: message.id, chatId: message.chatId, chatAccountId: message.chatAccountId, sentAt: chatInstant(message.sentAt, 'sentAt'), message })
+async function writeChatMessage(tx: ChatTx, message: SyncedChatMessage, time: ReadTime): Promise<void> {
+  await tx.objectStore('chatMessages').put({
+    id: message.id,
+    chatId: message.chatId,
+    chatAccountId: message.chatAccountId,
+    incoming: message.fromMe ? 0 : 1,
+    sentAt: time(message.sentAt, 'sentAt'),
+    message,
+  })
 }
 
-async function writeChatOutgoing(tx: ChatTx, row: SyncedChatOutgoing): Promise<void> {
-  chatInstant(row.createdAt, 'createdAt')
+async function writeChatOutgoing(tx: ChatTx, row: SyncedChatOutgoing, time: ReadTime): Promise<void> {
+  time(row.createdAt, 'createdAt')
   await tx.objectStore('chatOutgoing').put(row)
 }
 

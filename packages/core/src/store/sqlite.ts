@@ -3,8 +3,7 @@ import { compareBriefs } from '../brief'
 import type { Verdict } from '../domain'
 import { compareHandOvers } from '../handOvers'
 import { sortCalendars, touchesCalendars } from '../calendar/calendars'
-import { inInbox } from '../chat/format'
-import { chatInstant, chatOnlyHere, compareChatMessages, compareChatOutgoing } from '../chat/rows'
+import { chatAccountFromDelta, chatFromDelta, chatInstant, chatMessageFromDelta, chatOnlyHere, chatOutgoingFromDelta, compareChatMessages, compareChatOutgoing, deltaInstant, optionalInstant } from '../chat/rows'
 import type { ChatSummary, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from '../chat/types'
 import { eventSpan } from '../calendar/occurrences'
 import type { SyncedCalendar, SyncedCalendarEvent } from '../calendar/types'
@@ -41,11 +40,12 @@ export interface SchemaMigration {
  */
 const CHAT_TABLES_V10 = `
 CREATE TABLE IF NOT EXISTS chat_accounts (id TEXT PRIMARY KEY NOT NULL, json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY NOT NULL, chat_account_id TEXT NOT NULL, jid TEXT NOT NULL, last_message_at INTEGER NOT NULL, left_out INTEGER NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY NOT NULL, chat_account_id TEXT NOT NULL, jid TEXT NOT NULL, last_message_at INTEGER NOT NULL, left_out INTEGER NOT NULL, read_through INTEGER, archived_through INTEGER, json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS chats_by_last ON chats (left_out, last_message_at);
 CREATE UNIQUE INDEX IF NOT EXISTS chats_by_jid ON chats (chat_account_id, jid);
 CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY NOT NULL, chat_id TEXT NOT NULL, chat_account_id TEXT NOT NULL, sent_at INTEGER NOT NULL, from_me INTEGER NOT NULL, json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS chat_messages_by_chat ON chat_messages (chat_id, sent_at);
+CREATE INDEX IF NOT EXISTS chat_messages_unread ON chat_messages (chat_id, from_me, sent_at);
 CREATE INDEX IF NOT EXISTS chat_messages_by_account ON chat_messages (chat_account_id);
 CREATE TABLE IF NOT EXISTS chat_outgoing (id TEXT PRIMARY KEY NOT NULL, chat_id TEXT NOT NULL, chat_account_id TEXT NOT NULL, status TEXT NOT NULL, json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS chat_outgoing_by_chat ON chat_outgoing (chat_id);
@@ -60,9 +60,11 @@ CREATE INDEX IF NOT EXISTS chat_outgoing_by_status ON chat_outgoing (status, id)
  * A version without a step is rebuilt; the shapes before 9 are older than any release.
  */
 export const MIGRATIONS: Readonly<Record<number, SchemaMigration>> = {
-  // Chats. A new kind of entity: a copy of version 9 got the delta's chat lists and dropped them (a phone that synced
-  // while a Mac already relayed), so it syncs again from the start to fetch the chats it skipped.
-  9: { sql: CHAT_TABLES_V10, resync: true },
+  // Chats. A copy of version 9 may have got the delta's chat lists and dropped them (a phone that synced while a Mac
+  // already relayed), but syncing everyone again from the start for that is a waste while hardly anyone has chats on
+  // the server. So the step marks the copy instead (`chat:backfill`, see backfillChats): at the next session start the
+  // app asks the server for chat accounts and syncs from the start only when there is one.
+  9: { sql: `${CHAT_TABLES_V10}INSERT OR REPLACE INTO meta (key, value) VALUES ('chat:backfill', '1');`, resync: false },
 }
 
 /**
@@ -158,6 +160,11 @@ const TABLES = [
 
 /** Keys of `meta` that hold chat values (see MailStore.chatMeta), kept apart from the copy's own. */
 const CHAT_META = 'chat:'
+
+/** A message `m` of chat `c` that is unread: incoming, after `readThrough` (all incoming ones without it); see unreadCount. */
+const UNREAD_MESSAGE = 'm.chat_id = c.id AND m.from_me = 0 AND (c.read_through IS NULL OR m.sent_at > c.read_through)'
+/** Chat `c` is in the Unified Inbox (left out ones aside): not archived through its newest message; see inInbox. */
+const IN_INBOX = '(c.archived_through IS NULL OR c.last_message_at > c.archived_through)'
 
 type JsonRow = { json: string }
 
@@ -505,18 +512,33 @@ export class SqliteMailStore implements MailStore {
       }
       // Each row stands on its own: a message stored before its chat (pages follow change numbers, and a chat
       // changes again with every message) is kept and shows once the chat arrives.
+      // A row a newer server shapes differently is stored as far as it can be read, and one without an id is left out:
+      // one odd row must not stop the sync (see the fromDelta readers).
       for (const account of page.chatAccounts ?? []) {
-        await writeChatAccount(tx, account)
+        const row = chatAccountFromDelta(account)
+        if (row !== null) {
+          await writeChatAccount(tx, row)
+        }
       }
       for (const chat of page.chats ?? []) {
-        await writeChat(tx, chat)
+        const row = chatFromDelta(chat)
+        if (row !== null) {
+          await writeChat(tx, row, deltaInstant)
+        }
       }
       for (const message of page.chatMessages ?? []) {
-        await writeChatMessage(tx, message)
+        const row = chatMessageFromDelta(message)
+        if (row !== null) {
+          await writeChatMessage(tx, row, deltaInstant)
+        }
       }
       for (const outgoing of page.chatOutgoing ?? []) {
-        await writeChatOutgoing(tx, outgoing)
+        const row = chatOutgoingFromDelta(outgoing)
+        if (row !== null) {
+          await writeChatOutgoing(tx, row, deltaInstant)
+        }
       }
+      await dropRemovedInPage(tx, page)
 
       const lists = await listFoldersOf(tx)
       for (const threadId of affected) {
@@ -887,25 +909,22 @@ export class SqliteMailStore implements MailStore {
   }
 
   async chats(options: { inboxOnly?: boolean; limit?: number } = {}): Promise<ChatSummary[]> {
-    const limit = options.limit ?? Number.POSITIVE_INFINITY
-    const found: ChatSummary[] = []
-    // In pages, so a limit stops the scan early.
-    for (let offset = 0; found.length < limit; offset += LIST_PAGE) {
-      const rows = await this.reader.all<JsonRow & { last_message_at: number }>(
-        'SELECT json, last_message_at FROM chats WHERE left_out = 0 ORDER BY last_message_at DESC, id DESC LIMIT ? OFFSET ?',
-        [LIST_PAGE, offset],
-      )
-      for (const row of rows) {
-        const chat = parse<SyncedChat>(row)
-        if (found.length < limit && (options.inboxOnly !== true || inInbox(chat))) {
-          found.push(await this.chatSummary(chat, Number(row.last_message_at)))
-        }
-      }
-      if (rows.length < LIST_PAGE) {
-        break
-      }
-    }
-    return found
+    // One query, the newest message and the unread count read with each chat: on the desktop every query is a call
+    // into the shell.
+    const rows = await this.reader.all<JsonRow & { last_message_at: number; newest: string | null; unread: number }>(
+      `SELECT c.json, c.last_message_at,
+        (SELECT m.json FROM chat_messages m WHERE m.chat_id = c.id ORDER BY m.sent_at DESC, m.id DESC LIMIT 1) AS newest,
+        (SELECT COUNT(*) FROM chat_messages m WHERE ${UNREAD_MESSAGE}) AS unread
+       FROM chats c WHERE c.left_out = 0${options.inboxOnly === true ? ` AND ${IN_INBOX}` : ''}
+       ORDER BY c.last_message_at DESC, c.id DESC LIMIT ?`,
+      [options.limit === undefined ? -1 : Math.max(0, options.limit)],
+    )
+    return rows.map((row) => ({
+      chat: parse<SyncedChat>(row),
+      newest: row.newest === null ? null : (JSON.parse(row.newest) as SyncedChatMessage),
+      unread: Number(row.unread),
+      lastMessageAt: Number(row.last_message_at),
+    }))
   }
 
   async chat(id: string): Promise<{ chat: SyncedChat; messages: SyncedChatMessage[]; outgoing: SyncedChatOutgoing[] } | null> {
@@ -924,14 +943,11 @@ export class SqliteMailStore implements MailStore {
   }
 
   async unreadChatCount(): Promise<number> {
-    let count = 0
-    for (const row of await this.reader.all<JsonRow>('SELECT json FROM chats WHERE left_out = 0')) {
-      const chat = parse<SyncedChat>(row)
-      if (inInbox(chat) && (await this.unreadIn(chat)) > 0) {
-        count += 1
-      }
-    }
-    return count
+    // One statement; for each chat the index on (chat_id, from_me, sent_at) finds the first unread message, if any.
+    const row = await this.reader.first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM chats c WHERE c.left_out = 0 AND ${IN_INBOX} AND EXISTS (SELECT 1 FROM chat_messages m WHERE ${UNREAD_MESSAGE})`,
+    )
+    return Number(row?.count ?? 0)
   }
 
   async waitingOutgoing(): Promise<SyncedChatOutgoing[]> {
@@ -947,7 +963,7 @@ export class SqliteMailStore implements MailStore {
     return this.write(() =>
       this.sql.transaction(async (tx) => {
         for (const chat of chats) {
-          await writeChat(tx, chat)
+          await writeChat(tx, chat, chatInstant)
         }
       }),
     )
@@ -957,7 +973,7 @@ export class SqliteMailStore implements MailStore {
     return this.write(() =>
       this.sql.transaction(async (tx) => {
         for (const message of messages) {
-          await writeChatMessage(tx, message)
+          await writeChatMessage(tx, message, chatInstant)
         }
       }),
     )
@@ -967,7 +983,7 @@ export class SqliteMailStore implements MailStore {
     return this.write(() =>
       this.sql.transaction(async (tx) => {
         for (const row of rows) {
-          await writeChatOutgoing(tx, row)
+          await writeChatOutgoing(tx, row, chatInstant)
         }
       }),
     )
@@ -992,19 +1008,6 @@ export class SqliteMailStore implements MailStore {
     )
   }
 
-  private async chatSummary(chat: SyncedChat, lastMessageAt: number): Promise<ChatSummary> {
-    const newest = await this.reader.first<JsonRow>('SELECT json FROM chat_messages WHERE chat_id = ? ORDER BY sent_at DESC, id DESC LIMIT 1', [chat.id])
-    return { chat, newest: newest === null ? null : parse<SyncedChatMessage>(newest), unread: await this.unreadIn(chat), lastMessageAt }
-  }
-
-  /** Incoming messages after `readThrough`, as unreadCount counts them; all of them when it is null or no time. */
-  private async unreadIn(chat: SyncedChat): Promise<number> {
-    const readThrough = chat.readThrough === null ? Number.NaN : Date.parse(chat.readThrough)
-    const row = Number.isNaN(readThrough)
-      ? await this.reader.first<{ count: number }>('SELECT COUNT(*) AS count FROM chat_messages WHERE chat_id = ? AND from_me = 0', [chat.id])
-      : await this.reader.first<{ count: number }>('SELECT COUNT(*) AS count FROM chat_messages WHERE chat_id = ? AND from_me = 0 AND sent_at > ?', [chat.id, readThrough])
-    return Number(row?.count ?? 0)
-  }
 }
 
 /** The steps from one version to a later one, in order; null when one is missing or the copy is of a newer version. */
@@ -1061,14 +1064,15 @@ async function rebuild(sql: Sql, version: number = SCHEMA_VERSION): Promise<void
     for (const account of chats.accounts) {
       await writeChatAccount(tx, account)
     }
+    // Read back leniently: a row stored by a version that was less strict must not stop the copy from opening.
     for (const chat of chats.chats) {
-      await writeChat(tx, chat)
+      await writeChat(tx, chat, deltaInstant)
     }
     for (const message of chats.messages) {
-      await writeChatMessage(tx, message)
+      await writeChatMessage(tx, message, deltaInstant)
     }
     for (const row of chats.outgoing) {
-      await writeChatOutgoing(tx, row)
+      await writeChatOutgoing(tx, row, deltaInstant)
     }
     for (const { key, value } of chats.meta) {
       await tx.run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [key, value])
@@ -1264,36 +1268,56 @@ async function writeChatAccount(tx: Sql, account: SyncedChatAccount): Promise<vo
   await tx.run('INSERT OR REPLACE INTO chat_accounts (id, json) VALUES (?, ?)', [account.id, JSON.stringify(account)])
 }
 
-async function writeChat(tx: Sql, chat: SyncedChat): Promise<void> {
-  const lastMessageAt = chatInstant(chat.lastMessageAt, 'lastMessageAt')
+/** How a write reads a row's times: strictly for rows of this device, leniently for rows of the delta. */
+type ReadTime = (value: string, field: string) => number
+
+async function writeChat(tx: Sql, chat: SyncedChat, time: ReadTime): Promise<void> {
+  const lastMessageAt = time(chat.lastMessageAt, 'lastMessageAt')
   // One chat per account and JID: another one with this JID was removed and made again, so it goes with what it held.
   for (const other of await tx.all<{ id: string }>('SELECT id FROM chats WHERE chat_account_id = ? AND jid = ? AND id <> ?', [chat.chatAccountId, chat.jid, chat.id])) {
     await deleteChat(tx, other.id)
   }
-  await tx.run('INSERT OR REPLACE INTO chats (id, chat_account_id, jid, last_message_at, left_out, json) VALUES (?, ?, ?, ?, ?, ?)', [
+  await tx.run('INSERT OR REPLACE INTO chats (id, chat_account_id, jid, last_message_at, left_out, read_through, archived_through, json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
     chat.id,
     chat.chatAccountId,
     chat.jid,
     lastMessageAt,
     chat.leftOut ? 1 : 0,
+    optionalInstant(chat.readThrough),
+    optionalInstant(chat.archivedThrough),
     JSON.stringify(chat),
   ])
 }
 
-async function writeChatMessage(tx: Sql, message: SyncedChatMessage): Promise<void> {
+async function writeChatMessage(tx: Sql, message: SyncedChatMessage, time: ReadTime): Promise<void> {
   await tx.run('INSERT OR REPLACE INTO chat_messages (id, chat_id, chat_account_id, sent_at, from_me, json) VALUES (?, ?, ?, ?, ?, ?)', [
     message.id,
     message.chatId,
     message.chatAccountId,
-    chatInstant(message.sentAt, 'sentAt'),
+    time(message.sentAt, 'sentAt'),
     message.fromMe ? 1 : 0,
     JSON.stringify(message),
   ])
 }
 
-async function writeChatOutgoing(tx: Sql, row: SyncedChatOutgoing): Promise<void> {
-  chatInstant(row.createdAt, 'createdAt')
+async function writeChatOutgoing(tx: Sql, row: SyncedChatOutgoing, time: ReadTime): Promise<void> {
+  time(row.createdAt, 'createdAt')
   await tx.run('INSERT OR REPLACE INTO chat_outgoing (id, chat_id, chat_account_id, status, json) VALUES (?, ?, ?, ?, ?)', [row.id, row.chatId, row.chatAccountId, row.status, JSON.stringify(row)])
+}
+
+/**
+ * Removals run before the rows of a page, so a message or reply in the same page as its chat's (or account's) removal
+ * would stay behind, never shown. Once the rows are in, those go too, unless the page brought the chat or account back.
+ */
+async function dropRemovedInPage(tx: Sql, page: ChangePage): Promise<void> {
+  for (const deleted of page.deleted) {
+    if (deleted.type === 'chat' && (await tx.first('SELECT id FROM chats WHERE id = ?', [deleted.id])) === null) {
+      await deleteChat(tx, deleted.id)
+    }
+    if (deleted.type === 'chatAccount' && (await tx.first('SELECT id FROM chat_accounts WHERE id = ?', [deleted.id])) === null) {
+      await deleteChatAccount(tx, deleted.id)
+    }
+  }
 }
 
 async function deleteChat(tx: Sql, chatId: string): Promise<void> {

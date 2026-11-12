@@ -88,6 +88,11 @@ export interface MailStore extends SyncStore {
    * rebuilt, or kept and brought up to date in place. The status says so until that pull is done.
    */
   readonly afterUpdate: boolean
+  /**
+   * Makes the next pull fetch everything again, keeping what the copy holds on screen while the pages overwrite it.
+   * A pull already under way keeps the cursor it began from but no longer moves it (see SqliteMailStore).
+   */
+  resyncFromStart(): Promise<void>
   /** When a pull last brought the copy up to date (epoch ms), also in an earlier session; null if none ever did. */
   syncedAt(): Promise<number | null>
   markSynced(at: number): Promise<void>

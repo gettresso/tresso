@@ -1,6 +1,6 @@
-import { chatMedia } from './rows'
 import type {
   ChatKind,
+  ChatMedia,
   ChatOutgoingError,
   SyncedChat,
   SyncedChatAccount,
@@ -137,6 +137,11 @@ export function accountSubtitle(
   const via = thisMac ? 'this Mac' : name !== '' ? name : 'another device'
   const number = account.address === null ? null : phoneLabel(account.address)
   return number === null ? `Via ${via}` : `${number}, via ${via}`
+}
+
+/** The file a message carries, or null for a message with text only. */
+export function chatMedia(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaName' | 'mediaSize'>): ChatMedia | null {
+  return message.mediaKind === null ? null : { kind: message.mediaKind, name: message.mediaName, size: message.mediaSize }
 }
 
 /** The text of a message on one line, or a word for its media when it has no text. */

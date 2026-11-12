@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { chat, chatAccount, chatMessage, chatOutgoing, describeMailStore, draft, firstPage, message, page } from './contract'
 import { CopyClosingError } from './mailStore'
 import { memorySql } from './memorySql'
-import type { Sql } from './sql'
+import type { Sql, SqlValue } from './sql'
+import { CHAT_BACKFILL } from '../chat/backfill'
+import { SyncStatusMachine } from '../sync/status'
 import { MIGRATIONS, SCHEMA_VERSION, SqliteMailStore } from './sqlite'
 
 describeMailStore(
@@ -287,42 +289,91 @@ describe('SqliteMailStore', () => {
     const at = '2026-11-12T10:00:00+00:00'
     const localChat = 'wa:31655555555@s.whatsapp.net'
 
-    /** A copy as version 9 left it: the same tables without the chat ones, which version 10 added. */
-    async function makeVersion9(): Promise<void> {
-      await sql.exec('DROP TABLE chat_accounts; DROP TABLE chats; DROP TABLE chat_messages; DROP TABLE chat_outgoing')
-      await sql.run("UPDATE meta SET value = '9' WHERE key = 'schema'")
+    /**
+     * A copy as version 9 left it: the frozen version 9 schema, holding the rows the current store made of the first
+     * page (the tables version 9 had are unchanged since), and the meta values (cursor 10, schema 9).
+     */
+    async function version9Copy(): Promise<Sql & { closed(): boolean }> {
+      const old = await memorySql()
+      await old.exec(SCHEMA_V9)
+      const tables = (await old.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => row.name)
+      for (const table of tables) {
+        for (const row of await sql.all<Record<string, SqlValue>>(`SELECT * FROM ${table}`)) {
+          const columns = Object.keys(row)
+          await old.run(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`, columns.map((column) => row[column]!))
+        }
+      }
+      await old.run("UPDATE meta SET value = '9' WHERE key = 'schema'")
+      return old
     }
 
-    it('is at version 10, with a step from 9', () => {
+    it('is at version 10, with a step from 9 that syncs nothing again by itself', () => {
       expect(SCHEMA_VERSION).toBe(10)
-      expect(MIGRATIONS[9]?.resync).toBe(true)
+      expect(MIGRATIONS[9]?.resync).toBe(false)
     })
 
-    it('brings a version 9 copy with mail to version 10 in place, keeping its rows, and fetches the chats it skipped', async () => {
+    it('brings a version 9 copy with mail to version 10 in place, keeping its rows and its cursor, marked to check for chats', async () => {
       await db.saveDraft(draft('synced', { version: 2 }))
       await db.saveDraft(draft('unsent', { pendingSave: true, version: 3 }))
       await db.markSynced(1_700_000_000_000)
-      await makeVersion9()
+      const old = await version9Copy()
+      expect(await old.first("SELECT name FROM sqlite_master WHERE name = 'chats'")).toBeNull()
 
-      const reopened = await SqliteMailStore.open(sql)
+      const reopened = await SqliteMailStore.open(old)
 
-      expect(reopened.upgrade).toBe('migrated')
-      expect(reopened.afterUpdate).toBe(true)
-      expect(await sql.first<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'")).toEqual({ value: '10' })
-      // Kept: mail, lists, drafts with their server versions, when it last synced.
+      expect(reopened.upgrade).toBe('none')
+      expect(reopened.afterUpdate).toBe(false)
+      expect(await old.first<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'")).toEqual({ value: '10' })
+      // Kept: mail, lists, drafts with their server versions, when it last synced, and where the pull goes on from.
       expect((await reopened.inbox(null, 10)).map((c) => c.threadId)).toEqual(['t1', 't3'])
       expect((await reopened.thread('t1'))?.messages.map((m) => m.id)).toEqual(['m2', 'm1'])
       expect(await reopened.draft('synced')).toMatchObject({ version: 2 })
       expect(await reopened.draft('unsent')).toMatchObject({ pendingSave: true, version: 3 })
       expect(await reopened.syncedAt()).toBe(1_700_000_000_000)
-      // A pull from the start brings the chats a version 9 copy dropped.
-      expect(await reopened.cursor()).toBe(0)
+      expect(await reopened.cursor()).toBe(10)
+      expect(await reopened.chatMeta(CHAT_BACKFILL)).toBe('1')
+      // The chat tables work.
       await reopened.apply(
         page({ cursor: 50, chatAccounts: [chatAccount('acct')], chats: [chat('anna', 'acct', { lastMessageAt: at })], chatMessages: [chatMessage('a1', 'anna', 'acct', at)] }),
       )
       expect((await reopened.chat('anna'))?.messages.map((m) => m.id)).toEqual(['a1'])
-      expect(await reopened.cursor()).toBe(50)
-      expect((await SqliteMailStore.open(sql)).upgrade).toBe('none')
+      expect((await SqliteMailStore.open(old)).upgrade).toBe('none')
+    })
+
+    it('does not say the mail is updating after the update for a copy brought to version 10', async () => {
+      const reopened = await SqliteMailStore.open(await version9Copy())
+      const status = new SyncStatusMachine({ onChange: () => undefined, now: () => 1_700_000_000_000 })
+      status.opening()
+      status.opened({ confirmed: true, afterUpdate: reopened.afterUpdate, lastSyncedAt: await reopened.syncedAt() })
+      status.confirmed()
+      status.progress({ from: 10, cursor: 10, latest: 12, items: 0, pages: 0, hasMore: null })
+
+      expect(status.status.kind).not.toBe('updating')
+      expect(status.status.text).not.toContain('after the update')
+    })
+
+    it('lists chats and counts the unread ones in one query each', async () => {
+      await db.apply(
+        page({
+          cursor: 11,
+          chatAccounts: [chatAccount('acct')],
+          chats: [chat('anna', 'acct', { lastMessageAt: at }), chat('bram', 'acct', { lastMessageAt: at, readThrough: at })],
+          chatMessages: [chatMessage('a1', 'anna', 'acct', at), chatMessage('b1', 'bram', 'acct', at)],
+        }),
+      )
+      let queries = 0
+      const counting: Sql = { ...sql, all: (source, params) => (queries++, sql.all(source, params)), first: (source, params) => (queries++, sql.first(source, params)) }
+      const store = await SqliteMailStore.open(counting)
+      queries = 0
+
+      expect((await store.chats()).map((summary) => [summary.chat.id, summary.unread, summary.newest?.id])).toEqual([
+        ['bram', 0, 'b1'],
+        ['anna', 1, 'a1'],
+      ])
+      expect(queries).toBe(1)
+      queries = 0
+      expect(await store.unreadChatCount()).toBe(1)
+      expect(queries).toBe(1)
     })
 
     it('keeps the chats that exist only on this device, and the chat values, through a rebuild', async () => {
@@ -356,11 +407,11 @@ describe('SqliteMailStore', () => {
       expect(await rebuilt.chatMeta('cursor')).toBe('812')
     })
 
-    it('keeps the chats of this device when a rebuild comes from a copy without chat tables', async () => {
-      await makeVersion9()
-      await sql.run("UPDATE meta SET value = '1' WHERE key = 'schema'")
+    it('rebuilds a copy without chat tables, which has no chats of this device to keep', async () => {
+      const old = await version9Copy()
+      await old.run("UPDATE meta SET value = '1' WHERE key = 'schema'")
 
-      const rebuilt = await SqliteMailStore.open(sql)
+      const rebuilt = await SqliteMailStore.open(old)
 
       expect(rebuilt.upgrade).toBe('rebuilt')
       expect(await rebuilt.chatAccounts()).toEqual([])
@@ -387,3 +438,60 @@ describe('SqliteMailStore', () => {
     expect(await fresh.syncedAt()).toBeNull()
   })
 })
+
+/** The schema of version 9 as it shipped, frozen here: the copy a version 9 app left on the device. */
+const SCHEMA_V9 = `
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS mail_accounts (id TEXT PRIMARY KEY NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY NOT NULL, mail_account_id TEXT NOT NULL, role TEXT NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY NOT NULL, mail_account_id TEXT NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY NOT NULL, thread_id TEXT NOT NULL, mail_account_id TEXT NOT NULL, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS messages_by_thread ON messages (thread_id);
+CREATE INDEX IF NOT EXISTS messages_by_account ON messages (mail_account_id);
+CREATE TABLE IF NOT EXISTS message_folders (message_id TEXT NOT NULL, folder_id TEXT NOT NULL, PRIMARY KEY (message_id, folder_id));
+CREATE INDEX IF NOT EXISTS message_folders_by_folder ON message_folders (folder_id);
+CREATE TABLE IF NOT EXISTS conversations (
+  thread_id TEXT PRIMARY KEY NOT NULL,
+  mail_account_id TEXT NOT NULL,
+  inbox INTEGER NOT NULL,
+  unread INTEGER NOT NULL,
+  last_message_at INTEGER NOT NULL,
+  smart_inbox_id TEXT,
+  active INTEGER NOT NULL,
+  batched_at INTEGER,
+  json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversations_by_inbox ON conversations (inbox, last_message_at);
+CREATE INDEX IF NOT EXISTS conversations_by_account_inbox ON conversations (mail_account_id, inbox, last_message_at);
+CREATE INDEX IF NOT EXISTS conversations_by_smart_inbox ON conversations (smart_inbox_id, active, last_message_at);
+CREATE INDEX IF NOT EXISTS conversations_by_batch ON conversations (inbox, batched_at, last_message_at);
+CREATE TABLE IF NOT EXISTS smart_inboxes (id TEXT PRIMARY KEY NOT NULL, builtin TEXT, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS outgoing (id TEXT PRIMARY KEY NOT NULL, mail_account_id TEXT NOT NULL, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS outgoing_by_account ON outgoing (mail_account_id);
+CREATE TABLE IF NOT EXISTS contacts (key TEXT PRIMARY KEY NOT NULL, last_seen INTEGER NOT NULL, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS contacts_by_last_seen ON contacts (last_seen);
+CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY NOT NULL, mail_account_id TEXT, updated_at INTEGER NOT NULL, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS drafts_by_updated_at ON drafts (updated_at);
+CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY NOT NULL, message_id TEXT, thread_id TEXT, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS todos_by_message ON todos (message_id);
+CREATE INDEX IF NOT EXISTS todos_by_thread ON todos (thread_id);
+CREATE TABLE IF NOT EXISTS unsubscriptions (id TEXT PRIMARY KEY NOT NULL, mail_account_id TEXT NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS hand_overs (id TEXT PRIMARY KEY NOT NULL, mail_account_id TEXT NOT NULL, message_id TEXT, thread_id TEXT, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS hand_overs_by_account ON hand_overs (mail_account_id);
+CREATE TABLE IF NOT EXISTS daily_briefs (id TEXT PRIMARY KEY NOT NULL, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS calendars (id TEXT PRIMARY KEY NOT NULL, mail_account_id TEXT, json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  calendar_id TEXT NOT NULL,
+  uid TEXT NOT NULL,
+  starts_at INTEGER NOT NULL,
+  ends_at INTEGER,
+  series_starts_at INTEGER NOT NULL,
+  series_ends_at INTEGER,
+  json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS calendar_events_by_series ON calendar_events (calendar_id, uid);
+CREATE INDEX IF NOT EXISTS calendar_events_by_series_start ON calendar_events (series_starts_at);
+CREATE INDEX IF NOT EXISTS calendar_events_by_series_end ON calendar_events (series_ends_at);
+`
