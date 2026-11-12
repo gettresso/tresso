@@ -354,4 +354,87 @@ function failed(account: SyncedMailAccount): boolean {
 .settings {
   margin-top: auto;
 }
+
+/*
+ * The desktop window frame (assets/frame.css has every number; .frame-shell is set by AppShell in the desktop app
+ * only). The card's rows: 32 high with no gap, the selection fill 10 inside the card's edges with radius 8, the icon
+ * at x 30 and the label at x 54, the count inside the fill. What the spec does not cover keeps its own height: the
+ * profile (44, avatar and Sign out), the ink Compose button (40) and the account rows (44, two lines: name, and address
+ * or what failed).
+ */
+.frame-shell .sidebar {
+  gap: 0;
+  padding: calc(var(--frame-first-row-y) - var(--frame-inset)) var(--frame-row-inset) var(--frame-row-inset);
+}
+.frame-shell .profile {
+  padding: 0 4px 0 var(--frame-row-icon-x);
+}
+.frame-shell .compose {
+  margin: var(--frame-group-gap) 0 0;
+}
+.frame-shell .group {
+  gap: 0;
+  margin-top: var(--frame-group-gap);
+}
+/* A labelled group is set off by its label's strip instead. */
+.frame-shell .group:has(> .group-title) {
+  margin-top: 0;
+}
+.frame-shell .group-title {
+  display: flex;
+  align-items: center;
+  height: var(--frame-group-label-height);
+  padding: 0 var(--frame-row-icon-x);
+  font-size: var(--frame-group-label-size);
+}
+.frame-shell .item {
+  min-height: var(--frame-row-height);
+  padding: 0 var(--frame-row-trailing) 0 var(--frame-row-icon-x);
+  gap: var(--frame-row-label-gap);
+  border-radius: var(--frame-row-radius);
+}
+.frame-shell .item.account {
+  min-height: 44px;
+  padding-block: 4px;
+}
+.frame-shell .item > svg,
+.frame-shell .item > .mark {
+  flex: none;
+  width: var(--frame-row-icon);
+  height: var(--frame-row-icon);
+}
+.frame-shell .item > .mark {
+  border-radius: 4px;
+  font-size: 10px;
+}
+.frame-shell .add {
+  height: var(--frame-row-height);
+  padding: 0 var(--frame-row-icon-x);
+  border-radius: var(--frame-row-radius);
+}
+.frame-shell .group:has(+ .settings) {
+  margin-bottom: var(--frame-group-gap);
+}
+.frame-shell .sync-status {
+  margin-top: 8px;
+  padding: 0 var(--frame-row-icon-x);
+}
+/* The selected row: grey while the content has focus (or the window is in the back), the accent while the sidebar has. */
+.frame-shell .item[aria-current='page'] {
+  background: var(--frame-selection-fill);
+  box-shadow: var(--frame-selection-edge);
+}
+.frame-shell .sidebar.active .item[aria-current='page'] {
+  background: var(--frame-selection-accent);
+  box-shadow: none;
+  color: var(--frame-selection-text);
+}
+.frame-shell .sidebar.active .item[aria-current='page'] :is(.count, .count.failed, .account-address, .account-address.problem, .batches-icon) {
+  color: var(--frame-selection-text);
+}
+/* The "New" badge turns around on the accent: white with the accent's colour (5.4:1 for #0064e1, as white on it). */
+.frame-shell .sidebar.active .item[aria-current='page'] .new {
+  background: var(--frame-selection-text);
+  color: var(--frame-selection-accent);
+}
 </style>

@@ -5,12 +5,18 @@ import { MENU_ACTIONS, MENU_EVENT, runMenuAction, startMenuBridge, type MenuActi
 
 function targets(signedIn = true) {
   const state = ref(signedIn)
+  const sidebar = ref(true)
   return {
     state,
+    sidebar,
     router: { push: vi.fn<(to: { name: string }) => Promise<undefined>>(async () => undefined) },
     newMessage: vi.fn<() => void>(),
     reload: vi.fn<() => Promise<void>>(async () => undefined),
     signedIn: () => state.value,
+    toggleSidebar: vi.fn<() => void>(() => {
+      sidebar.value = !sidebar.value
+    }),
+    sidebarShown: () => sidebar.value,
   }
 }
 
@@ -61,7 +67,11 @@ describe('the menu bar bridge', () => {
     const reloading = targets()
     await runMenuAction('reload', reloading)
     expect(reloading.reload).toHaveBeenCalledOnce()
-    expect(new Set([...routes.map(([action]) => action), 'new-message', 'reload'])).toEqual(new Set(MENU_ACTIONS))
+    const hiding = targets()
+    await runMenuAction('toggle-sidebar', hiding)
+    expect(hiding.toggleSidebar).toHaveBeenCalledOnce()
+    expect(hiding.router.push).not.toHaveBeenCalled()
+    expect(new Set([...routes.map(([action]) => action), 'new-message', 'reload', 'toggle-sidebar'])).toEqual(new Set(MENU_ACTIONS))
   })
 
   it('asks the calendar for a new event and the to-dos for their quick add, once they are on screen', async () => {
@@ -105,6 +115,7 @@ describe('the menu bar bridge', () => {
     }
     expect(to.router.push).not.toHaveBeenCalled()
     expect(to.newMessage).not.toHaveBeenCalled()
+    expect(to.toggleSidebar).not.toHaveBeenCalled()
     expect(to.reload).toHaveBeenCalledOnce()
   })
 
@@ -128,20 +139,38 @@ describe('the menu bar bridge', () => {
     const to = targets(false)
     const desktop = shell()
     const stop = await startMenuBridge(to, desktop)
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false, sidebarShown: true })
 
     to.state.value = true
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true })
 
     // A request still waiting for its view is dropped at the sign-out.
     await runMenuAction('new-event', to)
     to.state.value = false
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false, sidebarShown: true })
     const newEvent = vi.fn<() => void>()
     onViewRequest('newEvent', newEvent)()
     expect(newEvent).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it('names View > Hide Sidebar after the sidebar: Ctrl+Cmd+S hides it, and the item then says Show Sidebar', async () => {
+    const to = targets()
+    const desktop = shell()
+    const stop = await startMenuBridge(to, desktop)
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true })
+
+    desktop.send('toggle-sidebar')
+    await nextTick()
+    expect(to.toggleSidebar).toHaveBeenCalledOnce()
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: false })
+
+    // The toggle in the window changes it too; the menu follows.
+    to.sidebar.value = true
+    await nextTick()
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true })
     stop()
   })
 })

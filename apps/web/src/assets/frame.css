@@ -1,0 +1,210 @@
+/*
+ * The desktop window frame: the sidebar column and its card, the collapse toggle, the title strip and its toolbar
+ * capsules. It follows the shared window spec the owner approved for all their Mac apps (measured from a reference app
+ * on macOS 26 in light mode, 1 px = 1 pt; positions from the window's top-left corner). Every number of the frame lives
+ * here, so a new measurement is one edit; platform/frame.ts reads the sidebar's widths from this file too. Values the
+ * spec has none for are marked "chosen".
+ *
+ * Only the desktop app sets html.frame (platform/frame.ts), and only its signed-in shell html.frame-shell; the browser
+ * build never renders any of it. Content (the mail list, the reading pane, the calendar), fonts, the ink primary button
+ * and the brand colours stay Tresso's. Dark mode keeps Tresso's colours: only sizes, radii and positions apply there.
+ */
+:root {
+  /* Sidebar: 190 to 300 wide, 220 by default (the column: inset, card, gap). */
+  --frame-sidebar-min: 190px;
+  --frame-sidebar-default: 220px;
+  --frame-sidebar-max: 300px;
+  /* The card sits this far from the window's left, top and bottom edge; the last toolbar capsule as far from the right. */
+  --frame-inset: 8px;
+  /* Between the card and the content. */
+  --frame-sidebar-gap: 10px;
+  /* The window's corner radius (26) less the inset. */
+  --frame-card-radius: 18px;
+
+  /* Rows: the first starts at y 52, each is 32 high with no gap. */
+  --frame-first-row-y: 52px;
+  --frame-row-height: 32px;
+  /* The selection fill starts and ends this far inside the card's edges. */
+  --frame-row-inset: 10px;
+  --frame-row-radius: 8px;
+  /* The icon starts at x 30 (12 inside the fill) and is about 16 wide; the label starts at x 54. */
+  --frame-row-icon: 16px;
+  --frame-row-icon-x: 12px;
+  --frame-row-label-gap: 8px;
+  /* Chosen: the trailing count ends as far inside the fill as the icon starts. */
+  --frame-row-trailing: 12px;
+  /* A group label sits in a strip of about 24; a group without one is set off by about 13. */
+  --frame-group-label-height: 24px;
+  --frame-group-gap: 13px;
+  /* Chosen: "small, semibold". */
+  --frame-group-label-size: 11px;
+
+  /*
+   * The traffic lights' inset in tauri.macos.conf.json (trafficLightPosition), kept here so the two are one number: the
+   * values a test app measured on macOS 26.7 for centres at x 25.5 / 48.5 / 71.5, y 25.5, on the toggle's line.
+   * frame.spec.ts keeps the config equal to them.
+   */
+  --frame-traffic-light-inset-x: 17.5px;
+  --frame-traffic-light-inset-y: 27.5px;
+  /* Collapse toggle: the sidebar.left glyph, about 20 x 15, centred at y 26, 13 from the card's right edge. */
+  --frame-toggle-glyph-width: 20px;
+  --frame-toggle-glyph-height: 15px;
+  --frame-toggle-y: 26px;
+  --frame-toggle-from-card: 13px;
+  /* Chosen: the button around the glyph, a hit target above 24 x 24. */
+  --frame-toggle-hit: 28px;
+  /*
+   * Chosen (the collapsed sidebar is not measured): the toggle's centre once the sidebar is hidden. On macOS it sits
+   * right of the traffic lights (their right edge is at x 78.5); elsewhere at the window's left.
+   */
+  --frame-toggle-collapsed-x-mac: 105px;
+  --frame-toggle-collapsed-x: 26px;
+  /* Chosen: the sidebar's slide when it is hidden or shown; none with reduced motion. */
+  --frame-sidebar-motion: 220ms;
+  /* Chosen: the width of the drag handle on the card's right edge. */
+  --frame-resize-handle: 12px;
+
+  /* Title strip: 52 high, no line under it; the title centred at y 26, starting 10 right of the content's left edge. */
+  --frame-title-height: 52px;
+  --frame-title-x: 10px;
+  --frame-title-size: 15px;
+  --frame-subtitle-size: 11px;
+  /* Toolbar capsules: 36 high (y 8 to 44), fully round; one icon 40 wide, two 70 (35 each), gaps of 18 to 20. */
+  --frame-capsule-height: 36px;
+  --frame-capsule-single: 40px;
+  --frame-capsule-icon: 35px;
+  --frame-capsule-gap: 18px;
+  /* Chosen: a capsule around a text action, as wide as its text plus this on each side. */
+  --frame-capsule-text-padding: 14px;
+
+  /* Light mode colours from the spec. */
+  --frame-window-fill: #f3f3f3;
+  --frame-card-fill: #fcfcfc;
+  /* Chosen: the 1 pt lighter edge and the soft shadow (their strength is not measured). */
+  --frame-card-edge: inset 0 0 0 1px rgb(255 255 255 / 90%);
+  --frame-card-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 6px 16px rgb(0 0 0 / 6%);
+  --frame-selection-fill: #dcdcdc;
+  --frame-selection-edge: 0 0 #0000;
+  /*
+   * The selected row while the sidebar has focus: the system's selection colour, which follows the user's accent
+   * colour (the shell reads it, platform/frame.ts); #0064e1 where it cannot be read, macOS's own value for the blue
+   * accent. White text reads on it at 5.4:1.
+   */
+  --frame-selection-accent: var(--frame-accent-light, #0064e1);
+  --frame-selection-text: #ffffff;
+  /* Chosen: the near-white fill and soft shadow of a toolbar capsule. */
+  --frame-capsule-fill: #fdfdfd;
+  --frame-capsule-shadow: 0 0 0 0.5px rgb(0 0 0 / 8%), 0 1px 3px rgb(0 0 0 / 10%);
+}
+
+/* Over the system material (macOS): the card lets it through a little, as glass. Chosen strength. */
+html.vibrant {
+  --frame-window-fill: transparent;
+  --frame-card-fill: rgb(255 255 255 / 72%);
+}
+
+/* Dark mode: Tresso's own colours, the ones the sidebar and its selected row have in the browser. */
+@media (prefers-color-scheme: dark) {
+  :root,
+  html.vibrant {
+    --frame-window-fill: transparent;
+    --frame-card-fill: color-mix(in srgb, var(--surface) 60%, transparent);
+    --frame-card-edge: var(--glass-edge);
+    --frame-card-shadow: 0 0 #0000;
+    --frame-selection-fill: var(--surface);
+    --frame-selection-edge: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%);
+    --frame-selection-accent: var(--frame-accent-dark, #0064e1);
+    --frame-capsule-fill: var(--surface);
+    --frame-capsule-shadow: var(--glass-edge);
+  }
+}
+
+/* Less transparency: the card is solid (macOS turns its own material solid by itself). */
+@media (prefers-reduced-transparency: reduce) {
+  html.vibrant {
+    --frame-card-fill: #fcfcfc;
+  }
+}
+html.vibrant.reduce-transparency {
+  --frame-card-fill: #fcfcfc;
+}
+@media (prefers-color-scheme: dark) {
+  html.vibrant.reduce-transparency {
+    --frame-card-fill: var(--paper);
+  }
+}
+
+/*
+ * The signed-in shell draws its own title strip: the page starts at the window's top edge, and what keeps clear of the
+ * window's title area (menus, drawers, the update card) keeps clear of the strip.
+ */
+html.frame-shell {
+  --titlebar: var(--frame-title-height);
+}
+html.vibrant.frame-shell #app {
+  padding-top: 0;
+}
+
+/* The view's title in the strip (FrameTitle): its own heading (or a paragraph where it keeps one), in the frame's size. */
+html.frame-shell .frame-strip .frame-title > :is(h1, p) {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  margin: 0;
+  font: 600 var(--frame-title-size) / 18px var(--font-ui);
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+html.frame-shell .frame-strip .frame-title > :is(h1, p) > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+html.frame-shell .frame-strip .frame-title > :is(h1, p) .subtitle {
+  margin: 0;
+  font: 400 var(--frame-subtitle-size) / 13px var(--font-ui);
+  color: var(--ink-2);
+}
+
+/* A group of toolbar actions (FrameTools) and its capsules (FrameCapsule). */
+html.frame-shell .frame-tools-group {
+  display: flex;
+  align-items: center;
+  gap: var(--frame-capsule-gap);
+}
+html.frame-shell .frame-capsule {
+  display: inline-flex;
+  align-items: center;
+  height: var(--frame-capsule-height);
+  border-radius: calc(var(--frame-capsule-height) / 2);
+  background: var(--frame-capsule-fill);
+  box-shadow: var(--frame-capsule-shadow);
+  overflow: hidden;
+}
+/* Inside a capsule a control has no fill or edge of its own; the capsule is its shape. */
+/* How each control shows (or hides at some widths) stays its own; the capsule only sets its shape. */
+html.frame-shell .frame-capsule :is(button, a) {
+  height: var(--frame-capsule-height);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+html.frame-shell .frame-capsule :is(button, a):hover:not(:disabled) {
+  background: var(--ground);
+}
+html.frame-shell .frame-capsule :is(button, a):focus-visible {
+  outline-offset: -2px;
+  border-radius: calc(var(--frame-capsule-height) / 2);
+}
+html.frame-shell .frame-capsule > :is(button, a):not(.icon),
+html.frame-shell .frame-capsule > * > :is(button, a) {
+  padding: 0 var(--frame-capsule-text-padding);
+}
+html.frame-shell .frame-capsule > .icon {
+  width: var(--frame-capsule-icon);
+  padding: 0;
+}
+html.frame-shell .frame-capsule > .icon:only-child {
+  width: var(--frame-capsule-single);
+}

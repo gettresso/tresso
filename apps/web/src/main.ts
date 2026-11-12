@@ -6,6 +6,7 @@ import '@fontsource/instrument-sans/600.css'
 import '@fontsource/bricolage-grotesque/700.css'
 import '@fontsource/jetbrains-mono/400.css'
 import './assets/main.css'
+import './assets/frame.css'
 
 import App from './App.vue'
 import router from './router'
@@ -15,6 +16,8 @@ import { listen } from '@tauri-apps/api/event'
 import { isDesktop, onDeepLinks } from './platform/desktop'
 import { startMenuBridge } from './platform/menu'
 import { followReducedTransparency, vibrant } from './platform/vibrancy'
+import { followSelectionAccent, framed } from './platform/frame'
+import { useFrameStore } from './stores/frame'
 import { startNotificationClicks } from './platform/notifier'
 import { onPushClick } from './platform/webPush'
 import { desktopLinkRoute } from './platform/signInLinks'
@@ -25,6 +28,11 @@ import { useUpdatesStore } from './stores/updates'
 if (vibrant) {
   document.documentElement.classList.add('vibrant')
   followReducedTransparency()
+}
+// The desktop window frame (assets/frame.css): the sidebar card and the title strip, with the system's selection colour.
+if (framed) {
+  document.documentElement.classList.add('frame')
+  followSelectionAccent()
 }
 
 const app = createApp(App)
@@ -53,6 +61,8 @@ if (isDesktop) {
       newMessage: () => useComposeStore().openNew(),
       signedIn: () => auth.isAuthenticated && !auth.paymentRequired,
       reload: () => useUpdatesStore().reloadApp(),
+      toggleSidebar: () => useFrameStore().toggle(),
+      sidebarShown: () => useFrameStore().shown,
     },
     { listen, invoke },
   ).catch((error: unknown) => console.error('The menu bar could not be connected to the app', error))
