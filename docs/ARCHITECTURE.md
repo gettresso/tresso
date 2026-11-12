@@ -1362,7 +1362,7 @@ then tells the server, within 6 seconds in all and with the tokens taken before 
 does can refresh: first it stops this browser's pushes (up to 2.5 seconds), then it revokes the refresh token, which
 also ends the access token the push calls need. A refresh anywhere
 that finishes after the tokens are gone, also one this tab started before the sign-out, drops its answer and revokes
-it. While a sign-out runs its button says so; drafts on the device that never reached the server are asked about first (try to save them, sign out anyway, or cancel); a failure is shown, and a mail copy that could not be removed is named on the sign-in screen, marked in `tresso.mail.copies` and removed at the next start. Signing out also ends the browser session of the
+it. While a sign-out runs its button says so; drafts on the device that never reached the server are asked about first (try to save them, sign out anyway, or cancel), also when the copy is not open (it is opened to look), and when they cannot be checked the question says so and offers only signing out anyway or cancel; a failure is shown, and a mail copy that could not be removed is named on the sign-in screen, marked in `tresso.mail.copies` and removed at the next start. Signing out also ends the browser session of the
 sign-in pages, remember-me cookie included, by submitting a top-level form (POST) to `/logout` on the sign-in address;
 the server accepts it for the app's origin and sends the browser back to the app. The form is sent only when the
 sign-in pages answer, as it would otherwise leave the user on the browser's error page: on the API's origin the
@@ -1703,7 +1703,8 @@ sent with a `sendAt` a few seconds ahead, so "Undo" can cancel it; "Send later" 
 the local copy while typing and kept until the message is confirmed sent, so a failed message can be edited and sent
 again; the outcome of each sent message is announced once. When the session ends, the draft on screen goes with it,
 so whoever signs in next never sees it; a session that expired or ended in another tab first saves the typing since
-the last autosave into the copy it keeps; when the copy is opened again for the same user (another tab signed out and
+the last autosave into the copy it keeps, for at most 3 seconds (the close of the copy is bounded the same way), and
+lets go of the draft on screen when that is done or the time is up; when the copy is opened again for the same user (another tab signed out and
 removed it), the draft on screen moves to the new copy and is saved and uploaded there. Drafts whose upload failed
 (offline) go up at the next start, when the realtime connection is made again, and after the first pull that works
 after a failed one. Recipient suggestions come from the people in synced
