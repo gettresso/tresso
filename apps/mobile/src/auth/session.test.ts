@@ -154,26 +154,117 @@ describe('Session', () => {
     expect(store.lastUser).toBe('kim')
   })
 
-  it('keeps the sign-in when the refresh request fails without an answer', async () => {
-    const store = memoryStore(expired())
-    const answers: (() => Promise<Response>)[] = [() => Promise.reject(new TypeError('Network request failed')), async () => tokenResponse('access-2', 'refresh-2')]
-    const session = await restored(store, vi.fn<Fetch>(() => answers.shift()!()))
+  it('keeps the sign-in when the refresh request and its retry fail without an answer', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore(expired())
+      const answers: (() => Promise<Response>)[] = [
+        () => Promise.reject(new TypeError('Network request failed')),
+        () => Promise.reject(new TypeError('Network request failed')),
+        async () => tokenResponse('access-2', 'refresh-2'),
+      ]
+      const fetchImpl = vi.fn<Fetch>(() => answers.shift()!())
+      const session = await restored(store, fetchImpl)
 
-    const failed = session.accessToken()
-    await expect(failed).rejects.toBeInstanceOf(RenewalFailedError)
-    await expect(failed).rejects.toThrow('The sign-in could not be renewed right now: Network request failed')
-    expect(session.snapshot.tokens?.refreshToken).toBe('refresh-1')
-    expect(session.snapshot.ended).toBeNull()
-    expect(store.saved?.refreshToken).toBe('refresh-1')
+      const failed = session.accessToken()
+      const settled = expect(failed).rejects.toThrow('The sign-in could not be renewed right now: Network request failed')
+      await vi.advanceTimersByTimeAsync(2_000)
+      await settled
+      await expect(failed).rejects.toBeInstanceOf(RenewalFailedError)
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+      expect(session.snapshot.tokens?.refreshToken).toBe('refresh-1')
+      expect(session.snapshot.ended).toBeNull()
+      expect(store.saved?.refreshToken).toBe('refresh-1')
 
-    expect(await session.accessToken()).toBe('access-2')
+      expect(await session.accessToken()).toBe('access-2')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it.each([500, 502, 503])('keeps the sign-in when the token endpoint answers %i', async (status) => {
+  it('asks once more after 2 seconds when the answer to a refresh was lost, and takes that answer', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore(expired())
+      const answers: (() => Promise<Response>)[] = [() => Promise.reject(new TypeError('Network request failed')), async () => tokenResponse('access-2', 'refresh-2')]
+      const fetchImpl = vi.fn<Fetch>(() => answers.shift()!())
+      const session = await restored(store, fetchImpl)
+
+      const renewed = session.accessToken()
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(fetchImpl).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1)
+
+      expect(await renewed).toBe('access-2')
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+      expect(store.saved).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives a refresh that gets no answer 20 seconds, then frees every request that waits on it for the next to try again', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore(expired())
+      let hanging = true
+      const signals: AbortSignal[] = []
+      const fetchImpl = vi.fn<Fetch>(async (input, init) => {
+        if (hanging) {
+          signals.push(init!.signal!)
+          return new Promise<Response>(() => undefined)
+        }
+        return String(input).endsWith('/oauth/token') ? tokenResponse('access-2', 'refresh-2') : new Response(JSON.stringify({ id: 'kim' }))
+      })
+      const session = await restored(store, fetchImpl)
+
+      const first = session.api('/api/v1/me')
+      const second = session.api('/api/v1/me')
+      const bothFail = Promise.all([expect(first).rejects.toBeInstanceOf(RenewalFailedError), expect(second).rejects.toBeInstanceOf(RenewalFailedError)])
+      await vi.advanceTimersByTimeAsync(20_000)
+      // The first request timed out and was aborted; the retry follows 2 seconds later and gets 20 seconds as well.
+      expect(signals[0]?.aborted).toBe(true)
+      await vi.advanceTimersByTimeAsync(2_000 + 20_000)
+      await bothFail
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+      expect(signals[1]?.aborted).toBe(true)
+      expect(session.snapshot.tokens?.refreshToken).toBe('refresh-1')
+      expect(session.snapshot.ended).toBeNull()
+
+      hanging = false
+      expect(await session.api('/api/v1/me')).toEqual({ id: 'kim' })
+      expect(store.saved).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not ask again for a lost refresh answer once the user signed out', async () => {
+    vi.useFakeTimers()
+    try {
+      const tokenEndpoint = vi.fn<Fetch>(async () => Promise.reject(new TypeError('Network request failed')))
+      const session = await restored(memoryStore(expired()), server(tokenEndpoint))
+
+      const pending = session.accessToken()
+      const refused = expect(pending).rejects.toMatchObject({ status: 401, message: 'Signed out.' })
+      await vi.advanceTimersByTimeAsync(0)
+      await session.signOut()
+      await vi.advanceTimersByTimeAsync(2_000)
+      await refused
+
+      expect(tokenEndpoint).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([500, 502, 503])('keeps the sign-in when the token endpoint answers %i, and does not ask again before the next request', async (status) => {
     const store = memoryStore(expired())
-    const session = await restored(store, vi.fn<Fetch>(async () => new Response('<html>Bad gateway</html>', { status })))
+    const fetchImpl = vi.fn<Fetch>(async () => new Response('<html>Bad gateway</html>', { status }))
+    const session = await restored(store, fetchImpl)
 
     await expect(session.accessToken()).rejects.toThrow(`The sign-in could not be renewed right now: Token request failed (${status}).`)
+    expect(fetchImpl).toHaveBeenCalledOnce()
 
     expect(session.snapshot.tokens?.refreshToken).toBe('refresh-1')
     expect(store.saved?.refreshToken).toBe('refresh-1')
@@ -236,19 +327,26 @@ describe('Session', () => {
   })
 
   it('keeps the sign-in when the API refuses the token and the renewal gets no answer', async () => {
-    const store = memoryStore(fresh())
-    const fetchImpl = vi.fn<Fetch>(async (input) => {
-      if (String(input).endsWith('/oauth/token')) {
-        throw new TypeError('Network request failed')
-      }
-      return new Response(null, { status: 401 })
-    })
-    const session = await restored(store, fetchImpl)
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore(fresh())
+      const fetchImpl = vi.fn<Fetch>(async (input) => {
+        if (String(input).endsWith('/oauth/token')) {
+          throw new TypeError('Network request failed')
+        }
+        return new Response(null, { status: 401 })
+      })
+      const session = await restored(store, fetchImpl)
 
-    await expect(session.me()).rejects.toBeInstanceOf(RenewalFailedError)
-    expect(session.snapshot.tokens?.accessToken).toBe('access-1')
-    expect(store.saved?.accessToken).toBe('access-1')
-    expect(session.snapshot.ended).toBeNull()
+      const failed = expect(session.me()).rejects.toBeInstanceOf(RenewalFailedError)
+      await vi.advanceTimersByTimeAsync(2_000)
+      await failed
+      expect(session.snapshot.tokens?.accessToken).toBe('access-1')
+      expect(store.saved?.accessToken).toBe('access-1')
+      expect(session.snapshot.ended).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('ends the sign-in when the API refuses the token and there is no refresh token', async () => {

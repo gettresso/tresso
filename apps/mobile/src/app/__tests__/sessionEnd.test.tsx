@@ -145,7 +145,8 @@ describe('when the sign-in ends', () => {
     launch()
 
     await waitFor(() => expect(seen?.mail.userId).toBe('kim'))
-    await waitFor(() => expect(seen?.mail.syncError).toContain('could not be renewed right now'))
+    // The refresh is asked once more after 2 seconds before the request fails.
+    await waitFor(() => expect(seen?.mail.syncError).toContain('could not be renewed right now'), { timeout: 4_000 })
     expect(seen?.auth.isAuthenticated).toBe(true)
     expect(keychain.items.get('auth.refreshToken')).toBe('refresh-1')
     expect(disk.deleted).toEqual([])
