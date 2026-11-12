@@ -12,7 +12,10 @@ import {
   localChatId,
   queueLocalReply,
   removeLocalChats,
+  removeLocalGroupChats,
+  resetLocalCursor,
   retryLocalReply,
+  setLocalChatAccount,
   setLocalChatState,
 } from './localBackend'
 import { ChatRelayStopped, type IncomingChat, type IncomingMessage } from './relay'
@@ -313,5 +316,39 @@ describe('LocalChatBackend', () => {
 
     expect((await store.chatAccounts())[0]!.includeGroups).toBe(false)
     expect(await backend.settings()).toEqual({ includeGroups: false, leftOut: new Set([DIRECT]), importSince: 0 })
+  })
+
+  it('keeps the bridge state and Notify me on the account row, which a later prepare keeps', async () => {
+    const stored = await setLocalChatAccount(store, { bridge: 'stopped', link: 'linked', linkedAt: iso(-60), loopbackOnly: true, notify: true })
+
+    expect(stored).toMatchObject({ bridge: 'stopped', link: 'linked', linkedAt: iso(-60), loopbackOnly: true, notify: true })
+    await new LocalChatBackend(store, config, identity, () => now).prepare()
+    expect((await store.chatAccounts())[0]).toMatchObject({ bridge: 'stopped', link: 'linked', notify: true })
+
+    // Without the row (before the relay's first round) nothing is made.
+    await removeLocalChats(store)
+    expect(await setLocalChatAccount(store, { notify: false })).toBeNull()
+    expect(await store.chatAccounts()).toEqual([])
+  })
+
+  it('removes the group chats but a left-out one, and resets the cursor for a new first import', async () => {
+    const group: IncomingChat = { jid: GROUP, name: 'Family', kind: 'group' }
+    const other = '120363000000000002@g.us'
+    await backend.ingest(
+      [direct, group, { jid: other, name: 'Club', kind: 'group' }],
+      [incoming('A1', DIRECT, -10), incoming('G1', GROUP, -9, { sender: { id: '31611111111', name: 'Mom' } }), incoming('C1', other, -8, { sender: { id: '31622222222', name: null } })],
+      false,
+    )
+    await setLocalChatState(store, localChatId(other), { leftOut: true })
+    await backend.setCursor({ storeId: 's1', rowid: 9, firstImport: null })
+
+    expect(await removeLocalGroupChats(store)).toBe(1)
+
+    expect((await store.chats()).map(({ chat }) => chat.jid)).toEqual([DIRECT])
+    expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, other)).toMatchObject({ leftOut: true })
+    expect(await store.chat(localChatId(GROUP))).toBeNull()
+
+    await resetLocalCursor(store)
+    expect(await backend.cursor()).toBeNull()
   })
 })
