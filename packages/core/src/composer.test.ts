@@ -1113,7 +1113,7 @@ describe('Composer', () => {
       expect(sent[0]!.outgoingId).not.toBe(tried[0]!.outgoingId)
     })
 
-    it('is kept when the session ended while the send was under way: the server may have queued it', async () => {
+    it('is kept when a send fails with an error that carries no status (a session that ended under way): the server may have queued it', async () => {
       composer.openNew([{ address: 'anna@example.test', name: null }])
       const id = composer.state.draft!.id
       // The client drops the answer (maybe a 2xx) once the session ended; it is not the server's refusal.

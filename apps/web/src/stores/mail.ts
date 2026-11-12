@@ -59,6 +59,9 @@ const LIST_STEP = 100
 /** Why nothing is sent for a copy whose user the server has not confirmed yet. */
 export const STILL_CHECKING = 'Tresso is still checking who is signed in. Try again once it is connected.'
 
+/** How long the draft on screen gets to be written into a kept copy before it closes at the end of a session. */
+export const KEPT_SAVE_LIMIT_MS = 3_000
+
 const UNIFIED_INBOX: ListScope = { kind: 'inbox', mailAccountId: null }
 
 export type SyncState = 'idle' | 'syncing' | 'error'
@@ -190,6 +193,8 @@ export const useMailStore = defineStore('mail', () => {
    * in another tab): the draft on screen, so typing since the last autosave is kept with the copy.
    */
   const beforeKeptClose = new Set<() => Promise<void>>()
+  /** The close of a kept copy under way (closeKept); a start waits for it, so none meets the copy half closed. */
+  let closingKept: Promise<void> | null = null
 
   /**
    * Opens the user's copy and, once the server confirmed the user, keeps it current. A start that is not `confirmed`
@@ -200,6 +205,14 @@ export const useMailStore = defineStore('mail', () => {
    */
   async function start(forUserId: string, options: { confirmed?: boolean } = {}): Promise<void> {
     const confirmed = options.confirmed !== false
+    if (closingKept !== null) {
+      // The previous session's copy is still taking its last draft: it closes first, then this start opens it (or
+      // another user's) afresh. A sign-out meanwhile ended the session this start was for.
+      await closingKept
+      if (!auth.isAuthenticated) {
+        return
+      }
+    }
     if (userId === forUserId) {
       if (!confirmed || syncing) {
         return
@@ -528,10 +541,18 @@ export const useMailStore = defineStore('mail', () => {
    */
   async function removeLeftCopies(): Promise<void> {
     let failure: unknown = null
+    const stillMarked = (name: string) => keptCopies().some((kept) => kept.name === name && kept.remove === true)
     for (const copy of keptCopies().filter((kept) => kept.remove === true)) {
+      // Looked at again before each removal: its user may have signed in meanwhile and opened it (which unmarks it).
+      if (!stillMarked(copy.name) || (userId !== null && mailCopyName(userId) === copy.name)) {
+        continue
+      }
       try {
         await deleteMailStore(copy.userId, copy.name)
-        forgetCopy(copy.name)
+        // Only the mark goes: an entry its user wrote again meanwhile (rememberCopy) is theirs.
+        if (stillMarked(copy.name)) {
+          forgetCopy(copy.name)
+        }
       } catch (error) {
         console.error('Removing the mail a signed-out user left on this device failed', error)
         failure = error
@@ -925,9 +946,29 @@ export const useMailStore = defineStore('mail', () => {
     return (await db.value?.drafts()) ?? []
   }
 
-  /** Drafts with edits that never reached the server (written offline, say): a sign-out would delete them. */
+  /**
+   * Drafts with edits that never reached the server (written offline, say) in the copy a sign-out would delete. When
+   * that copy is not open (its start could not open or read it, another tab upgraded it, it is still opening), it is
+   * opened to look, so the question is asked whenever drafts would be lost. Throws when it cannot be read.
+   */
   async function unsavedDrafts(): Promise<Draft[]> {
-    return (await drafts()).filter((draft) => draft.pendingSave)
+    // A copy still opening is either open afterwards or closed again by its start.
+    await Promise.allSettled(openings)
+    const pending = (all: Draft[]) => all.filter((draft) => draft.pendingSave)
+    const database = db.value
+    if (database !== null) {
+      return pending(await database.drafts())
+    }
+    const forUserId = lastUser ?? openedUnconfirmed
+    if (forUserId === null) {
+      return []
+    }
+    const copy = await openMailStore(forUserId)
+    try {
+      return pending(await copy.drafts())
+    } finally {
+      await copy.close()
+    }
   }
 
   /**
@@ -966,25 +1007,44 @@ export const useMailStore = defineStore('mail', () => {
 
   /**
    * A session ended without a sign-out: what is still being written goes into the copy first, while it is open, and
-   * then it closes. The users of this session are no longer the ones a later sign-out removes the copy of: that is
-   * whoever starts next (a sign-out before the next start must not remove this copy for someone else).
+   * then it closes. The writes get {@link KEPT_SAVE_LIMIT_MS}; a write that does not settle by then (storage that
+   * hangs) does not keep the copy open. The users of this session are no longer the ones a later sign-out removes the
+   * copy of: that is whoever starts next (a sign-out before the next start must not remove this copy for someone else).
    */
-  async function closeKept(): Promise<void> {
-    lastUser = null
-    openedUnconfirmed = null
-    // No pull starts while the draft is written: the session is over.
-    engine?.stop()
-    const mine = generation
-    const results = await Promise.allSettled([...beforeKeptClose].map(async (write) => write()))
-    for (const result of results) {
-      if (result.status === 'rejected') {
-        console.error('Saving what was being written before the mail copy closed failed', result.reason)
+  function closeKept(): Promise<void> {
+    const closing = (async () => {
+      lastUser = null
+      openedUnconfirmed = null
+      // No pull starts while the draft is written: the session is over.
+      engine?.stop()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const late = new Promise<'late'>((resolve) => {
+        timer = setTimeout(() => resolve('late'), KEPT_SAVE_LIMIT_MS)
+      })
+      const writes = Promise.allSettled([...beforeKeptClose].map(async (write) => write())).then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            console.error('Saving what was being written before the mail copy closed failed', result.reason)
+          }
+        }
+        return 'done' as const
+      })
+      try {
+        if ((await Promise.race([writes, late])) === 'late') {
+          console.error(`Saving what was being written did not finish within ${KEPT_SAVE_LIMIT_MS / 1000} seconds; the mail copy closes anyway`)
+        }
+      } finally {
+        clearTimeout(timer)
       }
-    }
-    // A start that came meanwhile (the next sign-in in the desktop window) closed this copy itself; its own stays.
-    if (mine === generation) {
       await stop()
-    }
+    })()
+    const settled = closing.finally(() => {
+      if (closingKept === settled) {
+        closingKept = null
+      }
+    })
+    closingKept = settled
+    return settled
   }
 
   // Only the user's own sign-out removes the copy. A session that expired, or that ended in another tab (which removes
