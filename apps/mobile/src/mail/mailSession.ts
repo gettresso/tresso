@@ -102,7 +102,7 @@ interface Open {
 }
 
 /** The status while no copy is open. */
-export const NO_STATUS: SyncStatus = { kind: 'closed', text: '', fraction: null, remaining: null, notice: null, announcement: '' }
+export const NO_STATUS: SyncStatus = { kind: 'closed', text: '', fraction: null, remaining: null, notice: null, problem: null, announcement: '' }
 
 export function databaseName(userId: string): string {
   return `mail-${userId}.db`
@@ -326,14 +326,21 @@ export class MailSession {
       await index.close()
     }
     this.status.opening()
-    const sql = await this.deps.openSql(name)
+    let sql: Sql & { close(): Promise<void> }
+    try {
+      sql = await this.deps.openSql(name)
+    } catch (error) {
+      // No copy is open: the status says the sync stopped and why, as the error does.
+      this.status.openFailed(message(error))
+      throw error
+    }
     let database: SqliteMailStore
     let lastSyncedAt: number | null
     try {
       database = await SqliteMailStore.open(sql)
       lastSyncedAt = await database.syncedAt()
     } catch (error) {
-      this.status.closed()
+      this.status.openFailed(message(error))
       await sql.close()
       throw error
     }
@@ -478,13 +485,21 @@ export class MailSession {
     }
   }
 
-  private async pull(open: Open, run: () => Promise<void>): Promise<void> {
+  private async pull(open: Open, run: () => Promise<unknown>): Promise<void> {
     if (this.open !== open) {
       return
     }
+    const before = this.state.syncState
     this.update({ syncState: 'syncing' })
     try {
-      await run()
+      // A notification at or below the stored cursor pulls nothing (`false`): that proves nothing, so a failure stays
+      // and the copy is not noted as synced.
+      if ((await run()) === false) {
+        if (this.open === open) {
+          this.update({ syncState: before })
+        }
+        return
+      }
       if (this.open === open) {
         open.tellingSince ??= Date.now()
         this.status.synced()
