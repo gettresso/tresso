@@ -84,6 +84,16 @@ export function importableChat(jid: string): boolean {
   return chatAddress(jid) !== null
 }
 
+/**
+ * The one form a chat's JID is kept in, as the server stores it (`App\Chat\ChatJid`): lower case, without agent and
+ * device suffix (`31612345678@s.whatsapp.net` for `31612345678.0:3@S.WhatsApp.Net`). Null for a JID that is not a
+ * chat Tresso takes.
+ */
+export function canonicalChatJid(jid: string): string | null {
+  const address = chatAddress(jid)
+  return address === null ? null : `${address.user}@${address.server}`
+}
+
 /** `group` for a group JID, else `direct`. Meaningful for JIDs that pass `importableChat`. */
 export function chatKindOf(jid: string): ChatKind {
   return chatAddress(jid)?.kind ?? 'direct'

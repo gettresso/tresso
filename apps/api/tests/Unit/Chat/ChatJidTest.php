@@ -12,7 +12,7 @@ use PHPUnit\Framework\TestCase;
 /**
  * The server takes the chats the desktop relays and nothing else: the rule of `importableChat` in
  * packages/core/src/chat/format.ts, checked against the cases in packages/core/src/chat/importable-jids.json (which
- * format.test.ts is to read as well once PR #110 is merged) and against the expression in format.ts itself.
+ * format.test.ts reads as well) and against the expression in format.ts itself.
  *
  * The dev container mounts apps/api only, so there the test is skipped; in CI (the whole repository) a missing file
  * fails it.
