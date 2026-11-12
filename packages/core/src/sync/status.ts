@@ -135,6 +135,8 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
         fraction,
         remaining,
         notice: 'Tresso is updating your mail on this device. What you see may be out of date until it is done.',
+        // A failure stands until a pull works, also while its retry runs: the banner (and its dismissal) stays.
+        problem,
         announcement: quarter === null ? UPDATING : `${UPDATING}, ${quarter}%`,
       })
     }
@@ -144,6 +146,8 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
         fraction,
         remaining,
         notice: 'Your mail is still arriving on this device. What you see may be incomplete until it is done.',
+        // A failure stands until a pull works, also while its retry runs: the banner (and its dismissal) stays.
+        problem,
         announcement: quarter === null ? 'Getting your mail' : `Getting your mail, ${quarter}%`,
       })
     }
@@ -155,6 +159,8 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
         fraction,
         remaining,
         notice: 'Catching up on changes. What you see may be out of date until it is done.',
+        // A failure stands until a pull works, also while its retry runs: the banner (and its dismissal) stays.
+        problem,
         announcement: quarter === null ? 'Catching up' : `Catching up, ${quarter}%`,
       })
     }
@@ -165,7 +171,9 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
   if (facts.error !== null) {
     return status('error', lastSynced === null ? SYNC_STOPPED : `${SYNC_STOPPED}. Last synced ${lastSynced}`, { notice: staleNotice, announcement: SYNC_STOPPED, problem })
   }
-  if (pull !== null && pull.pages === 0 && pull.latest === null) {
+  // Only for a copy not known to be current (never synced, or not for longer than the list notice allows: a laptop
+  // that woke up): a pull of a copy synced a moment ago (a notification, a write) changes nothing on screen.
+  if (pull !== null && pull.pages === 0 && pull.latest === null && (stale || facts.lastSyncedAt === null)) {
     return status('checking', 'Checking for new mail…', { announcement: '' })
   }
   // A live stream reaches the server, whatever the device says of its network (a server on this machine).

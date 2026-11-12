@@ -136,10 +136,22 @@ describe('describeSync, as the audit asked', () => {
     expect(describe_({ online: false, stream: 'live' })).toMatchObject({ kind: 'live', text: 'Up to date' })
   })
 
-  it('never says up to date while the first page of a pull is on its way, and does not announce that', () => {
-    const checking = describe_({ pull: pull({ from: 500, cursor: 500 }), origin: 500 })
-    expect(checking).toMatchObject({ kind: 'checking', text: 'Checking for new mail…', announcement: '' })
-    expect(describe_({ pull: pull({ from: 500, cursor: 520, latest: 520, pages: 1, hasMore: false }), origin: 500 }).text).toBe('Up to date')
+  it('says checking, not up to date, while the first page is on its way for a copy not known to be current', () => {
+    // A laptop that woke up: long away, the stream live again, the first page not in yet.
+    const woke = describe_({ lastSyncedAt: NOW - STALE_AFTER_MS - 60_000, pull: pull({ from: 500, cursor: 500 }), origin: 500 })
+    expect(woke).toMatchObject({ kind: 'checking', text: 'Checking for new mail…', announcement: '' })
+    expect(describe_({ lastSyncedAt: null, pull: pull({ from: 500, cursor: 500 }), origin: 500 }).kind).toBe('checking')
+  })
+
+  it('stays up to date through a short pull of a copy synced a moment ago (a notification, a write)', () => {
+    expect(describe_({ lastSyncedAt: NOW - 60_000, pull: pull({ from: 500, cursor: 500 }), origin: 500 })).toMatchObject({ kind: 'live', text: 'Up to date' })
+  })
+
+  it('keeps the banner through a long retry, until a pull works', () => {
+    expect(describe_({ error: 'Bad gateway', lastSyncedAt: null, pull: pull({ cursor: 400, latest: 1000, pages: 1, hasMore: true }), origin: 0 })).toMatchObject({ kind: 'firstSync', problem: 'Sync stopped: Bad gateway' })
+    expect(describe_({ error: 'Bad gateway', afterUpdate: true, pull: pull({ cursor: 400, latest: 1000, pages: 1, hasMore: true }), origin: 0 }).problem).toBe('Sync stopped: Bad gateway')
+    expect(describe_({ error: 'Bad gateway', pull: pull({ from: 100, cursor: 600, latest: 13_000, pages: 1, hasMore: true }), origin: 100 })).toMatchObject({ kind: 'catchingUp', problem: 'Sync stopped: Bad gateway' })
+    expect(describe_({ lastSyncedAt: null, pull: pull({ cursor: 400, latest: 1000, pages: 1, hasMore: true }), origin: 0 }).problem).toBeNull()
   })
 
   it('says connecting, once, until the stream is live for the first time, through every retry', () => {
@@ -148,7 +160,7 @@ describe('describeSync, as the audit asked', () => {
   })
 
   it('takes a mailbox that finished a pull at cursor 0 for synced, not for a new device', () => {
-    expect(describe_({ pull: pull(), origin: 0 }).kind).toBe('checking')
+    expect(describe_({ pull: pull(), origin: 0 }).kind).toBe('live')
     expect(describe_({ pull: pull({ hasMore: false, pages: 0, latest: 0 }), origin: 0 }).kind).toBe('live')
     expect(describe_({ pull: pull(), origin: 0, lastSyncedAt: null }).kind).toBe('firstSync')
   })
@@ -297,5 +309,23 @@ describe('SyncStatusMachine', () => {
     subject.openFailed('disk full')
 
     expect(subject.status).toMatchObject({ kind: 'error', problem: 'Sync stopped: disk full' })
+  })
+
+  it('emits nothing for a short pull of a live copy synced a minute ago', () => {
+    const { subject, seen, advance } = machine()
+    subject.opening()
+    subject.opened({ confirmed: true, afterUpdate: false, lastSyncedAt: NOW - 60_000 })
+    subject.streamLive()
+    const before = seen.length
+
+    advance(5_000)
+    subject.progress(pull({ from: 10, cursor: 10 }))
+    subject.progress(pull({ from: 10, cursor: 12, latest: 12, pages: 1, hasMore: false }))
+    subject.progress(null)
+
+    // synced() moves "last synced" on, which a live copy does not show: nothing new to say or announce.
+    subject.synced(NOW + 5_000)
+    expect(seen.slice(before)).toEqual([])
+    expect(subject.status).toMatchObject({ kind: 'live', announcement: 'Up to date' })
   })
 })
