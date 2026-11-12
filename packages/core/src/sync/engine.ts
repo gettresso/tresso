@@ -117,6 +117,8 @@ export class SyncEngine {
   private retryAsked = false
   private stopped = false
   private pulling: PullProgress | null = null
+  /** The last pull failed: until one works, a notification pulls whatever its cursor says. */
+  private lastFailed = false
 
   constructor(private readonly options: SyncEngineOptions) {}
 
@@ -137,8 +139,10 @@ export class SyncEngine {
         }
         await this.options.store.markSynced?.((this.options.now ?? Date.now)())
         this.failures = 0
+        this.lastFailed = false
         this.cancelRetry()
       } catch (error) {
+        this.lastFailed = true
         this.scheduleRetry(error)
         throw error
       } finally {
@@ -221,13 +225,17 @@ export class SyncEngine {
     }
   }
 
-  /** A realtime notification: pull only when it is beyond what is stored. */
-  notify(cursor: number): Promise<void> {
-    if (this.appliedCursor !== null && cursor <= this.appliedCursor) {
-      return this.running ?? Promise.resolve()
+  /**
+   * A realtime notification: pull only when it is beyond what is stored, or when the last pull failed (the copy is not
+   * known to be current then). Resolves false when nothing was pulled and none was under way, so the caller does not
+   * take it for a completed pull (one that would clear a failure or note the copy as synced).
+   */
+  notify(cursor: number): Promise<boolean> {
+    if (!this.lastFailed && this.appliedCursor !== null && cursor <= this.appliedCursor) {
+      return this.running === null ? Promise.resolve(false) : this.running.then(() => true)
     }
 
-    return this.sync()
+    return this.sync().then(() => true)
   }
 
   private async pullAll(): Promise<void> {
@@ -235,7 +243,8 @@ export class SyncEngine {
     this.appliedCursor = since
     // A round that goes again (a notification came meanwhile) carries on the progress of the pull it belongs to.
     const started = this.pulling
-    this.report(started === null ? { from: since, cursor: since, latest: null, items: 0, pages: 0, hasMore: null } : { ...started, cursor: since, hasMore: null })
+    // Its progress stays where it was until the next page says more: it never steps back from 100% to 99%.
+    this.report(started === null ? { from: since, cursor: since, latest: null, items: 0, pages: 0, hasMore: null } : { ...started, cursor: since })
     for (;;) {
       const page = await this.options.fetchPage(since, this.options.pageSize ?? DEFAULT_PAGE_SIZE)
       if (page.cursor < since) {
