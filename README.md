@@ -140,7 +140,9 @@ and restart, after which the apps renew their sign-in).
 Running the images without this compose file, set the same settings as `compose.prod.yaml` does. Exactly one API
 container (running the image's default `frankenphp` command) needs `RUN_MIGRATIONS=1`: on start it makes the OAuth
 signing keys, migrates the database and creates the OAuth clients. Every other container, more API containers and the
-workers, needs those keys too (mount them read-only at `/app/config/jwt`). `CORS_ALLOW_ORIGIN` and
+workers, needs those keys too (mount them read-only at `/app/config/jwt`). Run the Messenger workers with the
+transports `compose.prod.yaml` gives each one: every transport and schedule needs exactly one consumer, and
+`scheduler_default` (the sweeps and nightly purges) gets a worker of its own, so a long sweep never holds up a send. `CORS_ALLOW_ORIGIN` and
 `MERCURE_CORS_ORIGINS` list the allowed origins separated by spaces: the web address and the desktop app's own,
 `tauri://localhost` and `http://tauri.localhost`. The API reads the optional addresses above as `AUTH_PUBLIC_URL`,
 `MCP_PUBLIC_URL` and `MCP_ON_API_HOST`, the web image `TRESSO_AUTH_URL`. `MERCURE_HEARTBEAT_SECONDS` (40 by default)

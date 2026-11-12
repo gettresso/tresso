@@ -137,7 +137,13 @@ services:
   # Outgoing mail and the slower jobs each have their own worker, so one never waits behind another (see compose.yaml).
   messenger:
     <<: *worker
-    command: ["php", "bin/console", "messenger:consume", "async", "search", "push", "scheduler_notifications", "scheduler_default", "scheduler_batches", "scheduler_daily_brief", "--time-limit=3600", "--memory-limit=256M"]
+    command: ["php", "bin/console", "messenger:consume", "async", "search", "push", "scheduler_notifications", "scheduler_batches", "scheduler_daily_brief", "--time-limit=3600", "--memory-limit=256M"]
+
+  # The sweeps and nightly purges (scheduler_default) run in their own worker: a sweep with much to delete takes up to
+  # 20 seconds, and a queued send must not wait behind it.
+  maintenance:
+    <<: *worker
+    command: ["php", "bin/console", "messenger:consume", "scheduler_default", "--time-limit=3600", "--memory-limit=256M"]
 
   classifier:
     <<: *worker
