@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import { signInProvider, type SyncedCalendar, type SyncedMailAccount } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { useAccountsStore } from '@/stores/accounts'
+import { useMailStore } from '@/stores/mail'
 
 /**
  * On the calendar page: the mail accounts whose calendars do not show, and why. An account without calendar access
@@ -13,6 +14,7 @@ import { useAccountsStore } from '@/stores/accounts'
 const props = defineProps<{ accounts: SyncedMailAccount[]; calendars: SyncedCalendar[] }>()
 
 const store = useAccountsStore()
+const mail = useMailStore()
 
 /**
  * Notices the user hid, per account and status, in this browser. A hidden entry lasts only while the account keeps
@@ -39,13 +41,14 @@ function saveHidden(entries: string[]): void {
 function hide(account: SyncedMailAccount): void {
   saveHidden([...hidden.value, `${account.id}:${account.calendarStatus}`])
 }
-// Only while the account still has the status that was hidden. An account that is not in the list (yet) keeps its
-// entry: the list may still be loading.
+// Only while the account still has the status that was hidden. An account that is not in the list keeps its entry
+// until the first pull is over (the list may still be loading); after it, the account is gone or another user's (the
+// browser is shared), and its entry goes.
 watch(
-  () => props.accounts.map((account) => `${account.id}:${account.calendarStatus}`),
-  (current) => {
+  [() => props.accounts.map((account) => `${account.id}:${account.calendarStatus}`), () => mail.synced],
+  ([current, synced]) => {
     const known = new Set(props.accounts.map((account) => account.id))
-    const kept = hidden.value.filter((entry) => current.includes(entry) || !known.has(entry.split(':')[0] ?? ''))
+    const kept = hidden.value.filter((entry) => current.includes(entry) || (!synced && !known.has(entry.split(':')[0] ?? '')))
     if (kept.length !== hidden.value.length) saveHidden(kept)
   },
   { immediate: true },

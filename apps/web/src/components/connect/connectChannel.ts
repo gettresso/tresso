@@ -74,6 +74,12 @@ function channel(): BroadcastChannel | null {
  */
 export function markAwaiting(state: string, expiresAt: number): void {
   write(AWAITING_KEY, [...live(read<Noted[]>(AWAITING_KEY), state), { state, expiresAt }])
+  // An outcome no tab took is only checked for its expiry when read: one that expired goes here, so it does not stay
+  // in the browser until the next hand-over writes over it.
+  const outcome = read<Noted>(OUTCOME_KEY)
+  if (outcome !== null && !(typeof outcome.expiresAt === 'number' && outcome.expiresAt > Date.now())) {
+    write(OUTCOME_KEY, null)
+  }
 }
 
 export function clearAwaiting(state: string): void {
