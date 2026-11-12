@@ -1326,12 +1326,16 @@ The macOS app has a full menu bar (`apps/desktop/src-tauri/src/menu.rs`, describ
 ids and shortcuts): Tresso (About Tresso, Check for Updates…, Settings… ⌘,, Services, Hide Tresso ⌘H, Hide Others
 ⌥⌘H, Show All, Quit Tresso ⌘Q), File (New Message ⌘N, New Event, New To-do, Close Window ⌘W), Edit (Undo, Redo, Cut,
 Copy, Paste, Paste and Match Style ⌥⇧⌘V, Delete, Select All, Find… ⌘F), View (Inbox, Triage, To-dos, Calendar,
-Search, Reload ⌘R, Enter Full Screen ⌃⌘F), Window (Minimize ⌘M, Zoom, Bring All to Front, Tresso ⌘0) and Help
+Search, Reload, Enter Full Screen ⌃⌘F), Window (Minimize ⌘M, Zoom, Bring All to Front, Tresso ⌘0) and Help
 (Tresso Help, the README; Release Notes, the releases page). The standard items are AppKit's own, so they act on the
 focused web content; Paste and Match Style and Delete, which Tauri has no item for, are added natively. Items that act
 in the web client reach it as the `menu` event with the action's name, handled in one place
-(`apps/web/src/platform/menu.ts`), and are enabled through the one command `menu_state` while someone is signed in.
-Closing the window hides it and the app stays in the Dock; the Dock icon and Window > Tresso bring it back. The view
+(`apps/web/src/platform/menu.ts`), and are enabled through the one command `menu_state` while someone is signed in
+(the state lib.rs manages once, which the bar's setup fills). Reload acts signed out too, and only after the draft is
+saved and nothing is on its way, as before a restart for an update; it has no ⌘R, which other mail apps use for Reply.
+Closing the window hides it and the app stays in the Dock; the Dock icon and Window > Tresso bring it back, and so do
+a click on a notification (`show_main_window_command`), a `tresso://` link (the sign-in coming back), a second launch
+and Sparkle's question before a relaunch, each through the shell. The view
 switches have no shortcuts, because the web client has none for them; a Show/Hide Sidebar item waits for a sidebar that
 collapses. Windows and Linux keep no menu bar, as before.
 
@@ -1557,9 +1561,14 @@ protocol, so every client syncs the same way:
   "Opening your mail…", "Showing mail kept on this device" (before the sign-in is confirmed), "Getting your mail, 62%"
   (a copy that never synced), "Updating your mail on this device after the update, 25%", "Catching up: 12,400 changes
   to go" (a pull that began more than `BEHIND_CHANGES`, 1,000, change numbers behind, or of more than one page after
-  `STALE_AFTER_MS`, 30 minutes, away), "Up to date", "Connecting…" (only while the first connection is being made),
-  "Reconnecting… Last synced 14:02", "Offline. Last synced 14:02" and "Sync stopped. Last synced 14:02" (the banner
-  says "Sync stopped: " and the reason, from the same state). From a server that sends no `latest` the status counts
+  `STALE_AFTER_MS`, 30 minutes, away), "Checking for new mail…" (a pull whose first page has not answered yet, not
+  announced), "Up to date" (a live stream, also when the device says it is offline), "Connecting…" (one text, said
+  once, until the stream is live for the first time), "Reconnecting… Last synced 14:02", "Offline. Last synced 14:02"
+  and "Sync stopped. Last synced 14:02". The banner ("Sync stopped: " and the reason) reads the same status
+  (`problem`), so the two never disagree; a copy that could not be opened says so there too. A copy that finished a
+  pull before is never a new device again, also at cursor 0, and the fraction of one sync never steps back. A
+  notification at or below the stored cursor pulls nothing and proves nothing (`notify` resolves false): it neither
+  clears a failure nor notes the copy as synced; after a failure every notification pulls. From a server that sends no `latest` the status counts
   the items stored so far ("Syncing… 1,240 items so far"). While a sync is under way, or a copy that cannot sync has
   not synced for 30 minutes, the mail lists show a quiet notice that what they show may be out of date. The web and
   desktop clients show the status at the foot of the sidebar, with a thin progress line when the fraction is known and
@@ -1589,7 +1598,8 @@ a busy timeout), refuses writes once closing and waits for the ones under way, a
 in one transaction. A copy of an older schema version is brought up to date in place when `MIGRATIONS` has a step for
 every version on the way (`MIGRATIONS[n]` brings version n to n + 1, all steps in one transaction); a step that adds
 data the old copy never stored asks for a sync from the start, which keeps the rows on screen and overwrites them page
-by page. A copy of a newer version, or one a step is missing for, is dropped and rebuilt, keeping the drafts that exist
+by page. A step that fails rolls back, and the copy is rebuilt instead, so it always opens. A copy of a newer version,
+or one a step is missing for, is dropped and rebuilt, keeping the drafts that exist
 only on the device. Either way the store says so (`afterUpdate`), and the status says "Updating your mail on this
 device after the update" until that pull is done. The browser's store upgrades in place per IndexedDB version and syncs
 again from the start, which it says the same way. A resync (after a change the server refused could not be put back) makes the next pull start from the
