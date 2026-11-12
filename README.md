@@ -152,10 +152,13 @@ container (running the image's default `frankenphp` command) needs `RUN_MIGRATIO
 signing keys, migrates the database and creates the OAuth clients. Every other container, more API containers and the
 workers, needs those keys too (mount them read-only at `/app/config/jwt`). Run the Messenger workers with the
 transports `compose.prod.yaml` gives each one: every transport and schedule needs exactly one consumer, and
-`scheduler_default` (the sweeps and nightly purges) gets a worker of its own, so a long sweep never holds up a send. `CORS_ALLOW_ORIGIN` and
-`MERCURE_CORS_ORIGINS` list the allowed origins separated by spaces: the web address and the desktop app's own,
-`tauri://localhost` and `http://tauri.localhost`. The API reads the optional addresses above as `AUTH_PUBLIC_URL`,
-`MCP_PUBLIC_URL` and `MCP_ON_API_HOST`, the web image `TRESSO_AUTH_URL`. `MERCURE_HEARTBEAT_SECONDS` (40 by default)
+`scheduler_default` (the sweeps and nightly purges) gets a worker of its own, so a long sweep never holds up a send.
+`CORS_ALLOW_ORIGIN` and `MERCURE_CORS_ORIGINS` list the allowed origins separated by spaces: the web address and the
+desktop app's own, `tauri://localhost` and `http://tauri.localhost`. The API reads the optional addresses below as
+`AUTH_PUBLIC_URL`, `MCP_PUBLIC_URL` and `MCP_ON_API_HOST`, the web image `TRESSO_AUTH_URL`. When the realtime hub
+(`MERCURE_PUBLIC_URL`) is on another host than the API, give the web image that address as `TRESSO_HUB_URL` too: its
+Content-Security-Policy lets the page connect only to itself, the API and that hub (`compose.prod.yaml` keeps the hub
+on the API's address and needs none). `MERCURE_HEARTBEAT_SECONDS` (40 by default)
 sets how often the hub writes on an idle stream; the API tells the apps, which take a stream silent for two and a half
 of these for dead, so set it for the API and the hub alike (`compose.prod.yaml` passes it to both). Apps released
 before this setting do not watch for silence at all, so it does not affect them.
@@ -196,8 +199,8 @@ To switch an existing server without signing anyone out:
 Behind a proxy of your own instead of the one in `compose.prod.yaml`: route the six sign-in paths above on the web
 address to the API (not `/auth/*` as a whole: `/auth/callback` is the web client's), serve the MCP host from the API
 like the API host, and keep the `Host` header the browser sent (the API builds its redirects and its MCP metadata from
-it). [Operations](docs/OPERATIONS.md#moving-sign-in-and-mcp-to-their-own-addresses) has the full steps as Tresso Cloud
-does them, including the client address the sign-in limiter needs behind a proxy.
+it). [Operations](docs/OPERATIONS.md#moving-sign-in-and-mcp-to-their-own-addresses) has the full steps, including the
+client address the sign-in limiter needs behind a proxy.
 
 ### What changes in this release for a self-hosted server
 
@@ -452,7 +455,7 @@ app or the install scripts builds every platform without publishing.
 - [Architecture](docs/ARCHITECTURE.md): components, self-hosted and Tresso Cloud, auth, sync protocol, processing
   pipeline, scaling
 - [Billing](docs/BILLING.md): Tresso Cloud's subscriptions, the billing API and Stripe
-- [Operations](docs/OPERATIONS.md): moving sign-in and MCP to their own addresses on Tresso Cloud, and what to check
+- [Operations](docs/OPERATIONS.md): moving sign-in and MCP to their own addresses behind a proxy, and what to check
   by hand after a release
 - [Roadmap](docs/ROADMAP.md): phases from foundation to native apps
 

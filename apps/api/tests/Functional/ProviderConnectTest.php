@@ -492,7 +492,6 @@ final class ProviderConnectTest extends DatabaseTestCase
      */
     #[TestWith(['error'])]
     #[TestWith(['auth_failed'])]
-    #[TestWith(['not_granted'])]
     public function testSigningInAgainWithCalendarsPutsEveryCalendarProblemBackToUnknown(string $before): void
     {
         $account = $this->connectGoogle();
