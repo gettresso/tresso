@@ -54,7 +54,10 @@ export interface WhatsAppConfig {
   mode: 'local' | 'all'
   deviceId: string
   deviceName: string
+  /** ISO 8601; when Tresso saw the phone link, null when it did not. */
   linkedAt: string | null
+  /** ISO 8601; set once at connect (that moment less 30 days) and never changed: older messages are not brought in. */
+  importSince: string
   includeGroups: boolean
   notify: boolean
   leftOut: string[]
@@ -97,7 +100,10 @@ const tauriShell: WhatsAppShell = { invoke, listen }
 
 export function whatsAppShell(shell: WhatsAppShell = tauriShell) {
   return {
-    /** True on macOS, the only platform with WhatsApp. */
+    /**
+     * True on macOS, the only platform with WhatsApp, once it was turned on there (`defaults write app.tresso.desktop
+     * EnableWhatsApp -bool YES`, see whatsapp.rs): until then the app shows nothing of WhatsApp.
+     */
     available: () => shell.invoke<boolean>('whatsapp_available'),
     /** This computer's name, for "via <device>". */
     device: () => shell.invoke<{ name: string }>('whatsapp_device'),
