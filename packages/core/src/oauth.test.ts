@@ -124,12 +124,14 @@ describe('revokeToken', () => {
 })
 
 describe('refreshRefusalEndsSession', () => {
-  it('ends the session only when the token endpoint says the sign-in itself is over, on every client', () => {
-    expect(refreshRefusalEndsSession(new OAuthError('Refused', 'invalid_grant'))).toBe(true)
-    expect(refreshRefusalEndsSession(new OAuthError('Refused', 'invalid_request'))).toBe(true)
-    // The server does not know or allow the app for a moment (a deploy): a new sign-in would not cure that either.
-    expect(refreshRefusalEndsSession(new OAuthError('Refused', 'invalid_client'))).toBe(false)
-    expect(refreshRefusalEndsSession(new OAuthError('Refused', 'unauthorized_client'))).toBe(false)
+  it('ends the session on the four codes that say the sign-in or the client is over, on every client', () => {
+    for (const code of ['invalid_grant', 'invalid_request', 'invalid_client', 'unauthorized_client']) {
+      expect(refreshRefusalEndsSession(new OAuthError('Refused', code))).toBe(true)
+    }
+  })
+
+  it('keeps the session for anything else, which may work on the next try', () => {
+    expect(refreshRefusalEndsSession(new OAuthError('Failed', 'server_error'))).toBe(false)
     expect(refreshRefusalEndsSession(new OAuthError('Failed', null))).toBe(false)
     expect(refreshRefusalEndsSession(new Error('offline'))).toBe(false)
   })
