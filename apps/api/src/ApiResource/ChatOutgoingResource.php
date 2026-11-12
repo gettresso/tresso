@@ -36,6 +36,10 @@ use App\State\ChatOutgoingProvider;
             security: "is_granted('".ChatAccessVoter::SEND."')",
             input: QueueReply::class,
             read: false,
+            // The body names the reply's `id`, which API Platform would take for an update of an existing item: the
+            // processor reads and validates the body itself.
+            deserialize: false,
+            validate: false,
             processor: ChatOutgoingProcessor::class,
             name: 'chat_outgoing_queue',
         ),
