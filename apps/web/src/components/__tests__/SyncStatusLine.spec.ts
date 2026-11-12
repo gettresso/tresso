@@ -39,7 +39,8 @@ describe('SyncStatusLine', () => {
       [{ stream: 'retrying' }, 'Reconnecting… Last synced 14:02', true],
       [{ online: false, stream: 'retrying' }, 'Offline. Last synced 14:02', false],
       [{ online: false, stream: 'live' }, 'Up to date', false],
-      [{ pull: pull({ from: 100, cursor: 100 }), origin: 100 }, 'Checking for new mail…', false],
+      [{ pull: pull({ from: 100, cursor: 100 }), origin: 100, lastSyncedAt: null }, 'Checking for new mail…', false],
+      [{ pull: pull({ from: 100, cursor: 100 }), origin: 100 }, 'Up to date', false],
       [{ error: 'Bad gateway' }, 'Sync stopped. Last synced 14:02', false],
       [{ stream: 'off' }, 'Last synced 14:02', false],
     ]

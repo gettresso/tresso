@@ -144,6 +144,31 @@ describe('App', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('Signing in to kim@company.example failed')
   })
 
+  it('keeps a hidden sync error hidden while a long retry (a first sync) runs and fails again', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
+    await router.push('/')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    const mail = useMailStore()
+    const firstSync = (error: string | null, pull: PullProgress | null) => {
+      mail.syncStatus = describeSync({ ...openFacts, lastSyncedAt: null, error, pull, origin: 0 })
+    }
+    firstSync('Failed to fetch', null)
+    await flushPromises()
+    await wrapper.get('[role="alert"] button[aria-label="Hide this message"]').trigger('click')
+
+    // Retries of a first sync show their progress; the failure stands until one works.
+    for (const cursor of [400, 800]) {
+      firstSync('Failed to fetch', { from: 0, cursor, latest: 2000, items: cursor, pages: cursor / 400, hasMore: true })
+      await flushPromises()
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      firstSync('Failed to fetch', null)
+      await flushPromises()
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    }
+  })
+
   it('shows a hidden sync error again on a later outage, once a pull worked in between', async () => {
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
     await router.push('/')
