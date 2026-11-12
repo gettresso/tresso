@@ -1,0 +1,109 @@
+{
+  "description": "WhatsApp JIDs and whether Tresso takes them as a chat (importableChat in format.ts, App\\Chat\\ChatJid in apps/api). Both tests read this list; canonical is the form the server stores.",
+  "cases": [
+    {
+      "jid": "31612345678@s.whatsapp.net",
+      "chat": true,
+      "kind": "direct",
+      "canonical": "31612345678@s.whatsapp.net"
+    },
+    {
+      "jid": "84932172912345@lid",
+      "chat": true,
+      "kind": "direct",
+      "canonical": "84932172912345@lid"
+    },
+    {
+      "jid": "120363025246125486@g.us",
+      "chat": true,
+      "kind": "group",
+      "canonical": "120363025246125486@g.us"
+    },
+    {
+      "jid": "31612345678-1600000000@g.us",
+      "chat": true,
+      "kind": "group",
+      "canonical": "31612345678-1600000000@g.us"
+    },
+    {
+      "jid": "31612345678@S.WhatsApp.Net",
+      "chat": true,
+      "kind": "direct",
+      "canonical": "31612345678@s.whatsapp.net"
+    },
+    {
+      "jid": "31612345678:12@s.whatsapp.net",
+      "chat": true,
+      "kind": "direct",
+      "canonical": "31612345678@s.whatsapp.net"
+    },
+    {
+      "jid": "31612345678.0:3@s.whatsapp.net",
+      "chat": true,
+      "kind": "direct",
+      "canonical": "31612345678@s.whatsapp.net"
+    },
+    {
+      "jid": "120363025246125486@G.US",
+      "chat": true,
+      "kind": "group",
+      "canonical": "120363025246125486@g.us"
+    },
+    {
+      "jid": "0@s.whatsapp.net",
+      "chat": false
+    },
+    {
+      "jid": "status@broadcast",
+      "chat": false
+    },
+    {
+      "jid": "120363144038483540@newsletter",
+      "chat": false
+    },
+    {
+      "jid": "31612345678@bot",
+      "chat": false
+    },
+    {
+      "jid": "31612345678@c.us",
+      "chat": false
+    },
+    {
+      "jid": "31612345678@hosted",
+      "chat": false
+    },
+    {
+      "jid": "abc@s.whatsapp.net",
+      "chat": false
+    },
+    {
+      "jid": "31612345678-1@s.whatsapp.net",
+      "chat": false
+    },
+    {
+      "jid": "31612345678",
+      "chat": false
+    },
+    {
+      "jid": "",
+      "chat": false
+    },
+    {
+      "jid": " 31612345678@s.whatsapp.net",
+      "chat": false
+    },
+    {
+      "jid": "31612345678@s.whatsapp.net\n",
+      "chat": false
+    },
+    {
+      "jid": "0-0@g.us",
+      "chat": false
+    },
+    {
+      "jid": "31612345678@s.whatsapp.net.evil",
+      "chat": false
+    }
+  ]
+}

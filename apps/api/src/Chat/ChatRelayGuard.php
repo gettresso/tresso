@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Chat;
 
-use App\ApiResource\ChatConflict;
+use App\ApiResource\ChatProblem;
 use App\Entity\ChatAccount;
 use App\Entity\User;
 use App\Repository\ChatAccountRepository;
@@ -41,6 +41,31 @@ final readonly class ChatRelayGuard
      */
     public function relayedAccount(User $user, mixed $accountId, string $deviceId, \DateTimeImmutable $now): ChatAccount
     {
+        [$account, $isRelay] = $this->account($user, $accountId, $deviceId, $now);
+        if (!$isRelay) {
+            throw ChatProblem::notTheRelay();
+        }
+
+        return $account;
+    }
+
+    /**
+     * For a result only: the account, and whether the calling device relays it. A desktop that relayed before a
+     * takeover may still report that a reply it claimed went out ({@see ChatQueue::report()}); it is no sign of life
+     * of the relay.
+     *
+     * @return array{ChatAccount, bool}
+     */
+    public function reportingAccount(User $user, mixed $accountId, string $deviceId, \DateTimeImmutable $now): array
+    {
+        return $this->account($user, $accountId, $deviceId, $now);
+    }
+
+    /**
+     * @return array{ChatAccount, bool}
+     */
+    private function account(User $user, mixed $accountId, string $deviceId, \DateTimeImmutable $now): array
+    {
         $account = \is_string($accountId) ? $this->accounts->findOneOwnedBy($user, $accountId) : null;
         if (!$account instanceof ChatAccount) {
             throw new NotFoundHttpException('Chat account not found.');
@@ -53,11 +78,11 @@ final readonly class ChatRelayGuard
             throw new NotFoundHttpException('Chat account not found.');
         }
 
-        if (!Uuid::isValid($deviceId) || !$account->getRelayDeviceId()->equals(Uuid::fromString($deviceId))) {
-            throw ChatConflict::notTheRelay();
+        $isRelay = Uuid::isValid($deviceId) && $account->getRelayDeviceId()->equals(Uuid::fromString($deviceId));
+        if ($isRelay) {
+            $account->heardFromRelay($now);
         }
-        $account->heardFromRelay($now);
 
-        return $account;
+        return [$account, $isRelay];
     }
 }

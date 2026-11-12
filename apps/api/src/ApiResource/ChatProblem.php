@@ -15,17 +15,21 @@ use Symfony\Component\Serializer\Attribute\SerializedName;
 use Symfony\Component\WebLink\Link;
 
 /**
- * A 409 of the chat endpoints, with a `code` a client acts on beside the problem detail:
+ * A refusal of the chat endpoints with a `code` a client acts on beside the problem detail. 409:
  *
  * - `not_the_relay`: the calling desktop does not relay this account (any more); it stops relaying.
  * - `already_going_out`: the reply is being sent or was sent, so it cannot be cancelled.
  * - `id_taken`: another reply has this id; the client makes a new one.
  * - `result_final`: the reply has a result already, or the relay did not claim it; a result is never changed.
  * - `not_failed`: only a reply that failed can be tried again.
+ * - `cancelled`: a reply with this id was cancelled or removed; it is never queued again.
+ *
+ * 413:
+ *
+ * - `too_large`: the relay's batch is larger than {@see \App\ApiResource\Input\Chat\RelayMessages::MAX_BYTES}; send fewer messages at once.
  */
 #[ErrorResource(
-    uriTemplate: '/chat_conflicts/{id}',
-    status: 409,
+    uriTemplate: '/chat_problems/{id}',
     uriVariables: ['id'],
     openapi: false,
     outputFormats: [
@@ -33,11 +37,11 @@ use Symfony\Component\WebLink\Link;
         'json' => ['application/problem+json', 'application/json'],
     ],
     provider: 'api_platform.state.error_provider',
-    shortName: 'ChatConflict',
+    shortName: 'ChatProblem',
     description: 'Conflict',
     operations: [
         new ErrorOperation(
-            name: '_api_chat_conflict_problem',
+            name: '_api_chat_problem_problem',
             outputFormats: ['json' => ['application/problem+json']],
             normalizationContext: [
                 SchemaFactory::OPENAPI_DEFINITION_NAME => '',
@@ -47,7 +51,7 @@ use Symfony\Component\WebLink\Link;
             ],
         ),
         new ErrorOperation(
-            name: '_api_chat_conflict_hydra',
+            name: '_api_chat_problem_hydra',
             outputFormats: ['jsonld' => ['application/problem+json', 'application/ld+json']],
             links: [new Link(rel: 'http://www.w3.org/ns/json-ld#error', href: 'http://www.w3.org/ns/hydra/error')],
             normalizationContext: [
@@ -62,17 +66,29 @@ use Symfony\Component\WebLink\Link;
 )]
 #[ApiProperty(property: 'traceAsString', hydra: false)]
 #[ApiProperty(property: 'string', hydra: false)]
-final class ChatConflict extends \RuntimeException implements ProblemExceptionInterface, HttpExceptionInterface
+final class ChatProblem extends \RuntimeException implements ProblemExceptionInterface, HttpExceptionInterface
 {
     public const string NOT_THE_RELAY = 'not_the_relay';
     public const string ALREADY_GOING_OUT = 'already_going_out';
     public const string ID_TAKEN = 'id_taken';
     public const string RESULT_FINAL = 'result_final';
     public const string NOT_FAILED = 'not_failed';
+    public const string CANCELLED = 'cancelled';
+    public const string TOO_LARGE = 'too_large';
 
-    private function __construct(private readonly string $reason, string $detail)
+    private function __construct(private readonly string $reason, string $detail, private readonly int $status = 409)
     {
         parent::__construct($detail);
+    }
+
+    public static function cancelled(): self
+    {
+        return new self(self::CANCELLED, 'The reply with this id was cancelled or removed; it is not queued again.');
+    }
+
+    public static function tooLarge(int $maxBytes): self
+    {
+        return new self(self::TOO_LARGE, \sprintf('The batch is larger than %d bytes; send fewer messages at once.', $maxBytes), 413);
     }
 
     public static function notTheRelay(): self
@@ -118,7 +134,7 @@ final class ChatConflict extends \RuntimeException implements ProblemExceptionIn
     #[ApiProperty(writable: false, initializable: false)]
     public function getType(): string
     {
-        return '/chat_conflicts/'.$this->reason;
+        return '/chat_problems/'.$this->reason;
     }
 
     #[Groups(['jsonld', 'json'])]
@@ -139,7 +155,7 @@ final class ChatConflict extends \RuntimeException implements ProblemExceptionIn
     #[ApiProperty(writable: false, initializable: false)]
     public function getStatus(): int
     {
-        return 409;
+        return $this->status;
     }
 
     #[Groups(['jsonld', 'json'])]
@@ -151,7 +167,7 @@ final class ChatConflict extends \RuntimeException implements ProblemExceptionIn
 
     public function getStatusCode(): int
     {
-        return 409;
+        return $this->status;
     }
 
     /** @return array<string, string> */

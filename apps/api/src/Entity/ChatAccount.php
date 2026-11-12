@@ -82,6 +82,13 @@ class ChatAccount implements TracksChanges
     #[ORM\Column(nullable: true)]
     private ?bool $loopbackOnly = null;
 
+    /**
+     * Whether the relay finished importing the history it found when it started: it sends `firstImport` until then.
+     * Internal, not a client field. A new relay starts its own first import.
+     */
+    #[ORM\Column(options: ['default' => false])]
+    private bool $historyImported = false;
+
     #[ORM\Column(options: ['default' => true])]
     private bool $includeGroups;
 
@@ -176,6 +183,7 @@ class ChatAccount implements TracksChanges
     {
         if (!$this->relayDeviceId->equals($deviceId)) {
             $this->relayDeviceId = $deviceId;
+            $this->historyImported = false;
         }
         $this->relayDeviceName = $deviceName;
         $this->relaySeenAt = $now;
@@ -214,6 +222,17 @@ class ChatAccount implements TracksChanges
         if ($loopbackOnly !== $this->loopbackOnly) {
             $this->loopbackOnly = $loopbackOnly;
         }
+    }
+
+    /** True while the relay imports the history it found when it started (until its first batch without `firstImport`). */
+    public function importsHistory(): bool
+    {
+        return !$this->historyImported;
+    }
+
+    public function finishHistoryImport(): void
+    {
+        $this->historyImported = true;
     }
 
     public function getBridgeState(): ChatBridgeState

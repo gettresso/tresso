@@ -17,6 +17,12 @@ final class RelayMessages extends RelayRequest
     public const int MAX_MESSAGES = 200;
     public const int MAX_CHATS = 200;
 
+    /**
+     * Bytes a call may have: 200 messages of a few kilobytes fit many times over, while PHP keeps the decoded batch
+     * and its sealed copy well within its memory limit (256 MB). A larger batch is answered 413 `too_large`.
+     */
+    public const int MAX_BYTES = 8 * 1024 * 1024;
+
     /** True while the relay imports the history it found when it started: those messages arrive read. */
     public bool $firstImport = false;
 

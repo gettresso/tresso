@@ -18,6 +18,9 @@ final class QueueReply
 {
     public const int MAX_TEXT = 4096;
 
+    /** Bytes a request may have: the text in four-byte characters, escaped, and the id. */
+    public const int MAX_BYTES = 64 * 1024;
+
     /** How far ahead of the server an id may be made: a little clock skew, as for mail ({@see \App\ApiResource\Input\Outbox\SendMessageInput}). */
     private const string ID_AHEAD = '+5 minutes';
 

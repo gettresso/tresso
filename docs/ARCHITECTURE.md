@@ -2974,32 +2974,49 @@ chat's JID and WhatsApp id, so it never needs either readable.
   (`DELETE /api/v1/chat-outgoing/{id}`) and trying it again (`POST /api/v1/chat-outgoing/{id}/retry`) need
   `CHAT_SEND`; Tresso's own chat state (`PATCH /api/v1/chats/{id}`: `readThrough`, `archivedThrough`, `leftOut`) needs
   `CHAT_MANAGE`. Everything is loaded through the signed-in user: another user's id is a 404.
-- **Messages.** At most 200 messages and 200 chats a call; a text up to 65,536 characters (what the desktop cuts at);
-  JIDs follow `importableChat` in `packages/core/src/chat/format.ts` and are stored in one form (lower case, without
-  agent and device suffix); times not before 2009 and not more than a day ahead. A batch is stored in one transaction,
-  whole or not at all, and answers per message `stored`, `known` (the server had it: a replayed batch changes nothing)
-  or `left_out` (a chat the user left out, or a group while the account leaves groups out). Every message's chat must
-  be in the call or on the server (422 otherwise). Names lose control characters and direction overrides and are cut
-  to 255 characters. During the first import (`firstImport`) a chat's `readThrough` moves to its newest message, so
-  the history arrives read.
+- **Messages.** At most 200 messages, 200 chats and 8 MB a call (413 with `"code": "too_large"` above that, checked
+  before the body is decoded; the relay sends fewer at once); a text up to 65,536 characters (what the desktop cuts at)
+  and 262,144 bytes. Batches are limited per account (`chat_relay_import`: a token bucket of 1,200 batches, refilled
+  with 120 a minute, so a first import of a large history goes through and a looping relay does not). A batch is stored
+  in one transaction, whole or not at all, and answers counts and per message `stored`, `known` (the server had it: a
+  replayed batch changes nothing), `left_out` (a chat the user left out, or a group while the account leaves groups
+  out) or `refused`. `refused` is for what the relay copies from the bridge's store and cannot repair: a JID that is not
+  a chat `importableChat` in `packages/core/src/chat/format.ts` takes, a WhatsApp or sender id other than 1 to 128
+  visible ASCII characters, a time before 2009 or more than a day ahead. The rest of the batch is stored, so one bad row
+  never holds the relay's cursor; a malformed request (types, missing fields, sizes, a message whose chat is neither in
+  the call nor on the server) is still 422 as a whole. JIDs are stored in one form (lower case, without agent and
+  device suffix); the cases both sides test are in `packages/core/src/chat/importable-jids.json`. Names lose control
+  characters and direction overrides and are cut to 255 characters. `firstImport` is honoured until the relay's first
+  batch without it (and again for a relay that takes over): then a chat that had nothing unread is read through its
+  newest message, so the history arrives read.
 - **Reply queue.** A reply's id is a UUIDv7 the client made in the last 10 minutes; the same id again returns the stored
-  reply (200), the same id for another chat or user is 409 `id_taken`. At most 100 replies per user in 10 minutes
-  (429). The relay claims the oldest waiting reply of its account (`waiting` to `sending`, `FOR UPDATE SKIP LOCKED`
-  under the account's lock); a claimed reply is never handed out again. The result is final: only a `sending` reply
-  takes one, the same result again is a 200, another is 409 `result_final`. `sent: false` carries the shell's reason
-  (`bridge_stopped`, `not_linked`, `refused`, `unconfirmed`); nothing sends a failed reply again until the user's Try
-  again. Cancelling deletes a waiting or failed reply (a tombstone); a reply being sent or sent is 409
+  reply (200), the same id for another chat or user is 409 `id_taken` (the chat is looked up first, so another user's
+  chat is a 404 whatever the id), and the id of a reply that was cancelled or went with a chat left out is 409
+  `cancelled` for good (its tombstone is the record). At most 100 replies per user in 10 minutes (429). The relay
+  claims the oldest waiting reply of its account (`waiting` to `sending`); a claimed reply is never handed out again.
+  The claim answers `claimedAt`, and the result carries it back: a result for another claim is 409 `result_final`. A
+  result is final: the same result again is a 200, another is 409 `result_final`, except that `sent: true` wins over
+  `unconfirmed` of the same claim (it did go out, and Try again would send it twice). A desktop that no longer relays
+  the account may still report `sent: true` for its own claim, nothing else (409 `not_the_relay`). `sent: false` carries
+  the shell's reason (`bridge_stopped`, `not_linked`, `refused`, `unconfirmed`); nothing sends a failed reply again until
+  the user's Try again. Cancelling deletes a waiting or failed reply (a tombstone); a reply being sent or sent is 409
   `already_going_out`.
+- **Left out.** Leaving a chat out removes its messages and replies (tombstones) and keeps the chat row with its sealed
+  JID and name, which is no longer renamed: the relay must know to leave it out, and the user can take it in again.
 - **Sweep.** `SweepChatRelays` runs every minute on `scheduler_default` (the `maintenance` worker), and by hand as
   `bin/console app:chat:sweep-relays`: a relay not heard from for 3 minutes goes offline from when it was last heard
   from (its next call brings it back), and a reply still `sending` 5 minutes after its claim fails with `unconfirmed`,
   since the bridge returns no id and may have sent it. Heartbeats are no change for clients; these flips are.
-- **Locks.** Every chat write takes the owner's row first, then the chat rows (`App\Chat\ChatOwnerLock`), the order the
-  change numbers take them in, so no two writers wait on each other in a circle; the sweep skips an owner whose row is
-  busy.
+- **Locks.** Every chat write takes the owner's row first, `FOR NO KEY UPDATE` (`App\Chat\ChatOwnerLock`), then the
+  chat rows: the order the change numbers take them in, so no two writers wait on each other in a circle. It conflicts
+  with the change number update and with the key locks of `UserKeys`, and not with the KEY SHARE of an insert that
+  refers to the user. Claims, imports, cancels and the sweep of one user therefore take turns (tested on two real
+  connections); the sweep skips an owner whose row is busy.
 - **Delta.** Every write is a change in `chatAccounts`, `chats`, `chatMessages` and `chatOutgoing`; removals (a
-  cancelled reply, the messages and replies of a chat left out) are tombstones. Nothing of a message's text reaches a
-  log, an error or a validation message.
+  cancelled reply, the messages and replies of a chat left out) are tombstones. A relay batch gets a change number per
+  megabyte of text, and a chat message counts as one row of a delta page per 4 KB of its sealed text, so a page of long
+  messages stays as small as one of short ones. Nothing of a message's text reaches a log, an error or a validation
+  message.
 
 ## 4. Scale notes
 

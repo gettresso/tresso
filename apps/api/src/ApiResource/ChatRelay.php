@@ -42,7 +42,7 @@ use App\State\ChatRelayProcessor;
             processor: ChatRelayProcessor::class,
             name: 'chat_relay_status',
         ),
-        // At most 200 messages and 200 chats a call; safe to send again.
+        // At most 200 messages, 200 chats and 8 MB a call; safe to send again.
         new Post(
             uriTemplate: '/chat-accounts/{accountId}/relay/messages',
             uriVariables: ['accountId' => new Link(fromClass: ChatAccountResource::class, identifiers: ['id'])],
@@ -51,6 +51,9 @@ use App\State\ChatRelayProcessor;
             input: RelayMessages::class,
             output: RelayImportOutput::class,
             read: false,
+            // The processor checks the size in bytes before it decodes anything (413 `too_large`).
+            deserialize: false,
+            validate: false,
             processor: ChatRelayProcessor::class,
             name: 'chat_relay_messages',
         ),

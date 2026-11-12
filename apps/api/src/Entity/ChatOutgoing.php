@@ -114,13 +114,6 @@ class ChatOutgoing implements TracksChanges
         return $this->sentAt;
     }
 
-    /** The relay took it to send: it is not handed out again ({@see \App\Chat\ChatQueue}). */
-    public function claim(\DateTimeImmutable $now): void
-    {
-        $this->status = ChatOutgoingStatus::Sending;
-        $this->claimedAt = $now;
-    }
-
     public function markSent(\DateTimeImmutable $now): void
     {
         $this->status = ChatOutgoingStatus::Sent;

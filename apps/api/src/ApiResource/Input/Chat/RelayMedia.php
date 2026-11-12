@@ -20,6 +20,7 @@ final class RelayMedia
 
     /** The file's name; stored cut to 255 characters, without control characters. */
     #[Assert\Length(max: RelayChat::MAX_FIELD)]
+    #[Assert\Length(max: RelayMessage::MAX_FIELD_BYTES, countUnit: Assert\Length::COUNT_BYTES)]
     public ?string $name = null;
 
     /** Bytes; null when the bridge does not know. */

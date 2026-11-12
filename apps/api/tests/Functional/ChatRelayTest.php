@@ -60,7 +60,7 @@ final class ChatRelayTest extends DatabaseTestCase
             self::waMessage('3EB0A1B2C3D4E5F60718', '', '2026-11-12T09:13:00+00:00', ['media' => ['kind' => 'image', 'name' => 'image_20261112_101300.jpg', 'size' => 184220]]),
         ]);
 
-        self::assertSame(['stored' => 2, 'known' => 0, 'leftOut' => 0, 'results' => ['stored', 'stored']], $answer);
+        self::assertSame(['stored' => 2, 'known' => 0, 'leftOut' => 0, 'refused' => 0, 'results' => ['stored', 'stored']], $answer);
         $page = $this->delta($cursor);
         self::assertCount(1, $page['chats']);
         $chat = $page['chats'][0];
@@ -93,7 +93,7 @@ final class ChatRelayTest extends DatabaseTestCase
 
         $answer = $this->relayMessages($batch);
 
-        self::assertSame(['stored' => 0, 'known' => 2, 'leftOut' => 0, 'results' => ['known', 'known']], $answer);
+        self::assertSame(['stored' => 0, 'known' => 2, 'leftOut' => 0, 'refused' => 0, 'results' => ['known', 'known']], $answer);
         self::assertSame($rows, $this->chatRowCounts());
         self::assertSame($seq, $this->kimsChangeSeq(), 'A replayed batch is no change for clients.');
     }
@@ -102,7 +102,7 @@ final class ChatRelayTest extends DatabaseTestCase
     {
         $answer = $this->relayMessages([self::waMessage('M1', 'Hello'), self::waMessage('M1', 'Hello'), self::waMessage('M2', 'Bye')]);
 
-        self::assertSame(['stored' => 2, 'known' => 1, 'leftOut' => 0, 'results' => ['stored', 'known', 'stored']], $answer);
+        self::assertSame(['stored' => 2, 'known' => 1, 'leftOut' => 0, 'refused' => 0, 'results' => ['stored', 'known', 'stored']], $answer);
         self::assertSame(2, $this->countRows('SELECT COUNT(*) FROM chat_message'));
     }
 
@@ -166,7 +166,7 @@ final class ChatRelayTest extends DatabaseTestCase
             [['jid' => self::JID, 'name' => 'Renamed', 'kind' => 'direct'], ['jid' => self::GROUP_JID, 'name' => 'Family', 'kind' => 'group']],
         );
 
-        self::assertSame(['stored' => 0, 'known' => 0, 'leftOut' => 2, 'results' => ['left_out', 'left_out']], $answer);
+        self::assertSame(['stored' => 0, 'known' => 0, 'leftOut' => 2, 'refused' => 0, 'results' => ['left_out', 'left_out']], $answer);
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_message'));
         self::assertSame([$chatId], $this->connection()->fetchFirstColumn('SELECT id FROM chat'), 'No chat is made for an excluded group.');
         self::assertSame('Bram Visser', $this->delta(0)['chats'][0]['name'] ?? null, 'Nothing of a left-out chat is taken, not its name either.');
@@ -175,15 +175,48 @@ final class ChatRelayTest extends DatabaseTestCase
     public function testTheFirstImportArrivesRead(): void
     {
         $this->relayMessages([self::waMessage('M1', 'Old news', '2026-10-20T08:00:00+00:00'), self::waMessage('M2', 'Older news', '2026-10-19T08:00:00+00:00')], firstImport: true);
+        $this->relayMessages([self::waMessage('M0', 'Oldest news', '2026-10-21T08:00:00+00:00')], firstImport: true);
 
         $chat = $this->delta(0)['chats'][0];
-        self::assertInstant('2026-10-20T08:00:00+00:00', $chat['readThrough'] ?? null);
-        self::assertInstant('2026-10-20T08:00:00+00:00', $chat['lastMessageAt'] ?? null);
+        self::assertInstant('2026-10-21T08:00:00+00:00', $chat['readThrough'] ?? null, 'Every batch of the first import arrives read.');
+        self::assertInstant('2026-10-21T08:00:00+00:00', $chat['lastMessageAt'] ?? null);
 
         $this->relayMessages([self::waMessage('M3', 'New', '2026-11-12T09:00:00+00:00')]);
         $chat = $this->delta(0)['chats'][0];
-        self::assertInstant('2026-10-20T08:00:00+00:00', $chat['readThrough'] ?? null, 'After the first import new messages are unread.');
+        self::assertInstant('2026-10-21T08:00:00+00:00', $chat['readThrough'] ?? null, 'After the first import new messages are unread.');
         self::assertInstant('2026-11-12T09:00:00+00:00', $chat['lastMessageAt'] ?? null);
+    }
+
+    public function testFirstImportAfterItEndedChangesNoReadTime(): void
+    {
+        $this->relayMessages([self::waMessage('M1', 'Hello', '2026-11-12T09:00:00+00:00')]);
+        $this->relayMessages(
+            [self::waMessage('M2', 'Unread', '2026-11-12T09:05:00+00:00'), self::waMessage('N1', 'Hi', '2026-11-12T09:06:00+00:00', ['chatJid' => self::OTHER_JID])],
+            [['jid' => self::JID, 'name' => 'Bram', 'kind' => 'direct'], ['jid' => self::OTHER_JID, 'name' => 'Anna', 'kind' => 'direct']],
+            firstImport: true,
+        );
+
+        foreach ($this->delta(0)['chats'] as $chat) {
+            self::assertNull($chat['readThrough'] ?? null, 'The first import ended with the first batch without it.');
+        }
+    }
+
+    public function testANewRelayStartsItsOwnFirstImportButLeavesUnreadChatsAlone(): void
+    {
+        $this->relayMessages([self::waMessage('M1', 'Unread', '2026-11-12T09:00:00+00:00')]);
+        $this->connectWhatsApp($this->userHeaders('kim@example.test', ['mail:read', 'mail:write'], 'desktop'), self::OTHER_MAC);
+
+        $this->relay('messages', [
+            'deviceId' => self::OTHER_MAC,
+            'firstImport' => true,
+            'chats' => [['jid' => self::JID, 'name' => 'Bram', 'kind' => 'direct'], ['jid' => self::OTHER_JID, 'name' => 'Anna', 'kind' => 'direct']],
+            'messages' => [self::waMessage('M2', 'Also unread', '2026-11-12T09:05:00+00:00'), self::waMessage('N1', 'History', '2026-11-12T08:00:00+00:00', ['chatJid' => self::OTHER_JID])],
+        ]);
+        self::assertResponseStatusCodeSame(200);
+
+        $chats = array_column($this->delta(0)['chats'], null, 'jid');
+        self::assertNull($chats[self::JID]['readThrough'] ?? null, 'A chat with unread messages stays unread.');
+        self::assertInstant('2026-11-12T08:00:00+00:00', $chats[self::OTHER_JID]['readThrough'] ?? null, 'A chat of the new relay\'s import arrives read.');
     }
 
     public function testTheLastMessageTimeOnlyMovesForwardAndNamesFollowTheBridge(): void
@@ -225,14 +258,9 @@ final class ChatRelayTest extends DatabaseTestCase
         yield 'a name longer than the desktop cuts at' => [['chats' => [['name' => str_repeat('a', 65_537)] + $chat], 'messages' => []], 'chats[0].name'];
         yield 'a kind that does not match the chat' => [['chats' => [['kind' => 'group'] + $chat], 'messages' => []], 'chats[0].kind'];
         yield 'one chat twice' => [['chats' => [$chat, ['jid' => '31612345678:3@s.whatsapp.net'] + $chat], 'messages' => []], 'chats[1].jid'];
-        yield 'no WhatsApp id' => [['chats' => [$chat], 'messages' => [['waId' => ''] + $message]], 'messages[0].waId'];
-        yield 'a WhatsApp id with a space' => [['chats' => [$chat], 'messages' => [['waId' => '3EB0 C767'] + $message]], 'messages[0].waId'];
-        yield 'a WhatsApp id that is too long' => [['chats' => [$chat], 'messages' => [['waId' => str_repeat('A', 129)] + $message]], 'messages[0].waId'];
-        yield 'a time far in the future' => [['chats' => [$chat], 'messages' => [['sentAt' => '2099-01-01T00:00:00+00:00'] + $message]], 'messages[0].sentAt'];
-        yield 'a time before WhatsApp' => [['chats' => [$chat], 'messages' => [['sentAt' => '1970-01-01T00:00:00+00:00'] + $message]], 'messages[0].sentAt'];
         yield 'no time' => [['chats' => [$chat], 'messages' => [['sentAt' => null] + $message]], 'messages[0].sentAt'];
-        yield 'a sender with a space in its id' => [['chats' => [$chat], 'messages' => [['sender' => ['id' => '316 1234', 'name' => null]] + $message]], 'messages[0].sender.id'];
         yield 'a file of negative size' => [['chats' => [$chat], 'messages' => [['media' => ['kind' => 'image', 'name' => null, 'size' => -1]] + $message]], 'messages[0].media.size'];
+        yield 'a WhatsApp id longer than any id' => [['chats' => [$chat], 'messages' => [['waId' => str_repeat('A', 1025)] + $message]], 'messages[0].waId'];
         yield 'a device id that is no UUID' => [['deviceId' => 'my-mac', 'chats' => [$chat], 'messages' => [$message]], 'deviceId'];
     }
 
@@ -251,28 +279,89 @@ final class ChatRelayTest extends DatabaseTestCase
     }
 
     /**
-     * The cases of `importableChat` in packages/core/src/chat/format.test.ts: what the desktop does not relay, the server
-     * does not take.
+     * What the relay copies from the bridge's store and cannot repair.
      *
-     * @return iterable<string, array{string}>
+     * @return iterable<string, array{array<string, mixed>}>
      */
-    public static function jidsThatAreNoChat(): iterable
+    public static function rowsTheRelayCannotRepair(): iterable
     {
-        foreach (['0@s.whatsapp.net', 'status@broadcast', '120363144038483540@newsletter', '31612345678@bot', '31612345678@c.us', '31612345678@hosted', 'abc@s.whatsapp.net', '31612345678-1@s.whatsapp.net', '31612345678', ' 31612345678@s.whatsapp.net'] as $jid) {
-            yield $jid => [$jid];
+        foreach (['0@s.whatsapp.net', 'status@broadcast', '120363144038483540@newsletter', '31612345678@c.us', 'abc@s.whatsapp.net', '31612345678', ''] as $jid) {
+            yield 'the JID '.var_export($jid, true) => [['chatJid' => $jid]];
         }
+        yield 'no WhatsApp id' => [['waId' => '']];
+        yield 'a WhatsApp id with a space' => [['waId' => '3EB0 C767']];
+        yield 'a WhatsApp id of 129 characters' => [['waId' => str_repeat('A', 129)]];
+        yield 'a sender with a space in its id' => [['sender' => ['id' => '316 1234', 'name' => null]]];
+        yield 'a time far in the future' => [['sentAt' => '2099-01-01T00:00:00+00:00']];
+        yield 'a time before WhatsApp' => [['sentAt' => '1970-01-01T00:00:00+00:00']];
     }
 
-    #[DataProvider('jidsThatAreNoChat')]
-    public function testRefusesAJidThatIsNoChat(string $jid): void
+    /**
+     * @param array<string, mixed> $bad
+     */
+    #[DataProvider('rowsTheRelayCannotRepair')]
+    public function testARowTheRelayCannotRepairIsRefusedAlone(array $bad): void
     {
-        $this->relay('messages', ['chats' => [['jid' => $jid, 'name' => 'Bram', 'kind' => 'direct']], 'messages' => [self::waMessage('M1', 'Hello', extra: ['chatJid' => $jid])]]);
+        $answer = $this->relayMessages([
+            self::waMessage('M1', 'Before'),
+            self::waMessage('M2', 'A secret plan', extra: $bad),
+            self::waMessage('M3', 'After', '2026-11-12T09:15:00+00:00'),
+        ]);
 
-        self::assertResponseStatusCodeSame(422);
-        self::assertContains('chats[0].jid', $this->violationPaths());
-        self::assertContains('messages[0].chatJid', $this->violationPaths());
-        self::assertStringNotContainsString('Hello', (string) $this->client->getResponse()->getContent());
-        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat'));
+        self::assertSame(['stored' => 2, 'known' => 0, 'leftOut' => 0, 'refused' => 1, 'results' => ['stored', 'refused', 'stored']], $answer);
+        self::assertSame(['Before', 'After'], array_column($this->delta(0)['chatMessages'], 'text'));
+        self::assertStringNotContainsString('secret', (string) $this->client->getResponse()->getContent());
+    }
+
+    public function testAChatThatIsNoChatIsLeftAside(): void
+    {
+        $answer = $this->relayMessages(
+            [self::waMessage('S1', 'A status', extra: ['chatJid' => 'status@broadcast']), self::waMessage('M1', 'Hello')],
+            [['jid' => 'status@broadcast', 'name' => 'Status', 'kind' => 'direct'], ['jid' => self::JID, 'name' => 'Bram', 'kind' => 'direct']],
+        );
+
+        self::assertSame(['refused', 'stored'], $answer['results'] ?? null);
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM chat'));
+    }
+
+    public function testABatchLargerThanEightMegabytesIs413(): void
+    {
+        $messages = array_map(static fn (int $i): array => self::waMessage('M'.$i, str_repeat('a', 65_536)), range(1, 130));
+
+        $this->relay('messages', ['chats' => [['jid' => self::JID, 'name' => 'Bram', 'kind' => 'direct']], 'messages' => $messages]);
+
+        self::assertResponseStatusCodeSame(413);
+        self::assertSame('too_large', $this->decodedResponse()['code'] ?? null);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_message'));
+    }
+
+    public function testALargeBatchGetsAChangeNumberPerMegabyteSoADeltaPageStaysSmall(): void
+    {
+        $cursor = $this->delta(0)['cursor'];
+        $messages = array_map(static fn (int $i): array => self::waMessage('M'.$i, str_repeat(\chr(64 + $i % 26), 60_000), \sprintf('2026-11-12T09:%02d:00+00:00', $i)), range(1, 40));
+
+        $this->relayMessages($messages);
+
+        self::assertGreaterThanOrEqual(3, $this->countRows('SELECT COUNT(DISTINCT change_seq) FROM chat_message'), 'About a megabyte of text per change number.');
+        $this->client->request('GET', \sprintf('/api/v1/sync/changes?since=%d&limit=200', $cursor), server: $this->web);
+        self::assertResponseIsSuccessful();
+        $page = $this->decodedResponse();
+        self::assertTrue($page['hasMore'] ?? null, 'Long messages fill a page sooner than short ones.');
+        self::assertIsArray($page['chatMessages'] ?? null);
+        self::assertLessThan(40, \count($page['chatMessages']));
+    }
+
+    public function testImportsAreLimitedPerAccount(): void
+    {
+        // The test limit is 30 batches.
+        for ($i = 1; $i <= 30; ++$i) {
+            $this->relayMessages([self::waMessage('M'.$i, 'Hi')]);
+        }
+
+        $this->relay('messages', ['chats' => [], 'messages' => [self::waMessage('M31', 'Hi')]]);
+
+        self::assertResponseStatusCodeSame(429);
+        self::assertSame(30, $this->countRows('SELECT COUNT(*) FROM chat_message'));
     }
 
     public function testAnotherDesktopIsNotTheRelay(): void
@@ -284,7 +373,7 @@ final class ChatRelayTest extends DatabaseTestCase
         $rows = $this->chatRowCounts();
         $seq = $this->kimsChangeSeq();
 
-        foreach (['status' => ['bridge' => 'stopped', 'link' => 'unlinked'], 'messages' => ['chats' => [], 'messages' => [self::waMessage('M2', 'Bye')]], 'outgoing/claim' => [], 'outgoing/'.$replyId.'/result' => ['sent' => true]] as $path => $body) {
+        foreach (['status' => ['bridge' => 'stopped', 'link' => 'unlinked'], 'messages' => ['chats' => [], 'messages' => [self::waMessage('M2', 'Bye')]], 'outgoing/claim' => [], 'outgoing/'.$replyId.'/result' => ['sent' => true, 'claimedAt' => '2026-11-12T10:00:00+00:00']] as $path => $body) {
             $this->relay($path, ['deviceId' => self::OTHER_MAC] + $body);
             self::assertResponseStatusCodeSame(409, $path);
             self::assertSame('not_the_relay', $this->decodedResponse()['code'] ?? null, $path);
@@ -399,7 +488,7 @@ final class ChatRelayTest extends DatabaseTestCase
         $replyId = $this->responseString('id');
         $rows = $this->chatRowCounts();
 
-        foreach (['status' => ['bridge' => 'stopped', 'link' => 'unlinked'], 'messages' => ['chats' => [], 'messages' => [self::waMessage('M2', 'Bye')]], 'outgoing/claim' => [], 'outgoing/'.$replyId.'/result' => ['sent' => true]] as $path => $body) {
+        foreach (['status' => ['bridge' => 'stopped', 'link' => 'unlinked'], 'messages' => ['chats' => [], 'messages' => [self::waMessage('M2', 'Bye')]], 'outgoing/claim' => [], 'outgoing/'.$replyId.'/result' => ['sent' => true, 'claimedAt' => '2026-11-12T10:00:00+00:00']] as $path => $body) {
             $this->relay($path, $body, $headers);
             self::assertResponseStatusCodeSame($status, $path);
         }
