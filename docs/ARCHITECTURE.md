@@ -2957,6 +2957,50 @@ it and encrypts in place.
   fails cuts the download off with an error. A tampered first frame (which covers any file up to 64 KiB) fails before
   anything is sent.
 
+### 3.17 WhatsApp relay and reply queue
+
+With "All my devices" one of the user's desktops relays their WhatsApp to the server: it reads the bridge's store and
+passes the messages on, and it sends the replies written on other devices. Chat accounts, chats, messages and replies
+are their own entities (`chat_account`, `chat`, `chat_message`, `chat_outgoing`), sealed with the owner's field key
+(`App\Chat\ChatFields`); the server finds a chat by the fingerprint of its JID and a message by the fingerprint of its
+chat's JID and WhatsApp id, so it never needs either readable.
+
+- **Who calls what.** `App\Security\ChatAccessVoter` decides every chat endpoint. The relay calls
+  (`POST /api/v1/chat-accounts/{id}/relay/status`, `relay/messages`, `relay/outgoing/claim`,
+  `relay/outgoing/{replyId}/result`) need `CHAT_MANAGE` (our own apps with `mail:write`) and our desktop app
+  (`DESKTOP_CLIENT`); `App\Chat\ChatRelayGuard` then answers only the account's relaying device (409 with
+  `"code": "not_the_relay"` for another desktop of the user, until it takes over through
+  `PUT /api/v1/chat-accounts/whatsapp`). Queueing a reply (`POST /api/v1/chats/{id}/outgoing`), cancelling it
+  (`DELETE /api/v1/chat-outgoing/{id}`) and trying it again (`POST /api/v1/chat-outgoing/{id}/retry`) need
+  `CHAT_SEND`; Tresso's own chat state (`PATCH /api/v1/chats/{id}`: `readThrough`, `archivedThrough`, `leftOut`) needs
+  `CHAT_MANAGE`. Everything is loaded through the signed-in user: another user's id is a 404.
+- **Messages.** At most 200 messages and 200 chats a call; a text up to 65,536 characters (what the desktop cuts at);
+  JIDs follow `importableChat` in `packages/core/src/chat/format.ts` and are stored in one form (lower case, without
+  agent and device suffix); times not before 2009 and not more than a day ahead. A batch is stored in one transaction,
+  whole or not at all, and answers per message `stored`, `known` (the server had it: a replayed batch changes nothing)
+  or `left_out` (a chat the user left out, or a group while the account leaves groups out). Every message's chat must
+  be in the call or on the server (422 otherwise). Names lose control characters and direction overrides and are cut
+  to 255 characters. During the first import (`firstImport`) a chat's `readThrough` moves to its newest message, so
+  the history arrives read.
+- **Reply queue.** A reply's id is a UUIDv7 the client made in the last 10 minutes; the same id again returns the stored
+  reply (200), the same id for another chat or user is 409 `id_taken`. At most 100 replies per user in 10 minutes
+  (429). The relay claims the oldest waiting reply of its account (`waiting` to `sending`, `FOR UPDATE SKIP LOCKED`
+  under the account's lock); a claimed reply is never handed out again. The result is final: only a `sending` reply
+  takes one, the same result again is a 200, another is 409 `result_final`. `sent: false` carries the shell's reason
+  (`bridge_stopped`, `not_linked`, `refused`, `unconfirmed`); nothing sends a failed reply again until the user's Try
+  again. Cancelling deletes a waiting or failed reply (a tombstone); a reply being sent or sent is 409
+  `already_going_out`.
+- **Sweep.** `SweepChatRelays` runs every minute on `scheduler_default` (the `maintenance` worker), and by hand as
+  `bin/console app:chat:sweep-relays`: a relay not heard from for 3 minutes goes offline from when it was last heard
+  from (its next call brings it back), and a reply still `sending` 5 minutes after its claim fails with `unconfirmed`,
+  since the bridge returns no id and may have sent it. Heartbeats are no change for clients; these flips are.
+- **Locks.** Every chat write takes the owner's row first, then the chat rows (`App\Chat\ChatOwnerLock`), the order the
+  change numbers take them in, so no two writers wait on each other in a circle; the sweep skips an owner whose row is
+  busy.
+- **Delta.** Every write is a change in `chatAccounts`, `chats`, `chatMessages` and `chatOutgoing`; removals (a
+  cancelled reply, the messages and replies of a chat left out) are tombstones. Nothing of a message's text reaches a
+  log, an error or a validation message.
+
 ## 4. Scale notes
 
 - Every mail metadata row (folders, threads, messages, attachments) carries `mail_account_id` and every query path

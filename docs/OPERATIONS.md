@@ -1,7 +1,7 @@
 # Operations
 
 Steps for whoever runs a Tresso server or tags a release, beyond the README
-([Your own server](../README.md#-your-own-server)): moving sign-in and MCP to their own addresses, and what is checked
+([Your own server](../README.md#-your-own-server)): moving sign-in and MCP to their own addresses, scheduled work, and what is checked
 by hand.
 
 ## Moving sign-in and MCP to their own addresses
@@ -76,6 +76,19 @@ the steps, `<web>`, `<api>` and `<mcp>` stand for your three addresses. Do them 
 
 The README has the short version
 ([Sign-in on the web address, MCP on its own host](../README.md#sign-in-on-the-web-address-mcp-on-its-own-host)).
+
+## Scheduled work
+
+The `maintenance` worker consumes `scheduler_default` alone (`apps/api/src/Schedule.php`). Besides the sweeps and
+nightly purges described in ARCHITECTURE.md it runs `SweepChatRelays` every minute: a WhatsApp relay not heard from for
+3 minutes is shown offline, and a WhatsApp reply still being sent 5 minutes after the relay took it is marked
+"could not confirm" (never sent again by itself). When the worker was down, run it once by hand:
+
+```
+bin/console app:chat:sweep-relays
+```
+
+It prints how many relays went offline and how many replies could not be confirmed.
 
 ## Check by hand after a release
 
