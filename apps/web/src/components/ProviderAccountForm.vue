@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import FieldLabel from '@/forms/FieldLabel.vue'
 import { provideRequiredFields } from '@/forms/required'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
-import { providerName, type MailAccount, type OAuthProviderId, type ProviderFeature } from '@tresso/core'
+import { providerCalendarProblem, providerName, type MailAccount, type OAuthProviderId, type ProviderFeature } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
 import { providerAccountSchema, type ProviderAccountValues } from '@/forms/accounts'
 import { useAccountsStore } from '@/stores/accounts'
@@ -58,6 +58,13 @@ const save = handleSubmit(async (values) => {
  * its `tresso://` link, while the page in the system browser is left behind). Signing in again asks for mail and
  * whatever the account allows already; allowing calendars adds just them.
  */
+/** Why the calendars do not sync, as the sync said it, and what fixes it (see providerCalendarProblem). */
+const calendarProblem = computed(() => providerCalendarProblem(props.account, props.provider))
+
+function fixCalendars(kind: 'allow' | 'sign-in'): Promise<void> {
+  return kind === 'allow' ? signInAgain(['calendar']) : signInAgain()
+}
+
 async function signInAgain(features?: ProviderFeature[]): Promise<void> {
   signingIn.value = true
   error.value = null
@@ -86,9 +93,9 @@ async function signInAgain(features?: ProviderFeature[]): Promise<void> {
       {{ providerName(provider) }} account settings.
     </p>
 
-    <p v-if="account.calendarStatus === 'not_granted'" class="calendars" role="status">
-      Tresso may not use the calendars of this account yet.
-      <button type="button" class="button button-quiet" :disabled="signingIn" @click="signInAgain(['calendar'])">Allow calendar access</button>
+    <p v-if="calendarProblem" class="calendars" role="status">
+      {{ calendarProblem.text }}
+      <button v-if="calendarProblem.action" type="button" class="button button-quiet" :disabled="signingIn" @click="fixCalendars(calendarProblem.action.kind)">{{ calendarProblem.action.label }}</button>
     </p>
 
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>

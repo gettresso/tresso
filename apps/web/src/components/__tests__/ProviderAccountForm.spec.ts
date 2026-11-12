@@ -72,6 +72,33 @@ describe('ProviderAccountForm', () => {
     expect(requests).toEqual([{ path: '/api/v1/provider-authorizations', body: { provider: 'google', features: ['mail'], mailAccountId: 'acc-g' } }])
   })
 
+  it('shows why the calendars failed and lets the user allow calendar access again', async () => {
+    const detail = 'Google refused the calendars of this account (forbidden). Your organization may not allow Tresso to use calendars.'
+    const wrapper = mount(ProviderAccountForm, { props: { account: { ...gmail, calendarStatus: 'error', calendarStatusDetail: detail }, provider: 'google' } })
+
+    const line = wrapper.get('.calendars')
+    expect(line.text()).toContain(detail)
+    await line.get('button').trigger('click')
+    await flushPromises()
+
+    expect(line.get('button').text()).toBe('Allow calendar access again')
+    expect(requests).toEqual([{ path: '/api/v1/provider-authorizations', body: { provider: 'google', features: ['calendar'], mailAccountId: 'acc-g' } }])
+  })
+
+  it('shows why the calendar sign-in failed and offers signing in again next to it', async () => {
+    const detail = "Google no longer accepts Tresso's access to this account. Sign in with Google again."
+    const wrapper = mount(ProviderAccountForm, { props: { account: { ...gmail, calendarStatus: 'auth_failed', calendarStatusDetail: detail }, provider: 'google' } })
+
+    const line = wrapper.get('.calendars')
+    expect(line.text()).toContain(detail)
+    expect(line.get('button').text()).toBe('Sign in with Google again')
+    await line.get('button').trigger('click')
+    await flushPromises()
+
+    // Signing in again asks for what the account allows already, calendars included (the API adds them).
+    expect(requests).toEqual([{ path: '/api/v1/provider-authorizations', body: { provider: 'google', features: ['mail'], mailAccountId: 'acc-g' } }])
+  })
+
   it('shows nothing about calendars once they sync', () => {
     const wrapper = mount(ProviderAccountForm, { props: { account: { ...gmail, calendarStatus: 'active', calendarStatusDetail: null }, provider: 'google' } })
     expect(wrapper.text()).not.toContain('Allow calendar access')
