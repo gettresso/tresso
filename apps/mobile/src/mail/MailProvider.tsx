@@ -35,7 +35,7 @@ import {
 import { useAuth } from '@/auth/AuthProvider'
 import { ApiError } from '@/auth/session'
 import { LAST_USER } from '@/auth/secureTokenStore'
-import { MailSession, type MailState } from '@/mail/mailSession'
+import { MailSession, NO_STATUS, type MailState } from '@/mail/mailSession'
 import { deleteSql, openSql } from '@/mail/sql'
 import { todoApi } from '@/mail/todoApi'
 
@@ -124,7 +124,7 @@ const MailContext = createContext<Mail | null>(null)
  */
 export function MailProvider({ children }: { children: ReactNode }) {
   const auth = useAuth()
-  const [state, setState] = useState<MailState>({ userId: null, ready: false, synced: false, version: 0, syncState: 'idle', syncError: null, live: false, pulls: 0 })
+  const [state, setState] = useState<MailState>({ userId: null, ready: false, synced: false, version: 0, syncState: 'idle', syncError: null, live: false, pulls: 0, status: NO_STATUS })
   const [lookupError, setLookupError] = useState<string | null>(null)
   const [overdue, setOverdue] = useState<SyncedHandOver[]>([])
   const session = useMemo(
@@ -340,7 +340,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
     },
     [auth.session, session],
   )
-  const { userId, ready, synced, version, syncState, syncError, live, pulls } = state
+  const { userId, ready, synced, version, syncState, syncError, live, pulls, status } = state
   const mail = useMemo<Mail>(
     () => ({
       userId,
@@ -350,6 +350,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
       syncState,
       syncError: syncError ?? lookupError,
       live,
+      status,
       pulls,
       mailAccounts,
       folders,
@@ -388,7 +389,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
       clearOverdue,
       respond,
     }),
-    [userId, touch, ready, synced, version, syncState, syncError, lookupError, live, pulls, mailAccounts, folders, act, inbox, triageWaiting, newestInInbox, summaries, smartInboxes, classifyThread, releaseThread, thread, body, unscannedLink, syncNow, auth.session, store, session, signatures, suggestContacts, send, cancelOutgoing, todos, todosOfThread, messages, makeTodo, removeTodo, setTodoDone, planTodo, unplanTodo, handOvers, outgoing, handOverApi, overdue, clearOverdue, respond],
+    [userId, touch, ready, synced, version, syncState, syncError, lookupError, live, status, pulls, mailAccounts, folders, act, inbox, triageWaiting, newestInInbox, summaries, smartInboxes, classifyThread, releaseThread, thread, body, unscannedLink, syncNow, auth.session, store, session, signatures, suggestContacts, send, cancelOutgoing, todos, todosOfThread, messages, makeTodo, removeTodo, setTodoDone, planTodo, unplanTodo, handOvers, outgoing, handOverApi, overdue, clearOverdue, respond],
   )
 
   return <MailContext.Provider value={mail}>{children}</MailContext.Provider>
