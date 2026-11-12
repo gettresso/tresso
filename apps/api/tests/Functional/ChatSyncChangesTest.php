@@ -23,6 +23,7 @@ final class ChatSyncChangesTest extends DatabaseTestCase
 {
     use AuthenticatesUsers;
     use ConnectsThirdPartyApps;
+    use SeedsAccessTokens;
     use StoresChats;
 
     private const string JID = '31612345678@s.whatsapp.net';
@@ -151,16 +152,41 @@ final class ChatSyncChangesTest extends DatabaseTestCase
     {
         $ours = $this->delta(0, $this->kim);
 
-        $theirs = $this->delta(0, $this->thirdPartyHeaders('kim@example.test', ['mail:read', 'chat:read'], nameScopes: true));
+        $theirs = $this->delta(0, $this->seededThirdPartyHeaders('kim@example.test', ['mail:read', 'chat:read']));
 
         self::assertSame($ours['cursor'], $theirs['cursor']);
         foreach (['chatAccounts', 'chats', 'chatMessages', 'chatOutgoing'] as $list) {
             self::assertSame($ours[$list], $theirs[$list], $list);
         }
-        $lisa = $this->delta(0, $this->thirdPartyHeaders('lisa@example.test', ['mail:read', 'chat:read'], nameScopes: true));
+        $lisa = $this->delta(0, $this->seededThirdPartyHeaders('lisa@example.test', ['mail:read', 'chat:read']));
         foreach (['chatAccounts', 'chats', 'chatMessages', 'chatOutgoing'] as $list) {
             self::assertSame([], $lisa[$list], 'Lisa\'s app sees none of Kim\'s '.$list);
         }
+    }
+
+    public function testChatSendAloneReadsNoChats(): void
+    {
+        $headers = $this->seededThirdPartyHeaders('kim@example.test', ['mail:read', 'chat:send']);
+        $ours = $this->delta(0, $this->kim);
+
+        $theirs = $this->delta(0, $headers);
+
+        self::assertSame($ours['cursor'], $theirs['cursor']);
+        foreach (['chatAccounts', 'chats', 'chatMessages', 'chatOutgoing'] as $list) {
+            self::assertSame([], $theirs[$list], $list.' needs chat:read.');
+        }
+
+        $this->client->request('PATCH', '/api/v1/chat-accounts/'.$this->accountId, server: $this->kim + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: '{"includeGroups":false}');
+        self::assertResponseIsSuccessful();
+        $this->client->request('DELETE', '/api/v1/chat-accounts/'.$this->accountId, server: $this->kim);
+        self::assertResponseStatusCodeSame(204);
+        self::assertSame(
+            [['type' => 'chat', 'id' => $this->group->getId()->toRfc4122()], ['type' => 'chatAccount', 'id' => $this->accountId]],
+            $this->delta($ours['cursor'], $this->kim)['deleted'],
+        );
+        $after = $this->delta($ours['cursor'], $headers);
+        self::assertSame([], $after['deleted'], 'No removal of a chat or chat account either.');
+        self::assertGreaterThan($ours['cursor'], $after['cursor']);
     }
 
     public function testPagingNeverSplitsAChangeNumber(): void

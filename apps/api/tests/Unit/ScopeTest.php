@@ -64,18 +64,19 @@ final class ScopeTest extends TestCase
     }
 
     /**
-     * Chats are reached only by their own scopes: no other scope grants them, they are not offered for personal access
-     * tokens nor advertised to apps that are not ours, which may only ask for them by name.
+     * Chats are reached only by their own scopes, and until the MCP tools for chats exist no caller that is not one of
+     * our own apps can obtain them: not a personal access token, not an app that is not ours.
      */
-    public function testChatScopesAreOnlyAskedForByName(): void
+    public function testNoCallerThatIsNotOursCanObtainTheChatScopes(): void
     {
         $offered = array_map(static fn (Scope $s): string => $s->value, [...Scope::personalAccessTokenScopes(), ...Scope::thirdPartyAppScopes()]);
 
         self::assertSame([Scope::ChatRead, Scope::ChatSend], Scope::chatScopes());
         self::assertNotContains('chat:read', $offered);
         self::assertNotContains('chat:send', $offered);
-        self::assertTrue(ThirdPartyClients::mayAskFor('chat:read'));
-        self::assertTrue(ThirdPartyClients::mayAskFor('chat:send'));
+        self::assertFalse(ThirdPartyClients::mayAskFor('chat:read'));
+        self::assertFalse(ThirdPartyClients::mayAskFor('chat:send'));
+        self::assertTrue(ThirdPartyClients::mayAskFor('mail:read'));
         self::assertFalse(ThirdPartyClients::mayAskFor('sync:ingest'));
         self::assertFalse(ThirdPartyClients::mayAskFor('teams:read'));
         self::assertSame('Read your WhatsApp chats', Scope::ChatRead->label());
