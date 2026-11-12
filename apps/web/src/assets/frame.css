@@ -24,6 +24,11 @@
   /* Rows: the first starts at y 52, each is 32 high with no gap. */
   --frame-first-row-y: 52px;
   --frame-row-height: 32px;
+  /*
+   * Chosen: the scrolling rows start this far above the first row, room for a focus ring; the window's drag strip
+   * above the sidebar ends where they start, so no part of a row drags the window.
+   */
+  --frame-scroll-inset: 4px;
   /* The selection fill starts and ends this far inside the card's edges. */
   --frame-row-inset: 10px;
   --frame-row-radius: 8px;

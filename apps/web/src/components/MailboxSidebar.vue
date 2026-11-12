@@ -375,7 +375,7 @@ function failed(account: SyncedMailAccount): boolean {
 .frame-shell .sidebar {
   gap: 0;
   overflow: hidden;
-  padding: calc(var(--frame-first-row-y) - var(--frame-inset) - 4px) 0 var(--frame-row-inset);
+  padding: calc(var(--frame-first-row-y) - var(--frame-inset) - var(--frame-scroll-inset)) 0 var(--frame-row-inset);
 }
 .frame-shell .frame-scroll {
   display: flex;
@@ -383,13 +383,14 @@ function failed(account: SyncedMailAccount): boolean {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px var(--frame-row-inset);
-  scroll-padding-block: 4px;
+  padding: var(--frame-scroll-inset) var(--frame-row-inset);
+  scroll-padding-block: var(--frame-scroll-inset);
 }
 .frame-shell .profile {
   padding: 0 4px 0 var(--frame-row-icon-x);
 }
 .frame-shell .compose {
+  flex: none;
   margin: var(--frame-group-gap) 0 0;
 }
 .frame-shell .group {

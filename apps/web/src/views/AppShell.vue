@@ -418,7 +418,7 @@ html.liquid-glass:not(.reduce-transparency) .frame-shell .mailboxes > :deep(nav)
   left: 0;
   z-index: 2;
   width: var(--frame-column);
-  height: var(--frame-first-row-y);
+  height: calc(var(--frame-first-row-y) - var(--frame-scroll-inset));
 }
 /* On the line of the traffic lights, 13 from the card's right edge; at the left of the title strip when hidden. */
 .frame-toggle {
