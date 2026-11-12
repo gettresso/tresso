@@ -94,11 +94,11 @@ describe('LocalChatBackend', () => {
 
   it('keeps the cursor with the store it belongs to, and reads an unreadable one as a read from 0', async () => {
     expect(await backend.cursor()).toBeNull()
-    const firstImport = { through: 40, startedAt: NOW, quietSince: NOW + 5 }
+    const firstImport = { through: 40, ranFor: 120_000, quietFor: 9_000 }
     await backend.setCursor({ storeId: 's1', rowid: 12, firstImport })
     expect(await backend.cursor()).toEqual({ storeId: 's1', rowid: 12, firstImport })
 
-    for (const unreadable of ['12', '{"storeId":"s1","rowid":12,"firstImportThrough":40}', '{"storeId":"s1","rowid":12,"firstImport":{"through":"40"}}']) {
+    for (const unreadable of ['12', '{"storeId":"s1","rowid":12,"firstImportThrough":40}', '{"storeId":"s1","rowid":12,"firstImport":{"through":"40"}}', '{"storeId":"s1","rowid":12,"firstImport":{"through":40,"startedAt":1,"quietSince":1}}']) {
       await store.setChatMeta(LOCAL_CURSOR, unreadable)
       expect(await backend.cursor()).toEqual({ storeId: '', rowid: 0, firstImport: null })
     }

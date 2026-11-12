@@ -9,6 +9,7 @@ import {
   ChatRelayStopped,
   FIRST_IMPORT_MAX,
   FIRST_IMPORT_QUIET,
+  FIRST_IMPORT_STEP_MAX,
   NAME_RETRY,
   RELAY_ERROR_DELAY,
   RELAY_INTERVAL,
@@ -275,7 +276,7 @@ describe('ChatRelay with the local backend', () => {
       ['G3', { id: '99999999999999', name: null }, null, null, null],
       ['G4', { id: '31611111111', name: 'Mom' }, null, null, null],
     ])
-    expect(await storedCursor()).toEqual({ storeId: 'file-1:1:1', rowid: 6, firstImport: { through: 6, startedAt: NOW, quietSince: NOW } })
+    expect(await storedCursor()).toEqual({ storeId: 'file-1:1:1', rowid: 6, firstImport: { through: 6, ranFor: 0, quietFor: 0 } })
     expect(scheduler.active()).toEqual([])
   })
 
@@ -315,15 +316,20 @@ describe('ChatRelay with the local backend', () => {
       bridge.add(`A${i}`, DIRECT)
     }
     await relay.pollNow()
-    clock += FIRST_IMPORT_QUIET
-    await relay.pollNow()
+    // The first import ends once the store was quiet while the relay ran.
+    for (let round = 0; round < FIRST_IMPORT_QUIET / RELAY_INTERVAL; round++) {
+      clock += RELAY_INTERVAL
+      await relay.pollNow()
+    }
+    expect((await storedCursor())?.firstImport).toBeNull()
+    bridge.reads.length = 0
     bridge.rows = bridge.rows.filter((row) => row.id !== 'A2')
     bridge.renumber('file-1:2:1')
     bridge.add('A6', DIRECT, { sentAt: at(1) })
 
     await relay.pollNow()
 
-    expect(bridge.reads).toEqual([0, 5, 5, 0])
+    expect(bridge.reads).toEqual([5, 0])
     expect(await messageIds()).toEqual([1, 2, 3, 4, 5, 6].map((i) => `wa:${DIRECT}:A${i}`))
     expect(await storedCursor()).toEqual({ storeId: 'file-1:2:1', rowid: 5, firstImport: null })
     // Not a first import: the new message is unread.
@@ -459,6 +465,17 @@ describe('ChatRelay with the local backend', () => {
     await vi.waitFor(() => expect(scheduler.active()).toHaveLength(1))
   }
 
+  /** Rounds `step` ms of clock apart, each after `add` (rows arriving), one round per call of pollNow. */
+  async function rounds(count: number, step: number = RELAY_INTERVAL, add: (index: number) => void = () => {}): Promise<void> {
+    for (let index = 0; index < count; index++) {
+      clock += step
+      add(index)
+      await relay.pollNow()
+    }
+  }
+
+  const quietRounds = FIRST_IMPORT_QUIET / RELAY_INTERVAL
+
   it('takes history arriving in bursts after linking as the first import, until the store is quiet', async () => {
     // Freshly linked: the store is empty, then the history sync writes in bursts over minutes.
     relay.start()
@@ -473,65 +490,92 @@ describe('ChatRelay with the local backend', () => {
         await nextRound()
       }
     }
-    expect(backend.ingests.every(({ flag }) => flag)).toBe(true)
-    expect((await storedCursor())?.firstImport).not.toBeNull()
+    await relay.stop()
+    makeRelay()
+    // Taken up again (a restart): the quiet time starts at 0, and counts only rounds.
+    await relay.pollNow()
+    expect(backend.ingests).toEqual([])
+    expect((await storedCursor())?.firstImport).toMatchObject({ through: 30 + RELAY_PAGE + 10 + 30, quietFor: 0 })
 
-    // Quiet, but not long enough yet.
-    clock += FIRST_IMPORT_QUIET - 1
-    await nextRound()
-    expect((await storedCursor())?.firstImport).not.toBeNull()
-    clock += 1
-    await nextRound()
+    await rounds(quietRounds - 1)
+    expect((await storedCursor())?.firstImport).toMatchObject({ quietFor: FIRST_IMPORT_QUIET - RELAY_INTERVAL })
+    await rounds(1)
     expect((await storedCursor())?.firstImport).toBeNull()
-    expect(progress.at(-1)).toMatchObject({ firstImport: false, stored: 30 + RELAY_PAGE + 10 + 30 })
+    expect(progress.at(-1)).toMatchObject({ firstImport: false })
 
     bridge.add('LIVE', DIRECT, { sentAt: at(1) })
-    await nextRound()
-    await relay.stop()
+    await rounds(1)
 
-    expect(backend.ingests.map(({ flag }) => flag).filter((flag) => !flag)).toHaveLength(1)
-    expect(backend.ingests.at(-1)).toEqual({ flag: false, waIds: ['LIVE'] })
+    expect(backend.ingests).toEqual([{ flag: false, waIds: ['LIVE'] }])
     const summary = (await store.chats())[0]!
-    // History arrives read; the live message does not.
+    // History arrived read; the live message did not.
     expect(summary.unread).toBe(1)
+    expect(summary.chat.readThrough).toBe(new Date(at(-2000 + 1200 + 30)).toISOString())
   })
 
-  it('measures the quiet time anew after a restart during the first import', async () => {
+  it('goes on with the first import when the app reopens a day after it was quit, and ends it once quiet', async () => {
     bridge.add('H1', DIRECT, { sentAt: at(-100) })
     await relay.pollNow()
-    expect((await storedCursor())?.firstImport).toEqual({ through: 1, startedAt: NOW, quietSince: NOW })
+    // Five minutes of history sync, a row now and then.
+    await rounds(100, RELAY_INTERVAL, (index) => {
+      if (index % 10 === 0) {
+        bridge.add(`H${index + 2}`, DIRECT, { sentAt: at(-99 + index) })
+      }
+    })
+    const before = (await storedCursor())!.firstImport!
+    expect(before.ranFor).toBe(5 * 60_000)
 
-    // The app was closed for ten minutes; the bridge catches up with history when both start again.
-    clock += 10 * 60_000
+    // Quit; reopened a day later, when the bridge catches up with the rest of the history.
+    clock += 24 * 60 * 60 * 1000
     makeRelay()
+    bridge.add('LATE-HISTORY', DIRECT, { sentAt: at(-10) })
     await relay.pollNow()
-    expect((await storedCursor())?.firstImport).toEqual({ through: 1, startedAt: NOW, quietSince: clock })
-    bridge.add('H2', DIRECT, { sentAt: at(-50) })
-    clock += 30_000
-    await relay.pollNow()
+    expect(backend.ingests).toEqual([{ flag: true, waIds: ['LATE-HISTORY'] }])
+    expect((await storedCursor())?.firstImport).toMatchObject({ ranFor: 5 * 60_000, quietFor: 0 })
 
-    expect(backend.ingests).toEqual([{ flag: true, waIds: ['H2'] }])
-    expect((await storedCursor())?.firstImport).toMatchObject({ through: 2, startedAt: NOW })
+    await rounds(quietRounds)
+    expect((await storedCursor())?.firstImport).toBeNull()
     expect((await store.chats())[0]!.unread).toBe(0)
   })
 
-  it('ends the first import after its longest duration, so later messages are live even while rows keep coming', async () => {
+  it('does not end the first import by its maximum when the Mac wakes after two hours asleep', async () => {
     bridge.add('H1', DIRECT, { sentAt: at(-100) })
     await relay.pollNow()
-    for (let minute = 1; minute < 30; minute++) {
-      clock = NOW + minute * 60_000
-      bridge.add(`H${minute + 1}`, DIRECT, { sentAt: at(-100 + minute) })
-      await relay.pollNow()
-    }
-    expect(backend.ingests.every(({ flag }) => flag)).toBe(true)
+    await rounds(10)
 
-    clock = NOW + FIRST_IMPORT_MAX
-    bridge.add('LATE', DIRECT, { sentAt: at(5) })
+    // Asleep: no rounds ran. On waking the history sync goes on.
+    await rounds(1, 2 * 60 * 60 * 1000, () => bridge.add('H2', DIRECT, { sentAt: at(-50) }))
+
+    expect((await storedCursor())?.firstImport).toEqual({ through: 2, ranFor: 10 * RELAY_INTERVAL + FIRST_IMPORT_STEP_MAX, quietFor: 0 })
+    expect(backend.ingests.at(-1)).toEqual({ flag: true, waIds: ['H2'] })
+  })
+
+  it('ends the first import after its longest running time when the store never goes quiet', async () => {
+    bridge.add('H1', DIRECT, { sentAt: at(-100) })
     await relay.pollNow()
+    const steps = FIRST_IMPORT_MAX / FIRST_IMPORT_STEP_MAX
+    await rounds(steps - 1, FIRST_IMPORT_STEP_MAX, (index) => bridge.add(`H${index + 2}`, DIRECT, { sentAt: at(-99 + index / 10) }))
+    expect(backend.ingests.every(({ flag }) => flag)).toBe(true)
+    expect((await storedCursor())?.firstImport).not.toBeNull()
+
+    await rounds(1, FIRST_IMPORT_STEP_MAX, () => bridge.add('LATE', DIRECT, { sentAt: at(5) }))
 
     expect(backend.ingests.at(-1)).toEqual({ flag: false, waIds: ['LATE'] })
     expect((await storedCursor())?.firstImport).toBeNull()
     expect((await store.chats())[0]!.unread).toBe(1)
+  })
+
+  it('does not let a clock that jumps back keep the first import going', async () => {
+    bridge.add('H1', DIRECT, { sentAt: at(-100) })
+    await relay.pollNow()
+    await rounds(5)
+
+    // The clock goes back an hour (a time zone or NTP fix): that round counts nothing, the next ones count again.
+    await rounds(1, -60 * 60 * 1000)
+    expect((await storedCursor())?.firstImport).toMatchObject({ ranFor: 5 * RELAY_INTERVAL, quietFor: 5 * RELAY_INTERVAL })
+    await rounds(quietRounds - 5)
+
+    expect((await storedCursor())?.firstImport).toBeNull()
   })
 
   it('skips a round quietly while the bridge writes to its store', async () => {
