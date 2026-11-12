@@ -1337,19 +1337,87 @@ The macOS app has a full menu bar (`apps/desktop/src-tauri/src/menu.rs`, describ
 ids and shortcuts): Tresso (About Tresso, Check for Updates…, Settings… ⌘,, Services, Hide Tresso ⌘H, Hide Others
 ⌥⌘H, Show All, Quit Tresso ⌘Q), File (New Message ⌘N, New Event, New To-do, Close Window ⌘W), Edit (Undo, Redo, Cut,
 Copy, Paste, Paste and Match Style ⌥⇧⌘V, Delete, Select All, Find… ⌘F), View (Inbox, Triage, To-dos, Calendar,
-Search, Reload, Enter Full Screen ⌃⌘F), Window (Minimize ⌘M, Zoom, Bring All to Front, Tresso ⌘0) and Help
+Search, Hide Sidebar or Show Sidebar ⌃⌘S, Reload, Enter Full Screen ⌃⌘F), Window (Minimize ⌘M, Zoom, Bring All to Front, Tresso ⌘0) and Help
 (Tresso Help, the README; Release Notes, the releases page). The standard items are AppKit's own, so they act on the
 focused web content; Paste and Match Style and Delete, which Tauri has no item for, are added natively. Items that act
 in the web client reach it as the `menu` event with the action's name, handled in one place
 (`apps/web/src/platform/menu.ts`), and are enabled through the one command `menu_state` while someone is signed in
-(the state lib.rs manages once, which the bar's setup fills). Reload acts signed out too, and only after the draft is
+(the state lib.rs manages once, which the bar's setup fills); the same command names the sidebar item after what it
+would do (Hide Sidebar while the sidebar shows). Reload acts signed out too, and only after the draft is
 saved and nothing is on its way, as before a restart for an update (one at a time: a second Reload while one waits is
 the same one, and "Later" ends it); it has no ⌘R, which other mail apps use for Reply.
 Closing the window hides it and the app stays in the Dock; the Dock icon and Window > Tresso bring it back, and so do
 a click on a notification (`show_main_window_command`), a `tresso://` link (the sign-in coming back), a second launch
 and Sparkle's question before a relaunch, each through the shell. The view
-switches have no shortcuts, because the web client has none for them; a Show/Hide Sidebar item waits for a sidebar that
-collapses. Windows and Linux keep no menu bar, as before.
+switches have no shortcuts, because the web client has none for them. Windows and Linux keep no menu bar, as before.
+
+#### The desktop window frame
+
+The desktop app (every system) draws its window frame after a window spec shared by the owner's Mac apps (measured on
+macOS 26 in light mode). Every number of it is a token in one file, `apps/web/src/assets/frame.css`, which also says
+which values are chosen where the spec has none; `apps/web/src/platform/frame.ts` reads the sidebar's widths from it.
+The web client knows it runs in the desktop app through Tauri (`platform/desktop.ts`, `isDesktop`) and on macOS through
+the user agent (`platform/vibrancy.ts`, `vibrant`); `main.ts` sets `html.frame` (desktop) and `html.vibrant` (macOS),
+and AppShell sets `.frame-shell` on its layout and `html.frame-shell` while the signed-in shell shows. The browser build
+sets none of them, so its layout, markup and classes stay as they were (a snapshot test keeps the browser's shell and
+sidebar markup).
+
+- **Sidebar.** A column 190 to 300 wide (220 at first): the card 8 from the window's left, top and bottom edge, radius
+  18, a 1 pt lighter edge and a soft shadow, 10 to the content. Rows are 32 high from y 52, the selection fill 10 inside
+  the card with radius 8, the icon at x 30 and the label at x 54, the count inside the fill; a group label sits in a 24
+  strip, an unlabelled group is set off by 13. The profile, the Compose button and the account rows (two lines) keep
+  their own heights. The selected row takes the system's selection colour with white text while the sidebar is used
+  (the last click or focus went into it and the window is in front), and a grey fill while the content is or the window
+  is in the back.
+- **Width and collapse.** The card's right edge is a drag handle and a focusable separator (arrows by 10, Home and End
+  to the limits); the toggle (the `sidebar` icon, after the system's sidebar.left, named "Sidebar" with
+  `aria-expanded`) sits on the traffic lights' line 13 from the card's edge and hides the sidebar, taking the focus when
+  it was in the sidebar or on its edge, as does View > Hide Sidebar (⌃⌘S). Width and state are kept per device in
+  localStorage (`tresso.sidebar`, `stores/frame.ts`). Hiding slides the card out in 220 ms (none with reduced motion);
+  the toggle then sits right of the traffic lights (macOS, x 105) or at the window's left (x 26), and the title moves
+  right of it.
+- **Title strip.** 52 high over the screens, without a line: a screen's title (`FrameTitle`, its h1 in 15 px
+  semibold, an optional 11 px subtitle) from 10 right of the content's edge, and its toolbar (`FrameTools`) at the
+  right, actions grouped in 36 high capsules (`FrameCapsule`) ending 8 from the window's edge. Outside the desktop shell
+  these components render the h1 and the actions in place, unchanged. Search and Triage have a title in the strip only
+  (`framedOnly`): Search's field stays above its results, and Triage keeps the subject as its heading. The strip moves the window on macOS
+  (`data-tauri-drag-region="deep"`, which also zooms on a double click), except over its controls. When the actions do
+  not fit, they wrap under the title and the strip grows. The content starts below the strip rather than scrolling
+  under it, as the page has no scroll edge effect to keep the title readable over moving content.
+- **Selection colour.** The shell reads AppKit's `selectedContentBackgroundColor` (the accent colour the user picked,
+  made deep enough for white text: #0064e1 for blue) in the light and the dark appearance (`selection_accent`,
+  `accessibility.rs`); the web client sets them as `--frame-accent-light` and `--frame-accent-dark` at launch and when
+  the window comes back, as it does for "Reduce transparency". Windows, Linux and a failed read use #0064e1.
+- **Window.** 1240 x 780 at every launch: the app keeps no window state, so a size the user set lasts until it quits.
+  The traffic lights' inset (17.5, 27.5, a token in frame.css next to the others) is the one a test app measured on
+  macOS 26.7 for centres at x 25.5, y 25.5; the corner radius is the system's.
+- **Material.** Before macOS 26 the window is see-through with the system's sidebar material behind the page (the card
+  over it, a little translucent); "Reduce transparency" turns the card solid. Dark mode keeps Tresso's own colours:
+  only sizes, radii and positions change there. Windows and Linux use the same sizes without the traffic lights, on a
+  solid window colour.
+
+##### Liquid Glass behind the sidebar card (macOS 26 and later)
+
+On macOS 26 and later the shell puts one system `NSGlassEffectView` under the web view, exactly where the card is
+(`apps/desktop/src-tauri/src/glass.rs`): the window paints an opaque background instead of the whole-window material
+(the spec's #f3f3f3 in the light appearance, AppKit's `windowBackgroundColor` in the dark one), the page leaves the card see-through (`html.liquid-glass`), and the content paints its own
+opaque background. The page reports the card's place with `set_glass` (`apps/web/src/platform/glass.ts`): once it shows,
+when the window or the card changes size, and every frame only while the card slides or its edge is dragged; a hidden
+card, the sign-in screen and "Reduce transparency" send an empty list, which removes the glass (the card is then drawn
+solid). The shell checks every shape (finite numbers, sizes from 0 to 100 000 points, at most four, ids of a to z, 0 to
+9 and hyphens), keeps one view per id on the main thread, turns page coordinates into AppKit's (scaled by the content
+view's width over the page's, so a zoomed web view still fits, and counted from the bottom) and removes views no longer
+listed, and all of them when a new page loads (a reload). Hidden windows keep their views; full screen and resizes
+report again. The class is looked up at run time, and it must answer every message sent to its views, so macOS before
+26 (or a changed class) answers `supported: false` and keeps the look above unchanged; so do Windows and Linux. Whether
+the glass is on is decided once at launch and kept until the app quits. In dark mode the card is the system's glass
+over the dark window colour, not Tresso's dark card colour.
+
+Known risk: tauri-apps/tauri#14454 reports AppKit aborting on macOS 27 in packaged apps that combine WKWebView with
+`NSGlassEffectView` during a native resize (not reproduced on macOS 26.7). The glass can be turned off without a new
+release: `defaults write app.tresso.desktop DisableLiquidGlass -bool YES` (undo with `defaults delete
+app.tresso.desktop DisableLiquidGlass`), or start the app with `TRESSO_DISABLE_GLASS=1`; both are read once at launch
+(a reload does not change it), and the window then keeps the whole-window material.
 
 The desktop app runs the web client unchanged; only signing in and keeping the tokens go through the shell
 (`apps/web/src/platform/desktop.ts`). It is its own OAuth client (`desktop`) with the redirect URI
