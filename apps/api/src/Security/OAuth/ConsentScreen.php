@@ -110,9 +110,13 @@ final readonly class ConsentScreen
      */
     private function checkScopes(AuthorizationRequestResolveEvent $event, Client $client, array $scopes): void
     {
+        // A client registered without scopes may ask for what is offered, no more.
         $registered = array_map(strval(...), $client->getScopes());
+        if ([] === $registered) {
+            $registered = ThirdPartyClients::scopeValues();
+        }
         foreach ($scopes as $scope) {
-            if (!ThirdPartyClients::mayAskFor($scope) || ([] !== $registered && !\in_array($scope, $registered, true))) {
+            if (!ThirdPartyClients::mayAskFor($scope) || !\in_array($scope, $registered, true)) {
                 throw OAuthServerException::invalidScope($scope, $this->redirectUri($event, $client));
             }
         }

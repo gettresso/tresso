@@ -76,10 +76,9 @@ enum Scope: string
 
     /**
      * WhatsApp chats are private: only these scopes reach them for a caller that is not one of our own apps, and no
-     * other scope implies them, so no grant from before gains them. An app that is not ours may ask for them by name
-     * ({@see \App\Security\OAuth\ThirdPartyClients::mayAskFor()}), the user then sees them on the consent screen;
-     * they are not advertised in the metadata, nor offered for personal access tokens, until the MCP tools for chats
-     * exist.
+     * other scope implies them, so no grant from before gains them. Until the MCP tools for chats exist no such caller
+     * can obtain them: they are neither offered to apps that are not ours ({@see thirdPartyAppScopes()}) nor to personal
+     * access tokens. Our own apps reach chats through their mail scopes ({@see ChatAccessVoter}).
      *
      * @return list<self>
      */
@@ -89,9 +88,9 @@ enum Scope: string
     }
 
     /**
-     * What an app that is not ours (registered through dynamic client registration, such as an MCP client) is offered
-     * and may ask for without naming a scope: the same as a personal access token. Never a sync scope, and never the
-     * scopes of features not built yet. It may also ask for the {@see chatScopes()} by name.
+     * What an app that is not ours (registered through dynamic client registration, such as an MCP client) may ask
+     * for: the same as a personal access token. Never a sync scope, never the scopes of features not built yet, and not
+     * the {@see chatScopes()} yet.
      *
      * @return list<self>
      */

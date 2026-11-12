@@ -14,6 +14,7 @@ use App\Security\OAuth\PurgeUnusedRegisteredClients;
 use App\Security\OAuth\PurgeUnusedRegisteredClientsHandler;
 use App\Security\OAuth\RegistrationLimits;
 use Doctrine\DBAL\ArrayParameterType;
+use Doctrine\ORM\EntityManagerInterface;
 use League\Bundle\OAuth2ServerBundle\Manager\ClientManagerInterface;
 use League\Bundle\OAuth2ServerBundle\Model\Client;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -237,6 +238,8 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'a sync scope' => [['scope' => 'mail:read sync:credentials'], 'invalid_client_metadata'];
         yield 'a teams scope' => [['scope' => 'teams:read'], 'invalid_client_metadata'];
         yield 'the webhooks scope' => [['scope' => 'webhooks:manage'], 'invalid_client_metadata'];
+        yield 'the chat read scope' => [['scope' => 'mail:read chat:read'], 'invalid_client_metadata'];
+        yield 'the chat send scope' => [['scope' => 'chat:send'], 'invalid_client_metadata'];
         yield 'an unknown scope' => [['scope' => 'offline_access'], 'invalid_client_metadata'];
         yield 'a confidential client' => [['token_endpoint_auth_method' => 'client_secret_basic'], 'invalid_client_metadata'];
         yield 'a client secret posted' => [['token_endpoint_auth_method' => 'client_secret_post'], 'invalid_client_metadata'];
@@ -523,6 +526,52 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertResponseRedirects();
         self::assertStringContainsString('code=', (string) $this->client->getResponse()->headers->get('Location'));
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+    }
+
+    /**
+     * WhatsApp chats are not for apps that are not ours until the MCP tools for them exist: no app can be allowed the
+     * chat scopes, whether it registered naming scopes or not.
+     */
+    public function testNoAppIsAllowedTheChatScopes(): void
+    {
+        $this->signIn('kim@example.test');
+        foreach (['registered naming scopes' => $this->registeredClientId(['scope' => 'mail:read']), 'registered without scopes' => $this->registeredClientId()] as $case => $clientId) {
+            foreach (['chat:read', 'chat:send'] as $scope) {
+                $this->authorize($clientId, ['mail:read', $scope], $this->verifier(), 'state-chat');
+
+                self::assertResponseStatusCodeSame(400, $case.': '.$scope);
+                self::assertSelectorTextContains('code', 'invalid_scope');
+            }
+        }
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+    }
+
+    public function testAnAppAllowedBeforeDoesNotGainTheChatScopesOnRefresh(): void
+    {
+        $clientId = $this->registeredClientId();
+        $tokens = $this->connect('kim@example.test', $clientId, ['mail:read']);
+
+        $this->client->request('POST', '/oauth/token', ['grant_type' => 'refresh_token', 'client_id' => $clientId, 'refresh_token' => $tokens['refresh_token'], 'scope' => 'mail:read chat:read']);
+
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_scope', $this->decodedResponse()['error'] ?? null);
+    }
+
+    /** A client stored without scopes may ask for what apps that are not ours are offered, and nothing more. */
+    public function testAClientWithoutRegisteredScopesAsksOnlyForWhatIsOffered(): void
+    {
+        $clientId = $this->registeredClientId();
+        $this->connection()->executeStatement('UPDATE oauth2_client SET scopes = NULL WHERE identifier = :id', ['id' => $clientId]);
+        static::getContainer()->get(EntityManagerInterface::class)->clear();
+        $this->signIn('kim@example.test');
+
+        $this->authorize($clientId, ['mail:read'], $this->verifier(), 'state-offered');
+        self::assertResponseIsSuccessful('The consent screen asks.');
+        foreach (['chat:read', 'teams:read', 'sync:credentials'] as $scope) {
+            $this->authorize($clientId, [$scope], $this->verifier(), 'state-not-offered');
+            self::assertResponseStatusCodeSame(400, $scope);
+            self::assertSelectorTextContains('code', 'invalid_scope');
+        }
     }
 
     public function testErrorsBeforeTheUserAllowedTheAppStayOnAPageOfOurOwn(): void
@@ -1106,7 +1155,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertIsArray($scopes);
         foreach ($scopes as $scope) {
             self::assertIsString($scope);
-            self::assertDoesNotMatchRegularExpression('/^(sync|teams):|^webhooks:/', $scope);
+            self::assertDoesNotMatchRegularExpression('/^(sync|teams|chat):|^webhooks:/', $scope);
         }
     }
 }

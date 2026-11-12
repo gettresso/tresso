@@ -18,6 +18,7 @@ final class ChatAccountApiTest extends DatabaseTestCase
 {
     use AuthenticatesUsers;
     use ConnectsThirdPartyApps;
+    use SeedsAccessTokens;
     use StoresChats;
 
     private const array MAIL = ['mail:read', 'mail:write'];
@@ -139,11 +140,16 @@ final class ChatAccountApiTest extends DatabaseTestCase
         yield 'a device id that is no UUID' => [['deviceId' => 'my-mac'], 'deviceId'];
         yield 'no device name' => [['deviceName' => ' '], 'deviceName'];
         yield 'a device name that is too long' => [['deviceName' => str_repeat('a', 256)], 'deviceName'];
+        yield 'an empty number' => [['address' => ''], 'address'];
         yield 'a number with a plus' => [['address' => '+31698765432'], 'address'];
         yield 'a number that is too short' => [['address' => '1234'], 'address'];
         yield 'a number that is too long' => [['address' => str_repeat('1', 21)], 'address'];
         yield 'a number with a new line' => [['address' => "31698765432\n"], 'address'];
         yield 'a name that is too long' => [['displayName' => str_repeat('a', 256)], 'displayName'];
+        yield 'a device name with a line break' => [['deviceName' => "Kim's\nMacBook"], 'deviceName'];
+        yield 'a device name that reverses text' => [['deviceName' => "Kim's \u{202E}kooBcaM"], 'deviceName'];
+        yield 'a name with a control character' => [['displayName' => "Kim\u{0007}Visser"], 'displayName'];
+        yield 'a name with a zero width joiner' => [['displayName' => "Kim\u{200D}Visser"], 'displayName'];
     }
 
     /**
@@ -283,13 +289,33 @@ final class ChatAccountApiTest extends DatabaseTestCase
         self::assertFalse($account['notify'] ?? null);
     }
 
+    public function testAPersonalAccessTokenCannotHoldAChatScope(): void
+    {
+        // The session holds the chat scopes, so only the rule for tokens refuses them.
+        $session = $this->userHeaders('kim@example.test', ['settings:write', 'mail:read', 'chat:read', 'chat:send']);
+        foreach (['chat:read', 'chat:send'] as $scope) {
+            $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Script', 'scopes' => ['mail:read', $scope]], $session);
+            self::assertResponseStatusCodeSame(422, $scope);
+        }
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Script', 'scopes' => ['mail:read']], $session);
+        self::assertResponseStatusCodeSame(201, 'The same session makes a token without them.');
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM personal_access_token'));
+    }
+
+    public function testNeedsASignedInCaller(): void
+    {
+        $this->client->request('GET', '/api/v1/chat-accounts', server: ['HTTP_ACCEPT' => 'application/json']);
+
+        self::assertResponseStatusCodeSame(401);
+    }
+
     public function testAnAppHoldingChatReadReadsButChangesNothing(): void
     {
         $this->connect();
         $id = $this->responseString('id');
         $this->client->request('GET', '/api/v1/chat-accounts', server: $this->web);
         $ours = $this->decodedResponse();
-        $headers = $this->thirdPartyHeaders('kim@example.test', ['chat:read'], nameScopes: true);
+        $headers = $this->seededThirdPartyHeaders('kim@example.test', ['chat:read']);
 
         $this->client->request('GET', '/api/v1/chat-accounts', server: $headers);
         self::assertResponseIsSuccessful();
@@ -308,7 +334,7 @@ final class ChatAccountApiTest extends DatabaseTestCase
     {
         $this->connect();
         $id = $this->responseString('id');
-        $lisa = $this->thirdPartyHeaders('lisa@example.test', ['chat:read'], nameScopes: true);
+        $lisa = $this->seededThirdPartyHeaders('lisa@example.test', ['chat:read']);
 
         $this->client->request('GET', '/api/v1/chat-accounts', server: $lisa);
         self::assertResponseIsSuccessful();
@@ -319,47 +345,6 @@ final class ChatAccountApiTest extends DatabaseTestCase
         $this->client->request('DELETE', '/api/v1/chat-accounts/'.$id, server: $lisa);
         self::assertResponseStatusCodeSame(403);
         self::assertFalse($this->onlyAccount()['notify'] ?? null);
-    }
-
-    /**
-     * No grant from before gains chats: the chat scopes are not offered, an app gets them only when it names them and
-     * the user allows them, and a personal access token cannot hold them yet.
-     */
-    public function testChatScopesAreNeverGivenUnasked(): void
-    {
-        foreach (['/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'] as $path) {
-            $this->client->request('GET', $path);
-            self::assertResponseIsSuccessful();
-            $supported = $this->decodedResponse()['scopes_supported'] ?? null;
-            self::assertIsArray($supported);
-            self::assertNotContains('chat:read', $supported, $path);
-            self::assertNotContains('chat:send', $supported, $path);
-        }
-
-        // An app registered without naming the chat scopes was given the offered ones; it cannot ask for chat:read.
-        $this->resetRegistrationLimits();
-        $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'Some app', 'redirect_uris' => ['http://127.0.0.1:33418/callback']]);
-        self::assertResponseStatusCodeSame(201);
-        self::assertNotContains('chat:read', explode(' ', $this->responseString('scope')));
-        $clientId = $this->responseString('client_id');
-        $this->client->getCookieJar()->clear();
-        $crawler = $this->client->request('GET', '/login');
-        $this->client->submit($crawler->selectButton('Sign in')->form(['_username' => 'kim@example.test', '_password' => self::DEFAULT_PASSWORD]));
-        $this->client->request('GET', '/oauth/authorize?'.http_build_query([
-            'response_type' => 'code',
-            'client_id' => $clientId,
-            'redirect_uri' => 'http://127.0.0.1:33418/callback',
-            'scope' => 'mail:read chat:read',
-            'state' => 'test',
-            'code_challenge' => rtrim(strtr(base64_encode(hash('sha256', 'a-verifier-of-enough-length-for-pkce-0123456789', true)), '+/', '-_'), '='),
-            'code_challenge_method' => 'S256',
-        ]));
-        self::assertResponseStatusCodeSame(400);
-        self::assertSelectorTextContains('code', 'invalid_scope');
-        $this->client->getCookieJar()->clear();
-
-        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Script', 'scopes' => ['chat:read']], $this->userHeaders('kim@example.test', ['settings:write']));
-        self::assertResponseStatusCodeSame(422);
     }
 
     /**
