@@ -175,8 +175,8 @@ Only first-party clients are approved automatically; every other app goes throug
 The web client and the desktop app keep a sign-in until the server refuses it, by these rules; the phone follows the
 same rules as of this release (the mobile app in section 3.10). They refresh the access token before it expires,
 one refresh at a time (refresh tokens rotate, so a second refresh with the same token would be refused), and only an
-`invalid_grant` or `invalid_request` answer of the token endpoint (`refreshRefusalEndsSession` in `packages/core`, the
-rule of every client), or a 401 from the API that a refresh and one retry do not cure, ends the session. A network error, a timeout (20 seconds for
+`invalid_grant`, `invalid_request`, `invalid_client` or `unauthorized_client` answer of the token endpoint
+(`refreshRefusalEndsSession` in `packages/core`, the rule of every client), or a 401 from the API that a refresh and one retry do not cure, ends the session. A network error, a timeout (20 seconds for
 the whole answer) or a 5xx keeps the tokens; the request fails with an error that says the next one tries again. When
 the answer was lost (a network error or the timeout, not an error answer), the client asks once more after 2 seconds:
 the server may have rotated the token already, and answers the old one with the same new pair for 30 seconds. A device
@@ -1308,7 +1308,8 @@ that writes (a draft upload or delete, a message sent) goes out; drafts are stil
 confirmed. A sign-out meanwhile removes the copy, as its id came with the tokens signed out. When the server names
 another user, the draft on screen, a hand-over and a followed bulk action are let go, that copy is closed and the
 user's own opens; only then are copies other users left here removed (also copies of 0.7 and earlier that the list
-of copies does not know, found through `indexedDB.databases()`; the desktop's SQLite files cannot be listed). An answer to `/me` about a token set that was
+of copies does not know, found through `indexedDB.databases()` and, on the desktop, the shell's `sql_list`, which returns only the names of the
+mail copy files in its data folder). An answer to `/me` about a token set that was
 replaced while it was asked is not taken; the server is asked again.
 A start that fails (offline, the server down, the copy refused) says so with a Retry button and tries again by
 itself: after 5 seconds, doubling up to 5 minutes, and at once when the device comes back online.
@@ -1431,7 +1432,8 @@ refuse values above about 2 KB, refreshes them before they expire with one share
 and never lets a refresh that finishes after sign-out sign the user back in. A save writes the refresh token first and
 the expiry last, so one cut off at any step still loads with the newest refresh token. As of this release it renews
 by the same rules as the web client and the desktop app (section 3.2): only an `invalid_grant`,
-`invalid_request`, `invalid_client` or `unauthorized_client` answer of `/oauth/token` ends the sign-in; offline, a
+`invalid_request`, `invalid_client` or `unauthorized_client` answer of `/oauth/token` ends the sign-in (the rule
+of `refreshRefusalEndsSession` in `packages/core`, shared by all three clients); offline, a
 timeout (20 seconds for the whole answer) or a server error keeps the tokens and the next request tries again, and a
 lost answer is asked for once more after 2 seconds. A 401 from the API renews the token once and asks once more before the
 sign-in ends. A sign-in that ends this way has expired: the tokens go, but who was signed in and their mail on the
