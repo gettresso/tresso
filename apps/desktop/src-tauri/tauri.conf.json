@@ -14,8 +14,8 @@
     "windows": [
       {
         "title": "Tresso",
-        "width": 1280,
-        "height": 800,
+        "width": 1240,
+        "height": 780,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,

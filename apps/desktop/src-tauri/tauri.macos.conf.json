@@ -4,8 +4,8 @@
     "windows": [
       {
         "title": "Tresso",
-        "width": 1280,
-        "height": 800,
+        "width": 1240,
+        "height": 780,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
@@ -16,8 +16,8 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {
-          "x": 18,
-          "y": 24
+          "x": 17.5,
+          "y": 27.5
         },
         "windowEffects": {
           "effects": [

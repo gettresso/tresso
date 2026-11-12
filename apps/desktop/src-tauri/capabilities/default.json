@@ -18,6 +18,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
     "allow-reduce-transparency",
+    "allow-selection-accent",
     "allow-update-channel",
     "allow-check-for-updates-natively",
     "allow-update-listening",

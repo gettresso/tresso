@@ -27,6 +27,7 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       accessibility::reduce_transparency,
+      accessibility::selection_accent,
       updates::update_channel,
       updates::check_for_updates_natively,
       updates::update_listening,
@@ -193,6 +194,28 @@ mod tests {
       checked += 1;
     }
     assert_eq!(checked, 2);
+  }
+
+  /// A pixel token of the web client's frame stylesheet, where the window frame keeps its numbers.
+  fn frame_token(name: &str) -> f64 {
+    let css = include_str!("../../../web/src/assets/frame.css");
+    let start = css.find(&format!("--{name}:")).unwrap_or_else(|| panic!("frame.css has no --{name}")) + name.len() + 3;
+    css[start..].trim_start().split("px;").next().unwrap().parse().unwrap()
+  }
+
+  /// The window frame's spec: 1240 x 780 on every system (each launch: the app keeps no window state), and the traffic
+  /// lights' inset the frame keeps with its other numbers. Where AppKit then draws them is only seen on a built app.
+  #[test]
+  fn the_window_opens_as_the_frame_says() {
+    for config in [include_str!("../tauri.conf.json"), include_str!("../tauri.macos.conf.json")] {
+      let config: serde_json::Value = serde_json::from_str(config).unwrap();
+      let window = &config["app"]["windows"][0];
+      assert_eq!((window["width"].as_f64(), window["height"].as_f64()), (Some(1240.0), Some(780.0)));
+    }
+    let mac: serde_json::Value = serde_json::from_str(include_str!("../tauri.macos.conf.json")).unwrap();
+    let inset = &mac["app"]["windows"][0]["trafficLightPosition"];
+    assert_eq!(inset["x"].as_f64(), Some(frame_token("frame-traffic-light-inset-x")));
+    assert_eq!(inset["y"].as_f64(), Some(frame_token("frame-traffic-light-inset-y")));
   }
 
   #[test]
