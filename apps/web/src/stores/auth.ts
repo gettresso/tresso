@@ -24,6 +24,8 @@ const PENDING_KEY = 'auth.pending'
  * restart of the desktop app and a closed browser; a reopened authorization page keeps asking.
  */
 const PROMPT_LOGIN_KEY = 'tresso.auth.promptLogin'
+/** How often loadMe asks again when the token set changed while it asked. */
+const LOAD_ME_ATTEMPTS = 3
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
 const EXPIRY_MARGIN_MS = 30_000
 /** How long the token endpoint gets to answer: a refresh holds the lock of every tab while it waits. */
@@ -751,15 +753,28 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * Asks the server who is signed in. An answer to a token set that was replaced while it was asked (a refresh, or
+   * another tab's sign-in, maybe of someone else) is not taken: the server is asked again with the set as it is now.
+   */
   async function loadMe(): Promise<void> {
     const session = generation.value
-    const asked = tokens.value
-    const loaded = await api<Me>('/api/v1/me')
-    // A sign-out while it ran: the answer is about a user who is gone.
-    if (session === generation.value) {
+    for (let attempt = 0; attempt < LOAD_ME_ATTEMPTS; attempt++) {
+      const asked = tokens.value
+      const loaded = await api<Me>('/api/v1/me')
+      // A sign-out while it ran: the answer is about a user who is gone.
+      if (session !== generation.value) {
+        return
+      }
+      if (tokens.value !== asked) {
+        continue
+      }
       me.value = loaded
-      await keepUserId(asked, loaded.id)
+      // Not awaited: the id is in `tokens` at once, and the copy of another user must not wait for the keychain.
+      void keepUserId(asked, loaded.id)
+      return
     }
+    throw new Error('The sign-in kept changing while Tresso asked who is signed in. It tries again.')
   }
 
   /**
