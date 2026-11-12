@@ -45,6 +45,8 @@ vi.mock('@/mail/store', () => ({
     })
   },
   mailCopyName: (userId: string) => `copy-${userId}`,
+  // No copies of an earlier release on this device.
+  copiesOnDevice: async () => [],
   deleteMailStore: async (userId: string) => {
     device.deleted.push(userId)
     device.copies.delete(userId)

@@ -26,7 +26,7 @@ const copies = vi.hoisted(() => ({
   /** What each opened copy calls when another tab or the browser closes it. */
   closedElsewhere: new Map<string, (reason: 'deleted' | 'upgraded' | 'terminated') => void>(),
   /** Changes the store a test opens, e.g. to make a read fail. */
-  afterOpen: null as ((store: MailStore) => void) | null,
+  afterOpen: null as ((store: MailStore) => void | Promise<void>) | null,
   /** Removing a copy fails with this, as when the desktop shell refuses while a read still uses it. */
   deleteFails: null as Error | null,
   /** The copies the device lists (IndexedDB databases), as copiesOnDevice reports them. */
@@ -48,7 +48,7 @@ vi.mock('@/mail/store', () => ({
     }
     const store = await SqliteMailStore.open(await memorySql())
     copies.opened.push(userId)
-    copies.afterOpen?.(store)
+    await copies.afterOpen?.(store)
     const close = store.close.bind(store)
     store.close = async () => {
       await copies.holdClose.get(userId)
@@ -73,7 +73,7 @@ vi.mock('@/mail/store', () => ({
   },
 }))
 
-const { STILL_CHECKING, useMailStore } = await import('../mail')
+const { KEPT_SAVE_LIMIT_MS, STILL_CHECKING, useMailStore } = await import('../mail')
 
 // The browser's local storage, kept in memory.
 function memoryStorage(): Storage {
@@ -224,6 +224,49 @@ describe('the mail copy across sign-out and sign-in', () => {
     expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'anna', name: 'copy-anna' }])
   })
 
+  it('closes a kept copy after a few seconds when writing the last draft into it never finishes', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const mail = useMailStore()
+    await mail.start('anna')
+    // Storage that never answers the write of the draft on screen.
+    mail.beforeKeptCopyCloses(() => new Promise<void>(() => undefined))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
+      await vi.advanceTimersByTimeAsync(KEPT_SAVE_LIMIT_MS - 1)
+      expect(copies.closed).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(1)
+    } finally {
+      vi.useRealTimers()
+    }
+    await vi.waitFor(() => expect(copies.closed).toEqual(['anna']))
+    expect(mail.ready).toBe(false)
+  })
+
+  it('opens and syncs the copy of the same user who signs in again while the last draft is still being written', async () => {
+    const { useAuthStore } = await import('../auth')
+    const auth = useAuthStore()
+    const mail = useMailStore()
+    await mail.start('anna')
+    let written!: () => void
+    mail.beforeKeptCopyCloses(() => new Promise<void>((resolve) => (written = resolve)))
+
+    window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
+    await vi.waitFor(() => expect(written).toBeDefined())
+    // Anna signs in again (another tab, or the desktop window) before the write finished.
+    auth.tokens = { accessToken: 'token-2', refreshToken: null, expiresAt: Date.now() + 3_600_000 }
+    const starting = mail.start('anna')
+    written()
+    await starting
+
+    // The half-closed copy was closed, and her copy opened afresh and syncing; no late close shuts it.
+    expect(copies.closed).toEqual(['anna'])
+    expect(copies.opened).toEqual(['anna', 'anna'])
+    await vi.waitFor(() => expect(mail.synced).toBe(true))
+    expect(mail.ready).toBe(true)
+  })
+
   it('removes the copy when the user signs out', async () => {
     vi.stubGlobal('location', { ...window.location, assign: vi.fn<(url: string) => void>() })
     const { useAuthStore } = await import('../auth')
@@ -293,6 +336,61 @@ describe('the mail copy across sign-out and sign-in', () => {
     expect(copies.deleted).toEqual(['anna'])
     expect(next.removalError).toBeNull()
     expect(localStorage.getItem('tresso.mail.copies')).toBeNull()
+  })
+
+  it('does not remove a marked copy its user opened again meanwhile', async () => {
+    localStorage.setItem('tresso.mail.copies', JSON.stringify([{ userId: 'anna', name: 'copy-anna', remove: true }]))
+    const mail = useMailStore()
+    // Anna signs in again and her copy opens, which unmarks it, before the retry gets to it.
+    await mail.start('anna')
+
+    await mail.removeLeftCopies()
+
+    expect(copies.deleted).toEqual([])
+    expect(JSON.parse(localStorage.getItem('tresso.mail.copies')!)).toEqual([{ userId: 'anna', name: 'copy-anna' }])
+  })
+
+  it('looks into a copy that is not open before a sign-out removes it, so its unsaved drafts are asked about', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const mail = useMailStore()
+    await mail.start('anna')
+    // Another tab upgraded the copy (or reading it failed): it is closed here, and a sign-out would still remove it.
+    copies.closedElsewhere.get('anna')!('upgraded')
+    await vi.waitFor(() => expect(mail.ready).toBe(false))
+    // What the copy holds on disk: a draft written offline, and one the server has.
+    copies.afterOpen = async (store) => {
+      await store.saveDraft(draft('d1', { pendingSave: true }))
+      await store.saveDraft(draft('d2', { pendingSave: false }))
+    }
+
+    expect((await mail.unsavedDrafts()).map((d) => d.id)).toEqual(['d1'])
+    // Looked into and closed again.
+    expect(copies.closed.filter((id) => id === 'anna')).toHaveLength(2)
+  })
+
+  it('stops waiting for the drafts to reach the server after 15 seconds, and says which are still not there', async () => {
+    const mail = useMailStore()
+    await mail.start('anna')
+    await mail.saveDraft(draft('d1', { pendingSave: true }))
+    // The server takes the upload and never answers.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        new URL(String(input)).pathname.startsWith('/api/v1/drafts') ? new Promise<Response>(() => undefined) : new Response(JSON.stringify(page(0))),
+      ),
+    )
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      let left: string[] | null = null
+      void mail.saveUnsavedDrafts(15_000).then((drafts) => (left = drafts.map((d) => d.id)))
+      await vi.advanceTimersByTimeAsync(14_999)
+      expect(left).toBeNull()
+
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.waitFor(() => expect(left).toEqual(['d1']))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('leaves a copy kept on purpose (an expired session) alone at the start of the signed-out app', async () => {

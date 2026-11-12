@@ -52,6 +52,8 @@ describe('compose store', () => {
   let pages: ChangePage[]
   /** The server refuses the session's token. */
   let expired: boolean
+  /** The answer to a send, when a test holds it back. */
+  let heldSend: Promise<Response> | null
   const requests: { method: string; path: string; body: unknown }[] = []
 
   beforeEach(async () => {
@@ -59,6 +61,7 @@ describe('compose store', () => {
     setActivePinia(createPinia())
     requests.length = 0
     expired = false
+    heldSend = null
     pages = [
       page(1, {
         mailAccounts: [
@@ -80,7 +83,7 @@ describe('compose store', () => {
           return json(pages.find((p) => p.cursor > since) ?? page(since))
         }
         if (url.pathname === '/api/v1/messages/m1/body') return json({ id: 'm1', html: '<p>Can you approve?</p>', text: null, hasRemoteContent: false, remoteContentLoaded: false, attachments: [] })
-        if (url.pathname === '/api/v1/outgoing-messages') return json(outgoing('scheduled'), 201)
+        if (url.pathname === '/api/v1/outgoing-messages') return heldSend ?? json(outgoing('scheduled'), 201)
         if (url.pathname === '/api/v1/outgoing-messages/o1/cancel') return json(outgoing('cancelled'))
         if (url.pathname === '/api/v1/drafts' && method === 'POST') {
           const body = JSON.parse(String(init?.body)) as Record<string, unknown>
@@ -294,6 +297,34 @@ describe('compose store', () => {
     // The same user signs in again: the copy was kept, with the text.
     await mail.start('compose-user')
     expect(await mail.draft(id)).toMatchObject({ subject: 'Half written', html: '<p>Typed just before the session ended</p>', pendingSave: true })
+  })
+
+  it('keeps the id of a send whose session ended while it was under way, as the server may have queued the message', async () => {
+    const compose = useComposeStore()
+    const mail = useMailStore()
+    let answer!: (response: Response) => void
+    heldSend = new Promise((resolve) => (answer = resolve))
+    compose.openNew([{ address: 'anna@finance.example', name: 'Anna' }])
+    compose.update({ subject: 'Queued or not' })
+    const id = compose.draft!.id
+    // Keeps the copy open after the session ended, until the answer was handled.
+    let release!: () => void
+    mail.beforeKeptCopyCloses(() => new Promise<void>((resolve) => (release = resolve)))
+
+    const sending = compose.send()
+    await vi.waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/api/v1/outgoing-messages')).toBe(true))
+    const attempt = (requests.find((r) => r.path === '/api/v1/outgoing-messages')!.body as { outgoingId: string }).outgoingId
+    window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
+    await vi.waitFor(() => expect(release).toBeDefined())
+    // The server did queue it; the answer comes after the session ended and is dropped.
+    answer(new Response(JSON.stringify(outgoing('scheduled')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+    await sending
+    release()
+    await vi.waitFor(() => expect(mail.ready).toBe(false))
+
+    // Signed in again: the draft still carries the send's id, so Send again cannot queue the message a second time.
+    await mail.start('compose-user')
+    expect(await mail.draft(id)).toMatchObject({ sendAttemptId: attempt })
   })
 
   it('keeps what was typed in the copy when the session ended in another tab', async () => {
