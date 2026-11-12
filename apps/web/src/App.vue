@@ -204,6 +204,17 @@ function retryNow(): void {
     void startSession()
   }
 }
+/**
+ * Try again on a sync error: a pull when the copy is syncing; otherwise (the copy was removed elsewhere and could not
+ * be opened again) the start, which opens it.
+ */
+function retrySync(): void {
+  if (mail.synced) {
+    void mail.syncNow()
+  } else if (auth.isAuthenticated && !starting) {
+    void startSession()
+  }
+}
 onMounted(() => window.addEventListener('online', retryNow))
 onBeforeUnmount(() => {
   window.removeEventListener('online', retryNow)
@@ -278,7 +289,7 @@ watch(
   </p>
   <p v-else-if="!auth.paymentRequired && syncProblem !== null && syncProblem !== hiddenSyncError" class="problem" :class="problemPlace" role="alert">
     {{ syncProblem }}
-    <button type="button" class="reload" @click="mail.syncNow()">Try again</button>
+    <button type="button" class="reload" @click="retrySync">Try again</button>
     <button type="button" class="hide" aria-label="Hide this message" @click="hiddenSyncError = syncProblem">×</button>
   </p>
 </template>
