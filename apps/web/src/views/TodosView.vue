@@ -11,6 +11,7 @@ import { quickAddSchema, type QuickAddValues } from '@/forms/todos'
 import { senderName } from '@/mail/format'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
+import { useViewRequest } from '@/components/viewRequests'
 import { useTodosStore } from '@/stores/todos'
 import AppIcon from '@/components/AppIcon.vue'
 import TodoDetail from '@/components/TodoDetail.vue'
@@ -62,6 +63,9 @@ const { defineField, handleSubmit, errors, values, resetForm, setErrors } = useF
 const [text] = defineField('text', { validateOnModelUpdate: false })
 const adding = ref(false)
 const addError = ref<string | null>(null)
+const quickAdd = ref<HTMLInputElement | null>(null)
+// New To-do in the desktop app's menu bar (see platform/menu.ts).
+useViewRequest('quickAddTodo', () => quickAdd.value?.focus())
 
 const preview = computed(() => {
   const typed = values.text ?? ''
@@ -108,6 +112,7 @@ async function toggle(todo: Todo): Promise<void> {
         <div class="quick-row">
           <input
             id="quick-add"
+            ref="quickAdd"
             v-model="text"
             :maxlength="TODO_TITLE_MAX_LENGTH"
             placeholder="Call Anna friday"
