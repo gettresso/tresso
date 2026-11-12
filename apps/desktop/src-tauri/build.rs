@@ -5,6 +5,7 @@ fn main() {
   tauri_build::try_build(tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
     "reduce_transparency",
     "selection_accent",
+    "set_glass",
     "update_channel",
     "check_for_updates_natively",
     "update_listening",

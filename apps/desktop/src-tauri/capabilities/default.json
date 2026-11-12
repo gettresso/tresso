@@ -19,6 +19,7 @@
     "core:window:allow-start-dragging",
     "allow-reduce-transparency",
     "allow-selection-accent",
+    "allow-set-glass",
     "allow-update-channel",
     "allow-check-for-updates-natively",
     "allow-update-listening",

@@ -43,14 +43,15 @@ getrandom = "0.3.4"
 tauri = { version = "2.12.4", features = ["macos-private-api", "test"] }
 
 # Reads the "Reduce transparency" setting, so the web glass turns solid with the window's vibrancy, and the selection
-# colour that follows the user's accent colour (accessibility.rs), and adds the Edit menu's items Tauri has none for and
-# keeps the main window out of AppKit's window list (menu.rs).
+# colour that follows the user's accent colour (accessibility.rs); paints the window colour behind the glass
+# (glass.rs); adds the Edit menu's items Tauri has none for and keeps the main window out of AppKit's window list
+# (menu.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSAccessibility", "NSAppearance", "NSColor", "NSColorSpace", "NSWorkspace", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSWindow"] }
-# Loads and drives Sparkle, the macOS updater (updates.rs).
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSAccessibility", "NSAppearance", "NSColor", "NSColorList", "NSColorSpace", "NSWorkspace", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSWindow"] }
+# Loads and drives Sparkle, the macOS updater (updates.rs), and places the Liquid Glass views (glass.rs).
 objc2 = "0.6.5"
 block2 = "0.6.2"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSString"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSGeometry", "NSString", "NSUserDefaults"] }
 # The keychain each platform keeps the sign-in in (tokens.rs).
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 

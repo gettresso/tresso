@@ -1,4 +1,5 @@
 mod accessibility;
+mod glass;
 mod menu;
 mod sql;
 mod tokens;
@@ -18,16 +19,20 @@ pub fn run() {
     .manage(whatsapp::Bridge::default())
     // Filled on macOS once the menu bar is built (menu.rs); empty where the app has none.
     .manage(<menu::MenuItems>::default())
+    // The Liquid Glass views behind the sidebar card (glass.rs, macOS 26 and later).
+    .manage(glass::GlassViews::default())
     // A new page in the main window does not listen for Sparkle's relaunch question until it says so (updates.rs).
     .on_page_load(|webview, payload| {
       use tauri::Manager;
       if webview.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
         webview.state::<updates::UpdateListener>().page_loading();
+        glass::page_loading(webview);
       }
     })
     .invoke_handler(tauri::generate_handler![
       accessibility::reduce_transparency,
       accessibility::selection_accent,
+      glass::set_glass,
       updates::update_channel,
       updates::check_for_updates_natively,
       updates::update_listening,
@@ -139,6 +144,8 @@ fn main_window(app: &tauri::App) -> tauri::Result<()> {
       tauri::webview::NewWindowResponse::Deny
     })
     .build()?;
+  // Liquid Glass behind the sidebar card where macOS has it (glass.rs); the window as configured elsewhere.
+  glass::setup(&window);
   // Closing it keeps the app in the Dock (macOS); elsewhere closing the only window quits, as it does there.
   #[cfg(target_os = "macos")]
   menu::keep_main_window(&window);
