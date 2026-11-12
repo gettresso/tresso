@@ -30,13 +30,13 @@ final readonly class ChatFields
     }
 
     /** Names a chat within its owner without its JID: what the server looks a chat up by. */
-    public function jidFingerprint(Uuid $owner, string $jid): string
+    public function jidFingerprint(Uuid $owner, #[\SensitiveParameter] string $jid): string
     {
         return $this->keys->fingerprint($owner, hash('sha256', $jid, true));
     }
 
     /** Names a message within its owner without its JID or WhatsApp id: what the server looks a message up by. */
-    public function messageFingerprint(Uuid $owner, string $jid, string $waId): string
+    public function messageFingerprint(Uuid $owner, #[\SensitiveParameter] string $jid, #[\SensitiveParameter] string $waId): string
     {
         return $this->keys->fingerprint($owner, hash('sha256', $jid."\n".$waId, true));
     }
@@ -44,7 +44,7 @@ final readonly class ChatFields
     /**
      * Sets the own number and name. An unchanged value is kept as sealed, so it is no change for clients.
      */
-    public function setAccountIdentity(ChatAccount $account, ?string $address, ?string $displayName): void
+    public function setAccountIdentity(ChatAccount $account, #[\SensitiveParameter] ?string $address, #[\SensitiveParameter] ?string $displayName): void
     {
         $owner = self::ownerOf($account);
         $sealedAddress = $address === $this->accountAddress($account)
@@ -66,7 +66,7 @@ final readonly class ChatFields
         return $this->open(self::ownerOf($account), ChatField::AccountName, $account->getId(), $account->getSealedDisplayName());
     }
 
-    public function newChat(ChatAccount $account, string $jid, ?string $name, ChatKind $kind, \DateTimeImmutable $lastMessageAt): Chat
+    public function newChat(ChatAccount $account, #[\SensitiveParameter] string $jid, #[\SensitiveParameter] ?string $name, ChatKind $kind, \DateTimeImmutable $lastMessageAt): Chat
     {
         $owner = self::ownerOf($account);
         $id = Uuid::v7();
@@ -93,7 +93,7 @@ final readonly class ChatFields
     }
 
     /** Sets the chat's name. An unchanged name is kept as sealed, so it is no change for clients. */
-    public function rename(Chat $chat, ?string $name): void
+    public function rename(Chat $chat, #[\SensitiveParameter] ?string $name): void
     {
         if ($name === $this->name($chat)) {
             return;
@@ -106,13 +106,13 @@ final readonly class ChatFields
      */
     public function newMessage(
         Chat $chat,
-        string $waId,
+        #[\SensitiveParameter] string $waId,
         bool $fromMe,
         \DateTimeImmutable $sentAt,
-        ?array $sender,
-        string $text,
+        #[\SensitiveParameter] ?array $sender,
+        #[\SensitiveParameter] string $text,
         ?ChatMediaKind $mediaKind,
-        ?string $mediaName,
+        #[\SensitiveParameter] ?string $mediaName,
         ?int $mediaSize,
     ): ChatMessage {
         $owner = self::ownerOf($chat->getChatAccount());
@@ -157,7 +157,7 @@ final readonly class ChatFields
     }
 
     /** $id comes from the client, so a repeated request names the same reply. */
-    public function newOutgoing(Uuid $id, Chat $chat, string $text, \DateTimeImmutable $now): ChatOutgoing
+    public function newOutgoing(Uuid $id, Chat $chat, #[\SensitiveParameter] string $text, \DateTimeImmutable $now): ChatOutgoing
     {
         return new ChatOutgoing($id, $chat, $this->seal(self::ownerOf($chat->getChatAccount()), ChatField::OutgoingText, $id, $text), $now);
     }
@@ -184,7 +184,7 @@ final readonly class ChatFields
      *
      * @return array{id: string, name: ?string}|null
      */
-    public static function decodeSender(?string $json): ?array
+    public static function decodeSender(#[\SensitiveParameter] ?string $json): ?array
     {
         if (null === $json) {
             return null;
@@ -199,12 +199,12 @@ final readonly class ChatFields
         return ['id' => $id, 'name' => $name];
     }
 
-    private function seal(Uuid $owner, ChatField $field, Uuid $rowId, string $plaintext): string
+    private function seal(Uuid $owner, ChatField $field, Uuid $rowId, #[\SensitiveParameter] string $plaintext): string
     {
         return $this->vault->seal($owner, $field->context($rowId), $plaintext);
     }
 
-    private function sealNullable(Uuid $owner, ChatField $field, Uuid $rowId, ?string $plaintext): ?string
+    private function sealNullable(Uuid $owner, ChatField $field, Uuid $rowId, #[\SensitiveParameter] ?string $plaintext): ?string
     {
         return null === $plaintext ? null : $this->seal($owner, $field, $rowId, $plaintext);
     }
