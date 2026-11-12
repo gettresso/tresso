@@ -41,7 +41,7 @@ describe('MailboxSidebar', () => {
       [{}, 'Up to date'],
       [{ stream: 'connecting', wasLive: false }, 'Connecting…'],
       [{ stream: 'retrying' }, 'Reconnecting… Last synced 14:02'],
-      [{ online: false }, 'Offline. Last synced 14:02'],
+      [{ online: false, stream: 'retrying' }, 'Offline. Last synced 14:02'],
       [{ error: 'Bad gateway' }, 'Sync stopped. Last synced 14:02'],
     ]
     for (const [change, text] of states) {

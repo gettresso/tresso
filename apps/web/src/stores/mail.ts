@@ -130,7 +130,7 @@ export const useMailStore = defineStore('mail', () => {
    * What the footer (and the notice above the lists) says about the sync, from the shared status model: opening,
    * read only, getting the mail, catching up, up to date, reconnecting, offline, stopped.
    */
-  const syncStatus = shallowRef<SyncStatus>({ kind: 'closed', text: '', fraction: null, remaining: null, notice: null, announcement: '' })
+  const syncStatus = shallowRef<SyncStatus>({ kind: 'closed', text: '', fraction: null, remaining: null, notice: null, problem: null, announcement: '' })
   const status = new SyncStatusMachine({
     onChange: (next) => {
       syncStatus.value = next
@@ -351,7 +351,11 @@ export const useMailStore = defineStore('mail', () => {
       // Aborted when the stream stops, so a sign-out does not wait for a token request that hangs.
       fetchAccess: (signal) => auth.api<RealtimeAccess>('/api/v1/realtime/token', { signal }),
       now: () => auth.serverNow(),
-      onCursor: (cursor) => void pull(() => engine?.notify(cursor)),
+      onCursor: (cursor) => {
+        if (realtime === stream) {
+          void pull(() => engine?.notify(cursor))
+        }
+      },
       onConnecting: () => {
         if (realtime === stream) {
           status.streamConnecting()
@@ -389,12 +393,18 @@ export const useMailStore = defineStore('mail', () => {
    * Runs a pull of the delta. Once it worked, drafts whose upload failed go up when asked (`uploadDrafts`, after a
    * reconnect) or when the pull before had failed: the server is reachable again.
    */
-  async function pull(run: () => Promise<void> | undefined, options: { uploadDrafts?: boolean } = {}): Promise<void> {
-    const failedBefore = syncState.value === 'error'
+  async function pull(run: () => Promise<unknown> | undefined, options: { uploadDrafts?: boolean } = {}): Promise<void> {
+    const before = syncState.value
+    const failedBefore = before === 'error'
     const mine = generation
     syncState.value = 'syncing'
     try {
-      await run()
+      // A notification at or below the stored cursor pulls nothing (`false`): that proves nothing, so a failure stays
+      // and the copy is not noted as synced.
+      if ((await run()) === false) {
+        syncState.value = before
+        return
+      }
       syncState.value = 'idle'
       syncError.value = null
       if (mine === generation) {
@@ -516,6 +526,8 @@ export const useMailStore = defineStore('mail', () => {
     } catch (error) {
       syncState.value = 'error'
       syncError.value = `The mail on this device was removed elsewhere and could not be opened again: ${error instanceof Error ? error.message : String(error)}`
+      // The banner says it, from the status as every other failure.
+      status.openFailed(syncError.value)
     }
   }
 

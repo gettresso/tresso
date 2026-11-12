@@ -7,6 +7,15 @@ import { useMailStore } from '../stores/mail'
 import { useAuthStore } from '../stores/auth'
 import { useComposeStore } from '../stores/compose'
 import AppShell from '../views/AppShell.vue'
+import { describeSync, type PullProgress, type SyncFacts } from '@tresso/core'
+
+/** An open, synced copy, live. */
+const openFacts: SyncFacts = { copy: 'open', confirmed: true, afterUpdate: false, pull: null, origin: null, error: null, stream: 'live', wasLive: true, online: true, lastSyncedAt: null, now: Date.now() }
+
+/** The status machine's word that a pull failed (and, with `pull`, that its retry runs), as the mail store sets it. */
+function failed(mail: ReturnType<typeof useMailStore>, error: string, pull: PullProgress | null = null): void {
+  mail.syncStatus = describeSync({ ...openFacts, error, pull, origin: pull === null ? null : pull.from })
+}
 
 describe('App', () => {
   beforeEach(() => {
@@ -107,8 +116,7 @@ describe('App', () => {
     const syncNow = vi.spyOn(mail, 'syncNow').mockResolvedValue()
     // A copy that syncs, whose pull failed.
     mail.synced = true
-    mail.syncState = 'error'
-    mail.syncError = 'The server could not be reached'
+    failed(mail, 'The server could not be reached')
     await flushPromises()
 
     expect(wrapper.get('[role="alert"]').text()).toContain('Sync stopped: The server could not be reached')
@@ -125,14 +133,13 @@ describe('App', () => {
 
     const wrapper = mount(App, { global: { plugins: [router] } })
     const mail = useMailStore()
-    mail.syncState = 'error'
-    mail.syncError = 'The server could not be reached'
+    failed(mail, 'The server could not be reached')
     await flushPromises()
 
     await wrapper.get('[role="alert"] button[aria-label="Hide this message"]').trigger('click')
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
 
-    mail.syncError = 'Signing in to kim@company.example failed'
+    failed(mail, 'Signing in to kim@company.example failed')
     await flushPromises()
     expect(wrapper.get('[role="alert"]').text()).toContain('Signing in to kim@company.example failed')
   })
@@ -144,22 +151,21 @@ describe('App', () => {
 
     const wrapper = mount(App, { global: { plugins: [router] } })
     const mail = useMailStore()
-    mail.syncState = 'error'
-    mail.syncError = 'Failed to fetch'
+    failed(mail, 'Failed to fetch')
     await flushPromises()
     await wrapper.get('[role="alert"] button[aria-label="Hide this message"]').trigger('click')
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
 
-    // A retry on its way changes nothing; a pull that worked does.
-    mail.syncState = 'syncing'
+    // A retry on its way changes nothing (the failure stands meanwhile); a pull that worked does.
+    failed(mail, 'Failed to fetch', { from: 10, cursor: 10, latest: null, items: 0, pages: 0, hasMore: null })
     await flushPromises()
-    mail.syncState = 'error'
+    failed(mail, 'Failed to fetch')
     await flushPromises()
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
 
-    mail.syncState = 'idle'
+    mail.syncStatus = describeSync({ ...openFacts, lastSyncedAt: Date.now() })
     await flushPromises()
-    mail.syncState = 'error'
+    failed(mail, 'Failed to fetch')
     await flushPromises()
     expect(wrapper.get('[role="alert"]').text()).toContain('Sync stopped: Failed to fetch')
   })
@@ -337,8 +343,7 @@ describe('App', () => {
       await flushPromises()
       expect(start).toHaveBeenCalledOnce()
       const mail = useMailStore()
-      mail.syncState = 'error'
-      mail.syncError = 'The mail on this device was removed elsewhere and could not be opened again: refused'
+      mail.syncStatus = describeSync({ ...openFacts, copy: 'closed', error: 'The mail on this device was removed elsewhere and could not be opened again: refused' })
       await flushPromises()
 
       await wrapper.findAll('button').find((button) => button.text() === 'Try again')!.trigger('click')

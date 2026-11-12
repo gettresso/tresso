@@ -16,7 +16,7 @@ import UpdateCard from '@/components/UpdateCard.vue'
 import { useUpdatesStore } from '@/stores/updates'
 import { useBillingStore } from '@/stores/billing'
 import { useBulkStore } from '@/stores/bulk'
-import { syncProblem as syncProblemText, TRIAL_REMINDER_DAYS, trialDaysLeft, type BillingStatus } from '@tresso/core'
+import { TRIAL_REMINDER_DAYS, trialDaysLeft, type BillingStatus } from '@tresso/core'
 import { isDesktop } from '@/platform/desktop'
 import { vibrant } from '@/platform/vibrancy'
 
@@ -27,17 +27,14 @@ const compose = useComposeStore()
 const problemPlace = computed(() => problemPlacement(compose.draft === null ? null : { minimized: compose.minimized }))
 /** The sync error the user hid; a different error shows again. */
 const hiddenSyncError = ref<string | null>(null)
-// The same words as the sync status at the foot of the sidebar, from the same state (syncProblem, describeSync).
-const syncProblem = computed(() => (mail.syncState === 'error' ? syncProblemText(mail.syncError ?? '') : null))
-// A sync error hidden by the user shows again on a later outage, once a pull worked in between.
-watch(
-  () => mail.syncState,
-  (state) => {
-    if (state === 'idle') {
-      hiddenSyncError.value = null
-    }
-  },
-)
+// One source with the sync status at the foot of the sidebar: the status machine sets a failure, both show it.
+const syncProblem = computed(() => mail.syncStatus.problem)
+// A sync error hidden by the user shows again on a later outage, once a pull worked in between (the failure cleared).
+watch(syncProblem, (problem) => {
+  if (problem === null) {
+    hiddenSyncError.value = null
+  }
+})
 // Started with the app: it tells the user about hand-overs past their due date wherever they are.
 const handOvers = useHandOversStore()
 // The hand-over dialog gives focus back to what opened it once it has left the page.

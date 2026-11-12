@@ -37,7 +37,9 @@ describe('SyncStatusLine', () => {
       [{}, 'Up to date', false],
       [{ stream: 'connecting', wasLive: false }, 'Connecting…', true],
       [{ stream: 'retrying' }, 'Reconnecting… Last synced 14:02', true],
-      [{ online: false }, 'Offline. Last synced 14:02', false],
+      [{ online: false, stream: 'retrying' }, 'Offline. Last synced 14:02', false],
+      [{ online: false, stream: 'live' }, 'Up to date', false],
+      [{ pull: pull({ from: 100, cursor: 100 }), origin: 100 }, 'Checking for new mail…', false],
       [{ error: 'Bad gateway' }, 'Sync stopped. Last synced 14:02', false],
       [{ stream: 'off' }, 'Last synced 14:02', false],
     ]
@@ -48,13 +50,13 @@ describe('SyncStatusLine', () => {
   })
 
   it('draws a thin progress line only when the fraction is known', () => {
-    expect(line({ pull: pull({ cursor: 620, latest: 1000, pages: 2, hasMore: true }), origin: 0 })).toMatchObject({ text: 'Getting your mail, 62%', progress: 'transform: scaleX(0.62);' })
+    expect(line({ pull: pull({ cursor: 620, latest: 1000, pages: 2, hasMore: true }), origin: 0, lastSyncedAt: null })).toMatchObject({ text: 'Getting your mail, 62%', progress: 'transform: scaleX(0.62);' })
     expect(line({ pull: pull({ cursor: 600, items: 40, pages: 1, hasMore: true }), origin: 0 }).progress).toBeNull()
     expect(line({}).progress).toBeNull()
   })
 
   it('announces politely, by the quarter, not every percent', () => {
-    const at = (cursor: number) => line({ pull: pull({ cursor, latest: 1000, pages: 1, hasMore: true }), origin: 0 }).announced
+    const at = (cursor: number) => line({ pull: pull({ cursor, latest: 1000, pages: 1, hasMore: true }), origin: 0, lastSyncedAt: null }).announced
     expect(at(510)).toBe('Getting your mail, 50%')
     expect(at(620)).toBe('Getting your mail, 50%')
     expect(at(760)).toBe('Getting your mail, 75%')
