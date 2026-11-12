@@ -283,7 +283,8 @@ export class SyncStatusMachine {
     }
     const origin = Math.min(this.facts.origin ?? pull.from, pull.from)
     const shown = progressOf(pull, origin)
-    this.set({ pull, origin, peak: Math.max(this.facts.peak ?? 0, shown ?? 0) })
+    // A retry that stored a page reaches the server again: the failure is over (a new one is news, and shows again).
+    this.set({ pull, origin, peak: Math.max(this.facts.peak ?? 0, shown ?? 0), error: pull.pages > 0 ? null : this.facts.error })
   }
 
   /** A pull completed: the copy is up to date as of now, also after an update. */
