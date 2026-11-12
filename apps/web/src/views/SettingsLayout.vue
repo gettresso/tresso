@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { computed } from 'vue'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { isDesktop } from '@/platform/desktop'
 import { useBillingStore } from '@/stores/billing'
 import FrameTitle from '@/components/FrameTitle.vue'
 
 const billing = useBillingStore()
+const route = useRoute()
+/** WhatsApp's settings belong under Accounts (the SettingsWhatsApp board), though their address is their own. */
+const underAccounts = computed(() => typeof route.name === 'string' && route.name.startsWith('settings-whatsapp'))
 </script>
 
 <template>
   <div class="settings">
     <nav class="nav" aria-label="Settings">
       <FrameTitle>Settings</FrameTitle>
-      <RouterLink :to="{ name: 'settings-accounts' }" class="item">Accounts</RouterLink>
+      <RouterLink :to="{ name: 'settings-accounts' }" class="item" :class="{ 'router-link-active': underAccounts }">Accounts</RouterLink>
       <RouterLink :to="{ name: 'settings-signatures' }" class="item">Signatures</RouterLink>
       <RouterLink :to="{ name: 'settings-smart-inboxes' }" class="item">Smart inboxes</RouterLink>
       <RouterLink :to="{ name: 'settings-notifications' }" class="item">Notifications</RouterLink>

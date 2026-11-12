@@ -1,8 +1,31 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteLocationRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import { reportSignedOutReturn } from '@/components/connect/connectChannel'
 import AppShell from '@/views/AppShell.vue'
 import MailView from '@/views/MailView.vue'
+
+/**
+ * WhatsApp's screens open only where WhatsApp is on (the desktop app on macOS, turned on there); anywhere else, and
+ * in the browser, their addresses lead to `elsewhere`.
+ */
+function whatsappOnly(elsewhere: RouteLocationRaw) {
+  return async (): Promise<true | RouteLocationRaw> => {
+    const whatsapp = useWhatsAppRelayStore()
+    await whatsapp.ready()
+    return whatsapp.available ? true : elsewhere
+  }
+}
+
+/** The connect dialog is for connecting: once WhatsApp is connected its address shows the settings. */
+async function notConnectedYet(): Promise<true | RouteLocationRaw> {
+  const whatsapp = useWhatsAppRelayStore()
+  await whatsapp.ready()
+  if (!whatsapp.available) {
+    return { name: 'settings-accounts' }
+  }
+  return whatsapp.connected ? { name: 'settings-whatsapp' } : true
+}
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -24,6 +47,10 @@ const router = createRouter({
         { path: 'batches', name: 'batches', component: MailView },
         { path: 'batches/:threadId', name: 'batches-thread', component: MailView },
         { path: 'cleanup', name: 'cleanup', component: MailView },
+        // WhatsApp chats, for the chat screens (the WhatsApp plan's WP6): in the Unified Inbox, and their own list.
+        { path: 'chats/:chatId', name: 'unified-chat', component: MailView, beforeEnter: whatsappOnly({ name: 'unified' }) },
+        { path: 'whatsapp', name: 'whatsapp', component: MailView, beforeEnter: whatsappOnly({ name: 'unified' }) },
+        { path: 'whatsapp/:chatId', name: 'whatsapp-chat', component: MailView, beforeEnter: whatsappOnly({ name: 'unified' }) },
         { path: 'triage', name: 'triage', component: () => import('@/views/TriageView.vue'), meta: { requiresAuth: true } },
         { path: 'search', name: 'search', component: () => import('@/views/SearchView.vue'), meta: { requiresAuth: true } },
         { path: 'todos', name: 'todos', component: () => import('@/views/TodosView.vue'), meta: { requiresAuth: true } },
@@ -42,6 +69,9 @@ const router = createRouter({
             { path: '', redirect: { name: 'settings-accounts' } },
             { path: 'accounts', name: 'settings-accounts', component: () => import('@/views/SettingsAccountsView.vue') },
             { path: 'accounts/new', name: 'settings-accounts-new', component: () => import('@/views/AddAccountView.vue') },
+            { path: 'whatsapp', name: 'settings-whatsapp', component: () => import('@/views/SettingsWhatsAppView.vue'), beforeEnter: whatsappOnly({ name: 'settings-accounts' }) },
+            // The connect dialog over Settings, WhatsApp, as accounts/new is for mail.
+            { path: 'whatsapp/connect', name: 'settings-whatsapp-connect', component: () => import('@/views/SettingsWhatsAppView.vue'), beforeEnter: notConnectedYet },
             { path: 'signatures', name: 'settings-signatures', component: () => import('@/views/SettingsSignaturesView.vue') },
             { path: 'brief', name: 'settings-brief', component: () => import('@/views/SettingsBriefView.vue') },
             { path: 'calendar', name: 'settings-calendar', component: () => import('@/views/SettingsCalendarView.vue') },
