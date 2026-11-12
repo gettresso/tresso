@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { connectErrorMessage, providerName } from '@tresso/core'
+import { providerSignInOutcome, signedInAgainNotice } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { useAccountsStore } from '@/stores/accounts'
 import { useMailStore } from '@/stores/mail'
 import AccountCard from '@/components/AccountCard.vue'
+import ApprovalLink from '@/components/ApprovalLink.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
 
 /**
@@ -19,8 +20,11 @@ const mail = useMailStore()
 const error = ref<string | null>(null)
 const route = useRoute()
 const router = useRouter()
-/** The outcome of signing in again with Google or Microsoft, which returns the browser here. */
-const signInResult = ref<{ ok: boolean; text: string } | null>(null)
+/**
+ * The outcome of signing in again with Google or Microsoft, or of allowing an account's calendars, which returns the
+ * browser here; with the link for an organization's administrator when the organization has to approve Tresso first.
+ */
+const signInResult = ref<{ ok: boolean; text: string; approvalUrl: string | null } | null>(null)
 
 async function load(): Promise<void> {
   try {
@@ -40,13 +44,12 @@ async function readSignInResult(): Promise<void> {
 
   try {
     const result = await accounts.finishProviderSignIn(query)
-    if (result?.connectError) {
-      signInResult.value = { ok: false, text: connectErrorMessage(result.connectError, result.provider) }
-    } else if (result?.connected) {
-      signInResult.value = { ok: true, text: `Signed in with ${providerName(result.provider)} again. The account syncs again.` }
+    if (result !== null) {
+      // Read as the connect dialog reads it: calendars left unticked at the provider are not reported as success.
+      signInResult.value = signedInAgainNotice(providerSignInOutcome(result), result.provider)
     }
   } catch (e) {
-    signInResult.value = { ok: false, text: errorMessage(e) }
+    signInResult.value = { ok: false, text: errorMessage(e), approvalUrl: null }
   }
 }
 
@@ -82,7 +85,13 @@ watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.
       <RouterLink :to="{ name: 'settings-accounts-new' }" class="button button-primary">Add account</RouterLink>
     </header>
 
-    <p v-if="signInResult" :class="signInResult.ok ? 'done' : 'form-error'" :role="signInResult.ok ? 'status' : 'alert'">{{ signInResult.text }}</p>
+    <template v-if="signInResult">
+      <p :class="signInResult.ok ? 'done' : 'form-error'" :role="signInResult.ok ? 'status' : 'alert'">{{ signInResult.text }}</p>
+      <template v-if="signInResult.approvalUrl">
+        <p class="approval">Send your IT team this link. Once they approve Tresso, allow calendar access or sign in again.</p>
+        <ApprovalLink :url="signInResult.approvalUrl" />
+      </template>
+    </template>
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     <p v-else-if="!accounts.loaded" class="state" role="status"><LogoLoader /> Loading accounts…</p>
     <p v-else-if="accounts.accounts.length === 0" class="state">No mail accounts yet. Add one to see your mail in Tresso.</p>
@@ -110,7 +119,8 @@ h2 {
   line-height: 28px;
 }
 .header p,
-.state {
+.state,
+.approval {
   margin: 0;
   color: var(--ink-2);
 }

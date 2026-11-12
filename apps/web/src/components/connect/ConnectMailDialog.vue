@@ -10,6 +10,7 @@ import {
   normalizeAppPassword,
   oauthProviderFor,
   providerLabel,
+  providerSignInOutcome,
   type CheckMailAccount,
   type MailAccount,
   type MailAccountCheck,
@@ -27,6 +28,7 @@ import { useAccountsStore } from '@/stores/accounts'
 import { useAuthStore } from '@/stores/auth'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
+import ApprovalLink from '@/components/ApprovalLink.vue'
 import TressoMark from '@/components/TressoMark.vue'
 import ConnectAppPassword from './ConnectAppPassword.vue'
 import ConnectChecks from './ConnectChecks.vue'
@@ -280,7 +282,6 @@ const calendarsOffered = computed(() => accounts.providers.find((provider) => pr
 const features = computed<ProviderFeature[]>(() => (calendars.value && calendarsOffered.value ? ['mail', 'calendar'] : ['mail']))
 const oauthError = ref<string | null>(null)
 const approvalUrl = ref<string | null>(null)
-const copied = ref(false)
 /** What the last sign-in asked for, as the API reported it. */
 const requested = ref<ProviderFeature[]>([])
 
@@ -416,13 +417,6 @@ function mailOnly(): void {
   void openSignIn(true)
 }
 
-async function copyApprovalUrl(): Promise<void> {
-  if (approvalUrl.value === null) return
-  await navigator.clipboard.writeText(approvalUrl.value)
-  copied.value = true
-  later(2000, () => (copied.value = false))
-}
-
 /** Shows how a provider sign-in ended. */
 async function applySignIn(result: ProviderConnection): Promise<void> {
   stopWaitTimer()
@@ -431,25 +425,27 @@ async function applySignIn(result: ProviderConnection): Promise<void> {
   pending = null
   requested.value = result.requested
   if (choice.value === null || PROVIDERS[choice.value].kind !== 'oauth') choice.value = result.provider === 'google' ? 'google' : 'm365'
-  if (result.connectError === null && result.connected !== null) {
+  // Read as the accounts page reads it (providerSignInOutcome), so both say the same about calendars and approvals.
+  const outcome = providerSignInOutcome(result)
+  if (outcome.kind === 'connected') {
     try {
-      const account = await accounts.get(result.connected)
+      const account = await accounts.get(outcome.accountId)
       choice.value = accountServiceProvider(account) ?? choice.value
       addressGiven.value = true
-      await showConnected(account, { existing: result.existing, refused: result.missing.includes('calendar') })
+      await showConnected(account, { existing: outcome.existing, refused: outcome.calendars === 'refused' })
     } catch (e) {
       oauthError.value = errorMessage(e)
       step.value = 'oauth'
     }
     return
   }
-  if (result.connectError === 'denied') {
+  if (outcome.kind === 'denied') {
     step.value = 'oauth-cancelled'
-  } else if (result.connectError === 'admin_approval_required') {
-    approvalUrl.value = result.approvalUrl
+  } else if (outcome.kind === 'approval-required') {
+    approvalUrl.value = outcome.approvalUrl
     step.value = 'oauth-error'
-  } else if (result.connectError !== null) {
-    oauthError.value = connectErrorMessage(result.connectError, result.provider)
+  } else if (outcome.kind === 'failed') {
+    oauthError.value = connectErrorMessage(outcome.error, result.provider)
     step.value = 'oauth'
   }
   if (history.value.length === 0) history.value = ['email']
@@ -1018,10 +1014,7 @@ onBeforeUnmount(() => {
           </p>
         </div>
       </div>
-      <div v-if="approvalUrl" class="cf-linkbox">
-        <span class="cf-url">{{ approvalUrl }}</span>
-        <button type="button" class="button cf-small" @click="copyApprovalUrl">{{ copied ? 'Copied' : 'Copy link' }}</button>
-      </div>
+      <ApprovalLink v-if="approvalUrl" :url="approvalUrl" />
       <p v-if="requested.includes('calendar')" class="cf-note">
         <span>Did your organization refuse access to your calendars? Then connect your mail only; calendars can follow later.</span>
         <button type="button" class="button cf-small" :disabled="busy" @click="mailOnly">Connect mail only</button>
@@ -1443,23 +1436,6 @@ onBeforeUnmount(() => {
 .connect-dialog .cf-badge.danger {
   background: var(--danger-soft);
   color: var(--danger);
-}
-.connect-dialog .cf-linkbox {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 6px 6px 18px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-}
-.connect-dialog .cf-url {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font: 400 13px var(--font-mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 @keyframes connect-spin {
   to {

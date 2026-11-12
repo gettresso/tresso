@@ -195,7 +195,8 @@ describe('connecting a provider account in the desktop app', () => {
 
     expect(router.currentRoute.value.name).toBe('settings-accounts')
     expect(requests.find((r) => r.path === '/api/v1/provider-connections')?.body).toEqual({ provider: 'google', state: 'state-2', code: 'code-2' })
-    expect(wrapper.get('[role="status"]').text()).toBe('Signed in with Google again. The account syncs again.')
+    // The account had calendars: the API asked for them again, and the page says they sync too.
+    expect(wrapper.get('[role="status"]').text()).toBe('Signed in with Google. Mail and calendars sync; calendars show up within a minute.')
     expect(router.currentRoute.value.query).toEqual({})
     expect(useAuthStore().isAuthenticated).toBe(true)
   })
