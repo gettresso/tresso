@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { retryAfterMs, SyncEngine, type SyncStore } from './engine'
+import { SessionEndedDuringRequestError } from '../requests'
+import { retryablePull, retryAfterMs, SyncEngine, type SyncStore } from './engine'
 import type { ChangePage } from './types'
 
 function page(cursor: number, hasMore = false, ids: string[] = []): ChangePage {
@@ -45,6 +46,14 @@ class MemoryStore implements SyncStore {
     this.stored = p.cursor
   }
 }
+
+describe('retryablePull', () => {
+  it('gives up on a pull whose session ended while it ran, though the error carries no status', () => {
+    expect(retryablePull(new SessionEndedDuringRequestError())).toBe(false)
+    expect(retryablePull({ status: 401 })).toBe(false)
+    expect(retryablePull(new Error('offline'))).toBe(true)
+  })
+})
 
 describe('SyncEngine', () => {
   it('pulls every page from the stored cursor', async () => {

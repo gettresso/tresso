@@ -1,3 +1,4 @@
+import { SessionEndedDuringRequestError } from '../requests'
 import { CopyClosingError } from '../store/mailStore'
 import type { ChangePage } from './types'
 
@@ -56,11 +57,12 @@ export function retryAfterMs(header: string | null, now: number = Date.now()): n
 }
 
 /**
- * Whether a failed pull may work when tried again: not when the copy is closing (a sign-out), nor when the server
- * refused the session (401), the plan (402) or the access (403), which asking again does not change.
+ * Whether a failed pull may work when tried again: not when the copy is closing (a sign-out) or the session ended while
+ * the pull ran, nor when the server refused the session (401), the plan (402) or the access (403), which asking again
+ * does not change.
  */
 export function retryablePull(error: unknown): boolean {
-  if (error instanceof CopyClosingError) {
+  if (error instanceof CopyClosingError || error instanceof SessionEndedDuringRequestError) {
     return false
   }
   const status = (error as { status?: unknown } | null)?.status

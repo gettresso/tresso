@@ -2,8 +2,11 @@ import { SseParser } from './sse'
 import type { RealtimeAccess } from './types'
 
 export interface RealtimeOptions {
-  /** GET /api/v1/realtime/token */
-  fetchAccess(): Promise<RealtimeAccess>
+  /**
+   * GET /api/v1/realtime/token. `signal` aborts when the client stops (a sign-out): a request that hangs must not hold
+   * the stop, and with it the closing of the mail copy, until its own deadline.
+   */
+  fetchAccess(signal: AbortSignal): Promise<RealtimeAccess>
   /** The user's changes reached this cursor. */
   onCursor(cursor: number): void
   /**
@@ -104,7 +107,18 @@ export class RealtimeClient {
    * rejects when the connection fails or goes quiet.
    */
   private async listen(generation: number): Promise<boolean> {
-    const access = await this.options.fetchAccess()
+    const asking = this.track(new AbortController())
+    let access: RealtimeAccess
+    try {
+      access = await this.options.fetchAccess(asking.signal)
+    } catch (error) {
+      if (!this.current(generation)) {
+        return false
+      }
+      throw error
+    } finally {
+      this.controllers.delete(asking)
+    }
     if (!this.current(generation)) {
       return false
     }

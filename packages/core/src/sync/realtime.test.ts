@@ -204,6 +204,30 @@ describe('RealtimeClient', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
+  it('aborts a token request under way when stopped, so a sign-out does not wait for one that hangs', async () => {
+    let signal: AbortSignal | null = null
+    const onError = vi.fn()
+    const hanging = new RealtimeClient({
+      // A token request that never answers, until it is aborted, as fetch does.
+      fetchAccess: (aborted) =>
+        new Promise<RealtimeAccess>((_resolve, reject) => {
+          signal = aborted
+          aborted.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        }),
+      onCursor: () => {},
+      onError,
+    })
+
+    hanging.start()
+    await until(() => signal !== null)
+    const outcome = await Promise.race([hanging.stop().then(() => 'stopped'), new Promise((resolve) => setTimeout(() => resolve('still waiting'), 500))])
+
+    expect(outcome).toBe('stopped')
+    expect(signal!.aborted).toBe(true)
+    // A stop is no error.
+    expect(onError).not.toHaveBeenCalled()
+  })
+
   it('stops at once when stopped just before waiting for the next attempt', async () => {
     let stopping: Promise<void> | null = null
     const failing = new RealtimeClient({
