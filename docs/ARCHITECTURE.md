@@ -514,7 +514,9 @@ Microsoft Graph calendars, with Meet and Teams meetings), which adds its scopes 
   requested: <features asked for>, missing: <features asked for and not allowed>, existing: <a new sign-in found the
   account connected already>, approvalUrl}` (codes: `denied`, `admin_approval_required`, `expired`, `different_user`,
   `scopes_missing`, `wrong_account`, `already_connected`, `unverified_address`, `no_mailbox`, `failed`). Calendars
-  asked for and left unticked set the account's calendar status to `not_granted` right away. Microsoft's
+  asked for and left unticked set the account's calendar status to `not_granted` right away; calendars allowed put
+  every calendar status except `active` back to `unknown` (a refused list, a refused token and a missing permission
+  alike), so the worker looks at them again at its next heartbeat. Microsoft's
   `consent_required`, or an `error_description` with AADSTS90094, AADSTS65001 or AADSTS900941, means the user's
   organization only allows apps an administrator approved: the answer is `admin_approval_required` with
   `approvalUrl`, Microsoft's admin consent page for the organization of the typed address (or this installation's
@@ -1912,8 +1914,9 @@ reads the address from `calendarStatusDetail`.
   they go through the same ingest, inventory and write cycle as CalDAV resources. The calendar list says
   `providerSchedules`, and per calendar which meetings it can make (`conferenceProviders`). Every minute, and right
   after a write or a sign-in that allowed calendars (every heartbeat also names leased Gmail and Microsoft accounts
-  whose calendar status is still `unknown`, so a missed wake-up after allowing calendars costs at most one
-  heartbeat, not the hour a `not_granted` account waits otherwise):
+  whose calendar status is still `unknown`, and signing in again with calendars allowed sets every status but
+  `active` to `unknown`, so a missed wake-up costs at most one heartbeat, not the hour an `error` or `not_granted`
+  account waits otherwise):
   - One resource is a single event, or a recurring series with its changed and cancelled occurrences (overrides and
     `EXDATE`s in one object, as RFC 5545 has it).
   - **Google:** `calendarList` (calendars the user can only see free/busy of are left out; `writer`/`owner` are
