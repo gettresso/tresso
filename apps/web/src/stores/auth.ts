@@ -4,9 +4,11 @@ import {
   exchangeCode,
   OAuthError,
   parseCallback,
+  refreshRefusalEndsSession,
   refreshTokens,
   revokeToken,
   ServerClock,
+  SessionEndedDuringRequestError,
   startAuthorization,
   withDeadline,
   type Me,
@@ -61,12 +63,6 @@ const REFRESH_LOCK_WAIT_MS = 60_000
  * answers the same refresh token with the same new pair for 30 seconds, so the retry has to come well within that.
  */
 export const REFRESH_RETRY_DELAY_MS = 2_000
-/**
- * The only answers of the token endpoint that say the sign-in itself is over (revoked, expired, already rotated, a
- * request the server will never accept, or a client it no longer knows or allows). Anything else (offline, a
- * timeout, a 5xx) may work on the next try.
- */
-const SESSION_ENDING_ERRORS = new Set(['invalid_grant', 'invalid_request', 'invalid_client', 'unauthorized_client'])
 const EXPIRED = 'Your session has expired. Sign in again.'
 
 const oauthConfig: OAuthClientConfig = config
@@ -642,7 +638,9 @@ export const useAuthStore = defineStore('auth', () => {
         if (session !== generation.value) {
           throw new ApiError(401, 'Not signed in.')
         }
-        if (!(error instanceof OAuthError) || error.code === null || !SESSION_ENDING_ERRORS.has(error.code)) {
+        // The rule all clients share: only an answer that says the sign-in itself is over ends it. Anything else
+        // (offline, a timeout, a 5xx, a server that does not know the app for a moment) may work on the next try.
+        if (!refreshRefusalEndsSession(error)) {
           throw new SignInRenewalError(error)
         }
         // Refused: unless another tab or window stored a newer set meanwhile (a browser without locks), it is over.
@@ -729,7 +727,8 @@ export const useAuthStore = defineStore('auth', () => {
     }
     if (session !== generation.value) {
       // The session ended while the request ran: its answer belongs to no one now, and must not reach the next user.
-      throw new ApiError(401, 'Signed out while this request was under way.')
+      // Not a 401: the server said nothing of the kind, and may have done what was asked (a send may be queued).
+      throw new SessionEndedDuringRequestError()
     }
     if (response.status === 401) {
       throw new ApiError(401, EXPIRED)
