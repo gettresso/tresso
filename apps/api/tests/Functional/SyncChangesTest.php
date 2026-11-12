@@ -330,6 +330,26 @@ final class SyncChangesTest extends DatabaseTestCase
         self::assertSame(['Tresso'], array_column($calendars, 'name'), 'Only her own local calendar.');
     }
 
+    /**
+     * The built-in smart inboxes share one change number. Rows of one number come in the order of their position, not
+     * in the order Postgres happens to find them on disk: here two of them were rewritten after the others, and a
+     * sequential scan meets the new row versions last.
+     */
+    public function testRowsOfOneChangeNumberComeInAStableOrder(): void
+    {
+        $this->connection()->executeStatement(
+            "UPDATE category SET name = name WHERE builtin IN ('todo', 'informational') AND owner_id = (SELECT id FROM app_user WHERE email = 'kim@example.test')",
+        );
+        self::assertSame(1, $this->countRows("SELECT COUNT(DISTINCT change_seq) FROM category WHERE owner_id = (SELECT id FROM app_user WHERE email = 'kim@example.test')"), 'A tie on the change number.');
+        $this->connection()->executeStatement('SET LOCAL enable_indexscan = off');
+        $this->connection()->executeStatement('SET LOCAL enable_bitmapscan = off');
+
+        $smartInboxes = $this->changes(0)['smartInboxes'];
+
+        self::assertSame(['todo', 'informational', 'notification', 'advertise', 'spam'], array_column($smartInboxes, 'builtin'));
+        self::assertSame([0, 1, 2, 3, 4], array_column($smartInboxes, 'position'));
+    }
+
     public function testSmartInboxesReachClients(): void
     {
         $first = $this->changes(0);
