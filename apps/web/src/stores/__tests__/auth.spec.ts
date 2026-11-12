@@ -6,6 +6,8 @@ const desktop = vi.hoisted(() => ({
   isDesktop: false,
   keychain: null as string | null,
   keychainFails: false,
+  /** Holds a keychain write until it resolves, as the OS may while it asks the user. */
+  keychainHold: null as Promise<void> | null,
   opened: [] as string[],
 }))
 
@@ -15,6 +17,7 @@ vi.mock('@/platform/desktop', () => ({
   },
   loadKeychainTokens: async () => desktop.keychain,
   saveKeychainTokens: async (tokens: string) => {
+    await desktop.keychainHold
     if (desktop.keychainFails) {
       throw new Error('User canceled the operation.')
     }
@@ -223,6 +226,7 @@ describe('auth store', () => {
     desktop.isDesktop = false
     desktop.keychain = null
     desktop.keychainFails = false
+    desktop.keychainHold = null
     desktop.opened = []
     vi.stubGlobal('localStorage', memoryStorage())
   })
@@ -562,20 +566,43 @@ describe('auth store', () => {
       expect(auth.knownUserId).toBe('user-1')
     })
 
-    it('keeps no user for tokens that another tab replaced while the server was asked', async () => {
-      let answer!: () => void
-      stubServer({ api: (_path, token) => new Promise((resolve) => (answer = () => resolve(Response.json({ id: token === 'access-1' ? 'user-1' : 'user-2' })))) })
+    it('does not take an answer about tokens another tab replaced while the server was asked, and asks again', async () => {
+      const answers: (() => void)[] = []
+      const server = stubServer({ api: (_path, token) => new Promise((resolve) => answers.push(() => resolve(Response.json({ id: token === 'access-1' ? 'user-1' : 'user-2' })))) })
       localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
       const auth = await authStore()
 
       const loading = auth.loadMe()
-      await vi.waitFor(() => expect(answer).toBeDefined())
+      await vi.waitFor(() => expect(answers).toHaveLength(1))
       // Another tab signed in as someone else meanwhile.
       auth.tokens = { accessToken: 'access-9', refreshToken: 'refresh-9', expiresAt: Date.now() + 3_600_000 }
-      answer()
+      answers[0]!()
+      await vi.waitFor(() => expect(answers).toHaveLength(2))
+      expect(auth.me).toBeNull()
+      answers[1]!()
       await loading
 
-      expect(auth.knownUserId).toBeNull()
+      expect(server.calls.map((call) => call.token)).toEqual(['access-1', 'access-9'])
+      expect(auth.me?.id).toBe('user-2')
+      expect(auth.knownUserId).toBe('user-2')
+    })
+
+    it('knows who is signed in without waiting for the keychain to keep the id', async () => {
+      desktop.isDesktop = true
+      desktop.keychain = JSON.stringify(TOKENS)
+      stubServer()
+      const auth = await authStore()
+      await auth.restore()
+      let release!: () => void
+      desktop.keychainHold = new Promise((resolve) => (release = resolve))
+
+      await auth.loadMe()
+
+      expect(auth.me?.id).toBe('user-1')
+      expect(auth.knownUserId).toBe('user-1')
+      expect(JSON.parse(desktop.keychain)).toEqual(TOKENS)
+      release()
+      await vi.waitFor(() => expect(JSON.parse(desktop.keychain!)).toMatchObject({ userId: 'user-1' }))
     })
 
     it('keeps the tokens when the token endpoint cannot be reached, and says it tries again', async () => {
