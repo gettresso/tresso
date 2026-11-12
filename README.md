@@ -131,9 +131,19 @@ client, one for the API) and ports 80 and 443 open:
    ```
 
 The stack gets HTTPS certificates by itself, migrates the database on start and runs PostgreSQL, Redis, object
-storage (RustFS), Meilisearch and ClamAV next to Tresso; ClamAV needs about 1.5 GB of RAM. To upgrade, set
-`TRESSO_VERSION` (or keep `latest`) and run `docker compose -f compose.prod.yaml pull` before `up -d`. Two settings
-only apply the first time: `POSTGRES_PASSWORD` (the database keeps its password) and `OAUTH_PASSPHRASE` (it encrypts
+storage (RustFS), Meilisearch and ClamAV next to Tresso; ClamAV needs about 1.5 GB of RAM.
+
+To upgrade:
+
+1. Download the new release's `compose.prod.yaml` over yours, for example
+   `curl -fsSLo compose.prod.yaml https://raw.githubusercontent.com/gettresso/tresso/v<version>/compose.prod.yaml`.
+   A release can add settings, workers and proxy routes there; with the old file, new settings in `.env` reach no
+   container and silently do nothing. Compare `.env.prod.example` of the release with your `.env` too.
+2. Set `TRESSO_VERSION` (or keep `latest`), then run `docker compose -f compose.prod.yaml pull` and
+   `docker compose -f compose.prod.yaml --env-file .env up -d`.
+3. Read what changes for your server in that release (below for this one).
+
+Two settings only apply the first time: `POSTGRES_PASSWORD` (the database keeps its password) and `OAUTH_PASSPHRASE` (it encrypts
 the OAuth signing key; a new passphrase needs a new key: remove both files from the `tresso-server_oauth_keys` volume
 and restart, after which the apps renew their sign-in).
 
@@ -173,7 +183,9 @@ To switch an existing server without signing anyone out:
 
 1. For `TRESSO_MCP_URL`: add a DNS record (A and AAAA) for the new name pointing at this server. The proxy gets its
    certificate by itself once the setting is there.
-2. Set `TRESSO_AUTH_URL` (to `TRESSO_WEB_URL`) and `TRESSO_MCP_URL` in `.env`, then
+2. Download this release's `compose.prod.yaml` first if your server still has an older one: only the new file passes
+   these settings to the containers and has the sign-in routes on the web address. Then set `TRESSO_AUTH_URL` (to
+   `TRESSO_WEB_URL`) and `TRESSO_MCP_URL` in `.env`, and run
    `docker compose -f compose.prod.yaml --env-file .env up -d`. Apps and their tokens stay signed in; a browser signs
    in once more the next time it reaches the sign-in page, since its sign-in cookie belonged to the API address.
 3. Check: sign in on the web address from a signed-out browser; sign in from the desktop app (it opens the API address
@@ -182,8 +194,36 @@ To switch an existing server without signing anyone out:
    add the server again under the new address and sign in once).
 
 Behind a proxy of your own instead of the one in `compose.prod.yaml`: route the six sign-in paths above on the web
-address to the API, serve the MCP host from the API like the API host, and keep the `Host` header the browser sent
-(the API builds its redirects and its MCP metadata from it).
+address to the API (not `/auth/*` as a whole: `/auth/callback` is the web client's), serve the MCP host from the API
+like the API host, and keep the `Host` header the browser sent (the API builds its redirects and its MCP metadata from
+it). [Operations](docs/OPERATIONS.md#moving-sign-in-and-mcp-to-their-own-addresses) has the full steps as Tresso Cloud
+does them, including the client address the sign-in limiter needs behind a proxy.
+
+### What changes in this release for a self-hosted server
+
+Upgrading from 0.7.0 needs no new setting: every new one has a default, and both the new images with the old compose
+file and the new compose file with the old `.env` start. Without you doing anything, this changes:
+
+1. Browsers are asked for the password once more at the next sign-in page: browser sessions moved from files to Redis.
+   Apps and their tokens are not touched.
+2. "Keep me signed in" is ticked by default: a 30 day cookie on the sign-in host.
+3. Wrong passwords lock the sign-in form for 15 minutes (5 per address and IP, 25 per IP). Behind a proxy of your own
+   that hides the visitor's address, everybody shares one IP and 25 wrong passwords lock everyone out: make that
+   proxy pass the client address on and cover it with `SYMFONY_TRUSTED_PROXIES` (`compose.prod.yaml` sets
+   `private_ranges`, which covers its own proxy).
+4. The web image sends a Content-Security-Policy. With `compose.prod.yaml` nothing breaks; a realtime hub on another
+   host than the API needs `TRESSO_HUB_URL` on the web image.
+5. With the new compose file, `/login`, `/logout`, `/oauth/authorize`, `/auth/auth.css`, `/auth/tresso.svg` and
+   `/auth/fonts/*` on the web address go to the API, which sends them on to the API address while `TRESSO_AUTH_URL` is empty. The web
+   client has no route under those paths.
+6. `GET /logout` no longer signs out (it shows a page); signing out of the web client also ends the browser's sign-in.
+7. A notification address that is not the sign-in address or a Google or Microsoft account's address is confirmed by
+   a link first; a token with only `mail:read` no longer gets todos, calendars or settings in the sync delta; an app
+   on a loopback redirect address sees the consent page every time.
+
+Also new in the compose file: a `maintenance` worker that runs the sweeps and nightly purges, so they never hold up
+outgoing mail. The migrations build one index on the `message` table without locking it: the API's start takes as long
+as a scan of that table, while mail keeps being read and written.
 
 ## 🤖 Use Tresso from Claude and other MCP clients
 
@@ -412,6 +452,8 @@ app or the install scripts builds every platform without publishing.
 - [Architecture](docs/ARCHITECTURE.md): components, self-hosted and Tresso Cloud, auth, sync protocol, processing
   pipeline, scaling
 - [Billing](docs/BILLING.md): Tresso Cloud's subscriptions, the billing API and Stripe
+- [Operations](docs/OPERATIONS.md): moving sign-in and MCP to their own addresses on Tresso Cloud, and what to check
+  by hand after a release
 - [Roadmap](docs/ROADMAP.md): phases from foundation to native apps
 
 ## 📄 License
