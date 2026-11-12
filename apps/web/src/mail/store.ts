@@ -69,20 +69,30 @@ export function copyUserId(name: string): string | null {
  * The mail copies this device can list, by user and name: the IndexedDB databases named `tresso-mail-<userId>`, in the
  * browser and in the desktop app's web view (where they are copies from before the desktop kept mail in SQLite), and
  * on the desktop the SQLite copies in the app's data folder (`sql_list`). `indexedDB.databases()` is in every browser
- * Tresso supports; where it is missing, no IndexedDB copy can be listed.
+ * Tresso supports; where it is missing, no IndexedDB copy can be listed. A source that fails is logged and the
+ * other's copies are still returned; the next start looks again.
  */
 export async function copiesOnDevice(): Promise<{ userId: string; name: string }[]> {
   const names = new Set<string>()
+  // Each source on its own: one that fails (a data folder that cannot be read) does not lose what the other found.
   if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
-    for (const database of await indexedDB.databases()) {
-      if (database.name !== undefined) {
-        names.add(database.name)
+    try {
+      for (const database of await indexedDB.databases()) {
+        if (database.name !== undefined) {
+          names.add(database.name)
+        }
       }
+    } catch (error) {
+      console.error('Listing the IndexedDB mail copies failed', error)
     }
   }
   if (isDesktop) {
-    for (const name of await listDesktopSql()) {
-      names.add(name)
+    try {
+      for (const name of await listDesktopSql()) {
+        names.add(name)
+      }
+    } catch (error) {
+      console.error("Listing the desktop app's mail copies failed", error)
     }
   }
   const found: { userId: string; name: string }[] = []
