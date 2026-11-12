@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
+use App\Entity\Chat;
 use App\Security\Scope;
+use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Uid\Uuid;
-use Symfony\Component\Uid\UuidV7;
 
 /**
  * The reply queue: a reply written on any of Kim's devices waits until her relaying Mac claims it, and goes out once.
@@ -97,8 +98,8 @@ final class ChatQueueTest extends DatabaseTestCase
         yield 'a control character' => [['text' => "Hi\u{0007}"], 'text'];
         yield 'no id' => [['id' => ''], 'id'];
         yield 'an id that is not a UUIDv7' => [['id' => '6f1c0a5e-8d2b-4e4f-9a7b-1c2d3e4f5a6b'], 'id'];
-        yield 'an id made long ago' => [['id' => new UuidV7(UuidV7::generate(new \DateTimeImmutable('-11 minutes')))->toRfc4122()], 'id'];
-        yield 'an id made in the future' => [['id' => new UuidV7(UuidV7::generate(new \DateTimeImmutable('+10 minutes')))->toRfc4122()], 'id'];
+        yield 'an id made long ago' => [['id' => self::uuidV7At('-11 minutes')], 'id'];
+        yield 'an id made in the future' => [['id' => self::uuidV7At('+10 minutes')], 'id'];
     }
 
     /**
@@ -124,16 +125,32 @@ final class ChatQueueTest extends DatabaseTestCase
 
     public function testALateRepeatStillGetsItsReply(): void
     {
-        $id = new UuidV7(UuidV7::generate(new \DateTimeImmutable('-9 minutes')))->toRfc4122();
-        $this->queueReply($this->chatId, 'Hi', $id);
-        self::assertResponseStatusCodeSame(201);
+        // Queued an hour ago, as the reply's id says: the request comes again only now.
+        $late = self::uuidV7At('-1 hour');
+        $this->chatEntityManager()->wrapInTransaction(function (EntityManagerInterface $entityManager) use ($late): void {
+            $chat = $entityManager->find(Chat::class, Uuid::fromString($this->chatId));
+            self::assertInstanceOf(Chat::class, $chat);
+            $entityManager->persist($this->chatFields()->newOutgoing(Uuid::fromString($late), $chat, 'Hi', new \DateTimeImmutable('-1 hour')));
+        });
+        $this->chatEntityManager()->clear();
 
-        // As if an hour went by: the id is older than ten minutes now, and the reply it queued comes back all the same.
-        $this->connection()->executeStatement('UPDATE chat_outgoing SET id = :late WHERE id = :id', ['late' => $late = new UuidV7(UuidV7::generate(new \DateTimeImmutable('-1 hour')))->toRfc4122(), 'id' => $id]);
-        $this->queueReply($this->chatId, 'Hi', $late);
+        $reply = $this->queueReply($this->chatId, 'Hi', $late);
 
-        self::assertResponseStatusCodeSame(200);
+        self::assertResponseStatusCodeSame(200, 'The reply it queued comes back, though its id is older than ten minutes now.');
+        self::assertSame($late, $reply['id'] ?? null);
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'));
+    }
+
+    /**
+     * A UUIDv7 made at $when, built by hand: Symfony's generator keeps its last time, so asking it for a time ahead
+     * would push every id made after it ahead too.
+     */
+    private static function uuidV7At(string $when): string
+    {
+        $hex = str_pad(dechex((int) new \DateTimeImmutable($when)->format('Uv')), 12, '0', \STR_PAD_LEFT).'7'.bin2hex(random_bytes(10));
+        $hex[16] = dechex(8 | (hexdec($hex[16]) & 3));
+
+        return Uuid::fromString(vsprintf('%s-%s-%s-%s-%s', sscanf(substr($hex, 0, 32), '%8s%4s%4s%4s%12s') ?? []))->toRfc4122();
     }
 
     public function testALeftOutChatTakesNoReply(): void
