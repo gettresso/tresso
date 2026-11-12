@@ -31,6 +31,11 @@ tauri-plugin-process = "2.4.0"
 # The keychain (tokens.rs): keyring's store crates directly, so a store that failed to open is tried again.
 keyring-core = "1.0.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# WhatsApp (whatsapp.rs): the folder and file pickers, plain HTTP to the bridge on 127.0.0.1 (no TLS stack), and the
+# SHA-256 check of a downloaded file.
+tauri-plugin-dialog = "2.8.3"
+ureq = { version = "3", default-features = false }
+sha2 = "0.10.9"
 
 [dev-dependencies]
 # The mock runtime and IPC helpers, for the menu_state test (menu.rs); tests only.
@@ -46,6 +51,10 @@ block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSString"] }
 # The keychain each platform keeps the sign-in in (tokens.rs).
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+
+# Stops the WhatsApp bridge with SIGTERM first, and finds a bridge a crashed run left behind (whatsapp.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tauri-plugin-single-instance = { version = "2.5.4", features = ["deep-link"] }

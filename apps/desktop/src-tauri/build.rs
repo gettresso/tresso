@@ -1,3 +1,45 @@
 fn main() {
-  tauri_build::build()
+  // Every command of the app (the handler list in src/lib.rs, which a test keeps equal to this one). With an app
+  // manifest Tauri checks each command against the capabilities, so a command is reachable only from the windows a
+  // capability names (the main window) and on the platforms it names (capabilities/whatsapp.json: macOS).
+  tauri_build::try_build(tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
+    "reduce_transparency",
+    "update_channel",
+    "check_for_updates_natively",
+    "update_listening",
+    "update_relaunch",
+    "menu_state",
+    "show_main_window_command",
+    "load_tokens",
+    "save_tokens",
+    "clear_tokens",
+    "sql_open",
+    "sql_exec",
+    "sql_begin",
+    "sql_commit",
+    "sql_rollback",
+    "sql_run",
+    "sql_select",
+    "sql_close",
+    "sql_delete",
+    "sql_list",
+    "whatsapp_available",
+    "whatsapp_device",
+    "whatsapp_config_load",
+    "whatsapp_config_save",
+    "whatsapp_config_clear",
+    "whatsapp_choose_folder",
+    "whatsapp_inspect",
+    "whatsapp_start",
+    "whatsapp_stop",
+    "whatsapp_state",
+    "whatsapp_identity",
+    "whatsapp_read",
+    "whatsapp_names",
+    "whatsapp_send",
+    "whatsapp_download",
+    "whatsapp_open_file",
+    "whatsapp_choose_file",
+  ])))
+  .expect("failed to run the Tauri build script");
 }

@@ -3,6 +3,7 @@ mod menu;
 mod sql;
 mod tokens;
 mod updates;
+mod whatsapp;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -11,8 +12,10 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_notification::init())
     .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_dialog::init())
     .manage(sql::Databases::default())
     .manage(updates::UpdateListener::default())
+    .manage(whatsapp::Bridge::default())
     // Filled on macOS once the menu bar is built (menu.rs); empty where the app has none.
     .manage(<menu::MenuItems>::default())
     // A new page in the main window does not listen for Sparkle's relaunch question until it says so (updates.rs).
@@ -43,9 +46,28 @@ pub fn run() {
       sql::sql_close,
       sql::sql_delete,
       sql::sql_list,
+      whatsapp::whatsapp_available,
+      whatsapp::whatsapp_device,
+      whatsapp::whatsapp_config_load,
+      whatsapp::whatsapp_config_save,
+      whatsapp::whatsapp_config_clear,
+      whatsapp::whatsapp_choose_folder,
+      whatsapp::whatsapp_inspect,
+      whatsapp::whatsapp_start,
+      whatsapp::whatsapp_stop,
+      whatsapp::whatsapp_state,
+      whatsapp::whatsapp_identity,
+      whatsapp::whatsapp_read,
+      whatsapp::whatsapp_names,
+      whatsapp::whatsapp_send,
+      whatsapp::whatsapp_download,
+      whatsapp::whatsapp_open_file,
+      whatsapp::whatsapp_choose_file,
     ])
     .setup(|app| {
       main_window(app)?;
+      // The WhatsApp bridge's events go to the window; a bridge a crashed run left behind is stopped (whatsapp.rs).
+      whatsapp::setup(app.handle());
       // macOS updates through Sparkle, which its item in the menu bar asks; Windows and Linux through Tauri's updater,
       // driven by the web client. Only macOS has a menu bar (menu.rs).
       #[cfg(target_os = "macos")]
@@ -80,12 +102,16 @@ pub fn run() {
     })
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
-    .run(|_app, event| match event {
-      // A token set the server just rotated is lost when the app quits before the keychain has it.
-      tauri::RunEvent::Exit => tokens::finish_pending(std::time::Duration::from_secs(5)),
+    .run(|app, event| match event {
+      tauri::RunEvent::Exit => {
+        // A token set the server just rotated is lost when the app quits before the keychain has it.
+        tokens::finish_pending(std::time::Duration::from_secs(5));
+        // The WhatsApp bridge Tresso started does not outlive it.
+        whatsapp::stop_on_exit(app);
+      }
       // A click on the Dock icon while the window is closed (macOS keeps the app running) brings it back.
       #[cfg(target_os = "macos")]
-      tauri::RunEvent::Reopen { has_visible_windows: false, .. } => menu::show_main_window(_app),
+      tauri::RunEvent::Reopen { has_visible_windows: false, .. } => menu::show_main_window(app),
       _ => {}
     });
 }

@@ -45,8 +45,11 @@ pub fn save_tokens(tokens: String) -> Result<(), String> {
   })
 }
 
+/// The sign-out (the web client clears the tokens only then, or when the server ended the sign-in): the WhatsApp
+/// bridge started for this user stops as well.
 #[tauri::command(async)]
-pub fn clear_tokens() -> Result<(), String> {
+pub fn clear_tokens(app: tauri::AppHandle) -> Result<(), String> {
+  crate::whatsapp::signed_out(&app);
   with_keychain(|store| clear(store).map_err(|error| format!("Removing the sign-in from the keychain failed: {error}")))
 }
 

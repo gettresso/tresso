@@ -1,0 +1,29 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "whatsapp",
+  "description": "macOS, the main window: starting, watching and stopping the user's whatsapp-mcp bridge, reading its store, sending and downloading through it, and the folder and file pickers it needs (src/whatsapp.rs)",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "macOS"
+  ],
+  "permissions": [
+    "allow-whatsapp-device",
+    "allow-whatsapp-config-load",
+    "allow-whatsapp-config-save",
+    "allow-whatsapp-config-clear",
+    "allow-whatsapp-choose-folder",
+    "allow-whatsapp-inspect",
+    "allow-whatsapp-start",
+    "allow-whatsapp-stop",
+    "allow-whatsapp-state",
+    "allow-whatsapp-identity",
+    "allow-whatsapp-read",
+    "allow-whatsapp-names",
+    "allow-whatsapp-send",
+    "allow-whatsapp-download",
+    "allow-whatsapp-open-file",
+    "allow-whatsapp-choose-file"
+  ]
+}

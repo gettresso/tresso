@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: core APIs, the link the app was opened with, opening web pages in the default browser, and notifications whose click brings the window to the front, and dragging the window by its own title area (the macOS app draws its title bar itself)",
+  "description": "The main window: the app's own commands (whatsapp.json has the WhatsApp ones), core APIs, the link the app was opened with, opening web pages in the default browser, and notifications whose click brings the window to the front, and dragging the window by its own title area (the macOS app draws its title bar itself)",
   "windows": [
     "main"
   ],
@@ -16,6 +16,27 @@
     "notification:allow-register-listener",
     "core:window:allow-unminimize",
     "core:window:allow-set-focus",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "allow-reduce-transparency",
+    "allow-update-channel",
+    "allow-check-for-updates-natively",
+    "allow-update-listening",
+    "allow-update-relaunch",
+    "allow-menu-state",
+    "allow-show-main-window-command",
+    "allow-load-tokens",
+    "allow-save-tokens",
+    "allow-clear-tokens",
+    "allow-sql-open",
+    "allow-sql-exec",
+    "allow-sql-begin",
+    "allow-sql-commit",
+    "allow-sql-rollback",
+    "allow-sql-run",
+    "allow-sql-select",
+    "allow-sql-close",
+    "allow-sql-delete",
+    "allow-sql-list",
+    "allow-whatsapp-available"
   ]
 }
