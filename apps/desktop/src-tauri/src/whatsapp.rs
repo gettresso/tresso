@@ -34,6 +34,12 @@
 //!   at the next launch and the next start.
 //! - Every command but `whatsapp_available` answers `unsupported` outside macOS, and only the main window may call
 //!   them (capabilities/whatsapp.json).
+//!
+//! WhatsApp stays hidden until it is turned on, while it waits for a hand-check with a real phone: `whatsapp_available`
+//! answers true only on macOS and only with `defaults write app.tresso.desktop EnableWhatsApp -bool YES` (or the app
+//! started with `TRESSO_ENABLE_WHATSAPP=1`). `defaults delete app.tresso.desktop EnableWhatsApp` hides it again. The web
+//! client asks once per launch, so quit and open Tresso after changing it. Hidden, the app starts no bridge at all, also
+//! not for a WhatsApp connected before.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -1261,6 +1267,9 @@ pub struct Config {
   device_name: String,
   #[serde(default)]
   linked_at: Option<String>,
+  /// Set once when WhatsApp is connected (that moment less 30 days); older messages are not brought in. The relay
+  /// passes it unchanged on every start, so it never moves by itself.
+  import_since: String,
   include_groups: bool,
   notify: bool,
   left_out: Vec<String>,
@@ -1304,15 +1313,23 @@ impl Config {
       return Err(code("The device name is not valid."));
     }
     if let Some(linked_at) = &self.linked_at
-      && (linked_at.is_empty() || linked_at.len() > 40 || !linked_at.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | '.' | 'T' | 'Z' | '+')))
+      && !valid_time(linked_at)
     {
       return Err(code("The link time is not valid."));
+    }
+    if !valid_time(&self.import_since) {
+      return Err(code("The import date is not valid."));
     }
     if self.left_out.len() > MAX_LEFT_OUT || !self.left_out.iter().all(|jid| valid_jid(jid)) {
       return Err(code("The chats left out are not valid."));
     }
     Ok(())
   }
+}
+
+/// An ISO 8601 time as the web client writes it (`2026-11-12T13:48:14.000Z`): digits and `-:.TZ+` only.
+fn valid_time(time: &str) -> bool {
+  !time.is_empty() && time.len() <= 40 && time.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | '.' | 'T' | 'Z' | '+'))
 }
 
 fn config_file(data_dir: &Path, user_id: &str) -> Result<PathBuf, String> {
@@ -1960,9 +1977,35 @@ pub fn signed_out<R: Runtime>(app: &AppHandle<R>) {
   thread::spawn(move || Bridge(shared).signed_out());
 }
 
+/// The `defaults` key and the environment variable that turn WhatsApp on (see the top of this file).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const ENABLE_DEFAULT: &str = "EnableWhatsApp";
+pub const ENABLE_ENV: &str = "TRESSO_ENABLE_WHATSAPP";
+
+/// On when the `defaults` key says so, or the variable is set to anything but empty or `0`.
+fn turned_on(env: Option<std::ffi::OsString>, by_default: bool) -> bool {
+  by_default || env.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+#[cfg(target_os = "macos")]
+fn enabled_by_default() -> bool {
+  use objc2_foundation::{NSString, NSUserDefaults};
+  NSUserDefaults::standardUserDefaults().boolForKey(&NSString::from_str(ENABLE_DEFAULT))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn enabled_by_default() -> bool {
+  false
+}
+
+/// Whether the web client shows WhatsApp: on macOS, once it was turned on.
+fn available(supported: bool, env: Option<std::ffi::OsString>, by_default: bool) -> bool {
+  supported && turned_on(env, by_default)
+}
+
 #[tauri::command]
 pub fn whatsapp_available() -> bool {
-  supported().is_ok()
+  available(supported().is_ok(), std::env::var_os(ENABLE_ENV), enabled_by_default())
 }
 
 #[derive(Serialize)]
@@ -2579,6 +2622,17 @@ mod tests {
 
   // ---- config
 
+  #[test]
+  fn is_hidden_until_it_is_turned_on() {
+    assert!(!available(true, None, false));
+    assert!(available(true, None, true));
+    assert!(available(true, Some("1".into()), false));
+    assert!(!available(true, Some("0".into()), false));
+    assert!(!available(true, Some("".into()), false));
+    // Never outside macOS, whatever turns it on.
+    assert!(!available(false, Some("1".into()), true));
+  }
+
   fn config(folder: &Path) -> Config {
     Config {
       folder: folder.to_str().unwrap().to_string(),
@@ -2586,6 +2640,7 @@ mod tests {
       device_id: "0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into(),
       device_name: "Kim's MacBook Pro".into(),
       linked_at: Some("2026-11-12T13:48:14.000Z".into()),
+      import_since: "2026-10-13T13:40:02.000Z".into(),
       include_groups: true,
       notify: false,
       left_out: vec!["120363000000000001@g.us".into()],
@@ -2609,12 +2664,14 @@ mod tests {
       assert!(load_config(&data, user_id).is_err(), "{user_id:?}");
     }
 
-    let invalid: [fn(&mut Config); 6] = [
+    let invalid: [fn(&mut Config); 8] = [
       |config| config.left_out.push("someone".into()),
       |config| config.left_out.push("1@evil.example".into()),
       |config| config.device_id = "../x".into(),
       |config| config.device_name = "line\nbreak".into(),
       |config| config.linked_at = Some("tomorrow".into()),
+      |config| config.import_since = String::new(),
+      |config| config.import_since = "last month".into(),
       |config| config.folder = format!("{}/", config.folder),
     ];
     for change in invalid {
@@ -2622,8 +2679,10 @@ mod tests {
       change(&mut wrong);
       assert!(save_config(&data, "u1", &wrong).is_err(), "{wrong:?}");
     }
-    assert!(serde_json::from_value::<Config>(json!({ "folder": "/x", "mode": "local", "deviceId": "d", "deviceName": "n", "includeGroups": true, "notify": false, "leftOut": [], "port": 1 })).is_err());
-    assert!(serde_json::from_value::<Config>(json!({ "folder": "/x", "mode": "everywhere", "deviceId": "d", "deviceName": "n", "includeGroups": true, "notify": false, "leftOut": [] })).is_err());
+    assert!(serde_json::from_value::<Config>(json!({ "folder": "/x", "mode": "local", "deviceId": "d", "deviceName": "n", "importSince": "2026-10-13T13:40:02.000Z", "includeGroups": true, "notify": false, "leftOut": [], "port": 1 })).is_err());
+    // A config without the import date is refused: it is set once at connect and never made up afterwards.
+    assert!(serde_json::from_value::<Config>(json!({ "folder": "/x", "mode": "local", "deviceId": "d", "deviceName": "n", "includeGroups": true, "notify": false, "leftOut": [] })).is_err());
+    assert!(serde_json::from_value::<Config>(json!({ "folder": "/x", "mode": "everywhere", "deviceId": "d", "deviceName": "n", "importSince": "2026-10-13T13:40:02.000Z", "includeGroups": true, "notify": false, "leftOut": [] })).is_err());
 
     #[cfg(unix)]
     {
@@ -3593,7 +3652,9 @@ mod tests {
   #[test]
   fn answers_unsupported_outside_macos() {
     if cfg!(target_os = "macos") {
-      assert!(whatsapp_available() && supported().is_ok());
+      // Shown only once turned on for this Mac (is_hidden_until_it_is_turned_on).
+      assert!(supported().is_ok());
+      assert_eq!(whatsapp_available(), turned_on(std::env::var_os(ENABLE_ENV), enabled_by_default()));
     } else {
       assert!(!whatsapp_available());
       assert_eq!(supported(), Err("unsupported".to_string()));
@@ -3671,7 +3732,7 @@ mod tests {
     };
     let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
     let other = tauri::WebviewWindowBuilder::new(&app, "other", Default::default()).build().unwrap();
-    assert_eq!(call(&main, "whatsapp_available").unwrap().deserialize::<bool>().unwrap(), cfg!(target_os = "macos"));
+    assert_eq!(call(&main, "whatsapp_available").unwrap().deserialize::<bool>().unwrap(), whatsapp_available());
     assert!(call(&other, "whatsapp_available").is_err());
     assert!(call(&other, "whatsapp_state").is_err());
     assert_eq!(call(&main, "whatsapp_state").is_ok(), cfg!(target_os = "macos"));
