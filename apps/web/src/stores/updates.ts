@@ -203,12 +203,19 @@ export const useUpdatesStore = defineStore('updates', () => {
    * why.
    */
   async function reloadApp(): Promise<void> {
+    // One at a time, as a restart: a second Reload while the first waits is the same one, so "Later" ends both.
+    if (preparing) {
+      return
+    }
+    preparing = true
     error.value = null
     let ready = false
     try {
       ready = await readyToRestart()
     } catch (cause) {
       error.value = `The draft could not be saved, so Tresso did not reload: ${cause instanceof Error ? cause.message : String(cause)}`
+    } finally {
+      preparing = false
     }
     if (ready) {
       window.location.reload()

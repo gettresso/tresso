@@ -338,6 +338,30 @@ describe('updates store', () => {
     }
   })
 
+  it('takes a second Reload while the first waits as the same one, so "Later" cancels it for good', async () => {
+    const reload = vi.fn<() => void>()
+    vi.stubGlobal('location', { ...window.location, reload })
+    try {
+      compose.unfinished = 'files'
+      const updates = useUpdatesStore()
+      const first = updates.reloadApp()
+      await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+      const second = updates.reloadApp()
+      await second
+
+      updates.later()
+      await first
+      compose.unfinished = null
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      expect(reload).not.toHaveBeenCalled()
+      expect(updates.phase).not.toBe('waiting')
+      expect(compose.saves).toBe(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('does not reload when the draft cannot be saved, and says why', async () => {
     const reload = vi.fn<() => void>()
     vi.stubGlobal('location', { ...window.location, reload })
