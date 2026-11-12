@@ -72,7 +72,7 @@ final readonly class ChatRelayProcessor implements ProcessorInterface
             if ($data instanceof RelayResult) {
                 [$account, $fromRelay] = $this->guard->reportingAccount($user, $uriVariables['accountId'] ?? null, $data->deviceId, $now);
 
-                return ChatOutgoingResource::fromView($this->views->outgoing($this->queue->report($account, $uriVariables['outgoingId'] ?? null, $data, $fromRelay, $now)));
+                return ChatOutgoingResource::fromView($this->views->outgoing($this->queue->report($account, $uriVariables['outgoingId'] ?? null, $data, $data->deviceId, $fromRelay, $now)));
             }
             $account = $this->guard->relayedAccount($user, $uriVariables['accountId'] ?? null, $data->deviceId, $now);
 
@@ -86,17 +86,19 @@ final readonly class ChatRelayProcessor implements ProcessorInterface
                 return $this->ingestor->ingest($account, $data, $now);
             }
             if ($data instanceof RelayClaim) {
-                $outgoing = $this->queue->claim($account, $now);
+                $claim = $this->queue->claim($account, $now);
+                if (null === $claim) {
+                    return new Response(null, Response::HTTP_NO_CONTENT);
+                }
+                [$outgoing, $token] = $claim;
 
-                return null === $outgoing
-                    ? new Response(null, Response::HTTP_NO_CONTENT)
-                    : new RelayClaimOutput(
-                        $outgoing->getId()->toRfc4122(),
-                        $outgoing->getChat()->getId()->toRfc4122(),
-                        $this->fields->jid($outgoing->getChat()),
-                        $this->fields->outgoingText($outgoing),
-                        ($outgoing->getClaimedAt() ?? throw new \LogicException('A claimed reply has a claim time.'))->format(\DATE_ATOM),
-                    );
+                return new RelayClaimOutput(
+                    $outgoing->getId()->toRfc4122(),
+                    $outgoing->getChat()->getId()->toRfc4122(),
+                    $this->fields->jid($outgoing->getChat()),
+                    $this->fields->outgoingText($outgoing),
+                    $token,
+                );
             }
 
             $account->reportBridge(

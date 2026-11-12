@@ -72,22 +72,22 @@ trait RelaysChats
     }
 
     /**
-     * The relay's result for a reply, for the claim the reply holds now unless the body names one.
+     * The relay's result for a reply, for the claim the reply holds now unless the body names a token.
      *
      * @param array<string, mixed>       $body
      * @param array<string, string>|null $headers
      */
     protected function report(string $replyId, array $body, ?array $headers = null): void
     {
-        $this->relay('outgoing/'.$replyId.'/result', $body + ['claimedAt' => $this->claimOf($replyId)], $headers);
+        $this->relay('outgoing/'.$replyId.'/result', $body + ['claimToken' => $this->tokenOf($replyId) ?? 'no-claim'], $headers);
     }
 
-    /** When the reply was claimed, as the claim answered it; a time of no claim when nobody claimed it. */
-    protected function claimOf(string $replyId): string
+    /** The token of the claim the reply holds now; null when it holds none. */
+    protected function tokenOf(string $replyId): ?string
     {
-        $at = $this->connection()->fetchOne('SELECT claimed_at FROM chat_outgoing WHERE id = :id', ['id' => $replyId]);
+        $token = $this->connection()->fetchOne('SELECT claim_token FROM chat_outgoing WHERE id = :id', ['id' => $replyId]);
 
-        return \is_string($at) ? new \DateTimeImmutable($at)->format(\DATE_ATOM) : '2026-11-12T10:00:00+00:00';
+        return \is_string($token) ? $token : null;
     }
 
     /**

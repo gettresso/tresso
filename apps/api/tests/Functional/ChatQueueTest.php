@@ -171,7 +171,10 @@ final class ChatQueueTest extends DatabaseTestCase
 
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(200);
-        self::assertSame(['id' => $first, 'chatId' => $this->chatId, 'chatJid' => self::JID, 'text' => 'One', 'claimedAt' => $this->claimOf($first)], $this->decodedResponse());
+        $token = $this->tokenOf($first);
+        self::assertIsString($token);
+        self::assertSame(32, \strlen($token));
+        self::assertSame(['id' => $first, 'chatId' => $this->chatId, 'chatJid' => self::JID, 'text' => 'One', 'claimToken' => $token], $this->decodedResponse());
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(200);
         self::assertSame($second, $this->decodedResponse()['id'] ?? null, 'A claimed reply is not handed out again.');
@@ -294,7 +297,7 @@ final class ChatQueueTest extends DatabaseTestCase
         yield 'sent with an error' => [['sent' => true, 'error' => 'refused']];
         yield 'not sent without an error' => [['sent' => false]];
         yield 'no outcome' => [[]];
-        yield 'no claim' => [['sent' => true, 'claimedAt' => null]];
+        yield 'no claim' => [['sent' => true, 'claimToken' => '']];
     }
 
     /**
@@ -443,22 +446,68 @@ final class ChatQueueTest extends DatabaseTestCase
     public function testAResultOfAnEarlierClaimIsRefused(): void
     {
         $id = $this->claimedReply('Hi');
-        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = claimed_at - INTERVAL '1 minute' WHERE id = :id", ['id' => $id]);
-        $earlier = $this->claimOf($id);
+        $earlier = $this->tokenOf($id);
+        self::assertIsString($earlier);
         $this->report($id, ['sent' => false, 'error' => 'bridge_stopped']);
         self::assertResponseStatusCodeSame(200);
+        self::assertNull($this->tokenOf($id), 'A final result ends the claim.');
         $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$id.'/retry', [], $this->web);
         self::assertResponseStatusCodeSame(200);
         $this->relay('outgoing/claim');
         self::assertSame($id, $this->decodedResponse()['id'] ?? null);
+        self::assertNotSame($earlier, $this->decodedResponse()['claimToken'] ?? null);
 
-        $this->report($id, ['sent' => true, 'claimedAt' => $earlier]);
+        $this->report($id, ['sent' => true, 'claimToken' => $earlier]);
 
         self::assertResponseStatusCodeSame(409);
         self::assertSame('result_final', $this->decodedResponse()['code'] ?? null);
         self::assertSame('sending', $this->delta(0)['chatOutgoing'][0]['status'] ?? null, 'The claim that holds it now decides.');
         $this->report($id, ['sent' => true]);
         self::assertResponseStatusCodeSame(200);
+    }
+
+    public function testAWrongTokenIsRefused(): void
+    {
+        $id = $this->claimedReply('Hi');
+
+        $this->report($id, ['sent' => true, 'claimToken' => str_repeat('0', 32)]);
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('result_final', $this->decodedResponse()['code'] ?? null);
+        self::assertSame('sending', $this->delta(0)['chatOutgoing'][0]['status'] ?? null);
+    }
+
+    public function testTheRightTokenFromAnotherDesktopIsRefused(): void
+    {
+        $id = $this->claimedReply('Hi');
+
+        $this->report($id, ['sent' => true, 'deviceId' => self::OTHER_MAC]);
+
+        self::assertResponseStatusCodeSame(409, 'Only the device that claimed it, with its token.');
+        self::assertSame('not_the_relay', $this->decodedResponse()['code'] ?? null);
+        self::assertSame('sending', $this->delta(0)['chatOutgoing'][0]['status'] ?? null);
+    }
+
+    public function testTheClaimNeverReachesClients(): void
+    {
+        $id = $this->claimedReply('Hi');
+        $token = $this->tokenOf($id);
+        self::assertIsString($token);
+        $answers = [];
+
+        $answers[] = json_encode($this->delta(0), \JSON_THROW_ON_ERROR);
+        $this->report($id, ['sent' => false, 'error' => 'unconfirmed']);
+        $answers[] = (string) $this->client->getResponse()->getContent();
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$id.'/retry', [], $this->web);
+        $answers[] = (string) $this->client->getResponse()->getContent();
+        $answers[] = json_encode($this->queueReply($this->chatId, 'Another'), \JSON_THROW_ON_ERROR);
+        $answers[] = json_encode($this->delta(0), \JSON_THROW_ON_ERROR);
+
+        foreach ($answers as $answer) {
+            self::assertStringNotContainsString($token, $answer);
+            self::assertStringNotContainsString('claimToken', $answer);
+            self::assertStringNotContainsString('claimedBy', $answer);
+        }
     }
 
     public function testADesktopThatNoLongerRelaysMayStillSayItsReplyWentOut(): void
@@ -470,9 +519,9 @@ final class ChatQueueTest extends DatabaseTestCase
         $this->report($failed, ['sent' => false, 'error' => 'refused']);
         self::assertResponseStatusCodeSame(409);
         self::assertSame('not_the_relay', $this->decodedResponse()['code'] ?? null, 'Only that it went out.');
-        $this->report($sent, ['sent' => true, 'claimedAt' => '2026-11-12T10:00:00+00:00']);
+        $this->report($sent, ['sent' => true, 'claimToken' => str_repeat('0', 32)]);
         self::assertResponseStatusCodeSame(409);
-        self::assertSame('not_the_relay', $this->decodedResponse()['code'] ?? null, 'Only with its own claim.');
+        self::assertSame('not_the_relay', $this->decodedResponse()['code'] ?? null, 'Only with its own claim\'s token.');
 
         $this->report($sent, ['sent' => true]);
 

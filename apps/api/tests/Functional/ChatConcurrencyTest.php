@@ -25,6 +25,7 @@ final class ChatConcurrencyTest extends DatabaseTestCase
     private Connection $two;
     private Uuid $owner;
     private Uuid $account;
+    private Uuid $device;
 
     /** @var list<string> */
     private array $replies;
@@ -38,13 +39,14 @@ final class ChatConcurrencyTest extends DatabaseTestCase
 
         $this->owner = Uuid::v7();
         $this->account = Uuid::v7();
+        $this->device = Uuid::v7();
         $chat = Uuid::v7();
         $this->one->insert('app_user', [
             'id' => $this->owner->toRfc4122(), 'email' => 'chat-race-'.$this->owner->toRfc4122().'@example.test', 'password' => 'x',
             'display_name' => 'Race', 'roles' => '[]', 'created_at' => '2026-11-12 00:00:00', 'change_seq' => 0,
         ]);
         $this->one->insert('chat_account', [
-            'id' => $this->account->toRfc4122(), 'owner_id' => $this->owner->toRfc4122(), 'channel' => 'whatsapp', 'relay_device_id' => Uuid::v7()->toRfc4122(),
+            'id' => $this->account->toRfc4122(), 'owner_id' => $this->owner->toRfc4122(), 'channel' => 'whatsapp', 'relay_device_id' => $this->device->toRfc4122(),
             'relay_device_name' => 'Mac', 'relay_seen_at' => '2026-11-12 09:00:00', 'relay_online' => 'true', 'bridge_state' => 'running',
             'link_state' => 'linked', 'created_at' => '2026-11-12 09:00:00',
         ]);
@@ -81,12 +83,12 @@ final class ChatConcurrencyTest extends DatabaseTestCase
     public function testTwoClaimsRacingNeverTakeOneReply(): void
     {
         $this->one->beginTransaction();
-        $first = $this->claims($this->one)->claim($this->owner, $this->account, new \DateTimeImmutable());
+        $first = $this->claims($this->one)->claim($this->owner, $this->account, $this->device, new \DateTimeImmutable())['id'] ?? null;
         self::assertSame($this->replies[0], $first);
 
         $this->two->beginTransaction();
         try {
-            $this->claims($this->two)->claim($this->owner, $this->account, new \DateTimeImmutable());
+            $this->claims($this->two)->claim($this->owner, $this->account, $this->device, new \DateTimeImmutable())['id'] ?? null;
             self::fail('A second claim went ahead while the first was open.');
         } catch (DBALException $e) {
             self::assertStringContainsString('lock', strtolower($e->getMessage()));
@@ -95,7 +97,7 @@ final class ChatConcurrencyTest extends DatabaseTestCase
 
         $this->one->commit();
         $this->two->beginTransaction();
-        $second = $this->claims($this->two)->claim($this->owner, $this->account, new \DateTimeImmutable());
+        $second = $this->claims($this->two)->claim($this->owner, $this->account, $this->device, new \DateTimeImmutable())['id'] ?? null;
         $this->two->commit();
 
         self::assertSame($this->replies[1], $second, 'The second claim sees the first reply taken and gets the next.');
@@ -111,7 +113,7 @@ final class ChatConcurrencyTest extends DatabaseTestCase
 
         $this->two->beginTransaction();
         try {
-            $this->claims($this->two)->claim($this->owner, $this->account, new \DateTimeImmutable());
+            $this->claims($this->two)->claim($this->owner, $this->account, $this->device, new \DateTimeImmutable())['id'] ?? null;
             self::fail('A claim went ahead during an import.');
         } catch (DBALException $e) {
             self::assertStringContainsString('lock', strtolower($e->getMessage()));
@@ -120,7 +122,7 @@ final class ChatConcurrencyTest extends DatabaseTestCase
         $this->one->commit();
 
         $this->two->beginTransaction();
-        self::assertSame($this->replies[0], $this->claims($this->two)->claim($this->owner, $this->account, new \DateTimeImmutable()));
+        self::assertSame($this->replies[0], $this->claims($this->two)->claim($this->owner, $this->account, $this->device, new \DateTimeImmutable())['id'] ?? null);
         $this->two->commit();
     }
 

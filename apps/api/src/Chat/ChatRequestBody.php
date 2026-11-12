@@ -45,7 +45,11 @@ final readonly class ChatRequestBody
         if (is_numeric($announced) && (int) $announced > $maxBytes) {
             throw ChatProblem::tooLarge($maxBytes);
         }
-        $content = $request->getContent();
+        // Read no more than one byte past the limit, also for a body without a length (chunked).
+        $content = stream_get_contents($request->getContent(true), $maxBytes + 1);
+        if (false === $content) {
+            throw new BadRequestHttpException('The body could not be read.');
+        }
         if (\strlen($content) > $maxBytes) {
             throw ChatProblem::tooLarge($maxBytes);
         }
