@@ -261,6 +261,23 @@ describe('Session', () => {
     expect(session.snapshot.ended).toBe('expired')
   })
 
+  it('refuses the answer to a request that was under way when the user signed out', async () => {
+    let answer!: (response: Response) => void
+    const fetchImpl = server(
+      vi.fn<Fetch>(async (input) =>
+        String(input).endsWith('/api/v1/messages/m1/body') ? new Promise<Response>((resolve) => (answer = resolve)) : new Response(null, { status: 204 }),
+      ),
+    )
+    const session = await restored(memoryStore(fresh()), fetchImpl)
+    const loading = session.api('/api/v1/messages/m1/body')
+    await vi.waitFor(() => expect(answer).toBeDefined())
+
+    await session.signOut()
+    answer(new Response(JSON.stringify({ html: '<p>Previous user</p>' })))
+
+    await expect(loading).rejects.toMatchObject({ status: 401, message: 'Signed out while this request was under way.' })
+  })
+
   it('revokes the refresh token on sign-out, then forgets the tokens and who was signed in', async () => {
     const store = memoryStore(fresh())
     const fetchImpl = server(vi.fn<Fetch>())
@@ -707,7 +724,8 @@ describe('Session', () => {
     await session.signOut()
     answer(new Response('{}', { status: 402 }))
 
-    await expect(request).rejects.toMatchObject({ status: 402 })
+    // The answer belongs to the session that ended: refused as such, and the notice stays off.
+    await expect(request).rejects.toMatchObject({ status: 401, message: 'Signed out while this request was under way.' })
     expect(session.snapshot.paymentRequired).toBe(false)
   })
 

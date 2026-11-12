@@ -236,8 +236,11 @@ export class Session {
       throw new ApiError(401, EXPIRED)
     }
     if (generation !== this.generation) {
-      // Signed out while it was underway: the answer says nothing about the next session.
-    } else if (response.status === 402) {
+      // Signed out while it was under way: its answer belongs to no one now, and must not reach the next user (a
+      // hand-over step that resumes with it would open the previous user's mail in the next user's composer).
+      throw new ApiError(401, 'Signed out while this request was under way.')
+    }
+    if (response.status === 402) {
       this.update({ paymentRequired: true })
     } else if (response.ok && this.state.paymentRequired && !OPEN_PATHS.some((open) => path.startsWith(open))) {
       // The server serves this user again (renewed elsewhere): the notice goes.
