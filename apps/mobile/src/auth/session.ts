@@ -5,6 +5,16 @@ import { revokeToken } from '@/auth/revokeToken'
 const EXPIRY_MARGIN_MS = 30_000
 /** How long a sign-out waits for the server to revoke the refresh token before it goes on without it. */
 const REVOKE_WAIT_MS = 5_000
+/**
+ * How long the token endpoint gets to answer, the body included. Every request that needs a token waits on the one
+ * shared refresh, and Android sets no time limit of its own on a connection that died silently.
+ */
+const TOKEN_TIMEOUT_MS = 20_000
+/**
+ * The wait before a refresh whose answer never came is sent again. The server may have rotated the token already; it
+ * answers the same refresh token with the same new pair for 30 seconds, so the retry has to come well within that.
+ */
+const REFRESH_RETRY_DELAY_MS = 2_000
 /** The token endpoint's answers that mean the refresh token is no longer good; anything else is tried again later. */
 const REFUSED_REFRESH = new Set(['invalid_grant', 'invalid_request'])
 const EXPIRED = 'Your session has expired. Sign in again.'
@@ -291,16 +301,31 @@ export class Session {
 
   private async refresh(refreshToken: string): Promise<string> {
     const generation = this.generation
+    const request = () => this.limited(TOKEN_TIMEOUT_MS, (fetchImpl) => refreshTokens(this.config, refreshToken, fetchImpl))
     let next: TokenSet
     try {
-      next = await refreshTokens(this.config, refreshToken, this.fetchImpl)
+      try {
+        next = await request()
+      } catch (error) {
+        if (error instanceof OAuthError || generation !== this.generation) {
+          throw error
+        }
+        // The answer was lost (offline for a moment, the time limit): the server may have rotated the token anyway, and
+        // gives the same answer again for a short while, so ask once more now rather than at the next request.
+        await wait(REFRESH_RETRY_DELAY_MS)
+        if (generation !== this.generation) {
+          throw error
+        }
+        next = await request()
+      }
     } catch (error) {
+      if (generation !== this.generation) {
+        throw new ApiError(401, 'Signed out.')
+      }
       if (!(error instanceof OAuthError && error.code !== null && REFUSED_REFRESH.has(error.code))) {
         throw new RenewalFailedError(error)
       }
-      if (generation === this.generation) {
-        await this.expire()
-      }
+      await this.expire()
       throw error
     }
     if (generation !== this.generation) {
@@ -415,10 +440,22 @@ export class Session {
     clearTimeout(timer)
   }
 
+  /**
+   * Runs `run` with a fetch that is aborted after `ms`, the reading of the answer included; past it this rejects with
+   * a RequestTimeoutError also when the work does not follow the signal.
+   */
+  private limited<T>(ms: number, run: (fetchImpl: typeof fetch) => Promise<T>): Promise<T> {
+    return withDeadline((signal) => run((input, init) => this.fetchImpl(input, { ...init, signal })), null, ms)
+  }
+
   private update(change: Partial<SessionState>): void {
     this.state = { ...this.state, ...change }
     this.listeners.forEach((listener) => listener())
   }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function notKept(error: unknown): string {
