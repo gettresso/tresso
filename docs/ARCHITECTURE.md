@@ -1650,28 +1650,63 @@ numbers above the cursor, so the normal pull brings it.
 The desktop app brings WhatsApp in with `ChatRelay` (`packages/core/src/chat/relay.ts`), one per account, through the
 shell's bridge commands (`ChatBridge`) and a backend (`ChatBackend`): `LocalChatBackend` for "Only this Mac", which
 writes the `wa:` rows above and sends nothing to the server, and later one for the server. Its rounds never overlap:
-the next is planned when one ends, 3 seconds later, at once after a full page of 500 rows, 15 seconds after an error
-(or as long as the backend asks). A round reads the bridge's store by rowid from the cursor, leaves out what Tresso does
-not take before anything is stored (anything but direct chats and groups, groups when they are not brought in, chats
-the user left out, messages before the import date, without a time or with one before 2009 or more than a day ahead,
-without a WhatsApp id the server takes, or without anything to show: what the server would refuse or leave out), keeps
-each JID in the one form the server stores (`canonicalChatJid`, tested on both sides with
-`packages/core/src/chat/importable-jids.json`), looks up group
-sender names once per session, stores, and only then moves the cursor, so a crash in between reads the rows again,
-which changes nothing: messages are stored by chat and WhatsApp id. A row the bridge stores again gets a higher rowid
-and is read again the same way. The cursor names the store it belongs to (`storeId`); when that changes, or the
-store's highest rowid falls below the cursor, the store was replaced or renumbered and is read again from 0. The first
-import covers the rows the store had when it began and marks a chat that had nothing unread read through its newest
-message, as the server does; later rows are live and arrive unread. After the import the round sends the waiting replies one at a time, oldest first: claim
-(the reply is recorded as the one being sent, then marked `sending`), send, report. A send is never repeated by the
-relay: a result that could not be recorded is kept and recorded first in the next round, and a reply found `sending` at
-the next start (the app quit during the send) becomes `failed` with `unconfirmed`, sent again only by the user's Try
-again. Writes to local chat rows, the relay's and the user's (queue, cancel, try again, read, archive, leave out), go
-through one queue per copy, so a reply cancelled while the relay claims it is either cancelled or sent. Leaving a chat
-out removes its messages and replies and keeps the chat marked, so nothing of it is stored again. Disconnecting stops
-the relay (which waits for the round under way) and then removes the chats with the relay's values
-(`removeLocalChats`); a backend made before refuses to write, so nothing comes back. At sign-out the closing copy stops
-the relay. Neither the relay nor its errors carry message text, names or JIDs.
+the next is planned when one ends, 3 seconds later, at once after a full page of 500 rows, 15 seconds after an error,
+or as long as the backend asks (1 second to 10 minutes; a round in which it asked claims no reply). A round reads the
+bridge's store by rowid from the cursor, leaves out what Tresso does not take before anything is stored (anything but
+direct chats and groups, groups when they are not brought in, chats the user left out, messages before the import date,
+without a time or with one before 2009 or more than a day ahead, without a WhatsApp id the server takes, or without
+anything to show: what the server would refuse or leave out), and counts what it left out by why (numbers only, for
+the connect dialog). It keeps each JID in the one form the server stores (`canonicalChatJid`, tested on both sides
+with `packages/core/src/chat/importable-jids.json`) and a group sender as the user part of its JID: the bridge stores
+the user part for live messages and the whole JID (with a device suffix, or `@lid`) for history it syncs, and what the
+JID says (a LID or a phone number) beats the shell's guess. Names are looked up once per session when found, and again
+after 5 minutes when not (contacts often arrive after the first messages); messages stored before keep what was known
+then, since the copy has no cheap way to find them by sender. It stores, and only then moves the cursor, so a crash in
+between reads the rows again, which changes nothing: messages are stored by chat and WhatsApp id. The backend answers
+what it did (`stored`, `known`, `leftOut`, `refused`, as the server's per-row results; the copy cannot tell a message
+stored again from a new one and counts both as stored). A row the bridge stores again gets a higher rowid and is read
+again the same way. The cursor names the store it belongs to (`storeId`); when that changes, or the store's highest
+rowid falls below the cursor, the store was replaced or renumbered and is read again from 0. That includes a history
+sync that stores the store's first row again (`storeId` holds that row): harmless in the copy, but against the server
+it sends every row again, which the server answers with `known`; the server backend should keep its own high-water mark
+of what it sent so a re-read costs no upload.
+
+The first import runs from the first read until the store had no new rows for 60 seconds, since after linking the
+bridge's history sync streams in over minutes, and ends at the latest 30 minutes after it began; a message that
+arrives within it lands as read. The cursor keeps when it began, the store's highest rowid seen and when the store last
+grew, so a restart takes the import up again: the quiet time is then measured anew (the bridge may just be catching up)
+and the 30 minutes count from the first start. Each batch of it goes to the backend as `firstImport` and no batch goes as
+live before it ended (the server honours `firstImport` until the first batch without it). It marks a chat that had
+nothing unread read through its newest message, as the server does; later rows are live and arrive unread.
+
+After the import the round sends the waiting replies one at a time, oldest first: claim (one write marks the reply
+`sending` with its claim time, which is also the claim's token), send, report. Nothing is claimed while a reply of the
+account is `sending`. A send is never repeated by the relay: a result that could not be recorded is kept and recorded
+first in the next round, and every reply found `sending` at the next start (`sendingOutgoingHere`, in both stores, which
+lists only rows of accounts on this device) becomes `failed` with `unconfirmed`, sent again only by the user's Try
+again; a `sent` of the same claim still wins over that, as on the server. A waiting reply whose chat cannot be named is
+failed as `refused`. Replies are trimmed and checked by `replyText`, the server's `QueueReply` rule. Writes to local chat
+rows, the relay's and the user's (queue, cancel, try again, read, archive, leave out), go through one queue per copy, so
+a reply cancelled while the relay claims it is either cancelled or sent. Leaving a chat out removes its messages and
+replies and keeps the chat marked, so nothing of it is stored again. Neither the relay nor its errors carry message
+text, names or JIDs.
+
+What the desktop wiring (the WhatsApp settings and connect package) and the server backend must respect:
+
+- One relay per copy and account. `await relay.stop()` before starting another or before `removeLocalChats`; stop
+  waits for a send under way. Sign-out must not wait on it: the closing copy refuses writes and the relay stops itself
+  (`CopyClosingError`).
+- Disconnecting will stop the relay, then call `removeLocalChats`; a backend made before refuses to write afterwards,
+  so nothing comes back.
+- `ChatBridge.read` maps the shell's `busy` rejection to `null`. `ChatBridge.send` rejects only when nothing went out
+  and has no timeout of its own that rejects (a rejection counts as `refused` and is never sent again).
+- Run the relay only while the bridge is linked.
+- Save the config, then call `LocalChatBackend.configure`, then `setLocalChatState`: the relay leaves out what the
+  config says; the left-out mark in the copy is a second guard.
+- `onError` logs the step and the error's name only.
+- Downloads look up a message by the chat JID the bridge stored, which may differ in case or device suffix from the
+  stored one.
+- The same contact under `@lid` and `@s.whatsapp.net` gives two chats (hand-check).
 
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
 whether the conversation is in an inbox or junk folder, and date (`ListScope`: an inbox or a smart inbox).
