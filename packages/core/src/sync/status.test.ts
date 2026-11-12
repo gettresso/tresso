@@ -54,12 +54,12 @@ describe('describeSync', () => {
   })
 
   it('reaches 100% only with the last page, as the newest number may stay ahead of the last cursor', () => {
-    expect(describe_({ pull: pull({ cursor: 9999, latest: 10_000, pages: 20, hasMore: true }), origin: 0 }).text).toBe('Getting your mail, 99%')
-    expect(describe_({ pull: pull({ cursor: 9000, latest: 10_000, pages: 21, hasMore: false }), origin: 0 }).text).toBe('Getting your mail, 100%')
+    expect(describe_({ pull: pull({ cursor: 9999, latest: 10_000, pages: 20, hasMore: true }), origin: 0, lastSyncedAt: null }).text).toBe('Getting your mail, 99%')
+    expect(describe_({ pull: pull({ cursor: 9000, latest: 10_000, pages: 21, hasMore: false }), origin: 0, lastSyncedAt: null }).text).toBe('Getting your mail, 100%')
   })
 
   it('keeps the fraction of the whole sync over a retry that begins further on', () => {
-    const retried = describe_({ pull: pull({ from: 5000, cursor: 7500, latest: 10_000, pages: 5, hasMore: true }), origin: 0 })
+    const retried = describe_({ pull: pull({ from: 5000, cursor: 7500, latest: 10_000, pages: 5, hasMore: true }), origin: 0, lastSyncedAt: null })
     expect(retried).toMatchObject({ kind: 'firstSync', text: 'Getting your mail, 75%' })
   })
 
@@ -84,7 +84,7 @@ describe('describeSync', () => {
   it('says nothing new for a short pull, which a notification or a write starts', () => {
     const short = describe_({ pull: pull({ from: 50_000, cursor: 50_000, latest: 50_000 + BEHIND_CHANGES }), origin: 50_000 })
     expect(short).toMatchObject({ kind: 'live', text: 'Up to date', notice: null, fraction: null })
-    expect(describe_({ pull: pull({ from: 50_000 }), origin: 50_000, stream: 'connecting', wasLive: false }).kind).toBe('connecting')
+    expect(describe_({ pull: pull({ from: 50_000, cursor: 50_000, latest: 50_010, pages: 1, hasMore: false }), origin: 50_000, stream: 'connecting', wasLive: false }).kind).toBe('connecting')
   })
 
   it('catches up after a long time away when more than one page comes, however few the changes', () => {
@@ -105,14 +105,14 @@ describe('describeSync', () => {
   it('says it reconnects, with when it last synced, when the stream is down', () => {
     expect(describe_({ stream: 'retrying' })).toMatchObject({ kind: 'reconnecting', text: 'Reconnecting… Last synced 14:02', notice: null })
     expect(describe_({ stream: 'connecting', wasLive: true }).text).toBe('Reconnecting… Last synced 14:02')
-    expect(describe_({ stream: 'retrying', wasLive: false, lastSyncedAt: null }).text).toBe('Reconnecting…')
+    expect(describe_({ stream: 'retrying', lastSyncedAt: null }).text).toBe('Reconnecting…')
   })
 
   it('says offline with when it last synced, and that the lists may be out of date once that is long ago', () => {
     expect(describe_({ online: false, stream: 'retrying' })).toMatchObject({ kind: 'offline', text: 'Offline. Last synced 14:02', notice: null })
     const old = NOW - STALE_AFTER_MS - 60_000
-    expect(describe_({ online: false, lastSyncedAt: old })).toMatchObject({ kind: 'offline', text: 'Offline. Last synced 13:59', notice: 'Last synced 13:59. What you see may be out of date.' })
-    expect(describe_({ online: false, lastSyncedAt: null }).text).toBe('Offline')
+    expect(describe_({ online: false, stream: 'retrying', lastSyncedAt: old })).toMatchObject({ kind: 'offline', text: 'Offline. Last synced 13:59', notice: 'Last synced 13:59. What you see may be out of date.' })
+    expect(describe_({ online: false, stream: 'retrying', lastSyncedAt: null }).text).toBe('Offline')
   })
 
   it('says the sync stopped in the same words as the banner, and keeps saying it over a short retry', () => {
@@ -120,12 +120,41 @@ describe('describeSync', () => {
     expect(syncProblem('Network down')).toBe('Sync stopped: Network down')
     expect(describe_({ error: 'Network down', pull: pull({ from: 10, cursor: 10 }), origin: 10 }).kind).toBe('error')
     // A long retry shows its progress: it is under way again.
-    expect(describe_({ error: 'Network down', pull: pull({ from: 5000, cursor: 5000 }), origin: 0 }).kind).toBe('firstSync')
+    expect(describe_({ error: 'Network down', pull: pull({ from: 5000, cursor: 5000 }), origin: 0, lastSyncedAt: null }).kind).toBe('firstSync')
+    expect(describe_({ error: 'Network down' }).problem).toBe('Sync stopped: Network down')
+    expect(describe_({}).problem).toBeNull()
   })
 
   it('says when it last synced while the stream does not run (a phone in the background)', () => {
     expect(describe_({ stream: 'off' })).toMatchObject({ kind: 'idle', text: 'Last synced 14:02' })
     expect(describe_({ stream: 'off', lastSyncedAt: null }).text).toBe('Not synced yet')
+  })
+})
+
+describe('describeSync, as the audit asked', () => {
+  it('is up to date while the stream is live, whatever the device says of its network (a server on this machine)', () => {
+    expect(describe_({ online: false, stream: 'live' })).toMatchObject({ kind: 'live', text: 'Up to date' })
+  })
+
+  it('never says up to date while the first page of a pull is on its way, and does not announce that', () => {
+    const checking = describe_({ pull: pull({ from: 500, cursor: 500 }), origin: 500 })
+    expect(checking).toMatchObject({ kind: 'checking', text: 'Checking for new mail…', announcement: '' })
+    expect(describe_({ pull: pull({ from: 500, cursor: 520, latest: 520, pages: 1, hasMore: false }), origin: 500 }).text).toBe('Up to date')
+  })
+
+  it('says connecting, once, until the stream is live for the first time, through every retry', () => {
+    const attempts = [describe_({ stream: 'connecting', wasLive: false }), describe_({ stream: 'retrying', wasLive: false }), describe_({ stream: 'connecting', wasLive: false })]
+    expect(new Set(attempts.map((status) => `${status.text}|${status.announcement}`))).toEqual(new Set(['Connecting…|Connecting']))
+  })
+
+  it('takes a mailbox that finished a pull at cursor 0 for synced, not for a new device', () => {
+    expect(describe_({ pull: pull(), origin: 0 }).kind).toBe('checking')
+    expect(describe_({ pull: pull({ hasMore: false, pages: 0, latest: 0 }), origin: 0 }).kind).toBe('live')
+    expect(describe_({ pull: pull(), origin: 0, lastSyncedAt: null }).kind).toBe('firstSync')
+  })
+
+  it('says the sync stopped when no copy could be opened', () => {
+    expect(describe_({ copy: 'closed', error: 'disk full' })).toMatchObject({ kind: 'error', text: 'Sync stopped', problem: 'Sync stopped: disk full' })
   })
 })
 
@@ -204,7 +233,7 @@ describe('SyncStatusMachine', () => {
     subject.streamLive()
     const before = seen.length
 
-    subject.progress(pull({ from: 10, cursor: 10 }))
+    subject.progress(pull({ from: 10, cursor: 10, latest: 10, pages: 1, hasMore: false }))
     subject.synced(NOW)
     subject.progress(null)
 
@@ -235,5 +264,38 @@ describe('SyncStatusMachine', () => {
     subject.closed()
 
     expect(subject.status).toMatchObject({ kind: 'closed', text: '' })
+  })
+
+  it('announces connecting once while a stream that was never live retries', () => {
+    const { subject, seen } = machine()
+    subject.opening()
+    subject.opened({ confirmed: true, afterUpdate: false, lastSyncedAt: LAST })
+    subject.streamConnecting()
+    subject.streamRetrying()
+    subject.streamConnecting()
+    subject.streamRetrying()
+
+    expect(seen.filter((status) => status.text === 'Connecting…')).toHaveLength(1)
+  })
+
+  it('never steps the progress of one sync back, though a pull goes round again or the newest number moves on', () => {
+    const { subject } = machine()
+    subject.opening()
+    subject.opened({ confirmed: true, afterUpdate: false, lastSyncedAt: null })
+    subject.progress(pull({ cursor: 800, latest: 1000, pages: 2, hasMore: true }))
+    expect(subject.status.fraction).toBe(0.8)
+    // New changes came meanwhile: the newest number moved on.
+    subject.progress(pull({ cursor: 900, latest: 2000, pages: 3, hasMore: true }))
+    expect(subject.status.fraction).toBe(0.8)
+    subject.progress(pull({ cursor: 2000, latest: 2000, pages: 4, hasMore: false }))
+    expect(subject.status.text).toBe('Getting your mail, 100%')
+  })
+
+  it('says the sync stopped and why when the copy could not be opened', () => {
+    const { subject } = machine()
+    subject.opening()
+    subject.openFailed('disk full')
+
+    expect(subject.status).toMatchObject({ kind: 'error', problem: 'Sync stopped: disk full' })
   })
 })

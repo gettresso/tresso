@@ -42,6 +42,11 @@ export interface SyncFacts {
   /** When a pull last completed (epoch ms), also in an earlier session; null for a copy that never synced. */
   lastSyncedAt: number | null
   now: number
+  /**
+   * The largest fraction shown for the sync under way, so it never steps back (a pull that goes round once more, the
+   * newest number moving on); 0 while none was shown.
+   */
+  peak?: number
 }
 
 export type SyncStatusKind =
@@ -54,6 +59,7 @@ export type SyncStatusKind =
   | 'error'
   | 'offline'
   | 'live'
+  | 'checking'
   | 'connecting'
   | 'reconnecting'
   | 'idle'
@@ -68,6 +74,8 @@ export interface SyncStatus {
   remaining: number | null
   /** A quiet line above the lists: what they show may be out of date. Null when it is current. */
   notice: string | null
+  /** The banner of a failed sync ("Sync stopped: " and the reason), from the same state as the line; null when none. */
+  problem: string | null
   /**
    * The text for a polite live region. It changes with the kind and with every quarter of progress, not with every
    * percent or item, so a screen reader is not talked over.
@@ -98,8 +106,10 @@ const UPDATING = 'Updating your mail on this device after the update'
 
 /** What the user is told about the sync, from what the client knows. */
 export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime): SyncStatus {
+  const problem = facts.error === null ? null : syncProblem(facts.error)
   if (facts.copy === 'closed') {
-    return status('closed', '', { announcement: '' })
+    // A copy that could not be opened (again) says so; otherwise there is nothing to say.
+    return facts.error === null ? status('closed', '', { announcement: '' }) : status('error', SYNC_STOPPED, { problem })
   }
   if (facts.copy === 'opening') {
     return status('opening', 'Opening your mail…')
@@ -114,7 +124,9 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
     const origin = Math.min(facts.origin ?? pull.from, pull.from)
     const latest = pull.latest
     const remaining = latest === null ? null : pull.hasMore === false ? 0 : Math.max(0, latest - pull.cursor)
-    const fraction = progressOf(pull, origin)
+    const shown = progressOf(pull, origin)
+    const peak = facts.peak ?? 0
+    const fraction = shown === null ? (peak > 0 ? peak : null) : Math.max(shown, peak)
     const percent = fraction === null ? null : Math.floor(fraction * 100)
     const quarter = fraction === null ? null : Math.floor(fraction * 4) * 25
     const items = `${NUMBER.format(pull.items)} ${pull.items === 1 ? 'item' : 'items'}`
@@ -126,7 +138,8 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
         announcement: quarter === null ? UPDATING : `${UPDATING}, ${quarter}%`,
       })
     }
-    if (origin === 0) {
+    // A copy that finished a pull before is not new, also at cursor 0 (a mailbox without any change yet).
+    if (origin === 0 && facts.lastSyncedAt === null) {
       return status('firstSync', percent !== null ? `Getting your mail, ${percent}%` : pull.items > 0 ? `Syncing… ${items} so far` : 'Getting your mail…', {
         fraction,
         remaining,
@@ -145,33 +158,35 @@ export function describeSync(facts: SyncFacts, time: SyncTimeFormat = syncTime):
         announcement: quarter === null ? 'Catching up' : `Catching up, ${quarter}%`,
       })
     }
-    // A short pull (a notification, a write): nothing to say beyond the connection.
+    // A short pull (a notification, a write): nothing to say beyond the connection, once its first page told how far it
+    // is. Before that, nothing is known: it is checking, not up to date. Not announced: it comes with every new mail.
   }
   const staleNotice = stale && lastSynced !== null ? `Last synced ${lastSynced}. What you see may be out of date.` : null
   if (facts.error !== null) {
-    return status('error', lastSynced === null ? SYNC_STOPPED : `${SYNC_STOPPED}. Last synced ${lastSynced}`, { notice: staleNotice, announcement: SYNC_STOPPED })
+    return status('error', lastSynced === null ? SYNC_STOPPED : `${SYNC_STOPPED}. Last synced ${lastSynced}`, { notice: staleNotice, announcement: SYNC_STOPPED, problem })
+  }
+  if (pull !== null && pull.pages === 0 && pull.latest === null) {
+    return status('checking', 'Checking for new mail…', { announcement: '' })
+  }
+  // A live stream reaches the server, whatever the device says of its network (a server on this machine).
+  if (facts.stream === 'live') {
+    return status('live', 'Up to date')
   }
   if (!facts.online) {
     return status('offline', lastSynced === null ? 'Offline' : `Offline. Last synced ${lastSynced}`, { notice: staleNotice, announcement: 'Offline' })
   }
-  switch (facts.stream) {
-    case 'live':
-      return status('live', 'Up to date')
-    case 'connecting':
-      if (!facts.wasLive) {
-        return status('connecting', 'Connecting…')
-      }
-      break
-    case 'off':
-      return status('idle', lastSynced === null ? 'Not synced yet' : `Last synced ${lastSynced}`, { notice: staleNotice, announcement: '' })
-    case 'retrying':
-      break
+  if (facts.stream === 'off') {
+    return status('idle', lastSynced === null ? 'Not synced yet' : `Last synced ${lastSynced}`, { notice: staleNotice, announcement: '' })
+  }
+  if (!facts.wasLive) {
+    // One text, said once, until the stream is live for the first time: its retries are not news.
+    return status('connecting', 'Connecting…', { notice: staleNotice })
   }
   return status('reconnecting', lastSynced === null ? 'Reconnecting…' : `Reconnecting… Last synced ${lastSynced}`, { notice: staleNotice, announcement: 'Reconnecting' })
 }
 
 /** How much of the sync since `origin` is done; 1 once the last page is in. */
-function progressOf(pull: PullProgress, origin: number): number | null {
+export function progressOf(pull: PullProgress, origin: number): number | null {
   if (pull.hasMore === false && pull.pages > 0) {
     return 1
   }
@@ -183,7 +198,7 @@ function progressOf(pull: PullProgress, origin: number): number | null {
 }
 
 function status(kind: SyncStatusKind, text: string, extra: Partial<Omit<SyncStatus, 'kind' | 'text'>> = {}): SyncStatus {
-  return { kind, text, fraction: null, remaining: null, notice: null, announcement: text.replace(/…$/, ''), ...extra }
+  return { kind, text, fraction: null, remaining: null, notice: null, problem: null, announcement: text.replace(/…$/, ''), ...extra }
 }
 
 /** What the sync machine is told by the client. */
@@ -219,6 +234,7 @@ export class SyncStatusMachine {
       online: options.online ?? true,
       lastSyncedAt: null,
       now: this.now(),
+      peak: 0,
     }
   }
 
@@ -228,7 +244,7 @@ export class SyncStatusMachine {
 
   /** A copy is being opened; whatever was known about the one before goes. */
   opening(): void {
-    this.set({ copy: 'opening', confirmed: false, afterUpdate: false, pull: null, origin: null, error: null, stream: 'off', wasLive: false, lastSyncedAt: null })
+    this.set({ copy: 'opening', confirmed: false, afterUpdate: false, pull: null, origin: null, peak: 0, error: null, stream: 'off', wasLive: false, lastSyncedAt: null })
   }
 
   /** The copy is open and on screen. */
@@ -243,17 +259,28 @@ export class SyncStatusMachine {
 
   /** No copy is open (a sign-out, a session that ended). */
   closed(): void {
-    this.set({ copy: 'closed', confirmed: false, afterUpdate: false, pull: null, origin: null, error: null, stream: 'off', wasLive: false, lastSyncedAt: null })
+    this.set({ copy: 'closed', confirmed: false, afterUpdate: false, pull: null, origin: null, peak: 0, error: null, stream: 'off', wasLive: false, lastSyncedAt: null })
+  }
+
+  /** The copy could not be opened: none is open, and the status says the sync stopped and why. */
+  openFailed(error: string): void {
+    this.set({ copy: 'closed', confirmed: false, afterUpdate: false, pull: null, origin: null, peak: 0, error, stream: 'off', wasLive: false, lastSyncedAt: null })
   }
 
   /** The engine's progress (see SyncEngineOptions.onProgress). */
   progress(pull: PullProgress | null): void {
-    this.set(pull === null ? { pull } : { pull, origin: this.facts.origin ?? pull.from })
+    if (pull === null) {
+      this.set({ pull })
+      return
+    }
+    const origin = Math.min(this.facts.origin ?? pull.from, pull.from)
+    const shown = progressOf(pull, origin)
+    this.set({ pull, origin, peak: Math.max(this.facts.peak ?? 0, shown ?? 0) })
   }
 
   /** A pull completed: the copy is up to date as of now, also after an update. */
   synced(at: number = this.now()): void {
-    this.set({ error: null, origin: null, afterUpdate: false, lastSyncedAt: at })
+    this.set({ error: null, origin: null, peak: 0, afterUpdate: false, lastSyncedAt: at })
   }
 
   /** A pull failed; the engine tries again by itself. */
@@ -334,5 +361,5 @@ export class SyncStatusMachine {
 }
 
 function sameStatus(a: SyncStatus, b: SyncStatus): boolean {
-  return a.kind === b.kind && a.text === b.text && a.fraction === b.fraction && a.remaining === b.remaining && a.notice === b.notice && a.announcement === b.announcement
+  return a.kind === b.kind && a.text === b.text && a.fraction === b.fraction && a.remaining === b.remaining && a.notice === b.notice && a.problem === b.problem && a.announcement === b.announcement
 }

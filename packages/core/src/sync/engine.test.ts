@@ -343,4 +343,53 @@ describe('SyncEngine', () => {
     expect(markSynced).toHaveBeenCalledTimes(1)
     expect(failing.progress).toBeNull()
   })
+
+  it('tells the caller a notification pulled nothing, but pulls after a failure whatever the cursor says', async () => {
+    const store = new MemoryStore()
+    let fail = false
+    const fetchPage = vi.fn(async (since: number) => {
+      if (fail) {
+        throw new Error('offline')
+      }
+      return since === 0 ? page(5) : page(since)
+    })
+    const engine = new SyncEngine({ store, fetchPage, retryable: () => false })
+    await engine.sync()
+    expect(await engine.notify(5)).toBe(false)
+    expect(fetchPage).toHaveBeenCalledTimes(1)
+
+    fail = true
+    await expect(engine.sync()).rejects.toThrow('offline')
+    fail = false
+    const calls = fetchPage.mock.calls.length
+    expect(await engine.notify(3)).toBe(true)
+    expect(fetchPage.mock.calls.length).toBe(calls + 1)
+    // Current again: a notification at the stored cursor is a no-op once more.
+    expect(await engine.notify(5)).toBe(false)
+  })
+
+  it("keeps a finished page's 100% on a round that goes again, until its page says more", async () => {
+    const reports: (PullProgress | null)[] = []
+    const engine: SyncEngine = new SyncEngine({
+      store: new MemoryStore(),
+      fetchPage: async (since) => (since === 0 ? { ...page(10, false, ['a']), latest: 10 } : { ...page(12, false, ['b']), latest: 12 }),
+      onProgress: (p) => reports.push(p),
+      // A notification while the pull runs makes it go round once more.
+      onApplied: (p) => {
+        if (p.cursor === 10) {
+          void engine.notify(12)
+        }
+      },
+    })
+
+    await engine.sync()
+
+    const live = reports.filter((r): r is PullProgress => r !== null)
+    expect(live.map((r) => [r.cursor, r.hasMore])).toEqual([
+      [0, null],
+      [10, false],
+      [10, false],
+      [12, false],
+    ])
+  })
 })
