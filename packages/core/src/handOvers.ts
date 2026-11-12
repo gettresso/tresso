@@ -258,8 +258,11 @@ export class HandOverFlow {
    * seconds.
    */
   private queue: Promise<unknown> = Promise.resolve()
-  /** A hand-over is using the composer right now; it keeps it until it settles, also past its turn's time limit. */
-  private composing = false
+  /**
+   * The composer session (see Composer.session) a hand-over is using the composer in right now, or null: it keeps it
+   * until it settles, also past its turn's time limit. A sign-out starts another session, which it does not hold up.
+   */
+  private composingIn: number | null = null
   /** Clean-ups still under way after an undo or take back answered; see {@link idle}. */
   private readonly cleanups = new Set<Promise<unknown>>()
 
@@ -278,16 +281,25 @@ export class HandOverFlow {
         timer = setTimeout(resolve, this.deps.queueTimeoutMs ?? QUEUE_TIMEOUT_MS)
       }
     })
+    const composer = this.deps.composer
+    const queuedIn = composer.session
     const step = async (): Promise<T> => {
-      if (this.composing) {
+      const session = composer.session
+      if (session !== queuedIn) {
+        // Asked for before a sign-out: it belongs to a session that is over.
+        throw new HandOverError('You were signed out. Sign in again to hand this over.')
+      }
+      if (this.composingIn === session) {
         throw new HandOverError('Another hand-over is still being made. Try again in a moment.')
       }
-      this.composing = true
+      this.composingIn = session
       startLimit()
       try {
         return await task()
       } finally {
-        this.composing = false
+        if (this.composingIn === session) {
+          this.composingIn = null
+        }
       }
     }
     const run = this.queue.then(step, step)

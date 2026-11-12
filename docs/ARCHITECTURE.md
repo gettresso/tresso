@@ -1595,7 +1595,9 @@ which stay with the server's copy), whether its form is open or not, and the use
 user typed. A hidden draft is not uploaded until it is settled, and the mark goes when the server brings the draft
 back. A send dropped because the text was edited after it failed is
 remembered (`unsureSendId`): when its message shows up after all, the user is told the earlier text went out and the
-edited text is kept as a new draft. A server that does not know the field ignores it.
+edited text is kept as a new draft. A draft moved into a copy that was opened again for the same user (`rebind`) takes
+where its send stands along (its id, an earlier send that may have gone out, whether the server hid it). A server that
+does not know the field ignores it.
 
 Message actions in the web client: opening a conversation reads it; the conversation's buttons archive, trash, mark
 unread, flag and move it (shortcuts E, #, U and S, not while typing or writing), and archiving, trashing or moving
@@ -2529,7 +2531,9 @@ by mail.
   cancelled and its draft thrown away. Until the forward leaves (the undo window), Undo cancels it and withdraws the
   hand-over (`DELETE`); afterwards the hand-over stays. Hand-overs share one composer, so they run one after another;
   each holds the next for at most a minute from when it starts, and one that runs longer keeps the composer until it
-  settles (a hand-over asked for meanwhile is refused with a message to try again). Every API request the clients make
+  settles (a hand-over asked for meanwhile is refused with a message to try again). A sign-out starts a new composer
+  session: a hand-over asked for before it is refused, and one still hanging from before does not hold up the next
+  user's. Every API request the clients make
   (uploads of the user's files aside) is given up after 120 s (`withDeadline`), so a request that hangs ends as a
   failed step instead of keeping hand-overs refused. Undo and take back do not wait for
   them: the cancel and the withdrawal go out at once and they answer when the server did; the draft the forward came

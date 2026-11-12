@@ -425,4 +425,16 @@ describe('the mail copy across sign-out and sign-in', () => {
     await vi.waitFor(() => expect(mail.syncState).toBe('idle'), { timeout: 5_000 })
     expect(mail.syncError).toBeNull()
   })
+
+  it('pulls nothing when the browser goes online or the tab shows again while the copy is not confirmed', async () => {
+    const mail = useMailStore()
+    await mail.start('anna', { confirmed: false })
+
+    window.dispatchEvent(new Event('online'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    expect(fetch).not.toHaveBeenCalled()
+    expect(mail.live).toBe(false)
+  })
 })

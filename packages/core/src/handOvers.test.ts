@@ -415,6 +415,26 @@ describe('HandOverFlow', () => {
     expect(sent.map((request) => request.inReplyToMessageId)).toEqual(['m1', 'm3'])
   })
 
+  it('lets a new session hand over while a step of the one before still hangs, and refuses what was asked before it', async () => {
+    flow = new HandOverFlow({ ...flowDeps, queueTimeoutMs: 1_000 })
+    originalFiles = [{ id: 'contract', filename: 'contract.pdf', contentType: 'application/pdf', size: 100, inline: false, contentId: null, scanStatus: 'clean', access: 'allowed', scanSignature: null, scanFailure: null, url: null }]
+    drafts.duringFile = () => new Promise<void>(() => undefined)
+    void flow.handOver(original, input).catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(10)
+    const asked = flow.handOver(message('m2', 't2', 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00'), input)
+    const refused = expect(asked).rejects.toThrow(new HandOverError('You were signed out. Sign in again to hand this over.'))
+
+    // Signed out (and in again): the composer starts a new session.
+    composer.reset()
+    await vi.advanceTimersByTimeAsync(1_100)
+    await refused
+    drafts.duringFile = null
+    originalFiles = []
+    await flow.handOver(message('m3', 't3', 'work', ['work-inbox'], '2026-10-19T09:00:00+00:00'), input)
+
+    expect(sent.map((request) => request.inReplyToMessageId)).toEqual(['m3'])
+  })
+
   it('takes back both the forward and the hand-over', async () => {
     const handed = await flow.handOver(original, input)
 

@@ -116,11 +116,36 @@ export class Composer {
   private readonly bases = new Map<string, DraftBase & { stored: boolean }>()
   /** Counts saves on this device, so a read of the copy can tell a save came in between. */
   private writesStarted = 0
+  /**
+   * What each draft's send stands at, as last read from the copy or written into it, so a draft moved into a copy that
+   * was opened again (rebind) keeps its send's id, an earlier send that may have gone out, and whether the server hid
+   * it: those live in the copy, which is new.
+   */
+  private readonly sends = new Map<string, Pick<Draft, 'sendAttemptId' | 'unsureSendId' | 'hiddenOnServer'>>()
+  /** Rises on every reset (a sign-out, another user): work started before belongs to a session that is over. */
+  private resets = 0
 
   constructor(private readonly deps: ComposerDeps) {}
 
   get state(): ComposerState {
     return this.current
+  }
+
+  /** Which session the composer is in: it changes on every {@link reset}. */
+  get session(): number {
+    return this.resets
+  }
+
+  /** Notes where a draft's send stands, from the copy (see `sends`). */
+  private noteSend(draft: Draft | null): void {
+    if (draft === null) {
+      return
+    }
+    if (draft.sendAttemptId || draft.unsureSendId || draft.hiddenOnServer) {
+      this.sends.set(draft.id, { sendAttemptId: draft.sendAttemptId ?? null, unsureSendId: draft.unsureSendId ?? null, ...(draft.hiddenOnServer ? { hiddenOnServer: true } : {}) })
+    } else {
+      this.sends.delete(draft.id)
+    }
   }
 
   /**
@@ -224,6 +249,7 @@ export class Composer {
       return failure
     }
     const saved = written as Draft | null
+    this.noteSend(saved)
     if (saved !== null) {
       if (closing && this.current.draft?.id !== draft.id) {
         this.bases.delete(draft.id)
@@ -301,6 +327,8 @@ export class Composer {
     }
     this.openedIn = null
     this.dirty = false
+    this.resets++
+    this.sends.clear()
     this.bases.clear()
     this.held.clear()
     this.heldSaves.clear()
@@ -324,6 +352,13 @@ export class Composer {
     this.openedIn = store
     this.dirty = true
     this.clearSaveTimer()
+    // Where its send stands lived in the old copy: it comes along, so a send whose answer was lost is still recognised
+    // (or still settled, when the server hid the draft) rather than sent a second time.
+    const send = this.sends.get(draft.id)
+    // A draft being sent is written by its send alone (and not at all into a copy that replaced its own).
+    if (send !== undefined && !this.held.has(draft.id)) {
+      await store.changeDraft(draft.id, (stored) => (stored !== null ? null : { ...withEditsOver(null, draft, null), ...send, pendingSave: true }))
+    }
     await this.save(draft)
   }
 
@@ -532,6 +567,7 @@ export class Composer {
   async openDraft(id: string): Promise<void> {
     const stored = await this.deps.store()?.draft(id)
     if (stored) {
+      this.noteSend(stored)
       this.open(reopenedDraft(stored), true)
     }
   }
@@ -846,6 +882,7 @@ export class Composer {
       // try of the same send (Send pressed again after a lost answer, also after a restart) carries it, so the server
       // queues the message once. Its time is the server's, which takes only an id made about now.
       const attempt = await store.changeDraft(draft.id, (stored) => (stored === null || stored.sendAttemptId ? null : { ...stored, sendAttemptId: uuidV7(this.now()) }))
+      this.noteSend(attempt)
       const attemptId = attempt?.sendAttemptId ?? uuidV7(this.now())
       // A try whose answer was lost may have reached the server: when its message is in the copy, it is on its way.
       const queued = await store.outgoing(attemptId)
@@ -899,7 +936,7 @@ export class Composer {
         // The server answered and queued nothing (it refused the id, made on a clock far ahead, or the request): the
         // send is over, and the next try is a new one. When even that cannot be written, the next try carries the old
         // id, which the server has no message for either.
-        await store.changeDraft(draft.id, (stored) => (stored?.sendAttemptId ? { ...stored, sendAttemptId: null } : null)).catch(() => undefined)
+        this.noteSend(await store.changeDraft(draft.id, (stored) => (stored?.sendAttemptId ? { ...stored, sendAttemptId: null } : null)).catch(() => null))
       }
       const unscanned = violations.acceptUnscanned
       if (unscanned !== undefined && this.current.draft?.id === draft.id) {

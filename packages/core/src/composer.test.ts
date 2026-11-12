@@ -1379,6 +1379,26 @@ describe('Composer', () => {
       expect(composer.state.draft).toMatchObject({ id: other })
     })
 
+    it('comes along when the draft moves into a copy that was opened again', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Moved' })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      const attempt = tried[0]!.outgoingId!
+      await vi.advanceTimersByTimeAsync(1000)
+
+      // The copy was removed under this window and opened again, empty, for the same user.
+      const reopened = await SqliteMailStore.open(await memorySql())
+      currentStore = reopened
+      await composer.rebind()
+      expect(await reopened.draft(id)).toMatchObject({ subject: 'Moved', sendAttemptId: attempt })
+
+      sendFails = null
+      await composer.send()
+      expect(sent[0]!.outgoingId).toBe(attempt)
+    })
+
     it('is dropped by an undo, so sending again is a new send', async () => {
       composer.openNew([{ address: 'anna@example.test', name: null }])
       const id = composer.state.draft!.id
