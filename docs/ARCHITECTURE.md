@@ -175,8 +175,8 @@ Only first-party clients are approved automatically; every other app goes throug
 The web client and the desktop app keep a sign-in until the server refuses it, by these rules; the phone follows the
 same rules as of this release (the mobile app in section 3.10). They refresh the access token before it expires,
 one refresh at a time (refresh tokens rotate, so a second refresh with the same token would be refused), and only an
-`invalid_grant`, `invalid_request`, `invalid_client` or `unauthorized_client` answer of the token endpoint, or a 401
-from the API that a refresh and one retry do not cure, ends the session. A network error, a timeout (20 seconds for
+`invalid_grant` or `invalid_request` answer of the token endpoint (`refreshRefusalEndsSession` in `packages/core`, the
+rule of every client), or a 401 from the API that a refresh and one retry do not cure, ends the session. A network error, a timeout (20 seconds for
 the whole answer) or a 5xx keeps the tokens; the request fails with an error that says the next one tries again. When
 the answer was lost (a network error or the timeout, not an error answer), the client asks once more after 2 seconds:
 the server may have rotated the token already, and answers the old one with the same new pair for 30 seconds. A device
@@ -1307,7 +1307,8 @@ connects), but only to be read until the server confirms the same user: no pull,
 that writes (a draft upload or delete, a message sent) goes out; drafts are still kept in the copy and go up once
 confirmed. A sign-out meanwhile removes the copy, as its id came with the tokens signed out. When the server names
 another user, the draft on screen, a hand-over and a followed bulk action are let go, that copy is closed and the
-user's own opens; only then are copies other users left here removed. An answer to `/me` about a token set that was
+user's own opens; only then are copies other users left here removed (also copies of 0.7 and earlier that the list
+of copies does not know, found through `indexedDB.databases()`; the desktop's SQLite files cannot be listed). An answer to `/me` about a token set that was
 replaced while it was asked is not taken; the server is asked again.
 A start that fails (offline, the server down, the copy refused) says so with a Retry button and tries again by
 itself: after 5 seconds, doubling up to 5 minutes, and at once when the device comes back online.
@@ -1360,7 +1361,7 @@ then tells the server, within 6 seconds in all and with the tokens taken before 
 does can refresh: first it stops this browser's pushes (up to 2.5 seconds), then it revokes the refresh token, which
 also ends the access token the push calls need. A refresh anywhere
 that finishes after the tokens are gone, also one this tab started before the sign-out, drops its answer and revokes
-it. While a sign-out runs its button says so; a failure is shown. Signing out also ends the browser session of the
+it. While a sign-out runs its button says so; drafts on the device that never reached the server are asked about first (try to save them, sign out anyway, or cancel); a failure is shown, and a mail copy that could not be removed is named on the sign-in screen, marked in `tresso.mail.copies` and removed at the next start. Signing out also ends the browser session of the
 sign-in pages, remember-me cookie included, by submitting a top-level form (POST) to `/logout` on the sign-in address;
 the server accepts it for the app's origin and sends the browser back to the app. The form is sent only when the
 sign-in pages answer, as it would otherwise leave the user on the browser's error page: on the API's origin the
@@ -1699,7 +1700,8 @@ addresses, and quote the original (helpers in `packages/core/src/compose.ts`, sh
 sent with a `sendAt` a few seconds ahead, so "Undo" can cancel it; "Send later" picks a time. The draft is saved in
 the local copy while typing and kept until the message is confirmed sent, so a failed message can be edited and sent
 again; the outcome of each sent message is announced once. When the session ends, the draft on screen goes with it,
-so whoever signs in next never sees it; when the copy is opened again for the same user (another tab signed out and
+so whoever signs in next never sees it; a session that expired or ended in another tab first saves the typing since
+the last autosave into the copy it keeps; when the copy is opened again for the same user (another tab signed out and
 removed it), the draft on screen moves to the new copy and is saved and uploaded there. Drafts whose upload failed
 (offline) go up at the next start, when the realtime connection is made again, and after the first pull that works
 after a failed one. Recipient suggestions come from the people in synced
