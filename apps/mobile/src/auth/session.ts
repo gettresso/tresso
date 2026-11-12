@@ -173,10 +173,11 @@ export class Session {
 
   /**
    * Exchanges the authorization code from the browser for tokens and keeps them. The store is prepared first (see
-   * {@link prepareStore}); while that fails, the tokens are not kept.
+   * {@link prepareStore}); while that fails, the tokens are not kept. The exchange has the token endpoint's time
+   * limit and is not asked again: a code is good for one exchange only.
    */
   async completeSignIn(code: string, codeVerifier: string): Promise<void> {
-    const tokens = await exchangeCode(this.config, code, codeVerifier, this.fetchImpl)
+    const tokens = await this.limited(TOKEN_TIMEOUT_MS, (fetchImpl) => exchangeCode(this.config, code, codeVerifier, fetchImpl))
     this.update({ tokens, restored: false, restoreFailed: false, ended: null })
     this.prepared = false
     await this.saveTokens(tokens)
