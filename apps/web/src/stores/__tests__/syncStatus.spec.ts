@@ -39,18 +39,25 @@ interface Server {
   hold: Map<number, Promise<void>>
   hub: ReturnType<typeof hubStream> | null
   hubAnswers: boolean
+  /** The delta answers 502 while set. */
+  failChanges: boolean
+  /** The signal of the last hub request, which a stop aborts. */
+  hubSignal: AbortSignal | null
 }
 
 function serve(server: Server) {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input))
       if (url.pathname === '/api/v1/sync/changes') {
         const since = Number(url.searchParams.get('since'))
         server.pulls.push(since)
         server.log.push(`changes ${since}`)
         await server.hold.get(since)
+        if (server.failChanges) {
+          return new Response(JSON.stringify({ detail: 'Bad gateway' }), { status: 502 })
+        }
         return new Response(JSON.stringify(server.pages.get(since) ?? page(since, false)))
       }
       if (url.pathname === '/api/v1/realtime/token') {
@@ -59,6 +66,7 @@ function serve(server: Server) {
       }
       if (url.href.startsWith(HUB)) {
         server.log.push('hub')
+        server.hubSignal = init?.signal ?? null
         if (!server.hubAnswers) {
           return new Response(null, { status: 502 })
         }
@@ -77,7 +85,7 @@ describe('the sync status of the mail store', () => {
     await deleteMailDatabase(USER)
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
     setActivePinia(createPinia())
-    server = { pulls: [], log: [], pages: new Map(), hold: new Map(), hub: null, hubAnswers: true }
+    server = { pulls: [], log: [], pages: new Map(), hold: new Map(), hub: null, hubAnswers: true, failChanges: false, hubSignal: null }
     serve(server)
   })
 
@@ -153,13 +161,13 @@ describe('the sync status of the mail store', () => {
     await starting
   })
 
-  it('says reconnecting when the stream cannot be opened, and offline when the browser is', async () => {
+  it('keeps saying connecting while a stream that was never live retries, and offline when the browser is', async () => {
     server.hubAnswers = false
     const mail = useMailStore()
 
     await mail.start(USER)
-    await vi.waitFor(() => expect(mail.syncStatus.kind).toBe('reconnecting'))
-    expect(mail.syncStatus.text).toMatch(/^Reconnecting… Last synced /)
+    await vi.waitFor(() => expect(server.log.filter((entry) => entry === 'hub').length).toBeGreaterThan(1), { timeout: 5_000 })
+    expect(mail.syncStatus).toMatchObject({ kind: 'connecting', text: 'Connecting…' })
 
     window.dispatchEvent(new Event('offline'))
     expect(mail.syncStatus.text).toMatch(/^Offline\. Last synced /)
@@ -180,6 +188,60 @@ describe('the sync status of the mail store', () => {
 
     expect(mail.syncState).toBe('error')
     expect(mail.syncStatus).toMatchObject({ kind: 'error', text: 'Sync stopped' })
+  })
+
+  it('counts a notification at the stored cursor as no pull, but pulls on one after a failure until a pull works', async () => {
+    const mail = useMailStore()
+    await mail.start(USER)
+    await vi.waitFor(() => expect(mail.syncStatus.kind).toBe('live'))
+    const synced = mail.syncStatus.text
+    const pullsBefore = mail.pulls
+    const requests = server.pulls.length
+
+    // Nothing beyond the copy: no request, no pull counted, the copy not noted as synced again.
+    server.hub!.send('event: changes\ndata: {"cursor":0}\n\n')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(server.pulls.length).toBe(requests)
+    expect(mail.pulls).toBe(pullsBefore)
+    expect(mail.syncStatus.text).toBe(synced)
+
+    server.failChanges = true
+    await mail.syncNow()
+    expect(mail.syncStatus.problem).toBe('Sync stopped: Bad gateway')
+
+    // The same notification now pulls: the copy is not known to be current. Failing again, the failure stays.
+    const failed = server.pulls.length
+    server.hub!.send('event: changes\ndata: {"cursor":0}\n\n')
+    await vi.waitFor(() => expect(server.pulls.length).toBe(failed + 1))
+    expect(mail.syncStatus.problem).toBe('Sync stopped: Bad gateway')
+
+    server.failChanges = false
+    server.hub!.send('event: changes\ndata: {"cursor":0}\n\n')
+    await vi.waitFor(() => expect(mail.syncStatus.problem).toBeNull())
+    expect(mail.syncStatus.kind).toBe('live')
+  })
+
+  it('stops the stream, applies no page and leaves no copy when the user signs out during the first pull', async () => {
+    const first = gate()
+    server.hold.set(0, first.passed)
+    server.pages.set(0, page(500, false, 500))
+    const mail = useMailStore()
+    const starting = mail.start(USER)
+    await vi.waitFor(() => expect(server.hub).not.toBeNull())
+    await vi.waitFor(() => expect(mail.live).toBe(true))
+
+    await mail.forget()
+
+    expect(server.hubSignal?.aborted).toBe(true)
+    expect(mail.syncStatus).toMatchObject({ kind: 'closed', text: '', problem: null })
+    first.open()
+    await starting
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(server.pulls).toEqual([0])
+    expect(mail.currentStore()).toBeNull()
+    expect(mail.syncStatus).toMatchObject({ kind: 'closed', problem: null })
+    expect((await indexedDB.databases()).map((database) => database.name)).not.toContain(`tresso-mail-${USER}`)
   })
 
   it('says nothing once the copy is closed', async () => {
