@@ -99,7 +99,7 @@ function oneOf<T extends string>(value: unknown, known: readonly string[], other
 
 /*
  * The readers below take a chat row of the delta as it came and return what the stores keep, or null for a row that
- * cannot be stored (no id, or no chat or account to hang it on). What a newer server may send differently:
+ * cannot be stored (no id, no chat or account to hang it on, or a chat without a JID). What a newer server may send differently:
  * - a missing optional field becomes its "nothing" (null, or the default the API itself gives a new row);
  * - a missing time becomes '' (sorts last; the format functions treat it as no time);
  * - an unknown enum value becomes a safe known one, chosen so nothing acts on it wrongly: a chat kind follows its
@@ -134,10 +134,12 @@ export function chatAccountFromDelta(raw: Raw<SyncedChatAccount>): SyncedChatAcc
 export function chatFromDelta(raw: Raw<SyncedChat>): SyncedChat | null {
   const id = text(raw.id)
   const chatAccountId = text(raw.chatAccountId)
-  if (id === null || chatAccountId === null) {
+  const jid = text(raw.jid)
+  // Without a JID a chat is no chat, and stored under '' it would take the place of every other chat without one
+  // (one chat per account and JID), removing them with their messages.
+  if (id === null || chatAccountId === null || jid === null || jid === '') {
     return null
   }
-  const jid = text(raw.jid) ?? ''
   return {
     id,
     chatAccountId,

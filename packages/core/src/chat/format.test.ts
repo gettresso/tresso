@@ -633,6 +633,14 @@ describe('audit fixes', () => {
     it('treats an archivedThrough that does not parse as not archived', () => {
       expect(inInbox(chat({ archivedThrough: 'garbage' }))).toBe(true)
     })
+
+    it('takes a message or chat time that does not parse as 0, as the stores keep it', () => {
+      const messages = [message('1', { sentAt: 'garbage' }), message('2', { sentAt: '' })]
+      expect(unreadCount(chat(), messages)).toBe(2)
+      expect(unreadCount(chat({ readThrough: '2026-11-12T09:00:00+00:00' }), messages)).toBe(0)
+      expect(inInbox(chat({ lastMessageAt: 'garbage' }))).toBe(true)
+      expect(inInbox(chat({ lastMessageAt: '', archivedThrough: '2026-11-12T09:00:00+00:00' }))).toBe(false)
+    })
   })
 
   describe('mergeInbox ties (10)', () => {

@@ -229,8 +229,9 @@ function instant(value: string | null): number {
 
 /**
  * Incoming messages of the chat after its `readThrough`. A `readThrough` that is null or does not parse counts as
- * never read. WhatsApp times have whole seconds, so a message in the same second as `readThrough` counts as read;
- * a message whose time does not parse counts as unread.
+ * never read. WhatsApp times have whole seconds, so a message in the same second as `readThrough` counts as read.
+ * A message whose time does not parse counts as sent at 0 (the earliest time), as the stores keep it (deltaInstant):
+ * read once there is a `readThrough`, unread before.
  */
 export function unreadCount(
   chat: Pick<SyncedChat, 'id' | 'readThrough'>,
@@ -241,20 +242,21 @@ export function unreadCount(
     (message) =>
       message.chatId === chat.id &&
       !message.fromMe &&
-      (Number.isNaN(readThrough) || !(Date.parse(message.sentAt) <= readThrough)),
+      (Number.isNaN(readThrough) || !((Date.parse(message.sentAt) || 0) <= readThrough)),
   ).length
 }
 
 /**
  * Whether the chat shows in the Unified Inbox: not left out, and a message came in after it was archived. An
- * `archivedThrough` that does not parse counts as not archived.
+ * `archivedThrough` that does not parse counts as not archived; a `lastMessageAt` that does not parse counts as 0 (the
+ * earliest time), as the stores keep it (deltaInstant), so such a chat stays archived once it is.
  */
 export function inInbox(chat: Pick<SyncedChat, 'lastMessageAt' | 'archivedThrough' | 'leftOut'>): boolean {
   if (chat.leftOut) {
     return false
   }
   const archivedThrough = instant(chat.archivedThrough)
-  return Number.isNaN(archivedThrough) || !(Date.parse(chat.lastMessageAt) <= archivedThrough)
+  return Number.isNaN(archivedThrough) || !((Date.parse(chat.lastMessageAt) || 0) <= archivedThrough)
 }
 
 export type TimelineEntry =
