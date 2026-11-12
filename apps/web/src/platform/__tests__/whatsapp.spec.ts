@@ -23,6 +23,7 @@ const config: WhatsAppConfig = {
   deviceId: '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b',
   deviceName: "Kim's MacBook Pro",
   linkedAt: null,
+  importSince: '2026-10-13T13:40:02.000Z',
   includeGroups: true,
   notify: false,
   leftOut: [],

@@ -14,6 +14,7 @@ import { problemPlacement } from '@/components/problemPlacement'
 import { useFocusReturn } from '@/components/focusReturn'
 import UpdateCard from '@/components/UpdateCard.vue'
 import { useUpdatesStore } from '@/stores/updates'
+import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import { useBillingStore } from '@/stores/billing'
 import { useBulkStore } from '@/stores/bulk'
 import { TRIAL_REMINDER_DAYS, trialDaysLeft, type BillingStatus } from '@tresso/core'
@@ -109,6 +110,11 @@ if (isDesktop) {
   updates.start(import.meta.env.PROD).catch((cause: unknown) => console.error('Starting the update checks failed', cause))
 }
 onBeforeUnmount(() => updates.stop())
+// WhatsApp (macOS, once turned on): the bridge and the relay follow the signed-in user and their mail copy by
+// themselves; a sign-out stops the relay without waiting for it, and the shell stops the bridge.
+if (isDesktop) {
+  void useWhatsAppRelayStore().init()
+}
 onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
 
 // Reminders are planned in the zone a device of the user last sent. This one sends its zone the first time and when
