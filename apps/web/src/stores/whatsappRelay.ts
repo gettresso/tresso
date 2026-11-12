@@ -118,6 +118,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   const scope = effectScope(true)
   /** The user before the last change, for the sign-out (the session may be gone by the time it is told). */
   let previousUser: string | null = null
+  /** The user the tokens name (auth.knownUserId), for a sign-out before the server said who is signed in. */
+  let knownUser: string | null = null
   let userRun = 0
 
   let relay: ChatRelay | null = null
@@ -131,6 +133,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   /** While a change of the chats runs (groups, connect), no relay may start in between. */
   let held = 0
   let chatsReadAt = 0
+  /** The task `run` is doing now, so closing the dialog can wait for it. */
+  let runningTask: Promise<void> | null = null
   /** The config changes, in order (updateConfig). */
   let saves: Promise<void> = Promise.resolve()
 
@@ -168,6 +172,15 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       console.error('Reading the name of this Mac failed', errorName(cause))
     }
     scope.run(() => {
+      watch(
+        () => auth.knownUserId,
+        (id) => {
+          if (id !== null) {
+            knownUser = id
+          }
+        },
+        { immediate: true },
+      )
       watch(
         () => auth.me?.id ?? null,
         (id) => void userChanged(id),
@@ -212,9 +225,20 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         configLoaded.value = true
       }
     }
-    if (mine === userRun && config.value !== null) {
+    if (mine !== userRun) {
+      return
+    }
+    if (config.value !== null) {
       folder.value = config.value.folder
       await startBridge(config.value.folder)
+    } else if (bridge.value.process === 'owned') {
+      // A connect flow the page left (a reload while the code showed): the bridge it started stops, and connecting
+      // starts again from the risk.
+      try {
+        onBridge(await commands.stop())
+      } catch (cause) {
+        console.error('Stopping a WhatsApp bridge nobody connected failed', errorName(cause))
+      }
     }
   }
 
@@ -229,7 +253,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
 
   /** The session ended: the relay stops without being waited for, and a sign-out removes the user's config. */
   function sessionEnded(reason: SessionEnd): void {
-    const id = userId.value ?? previousUser
+    const id = userId.value ?? previousUser ?? knownUser
     void stopRelay()
     if (reason === 'signedOut' && id !== null) {
       commands.clearConfig(id).catch((cause: unknown) => console.error('Removing the WhatsApp settings at sign-out failed', errorName(cause)))
@@ -516,6 +540,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     console.info('The WhatsApp relay stopped', errorName(reason))
     relay = null
     backend = null
+    // A later change (the bridge, the copy, the config) may start one again, also on the same copy.
+    relayStore = null
     relayRunning.value = false
   }
 
@@ -532,7 +558,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     busy.value = task
     error.value = null
     try {
-      await work()
+      const running = work()
+      runningTask = running.catch(() => undefined)
+      await running
       return true
     } catch (cause) {
       error.value = cause instanceof WhatsAppProblem ? cause.message : shellErrorText(cause)
@@ -592,6 +620,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     return run('connect', async () => {
       const id = userId.value
       const from = folder.value
+      if (!riskAccepted.value) {
+        throw new WhatsAppProblem('Confirm the risk first.')
+      }
       if (id === null || from === null || !linked.value || config.value !== null) {
         throw new WhatsAppProblem('Link WhatsApp to your phone first.')
       }
@@ -620,10 +651,14 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /** The connect dialog closed without connecting: a bridge started for it stops. */
-  function cancel(): Promise<boolean> {
+  async function cancel(): Promise<boolean> {
+    // A start (or a folder check) still running finishes first, so the bridge it starts is stopped below too.
+    while (busy.value !== null && runningTask !== null) {
+      await runningTask
+    }
     if (config.value !== null) {
       resetFlowKeepingConnection()
-      return Promise.resolve(true)
+      return true
     }
     return run('cancel', async () => {
       if (bridgeStarted.value || bridge.value.process === 'owned') {
@@ -699,21 +734,24 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     return run('groups', async () => {
       const id = userId.value
       const current = config.value
-      if (id === null || current === null || current.includeGroups === include) {
+      // Groups on again with nothing to change does nothing; groups off always removes what is copied (a removal an
+      // earlier attempt could not finish is done now).
+      if (id === null || current === null || (include && current.includeGroups)) {
         return
       }
+      const store = relayStore ?? mail.currentStore()
+      if (store === null) {
+        throw new WhatsAppProblem('Your mail on this Mac is still opening. Try again in a moment.')
+      }
       await holding(async () => {
-        const store = relayStore ?? mail.currentStore()
         await stopRelay()
         await updateConfig(id, (latest) => ({ ...latest, includeGroups: include }))
-        if (store !== null) {
-          if (include) {
-            await resetLocalCursor(store)
-          } else {
-            await removeLocalGroupChats(store)
-          }
-          await readChats(store, true)
+        if (include) {
+          await resetLocalCursor(store)
+        } else {
+          await removeLocalGroupChats(store)
         }
+        await readChats(store, true)
       })
     })
   }
@@ -746,6 +784,22 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         await setLocalChatState(store, localChatId(jid), { leftOut: true })
       }
     })
+  }
+
+  /**
+   * The server confirmed who is signed in: every other user's WhatsApp config on this Mac goes, with the folders only
+   * they named (called where the mail store removes other users' copies). The shell keeps the tokens but has no user
+   * id it could check them against, so config load and save stay bound to the confirmed user here, in the web client.
+   */
+  async function keepOnly(id: string): Promise<void> {
+    if (!available.value) {
+      return
+    }
+    try {
+      await commands.keepOnlyConfig(id)
+    } catch (cause) {
+      console.error("Removing other users' WhatsApp settings failed", errorName(cause))
+    }
   }
 
   /** For the chat screens: a round now (a reply was queued), after the one under way. */
@@ -800,6 +854,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     setIncludeGroups,
     setNotify,
     leaveOut,
+    keepOnly,
     pollNow,
     dispose,
   }

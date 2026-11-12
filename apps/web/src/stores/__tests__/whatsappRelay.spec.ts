@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { reactive } from 'vue'
+import { reactive, shallowReactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { ChatRelayImportStuck, LOCAL_CHAT_ACCOUNT, LOCAL_CURSOR, SqliteMailStore, localChatId, queueLocalReply, type BridgeRow } from '@tresso/core'
 import { memorySql } from '@tresso/core/testing/sql'
@@ -28,6 +28,8 @@ class FakeShell {
   readFails: unknown = null
   sendAnswer: () => Promise<SendResult> = async () => ({ ok: true, message: 'sent' })
   available = true
+  /** A start answers once this resolves. */
+  startHeld: Promise<void> = Promise.resolve()
   listener: ((state: BridgeState) => void) | null = null
   readonly calls: string[] = []
   /** Commands that reject, with what. */
@@ -75,10 +77,17 @@ class FakeShell {
         record('clearConfig', () => {
           this.configs.delete(userId)
         }),
+      keepOnlyConfig: (userId) =>
+        record('keepOnlyConfig', () => {
+          for (const user of this.configs.keys()) {
+            if (user !== userId) this.configs.delete(user)
+          }
+        }),
       chooseFolder: () => record('chooseFolder', () => FOLDER),
       inspect: () => record('inspect', () => GOOD_FOLDER),
       start: () =>
-        record('start', () => {
+        record('start', async () => {
+          await this.startHeld
           this.state = RUNNING
           return this.state
         }),
@@ -130,6 +139,7 @@ vi.mock('@/platform/desktop', async (original) => ({
 /** The signed-in user and the session's end, as the auth store offers them. */
 const auth = reactive({
   me: null as { id: string } | null,
+  knownUserId: null as string | null,
   handlers: [] as ((reason: SessionEnd) => unknown)[],
   onSessionEnd(handler: (reason: SessionEnd) => unknown) {
     auth.handlers.push(handler)
@@ -139,7 +149,8 @@ const auth = reactive({
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
 
 /** The mail copy, as the mail store offers it: open and caught up with the server (`synced`), or not. */
-const mail = reactive({ synced: false, store: null as SqliteMailStore | null, currentStore: () => mail.store })
+// Shallow, as the mail store's shallowRef: the copy is handed out as itself, never as a proxy.
+const mail = shallowReactive({ synced: false, store: null as SqliteMailStore | null, currentStore: () => mail.store })
 vi.mock('@/stores/mail', () => ({ useMailStore: () => mail }))
 
 const { useWhatsAppRelayStore } = await import('../whatsappRelay')
@@ -179,6 +190,7 @@ describe('the WhatsApp relay store', () => {
     fake.shell = shell
     fake.desktop = true
     auth.me = null
+    auth.knownUserId = null
     auth.handlers = []
     store = await SqliteMailStore.open(await memorySql())
     mail.store = store
@@ -516,5 +528,164 @@ describe('the WhatsApp relay store', () => {
     expect(shell.saved[shell.saved.length - 1]).toMatchObject({ folder: FOLDER, linkedAt: null })
     expect(shell.calls.slice(-3)).toEqual(['stop', 'saveConfig', 'start'])
     expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, DIRECT)).not.toBeNull()
+  })
+
+  it('connects only after the risk was confirmed on this page, and stops a bridge a reloaded page left', async () => {
+    // A page that started the bridge and was reloaded while the code showed: no config, the bridge still runs.
+    shell.state = { ...RUNNING, link: 'waiting_for_scan' }
+    const wa = await signedIn()
+    expect(shell.calls).toContain('stop')
+    expect(wa.bridge.process).toBe('stopped')
+
+    // Even linked, connecting needs the risk confirmed here.
+    await wa.chooseFolder()
+    shell.emit(LINKED)
+    await pass()
+    expect(await wa.connect()).toBe(false)
+    expect(wa.error).toBe('Confirm the risk first.')
+    expect(shell.saved).toEqual([])
+    wa.riskAccepted = true
+    expect(await wa.connect()).toBe(true)
+  })
+
+  it('closing the dialog while the bridge starts waits for the start, then stops the bridge', async () => {
+    const wa = await signedIn()
+    await wa.chooseFolder()
+    wa.riskAccepted = true
+    let release!: () => void
+    shell.startHeld = new Promise((resolve) => (release = resolve))
+    const starting = wa.start()
+    await pass()
+    expect(wa.busy).toBe('start')
+
+    const closing = wa.cancel()
+    await pass()
+    expect(shell.calls).not.toContain('stop')
+    release()
+    await starting
+    expect(await closing).toBe(true)
+    expect(shell.calls[shell.calls.length - 1]).toBe('stop')
+    expect(wa.bridge.process).toBe('stopped')
+  })
+
+  it('refuses groups off while the copy is not open, saving nothing; groups off again still removes them', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.store = null
+    expect(await wa.setIncludeGroups(false)).toBe(false)
+    expect(wa.error).toBe('Your mail on this Mac is still opening. Try again in a moment.')
+    expect(shell.saved).toEqual([])
+
+    // A config that already says no groups, with group chats still in the copy (an earlier removal did not finish).
+    mail.store = store
+    mail.synced = true
+    shell.configs.set('u1', connectedConfig({ includeGroups: false }))
+    shell.add('G1', GROUP, 9)
+    await store.putChatAccount({ id: LOCAL_CHAT_ACCOUNT, channel: 'whatsapp', address: null, displayName: null, relayDeviceId: 'd', relayDeviceName: 'Mac', relayOnline: true, relayOfflineSince: null, bridge: 'running', link: 'linked', linkedAt: null, loopbackOnly: true, includeGroups: true, notify: false })
+    await store.putChats([{ id: localChatId(GROUP), chatAccountId: LOCAL_CHAT_ACCOUNT, jid: GROUP, kind: 'group', name: 'Family', lastMessageAt: new Date(NOW).toISOString(), readThrough: null, archivedThrough: null, leftOut: false }])
+    auth.me = null
+    await pass()
+    auth.me = { id: 'u1' }
+    await pass()
+    expect(wa.config?.includeGroups).toBe(false)
+    expect(await wa.setIncludeGroups(false)).toBe(true)
+    expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, GROUP)).toBeNull()
+  })
+
+  it('removes the config at a sign-out that came before the server said who is signed in', async () => {
+    const wa = useWhatsAppRelayStore()
+    auth.knownUserId = 'u1'
+    shell.configs.set('u1', connectedConfig())
+    await wa.init()
+    await pass()
+    expect(wa.userId).toBeNull()
+    for (const handler of auth.handlers) {
+      handler('signedOut')
+    }
+    await pass()
+    expect(shell.configs.has('u1')).toBe(false)
+  })
+
+  it('switches users: the first one leaves nothing running, the second gets their own config', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.emit(LINKED)
+    await pass()
+    expect(wa.relayRunning).toBe(true)
+
+    shell.configs.set('u2', connectedConfig({ folder: '/Users/sam/whatsapp-mcp', includeGroups: false }))
+    auth.me = { id: 'u2' }
+    await pass()
+    expect(wa.userId).toBe('u2')
+    expect(wa.config?.folder).toBe('/Users/sam/whatsapp-mcp')
+    expect(wa.config?.includeGroups).toBe(false)
+
+    // A user without WhatsApp: nothing of the other one shows.
+    auth.me = { id: 'u3' }
+    await pass()
+    expect(wa.config).toBeNull()
+    expect(wa.connected).toBe(false)
+    expect(wa.relayRunning).toBe(false)
+  })
+
+  it('moves to a reopened copy only after the old relay finished its send', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.emit(LINKED)
+    await pass()
+    expect(wa.relayRunning).toBe(true)
+    shell.add('A1', DIRECT, 5)
+    await pass(3_000)
+    let finish!: () => void
+    shell.sendAnswer = () => new Promise((resolve) => (finish = () => resolve({ ok: true, message: 'sent' })))
+    await queueLocalReply(store, localChatId(DIRECT), 'On my way', '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a53', Date.now())
+    await pass(3_000)
+    expect(shell.sent).toHaveLength(1)
+
+    const reopened = await SqliteMailStore.open(await memorySql())
+    mail.store = reopened
+    await pass(10_000)
+    expect(await reopened.chatByJid(LOCAL_CHAT_ACCOUNT, DIRECT)).toBeNull()
+    finish()
+    await pass(3_000)
+    expect((await store.chat(localChatId(DIRECT)))?.outgoing[0]).toMatchObject({ status: 'sent' })
+    expect(await reopened.chatByJid(LOCAL_CHAT_ACCOUNT, DIRECT)).not.toBeNull()
+    expect(shell.sent).toHaveLength(1)
+  })
+
+  it('says a damaged config in plain words and connects nothing', async () => {
+    shell.failures.loadConfig = 'The WhatsApp settings are damaged: expected value at line 1 column 1'
+    const wa = await signedIn()
+    expect(wa.configLoaded).toBe(true)
+    expect(wa.connected).toBe(false)
+    expect(wa.error).toBe('The WhatsApp settings are damaged: expected value at line 1 column 1')
+    expect(shell.calls).not.toContain('start')
+  })
+
+  it('starts a relay again on the same copy after it stopped by itself', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.emit(LINKED)
+    await pass()
+    expect(wa.relayRunning).toBe(true)
+
+    // The chats were removed under it: it stops at its next write.
+    const { removeLocalChats } = await import('@tresso/core')
+    await removeLocalChats(store)
+    shell.add('A1', DIRECT, 5)
+    await pass(3_000)
+    expect(wa.relayRunning).toBe(false)
+
+    // The next change of the bridge starts a new one on the same copy.
+    shell.emit({ ...LINKED, port: 8742 })
+    await pass(3_000)
+    expect(wa.relayRunning).toBe(true)
+    expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, DIRECT)).not.toBeNull()
+  })
+
+  it('removes other users\' WhatsApp settings once the server confirmed who is signed in', async () => {
+    shell.configs.set('u2', connectedConfig())
+    const wa = await signedIn(connectedConfig())
+    await wa.keepOnly('u1')
+    expect([...shell.configs.keys()]).toEqual(['u1'])
   })
 })

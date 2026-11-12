@@ -183,6 +183,8 @@ async function startSession(): Promise<void> {
       }
       // The server confirmed who is signed in: copies other users left here can go.
       await mail.removeOtherUsersCopies(auth.me.id)
+      // And their WhatsApp settings and folders (the desktop app on macOS, once WhatsApp is on).
+      await useWhatsAppRelayStore().keepOnly(auth.me.id)
     }
     if (run !== startRun) {
       return
