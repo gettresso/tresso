@@ -1647,6 +1647,29 @@ copy sync again from the start (a resync asked while a pull runs makes the next 
 access counts as none; a failed request asks again at the next start. An account made after the check has change
 numbers above the cursor, so the normal pull brings it.
 
+The desktop app brings WhatsApp in with `ChatRelay` (`packages/core/src/chat/relay.ts`), one per account, through the
+shell's bridge commands (`ChatBridge`) and a backend (`ChatBackend`): `LocalChatBackend` for "Only this Mac", which
+writes the `wa:` rows above and sends nothing to the server, and later one for the server. Its rounds never overlap:
+the next is planned when one ends, 3 seconds later, at once after a full page of 500 rows, 15 seconds after an error
+(or as long as the backend asks). A round reads the bridge's store by rowid from the cursor, leaves out what Tresso does
+not take before anything is stored (anything but direct chats and groups, groups when they are not brought in, chats
+the user left out, messages before the import date, without a time or without anything to show), looks up group
+sender names once per session, stores, and only then moves the cursor, so a crash in between reads the rows again,
+which changes nothing: messages are stored by chat and WhatsApp id. A row the bridge stores again gets a higher rowid
+and is read again the same way. The cursor names the store it belongs to (`storeId`); when that changes, or the
+store's highest rowid falls below the cursor, the store was replaced or renumbered and is read again from 0. The first
+import covers the rows the store had when it began and marks each chat read through its newest message; later rows
+are live and arrive unread. After the import the round sends the waiting replies one at a time, oldest first: claim
+(the reply is recorded as the one being sent, then marked `sending`), send, report. A send is never repeated by the
+relay: a result that could not be recorded is kept and recorded first in the next round, and a reply found `sending` at
+the next start (the app quit during the send) becomes `failed` with `unconfirmed`, sent again only by the user's Try
+again. Writes to local chat rows, the relay's and the user's (queue, cancel, try again, read, archive, leave out), go
+through one queue per copy, so a reply cancelled while the relay claims it is either cancelled or sent. Leaving a chat
+out removes its messages and replies and keeps the chat marked, so nothing of it is stored again. Disconnecting stops
+the relay (which waits for the round under way) and then removes the chats with the relay's values
+(`removeLocalChats`); a backend made before refuses to write, so nothing comes back. At sign-out the closing copy stops
+the relay. Neither the relay nor its errors carry message text, names or JIDs.
+
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
 whether the conversation is in an inbox or junk folder, and date (`ListScope`: an inbox or a smart inbox).
 Conversations in the Spam smart inbox stay out of the inboxes, also when the server left them there
