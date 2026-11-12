@@ -13,6 +13,11 @@ export interface RealtimeOptions {
    * The stream is open. Notifications sent while it was down are not replayed, so pull the delta here to catch up.
    */
   onConnected?(): void
+  /**
+   * A connection is being made: the token is asked for and the hub is reached. Not said when the stream only renews its
+   * token, which reopens it at once: it stays live meanwhile.
+   */
+  onConnecting?(): void
   onError?(error: unknown): void
   fetch?: typeof fetch
   /** Delays between failed attempts, in ms; the last one repeats. */
@@ -83,14 +88,21 @@ export class RealtimeClient {
   private async run(generation: number): Promise<void> {
     const delays = this.options.retryDelays ?? DEFAULT_RETRY_DELAYS
     this.failures = 0
+    /** The last attempt was live and ended only to renew its token. */
+    let renewing = false
     while (this.current(generation)) {
       try {
+        if (!renewing) {
+          this.options.onConnecting?.()
+        }
         const connected = await this.listen(generation)
+        renewing = connected
         if (!connected && this.current(generation)) {
           // Renewed before the hub even answered: wait a moment rather than ask again at once.
           await this.sleep(delays[0] ?? DEFAULT_RETRY_DELAYS[0]!, generation)
         }
       } catch (error) {
+        renewing = false
         if (!this.current(generation)) {
           return
         }

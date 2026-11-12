@@ -340,6 +340,12 @@ export interface Deleted {
 export interface ChangePage {
   cursor: number
   hasMore: boolean
+  /**
+   * The newest change number of the user when the page was read, never below `cursor`: with the cursor a pull began
+   * from it says how far behind the copy is. It may stay above the last cursor a pull reaches, so a pull ends at
+   * `hasMore: false`. Absent from servers before 0.9.
+   */
+  latest?: number
   mailAccounts: SyncedMailAccount[]
   folders: SyncedFolder[]
   threads: SyncedThread[]

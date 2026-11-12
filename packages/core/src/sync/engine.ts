@@ -6,6 +6,35 @@ import type { ChangePage } from './types'
 export interface SyncStore {
   cursor(): Promise<number>
   apply(page: ChangePage): Promise<void>
+  /** Notes when a pull last brought the copy up to date (epoch ms), so it can be said after a restart too. */
+  markSynced?(at: number): Promise<void>
+}
+
+/** How far the pull under way got, for the sync status (see describeSync). */
+export interface PullProgress {
+  /** The cursor the pull began from: 0 for a copy that never synced. */
+  from: number
+  /** The cursor the copy reached so far. */
+  cursor: number
+  /** The newest change number the last page named; null before the first page, and from servers that do not say. */
+  latest: number | null
+  /** Entities (and removals) this pull stored so far. */
+  items: number
+  /** Pages this pull stored so far. */
+  pages: number
+  /** Whether the last page said more follow; null before the first page. */
+  hasMore: boolean | null
+}
+
+/** The entities and removals a page carries. */
+export function itemsIn(page: ChangePage): number {
+  let items = 0
+  for (const value of Object.values(page)) {
+    if (Array.isArray(value)) {
+      items += value.length
+    }
+  }
+  return items
 }
 
 export interface SyncEngineOptions {
@@ -14,6 +43,10 @@ export interface SyncEngineOptions {
   pageSize?: number
   /** Called after each stored page, e.g. to refresh what is on screen. */
   onApplied?(page: ChangePage): void
+  /** How far the pull under way got: when it begins, after every page, and null once it is over (done or failed). */
+  onProgress?(progress: PullProgress | null): void
+  /** The time a pull is noted as done at (see SyncStore.markSynced); Date.now by default. */
+  now?(): number
   /**
    * Delays before a failed pull is tried again, in ms; the last one repeats until a pull works. A pull also runs on
    * every realtime notification and reconnect, but on a quiet mailbox those may not come for hours.
@@ -83,6 +116,7 @@ export class SyncEngine {
   /** The waiting retry keeps a time the server asked for (Retry-After), which a wake does not cut short. */
   private retryAsked = false
   private stopped = false
+  private pulling: PullProgress | null = null
 
   constructor(private readonly options: SyncEngineOptions) {}
 
@@ -101,6 +135,7 @@ export class SyncEngine {
           this.again = false
           await this.pullAll()
         }
+        await this.options.store.markSynced?.((this.options.now ?? Date.now)())
         this.failures = 0
         this.cancelRetry()
       } catch (error) {
@@ -108,10 +143,21 @@ export class SyncEngine {
         throw error
       } finally {
         this.running = null
+        this.report(null)
       }
     })()
 
     return this.running
+  }
+
+  /** How far the pull under way got; null while none runs. */
+  get progress(): PullProgress | null {
+    return this.pulling
+  }
+
+  private report(progress: PullProgress | null): void {
+    this.pulling = progress
+    this.options.onProgress?.(progress === null ? null : { ...progress })
   }
 
   /** Ends retries, e.g. on a sign-out; a pull under way still finishes. */
@@ -187,6 +233,9 @@ export class SyncEngine {
   private async pullAll(): Promise<void> {
     let since = await this.options.store.cursor()
     this.appliedCursor = since
+    // A round that goes again (a notification came meanwhile) carries on the progress of the pull it belongs to.
+    const started = this.pulling
+    this.report(started === null ? { from: since, cursor: since, latest: null, items: 0, pages: 0, hasMore: null } : { ...started, cursor: since, hasMore: null })
     for (;;) {
       const page = await this.options.fetchPage(since, this.options.pageSize ?? DEFAULT_PAGE_SIZE)
       if (page.cursor < since) {
@@ -196,10 +245,13 @@ export class SyncEngine {
         if (page.hasMore) {
           throw new Error(`The server reported more changes but did not advance past cursor ${since}.`)
         }
+        this.report({ ...this.pulling!, latest: latestOf(page, this.pulling!.latest), hasMore: false })
         return
       }
       await this.options.store.apply(page)
       this.appliedCursor = page.cursor
+      const before = this.pulling!
+      this.report({ ...before, cursor: page.cursor, latest: latestOf(page, before.latest), items: before.items + itemsIn(page), pages: before.pages + 1, hasMore: page.hasMore })
       this.options.onApplied?.(page)
       since = page.cursor
       if (!page.hasMore) {
@@ -207,4 +259,9 @@ export class SyncEngine {
       }
     }
   }
+}
+
+/** The newest change number a page names, never below its cursor; the one known before from a server that does not say. */
+function latestOf(page: ChangePage, known: number | null): number | null {
+  return typeof page.latest === 'number' && Number.isSafeInteger(page.latest) ? Math.max(page.latest, page.cursor) : known
 }
