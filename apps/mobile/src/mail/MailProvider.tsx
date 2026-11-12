@@ -133,7 +133,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
         openSql,
         deleteSql,
         fetchPage: (since, limit) => auth.session.api<ChangePage>(`/api/v1/sync/changes?since=${since}&limit=${limit}`),
-        fetchAccess: () => auth.session.api<RealtimeAccess>('/api/v1/realtime/token'),
+        fetchAccess: (signal) => auth.session.api<RealtimeAccess>('/api/v1/realtime/token', { signal }),
         serverNow: () => auth.session.serverNow(),
         postAction: async (request) => {
           await auth.session.api('/api/v1/message-actions', json('POST', request))
