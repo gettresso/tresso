@@ -598,6 +598,10 @@ final class SyncChangesTest extends DatabaseTestCase
             'SELECT change_seq FROM mail_notification WHERE user_id = :user',
             'SELECT change_seq FROM hand_over WHERE owner_id = :user',
             'SELECT change_seq FROM daily_brief WHERE owner_id = :user',
+            'SELECT change_seq FROM chat_account WHERE owner_id = :user',
+            'SELECT x.change_seq FROM chat x JOIN chat_account a ON a.id = x.chat_account_id WHERE a.owner_id = :user',
+            'SELECT x.change_seq FROM chat_message x JOIN chat_account a ON a.id = x.chat_account_id WHERE a.owner_id = :user',
+            'SELECT x.change_seq FROM chat_outgoing x JOIN chat_account a ON a.id = x.chat_account_id WHERE a.owner_id = :user',
             'SELECT change_seq FROM sync_tombstone WHERE user_id = :user',
         ] as $sql) {
             foreach ($this->connection()->fetchFirstColumn($sql, ['user' => $user]) as $seq) {

@@ -8,11 +8,14 @@ use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProviderInterface;
 use App\ApiResource\SyncChanges;
 use App\Calendar\LocalCalendars;
+use App\Chat\ChatViews;
 use App\Classification\BuiltinSmartInboxes;
 use App\Classification\ReceivingServers;
 use App\Entity\Calendar;
+use App\Enum\ChatOutgoingStatus;
 use App\Enum\MailProvider;
 use App\Mail\MessageFields;
+use App\Security\ChatAccessVoter;
 use App\Security\CurrentUser;
 use App\Security\FirstPartyClients;
 use App\Security\Scope;
@@ -28,7 +31,8 @@ use Symfony\Component\Uid\Uuid;
  *
  * Each list needs the scope its own endpoints need ({@see self::SCOPES}); a token without it gets that list empty and
  * no `deleted` entries of its types. The cursor and the paging count every change, whatever the token holds, so the
- * cursor means the same for every token of a user.
+ * cursor means the same for every token of a user. Chats ({@see self::CHAT_TYPES}) are read only as
+ * {@see ChatAccessVoter::READ} allows: our own apps, or a caller holding `chat:read`.
  *
  * @implements ProviderInterface<SyncChanges>
  */
@@ -57,6 +61,9 @@ final readonly class SyncChangesProvider implements ProviderInterface
         'smartInbox' => Scope::SettingsRead,
     ];
 
+    /** Change types of chats, which no scope above grants: {@see ChatAccessVoter::READ} decides, for them and their removals. */
+    public const array CHAT_TYPES = ['chatAccount', 'chat', 'chatMessage', 'chatOutgoing'];
+
     public function __construct(
         private Connection $connection,
         private CurrentUser $currentUser,
@@ -64,6 +71,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
         private BuiltinSmartInboxes $builtinSmartInboxes,
         private LocalCalendars $localCalendars,
         private MessageFields $fields,
+        private ChatViews $chatViews,
         private Security $security,
     ) {
     }
@@ -112,6 +120,10 @@ final readonly class SyncChangesProvider implements ProviderInterface
                 unsubscriptions: [],
                 handOvers: [],
                 dailyBriefs: [],
+                chatAccounts: [],
+                chats: [],
+                chatMessages: [],
+                chatOutgoing: [],
                 deleted: [],
             );
         }
@@ -140,6 +152,10 @@ final readonly class SyncChangesProvider implements ProviderInterface
             unsubscriptions: $this->readIf($granted, 'unsubscription', $this->unsubscriptions(...), $range),
             handOvers: $this->readIf($granted, 'handOver', $this->handOvers(...), $range),
             dailyBriefs: $this->readIf($granted, 'dailyBrief', $this->dailyBriefs(...), $range),
+            chatAccounts: $this->readIf($granted, 'chatAccount', $this->chatAccounts(...), $range),
+            chats: $this->readIf($granted, 'chat', $this->chats(...), $range),
+            chatMessages: $this->readIf($granted, 'chatMessage', $this->chatMessages(...), $range),
+            chatOutgoing: $this->readIf($granted, 'chatOutgoing', $this->chatOutgoing(...), $range),
             deleted: [] === $granted ? [] : $this->deleted($range, $granted),
         );
     }
@@ -168,6 +184,9 @@ final readonly class SyncChangesProvider implements ProviderInterface
             if ($this->security->isGranted($scope->role())) {
                 $granted[] = $type;
             }
+        }
+        if ($this->security->isGranted(ChatAccessVoter::READ)) {
+            array_push($granted, ...self::CHAT_TYPES);
         }
 
         return $granted;
@@ -229,6 +248,10 @@ final readonly class SyncChangesProvider implements ProviderInterface
             $byParent('unsubscription', 'mail_account_id'),
             $byOwner('hand_over', 'owner_id'),
             $byOwner('daily_brief', 'owner_id'),
+            $byOwner('chat_account', 'owner_id'),
+            $byParent('chat', 'chat_account_id', 'chat_account'),
+            $byParent('chat_message', 'chat_account_id', 'chat_account'),
+            $byParent('chat_outgoing', 'chat_account_id', 'chat_account'),
             $byOwner('sync_tombstone', 'user_id'),
         ];
 
@@ -849,6 +872,81 @@ final readonly class SyncChangesProvider implements ProviderInterface
             'threadIds' => json_decode(\is_string($r['thread_ids']) ? $r['thread_ids'] : '[]', true, flags: \JSON_THROW_ON_ERROR),
             'createdAt' => self::date($r['created_at']),
         ], $rows);
+    }
+
+    /**
+     * @param array{user: string, since: int, until: int} $range
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function chatAccounts(array $range): array
+    {
+        $rows = $this->connection->fetchAllAssociative(
+            'SELECT '.ChatViews::ACCOUNT_COLUMNS.'
+             FROM chat_account a WHERE a.owner_id = :user AND a.change_seq > :since AND a.change_seq <= :until ORDER BY a.change_seq, a.id',
+            $range,
+        );
+        $owner = Uuid::fromString($range['user']);
+
+        return array_map(fn (array $r): array => $this->chatViews->accountRow($owner, $r), $rows);
+    }
+
+    /**
+     * @param array{user: string, since: int, until: int} $range
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function chats(array $range): array
+    {
+        $rows = $this->connection->fetchAllAssociative(
+            'SELECT '.ChatViews::CHAT_COLUMNS.'
+             FROM chat c JOIN chat_account a ON a.id = c.chat_account_id
+             WHERE a.owner_id = :user AND c.change_seq > :since AND c.change_seq <= :until ORDER BY c.change_seq, c.id',
+            $range,
+        );
+        $owner = Uuid::fromString($range['user']);
+
+        return array_map(fn (array $r): array => $this->chatViews->chatRow($owner, $r), $rows);
+    }
+
+    /**
+     * The text is opened here: chats are short and must read offline.
+     *
+     * @param array{user: string, since: int, until: int} $range
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function chatMessages(array $range): array
+    {
+        $rows = $this->connection->fetchAllAssociative(
+            'SELECT '.ChatViews::MESSAGE_COLUMNS.'
+             FROM chat_message m JOIN chat_account a ON a.id = m.chat_account_id
+             WHERE a.owner_id = :user AND m.change_seq > :since AND m.change_seq <= :until ORDER BY m.change_seq, m.id',
+            $range,
+        );
+        $owner = Uuid::fromString($range['user']);
+
+        return array_map(fn (array $r): array => $this->chatViews->messageRow($owner, $r), $rows);
+    }
+
+    /**
+     * Cancelled replies are not listed: clients drop them.
+     *
+     * @param array{user: string, since: int, until: int} $range
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function chatOutgoing(array $range): array
+    {
+        $rows = $this->connection->fetchAllAssociative(
+            'SELECT '.ChatViews::OUTGOING_COLUMNS.'
+             FROM chat_outgoing o JOIN chat_account a ON a.id = o.chat_account_id
+             WHERE a.owner_id = :user AND o.change_seq > :since AND o.change_seq <= :until AND o.status <> :cancelled ORDER BY o.change_seq, o.id',
+            [...$range, 'cancelled' => ChatOutgoingStatus::Cancelled->value],
+        );
+        $owner = Uuid::fromString($range['user']);
+
+        return array_map(fn (array $r): array => $this->chatViews->outgoingRow($owner, $r), $rows);
     }
 
     /**
