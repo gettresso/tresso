@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SessionEndedDuringRequestError } from '../requests'
-import { retryablePull, retryAfterMs, SyncEngine, type SyncStore } from './engine'
+import { retryablePull, retryAfterMs, SyncEngine, type PullProgress, type SyncStore } from './engine'
 import type { ChangePage } from './types'
 
 function page(cursor: number, hasMore = false, ids: string[] = []): ChangePage {
@@ -273,5 +273,74 @@ describe('SyncEngine', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('says how far a pull got, page by page, with the newest change number the server names', async () => {
+    const store = new MemoryStore()
+    const synced: number[] = []
+    const syncing: SyncStore = { cursor: () => store.cursor(), apply: (p) => store.apply(p), markSynced: async (at) => void synced.push(at) }
+    const pages = [
+      { ...page(400, true, ['t1', 't2']), latest: 1000 },
+      { ...page(800, true, ['t3']), latest: 1200 },
+      { ...page(1150, false, []), latest: 1200 },
+    ]
+    const reports: (PullProgress | null)[] = []
+    const engine = new SyncEngine({ store: syncing, fetchPage: async () => pages.shift()!, onProgress: (p) => reports.push(p), now: () => 42 })
+
+    await engine.sync()
+
+    expect(reports).toEqual([
+      { from: 0, cursor: 0, latest: null, items: 0, pages: 0, hasMore: null },
+      { from: 0, cursor: 400, latest: 1000, items: 2, pages: 1, hasMore: true },
+      { from: 0, cursor: 800, latest: 1200, items: 3, pages: 2, hasMore: true },
+      { from: 0, cursor: 1150, latest: 1200, items: 3, pages: 3, hasMore: false },
+      null,
+    ])
+    expect(engine.progress).toBeNull()
+    expect(synced).toEqual([42])
+  })
+
+  it('keeps the newest number unknown from a server that does not say, and counts what it stored', async () => {
+    const reports: (PullProgress | null)[] = []
+    const engine = new SyncEngine({ store: new MemoryStore(), fetchPage: async (since) => (since === 0 ? page(5, true, ['a']) : page(9, false, ['b', 'c'])), onProgress: (p) => reports.push(p) })
+
+    await engine.sync()
+
+    expect(reports.at(-2)).toEqual({ from: 0, cursor: 9, latest: null, items: 3, pages: 2, hasMore: false })
+  })
+
+  it('carries the progress on when a notification makes the pull go round again, and notes no sync when it fails', async () => {
+    const store = new MemoryStore()
+    const markSynced = vi.fn(async () => undefined)
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let calls = 0
+    const reports: (PullProgress | null)[] = []
+    const engine = new SyncEngine({
+      store: { cursor: () => store.cursor(), apply: (p) => store.apply(p), markSynced },
+      fetchPage: async (since) => {
+        calls++
+        if (calls === 1) {
+          await held
+          return { ...page(3, false, ['a']), latest: 3 }
+        }
+        return since === 3 ? { ...page(4, false, ['b']), latest: 4 } : page(since)
+      },
+      onProgress: (p) => reports.push(p),
+      retryDelays: [60_000],
+    })
+
+    const pulling = engine.sync()
+    void engine.notify(4)
+    release()
+    await pulling
+
+    expect(reports.filter((r) => r !== null).at(-1)).toEqual({ from: 0, cursor: 4, latest: 4, items: 2, pages: 2, hasMore: false })
+    expect(markSynced).toHaveBeenCalledTimes(1)
+
+    const failing = new SyncEngine({ store: { cursor: async () => 0, apply: async () => undefined, markSynced }, fetchPage: async () => Promise.reject(new Error('offline')), retryable: () => false })
+    await expect(failing.sync()).rejects.toThrow('offline')
+    expect(markSynced).toHaveBeenCalledTimes(1)
+    expect(failing.progress).toBeNull()
   })
 })

@@ -158,6 +158,41 @@ describe('RealtimeClient', () => {
     expect(fetchAccess).toHaveBeenCalledTimes(2)
   })
 
+  it('says when a connection is being made, but not when it only renews its token', async () => {
+    vi.useFakeTimers()
+    let hub = stream()
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      hub = stream()
+      init?.signal?.addEventListener('abort', () => hub.response.body?.cancel().catch(() => {}))
+      return hub.response
+    })
+    const fetchAccess = vi.fn().mockResolvedValueOnce(access('short', 120_000)).mockResolvedValue(access('long'))
+    const events: string[] = []
+    client = new RealtimeClient({
+      fetchAccess,
+      onCursor: () => {},
+      onConnecting: () => events.push('connecting'),
+      onConnected: () => events.push('live'),
+      onError: () => events.push('error'),
+      fetch,
+      idleTimeout: 3_600_000,
+      retryDelays: [5],
+    })
+
+    client.start()
+    await vi.advanceTimersByTimeAsync(10)
+    expect(events).toEqual(['connecting', 'live'])
+
+    // The token is renewed: the stream reopens at once and stays live meanwhile.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(events).toEqual(['connecting', 'live', 'live'])
+
+    // The hub drops it: an error, then a new connection is made.
+    hub.close()
+    await vi.advanceTimersByTimeAsync(10)
+    expect(events).toEqual(['connecting', 'live', 'live', 'error', 'connecting', 'live'])
+  })
+
   it('takes a stream that went silent for dead and connects again, while heartbeats keep it open', async () => {
     vi.useFakeTimers()
     const hubs: ReturnType<typeof stream>[] = []
