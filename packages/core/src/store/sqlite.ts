@@ -175,7 +175,15 @@ export class SqliteMailStore implements MailStore {
         await rebuild(sql, target)
         upgrade = 'rebuilt'
       } else {
-        upgrade = (await migrate(sql, steps, target)) ? 'migrated' : 'none'
+        try {
+          upgrade = (await migrate(sql, steps, target)) ? 'migrated' : 'none'
+        } catch (error) {
+          // The steps rolled back: the copy is of the old version still, which this one cannot read. Rebuilt instead
+          // (keeping the drafts that exist only here), so it opens; a failing step must not lock the user out for good.
+          console.error('Bringing the mail copy up to date in place failed; it is rebuilt', error)
+          await rebuild(sql, target)
+          upgrade = 'rebuilt'
+        }
       }
     }
     const resync = await sql.first<{ value: string }>('SELECT value FROM meta WHERE key = ?', ['resync'])
