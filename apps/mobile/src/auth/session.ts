@@ -37,6 +37,8 @@ export interface TokenStore {
   load(): Promise<TokenSet | null>
   /** Keeps this token set, or removes the kept one (null). */
   save(tokens: TokenSet | null): Promise<void>
+  /** Keeps who is signed in, so the next launch opens their mail before the server answers (see MailProvider). */
+  rememberUser(userId: string): Promise<void>
   /** Forgets who was signed in last (see MailProvider), so their mail no longer opens before the server answers. */
   forgetUser(): Promise<void>
   /** The kept refresh token on its own, also when the rest of the set is gone (a sign-out cut off halfway). */
@@ -338,6 +340,24 @@ export class Session {
       throw new ApiError(response.status, problem.detail, problem.violations, retryAfterMs(response.headers.get('Retry-After')))
     }
     return (response.status === 204 ? undefined : await response.json()) as T
+  }
+
+  /**
+   * Keeps who is signed in, once the server said who it is. It goes through the store's queue: a sign-in made here
+   * forgets the previous user before its tokens are kept, and that must not land after this. Not for a sign-in that
+   * ended since.
+   */
+  rememberUser(userId: string): Promise<void> {
+    const generation = this.generation
+    return this.write(async () => {
+      if (generation !== this.generation || this.state.tokens === null) {
+        return
+      }
+      if (!this.prepared) {
+        await this.prepareStore()
+      }
+      await this.store.rememberUser(userId)
+    })
   }
 
   /** The time on the server's clock (epoch ms), as well as its answers told it. */

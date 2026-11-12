@@ -54,7 +54,8 @@ describe('secureTokenStore', () => {
 
   it('removes the tokens on sign-out and keeps who was signed in until asked to forget them', async () => {
     await secureTokenStore.save({ accessToken: 'access', refreshToken: 'refresh', expiresAt: 1 })
-    items.set('auth.lastUserId', 'u1')
+    await secureTokenStore.rememberUser('u1')
+    expect(items.get('auth.lastUserId')).toBe('u1')
 
     await secureTokenStore.save(null)
     expect([...items.keys()]).toEqual(['auth.lastUserId'])

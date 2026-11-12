@@ -212,7 +212,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
             answered = true
             setLookupError(null)
             void session.switchTo(me.id)
-            void SecureStore.setItemAsync(LAST_USER, me.id).catch(() => {})
+            // Through the session, after a new sign-in's store preparation that forgets the previous user.
+            void auth.session.rememberUser(me.id).catch(() => {})
           }
         })
         .catch((error: unknown) => {
