@@ -243,10 +243,13 @@ jobs:
         working-directory: .
         run: scripts/ci/apt-install.sh libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
       - run: cargo check --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --lib
 
   scripts:
