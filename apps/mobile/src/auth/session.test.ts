@@ -435,6 +435,30 @@ describe('Session', () => {
     }
   })
 
+  it('gives up a code exchange that gets no answer after 20 seconds and stays signed out', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore()
+      let signal: AbortSignal | undefined
+      const fetchImpl = vi.fn<Fetch>((_input, init) => {
+        signal = init?.signal ?? undefined
+        return new Promise<Response>(() => undefined)
+      })
+      const session = await restored(store, fetchImpl)
+
+      const signingIn = expect(session.completeSignIn('the-code', 'the-verifier')).rejects.toThrow('The server did not answer in time.')
+      await vi.advanceTimersByTimeAsync(20_000)
+      await signingIn
+
+      expect(signal?.aborted).toBe(true)
+      expect(fetchImpl).toHaveBeenCalledOnce()
+      expect(session.snapshot.tokens).toBeNull()
+      expect(store.saved).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('forgets who was signed in last before keeping a new sign-in', async () => {
     const store = memoryStore()
     store.lastUser = 'lisa'
