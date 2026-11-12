@@ -164,6 +164,22 @@ final class ChatSyncChangesTest extends DatabaseTestCase
         }
     }
 
+    /**
+     * The delta carries all mail, so its endpoint needs mail:read whatever else a token holds; chat:read alone reads the
+     * chat accounts at their own endpoint.
+     */
+    public function testChatReadAloneDoesNotOpenTheDelta(): void
+    {
+        $headers = $this->seededThirdPartyHeaders('kim@example.test', ['chat:read']);
+
+        $this->client->request('GET', '/api/v1/sync/changes?since=0', server: $headers);
+        self::assertResponseStatusCodeSame(403);
+
+        $this->client->request('GET', '/api/v1/chat-accounts', server: $headers);
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame([$this->accountId], array_column($this->decodedResponse(), 'id'));
+    }
+
     public function testChatSendAloneReadsNoChats(): void
     {
         $headers = $this->seededThirdPartyHeaders('kim@example.test', ['mail:read', 'chat:send']);
