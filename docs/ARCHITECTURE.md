@@ -1371,7 +1371,10 @@ keychain), one at a time and in the order the client asked for them; a keychain 
 save that is running, so a token set the server just rotated is not lost. When the keychain refuses, the app says
 that the sign-in will not last instead of failing quietly. The API and the Mercure hub accept the app's origins
 (`tauri://localhost`, and `http://tauri.localhost` on Windows), and the main window may only open http(s) pages in the
-browser and read the link it was opened with. A page in the window that asks for a new window (a link in a mail body,
+browser and read the link it was opened with. The shell's own commands (keychain, mail copies, menu, updates,
+WhatsApp) are listed in an app manifest (`apps/desktop/src-tauri/build.rs`), so Tauri checks each one against the
+capability files: only the main window may call them, a remote page never, and the WhatsApp commands only on macOS. A
+page in the window that asks for a new window (a link in a mail body,
 whose frame sends every link to a new window, or `window.open`) gets none: http, https and mailto links open in the
 user's browser and mail app, anything else is refused. Opening an attachment and joining a meeting call the browser
 directly, since the app has no tabs and must not leave its own page. The window's Content-Security-Policy lets the
