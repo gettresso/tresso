@@ -62,6 +62,42 @@ describe('SqliteMailStore', () => {
     expect(sql.closed()).toBe(true)
   })
 
+  it('closes anyway after the time it is given when a write never answers, and says so', async () => {
+    const logged: unknown[] = []
+    const error = console.error
+    console.error = (...args: unknown[]) => void logged.push(args[0])
+    try {
+      // Storage that never answers a write (a SQL call of the desktop shell that hangs).
+      let hang = false
+      const never = () => new Promise<never>(() => undefined)
+      const hanging: Sql & { closed(): boolean } = {
+        ...sql,
+        transaction: (task) => (hang ? never() : sql.transaction(task)),
+        run: (source, params) => (hang ? never() : sql.run(source, params)),
+        exec: (source) => (hang ? never() : sql.exec(source)),
+      }
+      const store = await SqliteMailStore.open(hanging)
+      hang = true
+      void store.saveDraft(draft('d1')).catch(() => undefined)
+
+      const started = Date.now()
+      await store.close({ waitMs: 50 })
+
+      expect(Date.now() - started).toBeGreaterThanOrEqual(45)
+      expect(sql.closed()).toBe(true)
+      expect(logged).toContain("The mail copy's writes and reads did not finish within 0.05 seconds; it is closed anyway")
+      await expect(store.saveDraft(draft('d2'))).rejects.toBeInstanceOf(CopyClosingError)
+    } finally {
+      console.error = error
+    }
+  })
+
+  it('closes at once with a time limit when nothing is under way', async () => {
+    await db.close({ waitMs: 60_000 })
+
+    expect(sql.closed()).toBe(true)
+  })
+
   it('also waits for a read that starts while closing waits for another', async () => {
     let releaseFirst!: () => void
     let releaseSecond!: () => void

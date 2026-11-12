@@ -144,14 +144,36 @@ export class SqliteMailStore implements MailStore {
     await Promise.allSettled([...this.writing])
   }
 
-  async close(): Promise<void> {
-    await this.shut()
-    // Reads that start while others finish (the next query of a thread, a screen still loading) are waited for too.
-    // Between the last check and closing nothing is awaited, so no read can slip in to hold the file open.
-    while (this.reading.size > 0) {
-      await Promise.allSettled([...this.reading])
+  async close(options: { waitMs?: number } = {}): Promise<void> {
+    const finish = async (): Promise<void> => {
+      await this.shut()
+      // Reads that start while others finish (the next query of a thread, a screen still loading) are waited for too.
+      // Between the last check and closing nothing is awaited, so no read can slip in to hold the file open.
+      while (this.reading.size > 0) {
+        await Promise.allSettled([...this.reading])
+      }
     }
-    await this.sql.close()
+    if (options.waitMs === undefined) {
+      await finish()
+      await this.sql.close()
+      return
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<'late'>((resolve) => {
+      timer = setTimeout(() => resolve('late'), options.waitMs)
+    })
+    try {
+      if ((await Promise.race([finish().then(() => 'done' as const), late])) === 'done') {
+        await this.sql.close()
+        return
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+    // A write or read that never answers (storage that hangs): closed anyway, without waiting for that either.
+    console.error(`The mail copy's writes and reads did not finish within ${options.waitMs / 1000} seconds; it is closed anyway`)
+    this.shutting = true
+    void this.sql.close().catch((error: unknown) => console.error('Closing the mail copy failed', error))
   }
 
   private track<T>(read: Promise<T>): Promise<T> {
