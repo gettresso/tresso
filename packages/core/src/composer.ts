@@ -1322,7 +1322,8 @@ function withoutFiles(draft: Draft): string {
 /**
  * Whether a failed send's answer shows the server queued nothing: a refusal (4xx), except a timeout (408) and "being
  * sent already" (409), which say nothing of the kind. No answer at all (offline, a lost answer) or a 5xx may have
- * queued it.
+ * queued it. Only the server's own answer counts: an error the client made up has no status (a session that ended
+ * while the send was under way, `SessionEndedDuringRequestError` in requests.ts, whose answer may well have been a 2xx).
  */
 function queuedNothing(error: unknown): boolean {
   const status = (error as { status?: unknown } | null)?.status

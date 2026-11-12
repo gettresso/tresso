@@ -55,6 +55,18 @@ export class OAuthError extends Error {
   }
 }
 
+/**
+ * The one rule of every first-party client (web, desktop, phone) for a refused refresh: only an answer of the token
+ * endpoint that says this sign-in itself is over ends the session. `invalid_grant` (revoked, expired, rotated already)
+ * and `invalid_request` (a request the server will never accept) do. `invalid_client` and `unauthorized_client` do
+ * not: they say the server does not know or allow the app (a deploy that briefly misconfigured the clients), which a
+ * new sign-in would not cure either, and which must not sign out everyone who refreshes meanwhile. The tokens stay and
+ * the next request tries again, as after a network error.
+ */
+export function refreshRefusalEndsSession(error: unknown): boolean {
+  return error instanceof OAuthError && (error.code === 'invalid_grant' || error.code === 'invalid_request')
+}
+
 function base64Url(bytes: Uint8Array): string {
   let binary = ''
   for (const byte of bytes) {

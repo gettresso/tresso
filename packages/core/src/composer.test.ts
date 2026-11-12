@@ -3,6 +3,7 @@ import type { SendMessageRequest } from './compose'
 import { Composer, OriginalUnavailableError, type ComposerDeps, type ComposerNotice } from './composer'
 import { DraftSync } from './drafts'
 import { uuidV7Time } from './ids'
+import { SessionEndedDuringRequestError } from './requests'
 import { ApiFailure, FakeDraftApi } from './drafts.fake'
 import { accounts, message, page, signature } from './store/contract'
 import { memorySql } from './store/memorySql'
@@ -1110,6 +1111,21 @@ describe('Composer', () => {
 
       expect(sent[0]!.outgoingId).toBeDefined()
       expect(sent[0]!.outgoingId).not.toBe(tried[0]!.outgoingId)
+    })
+
+    it('is kept when the session ended while the send was under way: the server may have queued it', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      const id = composer.state.draft!.id
+      // The client drops the answer (maybe a 2xx) once the session ended; it is not the server's refusal.
+      sendFails = new SessionEndedDuringRequestError()
+      await composer.send()
+      const first = tried[0]!.outgoingId
+      expect(await store.draft(id)).toMatchObject({ sendAttemptId: first })
+
+      // Sent again after signing in: the same id, so a message the server did queue is not sent twice.
+      sendFails = null
+      await composer.send()
+      expect(tried[1]!.outgoingId).toBe(first)
     })
 
     it('is made anew when the server refused the id itself', async () => {

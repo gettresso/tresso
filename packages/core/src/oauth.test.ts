@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { codeChallenge, exchangeCode, OAuthError, parseCallback, revokeToken, startAuthorization } from './oauth'
+import { codeChallenge, exchangeCode, OAuthError, parseCallback, refreshRefusalEndsSession, revokeToken, startAuthorization } from './oauth'
 
 const config = { apiUrl: 'http://api.test/', clientId: 'web', redirectUri: 'http://app.test/auth/callback' }
 
@@ -120,5 +120,17 @@ describe('revokeToken', () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ error: 'temporarily_unavailable' }, { status: 503 }))
 
     await expect(revokeToken(config, 'rt', fetchImpl)).rejects.toMatchObject({ name: 'OAuthError', code: 'temporarily_unavailable' })
+  })
+})
+
+describe('refreshRefusalEndsSession', () => {
+  it('ends the session only when the token endpoint says the sign-in itself is over, on every client', () => {
+    expect(refreshRefusalEndsSession(new OAuthError('Refused', 'invalid_grant'))).toBe(true)
+    expect(refreshRefusalEndsSession(new OAuthError('Refused', 'invalid_request'))).toBe(true)
+    // The server does not know or allow the app for a moment (a deploy): a new sign-in would not cure that either.
+    expect(refreshRefusalEndsSession(new OAuthError('Refused', 'invalid_client'))).toBe(false)
+    expect(refreshRefusalEndsSession(new OAuthError('Refused', 'unauthorized_client'))).toBe(false)
+    expect(refreshRefusalEndsSession(new OAuthError('Failed', null))).toBe(false)
+    expect(refreshRefusalEndsSession(new Error('offline'))).toBe(false)
   })
 })
