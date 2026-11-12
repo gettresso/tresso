@@ -1653,13 +1653,16 @@ writes the `wa:` rows above and sends nothing to the server, and later one for t
 the next is planned when one ends, 3 seconds later, at once after a full page of 500 rows, 15 seconds after an error
 (or as long as the backend asks). A round reads the bridge's store by rowid from the cursor, leaves out what Tresso does
 not take before anything is stored (anything but direct chats and groups, groups when they are not brought in, chats
-the user left out, messages before the import date, without a time or without anything to show), looks up group
+the user left out, messages before the import date, without a time or with one before 2009 or more than a day ahead,
+without a WhatsApp id the server takes, or without anything to show: what the server would refuse or leave out), keeps
+each JID in the one form the server stores (`canonicalChatJid`, tested on both sides with
+`packages/core/src/chat/importable-jids.json`), looks up group
 sender names once per session, stores, and only then moves the cursor, so a crash in between reads the rows again,
 which changes nothing: messages are stored by chat and WhatsApp id. A row the bridge stores again gets a higher rowid
 and is read again the same way. The cursor names the store it belongs to (`storeId`); when that changes, or the
 store's highest rowid falls below the cursor, the store was replaced or renumbered and is read again from 0. The first
-import covers the rows the store had when it began and marks each chat read through its newest message; later rows
-are live and arrive unread. After the import the round sends the waiting replies one at a time, oldest first: claim
+import covers the rows the store had when it began and marks a chat that had nothing unread read through its newest
+message, as the server does; later rows are live and arrive unread. After the import the round sends the waiting replies one at a time, oldest first: claim
 (the reply is recorded as the one being sent, then marked `sending`), send, report. A send is never repeated by the
 relay: a result that could not be recorded is kept and recorded first in the next round, and a reply found `sending` at
 the next start (the app quit during the send) becomes `failed` with `unconfirmed`, sent again only by the user's Try
