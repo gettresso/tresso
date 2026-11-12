@@ -83,6 +83,14 @@ export class CopyClosingError extends Error {
  */
 export interface MailStore extends SyncStore {
   /**
+   * An update of Tresso changed the copy's shape when it was opened, so it syncs again from the start: emptied and
+   * rebuilt, or kept and brought up to date in place. The status says so until that pull is done.
+   */
+  readonly afterUpdate: boolean
+  /** When a pull last brought the copy up to date (epoch ms), also in an earlier session; null if none ever did. */
+  syncedAt(): Promise<number | null>
+  markSynced(at: number): Promise<void>
+  /**
    * Makes an action show at once, before the server confirms it, the way the server will make it (see actionResult).
    *
    * @throws MissingFolderError when an account has nothing to archive or trash into; nothing changes then

@@ -176,7 +176,11 @@ export class IndexedDbMailStore implements MailStore {
   /** Why the connection closed under this tab, if it did; every call then says the copy is closing. */
   private closedElsewhere: ClosedElsewhere | null = null
 
-  private constructor(private readonly connection: IDBPDatabase<MailSchema>) {}
+  private constructor(
+    private readonly connection: IDBPDatabase<MailSchema>,
+    /** An update changed the copy's shape at this open: it keeps its rows and syncs again from the start. */
+    readonly afterUpdate: boolean,
+  ) {}
 
   private get db(): IDBPDatabase<MailSchema> {
     if (this.closedElsewhere !== null) {
@@ -191,6 +195,7 @@ export class IndexedDbMailStore implements MailStore {
    */
   static async open(userId: string, onClosedElsewhere: (reason: ClosedElsewhere) => void = () => {}): Promise<IndexedDbMailStore> {
     let store: IndexedDbMailStore | null = null
+    let upgraded = false
     const closed = (reason: ClosedElsewhere) => {
       if (store !== null) {
         store.closedElsewhere = reason
@@ -294,11 +299,12 @@ export class IndexedDbMailStore implements MailStore {
         // calendars come from the delta: an existing copy syncs again from the start.
         if (oldVersion >= 1) {
           await transaction.objectStore('meta').delete('cursor')
+          upgraded = true
         }
       },
     })
 
-    store = new IndexedDbMailStore(db)
+    store = new IndexedDbMailStore(db, upgraded)
     return store
   }
 
@@ -309,6 +315,14 @@ export class IndexedDbMailStore implements MailStore {
 
   async cursor(): Promise<number> {
     return (await this.db.get('meta', 'cursor')) ?? 0
+  }
+
+  async syncedAt(): Promise<number | null> {
+    return (await this.db.get('meta', 'syncedAt')) ?? null
+  }
+
+  async markSynced(at: number): Promise<void> {
+    await this.db.put('meta', at, 'syncedAt')
   }
 
   async apply(page: ChangePage): Promise<void> {
