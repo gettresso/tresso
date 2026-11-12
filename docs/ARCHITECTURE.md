@@ -1727,8 +1727,12 @@ chat values: what the server stored comes back through the delta, a chat's messa
   that names rows (`messages[i]...`) refuses those rows and sends the rest again; one that names a chat entry
   (`chats[i]...`) sends that chat without its entry (the server may know it); one whose row paths name nothing in the
   batch halves it towards the row. A 422 without paths, or with a path that is about the request (`deviceId`), is no
-  bad row and rejects as it came. At most 3 messages are refused that way per call (`RELAY_MAX_REFUSED`), also single
-  messages answered 413; one more rejects with an error, so the cursor holds and the relay tries again: a cause that
+  bad row and rejects as it came. A chat entry named for its name alone goes again without a name; a message the server
+  then refuses only because its chat's entry was left out rejects with `ChatRelayImportStuck` instead of being passed
+  over. Texts and names are cut to 65,536 code points first, on a code point boundary (the shell cuts before decoding,
+  and bytes that are not UTF-8 decode to more characters). At most 3 messages are refused that way per call
+  (`RELAY_MAX_REFUSED`), also single messages answered 413, and told (`row_refused`) only once the call resolves; one
+  more rejects with `ChatRelayImportStuck`, so the cursor holds and the relay tries again: a cause that
   affects every row (a proxy, a newer server, a broken client) costs a few calls and drops nothing. Messages the server
   itself answers `refused` are counted as such without limit. The per-row results are summed into the relay's counts;
   an answer whose counts do not add up is an error, so the rows go again. Messages a call stored before a later call
@@ -1764,7 +1768,14 @@ What the wiring (the WhatsApp UI package) must respect:
   there: a chat left out on another device is known as left out only from its row in the copy, and until then its
   messages would be uploaded (the server drops them, but they left the device).
 - Stop the relay when the account's `relayDeviceId` in the delta names another device (after this device's own
-  takeover, only once the delta shows it) or the account is removed, then call `removeServerChatState`.
+  takeover, only once the delta shows it) or the account is removed, then call `removeServerChatState`. That also
+  drops a kept claim, and with it a `sent` result `relay.stop()` could not report (the reply went out, and the sweep
+  then fails it as `unconfirmed`, inviting a second send). On a takeover or a mode switch, let that report succeed
+  first (a former relay may still report `sent: true` for its own claim: run `prepare` of a backend for the old
+  account until it resolves), or keep the claim value and clear only the cursor; when the account is gone (404) the
+  claim means nothing and goes with it.
+- An `ingest` that rejects with `ChatRelayImportStuck` is not transient: show the import as stuck (counts only) rather
+  than as a passing error; the relay keeps trying.
 - Taking a chat in again or turning groups on needs a cursor reset (with the relay stopped, clear the chat value
   `serverCursorKey(accountId)`; keep the claim): rows the relay skipped before are behind the cursor and are read again
   only from 0, as `known` for what the server has.
