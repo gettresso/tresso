@@ -6,6 +6,7 @@ import {
   chatFromDelta,
   chatInstant,
   chatMessageFromDelta,
+  chatOnlyHere,
   chatOutgoingFromDelta,
   deltaInstant,
   compareChatMessages,
@@ -1092,6 +1093,11 @@ export class IndexedDbMailStore implements MailStore {
   async waitingOutgoing(): Promise<SyncedChatOutgoing[]> {
     const rows = await this.db.getAllFromIndex('chatOutgoing', 'byStatus', IDBKeyRange.bound(['waiting'], ['waiting', []]))
     return rows.sort(compareChatOutgoing)
+  }
+
+  async sendingOutgoingHere(): Promise<SyncedChatOutgoing[]> {
+    const rows = await this.db.getAllFromIndex('chatOutgoing', 'byStatus', IDBKeyRange.bound(['sending'], ['sending', []]))
+    return rows.filter((row) => chatOnlyHere(row.chatAccountId)).sort(compareChatOutgoing)
   }
 
   async putChatAccount(account: SyncedChatAccount): Promise<void> {
