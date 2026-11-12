@@ -30,6 +30,7 @@ fn main() {
     "whatsapp_config_load",
     "whatsapp_config_save",
     "whatsapp_config_clear",
+    "whatsapp_config_keep_only",
     "whatsapp_choose_folder",
     "whatsapp_inspect",
     "whatsapp_start",
