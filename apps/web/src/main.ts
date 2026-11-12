@@ -44,11 +44,12 @@ if (isDesktop) {
       void router.replace(route)
     }
   })
-  // The menu bar (macOS): its actions run here, and its items act only while someone is signed in.
-  await startMenuBridge(
+  // The menu bar (macOS): its actions run here, and its items act only while someone is signed in. It does not hold up
+  // the first screen; when it cannot start, the items that act in the app stay disabled.
+  startMenuBridge(
     { router, newMessage: () => useComposeStore().openNew(), signedIn: () => auth.isAuthenticated && !auth.paymentRequired },
     { listen, invoke },
-  )
+  ).catch((error: unknown) => console.error('The menu bar could not be connected to the app', error))
   // A click on a mail notification opens its conversation.
   startNotificationClicks(
     (path) => void router.push(path),

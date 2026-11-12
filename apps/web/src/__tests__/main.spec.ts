@@ -11,6 +11,7 @@ vi.mock(import('@/platform/desktop'), async (importOriginal) => ({
   onDeepLinks: async () => {},
 }))
 vi.mock(import('@/platform/notifier'), async (importOriginal) => ({ ...(await importOriginal()), startNotificationClicks: () => {} }))
+vi.mock(import('@/platform/menu'), async (importOriginal) => ({ ...(await importOriginal()), startMenuBridge: async () => () => {} }))
 // The app itself is not what this is about: only which screen the first navigation lands on.
 vi.mock('@/App.vue', () => ({ default: { render: () => null } }))
 
