@@ -183,4 +183,22 @@ describe('a start before the server says who is signed in', () => {
     expect(device.deleted).not.toContain('ben')
     expect((await mail.drafts()).map((kept) => kept.id)).toEqual(['ben-draft'])
   })
+  it('removes the copy shown before the server answered when the user signs out meanwhile', async () => {
+    localStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'access-anna', refreshToken: 'refresh-anna', expiresAt: Date.now() + 3_600_000, userId: 'anna' }))
+    const server = stubServer()
+    // The sign-in pages' logout form is not followed in a test.
+    vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => undefined)
+    const { useMailStore } = await import('@/stores/mail')
+    const { useAuthStore } = await import('@/stores/auth')
+    const mail = useMailStore()
+    await app()
+    await vi.waitFor(() => expect(mail.ready).toBe(true))
+
+    await useAuthStore().signOut()
+    await flushPromises()
+
+    expect(device.deleted).toEqual(['anna'])
+    expect(writes(server.requests)).toEqual([])
+    expect(mail.ready).toBe(false)
+  })
 })

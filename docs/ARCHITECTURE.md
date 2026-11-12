@@ -1289,9 +1289,13 @@ When the web client starts signed in, it asks the server who the user is (`/api/
 mail copy. The id the server last confirmed is kept in the same stored entry as the tokens (`userId` next to them, in
 localStorage on the web and in the keychain value on the desktop), written only by the auth store and gone with them;
 a refresh carries it over, a new sign-in starts without it. The copy of that user opens before the server answers, so
-the mail is there when the app starts offline, but only to be read: no pull, no upload, no realtime stream, and a
-sign-out does not remove it, until the server confirms the same user. When it names another user, the draft on
-screen is let go, that copy is closed and the user's own opens; only then are copies other users left here removed.
+the mail is there when the app starts offline (the banner says the mail shown is kept on this device while Tresso
+connects), but only to be read until the server confirms the same user: no pull, no realtime stream, and no request
+that writes (a draft upload or delete, a message sent) goes out; drafts are still kept in the copy and go up once
+confirmed. A sign-out meanwhile removes the copy, as its id came with the tokens signed out. When the server names
+another user, the draft on screen, a hand-over and a followed bulk action are let go, that copy is closed and the
+user's own opens; only then are copies other users left here removed. An answer to `/me` about a token set that was
+replaced while it was asked is not taken; the server is asked again.
 A start that fails (offline, the server down, the copy refused) says so with a Retry button and tries again by
 itself: after 5 seconds, doubling up to 5 minutes, and at once when the device comes back online.
 
