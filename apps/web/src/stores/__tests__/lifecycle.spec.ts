@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { SqliteMailStore, type ChangePage, type MailStore } from '@tresso/core'
+import { draft } from '@tresso/core/testing'
 import { memorySql } from '@tresso/core/testing/sql'
 
 /** Lets a test hold an open or a close until it says so. */
@@ -64,7 +65,7 @@ vi.mock('@/mail/store', () => ({
   },
 }))
 
-const { useMailStore } = await import('../mail')
+const { STILL_CHECKING, useMailStore } = await import('../mail')
 
 // The browser's local storage, kept in memory.
 function memoryStorage(): Storage {
@@ -370,13 +371,33 @@ describe('the mail copy across sign-out and sign-in', () => {
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes('/api/v1/sync/changes'))).toBe(true)
   })
 
-  it('does not remove a copy only opened unconfirmed at a sign-out', async () => {
+  it('removes a copy opened before the server answered at a sign-out: its id came with the tokens signed out', async () => {
     const mail = useMailStore()
     await mail.start('anna', { confirmed: false })
 
     await mail.forget()
 
     expect(copies.closed).toEqual(['anna'])
-    expect(copies.deleted).toEqual([])
+    expect(copies.deleted).toEqual(['anna'])
+  })
+
+  it('sends nothing for a copy whose user is not confirmed, and keeps what is done with its drafts here', async () => {
+    const mail = useMailStore()
+    await mail.start('anna', { confirmed: false })
+    const copy = mail.currentStore()!
+    await copy.changeDraft('kept', () => draft('kept', { subject: 'Written offline', pendingSave: true }))
+    await copy.changeDraft('thrown', () => draft('thrown', { subject: 'Thrown away', pendingSave: true }))
+
+    await mail.uploadPendingDrafts()
+    await expect(mail.uploadDraft('kept')).rejects.toThrow(STILL_CHECKING)
+    await mail.deleteDraftEverywhere('thrown')
+    await expect(mail.send({ mailAccountId: 'work', to: [{ address: 'kim@example.test', name: null }], cc: [], bcc: [], subject: 'Hi', html: '<p>Hi</p>' })).rejects.toThrow(STILL_CHECKING)
+    expect(fetch).not.toHaveBeenCalled()
+    expect((await mail.drafts()).map((kept) => kept.id)).toEqual(['kept'])
+
+    await mail.start('anna', { confirmed: true })
+    await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith('/api/v1/drafts') && init?.method === 'POST')).toBe(true))
+    const uploaded = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes('/api/v1/drafts')).map(([, init]) => JSON.parse(String(init?.body)) as { draftId: string })
+    expect(uploaded.map((body) => body.draftId)).toEqual(['kept'])
   })
 })

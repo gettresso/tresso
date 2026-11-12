@@ -56,6 +56,9 @@ const PAGE_SIZE = 500
 
 const LIST_STEP = 100
 
+/** Why nothing is sent for a copy whose user the server has not confirmed yet. */
+export const STILL_CHECKING = 'Tresso is still checking who is signed in. Try again once it is connected.'
+
 const UNIFIED_INBOX: ListScope = { kind: 'inbox', mailAccountId: null }
 
 export type SyncState = 'idle' | 'syncing' | 'error'
@@ -134,10 +137,15 @@ export const useMailStore = defineStore('mail', () => {
   let userId: string | null = null
   /**
    * The user of the last confirmed start, kept apart from the claim (`userId`): a start whose open or first read failed
-   * gives the claim back so it can be tried again, but a sign-out must still remove that user's copy. Never the user of
-   * a copy only opened unconfirmed.
+   * gives the claim back so it can be tried again, but a sign-out must still remove that user's copy. A copy only
+   * opened unconfirmed is noted apart (`openedUnconfirmed`).
    */
   let lastUser: string | null = null
+  /**
+   * The user of a copy opened unconfirmed: the id came from the same stored entry as the tokens, so a sign-out before
+   * the server answered removes that copy too. Cleared once a confirmed start takes over.
+   */
+  let openedUnconfirmed: string | null = null
   let engine: SyncEngine | null = null
   let realtime: RealtimeClient | null = null
   /**
@@ -168,8 +176,9 @@ export const useMailStore = defineStore('mail', () => {
   /**
    * Opens the user's copy and, once the server confirmed the user, keeps it current. A start that is not `confirmed`
    * (the user the tokens were last confirmed for, before `/me` answered in this page load) only opens and reads the
-   * copy: no pull, no upload, no realtime stream, and a sign-out does not remove it. Starting the same user again with
-   * `confirmed` then begins the sync on the copy already open.
+   * copy: no pull, no upload, no realtime stream, no message sent. A sign-out meanwhile removes it, as it does a
+   * confirmed one: the id belongs to the tokens being signed out. Starting the same user again with `confirmed` then
+   * begins the sync on the copy already open.
    */
   async function start(forUserId: string, options: { confirmed?: boolean } = {}): Promise<void> {
     const confirmed = options.confirmed !== false
@@ -182,6 +191,7 @@ export const useMailStore = defineStore('mail', () => {
       await openPhase
       if (mine === generation && userId === forUserId && db.value !== null && !syncing) {
         lastUser = forUserId
+        openedUnconfirmed = null
         await beginSync(mine, db.value)
       }
       return
@@ -190,6 +200,9 @@ export const useMailStore = defineStore('mail', () => {
     const mine = ++generation
     if (confirmed) {
       lastUser = forUserId
+      openedUnconfirmed = null
+    } else {
+      openedUnconfirmed = forUserId
     }
     await teardown()
     if (mine !== generation) {
@@ -458,10 +471,11 @@ export const useMailStore = defineStore('mail', () => {
 
   /** Stops syncing and removes the local copy, so nothing stays behind on a shared computer. */
   async function forget(): Promise<void> {
-    // The copy of the user the server confirmed, also when its start failed to open or read it (see lastUser). A copy
-    // open unconfirmed (an id kept from before) is only closed: it may be someone else's, with their unsent drafts.
-    const forUserId = lastUser
+    // The copy of the user the server confirmed, also when its start failed to open or read it (see lastUser), or else
+    // the copy opened before the server answered, whose id came with the tokens being signed out.
+    const forUserId = lastUser ?? openedUnconfirmed
     lastUser = null
+    openedUnconfirmed = null
     // Named now: by the time the copy is closed, the user may be signed in to another server under the same id.
     const name = forUserId === null ? null : mailCopyName(forUserId)
     await stop()
@@ -763,7 +777,7 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   function send(request: SendMessageRequest): Promise<SyncedOutgoingMessage> {
-    return auth.send<SyncedOutgoingMessage>('POST', '/api/v1/outgoing-messages', request)
+    return confirmedOnly(() => auth.send<SyncedOutgoingMessage>('POST', '/api/v1/outgoing-messages', request))
   }
 
   function cancelOutgoing(id: string): Promise<SyncedOutgoingMessage> {
@@ -784,23 +798,33 @@ export const useMailStore = defineStore('mail', () => {
     await db.value?.saveDraft(JSON.parse(JSON.stringify(draft)) as Draft)
   }
 
-  // Drafts go to the server only from a copy whose user was confirmed; an unconfirmed copy is only read.
+  /**
+   * Runs a request that writes for the user of the open copy, once the server confirmed that user in this page load;
+   * until then it fails as if the server could not be reached.
+   */
+  function confirmedOnly<T>(request: () => Promise<T>): Promise<T> {
+    return syncing ? request() : Promise.reject(new Error(STILL_CHECKING))
+  }
+
+  // Drafts are kept in the copy as always, but reach the server only once its user was confirmed: until then every
+  // request fails as if offline, which every caller already handles (kept with pendingSave, said when it matters).
   const draftSync = new DraftSync(
-    () => (syncing ? db.value : null),
+    () => db.value,
     {
-      create: (id, request) => auth.send<SyncedDraft>('POST', '/api/v1/drafts', { ...request, draftId: id }),
-      update: (id, request, expectedVersion) => auth.send<SyncedDraft>('PUT', `/api/v1/drafts/${encodeURIComponent(id)}`, { ...request, expectedVersion }),
-      get: (id) => auth.api<SyncedDraft & { attachments: DraftAttachmentLink[] }>(`/api/v1/drafts/${encodeURIComponent(id)}`),
-      remove: (id) => auth.send<void>('DELETE', `/api/v1/drafts/${encodeURIComponent(id)}`),
-      attach: (id, file) => {
-        // The browser sets the multipart boundary itself.
-        const form = new FormData()
-        form.append('file', file.body as Blob, file.name)
-        return auth.api<DraftAttachmentLink>(`/api/v1/drafts/${encodeURIComponent(id)}/attachments`, { method: 'POST', body: form })
-      },
-      forward: (id, attachmentId) => auth.send<DraftAttachmentLink>('POST', `/api/v1/drafts/${encodeURIComponent(id)}/forwarded-attachments`, { attachmentId }),
-      detach: (id, attachmentId) => auth.send<{ draftVersion: number }>('DELETE', `/api/v1/drafts/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`),
-      unscannedLink: (attachmentId) => auth.send<{ url: string }>('POST', `/api/v1/draft-attachments/${encodeURIComponent(attachmentId)}/unscanned-link`, { confirmed: true }),
+      create: (id, request) => confirmedOnly(() => auth.send<SyncedDraft>('POST', '/api/v1/drafts', { ...request, draftId: id })),
+      update: (id, request, expectedVersion) => confirmedOnly(() => auth.send<SyncedDraft>('PUT', `/api/v1/drafts/${encodeURIComponent(id)}`, { ...request, expectedVersion })),
+      get: (id) => confirmedOnly(() => auth.api<SyncedDraft & { attachments: DraftAttachmentLink[] }>(`/api/v1/drafts/${encodeURIComponent(id)}`)),
+      remove: (id) => confirmedOnly(() => auth.send<void>('DELETE', `/api/v1/drafts/${encodeURIComponent(id)}`)),
+      attach: (id, file) =>
+        confirmedOnly(() => {
+          // The browser sets the multipart boundary itself.
+          const form = new FormData()
+          form.append('file', file.body as Blob, file.name)
+          return auth.api<DraftAttachmentLink>(`/api/v1/drafts/${encodeURIComponent(id)}/attachments`, { method: 'POST', body: form })
+        }),
+      forward: (id, attachmentId) => confirmedOnly(() => auth.send<DraftAttachmentLink>('POST', `/api/v1/drafts/${encodeURIComponent(id)}/forwarded-attachments`, { attachmentId })),
+      detach: (id, attachmentId) => confirmedOnly(() => auth.send<{ draftVersion: number }>('DELETE', `/api/v1/drafts/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`)),
+      unscannedLink: (attachmentId) => confirmedOnly(() => auth.send<{ url: string }>('POST', `/api/v1/draft-attachments/${encodeURIComponent(attachmentId)}/unscanned-link`, { confirmed: true })),
     },
     () => void refresh(),
   )
