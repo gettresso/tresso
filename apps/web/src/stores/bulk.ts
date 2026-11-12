@@ -6,6 +6,7 @@ import {
   bulkProgressText,
   bulkResultText,
   bulkSelectionQuery,
+  SessionEndedDuringRequestError,
   type BulkActionRequest,
   type BulkActionState,
   type BulkScope,
@@ -309,7 +310,7 @@ export const useBulkStore = defineStore('bulk', () => {
             throw new FollowEnded()
           }
           // The action is not there (anymore), or the session ended: asking again changes nothing.
-          if (error instanceof ApiError && (error.status === 401 || error.status === 404)) {
+          if (error instanceof SessionEndedDuringRequestError || (error instanceof ApiError && (error.status === 401 || error.status === 404))) {
             throw error
           }
           failures += 1

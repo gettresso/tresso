@@ -764,15 +764,18 @@ describe('auth store', () => {
       expect(auth.tokens?.refreshToken).toBe('refresh-2')
     })
 
-    it('ends the session when the server no longer knows the client', async () => {
-      stubServer({ refresh: () => Response.json({ error: 'invalid_client' }, { status: 401 }) })
+    it.each(['invalid_client', 'unauthorized_client'])('keeps the sign-in when the server refuses the app itself (%s), as the phone does', async (code) => {
+      // A deploy that briefly misconfigured the first-party clients must not sign out everyone who refreshes; a new
+      // sign-in would be refused the same way. The next request tries again.
+      stubServer({ refresh: () => Response.json({ error: code }, { status: 401 }) })
       localStorage.setItem('auth.tokens', JSON.stringify(EXPIRED))
       const auth = await authStore()
 
-      await expect(auth.api('/api/v1/me')).rejects.toThrow('Your session has expired.')
+      await expect(auth.api('/api/v1/me')).rejects.toThrow('Tresso could not renew your sign-in')
 
-      await vi.waitFor(() => expect(auth.isAuthenticated).toBe(false))
-      expect(auth.sessionEnd).toBe('expired')
+      expect(auth.isAuthenticated).toBe(true)
+      expect(auth.sessionEnd).toBeNull()
+      expect(auth.tokens?.refreshToken).toBe('refresh-1')
     })
 
     it('does not set the user from an answer that arrives after a sign-out', async () => {
@@ -792,7 +795,10 @@ describe('auth store', () => {
       await auth.signOut()
       answer(Response.json({ id: 'user-1' }))
 
-      await expect(loading).rejects.toThrow('Signed out while this request was under way.')
+      // Made here, not said by the server: no status, so nothing reads it as the server's refusal.
+      // (By name: the store was loaded afresh, with its own copy of the core module.)
+      await expect(loading).rejects.toMatchObject({ name: 'SessionEndedDuringRequestError', message: 'Signed out while this request was under way.' })
+      await expect(loading).rejects.not.toHaveProperty('status')
       expect(auth.me).toBeNull()
     })
 
