@@ -1366,7 +1366,8 @@ sidebar markup).
   18, a 1 pt lighter edge and a soft shadow, 10 to the content. Rows are 32 high from y 52, the selection fill 10 inside
   the card with radius 8, the icon at x 30 and the label at x 54, the count inside the fill; a group label sits in a 24
   strip, an unlabelled group is set off by 13. The profile, the Compose button and the account rows (two lines) keep
-  their own heights. The selected row takes the system's selection colour with white text while the sidebar is used
+  their own heights. Only the rows scroll (`FrameScroll`, rendered in the desktop shell only): the band of the traffic
+  lights and the toggle stays above them and the sync status at the card's foot. The selected row takes the system's selection colour with white text while the sidebar is used
   (the last click or focus went into it and the window is in front), and a grey fill while the content is or the window
   is in the back.
 - **Width and collapse.** The card's right edge is a drag handle and a focusable separator (arrows by 10, Home and End
@@ -1401,7 +1402,8 @@ sidebar markup).
 On macOS 26 and later the shell puts one system `NSGlassEffectView` under the web view, exactly where the card is
 (`apps/desktop/src-tauri/src/glass.rs`): the window paints an opaque background instead of the whole-window material
 (the spec's #f3f3f3 in the light appearance, AppKit's `windowBackgroundColor` in the dark one), the page leaves the card see-through (`html.liquid-glass`), and the content paints its own
-opaque background. The page reports the card's place with `set_glass` (`apps/web/src/platform/glass.ts`): once it shows,
+opaque background. The card stays solid until the shell has answered that the glass is behind it (at launch, after a
+sign-in, when the sidebar is shown again), so the bare window never shows through. The page reports the card's place with `set_glass` (`apps/web/src/platform/glass.ts`): once it shows,
 when the window or the card changes size, and every frame only while the card slides or its edge is dragged; a hidden
 card, the sign-in screen and "Reduce transparency" send an empty list, which removes the glass (the card is then drawn
 solid). The shell checks every shape (finite numbers, sizes from 0 to 100 000 points, at most four, ids of a to z, 0 to
