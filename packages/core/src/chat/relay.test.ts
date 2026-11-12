@@ -7,9 +7,16 @@ import {
   ChatRelay,
   ChatRelayRetryLater,
   ChatRelayStopped,
+  FIRST_IMPORT_MAX,
+  FIRST_IMPORT_QUIET,
+  NAME_RETRY,
   RELAY_ERROR_DELAY,
   RELAY_INTERVAL,
   RELAY_PAGE,
+  RELAY_RETRY_MAX,
+  RELAY_RETRY_MIN,
+  retryDelay,
+  senderAddress,
   type BridgePage,
   type BridgeSendResult,
   type ChatBackend,
@@ -18,10 +25,12 @@ import {
   type IncomingChat,
   type IncomingMessage,
   type RelayCursor,
+  type RelayProgress,
   type RelayStep,
   type ReplyResult,
   type SenderLookup,
 } from './relay'
+import type { MailStore } from '../store/mailStore'
 import type { BridgeRow } from './types'
 
 const DIRECT = '31612345678@s.whatsapp.net'
@@ -152,7 +161,7 @@ class Wrapped implements ChatBackend {
         throw error
       }
       this.ingests.push({ flag: firstImport, waIds: messages.map((message) => message.waId) })
-      await this.inner.ingest(chats, messages, firstImport)
+      return await this.inner.ingest(chats, messages, firstImport)
     } finally {
       this.ingesting--
     }
@@ -168,7 +177,9 @@ class Wrapped implements ChatBackend {
     }
     await this.inner.setCursor(cursor)
   }
+  claims = 0
   claimNext() {
+    this.claims++
     return this.inner.claimNext()
   }
   async report(reply: ClaimedReply, result: ReplyResult) {
@@ -189,14 +200,29 @@ describe('ChatRelay with the local backend', () => {
   let errors: { error: unknown; step: RelayStep }[]
   let relay: ChatRelay
   let config: { includeGroups: boolean; leftOut: string[]; importSince: number }
+  let clock: number
+  let progress: RelayProgress[]
 
   const identity = { number: '31698765432', name: 'Sam', deviceId: '0193a000-0000-7000-8000-000000000001', deviceName: 'MacBook Air' }
 
-  function makeRelay(on: SqliteMailStore = store): ChatRelay {
-    backend = new Wrapped(new LocalChatBackend(on, config, identity, () => NOW))
+  function makeRelay(on: MailStore = store): ChatRelay {
+    backend = new Wrapped(new LocalChatBackend(on, config, identity, () => clock))
     errors = []
-    relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: scheduler.schedule, onError: (error, step) => errors.push({ error, step }) })
+    progress = []
+    relay = new ChatRelay({
+      now: () => clock,
+      bridge,
+      backend,
+      schedule: scheduler.schedule,
+      onError: (error, step) => errors.push({ error, step }),
+      onProgress: (counts) => progress.push(counts),
+    })
     return relay
+  }
+
+  /** Past the first import: rows read from here on are live. */
+  async function live(): Promise<void> {
+    await store.setChatMeta(LOCAL_CURSOR, JSON.stringify({ storeId: bridge.storeId, rowid: 0, firstImport: null }))
   }
 
   async function messageIds(): Promise<string[]> {
@@ -217,6 +243,7 @@ describe('ChatRelay with the local backend', () => {
     bridge = new FakeBridge()
     scheduler = fakeScheduler()
     config = { includeGroups: true, leftOut: [], importSince: IMPORT_SINCE }
+    clock = NOW
     makeRelay()
   })
 
@@ -248,7 +275,7 @@ describe('ChatRelay with the local backend', () => {
       ['G3', { id: '99999999999999', name: null }, null, null, null],
       ['G4', { id: '31611111111', name: 'Mom' }, null, null, null],
     ])
-    expect(await storedCursor()).toEqual({ storeId: 'file-1:1:1', rowid: 6, firstImportThrough: null })
+    expect(await storedCursor()).toEqual({ storeId: 'file-1:1:1', rowid: 6, firstImport: { through: 6, startedAt: NOW, quietSince: NOW } })
     expect(scheduler.active()).toEqual([])
   })
 
@@ -257,7 +284,7 @@ describe('ChatRelay with the local backend', () => {
     bridge.add('A2', DIRECT)
     await relay.pollNow()
     // A crash between storing and the cursor write: the cursor is back where it was.
-    await store.setChatMeta(LOCAL_CURSOR, JSON.stringify({ storeId: bridge.storeId, rowid: 0, firstImportThrough: null }))
+    await store.setChatMeta(LOCAL_CURSOR, JSON.stringify({ storeId: bridge.storeId, rowid: 0, firstImport: null }))
 
     await relay.pollNow()
     await relay.pollNow()
@@ -288,15 +315,17 @@ describe('ChatRelay with the local backend', () => {
       bridge.add(`A${i}`, DIRECT)
     }
     await relay.pollNow()
+    clock += FIRST_IMPORT_QUIET
+    await relay.pollNow()
     bridge.rows = bridge.rows.filter((row) => row.id !== 'A2')
     bridge.renumber('file-1:2:1')
     bridge.add('A6', DIRECT, { sentAt: at(1) })
 
     await relay.pollNow()
 
-    expect(bridge.reads).toEqual([0, 5, 0])
+    expect(bridge.reads).toEqual([0, 5, 5, 0])
     expect(await messageIds()).toEqual([1, 2, 3, 4, 5, 6].map((i) => `wa:${DIRECT}:A${i}`))
-    expect(await storedCursor()).toEqual({ storeId: 'file-1:2:1', rowid: 5, firstImportThrough: null })
+    expect(await storedCursor()).toEqual({ storeId: 'file-1:2:1', rowid: 5, firstImport: null })
     // Not a first import: the new message is unread.
     expect((await store.chats())[0]!.unread).toBe(1)
   })
@@ -424,35 +453,85 @@ describe('ChatRelay with the local backend', () => {
     ])
   })
 
-  it('runs the first import to the end the store had when it began, then takes later rows as live', async () => {
-    for (let i = 1; i <= RELAY_PAGE + 20; i++) {
-      bridge.add(`H${i}`, DIRECT, { sentAt: at(-1000 + i) })
-    }
-    relay.start()
+  /** Runs the planned round and waits until the next is planned. */
+  async function nextRound(): Promise<void> {
     scheduler.fire()
     await vi.waitFor(() => expect(scheduler.active()).toHaveLength(1))
-    // A full page: the next round at once. Meanwhile a message arrives.
-    expect(scheduler.active()[0]!.ms).toBe(0)
-    expect(await storedCursor()).toEqual({ storeId: bridge.storeId, rowid: RELAY_PAGE, firstImportThrough: RELAY_PAGE + 20 })
-    bridge.add('LIVE', DIRECT, { sentAt: at(1) })
+  }
 
-    scheduler.fire()
-    await vi.waitFor(() => expect(scheduler.active()).toHaveLength(1))
-    expect(await storedCursor()).toEqual({ storeId: bridge.storeId, rowid: RELAY_PAGE + 20, firstImportThrough: null })
-    scheduler.fire()
-    await vi.waitFor(() => expect(scheduler.active()).toHaveLength(1))
+  it('takes history arriving in bursts after linking as the first import, until the store is quiet', async () => {
+    // Freshly linked: the store is empty, then the history sync writes in bursts over minutes.
+    relay.start()
+    await nextRound()
+    for (let burst = 0; burst < 3; burst++) {
+      clock += 40_000
+      for (let i = 1; i <= (burst === 1 ? RELAY_PAGE + 10 : 30); i++) {
+        bridge.add(`H${burst}-${i}`, DIRECT, { sentAt: at(-2000 + burst * 600 + i) })
+      }
+      await nextRound()
+      if (scheduler.active()[0]!.ms === 0) {
+        await nextRound()
+      }
+    }
+    expect(backend.ingests.every(({ flag }) => flag)).toBe(true)
+    expect((await storedCursor())?.firstImport).not.toBeNull()
+
+    // Quiet, but not long enough yet.
+    clock += FIRST_IMPORT_QUIET - 1
+    await nextRound()
+    expect((await storedCursor())?.firstImport).not.toBeNull()
+    clock += 1
+    await nextRound()
+    expect((await storedCursor())?.firstImport).toBeNull()
+    expect(progress.at(-1)).toMatchObject({ firstImport: false, stored: 30 + RELAY_PAGE + 10 + 30 })
+
+    bridge.add('LIVE', DIRECT, { sentAt: at(1) })
+    await nextRound()
     await relay.stop()
 
-    expect(backend.ingests.map(({ flag, waIds }) => [flag, waIds.length])).toEqual([
-      [true, RELAY_PAGE],
-      [true, 20],
-      [false, 1],
-    ])
-    expect(backend.ingests[2]!.waIds).toEqual(['LIVE'])
+    expect(backend.ingests.map(({ flag }) => flag).filter((flag) => !flag)).toHaveLength(1)
+    expect(backend.ingests.at(-1)).toEqual({ flag: false, waIds: ['LIVE'] })
     const summary = (await store.chats())[0]!
     // History arrives read; the live message does not.
     expect(summary.unread).toBe(1)
-    expect(summary.chat.readThrough).toBe(new Date(at(-1000 + RELAY_PAGE + 20)).toISOString())
+  })
+
+  it('measures the quiet time anew after a restart during the first import', async () => {
+    bridge.add('H1', DIRECT, { sentAt: at(-100) })
+    await relay.pollNow()
+    expect((await storedCursor())?.firstImport).toEqual({ through: 1, startedAt: NOW, quietSince: NOW })
+
+    // The app was closed for ten minutes; the bridge catches up with history when both start again.
+    clock += 10 * 60_000
+    makeRelay()
+    await relay.pollNow()
+    expect((await storedCursor())?.firstImport).toEqual({ through: 1, startedAt: NOW, quietSince: clock })
+    bridge.add('H2', DIRECT, { sentAt: at(-50) })
+    clock += 30_000
+    await relay.pollNow()
+
+    expect(backend.ingests).toEqual([{ flag: true, waIds: ['H2'] }])
+    expect((await storedCursor())?.firstImport).toMatchObject({ through: 2, startedAt: NOW })
+    expect((await store.chats())[0]!.unread).toBe(0)
+  })
+
+  it('ends the first import after its longest duration, so later messages are live even while rows keep coming', async () => {
+    bridge.add('H1', DIRECT, { sentAt: at(-100) })
+    await relay.pollNow()
+    for (let minute = 1; minute < 30; minute++) {
+      clock = NOW + minute * 60_000
+      bridge.add(`H${minute + 1}`, DIRECT, { sentAt: at(-100 + minute) })
+      await relay.pollNow()
+    }
+    expect(backend.ingests.every(({ flag }) => flag)).toBe(true)
+
+    clock = NOW + FIRST_IMPORT_MAX
+    bridge.add('LATE', DIRECT, { sentAt: at(5) })
+    await relay.pollNow()
+
+    expect(backend.ingests.at(-1)).toEqual({ flag: false, waIds: ['LATE'] })
+    expect((await storedCursor())?.firstImport).toBeNull()
+    expect((await store.chats())[0]!.unread).toBe(1)
   })
 
   it('skips a round quietly while the bridge writes to its store', async () => {
@@ -653,6 +732,142 @@ describe('ChatRelay with the local backend', () => {
     expect(errors).toEqual([])
     expect(scheduler.active()).toEqual([])
   })
+
+  it('claims again after a claim whose write failed, instead of holding the queue until a restart', async () => {
+    let failNext = false
+    const flaky = new Proxy(store, {
+      get(target, key) {
+        if (key === 'putChatOutgoing') {
+          return async (rows: Parameters<MailStore['putChatOutgoing']>[0]) => {
+            if (failNext) {
+              failNext = false
+              throw new Error('disk I/O error')
+            }
+            return target.putChatOutgoing(rows)
+          }
+        }
+        const value = Reflect.get(target, key, target) as unknown
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    }) as MailStore
+    makeRelay(flaky)
+    bridge.add('A1', DIRECT)
+    await relay.pollNow()
+    await queueLocalReply(flaky, localChatId(DIRECT), 'hi', '0193a000-0000-7000-8000-000000000001', at(1))
+    failNext = true
+
+    await relay.pollNow()
+    expect(errors.map(({ step }) => step)).toEqual(['claim'])
+    expect(bridge.sent).toEqual([])
+    expect((await store.chat(localChatId(DIRECT)))!.outgoing.map((row) => row.status)).toEqual(['waiting'])
+
+    await relay.pollNow()
+    expect(bridge.sent.map(({ text }) => text)).toEqual(['hi'])
+    expect((await store.chat(localChatId(DIRECT)))!.outgoing.map((row) => row.status)).toEqual(['sent'])
+  })
+
+  it('takes group senders stored as JIDs (history sync) as the same sender as live ones', async () => {
+    await live()
+    bridge.known = {
+      '31611111111': { number: '31611111111', name: 'Mom' },
+      // The shell guesses a number for an id it knows nothing of; the JID says this one is a LID.
+      '84932172912345': { number: '84932172912345', name: null },
+    }
+    bridge.add('G1', GROUP, { sender: '31611111111' })
+    bridge.add('G2', GROUP, { sender: '31611111111:5@s.whatsapp.net' })
+    bridge.add('G3', GROUP, { sender: '31611111111.0:2@S.WHATSAPP.NET' })
+    bridge.add('G4', GROUP, { sender: '84932172912345@lid' })
+    bridge.add('G5', GROUP, { sender: '31622222222222@s.whatsapp.net' })
+    bridge.add('G6', GROUP, { sender: '@lid' })
+
+    await relay.pollNow()
+
+    expect(bridge.nameCalls).toEqual([['31611111111', '84932172912345', '31622222222222']])
+    expect((await store.chat(localChatId(GROUP)))!.messages.map((message) => message.sender)).toEqual([
+      { id: '31611111111', name: 'Mom' },
+      { id: '31611111111', name: 'Mom' },
+      { id: '31611111111', name: 'Mom' },
+      { id: '84932172912345', name: null },
+      // A phone JID is a number, also when the shell could not tell.
+      { id: '31622222222222', name: '+31622222222222' },
+      null,
+    ])
+  })
+
+  it('looks a sender without a name up again after a while, and keeps a name it found', async () => {
+    await live()
+    bridge.add('G1', GROUP, { sender: '31611111111' })
+    await relay.pollNow()
+    bridge.known = { '31611111111': { number: '31611111111', name: 'Mom' } }
+    bridge.add('G2', GROUP, { sender: '31611111111' })
+    clock += NAME_RETRY - 1
+    await relay.pollNow()
+    expect(bridge.nameCalls).toHaveLength(1)
+
+    clock += 1
+    bridge.add('G3', GROUP, { sender: '31611111111' })
+    await relay.pollNow()
+    bridge.add('G4', GROUP, { sender: '31611111111' })
+    clock += NAME_RETRY
+    await relay.pollNow()
+
+    expect(bridge.nameCalls).toEqual([['31611111111'], ['31611111111']])
+    // Messages stored before the name was known keep what was known then: the copy has no cheap way to find them.
+    expect((await store.chat(localChatId(GROUP)))!.messages.map((message) => message.sender?.name)).toEqual(['+31611111111', '+31611111111', 'Mom', 'Mom'])
+  })
+
+  it('counts what it stored and what it left out, by why, with numbers only', async () => {
+    await live()
+    config.includeGroups = false
+    makeRelay()
+    bridge.add('A1', DIRECT)
+    bridge.add('A2', DIRECT)
+    bridge.add('G1', GROUP)
+    bridge.add('S1', 'status@broadcast')
+    bridge.add('OLD', DIRECT, { sentAt: IMPORT_SINCE - 1 })
+    bridge.add('NOTIME', DIRECT, { sentAt: null })
+    bridge.add('FUTURE', DIRECT, { sentAt: NOW + 2 * 24 * 60 * 60 * 1000 })
+    bridge.add('BAD ID', DIRECT)
+    bridge.add('EMPTY', DIRECT, { text: '' })
+    await relay.pollNow()
+    await setLocalChatState(store, localChatId(DIRECT), { leftOut: true })
+    bridge.add('A3', DIRECT)
+    await relay.pollNow()
+
+    expect(progress.at(-1)).toEqual({
+      chats: 1,
+      stored: 2,
+      known: 0,
+      leftOut: 1,
+      refused: 0,
+      skipped: { not_a_chat: 1, groups_off: 1, left_out: 0, before_import: 1, no_time: 1, bad_time: 1, bad_id: 1, nothing_to_show: 1 },
+      firstImport: false,
+    })
+  })
+
+  it('passes a file size on only when it is a whole number of 0 or more', async () => {
+    await live()
+    bridge.add('M1', DIRECT, { mediaType: 'image', fileLength: -1 })
+    bridge.add('M2', DIRECT, { mediaType: 'video', fileLength: 1.5 })
+    bridge.add('M3', DIRECT, { mediaType: 'audio', fileLength: 0 })
+    await relay.pollNow()
+
+    expect((await store.chat(localChatId(DIRECT)))!.messages.map((message) => message.mediaSize)).toEqual([null, null, 0])
+  })
+
+  it('reports nothing when the chats were removed before stop flushed a result', async () => {
+    bridge.add('A1', DIRECT)
+    await relay.pollNow()
+    await queueLocalReply(store, localChatId(DIRECT), 'hi', '0193a000-0000-7000-8000-000000000001', at(1))
+    backend.failReport = new Error('database is locked')
+    await relay.pollNow()
+    expect(errors.map(({ step }) => step)).toEqual(['report'])
+
+    await removeLocalChats(store)
+    await relay.stop()
+
+    expect(errors.map(({ step }) => step)).toEqual(['report'])
+  })
 })
 
 describe('ChatRelay with a backend that asks to wait or stop', () => {
@@ -660,7 +875,7 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
     return {
       prepare: async () => {},
       settings: async () => ({ includeGroups: true, leftOut: new Set<string>(), importSince: 0 }),
-      ingest: async () => {},
+      ingest: async () => ({ stored: 0, known: 0, leftOut: 0, refused: 0 }),
       cursor: async () => null,
       setCursor: async () => {},
       claimNext: async () => null,
@@ -680,6 +895,45 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
 
     expect(scheduler.active()[0]!.ms).toBe(60_000)
     await relay.stop()
+  })
+
+  it('keeps a pause a backend asks for in range', () => {
+    expect(retryDelay(new ChatRelayRetryLater(Number.NaN))).toBe(RELAY_ERROR_DELAY)
+    expect(retryDelay(new ChatRelayRetryLater(Number.POSITIVE_INFINITY))).toBe(RELAY_ERROR_DELAY)
+    expect(retryDelay(new ChatRelayRetryLater(0))).toBe(RELAY_RETRY_MIN)
+    expect(retryDelay(new ChatRelayRetryLater(-5))).toBe(RELAY_RETRY_MIN)
+    expect(retryDelay(new ChatRelayRetryLater(24 * 60 * 60 * 1000))).toBe(RELAY_RETRY_MAX)
+    expect(retryDelay(new ChatRelayRetryLater(30_000))).toBe(30_000)
+  })
+
+  it('claims no reply in a round in which the backend asked to wait', async () => {
+    const bridge = new FakeBridge()
+    bridge.add('A1', DIRECT)
+    let claims = 0
+    const scheduler = fakeScheduler()
+    const relay = new ChatRelay({
+      now: () => NOW,
+      bridge,
+      backend: backendOf({ ingest: async () => Promise.reject(new ChatRelayRetryLater(Number.NaN)), claimNext: async () => (claims++, null) }),
+      schedule: scheduler.schedule,
+    })
+    relay.start()
+    scheduler.fire()
+    await vi.waitFor(() => expect(scheduler.active()).toHaveLength(1))
+
+    expect(claims).toBe(0)
+    expect(scheduler.active()[0]!.ms).toBe(RELAY_ERROR_DELAY)
+    await relay.stop()
+  })
+
+  it('reads the user part of a sender JID', () => {
+    expect(senderAddress('31612345678')).toEqual({ id: '31612345678', kind: null })
+    expect(senderAddress('31612345678:12@s.whatsapp.net')).toEqual({ id: '31612345678', kind: 'phone' })
+    expect(senderAddress('31612345678.0:3@S.WhatsApp.Net')).toEqual({ id: '31612345678', kind: 'phone' })
+    expect(senderAddress('84932172912345@lid')).toEqual({ id: '84932172912345', kind: 'lid' })
+    expect(senderAddress('84932172912345:4@lid')).toEqual({ id: '84932172912345', kind: 'lid' })
+    expect(senderAddress('@lid')).toBeNull()
+    expect(senderAddress('')).toBeNull()
   })
 
   it('still sends replies when reading fails, and waits longer after', async () => {

@@ -2,11 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { chat, chatAccount, chatOutgoing } from '../store/contract'
 import { memorySql } from '../store/memorySql'
 import { SqliteMailStore } from '../store/sqlite'
+import { CHAT_REPLY_MAX } from './format'
 import {
-  CHAT_REPLY_MAX,
   LOCAL_CHAT_ACCOUNT,
   LOCAL_CURSOR,
-  LOCAL_SENDING,
   LocalChatBackend,
   LocalChatError,
   cancelLocalReply,
@@ -95,12 +94,14 @@ describe('LocalChatBackend', () => {
 
   it('keeps the cursor with the store it belongs to, and reads an unreadable one as a read from 0', async () => {
     expect(await backend.cursor()).toBeNull()
-    await backend.setCursor({ storeId: 's1', rowid: 12, firstImportThrough: 40 })
-    expect(await backend.cursor()).toEqual({ storeId: 's1', rowid: 12, firstImportThrough: 40 })
+    const firstImport = { through: 40, startedAt: NOW, quietSince: NOW + 5 }
+    await backend.setCursor({ storeId: 's1', rowid: 12, firstImport })
+    expect(await backend.cursor()).toEqual({ storeId: 's1', rowid: 12, firstImport })
 
-    await store.setChatMeta(LOCAL_CURSOR, '12')
-
-    expect(await backend.cursor()).toEqual({ storeId: '', rowid: 0, firstImportThrough: null })
+    for (const unreadable of ['12', '{"storeId":"s1","rowid":12,"firstImportThrough":40}', '{"storeId":"s1","rowid":12,"firstImport":{"through":"40"}}']) {
+      await store.setChatMeta(LOCAL_CURSOR, unreadable)
+      expect(await backend.cursor()).toEqual({ storeId: '', rowid: 0, firstImport: null })
+    }
   })
 
   describe('replies', () => {
@@ -117,10 +118,9 @@ describe('LocalChatBackend', () => {
 
       const claimed = await backend.claimNext()
 
-      expect(claimed).toEqual({ id: '0193a000-0000-7000-8000-000000000001', chatId: localChatId(DIRECT), chatJid: DIRECT, text: 'first', token: null })
+      expect(claimed).toEqual({ id: '0193a000-0000-7000-8000-000000000001', chatId: localChatId(DIRECT), chatJid: DIRECT, text: 'first', token: new Date(NOW).toISOString() })
       const row = (await store.chat(localChatId(DIRECT)))!.outgoing[0]!
       expect(row).toMatchObject({ status: 'sending', claimedAt: new Date(NOW).toISOString() })
-      expect(JSON.parse((await store.chatMeta(LOCAL_SENDING))!)).toEqual({ id: row.id, chatId: localChatId(DIRECT) })
       // One at a time: nothing more until that one is reported.
       expect(await backend.claimNext()).toBeNull()
     })
@@ -137,7 +137,31 @@ describe('LocalChatBackend', () => {
       const stored = (await store.chat(localChatId(DIRECT)))!
       expect(stored.outgoing.map((row) => [row.status, row.error, row.sentAt])).toEqual([['sent', null, iso(1)]])
       expect(stored.chat.lastMessageAt).toBe(iso(1))
-      expect(await store.chatMeta(LOCAL_SENDING)).toBeNull()
+      expect((await backend.claimNext())).toBeNull()
+    })
+
+    it('lets a sent result of the same claim win over unconfirmed, as the server does, and no other claim', async () => {
+      const id = '0193a000-0000-7000-8000-000000000001'
+      await queueLocalReply(store, localChatId(DIRECT), 'hi', id, NOW)
+      const claimed = (await backend.claimNext())!
+      // The app restarted while the old relay still held the result: the new start settled the reply as unconfirmed.
+      await new LocalChatBackend(store, config, identity, () => now).prepare()
+
+      await backend.report({ ...claimed, token: 'another claim' }, { sent: true })
+      expect((await store.chat(localChatId(DIRECT)))!.outgoing.map((row) => [row.status, row.error])).toEqual([['failed', 'unconfirmed']])
+      await backend.report(claimed, { sent: false, error: 'refused' })
+      expect((await store.chat(localChatId(DIRECT)))!.outgoing.map((row) => [row.status, row.error])).toEqual([['failed', 'unconfirmed']])
+      await backend.report(claimed, { sent: true })
+      expect((await store.chat(localChatId(DIRECT)))!.outgoing.map((row) => [row.status, row.error])).toEqual([['sent', null]])
+
+      // Try again ends a claim: a late result of the old one changes nothing.
+      const other = '0193a000-0000-7000-8000-000000000002'
+      await queueLocalReply(store, localChatId(DIRECT), 'again', other, NOW)
+      const second = (await backend.claimNext())!
+      await backend.report(second, { sent: false, error: 'unconfirmed' })
+      await retryLocalReply(store, localChatId(DIRECT), other)
+      await backend.report(second, { sent: true })
+      expect((await store.chat(localChatId(DIRECT)))!.outgoing.find((row) => row.id === other)).toMatchObject({ status: 'waiting', claimedAt: null })
     })
 
     it('settles a reply found sending at the start as not sent, unconfirmed, and leaves the server rows alone', async () => {
@@ -156,28 +180,43 @@ describe('LocalChatBackend', () => {
         ['later', 'waiting', null],
       ])
       expect((await store.chat('server-chat'))!.outgoing.map((row) => row.status)).toEqual(['sending'])
-      expect(await store.chatMeta(LOCAL_SENDING)).toBeNull()
+      // Sending goes on with the next one.
+      expect((await backend.claimNext())?.text).toBe('later')
     })
 
-    it('leaves a reply waiting when the crash came before it was marked sending', async () => {
-      await queueLocalReply(store, localChatId(DIRECT), 'hi', '0193a000-0000-7000-8000-000000000001', NOW)
-      await store.setChatMeta(LOCAL_SENDING, JSON.stringify({ id: '0193a000-0000-7000-8000-000000000001', chatId: localChatId(DIRECT) }))
+    it('settles every reply of this account found sending, whatever wrote it', async () => {
+      await store.putChatOutgoing([
+        chatOutgoing('0193a000-0000-7000-8000-000000000001', localChatId(DIRECT), LOCAL_CHAT_ACCOUNT, { status: 'sending', claimedAt: iso(-1) }),
+        chatOutgoing('0193a000-0000-7000-8000-000000000002', localChatId(GROUP), LOCAL_CHAT_ACCOUNT, { status: 'sending', claimedAt: iso(-1) }),
+      ])
+      expect(await backend.claimNext()).toBeNull()
 
       await new LocalChatBackend(store, config, identity, () => now).prepare()
 
-      expect((await store.chat(localChatId(DIRECT)))!.outgoing.map((row) => row.status)).toEqual(['waiting'])
-      expect(await store.chatMeta(LOCAL_SENDING)).toBeNull()
+      expect((await store.sendingOutgoingHere()).length).toBe(0)
+      expect((await store.chat(localChatId(GROUP)))!.outgoing.map((row) => [row.status, row.error])).toEqual([['failed', 'unconfirmed']])
+    })
+
+    it('fails a waiting reply whose chat id names no chat, so it holds up nothing', async () => {
+      // A row no relay version writes: its chat id has no JID in it.
+      await store.putChats([chat('wa:broken', LOCAL_CHAT_ACCOUNT, { jid: '31600000000@s.whatsapp.net' })])
+      await store.putChatOutgoing([chatOutgoing('0193a000-0000-7000-8000-000000000000', 'wa:broken', LOCAL_CHAT_ACCOUNT, { createdAt: iso(-60) })])
+      await queueLocalReply(store, localChatId(DIRECT), 'next', '0193a000-0000-7000-8000-000000000001', NOW)
+
+      expect((await backend.claimNext())?.text).toBe('next')
+      expect((await store.chat('wa:broken'))!.outgoing.map((row) => [row.status, row.error])).toEqual([['failed', 'refused']])
     })
 
     it('queues a reply once per id, and refuses empty, too long, left out and unknown chats', async () => {
       const id = '0193a000-0000-7000-8000-000000000001'
-      const first = await queueLocalReply(store, localChatId(DIRECT), 'hi', id, NOW)
+      const first = await queueLocalReply(store, localChatId(DIRECT), '  hi\n\n', id, NOW)
       expect(await queueLocalReply(store, localChatId(DIRECT), 'hi again', id, NOW + 5)).toEqual(first)
-      expect(first).toMatchObject({ status: 'waiting', chatAccountId: LOCAL_CHAT_ACCOUNT, createdAt: new Date(NOW).toISOString() })
+      expect(first).toMatchObject({ text: 'hi', status: 'waiting', chatAccountId: LOCAL_CHAT_ACCOUNT, createdAt: new Date(NOW).toISOString() })
 
       const refused = (promise: Promise<unknown>) => promise.then(() => null, (error: LocalChatError) => error.code)
       expect(await refused(queueLocalReply(store, localChatId(DIRECT), '  \n ', 'x1', NOW))).toBe('empty')
       expect(await refused(queueLocalReply(store, localChatId(DIRECT), 'x'.repeat(CHAT_REPLY_MAX + 1), 'x2', NOW))).toBe('too_long')
+      expect(await refused(queueLocalReply(store, localChatId(DIRECT), 'a\u0007b', 'x7', NOW))).toBe('control')
       expect(await refused(queueLocalReply(store, localChatId('31600000000@s.whatsapp.net'), 'hi', 'x3', NOW))).toBe('no_chat')
       expect(await refused(queueLocalReply(store, LOCAL_CHAT_ACCOUNT, 'hi', 'x4', NOW))).toBe('no_chat')
       await setLocalChatState(store, localChatId(GROUP), { leftOut: true })
@@ -244,7 +283,7 @@ describe('LocalChatBackend', () => {
 
   it('removes the chats with the relay values, and a backend made before writes nothing more', async () => {
     await backend.ingest([direct], [incoming('A1', DIRECT, -10)], false)
-    await backend.setCursor({ storeId: 's1', rowid: 3, firstImportThrough: null })
+    await backend.setCursor({ storeId: 's1', rowid: 3, firstImport: null })
     await store.putChatAccount(chatAccount('acct'))
 
     await removeLocalChats(store)
@@ -253,7 +292,7 @@ describe('LocalChatBackend', () => {
     expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, DIRECT)).toBeNull()
     expect(await store.chatMeta(LOCAL_CURSOR)).toBeNull()
     await expect(backend.ingest([direct], [incoming('A2', DIRECT, -5)], false)).rejects.toBeInstanceOf(ChatRelayStopped)
-    await expect(backend.setCursor({ storeId: 's1', rowid: 4, firstImportThrough: null })).rejects.toBeInstanceOf(ChatRelayStopped)
+    await expect(backend.setCursor({ storeId: 's1', rowid: 4, firstImport: null })).rejects.toBeInstanceOf(ChatRelayStopped)
     expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, DIRECT)).toBeNull()
 
     // A backend made afterwards (connecting again) works.
