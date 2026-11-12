@@ -51,3 +51,11 @@ export async function openDesktopSql(name: string): Promise<Sql> {
 export function deleteDesktopSql(name: string): Promise<void> {
   return invoke('sql_delete', { name })
 }
+
+/**
+ * The names of the mail copies in the desktop app's data folder (`tresso-mail-<userId>[-<serverTag>]`), so copies an
+ * earlier release left without listing them can be found. Names only: the shell returns no paths.
+ */
+export function listDesktopSql(): Promise<string[]> {
+  return invoke<string[]>('sql_list')
+}

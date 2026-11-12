@@ -23,9 +23,11 @@ vi.mock('@/platform/desktopSql', () => ({
     desktop.deleted.push(name)
     desktop.files.delete(name)
   },
+  // As the shell's sql_list: the names of the copies in its folder, no paths.
+  listDesktopSql: async () => [...desktop.files.keys()],
 }))
 
-const { deleteMailStore, mailCopyName, openMailStore } = await import('../store')
+const { copiesOnDevice, copyUserId, deleteMailStore, mailCopyName, openMailStore } = await import('../store')
 const { server, serverTag } = await import('@/platform/server')
 
 async function indexedDbExists(userId: string): Promise<boolean> {
@@ -169,5 +171,49 @@ describe('openMailStore', () => {
 
     expect(desktop.deleted).toEqual([databaseName('kim')])
     expect(await indexedDbExists('kim')).toBe(false)
+  })
+})
+
+describe('copiesOnDevice', () => {
+  const anna = '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'
+  const ben = '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c'
+
+  afterEach(async () => {
+    desktop.on = true
+    desktop.files.clear()
+    await deleteMailDatabase(anna)
+  })
+
+  it("finds the desktop's SQLite copies through the shell, with the user read from the name, and old IndexedDB copies", async () => {
+    desktop.files.set(databaseName(ben), await memorySql())
+    desktop.files.set(`${databaseName(anna)}-1a2b3c4d`, await memorySql())
+    // A copy from before the desktop kept mail in SQLite, in the web view's IndexedDB.
+    await (await IndexedDbMailStore.open(anna)).close()
+
+    const found = await copiesOnDevice()
+
+    expect(found).toEqual(
+      expect.arrayContaining([
+        { userId: anna, name: databaseName(anna) },
+        { userId: ben, name: databaseName(ben) },
+        { userId: anna, name: `${databaseName(anna)}-1a2b3c4d` },
+      ]),
+    )
+    expect(found).toHaveLength(3)
+  })
+
+  it('asks the shell for nothing in the browser', async () => {
+    desktop.on = false
+    desktop.files.set(databaseName(ben), await memorySql())
+
+    expect(await copiesOnDevice()).toEqual([])
+  })
+
+  it('reads the user of a copy name, with or without a server tag', () => {
+    expect(copyUserId(databaseName(anna))).toBe(anna)
+    expect(copyUserId(`${databaseName(anna)}-1a2b3c4d`)).toBe(anna)
+    expect(copyUserId('tresso-mail-u1')).toBe('u1')
+    expect(copyUserId('tresso-mail-')).toBeNull()
+    expect(copyUserId('other-database')).toBeNull()
   })
 })
