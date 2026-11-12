@@ -303,6 +303,21 @@ describe('SyncStatusMachine', () => {
     expect(subject.status.text).toBe('Getting your mail, 100%')
   })
 
+  it('drops the failure once a retry stores a page, and shows a new failure again', () => {
+    const { subject } = machine()
+    subject.opening()
+    subject.opened({ confirmed: true, afterUpdate: false, lastSyncedAt: null })
+    subject.failed('Bad gateway')
+    subject.progress(pull({ cursor: 0 }))
+    expect(subject.status.problem).toBe('Sync stopped: Bad gateway')
+
+    subject.progress(pull({ cursor: 400, latest: 1000, pages: 1, hasMore: true }))
+    expect(subject.status).toMatchObject({ kind: 'firstSync', text: 'Getting your mail, 40%', problem: null })
+
+    subject.failed('Bad gateway')
+    expect(subject.status.problem).toBe('Sync stopped: Bad gateway')
+  })
+
   it('says the sync stopped and why when the copy could not be opened', () => {
     const { subject } = machine()
     subject.opening()

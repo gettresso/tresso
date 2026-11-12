@@ -7,7 +7,7 @@ import { useMailStore } from '../stores/mail'
 import { useAuthStore } from '../stores/auth'
 import { useComposeStore } from '../stores/compose'
 import AppShell from '../views/AppShell.vue'
-import { describeSync, type PullProgress, type SyncFacts } from '@tresso/core'
+import { describeSync, SyncStatusMachine, type PullProgress, type SyncFacts } from '@tresso/core'
 
 /** An open, synced copy, live. */
 const openFacts: SyncFacts = { copy: 'open', confirmed: true, afterUpdate: false, pull: null, origin: null, error: null, stream: 'live', wasLive: true, online: true, lastSyncedAt: null, now: Date.now() }
@@ -144,29 +144,42 @@ describe('App', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('Signing in to kim@company.example failed')
   })
 
-  it('keeps a hidden sync error hidden while a long retry (a first sync) runs and fails again', async () => {
+  it('keeps a dismissed sync error hidden while retries store nothing, clears it once one stores a page, and shows a new failure', async () => {
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: AppShell, children: [{ path: '', name: 'unified', component: { template: '<div />' } }] }] })
     await router.push('/')
     await router.isReady()
 
     const wrapper = mount(App, { global: { plugins: [router] } })
     const mail = useMailStore()
-    const firstSync = (error: string | null, pull: PullProgress | null) => {
-      mail.syncStatus = describeSync({ ...openFacts, lastSyncedAt: null, error, pull, origin: 0 })
-    }
-    firstSync('Failed to fetch', null)
+    // The status machine as the mail store drives it: a first sync whose first try failed.
+    const status = new SyncStatusMachine({ onChange: (next) => (mail.syncStatus = next) })
+    status.opening()
+    status.opened({ confirmed: true, afterUpdate: false, lastSyncedAt: null })
+    status.failed('Bad gateway')
     await flushPromises()
     await wrapper.get('[role="alert"] button[aria-label="Hide this message"]').trigger('click')
 
-    // Retries of a first sync show their progress; the failure stands until one works.
-    for (const cursor of [400, 800]) {
-      firstSync('Failed to fetch', { from: 0, cursor, latest: 2000, items: cursor, pages: cursor / 400, hasMore: true })
-      await flushPromises()
-      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
-      firstSync('Failed to fetch', null)
+    // Retries that fail before storing a page: the failure stands, and so does the dismissal.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      status.progress({ from: 0, cursor: 0, latest: null, items: 0, pages: 0, hasMore: null })
+      status.failed('Bad gateway')
+      status.progress(null)
       await flushPromises()
       expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     }
+
+    // A retry that stores a page reaches the server: the banner goes while the percentage climbs.
+    status.progress({ from: 0, cursor: 400, latest: 2000, items: 400, pages: 1, hasMore: true })
+    await flushPromises()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(mail.syncStatus).toMatchObject({ text: 'Getting your mail, 20%', problem: null })
+
+    // It fails again later: news, so it shows again.
+    status.failed('Bad gateway')
+    status.progress(null)
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('Sync stopped: Bad gateway')
+    status.dispose()
   })
 
   it('shows a hidden sync error again on a later outage, once a pull worked in between', async () => {
