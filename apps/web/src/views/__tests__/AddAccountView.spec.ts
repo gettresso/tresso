@@ -369,7 +369,7 @@ describe('connecting a mail account', () => {
 
       expect(requests.find((r) => r.path === '/api/v1/provider-connections')?.body).toEqual({ provider: 'microsoft', state: 'state-1', error: 'access_denied', errorDescription: 'AADSTS90094: Admin consent' })
       expect(dialog(wrapper).get('h1').text()).toBe('Your organization has to approve Tresso first')
-      expect(dialog(wrapper).get('.cf-url').text()).toBe(approvalUrl)
+      expect(dialog(wrapper).get('.approval-link .url').text()).toBe(approvalUrl)
       expect(button(wrapper, 'Copy link').exists()).toBe(true)
       expect(button(wrapper, 'Connect mail only').exists()).toBe(true)
     })
