@@ -1859,9 +1859,10 @@ make the status flip every round). The worker ends it: after a round in which ev
 had changes) it reports `active` once, and while a calendar keeps failing it reports `error`, never `active`. The API
 takes `active` only over `error`; any other status (a login, a permission, an address to confirm) stays until a
 calendar list shows it is solved. The list's answer carries the account's `calendarStatus` after the list, so the
-worker reports a problem again only when it changed (another status or another text) or the API no longer holds it
-(a sign-in again sets it back to `unknown`, and the list then makes it `active`); an API that does not send the field
-gets the problem after every round, as before.
+worker reports a problem again only when it changed (another status or another text), when the API no longer holds
+it (a sign-in again sets it back to `unknown`, and the list then makes it `active`), or after a wake: a problem met
+before any list (a refused list, a refused sign-in) cannot be checked against the answer, and a wake is how the API
+says the status may have changed. An API that does not send the field gets the problem after every round, as before.
 The clients show it where the user looks: the account's card in Settings, Accounts carries a badge for
 `not_granted`, `auth_failed`, `error` and `unconfirmed` and opens by itself, and the calendar page lists every account
 whose calendars do not show, with "Allow calendar access" (one sign-in that adds the calendar scopes) for

@@ -154,7 +154,7 @@ func TestGraphNeverSaysCalendarsAreNotAllowed(t *testing.T) {
 	}
 }
 
-func TestAWriteGraphRefusesWith403SaysTheCalendarIsReadOnly(t *testing.T) {
+func TestAWriteGraphRefusesWith403SaysWhatIsKnown(t *testing.T) {
 	graph := newFakeGraph(t)
 	graph.put(single("ev10", "Lunch"))
 	fake := calsynctest.NewAPI(owner)
@@ -171,8 +171,8 @@ func TestAWriteGraphRefusesWith403SaysTheCalendarIsReadOnly(t *testing.T) {
 	calsynctest.Eventually(t, "the write", func() bool { _, ok := fake.Result("rename"); return ok })
 
 	r, _ := fake.Result("rename")
-	if r.Outcome != api.OperationFailed || r.Error == nil || *r.Error != "Outlook refused the change: the calendar is read-only for you." {
-		t.Fatalf("a 403 on a write names the calendar's own permission, not a bare status: %+v", r)
+	if r.Outcome != api.OperationFailed || r.Error == nil || *r.Error != "Microsoft refused the change (403). The calendar may be read-only for you." {
+		t.Fatalf("a 403 on a write says what is known and the likely cause: %+v", r)
 	}
 }
 

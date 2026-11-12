@@ -128,7 +128,9 @@ func TestARefusedCalendarListIsReportedAsAnErrorWithTheProvidersCode(t *testing.
 	calsynctest.Eventually(t, "the status", func() bool { return len(fake.Statuses()) == 1 })
 	syncer.Trigger("a1")
 	calsynctest.Eventually(t, "the retry the trigger starts", func() bool { return len(provider.listings()) >= 2 })
-	if statuses := fake.Statuses(); len(statuses) != 1 || statuses[0] != api.CalendarError {
+	// A wake may mean the API changed the status (a sign-in again), so the refusal is told once more.
+	calsynctest.Eventually(t, "the status again", func() bool { return len(fake.Statuses()) == 2 })
+	if statuses := fake.Statuses(); statuses[0] != api.CalendarError || statuses[1] != api.CalendarError {
 		t.Fatalf("statuses = %v", statuses)
 	}
 	if detail := fake.Details()[0]; detail != "Fake refused the calendars of this account (ErrorAccessDenied). Your organization may not allow Tresso to use calendars." {
@@ -258,6 +260,31 @@ func TestAnErrorThatStaysIsReportedOnceAndAgainOnlyWhenItChanges(t *testing.T) {
 	calsynctest.Eventually(t, "more rounds", func() bool { return len(provider.listings()) >= listed+8 })
 	if statuses := fake.Statuses(); len(statuses) != 3 || statuses[2] != api.CalendarError {
 		t.Fatalf("statuses = %v", statuses)
+	}
+}
+
+// Fails without the fix: a sign-in again set the status to unknown, the refused list failed the same way, and the
+// worker sent nothing because it had reported that error before; the account stayed unknown for ever.
+func TestAWakeAfterASignInReportsARefusedListAgain(t *testing.T) {
+	refused := &providerhttp.StatusError{Method: "GET", URL: "/me/calendars", StatusCode: http.StatusForbidden, Reasons: []string{"ErrorAccessDenied"}}
+	provider := &fakeProvider{calendars: func() ([]Calendar, error) { return nil, refused }}
+	fake := calsynctest.NewAPI("kim@example.com")
+	syncer := start(t, provider, fake, quick)
+
+	calsynctest.Eventually(t, "the refused list", func() bool { return len(fake.Statuses()) == 1 })
+	if statuses := fake.Statuses(); statuses[0] != api.CalendarError {
+		t.Fatalf("statuses = %v", statuses)
+	}
+
+	fake.SetStatus("unknown")
+	syncer.Trigger("a1")
+	calsynctest.Eventually(t, "the error after the sign-in", func() bool { return len(fake.Statuses()) == 2 })
+	time.Sleep(50 * time.Millisecond)
+	if statuses := fake.Statuses(); len(statuses) != 2 || statuses[1] != api.CalendarError {
+		t.Fatalf("statuses = %v; one wake, one report", statuses)
+	}
+	if listed := len(provider.listings()); listed != 2 {
+		t.Fatalf("listed %d times; a refused list waits for the next wake", listed)
 	}
 }
 
