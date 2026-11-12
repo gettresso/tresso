@@ -247,7 +247,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
     {
         $rows = $this->connection->fetchAllAssociative(
             'SELECT a.id, a.email_address, a.display_name, a.provider, a.status, a.status_detail, a.last_synced_at, a.default_signature_id,
-                    a.calendar_status, a.calendar_status_detail
+                    a.calendar_status, a.calendar_status_detail, a.calendar_found_url
              FROM mail_account a WHERE a.owner_id = :user AND a.change_seq > :since AND a.change_seq <= :until ORDER BY a.change_seq',
             $range,
         );
@@ -263,6 +263,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
             'defaultSignatureId' => $r['default_signature_id'],
             'calendarStatus' => $r['calendar_status'],
             'calendarStatusDetail' => $r['calendar_status_detail'],
+            'calendarFoundUrl' => $r['calendar_found_url'],
         ], $rows);
     }
 

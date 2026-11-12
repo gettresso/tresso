@@ -321,7 +321,7 @@ class MailAccount implements TracksChanges
 
     public static function clientFields(): ?array
     {
-        return ['emailAddress', 'displayName', 'provider', 'status', 'statusDetail', 'lastSyncedAt', 'defaultSignature', 'calendarStatus', 'calendarStatusDetail'];
+        return ['emailAddress', 'displayName', 'provider', 'status', 'statusDetail', 'lastSyncedAt', 'defaultSignature', 'calendarStatus', 'calendarStatusDetail', 'calendarFoundUrl'];
     }
 
     public static function changeType(): string

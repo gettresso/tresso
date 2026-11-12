@@ -97,6 +97,14 @@ final class SyncCalendarTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'unconfirmed', 'detail' => 'A calendar server was found.', 'url' => 'https://dav.company.example/caldav/?user=kim'], $this->worker);
         self::assertResponseIsSuccessful();
         self::assertSame('https://dav.company.example/caldav/?user=kim', $this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarFoundUrl']);
+        self::assertSame('https://dav.company.example/caldav/?user=kim', $this->deltaAccount()['calendarFoundUrl'] ?? null, 'The delta carries it too.');
+
+        // Another address with the same sentence is a change of its own for clients that keep accounts from the delta.
+        $cursor = $this->getJson('/api/v1/sync/changes?since=0', $this->kim)['cursor'] ?? null;
+        self::assertIsInt($cursor);
+        $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'unconfirmed', 'detail' => 'A calendar server was found.', 'url' => 'https://dav.company.example/caldav/'], $this->worker);
+        self::assertResponseIsSuccessful();
+        self::assertSame('https://dav.company.example/caldav/', $this->deltaAccount($cursor)['calendarFoundUrl'] ?? null);
 
         $this->client->jsonRequest('POST', $this->base().'/calendar-status', ['workerId' => 'w1', 'status' => 'unconfirmed', 'url' => 'http://dav.company.example/'], $this->worker);
         self::assertResponseStatusCodeSame(422, 'Only https addresses are offered.');
@@ -106,6 +114,9 @@ final class SyncCalendarTest extends DatabaseTestCase
 
         $this->reportCalendars();
         self::assertNull($this->getJson('/api/v1/mail-accounts/'.$this->accountId, $this->kim)['calendarFoundUrl'], 'Gone once the calendars sync.');
+        $account = $this->deltaAccount();
+        self::assertArrayHasKey('calendarFoundUrl', $account);
+        self::assertNull($account['calendarFoundUrl']);
     }
 
     public function testAnIncompleteCalendarListRemovesNothing(): void
@@ -537,6 +548,23 @@ final class SyncCalendarTest extends DatabaseTestCase
         sort($names);
 
         return $names;
+    }
+
+    /**
+     * The account as the sync delta after `$since` carries it.
+     *
+     * @return array<mixed>
+     */
+    private function deltaAccount(int $since = 0): array
+    {
+        $accounts = $this->getJson('/api/v1/sync/changes?since='.$since, $this->kim)['mailAccounts'] ?? null;
+        self::assertIsArray($accounts);
+        foreach ($accounts as $account) {
+            if (\is_array($account) && $this->accountId === ($account['id'] ?? null)) {
+                return $account;
+            }
+        }
+        self::fail('The delta carries the account.');
     }
 
     private function base(): string
