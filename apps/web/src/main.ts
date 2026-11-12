@@ -10,7 +10,10 @@ import './assets/main.css'
 import App from './App.vue'
 import router from './router'
 import { config } from './config'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { isDesktop, onDeepLinks } from './platform/desktop'
+import { startMenuBridge } from './platform/menu'
 import { followReducedTransparency, vibrant } from './platform/vibrancy'
 import { startNotificationClicks } from './platform/notifier'
 import { onPushClick } from './platform/webPush'
@@ -41,6 +44,11 @@ if (isDesktop) {
       void router.replace(route)
     }
   })
+  // The menu bar (macOS): its actions run here, and its items act only while someone is signed in.
+  await startMenuBridge(
+    { router, newMessage: () => useComposeStore().openNew(), signedIn: () => auth.isAuthenticated && !auth.paymentRequired },
+    { listen, invoke },
+  )
   // A click on a mail notification opens its conversation.
   startNotificationClicks(
     (path) => void router.push(path),

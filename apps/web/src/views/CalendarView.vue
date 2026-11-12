@@ -39,6 +39,7 @@ import { shortcutAllowed } from '@/mail/useMessageActions'
 import { useTodosStore } from '@/stores/todos'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import SegmentedControl from '@/components/SegmentedControl.vue'
+import { useViewRequest } from '@/components/viewRequests'
 
 const calendar = useCalendarStore()
 const mail = useMailStore()
@@ -183,6 +184,8 @@ function newEvent(start?: number, allDay = false): void {
   const hour = Math.min(23, wallParts(nowWall).hour + 1)
   editor.value = { kind: 'new', start: start ?? toInstant(day + hour * 3_600_000, calendar.zone), allDay }
 }
+// New Event in the desktop app's menu bar (see platform/menu.ts).
+useViewRequest('newEvent', () => newEvent())
 async function edit(): Promise<void> {
   const occurrence = selected.value
   if (occurrence === null) return

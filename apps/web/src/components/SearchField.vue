@@ -7,6 +7,7 @@ import { searchFilters } from '@tresso/core'
 import { searchSchema, type SearchValues } from '@/forms/search'
 import AppIcon from '@/components/AppIcon.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
+import { useViewRequest } from '@/components/viewRequests'
 
 const props = withDefaults(defineProps<{ query?: string; autofocus?: boolean }>(), { query: '', autofocus: false })
 
@@ -51,6 +52,12 @@ function shortcut(event: KeyboardEvent): void {
     input.value?.select()
   }
 }
+
+// Find… in the desktop app's menu bar (see platform/menu.ts).
+useViewRequest('focusSearch', () => {
+  input.value?.focus()
+  input.value?.select()
+})
 
 onMounted(() => {
   window.addEventListener('keydown', shortcut)
