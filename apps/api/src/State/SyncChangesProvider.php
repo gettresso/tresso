@@ -248,7 +248,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
         $rows = $this->connection->fetchAllAssociative(
             'SELECT a.id, a.email_address, a.display_name, a.provider, a.status, a.status_detail, a.last_synced_at, a.default_signature_id,
                     a.calendar_status, a.calendar_status_detail, a.calendar_found_url
-             FROM mail_account a WHERE a.owner_id = :user AND a.change_seq > :since AND a.change_seq <= :until ORDER BY a.change_seq',
+             FROM mail_account a WHERE a.owner_id = :user AND a.change_seq > :since AND a.change_seq <= :until ORDER BY a.change_seq, a.id',
             $range,
         );
 
@@ -277,7 +277,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
         $rows = $this->connection->fetchAllAssociative(
             'SELECT f.id, f.mail_account_id, f.remote_name, f.display_name, f.role
              FROM folder f JOIN mail_account a ON a.id = f.mail_account_id
-             WHERE a.owner_id = :user AND f.change_seq > :since AND f.change_seq <= :until ORDER BY f.change_seq',
+             WHERE a.owner_id = :user AND f.change_seq > :since AND f.change_seq <= :until ORDER BY f.change_seq, f.id',
             $range,
         );
 
@@ -301,7 +301,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
             'SELECT t.id, t.mail_account_id, t.subject, t.message_count, t.last_message_at, t.category_id, t.verdict, t.classification_reason,
                     t.held_until, t.batched_at
              FROM thread t JOIN mail_account a ON a.id = t.mail_account_id
-             WHERE a.owner_id = :user AND t.change_seq > :since AND t.change_seq <= :until ORDER BY t.change_seq',
+             WHERE a.owner_id = :user AND t.change_seq > :since AND t.change_seq <= :until ORDER BY t.change_seq, t.id',
             $range,
         );
 
@@ -336,7 +336,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
                     COALESCE((SELECT json_agg(l.folder_id ORDER BY l.folder_id) FROM message_location l WHERE l.message_id = m.id), '[]') AS folder_ids
              FROM message m JOIN mail_account a ON a.id = m.mail_account_id
              LEFT JOIN message_signals s ON s.message_id = m.id
-             WHERE a.owner_id = :user AND m.change_seq > :since AND m.change_seq <= :until ORDER BY m.change_seq",
+             WHERE a.owner_id = :user AND m.change_seq > :since AND m.change_seq <= :until ORDER BY m.change_seq, m.id",
             $range,
         );
 
@@ -402,7 +402,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
         $rows = $this->connection->fetchAllAssociative(
             'SELECT o.id, o.mail_account_id, o.status, o.subject, o.recipients, o.send_at, o.sent_at, o.last_error, o.in_reply_to_id
              FROM outgoing_message o JOIN mail_account a ON a.id = o.mail_account_id
-             WHERE a.owner_id = :user AND o.change_seq > :since AND o.change_seq <= :until ORDER BY o.change_seq',
+             WHERE a.owner_id = :user AND o.change_seq > :since AND o.change_seq <= :until ORDER BY o.change_seq, o.id',
             $range,
         );
 
@@ -428,7 +428,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
     {
         $rows = $this->connection->fetchAllAssociative(
             'SELECT g.id, g.name, g.html, g.updated_at
-             FROM signature g WHERE g.owner_id = :user AND g.change_seq > :since AND g.change_seq <= :until ORDER BY g.change_seq',
+             FROM signature g WHERE g.owner_id = :user AND g.change_seq > :since AND g.change_seq <= :until ORDER BY g.change_seq, g.id',
             $range,
         );
 
@@ -449,7 +449,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
     {
         $rows = $this->connection->fetchAllAssociative(
             'SELECT d.id, d.mail_account_id, d.kind, d.recipients, d.subject, d.html, d.signature_id, d.quote_html, d.in_reply_to_id, d.version, d.updated_at
-             FROM draft d WHERE d.owner_id = :user AND d.change_seq > :since AND d.change_seq <= :until AND d.sending_as_id IS NULL ORDER BY d.change_seq',
+             FROM draft d WHERE d.owner_id = :user AND d.change_seq > :since AND d.change_seq <= :until AND d.sending_as_id IS NULL ORDER BY d.change_seq, d.id',
             $range,
         );
         // The files without links: links expire, and the copy on a device lasts. GET /drafts/{id} has fresh ones.
@@ -504,7 +504,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
     {
         $rows = $this->connection->fetchAllAssociative(
             'SELECT c.id, c.builtin, c.name, c.instructions, c.include_senders, c.exclude_senders, c.verdict, c.auto_create_todo, c.batch_delivery, c.position
-             FROM category c WHERE c.owner_id = :user AND c.change_seq > :since AND c.change_seq <= :until ORDER BY c.change_seq',
+             FROM category c WHERE c.owner_id = :user AND c.change_seq > :since AND c.change_seq <= :until ORDER BY c.change_seq, c.position, c.id',
             $range,
         );
 
@@ -532,7 +532,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
         $rows = $this->connection->fetchAllAssociative(
             'SELECT u.id, u.mail_account_id, u.sender, u.method, u.status, u.error, u.requested_at, u.completed_at
              FROM unsubscription u JOIN mail_account a ON a.id = u.mail_account_id
-             WHERE a.owner_id = :user AND u.change_seq > :since AND u.change_seq <= :until ORDER BY u.change_seq',
+             WHERE a.owner_id = :user AND u.change_seq > :since AND u.change_seq <= :until ORDER BY u.change_seq, u.id',
             $range,
         );
 
@@ -558,7 +558,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
         $rows = $this->connection->fetchAllAssociative(
             'SELECT c.id, c.mail_account_id, c.source, c.name, c.color, c.user_color, c.time_zone, c.writable, c.is_default,
                     c.visible, c.work, c.provider_schedules, c.conference_providers, c.position
-             FROM calendar c WHERE c.owner_id = :user AND c.change_seq > :since AND c.change_seq <= :until ORDER BY c.change_seq',
+             FROM calendar c WHERE c.owner_id = :user AND c.change_seq > :since AND c.change_seq <= :until ORDER BY c.change_seq, c.position, c.id',
             $range,
         );
 
@@ -597,7 +597,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
              FROM calendar_event e JOIN calendar c ON c.id = e.calendar_id
              WHERE c.owner_id = :user AND e.change_seq > :since AND e.change_seq <= :until
                AND (e.series_ends_at IS NULL OR e.series_ends_at > :window)
-             ORDER BY e.change_seq',
+             ORDER BY e.change_seq, e.id',
             [...$range, 'window' => self::eventWindow()],
         );
 
@@ -650,7 +650,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
              FROM scheduled_notification n
              WHERE n.user_id = :user AND n.change_seq > :since AND n.change_seq <= :until
                AND (n.delivered_at > :recent OR (n.delivered_at IS NULL AND n.round > 0 AND n.fire_at > :recent))
-             ORDER BY n.change_seq',
+             ORDER BY n.change_seq, n.id',
             [...$range, 'recent' => new \DateTimeImmutable('-7 days')->format('Y-m-d H:i:s')],
         );
 
@@ -684,7 +684,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
             'SELECT n.id, n.message_id, n.thread_id, n.title, n.body, n.sealed_body, n.delivered_at, n.channels, n.silent, n.summary
              FROM mail_notification n
              WHERE n.user_id = :user AND n.change_seq > :since AND n.change_seq <= :until AND n.delivered_at > :recent
-             ORDER BY n.change_seq',
+             ORDER BY n.change_seq, n.id',
             [...$range, 'recent' => new \DateTimeImmutable('-7 days')->format('Y-m-d H:i:s')],
         );
 
@@ -712,7 +712,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
     {
         $rows = $this->connection->fetchAllAssociative(
             'SELECT o.id, o.event_id, o.occurrence_key, o.text, o.updated_at FROM event_note o
-             WHERE o.user_id = :user AND o.change_seq > :since AND o.change_seq <= :until ORDER BY o.change_seq',
+             WHERE o.user_id = :user AND o.change_seq > :since AND o.change_seq <= :until ORDER BY o.change_seq, o.id',
             $range,
         );
 
@@ -736,7 +736,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
             'SELECT o.id, o.title, o.notes, o.due_date, o.due_time, o.duration_minutes, o.completed_at, o.position, o.source,
                     o.message_id, m.thread_id, o.planned_start, o.planned_end, o.plan_state, o.created_at, o.updated_at
              FROM todo o LEFT JOIN message m ON m.id = o.message_id
-             WHERE o.owner_id = :user AND o.change_seq > :since AND o.change_seq <= :until ORDER BY o.change_seq',
+             WHERE o.owner_id = :user AND o.change_seq > :since AND o.change_seq <= :until ORDER BY o.change_seq, o.position, o.id',
             $range,
         );
 
@@ -783,7 +783,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
                     h.due_at, h.state, h.forward_id, h.overdue_at, h.notified_at, h.notified_channels, h.notified_silently, h.nudged_at, h.last_nudge_id, h.reply_id, h.created_at,
                     h.closed_at, h.updated_at
              FROM hand_over h LEFT JOIN message m ON m.id = h.message_id
-             WHERE h.owner_id = :user AND h.change_seq > :since AND h.change_seq <= :until ORDER BY h.change_seq',
+             WHERE h.owner_id = :user AND h.change_seq > :since AND h.change_seq <= :until ORDER BY h.change_seq, h.id',
             $range,
         );
 
@@ -820,7 +820,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
     {
         $rows = $this->connection->fetchAllAssociative(
             'SELECT b.id, b.covers_from, b.covers_until, b.thread_ids, b.created_at
-             FROM daily_brief b WHERE b.owner_id = :user AND b.change_seq > :since AND b.change_seq <= :until ORDER BY b.change_seq',
+             FROM daily_brief b WHERE b.owner_id = :user AND b.change_seq > :since AND b.change_seq <= :until ORDER BY b.change_seq, b.id',
             $range,
         );
 
@@ -851,7 +851,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
                 UNION ALL
                 SELECT \'calendarEvent\', e.id, e.change_seq FROM calendar_event e JOIN calendar c ON c.id = e.calendar_id
                  WHERE :since > 0 AND c.owner_id = :user AND e.change_seq > :since AND e.change_seq <= :until AND e.series_ends_at <= :window
-             ) gone WHERE entity_type IN (:types) ORDER BY change_seq',
+             ) gone WHERE entity_type IN (:types) ORDER BY change_seq, entity_type, entity_id',
             [...$range, 'window' => self::eventWindow(), 'types' => $types],
             ['types' => ArrayParameterType::STRING],
         );
