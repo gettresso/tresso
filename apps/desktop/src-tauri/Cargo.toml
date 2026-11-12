@@ -34,6 +34,10 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 # Reads the "Reduce transparency" setting, so the web glass turns solid with the window's vibrancy (accessibility.rs),
 # and adds the Edit menu's items Tauri has none for and keeps the main window out of AppKit's window list (menu.rs).
+[dev-dependencies]
+# The mock runtime and IPC helpers, for the menu_state test (menu.rs); tests only.
+tauri = { version = "2.12.4", features = ["macos-private-api", "test"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSWindow"] }
 # Loads and drives Sparkle, the macOS updater (updates.rs).
