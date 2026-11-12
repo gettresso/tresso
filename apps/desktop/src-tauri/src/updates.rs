@@ -230,10 +230,6 @@ mod sparkle {
   }
 }
 
-/// The menu item that asks Sparkle for updates, next to "About Tresso" in the app menu.
-#[cfg(target_os = "macos")]
-pub const CHECK_MENU_ID: &str = "check-for-updates";
-
 /// Asks the web client to get ready for the relaunch Sparkle wants; false when it is not listening, so nobody would
 /// answer.
 #[cfg(target_os = "macos")]
@@ -248,10 +244,10 @@ fn request_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
   asked
 }
 
-/// "Check for Updates…": with an update already downloaded and waiting for the web client, asks it again instead, so
-/// the update is one click away rather than downloaded twice. Main thread.
+/// "Check for Updates…" (the app menu, menu.rs, and Settings): with an update already downloaded and waiting for the
+/// web client, asks it again instead, so the update is one click away rather than downloaded twice. Main thread.
 #[cfg(target_os = "macos")]
-fn check_or_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+pub(crate) fn check_or_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
   if !sparkle::on_main_thread() {
     return;
   }
@@ -260,33 +256,16 @@ fn check_or_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
   }
 }
 
-/// Starts Sparkle and adds "Check for Updates…" to the app menu (macOS). Elsewhere the updater plugin is registered
-/// in lib.rs instead.
+/// Starts Sparkle (macOS) and returns whether it runs, so "Check for Updates…" in the app menu (menu.rs) can act.
+/// Elsewhere the updater plugin is registered in lib.rs instead.
 #[cfg(target_os = "macos")]
-pub fn setup(app: &tauri::App) -> tauri::Result<()> {
-  use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-
+pub fn setup(app: &tauri::App) -> bool {
   // A debug bundle (tauri build --debug) would otherwise offer to replace itself with the latest release.
   if cfg!(debug_assertions) {
-    return Ok(());
+    return false;
   }
   let handle = app.handle().clone();
-  if !sparkle::start(Box::new(move || request_relaunch(&handle))) {
-    return Ok(());
-  }
-  let menu = Menu::default(app.handle())?;
-  if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu().cloned()) {
-    let check = MenuItem::with_id(app, CHECK_MENU_ID, "Check for Updates…", true, None::<&str>)?;
-    app_menu.insert(&check, 1)?;
-    app_menu.insert(&PredefinedMenuItem::separator(app)?, 1)?;
-  }
-  app.set_menu(menu)?;
-  app.on_menu_event(|app, event| {
-    if event.id() == CHECK_MENU_ID {
-      check_or_relaunch(app);
-    }
-  });
-  Ok(())
+  sparkle::start(Box::new(move || request_relaunch(&handle)))
 }
 
 /// How this build updates itself: "sparkle" (macOS), "tauri" (the Windows setup and the Linux AppImage) or "none".

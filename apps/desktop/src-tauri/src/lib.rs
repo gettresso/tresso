@@ -1,4 +1,5 @@
 mod accessibility;
+mod menu;
 mod sql;
 mod tokens;
 mod updates;
@@ -12,6 +13,8 @@ pub fn run() {
     .plugin(tauri_plugin_process::init())
     .manage(sql::Databases::default())
     .manage(updates::UpdateListener::default())
+    // Filled on macOS once the menu bar is built (menu.rs); empty where the app has none.
+    .manage(menu::MenuItems::default())
     // A new page in the main window does not listen for Sparkle's relaunch question until it says so (updates.rs).
     .on_page_load(|webview, payload| {
       use tauri::Manager;
@@ -25,6 +28,7 @@ pub fn run() {
       updates::check_for_updates_natively,
       updates::update_listening,
       updates::update_relaunch,
+      menu::menu_state,
       tokens::load_tokens,
       tokens::save_tokens,
       tokens::clear_tokens,
@@ -41,9 +45,13 @@ pub fn run() {
     ])
     .setup(|app| {
       main_window(app)?;
-      // macOS updates through Sparkle; Windows and Linux through Tauri's updater, driven by the web client.
+      // macOS updates through Sparkle, which its item in the menu bar asks; Windows and Linux through Tauri's updater,
+      // driven by the web client. Only macOS has a menu bar (menu.rs).
       #[cfg(target_os = "macos")]
-      updates::setup(app)?;
+      {
+        let updates = updates::setup(app);
+        menu::setup(app, updates)?;
+      }
       #[cfg(not(target_os = "macos"))]
       app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
       if cfg!(debug_assertions) {
@@ -64,11 +72,13 @@ pub fn run() {
     })
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
-    .run(|_app, event| {
+    .run(|_app, event| match event {
       // A token set the server just rotated is lost when the app quits before the keychain has it.
-      if let tauri::RunEvent::Exit = event {
-        tokens::finish_pending(std::time::Duration::from_secs(5));
-      }
+      tauri::RunEvent::Exit => tokens::finish_pending(std::time::Duration::from_secs(5)),
+      // A click on the Dock icon while the window is closed (macOS keeps the app running) brings it back.
+      #[cfg(target_os = "macos")]
+      tauri::RunEvent::Reopen { has_visible_windows: false, .. } => menu::show_main_window(_app),
+      _ => {}
     });
 }
 
@@ -84,7 +94,7 @@ fn main_window(app: &tauri::App) -> tauri::Result<()> {
     .iter()
     .find(|window| window.label == "main")
     .expect("tauri.conf.json defines the main window");
-  tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
+  let window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
     .on_new_window(|url, _features| {
       if opens_outside(&url)
         && let Err(error) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
@@ -94,6 +104,11 @@ fn main_window(app: &tauri::App) -> tauri::Result<()> {
       tauri::webview::NewWindowResponse::Deny
     })
     .build()?;
+  // Closing it keeps the app in the Dock (macOS); elsewhere closing the only window quits, as it does there.
+  #[cfg(target_os = "macos")]
+  menu::keep_main_window(&window);
+  #[cfg(not(target_os = "macos"))]
+  let _ = window;
   Ok(())
 }
 
