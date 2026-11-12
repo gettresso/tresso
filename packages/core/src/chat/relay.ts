@@ -367,9 +367,9 @@ export class ChatRelay {
     const target = cursor.firstImportThrough
     const firstImport = target !== null
     const rows = page.rows.filter((row) => row.rowid > cursor.rowid && (target === null || row.rowid <= target))
-    const last = rows.at(-1)?.rowid ?? cursor.rowid
+    const last = rows[rows.length - 1]?.rowid ?? cursor.rowid
     const full = page.rows.length >= RELAY_PAGE
-    const firstImportDone = firstImport && (!full || (page.rows.at(-1)?.rowid ?? 0) >= target)
+    const firstImportDone = firstImport && (!full || (page.rows[page.rows.length - 1]?.rowid ?? 0) >= target)
 
     const { chats, messages } = await this.incoming(rows, settings)
     if (messages.length > 0) {
@@ -442,7 +442,7 @@ export class ChatRelay {
       this.step = 'names'
       const found = await this.options.bridge.names(batch)
       for (const id of batch) {
-        const lookup = Object.hasOwn(found, id) ? found[id] : undefined
+        const lookup = Object.prototype.hasOwnProperty.call(found, id) ? found[id] : undefined
         this.names.set(id, { number: lookup?.number ?? null, name: lookup?.name ?? null })
       }
     }
