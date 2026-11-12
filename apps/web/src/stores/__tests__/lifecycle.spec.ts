@@ -357,4 +357,26 @@ describe('the mail copy across sign-out and sign-in', () => {
     expect(mail.pulls).toBe(0)
     expect(fetch).not.toHaveBeenCalled()
   })
+  it('only reads a copy started unconfirmed, and keeps it current once the same user is confirmed', async () => {
+    const mail = useMailStore()
+
+    await mail.start('anna', { confirmed: false })
+    expect(mail.ready).toBe(true)
+    expect(fetch).not.toHaveBeenCalled()
+
+    await mail.start('anna', { confirmed: true })
+    expect(copies.opened).toEqual(['anna'])
+    expect(mail.synced).toBe(true)
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes('/api/v1/sync/changes'))).toBe(true)
+  })
+
+  it('does not remove a copy only opened unconfirmed at a sign-out', async () => {
+    const mail = useMailStore()
+    await mail.start('anna', { confirmed: false })
+
+    await mail.forget()
+
+    expect(copies.closed).toEqual(['anna'])
+    expect(copies.deleted).toEqual([])
+  })
 })

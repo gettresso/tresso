@@ -14,7 +14,7 @@ import {
 import { ApiError } from '@/api/errors'
 import { config } from '@/config'
 import { isDesktop, openInBrowser } from '@/platform/desktop'
-import { initialTokens, tokenStorage, watchTokens, withRefreshLock } from '@/platform/tokenStorage'
+import { initialTokens, tokenStorage, watchTokens, withRefreshLock, type StoredTokens } from '@/platform/tokenStorage'
 import { disableWebPush } from '@/platform/webPush'
 
 const PENDING_KEY = 'auth.pending'
@@ -237,9 +237,14 @@ function jsonRequest(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const tokens = ref<TokenSet | null>(initialTokens())
+  const tokens = ref<StoredTokens | null>(initialTokens())
   const me = ref<Me | null>(null)
   const isAuthenticated = computed(() => tokens.value !== null)
+  /**
+   * The user the server last confirmed for the tokens kept here, from before this page load: their mail copy may open
+   * before the server answers again, but only to be read until it does. Null when none was confirmed yet.
+   */
+  const knownUserId = computed(() => tokens.value?.userId ?? null)
   /** The desktop app sent the user to the system browser and waits for the `tresso://` link back. */
   const awaitingBrowser = ref(false)
   /** Keeping or forgetting the tokens failed, e.g. the keychain refused; shown to the user. */
@@ -271,7 +276,7 @@ export const useAuthStore = defineStore('auth', () => {
   /** Refresh tokens rotate: two refreshes with the same one would sign the user out, so a tab runs one at a time. */
   let refreshing: Promise<string> | null = null
 
-  async function store(next: TokenSet | null): Promise<void> {
+  async function store(next: StoredTokens | null): Promise<void> {
     tokens.value = next
     try {
       await tokenStorage.save(next)
@@ -339,10 +344,14 @@ export const useAuthStore = defineStore('auth', () => {
       return
     }
     try {
+      const asked = tokens.value
       const current = await api<Me>('/api/v1/me')
       if (current.id !== shown) {
         window.location.reload()
+        return
       }
+      // The other tab's set came without the id (a new sign-in of the same user): this tab confirmed it.
+      await keepUserId(asked, current.id)
     } catch (error) {
       // The next request finds out the same way.
       console.error('Checking who is signed in after another tab changed the sign-in failed', error)
@@ -584,7 +593,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /** Takes a set another tab stored, when it differs from the one this tab holds. */
-  function adoptStored(): TokenSet | null {
+  function adoptStored(): StoredTokens | null {
     const stored = tokenStorage.peek()
     // Null in storage is not a sign-out by itself (the storage may refuse writes); the storage event says when it is.
     if (stored !== undefined && stored !== null && tokens.value !== null && stored.refreshToken !== tokens.value.refreshToken) {
@@ -649,7 +658,8 @@ export const useAuthStore = defineStore('auth', () => {
         void revokeQuietly(next.refreshToken)
         throw new ApiError(401, 'Not signed in.')
       }
-      await store(next)
+      // The same user's set: the id confirmed for the one it replaces stays with it.
+      await store(latest.userId === undefined ? next : { ...next, userId: latest.userId })
       return next.accessToken
     }, { waitMs: REFRESH_LOCK_WAIT_MS })
   }
@@ -743,17 +753,33 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function loadMe(): Promise<void> {
     const session = generation.value
+    const asked = tokens.value
     const loaded = await api<Me>('/api/v1/me')
     // A sign-out while it ran: the answer is about a user who is gone.
     if (session === generation.value) {
       me.value = loaded
+      await keepUserId(asked, loaded.id)
     }
+  }
+
+  /**
+   * Keeps the id the server confirmed next to the tokens it confirmed it for, so the next start can open that user's
+   * copy at once. Not when the set changed while the server was asked (a refresh, or another tab's sign-in): the id
+   * might then belong to another set; the next confirmation keeps it.
+   */
+  async function keepUserId(asked: StoredTokens | null, userId: string): Promise<void> {
+    const current = tokens.value
+    if (current === null || current !== asked || current.userId === userId) {
+      return
+    }
+    await store({ ...current, userId })
   }
 
   return {
     tokens,
     me,
     isAuthenticated,
+    knownUserId,
     awaitingBrowser,
     storageError,
     browserSessionOpen,

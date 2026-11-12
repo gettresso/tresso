@@ -2,22 +2,32 @@ import type { TokenSet } from '@tresso/core'
 import { clearKeychainTokens, isDesktop, loadKeychainTokens, saveKeychainTokens } from '@/platform/desktop'
 
 const TOKENS_KEY = 'auth.tokens'
+
+/**
+ * The token set as it is kept, with the id of the user the server last confirmed for it (`/me`), so the mail copy of
+ * that user can open before the server answers again (offline, say). The id is written only next to the tokens it
+ * belongs to and goes with them; an entry from before it was kept has none.
+ */
+export type StoredTokens = TokenSet & { userId?: string }
 /** The name of the lock every tab of this origin takes around a token refresh. */
 const REFRESH_LOCK = 'tresso.auth.refresh'
 
 /** Where the signed-in user's tokens are kept between page loads or app launches. */
 export interface TokenStorage {
-  load(): Promise<TokenSet | null>
-  save(tokens: TokenSet | null): Promise<void>
+  load(): Promise<StoredTokens | null>
+  save(tokens: StoredTokens | null): Promise<void>
   /**
    * The set as it is stored right now, which another tab may have written since this one read it. Undefined where
    * nothing else writes the store (the desktop app has one window): what this window holds is the latest.
    */
-  peek(): TokenSet | null | undefined
+  peek(): StoredTokens | null | undefined
 }
 
-/** A stored token set, or null for anything else: a corrupt or foreign value means signed out, not a crash. */
-export function parseTokens(raw: string | null): TokenSet | null {
+/**
+ * A stored token set, or null for anything else: a corrupt or foreign value means signed out, not a crash. A user id
+ * that is not a string is left out, as if none was kept.
+ */
+export function parseTokens(raw: string | null): StoredTokens | null {
   if (raw === null) {
     return null
   }
@@ -30,11 +40,11 @@ export function parseTokens(raw: string | null): TokenSet | null {
   if (typeof value !== 'object' || value === null) {
     return null
   }
-  const { accessToken, refreshToken, expiresAt } = value as Record<string, unknown>
+  const { accessToken, refreshToken, expiresAt, userId } = value as Record<string, unknown>
   if (typeof accessToken !== 'string' || (typeof refreshToken !== 'string' && refreshToken !== null) || typeof expiresAt !== 'number') {
     return null
   }
-  return { accessToken, refreshToken, expiresAt }
+  return typeof userId === 'string' ? { accessToken, refreshToken, expiresAt, userId } : { accessToken, refreshToken, expiresAt }
 }
 
 /** Reads one key; a browser that refuses storage (blocked site data) reads as empty. */
@@ -58,7 +68,7 @@ function removeItem(storage: () => Storage, key: string): void {
  * The tokens in the browser's localStorage. A tab from before they moved there kept them in sessionStorage: they move
  * over, and a set already in localStorage (signed in by another tab since) wins over the tab's own.
  */
-function browserTokens(): TokenSet | null {
+function browserTokens(): StoredTokens | null {
   const kept = readItem(() => localStorage, TOKENS_KEY)
   const fromTab = readItem(() => sessionStorage, TOKENS_KEY)
   if (fromTab !== null) {
@@ -83,7 +93,7 @@ function browserTokens(): TokenSet | null {
  * Tokens read without waiting, so the web client can render signed in on the first frame. The desktop app has to
  * ask the keychain first, see {@link TokenStorage.load}.
  */
-export function initialTokens(): TokenSet | null {
+export function initialTokens(): StoredTokens | null {
   return isDesktop ? null : browserTokens()
 }
 
@@ -136,7 +146,7 @@ export const tokenStorage: TokenStorage = isDesktop ? keychainStorage : browserS
  * Calls back when another tab stores a new token set (a sign-in or a refresh) or removes it (a sign-out), with the
  * set or null. Returns the function that stops listening. Nothing to hear in the desktop app.
  */
-export function watchTokens(callback: (tokens: TokenSet | null) => void): () => void {
+export function watchTokens(callback: (tokens: StoredTokens | null) => void): () => void {
   if (isDesktop) {
     return () => {}
   }
