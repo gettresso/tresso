@@ -61,13 +61,49 @@ fn unavailable<T>(_: T) -> String {
   "The mail copies are unavailable.".to_string()
 }
 
+/// Whether a database name is one the commands accept: letters, digits, `-` and `_`, so it cannot leave the folder.
+fn valid_name(name: &str) -> bool {
+  !name.is_empty() && name.len() <= 128 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Names come from the client (`tresso-mail-<user id>`); anything that could leave the folder is refused.
 fn file(folder: &Path, name: &str) -> Result<PathBuf, String> {
-  let valid = !name.is_empty() && name.len() <= 128 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-  if !valid {
+  if !valid_name(name) {
     return Err(format!("\"{name}\" is not a valid database name."));
   }
   Ok(folder.join(format!("{name}.sqlite")))
+}
+
+/// The prefix of every mail copy's name (`tresso-mail-<user id>[-<server tag>]`, apps/web/src/mail/store.ts).
+const COPY_PREFIX: &str = "tresso-mail-";
+
+/// The copy name a file in the folder holds, if it is one of Tresso's mail copies: `<name>.sqlite` with a name that
+/// starts with the copy prefix and passes the same check as open and delete. Its `-wal` and `-shm` files, and
+/// anything else, are not copies.
+fn copy_name(file_name: &str) -> Option<&str> {
+  let name = file_name.strip_suffix(".sqlite")?;
+  (name.len() > COPY_PREFIX.len() && name.starts_with(COPY_PREFIX) && valid_name(name)).then_some(name)
+}
+
+/// The names of the mail copies in `folder`, sorted; no paths. A folder that does not exist yet holds none.
+fn list(folder: &Path) -> Result<Vec<String>, String> {
+  let entries = match std::fs::read_dir(folder) {
+    Ok(entries) => entries,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+    Err(error) => return Err(format!("Listing the mail copies failed: {error}")),
+  };
+  let mut names = Vec::new();
+  for entry in entries {
+    let entry = entry.map_err(|error| format!("Listing the mail copies failed: {error}"))?;
+    if !entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+      continue;
+    }
+    if let Some(name) = entry.file_name().to_str().and_then(copy_name) {
+      names.push(name.to_string());
+    }
+  }
+  names.sort();
+  Ok(names)
 }
 
 fn connect(path: &Path, flags: OpenFlags) -> Result<Connection, String> {
@@ -294,6 +330,13 @@ pub fn sql_delete(app: AppHandle, state: State<'_, Databases>, name: String) -> 
   state.delete(&folder(&app)?, &name)
 }
 
+/// The names of the mail copies on this computer (no paths), so the client finds copies an earlier release left
+/// without listing them.
+#[tauri::command(async)]
+pub fn sql_list(app: AppHandle) -> Result<Vec<String>, String> {
+  list(&folder(&app)?)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -442,5 +485,30 @@ mod tests {
     // Closing and deleting again is fine.
     databases.close(handle).unwrap();
     databases.delete(&folder, "copy").unwrap();
+  }
+
+  #[test]
+  fn names_only_tressos_own_mail_copies() {
+    assert_eq!(copy_name("tresso-mail-0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b.sqlite"), Some("tresso-mail-0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"));
+    assert_eq!(copy_name("tresso-mail-u1-1a2b3c4d.sqlite"), Some("tresso-mail-u1-1a2b3c4d"));
+    // The write-ahead log and shared memory files of a copy, the bare prefix, other files and names the commands refuse.
+    for file_name in ["tresso-mail-u1.sqlite-wal", "tresso-mail-u1.sqlite-shm", "tresso-mail-.sqlite", "other.sqlite", "tresso-mail-u1.db", "tresso-mail-u 1.sqlite", "tresso-mail-..sqlite"] {
+      assert_eq!(copy_name(file_name), None, "{file_name}");
+    }
+  }
+
+  #[test]
+  fn lists_the_copies_in_the_folder_and_nothing_else() {
+    let folder = folder();
+    let databases = Databases::default();
+    let handle = databases.open(&folder, "tresso-mail-u2", "page").unwrap();
+    databases.exec(handle, "CREATE TABLE t (x INTEGER)").unwrap();
+    std::fs::write(folder.join("tresso-mail-u1.sqlite"), b"").unwrap();
+    std::fs::write(folder.join("notes.txt"), b"").unwrap();
+    std::fs::create_dir(folder.join("tresso-mail-dir.sqlite")).unwrap();
+
+    assert_eq!(list(&folder).unwrap(), vec!["tresso-mail-u1".to_string(), "tresso-mail-u2".to_string()]);
+    assert_eq!(list(&folder.join("missing")).unwrap(), Vec::<String>::new());
+    databases.close(handle).unwrap();
   }
 }
