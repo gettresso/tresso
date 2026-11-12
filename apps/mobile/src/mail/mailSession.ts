@@ -417,16 +417,15 @@ export class MailSession {
     this.open = opened
     this.update({ userId, ready: true, synced: false, version: this.state.version + 1, syncError: null })
     this.status.opened({ confirmed: true, afterUpdate: database.afterUpdate, lastSyncedAt })
-    // Not awaited: the copy on the device shows right away, and a switch (a sign-out) does not wait for the pull. Before
-    // the first pull, a copy updated to keep chats checks once whether it must fetch them from the start.
-    void this.pull(opened, async () => {
-      await this.backfillChats(opened)
-      return engine.sync()
-    }).then(() => {
+    // Not awaited: the copy on the device shows right away, and a switch (a sign-out) does not wait for the pull.
+    void this.pull(opened, () => engine.sync()).then(() => {
       if (this.open === opened) {
         this.update({ synced: true })
       }
     })
+    // Beside the first pull, never before it (a request may hang for minutes): a copy updated to keep chats checks once
+    // whether the server holds any, and if so pulls again from the start (see backfillChats).
+    void this.backfillChats(opened)
     // Drafts written while offline (or before the app was closed) go up now.
     void this.drafts.uploadPending()
     if (this.foreground) {
@@ -434,10 +433,16 @@ export class MailSession {
     }
   }
 
-  /** The one check of a copy updated to keep chats (see backfillChats); a failure leaves it for the next start. */
+  /**
+   * The one check of a copy updated to keep chats (see backfillChats); a failure leaves it for the next start. A
+   * resync asked while a pull runs makes the next pull begin from 0 (see SqliteMailStore.resyncFromStart), and rows
+   * are stored by id, so nothing is lost or stored twice.
+   */
   private async backfillChats(open: Open): Promise<void> {
     try {
-      await backfillChats(open.database, () => this.deps.fetchChatAccounts())
+      if ((await backfillChats(open.database, () => this.deps.fetchChatAccounts())) === 'resync' && this.open === open) {
+        void this.pull(open, () => open.engine.sync())
+      }
     } catch (error) {
       if (this.open === open) {
         console.error('Checking the server for chats failed; the next start asks again', error)
