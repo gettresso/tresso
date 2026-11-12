@@ -41,8 +41,8 @@ use Symfony\Component\Validator\ConstraintViolationList;
  * - A chat's last message time only moves forward.
  * - `firstImport` is honoured while the account's relay imports the history it found when it started: until its first
  *   batch without it, and again for a relay that takes over. Then the read time of a chat that had nothing unread
- *   (made in this import, never read, or read through its last message) moves to its newest message, so the history
- *   arrives read; a chat with unread messages is left as it is.
+ *   (made in this import, or read through its last message) moves to its newest message, so the history arrives read;
+ *   a chat with unread messages (also one never read) is left as it is.
  * - Names come from other people: control characters and direction overrides are removed, whitespace becomes one
  *   space, and they are cut to {@see MAX_NAME} characters.
  * - The messages get a change number per {@see CHANGE_BYTES} of text, so a page of the delta, which never splits a
@@ -120,7 +120,8 @@ final readonly class ChatIngestor
         $nothingUnread = [];
         foreach ($known as $jid => $chat) {
             $read = $chat->getReadThrough();
-            $nothingUnread[$jid] = null === $read || $read >= $chat->getLastMessageAt();
+            // A known chat that was never read has unread messages (it has messages); one read through its last has none.
+            $nothingUnread[$jid] = null !== $read && $read >= $chat->getLastMessageAt();
         }
 
         $results = [];
