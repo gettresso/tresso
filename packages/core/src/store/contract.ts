@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { MissingFolderError } from '../actions'
 import { briefView } from '../brief'
 import type { SyncedCalendar, SyncedCalendarEvent } from '../calendar/types'
+import { inInbox, unreadCount } from '../chat/format'
 import type { SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from '../chat/types'
 import type { ChangePage, SyncedDailyBrief, SyncedHandOver, SyncedMessage, SyncedOutgoingMessage, SyncedSmartInbox, SyncedThread, SyncedTodo, SyncedUnsubscription } from '../sync/types'
 import type { Draft, MailStore } from './mailStore'
@@ -1350,6 +1351,65 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         // Neither sent again nor offered to retry.
         expect(odd?.outgoing[0]).toMatchObject({ id: 'r8', status: 'sending', error: 'refused' })
         expect(ids(await db.waitingOutgoing())).toEqual(['r2'])
+      })
+
+      it('leaves out a chat without a JID, so it never takes the place of another', async () => {
+        await db.apply(
+          page({
+            cursor: 41,
+            chats: [
+              { ...chat('nojid-1', 'acct'), jid: undefined } as unknown as SyncedChat,
+              { ...chat('nojid-2', 'acct'), jid: '' },
+              { ...chat('nojid-3', 'acct'), jid: null } as unknown as SyncedChat,
+            ],
+            chatMessages: [chatMessage('n1', 'nojid-1', 'acct', at(9))],
+          }),
+        )
+
+        expect(await db.cursor()).toBe(41)
+        expect(await db.chat('nojid-1')).toBeNull()
+        expect(await db.chat('nojid-2')).toBeNull()
+        expect(await listed()).toEqual(['bram', 'anna', 'group'])
+        expect(ids((await db.chat('anna'))!.messages)).toEqual(['a1', 'a2', 'a3'])
+      })
+
+      it('agrees with inInbox and unreadCount on every chat, also with times that are no times', async () => {
+        const rows = page({
+          cursor: 41,
+          chats: [
+            chat('t-odd', 'acct', { lastMessageAt: 'garbage', archivedThrough: at(0) }),
+            chat('t-odd-open', 'acct', { lastMessageAt: 'garbage' }),
+            chat('t-read', 'acct', { lastMessageAt: at(9), readThrough: at(5), archivedThrough: 'nonsense' }),
+            chat('t-bad-read', 'acct', { lastMessageAt: at(9), readThrough: 'nonsense', archivedThrough: at(9) }),
+          ],
+          chatMessages: [
+            chatMessage('o1', 't-odd', 'acct', 'yesterday'),
+            chatMessage('o2', 't-odd-open', 'acct', ''),
+            chatMessage('r1', 't-read', 'acct', 'yesterday'),
+            chatMessage('r2', 't-read', 'acct', at(5)),
+            chatMessage('r3', 't-read', 'acct', at(6)),
+            chatMessage('r4', 't-read', 'acct', at(7), { fromMe: true }),
+            chatMessage('b1', 't-bad-read', 'acct', 'yesterday'),
+            chatMessage('b2', 't-bad-read', 'acct', at(8)),
+          ],
+        })
+        await db.apply(rows)
+
+        const all = await db.chats()
+        const inbox = new Set((await db.chats({ inboxOnly: true })).map((summary) => summary.chat.id))
+        for (const row of rows.chats!) {
+          const messages = rows.chatMessages!.filter((message) => message.chatId === row.id)
+          expect({ id: row.id, inbox: inbox.has(row.id), unread: all.find((summary) => summary.chat.id === row.id)?.unread }).toEqual({
+            id: row.id,
+            inbox: inInbox(row),
+            unread: unreadCount(row, messages),
+          })
+        }
+        // And the badge counts what those say, with the chats of the first page.
+        const expected = [...chatPage.chats!, ...rows.chats!].filter(
+          (row) => inInbox(row) && unreadCount(row, [...chatPage.chatMessages!, ...rows.chatMessages!]) > 0,
+        ).length
+        expect(await db.unreadChatCount()).toBe(expected)
       })
 
       it('drops messages and replies that come in the same page as the removal of their chat or account', async () => {
