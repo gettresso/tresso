@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   accountSubtitle,
   bubbleMeta,
+  canonicalChatJid,
   chatKindOf,
   chatSubtitle,
   importable,
@@ -19,7 +20,10 @@ import {
   timeline,
   unreadCount,
 } from './format'
-import type { ChatMediaKind, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from './types'
+import type { ChatKind, ChatMediaKind, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from './types'
+import jidFixture from './importable-jids.json'
+
+const jidCases = jidFixture as { cases: { jid: string; chat: boolean; kind?: ChatKind; canonical?: string }[] }
 
 function chat(extra: Partial<SyncedChat> = {}): SyncedChat {
   return {
@@ -604,6 +608,22 @@ describe('audit fixes', () => {
       expect(chatSubtitle(chat({ jid: '31612345678:3@s.whatsapp.net' }))).toBe('+31612345678')
       expect(importable('31612345678:3@s.whatsapp.net', true, new Set(['31612345678@s.whatsapp.net']))).toBe(false)
       expect(importable('120363025246125486@G.US', false, new Set())).toBe(false)
+    })
+
+    // The cases the server tests too (apps/api/tests/Unit/Chat/ChatJidTest.php), so both sides take the same chats.
+    it.each(jidCases.cases.map((entry) => [JSON.stringify(entry.jid), entry] as const))('agrees with the server on %s', (_name, entry) => {
+      expect(importableChat(entry.jid)).toBe(entry.chat)
+      expect(importable(entry.jid, true, new Set())).toBe(entry.chat)
+      expect(canonicalChatJid(entry.jid)).toBe(entry.chat ? entry.canonical : null)
+      if (entry.chat) {
+        expect(chatKindOf(entry.jid)).toBe(entry.kind)
+        expect(canonicalChatJid(entry.canonical!)).toBe(entry.canonical)
+      }
+    })
+
+    it('reads a fixture with both kinds of case', () => {
+      expect(jidCases.cases.some((entry) => entry.chat)).toBe(true)
+      expect(jidCases.cases.some((entry) => !entry.chat)).toBe(true)
     })
   })
 
