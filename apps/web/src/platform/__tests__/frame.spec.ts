@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import frameCss from '@/assets/frame.css?raw'
 import mainCss from '@/assets/main.css?raw'
 import sidebar from '@/components/MailboxSidebar.vue?raw'
+import appShell from '@/views/AppShell.vue?raw'
 import {
   SIDEBAR_DEFAULT,
   SIDEBAR_KEY,
@@ -78,6 +79,16 @@ describe('the frame tokens (assets/frame.css)', () => {
     expect(2 * t('frame-capsule-icon')).toBe(70)
     expect(t('frame-capsule-single')).toBe(40)
     expect(t('frame-card-radius')).toBe(26 - t('frame-inset'))
+  })
+
+  it('end the window\'s drag strip where the scrolling rows start, so no row drags the window', () => {
+    const block = (source: string, selector: string) => source.slice(source.indexOf(`${selector} {`), source.indexOf('}', source.indexOf(`${selector} {`)))
+    expect(block(appShell, '.frame-sidebar-drag')).toContain('height: calc(var(--frame-first-row-y) - var(--frame-scroll-inset));')
+    // The card's top padding plus the card's inset: the scroller starts at the same y.
+    expect(block(sidebar, '.frame-shell .sidebar')).toContain('padding: calc(var(--frame-first-row-y) - var(--frame-inset) - var(--frame-scroll-inset))')
+    expect(frameToken('frame-first-row-y', Number.NaN) - frameToken('frame-scroll-inset', Number.NaN)).toBe(48)
+    // Compose keeps its 40 when the rows overflow.
+    expect(block(sidebar, '.frame-shell .compose')).toContain('flex: none;')
   })
 
   it('change only colours in dark mode, never a size, radius or position', () => {
