@@ -105,12 +105,12 @@ final class ChatQueueTest extends DatabaseTestCase
      * @param array<string, mixed> $change
      */
     #[DataProvider('invalidReplies')]
-    public function testRefusesAnInvalidReply(array $change): void
+    public function testRefusesAnInvalidReply(array $change, string $path): void
     {
         $this->client->jsonRequest('POST', '/api/v1/chats/'.$this->chatId.'/outgoing', $change + ['id' => self::newReplyId(), 'text' => 'Hi'], $this->web);
 
         self::assertResponseStatusCodeSame(422);
-        self::assertContains(array_key_first($change), $this->violationPaths());
+        self::assertContains($path, $this->violationPaths());
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'));
     }
 
