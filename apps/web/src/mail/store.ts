@@ -1,7 +1,7 @@
 import { draftOnlyHere, SqliteMailStore, type MailStore } from '@tresso/core'
 import { databaseName, deleteMailDatabase, IndexedDbMailStore, type ClosedElsewhere } from '@/mail/db'
 import { isDesktop } from '@/platform/desktop'
-import { deleteDesktopSql, openDesktopSql } from '@/platform/desktopSql'
+import { deleteDesktopSql, listDesktopSql, openDesktopSql } from '@/platform/desktopSql'
 import { server, serverTag } from '@/platform/server'
 
 /**
@@ -47,23 +47,49 @@ export async function deleteMailStore(userId: string, name: string = mailCopyNam
 }
 
 const COPY_PREFIX = databaseName('')
+/** A server tag at the end of a desktop copy's name (`-` and the eight hex digits of serverTag). */
+const SERVER_TAG = /-[0-9a-f]{8}$/
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The user a copy name belongs to: `tresso-mail-<userId>`, on the desktop with `-<serverTag>` for a server other than
+ * the default. User ids are UUIDs, whose last group has twelve digits, so a tag of eight is told apart; a name that
+ * fits neither reading keeps the whole rest as the id. Null for a name that is no mail copy.
+ */
+export function copyUserId(name: string): string | null {
+  if (!name.startsWith(COPY_PREFIX) || name.length === COPY_PREFIX.length) {
+    return null
+  }
+  const rest = name.slice(COPY_PREFIX.length)
+  const untagged = rest.replace(SERVER_TAG, '')
+  return untagged !== rest && UUID.test(untagged) ? untagged : rest
+}
 
 /**
  * The mail copies this device can list, by user and name: the IndexedDB databases named `tresso-mail-<userId>`, in the
- * browser and in the desktop app's web view (where they are copies from before the desktop kept mail in SQLite).
- * `indexedDB.databases()` is in every browser Tresso supports; where it is missing, nothing can be listed. The
- * desktop's SQLite copies cannot be listed: the shell's commands open, close and delete a copy by name, but have none
- * that lists its data folder.
+ * browser and in the desktop app's web view (where they are copies from before the desktop kept mail in SQLite), and
+ * on the desktop the SQLite copies in the app's data folder (`sql_list`). `indexedDB.databases()` is in every browser
+ * Tresso supports; where it is missing, no IndexedDB copy can be listed.
  */
 export async function copiesOnDevice(): Promise<{ userId: string; name: string }[]> {
-  if (typeof indexedDB === 'undefined' || typeof indexedDB.databases !== 'function') {
-    return []
+  const names = new Set<string>()
+  if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+    for (const database of await indexedDB.databases()) {
+      if (database.name !== undefined) {
+        names.add(database.name)
+      }
+    }
+  }
+  if (isDesktop) {
+    for (const name of await listDesktopSql()) {
+      names.add(name)
+    }
   }
   const found: { userId: string; name: string }[] = []
-  for (const database of await indexedDB.databases()) {
-    const name = database.name
-    if (name !== undefined && name.startsWith(COPY_PREFIX) && name.length > COPY_PREFIX.length) {
-      found.push({ userId: name.slice(COPY_PREFIX.length), name })
+  for (const name of names) {
+    const userId = copyUserId(name)
+    if (userId !== null) {
+      found.push({ userId, name })
     }
   }
   return found
