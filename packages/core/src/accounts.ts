@@ -228,6 +228,55 @@ export function connectErrorMessage(code: string, provider: OAuthProviderId): st
   return code in messages ? messages[code as ProviderConnectError] : messages.failed
 }
 
+/**
+ * How a finished provider sign-in turned out, read the same way wherever it came back (the connect dialog, the
+ * accounts page, the phone): connected, with what became of the calendars; refused at the provider; waiting for an
+ * organization's approval, with the link to pass to its administrator when the API sent one; or failed otherwise.
+ * `calendars` is `refused` when they were asked for and not allowed, `allowed` when they were asked for (or kept from
+ * before) and are covered now, `not-asked` otherwise.
+ */
+export type ProviderSignInOutcome =
+  | { kind: 'connected'; accountId: string; existing: boolean; calendars: 'allowed' | 'refused' | 'not-asked' }
+  | { kind: 'grant'; calendars: 'allowed' | 'refused' | 'not-asked' }
+  | { kind: 'denied' }
+  | { kind: 'approval-required'; approvalUrl: string | null }
+  | { kind: 'failed'; error: ProviderConnectError }
+
+export function providerSignInOutcome(result: ProviderConnection): ProviderSignInOutcome {
+  if (result.connectError === 'denied') return { kind: 'denied' }
+  if (result.connectError === 'admin_approval_required') return { kind: 'approval-required', approvalUrl: result.approvalUrl }
+  if (result.connectError !== null) return { kind: 'failed', error: result.connectError }
+  const calendars = result.missing.includes('calendar') ? 'refused' : result.requested.includes('calendar') ? 'allowed' : 'not-asked'
+  if (result.connected !== null) return { kind: 'connected', accountId: result.connected, existing: result.existing, calendars }
+  return { kind: 'grant', calendars }
+}
+
+/**
+ * What a screen says when a sign-in for an account that is connected already (signing in again, allowing its
+ * calendars) came back: `ok` false when something the user asked for did not happen. With an organization's approval
+ * to get, `approvalUrl` is the link for its administrator (null when the API had none).
+ */
+export function signedInAgainNotice(outcome: ProviderSignInOutcome, provider: OAuthProviderId): { ok: boolean; text: string; approvalUrl: string | null } {
+  const name = providerName(provider)
+  switch (outcome.kind) {
+    case 'connected':
+    case 'grant':
+      if (outcome.calendars === 'refused') {
+        return { ok: false, text: `Calendars were not allowed at ${name}, so they still do not sync. Mail is not affected.`, approvalUrl: null }
+      }
+      if (outcome.calendars === 'allowed') {
+        return { ok: true, text: `Signed in with ${name}. Mail and calendars sync; calendars show up within a minute.`, approvalUrl: null }
+      }
+      return { ok: true, text: `Signed in with ${name} again. The account syncs again.`, approvalUrl: null }
+    case 'denied':
+      return { ok: false, text: connectErrorMessage('denied', provider), approvalUrl: null }
+    case 'approval-required':
+      return { ok: false, text: connectErrorMessage('admin_approval_required', provider), approvalUrl: outcome.approvalUrl }
+    case 'failed':
+      return { ok: false, text: connectErrorMessage(outcome.error, provider), approvalUrl: null }
+  }
+}
+
 /** How a provider is called on screen: Outlook for Outlook.com, Hotmail and Live; Microsoft 365 for work accounts. */
 export function providerLabel(provider: MailServiceProvider): string {
   const labels: Record<MailServiceProvider, string> = { google: 'Google', outlook: 'Outlook', m365: 'Microsoft 365', icloud: 'iCloud', yahoo: 'Yahoo' }
@@ -321,4 +370,37 @@ export function calendarStatusLabel(status: CalendarSyncStatus): string | null {
     unconfirmed: 'Calendar address to confirm',
   }
   return labels[status] ?? null
+}
+
+/**
+ * What the settings of a Google or Microsoft account say about calendars that do not sync, and what the user can do
+ * about it: allow calendar access (again), which starts a calendar sign-in at the provider and wakes the sync at once,
+ * or sign in again, when the provider no longer accepts Tresso's access. The reason is the sync's own (the API's
+ * `calendarStatusDetail`) when it gave one. Null when nothing needs the user.
+ */
+export function providerCalendarProblem(
+  account: Pick<MailAccount, 'calendarStatus' | 'calendarStatusDetail'>,
+  provider: OAuthProviderId,
+): { text: string; action: { kind: 'allow' | 'sign-in'; label: string } | null } | null {
+  const name = providerName(provider)
+  const detail = account.calendarStatusDetail
+  switch (account.calendarStatus) {
+    case 'not_granted':
+      return { text: 'Tresso may not use the calendars of this account yet.', action: { kind: 'allow', label: 'Allow calendar access' } }
+    case 'auth_failed':
+      return { text: detail ?? `${name} no longer accepts Tresso's access to the calendars of this account.`, action: { kind: 'sign-in', label: `Sign in with ${name} again` } }
+    case 'error':
+      // Tresso keeps retrying by itself; allowing calendar access again retries now, and settles a refusal that a new
+      // consent (an organization's, say) can lift.
+      return { text: detail ?? 'Syncing the calendars failed. Tresso keeps retrying.', action: { kind: 'allow', label: 'Allow calendar access again' } }
+    case 'unconfirmed':
+      // Only calendar servers found for password accounts are confirmed; a provider account syncs through its
+      // provider, which a new calendar sign-in starts again.
+      return { text: detail ?? 'The calendars of this account could not be synced.', action: { kind: 'allow', label: 'Allow calendar access again' } }
+    case 'unsupported':
+      return { text: detail ?? `${name} offers no calendars for this account.`, action: null }
+    case 'unknown':
+    case 'active':
+      return null
+  }
 }

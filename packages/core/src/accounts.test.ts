@@ -11,8 +11,12 @@ import {
   normalizeAppPassword,
   oauthProviderFor,
   providerCompany,
+  providerCalendarProblem,
   providerLabel,
+  providerSignInOutcome,
+  signedInAgainNotice,
   signInProvider,
+  type ProviderConnection,
 } from './accounts'
 
 describe('defaultPort', () => {
@@ -143,5 +147,75 @@ describe('calendar statuses', () => {
     expect(calendarNeedsAttention('unsupported')).toBe(false)
     expect(calendarStatusLabel('not_granted')).toBe('Calendars not allowed')
     expect(calendarStatusLabel('unknown')).toBeNull()
+  })
+})
+
+describe('providerSignInOutcome and signedInAgainNotice', () => {
+  const result = (overrides: Partial<ProviderConnection>): ProviderConnection => ({
+    provider: 'microsoft',
+    connected: 'acc-m',
+    grant: null,
+    connectError: null,
+    requested: ['mail'],
+    missing: [],
+    existing: true,
+    approvalUrl: null,
+    ...overrides,
+  })
+
+  it('does not report calendars left unticked at the provider as success', () => {
+    const outcome = providerSignInOutcome(result({ requested: ['mail', 'calendar'], missing: ['calendar'] }))
+
+    expect(outcome).toEqual({ kind: 'connected', accountId: 'acc-m', existing: true, calendars: 'refused' })
+    expect(signedInAgainNotice(outcome, 'microsoft')).toEqual({
+      ok: false,
+      text: 'Calendars were not allowed at Microsoft, so they still do not sync. Mail is not affected.',
+      approvalUrl: null,
+    })
+  })
+
+  it('says the calendars come once they were allowed, and only that the account syncs again otherwise', () => {
+    expect(signedInAgainNotice(providerSignInOutcome(result({ requested: ['mail', 'calendar'] })), 'microsoft')).toEqual({
+      ok: true,
+      text: 'Signed in with Microsoft. Mail and calendars sync; calendars show up within a minute.',
+      approvalUrl: null,
+    })
+    expect(signedInAgainNotice(providerSignInOutcome(result({})), 'google')).toEqual({ ok: true, text: 'Signed in with Google again. The account syncs again.', approvalUrl: null })
+  })
+
+  it("passes on the link for the organization's administrator", () => {
+    const approvalUrl = 'https://login.microsoftonline.com/company.example/adminconsent?client_id=c'
+    const outcome = providerSignInOutcome(result({ connected: null, connectError: 'admin_approval_required', approvalUrl, requested: ['mail', 'calendar'] }))
+
+    expect(outcome).toEqual({ kind: 'approval-required', approvalUrl })
+    expect(signedInAgainNotice(outcome, 'microsoft')).toEqual({ ok: false, text: connectErrorMessage('admin_approval_required', 'microsoft'), approvalUrl })
+  })
+
+  it('tells a refusal and other failures apart', () => {
+    expect(providerSignInOutcome(result({ connected: null, connectError: 'denied' }))).toEqual({ kind: 'denied' })
+    expect(providerSignInOutcome(result({ connected: null, connectError: 'wrong_account' }))).toEqual({ kind: 'failed', error: 'wrong_account' })
+    expect(signedInAgainNotice({ kind: 'failed', error: 'wrong_account' }, 'microsoft').text).toBe(connectErrorMessage('wrong_account', 'microsoft'))
+  })
+})
+
+describe('providerCalendarProblem', () => {
+  it('gives every calendar status a provider account can have a reason and, where one helps, an action', () => {
+    expect(providerCalendarProblem({ calendarStatus: 'not_granted', calendarStatusDetail: null }, 'microsoft')).toEqual({
+      text: 'Tresso may not use the calendars of this account yet.',
+      action: { kind: 'allow', label: 'Allow calendar access' },
+    })
+    expect(providerCalendarProblem({ calendarStatus: 'auth_failed', calendarStatusDetail: 'Microsoft no longer accepts it.' }, 'microsoft')).toEqual({
+      text: 'Microsoft no longer accepts it.',
+      action: { kind: 'sign-in', label: 'Sign in with Microsoft again' },
+    })
+    expect(providerCalendarProblem({ calendarStatus: 'error', calendarStatusDetail: 'Microsoft refused the calendars of this account (ErrorAccessDenied).' }, 'microsoft')).toEqual({
+      text: 'Microsoft refused the calendars of this account (ErrorAccessDenied).',
+      action: { kind: 'allow', label: 'Allow calendar access again' },
+    })
+    expect(providerCalendarProblem({ calendarStatus: 'error', calendarStatusDetail: null }, 'google')?.text).toBe('Syncing the calendars failed. Tresso keeps retrying.')
+    expect(providerCalendarProblem({ calendarStatus: 'unconfirmed', calendarStatusDetail: null }, 'google')?.action?.kind).toBe('allow')
+    expect(providerCalendarProblem({ calendarStatus: 'unsupported', calendarStatusDetail: null }, 'google')).toEqual({ text: 'Google offers no calendars for this account.', action: null })
+    expect(providerCalendarProblem({ calendarStatus: 'active', calendarStatusDetail: null }, 'google')).toBeNull()
+    expect(providerCalendarProblem({ calendarStatus: 'unknown', calendarStatusDetail: null }, 'google')).toBeNull()
   })
 })
