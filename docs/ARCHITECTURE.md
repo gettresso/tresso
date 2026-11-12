@@ -49,6 +49,14 @@ the repository's `.env` files, since a production image would otherwise fall bac
 container (`RUN_MIGRATIONS=1`) then makes the OAuth signing keys once, in a volume, migrates the database and updates
 the first-party OAuth clients; the workers start when it is healthy.
 
+Migrations keep the large tables (`message` above all) usable while they run. A new column is nullable or has a
+constant default, which changes only the catalog. An index on such a table gets a migration of its own that runs
+outside a transaction (`isTransactional()` is false) with `CREATE INDEX CONCURRENTLY`, first dropping an index of the
+same name that a cut-off build left invalid. What an operator sees: the migration log names that migration and it
+takes as long as a scan of the table, while reads and writes go on (Messenger workers, and on a rolling deploy API
+instances of the previous release, keep working); if the start is cut off during the build, the migration is not recorded as
+done and the next start builds the index again.
+
 A server has two public addresses, the web client's (`WEB_APP_URL`) and the API's (`API_PUBLIC_URL`), and may give two
 things a host of their own (`App\Deployment\PublicAddresses`):
 
