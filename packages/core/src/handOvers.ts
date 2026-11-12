@@ -332,6 +332,7 @@ export class HandOverFlow {
 
   private async handOverNow(message: SyncedMessage, input: HandOverInput): Promise<HandedOver> {
     const composer = this.deps.composer
+    const session = composer.session
     try {
       await composer.openReply(message, 'forward', { strict: true })
     } catch (error) {
@@ -339,7 +340,7 @@ export class HandOverFlow {
       throw new HandOverError(error instanceof Error ? error.message : this.deps.explain(error).message)
     }
     const draft = composer.state.draft
-    if (draft === null) {
+    if (draft === null || composer.session !== session) {
       throw new HandOverError('You were signed out. Sign in again to hand this over.')
     }
     if (draft.kind !== 'forward' || draft.inReplyToMessageId !== message.id) {
