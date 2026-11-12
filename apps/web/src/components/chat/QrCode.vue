@@ -8,7 +8,15 @@ import { computed } from 'vue'
  */
 const props = withDefaults(defineProps<{ rows: readonly string[]; label: string; size?: number }>(), { size: 232 })
 
+/** The smallest a module is drawn, in CSS pixels: a phone camera needs at least that. */
+const MIN_MODULE_PX = 3
+
 const side = computed(() => props.rows.length)
+/**
+ * The drawn size: a whole number of pixels per module, as close to `size` as that allows and never under
+ * MIN_MODULE_PX, so crispEdges never has to round a module edge (232 px over 57 modules would).
+ */
+const pixels = computed(() => side.value * Math.max(MIN_MODULE_PX, Math.round(props.size / Math.max(1, side.value))))
 const valid = computed(() => side.value >= 21 && props.rows.every((row) => row.length === side.value && /^[01]+$/.test(row)))
 
 /** One `h` run per stretch of dark modules in a row: far fewer path commands than a square per module. */
@@ -25,7 +33,7 @@ const path = computed(() => {
   return parts.join('')
 })
 
-defineExpose({ valid })
+defineExpose({ valid, pixels })
 </script>
 
 <template>
@@ -34,8 +42,8 @@ defineExpose({ valid })
     class="qr"
     role="img"
     :aria-label="label"
-    :width="size"
-    :height="size"
+    :width="pixels"
+    :height="pixels"
     :viewBox="`0 0 ${side} ${side}`"
     shape-rendering="crispEdges"
     xmlns="http://www.w3.org/2000/svg"

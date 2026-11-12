@@ -11,6 +11,13 @@ import type { BridgeFailure, BridgeInspection, BridgeState, WhatsAppIdentity } f
 export const INSTALL_URL = 'https://github.com/gettresso/whatsapp-mcp'
 /** What the bridge needs to listen on loopback only and to check Tresso's token. */
 export const BRIDGE_DOCS_URL = 'https://github.com/gettresso/tresso/blob/main/docs/whatsapp-bridge.md'
+/** How to find and quit a bridge that listens on the network or holds the port (docs/whatsapp-bridge.md). */
+export const CLOSE_PORT_URL = `${BRIDGE_DOCS_URL}#closing-the-bridges-port`
+/**
+ * Said while the chat screens do not exist yet (the WhatsApp plan's WP6 removes it with them): connecting brings the
+ * chats into this Mac, but nothing shows them.
+ */
+export const CHATS_LATER = 'Your chats will show in Tresso in a later version.'
 /** Building the bridge once, in the whatsapp-mcp folder. Tresso never runs `go` itself. */
 export const BUILD_COMMAND = 'cd whatsapp-bridge && go build -o whatsapp-bridge .'
 /** How far back the first import reaches. */

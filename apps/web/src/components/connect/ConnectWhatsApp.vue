@@ -6,6 +6,7 @@ import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
   BRIDGE_NOTE,
   BUILD_COMMAND,
+  CHATS_LATER,
   FOLDER_NOTE,
   IMPORT_NOTE,
   INSTALL_URL,
@@ -53,7 +54,7 @@ const bridgeDone = computed(() => wa.bridge.process === 'owned' && wa.bridge.por
 const linkDone = computed(() => wa.linked)
 const importDone = computed(() => connectedHere.value && wa.importState === 'done')
 const canStart = computed(() => folderDone.value && wa.riskAccepted && wa.busy === null)
-const canConnect = computed(() => folderDone.value && bridgeDone.value && linkDone.value && wa.busy === null && !wa.connected)
+const canConnect = computed(() => wa.riskAccepted && folderDone.value && bridgeDone.value && linkDone.value && wa.busy === null && !wa.connected)
 /** Start the bridge (first time), or start it again after it stopped or failed. */
 const startLabel = computed(() => (bridgeIdle(wa.bridge) && !wa.bridgeStarted ? 'Start the bridge' : 'Start again'))
 const showStart = computed(() => wa.bridge.process === 'stopped' && !linkView.value.expired)
@@ -212,6 +213,7 @@ onUnmounted(() => {
           </span>
           <span class="note">{{ IMPORT_NOTE }}</span>
           <span v-if="importView.detail" class="detail">{{ importView.detail }}</span>
+          <span v-if="connectedHere" class="detail later">{{ CHATS_LATER }}</span>
         </span>
       </li>
     </ol>

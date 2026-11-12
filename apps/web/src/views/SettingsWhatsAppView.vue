@@ -2,12 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
+import { shortDue } from '@/mail/format'
 import AppIcon from '@/components/AppIcon.vue'
 import ConnectWhatsApp from '@/components/connect/ConnectWhatsApp.vue'
 import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
-  BRIDGE_DOCS_URL,
   BUILD_COMMAND,
+  CHATS_LATER,
+  CLOSE_PORT_URL,
   bridgeText,
   importText,
   linkedAge,
@@ -62,6 +64,7 @@ const subtitle = computed(() => (number.value === null ? `Through whatsapp-mcp o
 
 /** The pill next to the title. */
 const pill = computed<{ text: string; ok: boolean }>(() => {
+  if (wa.busy === 'disconnect') return { text: 'Disconnecting', ok: false }
   const bridge = wa.bridge
   if (bridge.process === 'owned') {
     if (bridge.link === 'linked') return { text: 'Connected', ok: true }
@@ -107,6 +110,15 @@ const importView = computed(() =>
 const importAnnouncement = computed(() =>
   wa.importState === 'reading' ? 'Bringing in your recent chats.' : wa.importState === 'stuck' ? 'Bringing in your chats is stuck.' : wa.importState === 'done' ? 'Your recent chats are in.' : '',
 )
+
+/** The import date the config keeps, in the app's date format. */
+const importSince = computed(() => (wa.config === null ? '' : shortDue(wa.config.importSince)))
+/** The whatsapp-mcp row: the folder, and whether Tresso's bridge runs from it now. */
+const folderRow = computed<{ value: string; ok: boolean }>(() => {
+  const folder = wa.config === null ? '' : shortFolder(wa.config.folder)
+  return wa.bridge.process === 'owned' && wa.bridge.error === null ? { value: `${folder}, bridge started by Tresso`, ok: true } : { value: `${folder}, bridge not running`, ok: false }
+})
+const disconnecting = computed(() => wa.busy === 'disconnect')
 
 const groupsValue = computed(() => (wa.config?.includeGroups === false ? 'direct' : 'all'))
 
@@ -178,9 +190,10 @@ onBeforeUnmount(() => {
         <span class="pill" :class="{ ok: pill.ok }">{{ pill.text }}</span>
       </header>
 
+      <p class="later">{{ CHATS_LATER }}</p>
       <p class="visually-hidden" role="status">{{ importAnnouncement }}</p>
       <div v-if="wa.importState === 'reading' || wa.importState === 'stuck'" class="import" :class="{ stuck: wa.importState === 'stuck' }">
-        <strong>{{ wa.importState === 'stuck' ? 'Bringing in your chats is stuck.' : 'Bringing in your chats from the last 30 days.' }}</strong>
+        <strong>{{ wa.importState === 'stuck' ? 'Bringing in your chats is stuck.' : `Bringing in your chats since ${importSince}.` }}</strong>
         <span v-if="importView.detail">{{ importView.detail }}</span>
       </div>
       <p v-else-if="wa.relayFailing !== null" class="import-failing">Reading WhatsApp messages failed just now. Tresso tries again in a moment.</p>
@@ -192,14 +205,14 @@ onBeforeUnmount(() => {
         </div>
         <div class="row">
           <span class="label">whatsapp-mcp</span>
-          <span class="value"><span class="dot ok" aria-hidden="true" />{{ shortFolder(wa.config!.folder) }}, bridge started by Tresso</span>
+          <span class="value"><span class="dot" :class="{ ok: folderRow.ok }" aria-hidden="true" />{{ folderRow.value }}</span>
           <button type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.changeFolder()">Change folder</button>
         </div>
         <div class="row">
           <span class="label">Bridge</span>
           <span class="value"><span class="dot" :class="{ ok: bridgeRow.ok }" aria-hidden="true" />{{ bridgeRow.value }}</span>
           <button v-if="bridgeRow.action === 'start'" type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.start()">Start again</button>
-          <a v-else-if="bridgeRow.action === 'close-port'" :href="BRIDGE_DOCS_URL" target="_blank" rel="noopener noreferrer" class="button button-quiet outline">Show how to close it</a>
+          <a v-else-if="bridgeRow.action === 'close-port'" :href="CLOSE_PORT_URL" target="_blank" rel="noopener noreferrer" class="button button-quiet outline">Show how to close it</a>
           <span v-if="bridgeRow.detail" class="detail">{{ bridgeRow.detail }}</span>
           <code v-if="bridgeView.problem === 'not_built' || bridgeView.problem === 'unprotected'" class="command">{{ BUILD_COMMAND }}</code>
         </div>
@@ -244,24 +257,7 @@ onBeforeUnmount(() => {
             <button ref="groupsCancel" type="button" class="button button-quiet" @click="confirmingGroups = false">Cancel</button>
           </div>
         </div>
-        <div class="option">
-          <span class="option-text">
-            <span id="wa-notify-label" class="option-label">Notify me</span>
-            <span id="wa-notify-note" class="option-note">Desktop notifications for new WhatsApp messages on this Mac.</span>
-          </span>
-          <button
-            type="button"
-            role="switch"
-            class="switch"
-            :aria-checked="wa.config!.notify ? 'true' : 'false'"
-            aria-labelledby="wa-notify-label"
-            aria-describedby="wa-notify-note"
-            :disabled="wa.busy !== null"
-            @click="wa.setNotify(!wa.config!.notify)"
-          >
-            <span />
-          </button>
-        </div>
+        <!-- Notify me comes with the chat screens, which send the notifications; until then it stays off (config.notify). -->
       </section>
 
       <section class="panel disconnect" aria-label="Disconnect">
@@ -274,9 +270,10 @@ onBeforeUnmount(() => {
             phone keeps this Mac under Linked devices until you remove it there.
           </p>
           <div class="actions">
-            <button type="button" class="button button-danger" :disabled="wa.busy !== null" @click="disconnect">Disconnect</button>
-            <button ref="disconnectCancel" type="button" class="button button-quiet" @click="confirmingDisconnect = false">Cancel</button>
+            <button type="button" class="button button-danger" :disabled="wa.busy !== null" @click="disconnect">{{ disconnecting ? 'Disconnecting…' : 'Disconnect' }}</button>
+            <button ref="disconnectCancel" type="button" class="button button-quiet" :disabled="disconnecting" @click="confirmingDisconnect = false">Cancel</button>
           </div>
+          <p class="waiting" role="status">{{ disconnecting ? 'Disconnecting… A reply being sent goes out first; this can take up to two minutes.' : '' }}</p>
         </div>
       </section>
     </template>
@@ -380,6 +377,11 @@ h2 {
 .import.stuck {
   background: var(--delegate-soft);
 }
+.later,
+.waiting {
+  margin: 0;
+  color: var(--ink-2);
+}
 .import-failing {
   margin: 0;
   color: var(--delegate);
@@ -475,30 +477,6 @@ select {
   color: var(--ink);
   font: 400 14px var(--font-ui);
 }
-.switch {
-  display: flex;
-  flex-shrink: 0;
-  justify-content: flex-start;
-  width: 40px;
-  height: 24px;
-  padding: 3px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--line-strong);
-  cursor: pointer;
-  transition: background-color var(--motion-fast) ease;
-}
-.switch[aria-checked='true'] {
-  justify-content: flex-end;
-  background: var(--ink);
-}
-.switch span {
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: var(--paper);
-  box-shadow: 0 1px 2px rgb(22 24 29 / 20%);
-}
 .disconnect {
   flex-flow: row wrap;
   align-items: center;
@@ -527,11 +505,6 @@ select {
   }
   .option {
     flex-direction: column;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .switch {
-    transition: none;
   }
 }
 </style>

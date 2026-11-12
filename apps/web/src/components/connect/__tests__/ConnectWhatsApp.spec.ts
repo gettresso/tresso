@@ -236,6 +236,7 @@ describe('ConnectWhatsApp', () => {
     expect(imported().classes()).toContain('done')
     expect(wrapper.get('[role="status"]').text()).toBe('Your recent chats are in.')
 
+    expect(wrapper.get('.later').text()).toBe('Your chats will show in Tresso in a later version.')
     expect(primary(wrapper).text()).toBe('Done')
     await primary(wrapper).trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
@@ -261,5 +262,20 @@ describe('ConnectWhatsApp', () => {
     await flushPromises()
     expect(document.activeElement).toBe(opener)
     opener.remove()
+  })
+
+  it('keeps Connect off while the risk is not confirmed, also when everything else is done', async () => {
+    const connect = vi.spyOn(wa, 'connect').mockResolvedValue(true)
+    wa.folder = '/Users/kim/whatsapp-mcp'
+    wa.inspection = GOOD
+    wa.bridge = { ...RUNNING, link: 'linked' }
+    const wrapper = open()
+    expect(primary(wrapper).attributes('disabled')).toBeDefined()
+    await wrapper.get('dialog').trigger('keydown', { key: 'Enter' })
+    expect(connect).not.toHaveBeenCalled()
+    expect(wrapper.find('.later').exists()).toBe(false)
+
+    await wrapper.get('.confirm input').setValue(true)
+    expect(primary(wrapper).attributes('disabled')).toBeUndefined()
   })
 })
