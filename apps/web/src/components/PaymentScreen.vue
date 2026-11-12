@@ -6,6 +6,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useBillingStore } from '@/stores/billing'
 import { vibrant } from '@/platform/vibrancy'
 import LogoLoader from '@/components/LogoLoader.vue'
+import UnsavedDraftsDialog from '@/components/UnsavedDraftsDialog.vue'
+import { useSignOut } from '@/components/signOut'
 
 /**
  * Covers the app while the server answers 402: the trial or subscription is over. It shows why, lets an owner or admin
@@ -17,14 +19,12 @@ const billing = useBillingStore()
 const checking = ref(false)
 const stillBlocked = ref(false)
 const signOutError = ref<string | null>(null)
+/** Drafts that never reached the server are asked about first (UnsavedDraftsDialog). */
+const signOut = useSignOut((text) => (signOutError.value = text))
 
-async function signOut(): Promise<void> {
+function startSignOut(): void {
   signOutError.value = null
-  try {
-    await auth.signOut()
-  } catch (cause) {
-    signOutError.value = `Signing out did not finish: ${errorMessage(cause)}. Try again.`
-  }
+  void signOut.request()
 }
 const heading = ref<HTMLElement | null>(null)
 
@@ -69,11 +69,20 @@ onMounted(() => {
       <p v-if="signOutError" class="form-error" role="alert">{{ signOutError }}</p>
       <div class="footer">
         <button type="button" class="button button-quiet" :disabled="checking" @click="checkAgain">I have paid, check again</button>
-        <button type="button" class="button button-quiet" :disabled="auth.signingOut" :aria-busy="auth.signingOut" @click="signOut">
+        <button type="button" class="button button-quiet" :disabled="auth.signingOut" :aria-busy="auth.signingOut" @click="startSignOut">
           {{ auth.signingOut ? 'Signing out…' : 'Sign out' }}
         </button>
       </div>
     </section>
+    <UnsavedDraftsDialog
+      v-if="signOut.unsaved.value !== null"
+      :count="signOut.unsaved.value"
+      :saving="signOut.saving.value"
+      :failed="signOut.saveFailed.value"
+      @save="signOut.saveFirst"
+      @sign-out="signOut.signOutAnyway"
+      @cancel="signOut.cancel"
+    />
   </div>
 </template>
 
