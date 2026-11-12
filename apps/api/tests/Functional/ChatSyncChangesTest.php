@@ -205,6 +205,37 @@ final class ChatSyncChangesTest extends DatabaseTestCase
         self::assertGreaterThan($ours['cursor'], $after['cursor']);
     }
 
+    /**
+     * "latest" counts chat changes like any other: a page with chat rows carries it, and a token that may not read chats
+     * learns the user's newest number moved on while its chat lists stay empty.
+     */
+    public function testLatestCountsChatChangesForEveryToken(): void
+    {
+        $script = $this->personalAccessTokenHeaders('kim@example.test', ['mail:read']);
+        $before = $this->delta(0, $this->kim)['cursor'];
+        self::assertSame($before, $this->delta(0, $script)['cursor']);
+
+        $this->storeChatMessages($this->chatInManager(), [['waId' => 'L1', 'text' => 'Late message']]);
+        $this->chatEntityManager()->clear();
+        $newest = $this->countRows("SELECT change_seq FROM app_user WHERE email = 'kim@example.test'");
+        self::assertGreaterThan($before, $newest);
+
+        $ours = $this->delta($before, $this->kim);
+        self::assertSame(['L1'], array_column($ours['chatMessages'], 'waId'));
+        self::assertSame($newest, $ours['latest'], 'A page carrying chat rows carries the newest number.');
+        self::assertSame($newest, $ours['cursor']);
+
+        $theirs = $this->delta($before, $script);
+        foreach (['chatAccounts', 'chats', 'chatMessages', 'chatOutgoing'] as $list) {
+            self::assertSame([], $theirs[$list], $list);
+        }
+        self::assertSame([], $theirs['deleted']);
+        self::assertSame($newest, $theirs['latest'], 'Ahead of the cursor this token held, with nothing it may read.');
+        self::assertGreaterThan($before, $theirs['latest']);
+        self::assertSame($ours['cursor'], $theirs['cursor'], 'Its cursor moves on as well, so its pull ends.');
+        self::assertFalse($theirs['hasMore']);
+    }
+
     public function testPagingNeverSplitsAChangeNumber(): void
     {
         // Three more messages in one transaction: one change number.
@@ -306,14 +337,14 @@ final class ChatSyncChangesTest extends DatabaseTestCase
     /**
      * @param array<string, string> $headers
      *
-     * @return array{cursor: int, hasMore: bool, chatAccounts: list<array<string, mixed>>, chats: list<array<string, mixed>>, chatMessages: list<array<string, mixed>>, chatOutgoing: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>}
+     * @return array{cursor: int, hasMore: bool, latest: int, chatAccounts: list<array<string, mixed>>, chats: list<array<string, mixed>>, chatMessages: list<array<string, mixed>>, chatOutgoing: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>}
      */
     private function delta(int $since, array $headers, int $limit = 2000): array
     {
         $this->client->request('GET', \sprintf('/api/v1/sync/changes?since=%d&limit=%d', $since, $limit), server: $headers);
         self::assertResponseIsSuccessful();
 
-        /** @var array{cursor: int, hasMore: bool, chatAccounts: list<array<string, mixed>>, chats: list<array<string, mixed>>, chatMessages: list<array<string, mixed>>, chatOutgoing: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>} */
+        /** @var array{cursor: int, hasMore: bool, latest: int, chatAccounts: list<array<string, mixed>>, chats: list<array<string, mixed>>, chatMessages: list<array<string, mixed>>, chatOutgoing: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>} */
         return $this->decodedResponse();
     }
 }
