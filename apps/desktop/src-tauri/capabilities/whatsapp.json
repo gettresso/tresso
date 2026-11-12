@@ -13,6 +13,7 @@
     "allow-whatsapp-config-load",
     "allow-whatsapp-config-save",
     "allow-whatsapp-config-clear",
+    "allow-whatsapp-config-keep-only",
     "allow-whatsapp-choose-folder",
     "allow-whatsapp-inspect",
     "allow-whatsapp-start",

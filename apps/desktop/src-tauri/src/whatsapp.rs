@@ -32,14 +32,15 @@
 //! - The bridge Tresso started stops when the app quits, at sign-out and when WhatsApp is disconnected. One that a
 //!   crashed run left behind exits at its next line of output (Go ends on a write to the closed pipe), and is stopped
 //!   at the next launch and the next start.
-//! - Every command but `whatsapp_available` answers `unsupported` outside macOS, and only the main window may call
-//!   them (capabilities/whatsapp.json).
+//! - Every command answers `unsupported` outside macOS and while WhatsApp is not turned on (below);
+//!   `whatsapp_available` says false then. Only the main window may call them (capabilities/whatsapp.json).
 //!
-//! WhatsApp stays hidden until it is turned on, while it waits for a hand-check with a real phone: `whatsapp_available`
-//! answers true only on macOS and only with `defaults write app.tresso.desktop EnableWhatsApp -bool YES` (or the app
-//! started with `TRESSO_ENABLE_WHATSAPP=1`). `defaults delete app.tresso.desktop EnableWhatsApp` hides it again. The web
-//! client asks once per launch, so quit and open Tresso after changing it. Hidden, the app starts no bridge at all, also
-//! not for a WhatsApp connected before.
+//! WhatsApp stays off until it is turned on, while it waits for a hand-check with a real phone: `defaults write
+//! app.tresso.desktop EnableWhatsApp -bool YES` (or the app started with `TRESSO_ENABLE_WHATSAPP=1`), and `defaults
+//! delete app.tresso.desktop EnableWhatsApp` turns it off again. The switch is read once, when the app starts
+//! (`setup`), so quit and open Tresso after changing it. Off, every command refuses, so nothing in the window can load
+//! a config, start a bridge, read or send, also for a WhatsApp connected before; a bridge an earlier run left behind
+//! is still stopped at launch.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -361,6 +362,8 @@ struct Shared {
   data_dir: Mutex<Option<PathBuf>>,
   /// The files the user picked in the file dialog since the last sign-out: the only ones a message may carry.
   chosen_files: Mutex<HashSet<PathBuf>>,
+  /// Whether WhatsApp is turned on, read once at launch (`setup`); off until then.
+  switched_on: std::sync::OnceLock<bool>,
 }
 
 /// A fresh token. Without random bytes from the OS nothing here can be made safe, so that stops the app.
@@ -431,7 +434,13 @@ impl Bridge {
       emit: Mutex::new(None),
       data_dir: Mutex::new(None),
       chosen_files: Mutex::new(HashSet::new()),
+      switched_on: std::sync::OnceLock::new(),
     }))
+  }
+
+  /// macOS, and WhatsApp turned on; every command checks this first.
+  fn enabled(&self) -> Result<(), String> {
+    enabled_with(supported().is_ok(), self.0.switched_on.get().copied().unwrap_or(false))
   }
 
   fn connect(&self, data_dir: PathBuf, emit: Emit) {
@@ -1354,6 +1363,53 @@ fn save_config(data_dir: &Path, user_id: &str, config: &Config) -> Result<(), St
   write_private(&file, &bytes).map_err(|error| format!("Saving the WhatsApp settings failed: {error}"))
 }
 
+/// The user ids that have a config here, from the file names (`whatsapp-<userId>.json`).
+fn config_users(data_dir: &Path) -> Vec<String> {
+  let Ok(entries) = fs::read_dir(data_dir) else {
+    return Vec::new();
+  };
+  entries
+    .flatten()
+    .filter_map(|entry| {
+      let name = entry.file_name();
+      let user = name.to_str()?.strip_prefix("whatsapp-")?.strip_suffix(".json")?.to_string();
+      valid_user_id(&user).then_some(user)
+    })
+    .collect()
+}
+
+/// Forgets the chosen folders no config names any more: using one again takes the folder dialog.
+fn forget_unused_folders(data_dir: &Path) -> Result<(), String> {
+  let used: HashSet<PathBuf> = config_users(data_dir)
+    .iter()
+    .filter_map(|user| load_config(data_dir, user).ok().flatten())
+    .filter_map(|config| Path::new(&config.folder).canonicalize().ok())
+    .collect();
+  let folders = chosen_folders(data_dir)?;
+  let kept: Vec<PathBuf> = folders.iter().filter(|folder| used.contains(*folder)).cloned().collect();
+  if kept.len() != folders.len() {
+    save_folders(data_dir, &kept)?;
+  }
+  Ok(())
+}
+
+/// Removes every user's config but `user_id`'s (the user the server confirmed), and the folders only they named; returns
+/// the folders still chosen. Another user's WhatsApp leaves nothing behind on this Mac once someone else signed in here.
+fn keep_only_config(data_dir: &Path, user_id: &str) -> Result<Vec<PathBuf>, String> {
+  config_file(data_dir, user_id)?;
+  for user in config_users(data_dir) {
+    if user != user_id {
+      match fs::remove_file(data_dir.join(format!("whatsapp-{user}.json"))) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Removing another user's WhatsApp settings failed: {error}")),
+      }
+    }
+  }
+  forget_unused_folders(data_dir)?;
+  chosen_folders(data_dir)
+}
+
 /// Removes a user's config and returns it. A folder no other user's config names is forgotten: using it again takes
 /// the folder dialog.
 fn clear_config(data_dir: &Path, user_id: &str) -> Result<Option<Config>, String> {
@@ -1364,25 +1420,7 @@ fn clear_config(data_dir: &Path, user_id: &str) -> Result<Option<Config>, String
     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
     Err(error) => return Err(format!("Removing the WhatsApp settings failed: {error}")),
   }
-  let mut used = HashSet::new();
-  if let Ok(entries) = fs::read_dir(data_dir) {
-    for entry in entries.flatten() {
-      let name = entry.file_name();
-      let Some(other) = name.to_str().and_then(|name| name.strip_prefix("whatsapp-")).and_then(|rest| rest.strip_suffix(".json")) else {
-        continue;
-      };
-      if let Ok(Some(config)) = load_config(data_dir, other)
-        && let Ok(folder) = Path::new(&config.folder).canonicalize()
-      {
-        used.insert(folder);
-      }
-    }
-  }
-  let folders = chosen_folders(data_dir)?;
-  let kept: Vec<PathBuf> = folders.iter().filter(|folder| used.contains(*folder)).cloned().collect();
-  if kept.len() != folders.len() {
-    save_folders(data_dir, &kept)?;
-  }
+  forget_unused_folders(data_dir)?;
   Ok(old)
 }
 
@@ -1959,6 +1997,9 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) {
       let _ = handle.emit(EVENT, snapshot);
     }),
   );
+  // Read once: a change takes effect at the next launch, never halfway through a session.
+  bridge.0.switched_on.get_or_init(|| turned_on(std::env::var_os(ENABLE_ENV), enabled_by_default()));
+  // Also with WhatsApp off: a bridge an earlier run left behind is stopped, not kept.
   if supported().is_ok() {
     let shared = Arc::clone(&bridge.0);
     thread::spawn(move || Bridge(shared).stop_left_over());
@@ -1998,14 +2039,14 @@ fn enabled_by_default() -> bool {
   false
 }
 
-/// Whether the web client shows WhatsApp: on macOS, once it was turned on.
-fn available(supported: bool, env: Option<std::ffi::OsString>, by_default: bool) -> bool {
-  supported && turned_on(env, by_default)
+/// WhatsApp can be used: on macOS, once it was turned on; else every command answers `unsupported`.
+fn enabled_with(supported: bool, switched_on: bool) -> Result<(), String> {
+  if supported && switched_on { Ok(()) } else { Err(code(UNSUPPORTED)) }
 }
 
 #[tauri::command]
-pub fn whatsapp_available() -> bool {
-  available(supported().is_ok(), std::env::var_os(ENABLE_ENV), enabled_by_default())
+pub fn whatsapp_available(bridge: State<'_, Bridge>) -> bool {
+  bridge.enabled().is_ok()
 }
 
 #[derive(Serialize)]
@@ -2049,27 +2090,27 @@ fn device_name(computer: Option<String>, host: Option<String>) -> Option<String>
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_device() -> Result<Device, String> {
-  supported()?;
+pub fn whatsapp_device(bridge: State<'_, Bridge>) -> Result<Device, String> {
+  bridge.enabled()?;
   device_name(computer_name(), host_name()).map(|name| Device { name }).ok_or_else(|| code("This computer's name is not known."))
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_config_load(app: AppHandle, user_id: String) -> Result<Option<Config>, String> {
-  supported()?;
+pub fn whatsapp_config_load<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, user_id: String) -> Result<Option<Config>, String> {
+  bridge.enabled()?;
   load_config(&data_dir(&app)?, &user_id)
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_config_save(app: AppHandle, user_id: String, config: Config) -> Result<(), String> {
-  supported()?;
+pub fn whatsapp_config_save<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, user_id: String, config: Config) -> Result<(), String> {
+  bridge.enabled()?;
   save_config(&data_dir(&app)?, &user_id, &config)
 }
 
 /// Disconnecting and signing out: the config goes, and the bridge Tresso started from its folder stops.
 #[tauri::command(async)]
-pub fn whatsapp_config_clear(app: AppHandle, bridge: State<'_, Bridge>, user_id: String) -> Result<(), String> {
-  supported()?;
+pub fn whatsapp_config_clear<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, user_id: String) -> Result<(), String> {
+  bridge.enabled()?;
   if let Some(old) = clear_config(&data_dir(&app)?, &user_id)?
     && let Ok(folder) = Path::new(&old.folder).canonicalize()
     && bridge.serving().is_some_and(|dir| dir.starts_with(&folder))
@@ -2079,10 +2120,25 @@ pub fn whatsapp_config_clear(app: AppHandle, bridge: State<'_, Bridge>, user_id:
   Ok(())
 }
 
+/// The server confirmed who is signed in (where the mail copies of other users are removed): every other user's config
+/// goes, with the folders only they named, and a bridge Tresso started from such a folder stops. The shell holds the
+/// tokens but not who they belong to, so the user id comes from the web client, which asked the server.
 #[tauri::command(async)]
-pub fn whatsapp_choose_folder(app: AppHandle) -> Result<Option<String>, String> {
+pub fn whatsapp_config_keep_only<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, user_id: String) -> Result<(), String> {
+  bridge.enabled()?;
+  let kept = keep_only_config(&data_dir(&app)?, &user_id)?;
+  if let Some(dir) = bridge.serving()
+    && !kept.iter().any(|folder| dir.starts_with(folder))
+  {
+    bridge.stop();
+  }
+  Ok(())
+}
+
+#[tauri::command(async)]
+pub fn whatsapp_choose_folder<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>) -> Result<Option<String>, String> {
   use tauri_plugin_dialog::DialogExt;
-  supported()?;
+  bridge.enabled()?;
   let Some(picked) = app.dialog().file().set_title("Choose the whatsapp-mcp folder").blocking_pick_folder() else {
     return Ok(None);
   };
@@ -2093,33 +2149,33 @@ pub fn whatsapp_choose_folder(app: AppHandle) -> Result<Option<String>, String> 
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_inspect(app: AppHandle, folder: String) -> Result<Inspection, String> {
-  supported()?;
+pub fn whatsapp_inspect<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, folder: String) -> Result<Inspection, String> {
+  bridge.enabled()?;
   Ok(inspect(&chosen_folder(&data_dir(&app)?, &folder)?))
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_start(app: AppHandle, bridge: State<'_, Bridge>, folder: String) -> Result<Snapshot, String> {
-  supported()?;
+pub fn whatsapp_start<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, folder: String) -> Result<Snapshot, String> {
+  bridge.enabled()?;
   let folder = chosen_folder(&data_dir(&app)?, &folder)?;
   Ok(bridge.start(&folder))
 }
 
 #[tauri::command(async)]
 pub fn whatsapp_stop(bridge: State<'_, Bridge>) -> Result<Snapshot, String> {
-  supported()?;
+  bridge.enabled()?;
   Ok(bridge.stop())
 }
 
 #[tauri::command]
 pub fn whatsapp_state(bridge: State<'_, Bridge>) -> Result<Snapshot, String> {
-  supported()?;
+  bridge.enabled()?;
   Ok(bridge.snapshot())
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_identity(app: AppHandle, folder: String) -> Result<Option<Identity>, String> {
-  supported()?;
+pub fn whatsapp_identity<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, folder: String) -> Result<Option<Identity>, String> {
+  bridge.enabled()?;
   let folder = chosen_folder(&data_dir(&app)?, &folder)?;
   match store_file(&folder, SESSION_DB) {
     Ok(db) => identity(&db),
@@ -2128,8 +2184,8 @@ pub fn whatsapp_identity(app: AppHandle, folder: String) -> Result<Option<Identi
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_read(app: AppHandle, folder: String, after_rowid: i64, limit: u32) -> Result<Rows, String> {
-  supported()?;
+pub fn whatsapp_read<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, folder: String, after_rowid: i64, limit: u32) -> Result<Rows, String> {
+  bridge.enabled()?;
   if after_rowid < 0 || !(1..=MAX_ROWS).contains(&limit) {
     return Err(format!("Read after a rowid of 0 or more, at most {MAX_ROWS} rows at a time."));
   }
@@ -2138,8 +2194,8 @@ pub fn whatsapp_read(app: AppHandle, folder: String, after_rowid: i64, limit: u3
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_names(app: AppHandle, folder: String, ids: Vec<String>) -> Result<HashMap<String, Name>, String> {
-  supported()?;
+pub fn whatsapp_names<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, folder: String, ids: Vec<String>) -> Result<HashMap<String, Name>, String> {
+  bridge.enabled()?;
   let folder = chosen_folder(&data_dir(&app)?, &folder)?;
   names(store_file(&folder, SESSION_DB).ok().as_deref(), store_file(&folder, MESSAGES_DB).ok().as_deref(), &ids)
 }
@@ -2170,7 +2226,7 @@ fn checked_message(chosen_files: &HashSet<PathBuf>, recipient: &str, text: &str,
 
 #[tauri::command(async)]
 pub fn whatsapp_send(bridge: State<'_, Bridge>, recipient: String, text: String, media_path: Option<String>) -> Result<Sent, String> {
-  supported()?;
+  bridge.enabled()?;
   let media = checked_message(&lock(&bridge.0.chosen_files), &recipient, &text, media_path.as_deref())?;
   let snapshot = bridge.snapshot();
   match bridge.endpoint() {
@@ -2181,8 +2237,8 @@ pub fn whatsapp_send(bridge: State<'_, Bridge>, recipient: String, text: String,
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_download(app: AppHandle, bridge: State<'_, Bridge>, folder: String, message_id: String, chat_jid: String) -> Result<Downloaded, String> {
-  supported()?;
+pub fn whatsapp_download<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, folder: String, message_id: String, chat_jid: String) -> Result<Downloaded, String> {
+  bridge.enabled()?;
   if !valid_message_id(&message_id) || !valid_jid(&chat_jid) {
     return Err(code("The message is not valid."));
   }
@@ -2193,16 +2249,16 @@ pub fn whatsapp_download(app: AppHandle, bridge: State<'_, Bridge>, folder: Stri
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_open_file(app: AppHandle, path: String) -> Result<(), String> {
-  supported()?;
+pub fn whatsapp_open_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, path: String) -> Result<(), String> {
+  bridge.enabled()?;
   let file = openable(&data_dir(&app)?.join(MEDIA_DIR), &path)?;
   tauri_plugin_opener::open_path(&file, None::<&str>).map_err(|error| format!("Opening the file failed: {error}"))
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_choose_file(app: AppHandle, bridge: State<'_, Bridge>) -> Result<Option<String>, String> {
+pub fn whatsapp_choose_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>) -> Result<Option<String>, String> {
   use tauri_plugin_dialog::DialogExt;
-  supported()?;
+  bridge.enabled()?;
   let Some(picked) = app.dialog().file().set_title("Attach a file").blocking_pick_file() else {
     return Ok(None);
   };
@@ -2623,14 +2679,46 @@ mod tests {
   // ---- config
 
   #[test]
-  fn is_hidden_until_it_is_turned_on() {
-    assert!(!available(true, None, false));
-    assert!(available(true, None, true));
-    assert!(available(true, Some("1".into()), false));
-    assert!(!available(true, Some("0".into()), false));
-    assert!(!available(true, Some("".into()), false));
+  fn is_off_until_it_is_turned_on() {
+    assert!(!turned_on(None, false));
+    assert!(turned_on(None, true));
+    assert!(turned_on(Some("1".into()), false));
+    assert!(!turned_on(Some("0".into()), false));
+    assert!(!turned_on(Some("".into()), false));
+    assert_eq!(enabled_with(true, true), Ok(()));
+    assert_eq!(enabled_with(true, false), Err("unsupported".to_string()));
     // Never outside macOS, whatever turns it on.
-    assert!(!available(false, Some("1".into()), true));
+    assert_eq!(enabled_with(false, true), Err("unsupported".to_string()));
+    // A bridge state the switch was never read into (before setup) is off.
+    assert_eq!(Bridge::default().enabled(), Err("unsupported".to_string()));
+  }
+
+  /// A bridge state with the switch read as `on`, as setup does at launch.
+  fn switched(on: bool) -> Bridge {
+    let bridge = Bridge::default();
+    bridge.0.switched_on.set(on).unwrap();
+    bridge
+  }
+
+  #[test]
+  fn keeps_only_the_confirmed_users_config_and_folders() {
+    let data = temp();
+    let root = temp();
+    let mine = install(&root.join("mine"), None);
+    let theirs = install(&root.join("theirs"), None);
+    remember_folder(&data, &mine).unwrap();
+    remember_folder(&data, &theirs).unwrap();
+    save_config(&data, "u1", &config(&mine)).unwrap();
+    save_config(&data, "u2", &config(&theirs)).unwrap();
+
+    assert_eq!(keep_only_config(&data, "u1").unwrap(), vec![mine.clone()]);
+    assert!(load_config(&data, "u1").unwrap().is_some());
+    assert_eq!(load_config(&data, "u2").unwrap(), None);
+    assert_eq!(chosen_folder(&data, theirs.to_str().unwrap()), Err("not_chosen".to_string()));
+    // A user without a config of their own removes everyone's.
+    assert!(keep_only_config(&data, "u3").unwrap().is_empty());
+    assert_eq!(load_config(&data, "u1").unwrap(), None);
+    assert!(keep_only_config(&data, "../u1").is_err());
   }
 
   fn config(folder: &Path) -> Config {
@@ -3652,13 +3740,13 @@ mod tests {
   #[test]
   fn answers_unsupported_outside_macos() {
     if cfg!(target_os = "macos") {
-      // Shown only once turned on for this Mac (is_hidden_until_it_is_turned_on).
       assert!(supported().is_ok());
-      assert_eq!(whatsapp_available(), turned_on(std::env::var_os(ENABLE_ENV), enabled_by_default()));
+      assert_eq!(switched(true).enabled(), Ok(()));
     } else {
-      assert!(!whatsapp_available());
       assert_eq!(supported(), Err("unsupported".to_string()));
+      assert_eq!(switched(true).enabled(), Err("unsupported".to_string()));
     }
+    assert_eq!(switched(false).enabled(), Err("unsupported".to_string()));
   }
 
   /// The handler list in lib.rs, the app manifest in build.rs and the capabilities agree: every command is allowed
@@ -3712,7 +3800,7 @@ mod tests {
   fn another_window_cannot_reach_the_commands() {
     use tauri::test::{INVOKE_KEY, mock_builder};
     let app = mock_builder()
-      .manage(Bridge::default())
+      .manage(switched(true))
       .invoke_handler(tauri::generate_handler![whatsapp_available, whatsapp_state])
       .build(tauri::generate_context!(test = true))
       .unwrap();
@@ -3732,9 +3820,105 @@ mod tests {
     };
     let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
     let other = tauri::WebviewWindowBuilder::new(&app, "other", Default::default()).build().unwrap();
-    assert_eq!(call(&main, "whatsapp_available").unwrap().deserialize::<bool>().unwrap(), whatsapp_available());
+    assert_eq!(call(&main, "whatsapp_available").unwrap().deserialize::<bool>().unwrap(), cfg!(target_os = "macos"));
     assert!(call(&other, "whatsapp_available").is_err());
     assert!(call(&other, "whatsapp_state").is_err());
     assert_eq!(call(&main, "whatsapp_state").is_ok(), cfg!(target_os = "macos"));
+  }
+
+  /// With the switch off every WhatsApp command refuses before it does anything, for the main window too: nothing in
+  /// the window can load a config, start a bridge, read or send. The list comes from the app manifest (build.rs), so a
+  /// command added there without being added here fails this test.
+  #[test]
+  fn every_command_refuses_while_whatsapp_is_off() {
+    use tauri::test::{INVOKE_KEY, mock_builder};
+    const COMMANDS: [&str; 18] = [
+      "whatsapp_available",
+      "whatsapp_device",
+      "whatsapp_config_load",
+      "whatsapp_config_save",
+      "whatsapp_config_clear",
+      "whatsapp_config_keep_only",
+      "whatsapp_choose_folder",
+      "whatsapp_inspect",
+      "whatsapp_start",
+      "whatsapp_stop",
+      "whatsapp_state",
+      "whatsapp_identity",
+      "whatsapp_read",
+      "whatsapp_names",
+      "whatsapp_send",
+      "whatsapp_download",
+      "whatsapp_open_file",
+      "whatsapp_choose_file",
+    ];
+    let manifest: Vec<&str> = include_str!("../build.rs")
+      .split('"')
+      .filter(|word| word.starts_with("whatsapp_") && word.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+      .collect();
+    assert_eq!(manifest, COMMANDS.to_vec());
+
+    let app = mock_builder()
+      .manage(switched(false))
+      .invoke_handler(tauri::generate_handler![
+        whatsapp_available,
+        whatsapp_device,
+        whatsapp_config_load,
+        whatsapp_config_save,
+        whatsapp_config_clear,
+        whatsapp_config_keep_only,
+        whatsapp_choose_folder,
+        whatsapp_inspect,
+        whatsapp_start,
+        whatsapp_stop,
+        whatsapp_state,
+        whatsapp_identity,
+        whatsapp_read,
+        whatsapp_names,
+        whatsapp_send,
+        whatsapp_download,
+        whatsapp_open_file,
+        whatsapp_choose_file
+      ])
+      .build(tauri::generate_context!(test = true))
+      .unwrap();
+    let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+    // Every argument any command takes, valid, so a refusal can only come from the switch.
+    let args = json!({
+      "userId": "u1",
+      "config": { "folder": "/x", "mode": "local", "deviceId": "d", "deviceName": "n", "linkedAt": null, "importSince": "2026-10-13T13:40:02.000Z", "includeGroups": true, "notify": false, "leftOut": [] },
+      "folder": "/x",
+      "afterRowid": 0,
+      "limit": 1,
+      "ids": [],
+      "recipient": "31612345678",
+      "text": "Hi",
+      "mediaPath": null,
+      "messageId": "ABC",
+      "chatJid": "31612345678@s.whatsapp.net",
+      "path": "/x"
+    });
+    for command in COMMANDS {
+      let answer = tauri::test::get_ipc_response(
+        &main,
+        tauri::webview::InvokeRequest {
+          cmd: command.into(),
+          callback: tauri::ipc::CallbackFn(0),
+          error: tauri::ipc::CallbackFn(1),
+          url: if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" }.parse().unwrap(),
+          body: tauri::ipc::InvokeBody::Json(args.clone()),
+          headers: Default::default(),
+          invoke_key: INVOKE_KEY.to_string(),
+        },
+      );
+      if command == "whatsapp_available" {
+        assert!(!answer.unwrap().deserialize::<bool>().unwrap());
+      } else if cfg!(target_os = "macos") {
+        assert_eq!(answer.unwrap_err(), json!("unsupported"), "{command}");
+      } else {
+        // Outside macOS the capability does not even let the call through.
+        assert!(answer.is_err(), "{command}");
+      }
+    }
   }
 }

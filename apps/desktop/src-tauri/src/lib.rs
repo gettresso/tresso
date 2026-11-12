@@ -57,6 +57,7 @@ pub fn run() {
       whatsapp::whatsapp_config_load,
       whatsapp::whatsapp_config_save,
       whatsapp::whatsapp_config_clear,
+      whatsapp::whatsapp_config_keep_only,
       whatsapp::whatsapp_choose_folder,
       whatsapp::whatsapp_inspect,
       whatsapp::whatsapp_start,
