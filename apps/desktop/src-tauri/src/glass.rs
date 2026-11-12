@@ -166,18 +166,26 @@ pub fn turned_off(env: Option<std::ffi::OsString>, default: bool) -> bool {
 /// and not turned off.
 pub fn supported() -> bool {
   static DECIDED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-  *DECIDED.get_or_init(decide)
+  decided_once(&DECIDED, || {
+    #[cfg(target_os = "macos")]
+    {
+      decide(appkit::class_usable(), std::env::var_os(DISABLE_ENV), appkit::disabled_by_default())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+      decide(false, None, false)
+    }
+  })
 }
 
-fn decide() -> bool {
-  #[cfg(target_os = "macos")]
-  {
-    appkit::class_usable() && !turned_off(std::env::var_os(DISABLE_ENV), appkit::disabled_by_default())
-  }
-  #[cfg(not(target_os = "macos"))]
-  {
-    false
-  }
+/// The glass is on where the class can be used and the user did not turn it off.
+pub fn decide(class_usable: bool, env: Option<std::ffi::OsString>, disabled_by_default: bool) -> bool {
+  class_usable && !turned_off(env, disabled_by_default)
+}
+
+/// The first answer, kept: later questions get the same one.
+fn decided_once(cell: &std::sync::OnceLock<bool>, decide: impl FnOnce() -> bool) -> bool {
+  *cell.get_or_init(decide)
 }
 
 /// The window around the card in the light appearance while the glass is on: the spec's #f3f3f3 (sRGB, 0 to 1).
@@ -477,18 +485,23 @@ mod tests {
     assert!(shapes.ids().is_empty() && views.live.is_empty());
   }
 
+  /// The switch and the class together: glass only where the class can be used and nothing turned it off.
+  #[test]
+  fn the_glass_is_on_only_with_a_usable_class_and_no_switch() {
+    assert!(decide(true, None, false));
+    assert!(!decide(false, None, false));
+    assert!(!decide(true, Some("1".into()), false));
+    assert!(!decide(true, None, true));
+    assert!(decide(true, Some("0".into()), false));
+  }
+
   /// Decided once: what the switch says later (a key deleted, then View > Reload) changes nothing until a relaunch.
   #[test]
   fn the_decision_holds_for_the_apps_life() {
-    let first = supported();
-    // SAFETY: tests only; no other test reads this variable.
-    unsafe { std::env::set_var(DISABLE_ENV, if first { "1" } else { "0" }) };
-    assert_eq!(supported(), first);
-    unsafe { std::env::remove_var(DISABLE_ENV) };
-    assert_eq!(supported(), first);
-    if !cfg!(target_os = "macos") {
-      assert!(!first);
-    }
+    let cell = std::sync::OnceLock::new();
+    assert!(decided_once(&cell, || true));
+    assert!(decided_once(&cell, || false));
+    assert!(decided_once(&cell, || panic!("asked again")));
   }
 
   #[test]
