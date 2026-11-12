@@ -1,7 +1,8 @@
 //! The menu bar of the macOS app, after the Human Interface Guidelines: the app menu, File, Edit, View, Window and
 //! Help, with the standard names, order and shortcuts. Every item does something real. What the web client does (a
 //! new message, a view, Settings) reaches it as the `menu` event with the action's name (MENU_EVENT,
-//! apps/web/src/platform/menu.ts); the web client enables those items once someone is signed in (`menu_state`). The
+//! apps/web/src/platform/menu.ts); the web client enables those items once someone is signed in, and names View > Show
+//! Sidebar or Hide Sidebar after the sidebar's state (`menu_state`). The
 //! standard items are AppKit's own, so they act on the focused web content: Undo, Cut, Paste and Match Style, Full
 //! Screen, Minimize. The shell does the rest itself: updates, Reload, the main window, Help.
 //!
@@ -16,6 +17,14 @@ pub const MENU_EVENT: &str = "menu";
 
 /// The item that asks Sparkle for updates (updates.rs).
 pub const CHECK_FOR_UPDATES: &str = "check-for-updates";
+
+/// View > Hide Sidebar or Show Sidebar: the web client shows and hides its sidebar (platform/frame.ts).
+pub const TOGGLE_SIDEBAR: &str = "toggle-sidebar";
+
+/// The sidebar item's title, after what it does now: AppKit's own names for it.
+pub fn sidebar_label(shown: bool) -> &'static str {
+  if shown { "Hide Sidebar" } else { "Show Sidebar" }
+}
 
 /// The project's home: the updater's endpoint in tauri.conf.json lives under it (a test keeps the two together). The
 /// app has no help pages of its own; its README is the documentation.
@@ -201,8 +210,10 @@ pub fn bar() -> Vec<Submenu> {
         web("view-todos", "To-dos", None),
         web("view-calendar", "Calendar", None),
         web("view-search", "Search", None),
-        // "Show Sidebar" / "Hide Sidebar" (Ctrl+Cmd+S) goes here, before Reload, once the sidebar can collapse: that
-        // waits for a design shared across the owner's apps.
+        Separator,
+        // The standard shortcut of every Mac app with a sidebar. Its title follows the sidebar (`menu_state`); the
+        // sidebar starts shown, as the web client's does on a first launch.
+        web(TOGGLE_SIDEBAR, sidebar_label(true), Some("Ctrl+Cmd+S")),
         Separator,
         // Loads the web client again, after it saved the draft and waited for files and a send under way, as before a
         // restart for an update (the web client does it: platform/menu.ts). No ⌘R: other mail apps answer with it.
@@ -245,14 +256,19 @@ pub fn action_of(id: &str) -> Option<Action> {
   })
 }
 
-/// A menu item that can be enabled and disabled: Tauri's, or a test's.
+/// A menu item that can be enabled and disabled, and renamed: Tauri's, or a test's.
 pub trait Toggle {
   fn set_enabled(&self, enabled: bool) -> Result<(), String>;
+  fn set_text(&self, text: &str) -> Result<(), String>;
 }
 
 impl<R: tauri::Runtime> Toggle for tauri::menu::MenuItem<R> {
   fn set_enabled(&self, enabled: bool) -> Result<(), String> {
     tauri::menu::MenuItem::set_enabled(self, enabled).map_err(|error| error.to_string())
+  }
+
+  fn set_text(&self, text: &str) -> Result<(), String> {
+    tauri::menu::MenuItem::set_text(self, text).map_err(|error| error.to_string())
   }
 }
 
@@ -282,18 +298,32 @@ impl<T: Toggle> MenuItems<T> {
     Ok(())
   }
 
+  /// Names the sidebar item after what it does now: Hide Sidebar while the sidebar shows, Show Sidebar while it is
+  /// hidden. Nothing where the app has no menu bar.
+  pub fn name_sidebar_item(&self, shown: bool) -> Result<(), String> {
+    for (id, item) in self.0.lock().map_err(|error| error.to_string())?.iter() {
+      if *id == TOGGLE_SIDEBAR {
+        item.set_text(sidebar_label(shown))?;
+      }
+    }
+    Ok(())
+  }
+
   #[cfg(test)]
   fn ids(&self) -> Vec<&'static str> {
     self.0.lock().unwrap().iter().map(|(id, _)| *id).collect()
   }
 }
 
-/// The web client says whether someone is signed in (and may use the app): the items that act in it follow.
+/// The web client says whether someone is signed in (and may use the app), and whether its sidebar shows: the items
+/// that act in it follow, and the sidebar item is named after what it would do.
 #[tauri::command]
-pub fn menu_state<R: tauri::Runtime>(app: tauri::AppHandle<R>, signed_in: bool) -> Result<(), String> {
+pub fn menu_state<R: tauri::Runtime>(app: tauri::AppHandle<R>, signed_in: bool, sidebar_shown: bool) -> Result<(), String> {
   use tauri::Manager;
 
-  app.state::<MenuItems<tauri::menu::MenuItem<R>>>().enable(signed_in)
+  let items = app.state::<MenuItems<tauri::menu::MenuItem<R>>>();
+  items.enable(signed_in)?;
+  items.name_sidebar_item(sidebar_shown)
 }
 
 /// The bar's items of our own, in its order, each enabled as it starts: the items that act in the web client wait for
@@ -552,7 +582,7 @@ mod tests {
     assert_eq!(titles(&bar[0]), ["About", "Check for Updates…", "-", "Settings…", "-", "Services", "-", "Hide", "HideOthers", "ShowAll", "-", "Quit"]);
     assert_eq!(titles(&bar[1]), ["New Message", "New Event", "New To-do", "-", "CloseWindow"]);
     assert_eq!(titles(&bar[2]), ["Undo", "Redo", "-", "Cut", "Copy", "Paste", "PasteAndMatchStyle", "Delete", "SelectAll", "-", "Find…"]);
-    assert_eq!(titles(&bar[3]), ["Inbox", "Triage", "To-dos", "Calendar", "Search", "-", "Reload", "EnterFullScreen"]);
+    assert_eq!(titles(&bar[3]), ["Inbox", "Triage", "To-dos", "Calendar", "Search", "-", "Hide Sidebar", "-", "Reload", "EnterFullScreen"]);
     assert_eq!(titles(&bar[4]), ["Minimize", "Zoom", "-", "BringAllToFront", "-", "Tresso"]);
     assert_eq!(titles(&bar[5]), ["Tresso Help", "Release Notes"]);
   }
@@ -586,6 +616,7 @@ mod tests {
       assert!(seen.insert(normalized(accelerator)), "{accelerator} is used twice");
     }
     assert!(seen.contains(&normalized("Cmd+,")) && seen.contains(&normalized("Cmd+N")) && seen.contains(&normalized("Cmd+F")));
+    assert!(seen.contains(&normalized("Cmd+Ctrl+S")) && seen.contains(&normalized("Cmd+Ctrl+F")));
   }
 
   #[test]
@@ -602,15 +633,21 @@ mod tests {
       .collect();
     web.sort_unstable();
     // The same list as MENU_ACTIONS in apps/web/src/platform/menu.ts.
-    assert_eq!(web, ["find", "new-event", "new-message", "new-todo", "reload", "settings", "view-calendar", "view-inbox", "view-search", "view-todos", "view-triage"]);
+    assert_eq!(web, ["find", "new-event", "new-message", "new-todo", "reload", "settings", "toggle-sidebar", "view-calendar", "view-inbox", "view-search", "view-todos", "view-triage"]);
     let source = include_str!("../../../web/src/platform/menu.ts");
     for name in web {
       assert!(source.contains(&format!("'{name}'")), "the web client does not handle {name}");
     }
   }
 
-  /// A menu item of a test, which remembers whether it is enabled.
-  struct FakeItem(std::cell::Cell<bool>);
+  /// A menu item of a test, which remembers whether it is enabled and its title.
+  struct FakeItem(std::cell::Cell<bool>, std::cell::RefCell<String>);
+
+  impl FakeItem {
+    fn new() -> Self {
+      Self(std::cell::Cell::new(false), std::cell::RefCell::new(String::new()))
+    }
+  }
 
   // SAFETY for the tests only: MenuItems is used from one thread here.
   unsafe impl Sync for FakeItem {}
@@ -620,6 +657,11 @@ mod tests {
       self.0.set(enabled);
       Ok(())
     }
+
+    fn set_text(&self, text: &str) -> Result<(), String> {
+      *self.1.borrow_mut() = text.to_string();
+      Ok(())
+    }
   }
 
   /// What setup stores is what menu_state enables: every item that acts in the web client while someone is signed
@@ -627,9 +669,9 @@ mod tests {
   #[test]
   fn the_items_menu_state_enables_are_the_web_actions() {
     let items = MenuItems::<FakeItem>::default();
-    items.fill(signed_in_ids().into_iter().map(|id| (id, FakeItem(std::cell::Cell::new(false)))).collect()).unwrap();
+    items.fill(signed_in_ids().into_iter().map(|id| (id, FakeItem::new())).collect()).unwrap();
 
-    assert_eq!(items.ids(), ["settings", "new-message", "new-event", "new-todo", "find", "view-inbox", "view-triage", "view-todos", "view-calendar", "view-search"]);
+    assert_eq!(items.ids(), ["settings", "new-message", "new-event", "new-todo", "find", "view-inbox", "view-triage", "view-todos", "view-calendar", "view-search", "toggle-sidebar"]);
     items.enable(true).unwrap();
     assert!(items.0.lock().unwrap().iter().all(|(_, item)| item.0.get()));
     items.enable(false).unwrap();
@@ -637,9 +679,24 @@ mod tests {
     assert!(!needs_sign_in(Action::WebAlways("reload")) && !needs_sign_in(Action::Shell(Shell::ShowMainWindow)));
   }
 
+  /// Only the sidebar item is renamed, after what it would do: Hide while the sidebar shows, Show while it is hidden.
+  #[test]
+  fn the_sidebar_item_is_named_after_what_it_would_do() {
+    let items = MenuItems::<FakeItem>::default();
+    items.fill(signed_in_ids().into_iter().map(|id| (id, FakeItem::new())).collect()).unwrap();
+    let title = |id: &str| items.0.lock().unwrap().iter().find(|(own, _)| *own == id).map(|(_, item)| item.1.borrow().clone()).unwrap();
+
+    items.name_sidebar_item(false).unwrap();
+    assert_eq!(title(TOGGLE_SIDEBAR), "Show Sidebar");
+    items.name_sidebar_item(true).unwrap();
+    assert_eq!(title(TOGGLE_SIDEBAR), "Hide Sidebar");
+    assert_eq!(title("view-inbox"), "", "no other item is renamed");
+    assert_eq!(action_of(TOGGLE_SIDEBAR), Some(Action::Web(TOGGLE_SIDEBAR)));
+  }
+
   /// The command the web client calls, through Tauri's IPC on a mock app: signing in enables exactly the items that act
   /// in the web client, in the state the bar's setup fills; signing out disables them. Reload, Help and the window item
-  /// stay as they are.
+  /// stay as they are. The sidebar item takes the title of what it would do, from the same command.
   #[test]
   fn signing_in_enables_the_web_items_through_menu_state() {
     use tauri::Manager;
@@ -653,7 +710,7 @@ mod tests {
     let own = own_items(&app, false).unwrap();
     app.state::<MenuItems<tauri::menu::MenuItem<MockRuntime>>>().fill(for_signed_in(&own)).unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
-    let send = |signed_in: bool| {
+    let send = |signed_in: bool, sidebar_shown: bool| {
       tauri::test::get_ipc_response(
         &webview,
         tauri::webview::InvokeRequest {
@@ -661,7 +718,7 @@ mod tests {
           callback: tauri::ipc::CallbackFn(0),
           error: tauri::ipc::CallbackFn(1),
           url: if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" }.parse().unwrap(),
-          body: tauri::ipc::InvokeBody::Json(serde_json::json!({ "signedIn": signed_in })),
+          body: tauri::ipc::InvokeBody::Json(serde_json::json!({ "signedIn": signed_in, "sidebarShown": sidebar_shown })),
           headers: Default::default(),
           invoke_key: INVOKE_KEY.to_string(),
         },
@@ -669,13 +726,17 @@ mod tests {
       .unwrap();
     };
     let enabled = |id: &str| own.iter().find(|(own_id, ..)| *own_id == id).unwrap().2.is_enabled().unwrap();
+    let title = |id: &str| own.iter().find(|(own_id, ..)| *own_id == id).unwrap().2.text().unwrap();
 
-    assert!(!enabled("new-message") && !enabled("settings") && !enabled("view-calendar"));
-    send(true);
+    assert!(!enabled("new-message") && !enabled("settings") && !enabled("view-calendar") && !enabled(TOGGLE_SIDEBAR));
+    assert_eq!(title(TOGGLE_SIDEBAR), "Hide Sidebar");
+    send(true, false);
+    assert_eq!(title(TOGGLE_SIDEBAR), "Show Sidebar");
     for (id, action, item) in &own {
       assert_eq!(item.is_enabled().unwrap(), !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} after sign-in");
     }
-    send(false);
+    send(false, true);
+    assert_eq!(title(TOGGLE_SIDEBAR), "Hide Sidebar");
     for (id, action, item) in &own {
       assert_eq!(item.is_enabled().unwrap(), !needs_sign_in(*action) && !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} after sign-out");
     }
@@ -700,11 +761,6 @@ mod tests {
     assert_eq!(action_of("main-window"), Some(Action::Shell(Shell::ShowMainWindow)));
     assert_eq!(action_of("release-notes"), Some(Action::Shell(Shell::Open(RELEASE_NOTES_URL))));
     assert_eq!(action_of("nothing"), None);
-  }
-
-  #[test]
-  fn there_is_no_sidebar_item_until_the_sidebar_can_collapse() {
-    assert!(items().iter().all(|(id, label, ..)| !id.contains("sidebar") && !label.contains("Sidebar")));
   }
 
   /// Help and Release Notes open the project the app updates from, not some other address.

@@ -4,6 +4,7 @@ fn main() {
   // capability names (the main window) and on the platforms it names (capabilities/whatsapp.json: macOS).
   tauri_build::try_build(tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
     "reduce_transparency",
+    "selection_accent",
     "update_channel",
     "check_for_updates_natively",
     "update_listening",
