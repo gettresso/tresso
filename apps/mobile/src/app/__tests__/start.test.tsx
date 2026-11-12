@@ -57,6 +57,20 @@ describe('the start screen', () => {
     })
   })
 
+  it('says the session expired and the mail stayed when the sign-in ended that way', () => {
+    auth.ended = 'expired'
+    render(<Start />)
+
+    expect(screen.getByText('Your session has expired. Your mail is still on this phone.')).toBeTruthy()
+  })
+
+  it('says nothing about an expiry after a sign-out', () => {
+    auth.ended = 'signedOut'
+    render(<Start />)
+
+    expect(screen.queryByText(/Your session has expired/)).toBeNull()
+  })
+
   it('shows the sign-out under way on the sign-in button, and does not sign in before it is done', () => {
     auth.ended = 'signedOut'
     auth.signingOut = true

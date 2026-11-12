@@ -95,6 +95,11 @@ function SignIn({ styles }: { styles: Styles }) {
       <Text style={styles.title} accessibilityRole="header">
         Every email is something to do, to hand over, or to know.
       </Text>
+      {auth.ended === 'expired' && (
+        <Text style={styles.notice} accessibilityLiveRegion="polite">
+          Your session has expired. Your mail is still on this phone.
+        </Text>
+      )}
       <Pressable
         style={({ pressed }) => [styles.primary, (pressed || busy) && styles.pressed]}
         onPress={signIn}
@@ -215,6 +220,7 @@ function makeStyles(theme: Theme) {
     content: { alignItems: 'center', gap: 16 },
     title: { color: theme.ink, fontSize: 24, lineHeight: 30, fontWeight: '700', textAlign: 'center' },
     body: { color: theme.ink2, fontSize: 16 },
+    notice: { color: theme.ink2, fontSize: 16, lineHeight: 22, textAlign: 'center' },
     primary: { minHeight: 48, paddingHorizontal: 28, borderRadius: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: theme.accent },
     primaryLabel: { color: theme.onAccent, fontSize: 16, fontWeight: '600' },
     secondary: { minHeight: 44, paddingHorizontal: 20, borderRadius: 6, justifyContent: 'center', borderWidth: 1, borderColor: theme.line, backgroundColor: theme.surface },
