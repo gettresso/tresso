@@ -18,21 +18,16 @@ trait ConnectsThirdPartyApps
     private const string THIRD_PARTY_REDIRECT = 'http://127.0.0.1:33418/callback';
 
     /**
-     * Registers an app, signs the user in, allows the app on the consent screen and returns its request headers. With
-     * $nameScopes the app names $scopes when it registers, as it must for a scope that is not offered (chat:read).
+     * Registers an app, signs the user in, allows the app on the consent screen and returns its request headers.
      *
      * @param list<string> $scopes
      *
      * @return array<string, string>
      */
-    protected function thirdPartyHeaders(string $email, array $scopes, bool $nameScopes = false): array
+    protected function thirdPartyHeaders(string $email, array $scopes): array
     {
         $this->resetRegistrationLimits();
-        $registration = ['client_name' => 'Some app', 'redirect_uris' => [self::THIRD_PARTY_REDIRECT]];
-        if ($nameScopes) {
-            $registration['scope'] = implode(' ', $scopes);
-        }
-        $this->client->jsonRequest('POST', '/oauth/register', $registration);
+        $this->client->jsonRequest('POST', '/oauth/register', ['client_name' => 'Some app', 'redirect_uris' => [self::THIRD_PARTY_REDIRECT]]);
         self::assertResponseStatusCodeSame(201);
         $clientId = $this->responseString('client_id');
 
