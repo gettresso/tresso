@@ -5,7 +5,9 @@ import {
   RELAY_MAX_MESSAGES,
   chatApiFailure,
   type ChatApi,
+  type ChatApiFailure,
   type RelayChat,
+  type RelayImportResponse,
   type RelayMessage,
   type RelayMessagesRequest,
   type RelayResultRequest,
@@ -16,6 +18,7 @@ import {
   ChatRelayRetryLater,
   ChatRelayStopped,
   RELAY_ERROR_DELAY,
+  RELAY_RETRY_MAX,
   type ChatBackend,
   type ClaimedReply,
   type IncomingChat,
@@ -25,9 +28,12 @@ import {
   type RelaySettings,
   type ReplyResult,
 } from './relay'
+import type { ChatOutgoingError } from './types'
 
 /** Before the account id in the chat value (MailStore.chatMeta) that holds this backend's cursor; see serverCursorKey. */
 export const SERVER_CURSOR_PREFIX = 'server-cursor:'
+/** Before the account id in the chat value that holds the reply this backend claimed and has not reported yet. */
+export const SERVER_CLAIM_PREFIX = 'server-claim:'
 
 /**
  * The chat value holding the cursor of the relay to the server account `accountId`. Apart from the local backend's
@@ -38,15 +44,36 @@ export function serverCursorKey(accountId: string): string {
   return `${SERVER_CURSOR_PREFIX}${accountId}`
 }
 
-/** Removes the cursor of a server account: when the account is removed, or this device no longer relays it. */
-export function removeServerChatCursor(store: Pick<MailStore, 'setChatMeta'>, accountId: string): Promise<void> {
-  return store.setChatMeta(serverCursorKey(accountId), null)
+/** The chat value holding the claim of the relay to the server account `accountId` until its result is reported. */
+export function serverClaimKey(accountId: string): string {
+  return `${SERVER_CLAIM_PREFIX}${accountId}`
+}
+
+/**
+ * Removes what this backend keeps for a server account (its cursor and an unreported claim): when the account is
+ * removed, or this device no longer relays it. A claim left unreported is failed as `unconfirmed` by the server's sweep.
+ */
+export async function removeServerChatState(store: Pick<MailStore, 'setChatMeta'>, accountId: string): Promise<void> {
+  await store.setChatMeta(serverCursorKey(accountId), null)
+  await store.setChatMeta(serverClaimKey(accountId), null)
 }
 
 /** The smallest a batch is cut to after a 413 from something between the desktop and the API with a lower limit. */
 export const RELAY_MIN_BATCH_BYTES = 64 * 1024
+/**
+ * The most messages one `ingest` may count as refused by isolating them after a 413 or 422. More than that is no bad
+ * row but a cause that affects every row (a proxy, a newer server, a broken client): the call rejects, the cursor holds
+ * and the relay tries again later, so a history is never dropped for it.
+ */
+export const RELAY_MAX_REFUSED = 3
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** Problems the backend saw and went past; counts only, no content (ServerChatBackend.problems). */
+export type ServerChatProblem = 'row_refused' | 'result_refused'
+
+/** RFC 4122 as the server's strict Assert\Uuid takes it: version 1 to 8, variant 10xx. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+/** A violation path about one message or one chat of a batch. */
+const ROW_PATH = /^(messages|chats)\[([0-9]+)\](?:[.[]|$)/
 
 export interface ServerChatBackendOptions {
   api: ChatApi
@@ -54,30 +81,53 @@ export interface ServerChatBackendOptions {
   store: MailStore
   /** The server's chat account this desktop relays. */
   accountId: string
-  /** The UUID the desktop app made once for itself; every relay call names it. */
+  /** The RFC 4122 UUID the desktop app made once for itself, the one it connected with; every relay call names it. */
   deviceId: string
   /**
    * Epoch ms; older messages are not brought in. The server's account does not keep it, so it comes from the desktop's
-   * config (the connect moment less 30 days), the same on a switch between the modes.
+   * config, set once at connect (the connect moment less 30 days) and passed unchanged: 0 uploads the whole history.
    */
   importSince: number
+  /** Called for each problem the backend went past (see ServerChatProblem), for a log line without content. */
+  onProblem?: (kind: ServerChatProblem) => void
+}
+
+interface ClaimRecord {
+  id: string
+  token: string
+  /** Null until the relay has a result; a claim found without one may have been sent: `unconfirmed`. */
+  result: ReplyResult | null
+}
+
+interface Item {
+  value: RelayMessage
+  /** Of the value as JSON in UTF-8. */
+  bytes: number
+  /** Chat JID and WhatsApp id. */
+  key: string
 }
 
 /**
  * The "All my devices" backend: the relay's messages go to the server (`relay/messages`), its replies come from the
- * server's queue (`relay/outgoing/claim` and `.../result`). Nothing is written to the copy but the cursor: the rows the
- * server stored come back through the delta, a chat's messages possibly a page before the chat.
+ * server's queue (`relay/outgoing/claim` and `.../result`). Nothing is written to the copy but the cursor and the
+ * claim under way: the rows the server stored come back through the delta, a chat's messages possibly a page before the
+ * chat.
  *
  * Batches: at most RELAY_MAX_MESSAGES messages and RELAY_MAX_CHATS chats, and at most RELAY_MAX_BYTES bytes of the
- * request as JSON in UTF-8, each with the chats of its messages. A 413 halves the batch, and lowers the size of the
- * batches made after it to half the request that got it (at least RELAY_MIN_BATCH_BYTES); a 422 (a request the server
- * cannot take as a whole, which the relay's own checks should prevent) halves it too, to find the message it is about. A single message that still gets
- * either is counted as refused and left: the server would never take it, and it must not hold the cursor. A batch of
- * n messages costs at most 2n - 1 calls this way (each message alone at the end), about 2 log2(n) for one bad message.
+ * request as JSON in UTF-8, each with the chats of its messages.
+ * - 413: the batches left are made again at half the size of the request that got it (at least RELAY_MIN_BATCH_BYTES,
+ *   and half as many messages), and stay that size for this backend; a single message still answered 413 is refused.
+ * - 422 naming rows (`messages[i]...`, `chats[i]...`): the messages named are refused, a chat named is sent without its
+ *   entry (the server may know it), and the rest goes again. Paths that name nothing in the batch: halved down to one
+ *   message, which is refused. A 422 with no paths, or one naming anything else (`deviceId`), rejects as it came.
+ * - At most RELAY_MAX_REFUSED messages are refused that way per `ingest`; one more rejects with a plain error, so the
+ *   cursor holds. A batch-wide cause therefore costs a few calls and drops nothing.
  *
- * Errors: 409 `not_the_relay` and 404 (the account is gone) reject with ChatRelayStopped, 429 with
- * ChatRelayRetryLater after Retry-After; anything else (network, 5xx, 400, 401, 403) rejects as it came, so the relay tries
- * the same rows again later. A message stored by a call before the one that failed is stored again as `known`.
+ * Errors: 409 `not_the_relay` and 404 (the account is gone) reject with ChatRelayStopped, 429 with ChatRelayRetryLater
+ * after Retry-After, 403 with ChatRelayRetryLater after RELAY_RETRY_MAX (the token lacks access; no point asking every
+ * 15 seconds); anything else (network, 5xx, 400, 401) rejects as it came, so the relay tries the same rows again later.
+ * Messages a call stored before a later call of the same `ingest` failed are stored again as `known`; the next `ingest`
+ * still counts them as stored (kept in memory for the session).
  *
  * Reading the store again from 0 (its storeId changed: VACUUM, a store made again, or a history sync that stores its
  * first row again) sends every row again, and the server answers `known`: no write, no change for the delta. That is
@@ -97,15 +147,20 @@ export class ServerChatBackend implements ChatBackend {
   private readonly accountId: string
   private readonly deviceId: string
   private readonly importSince: number
+  private readonly onProblem: ((kind: ServerChatProblem) => void) | undefined
   /** Bytes a batch may have; lowered after a 413 of a batch below RELAY_MAX_BYTES. */
   private maxBytes = RELAY_MAX_BYTES
   /** Chats found left out in the copy; checked again at every `settings`, since the user can take one in again. */
   private readonly leftOut = new Set<string>()
+  /** Messages answered `stored` by an `ingest` that then failed: its repeat counts them as stored, not known. */
+  private storedBefore = new Set<string>()
+  /** What the backend went past, by kind. */
+  readonly problems: Record<ServerChatProblem, number> = { row_refused: 0, result_refused: 0 }
 
   constructor(options: ServerChatBackendOptions) {
     if (!UUID.test(options.deviceId)) {
-      // Every relay call would be refused as a whole (422), and bisecting would count every message refused.
-      throw new Error('The device id is not a UUID.')
+      // The server would refuse every relay call as a whole (422 on `deviceId`).
+      throw new Error('The device id is not an RFC 4122 UUID.')
     }
     if (!Number.isSafeInteger(options.importSince) || options.importSince < 0) {
       throw new Error('The import date is not a time.')
@@ -115,14 +170,15 @@ export class ServerChatBackend implements ChatBackend {
     this.accountId = options.accountId
     this.deviceId = options.deviceId
     this.importSince = options.importSince
+    this.onProblem = options.onProblem
   }
 
   /**
-   * Nothing to put right here: a reply an earlier session claimed and could not report stays `sending` on the server,
-   * which fails it as `unconfirmed` after 5 minutes (the sweep).
+   * Reports a claim an earlier session left: its recorded result, or `unconfirmed` when none was recorded (see report).
+   * Rejects when that report fails for a reason worth trying again; the relay runs `prepare` again in its next round.
    */
-  prepare(): Promise<void> {
-    return Promise.resolve()
+  async prepare(): Promise<void> {
+    await this.settleClaim()
   }
 
   /**
@@ -153,38 +209,64 @@ export class ServerChatBackend implements ChatBackend {
     const sendable = messages.filter((message) => !this.leftOut.has(message.chatJid))
     counts.leftOut += messages.length - sendable.length
 
-    const described = new Map<string, Sized<RelayChat>>()
+    const described = new Map<string, { value: RelayChat; bytes: number }>()
     for (const chat of chats) {
       if (!described.has(chat.jid)) {
         const value: RelayChat = { jid: chat.jid, name: chat.name, kind: chat.kind }
-        described.set(chat.jid, { value, bytes: jsonBytes(value) })
+        described.set(chat.jid, { value, bytes: relayBodyBytes(value) })
       }
     }
-    const items = sendable.map((message) => {
+    const items: Item[] = sendable.map((message) => {
       const value = relayMessage(message)
-      return { value, bytes: jsonBytes(value) }
+      return { value, bytes: relayBodyBytes(value), key: `${value.chatJid}\n${value.waId}` }
     })
-    for (const batch of this.batches(items, described, firstImport)) {
-      await this.send(batch, described, firstImport, counts)
+    const storedNow: string[] = []
+    try {
+      await this.sendAll(items, described, firstImport, counts, storedNow)
+    } catch (error) {
+      for (const key of storedNow) {
+        this.storedBefore.add(key)
+      }
+      throw error
     }
+    this.storedBefore = new Set()
     return counts
   }
 
+  /**
+   * The cursor; null before the first import began. A value this version cannot read is null too: the relay reads the
+   * store from 0 as a first import. That is safe after the server's history import ended: it honours `firstImport`
+   * only until the relay's first batch without it (ChatIngestor), so a stale flag marks nothing read; and before it
+   * ended, it is what keeps the history from arriving unread.
+   */
   async cursor(): Promise<RelayCursor | null> {
     const value = await this.store.chatMeta(serverCursorKey(this.accountId))
-    if (value === null) {
-      return null
-    }
-    // A value this version cannot read: read the store again from 0, as live messages (the server answers `known`).
-    return readRelayCursor(value) ?? { storeId: '', rowid: 0, firstImport: null }
+    return value === null ? null : readRelayCursor(value)
   }
 
   setCursor(cursor: RelayCursor): Promise<void> {
     return this.store.setChatMeta(serverCursorKey(this.accountId), JSON.stringify(cursor))
   }
 
-  /** The oldest waiting reply, now `sending` on the server for this device; its claim token goes back with the result. */
+  /**
+   * The oldest waiting reply, now `sending` on the server for this device. The claim (id and token, no text) is kept in
+   * the copy until its result is reported, so a crash cannot make it go out twice. Where a crash can fall:
+   *
+   * 1. After the server claimed it, before the claim is kept: nothing here knows it; the server's sweep fails it as
+   *    `unconfirmed` after 5 minutes. It was not sent.
+   * 2. After the claim is kept, before or while it is sent: `prepare` reports `unconfirmed` (it may have gone out);
+   *    only the user's Try again sends it once more.
+   * 3. After it was sent, before the result is kept: the same, `unconfirmed`. A `sent: true` of the same claim later
+   *    still wins on the server.
+   * 4. After the result is kept, before it is reported: `prepare` reports the kept result.
+   * 5. After it was reported, before the claim is cleared: `prepare` reports it again; the server answers 200 (the
+   *    same result) or 409 `result_final`, both final, and the claim is cleared.
+   *
+   * A claim still kept when another is asked for is reported first. The claim call itself is never repeated by this
+   * backend: a repeated claim takes the next reply.
+   */
   async claimNext(): Promise<ClaimedReply | null> {
+    await this.settleClaim()
     let claimed
     try {
       claimed = await this.api.claimReply(this.accountId, { deviceId: this.deviceId })
@@ -194,35 +276,27 @@ export class ServerChatBackend implements ChatBackend {
     if (claimed === null) {
       return null
     }
+    await this.keepClaim({ id: claimed.id, token: claimed.claimToken, result: null })
     return { id: claimed.id, chatId: claimed.chatId, chatJid: claimed.chatJid, text: claimed.text, token: claimed.claimToken }
   }
 
   /**
-   * Reports a claimed reply's result with its claim token. Final answers resolve, so the relay moves on and never sends
-   * again: 404 (the reply or its chat is gone), 409 `result_final` (it has a result already, or the claim is no longer
-   * this one), and 422 (the server will never take this result; the sweep fails the reply as `unconfirmed`). A
-   * device that no longer relays the account may still report `sent: true` for its own claim, which the server takes;
-   * any other result of it is 409 `not_the_relay`, which stops the relay. A network error or 5xx rejects as it came: the
-   * relay reports the same result again later, without sending again.
+   * Keeps the result with the claim, then reports it with its claim token. Final answers resolve and clear the claim, so
+   * the relay moves on and never sends again: 404 (the reply or its chat is gone), 409 `result_final` (it has a result
+   * already, or the claim is no longer this one), and 422 (the server will never take this result; counted as
+   * `result_refused`, and the sweep fails the reply as `unconfirmed`). A device that no longer relays the account may
+   * still report `sent: true` for its own claim, which the server takes; any other result of it is 409
+   * `not_the_relay`, which stops the relay. A network error or 5xx rejects as it came: the relay reports the same
+   * result again later, without sending again.
    */
   async report(reply: ClaimedReply, result: ReplyResult): Promise<void> {
-    const request: RelayResultRequest = result.sent
-      ? { deviceId: this.deviceId, claimToken: reply.token, sent: true, error: null }
-      : { deviceId: this.deviceId, claimToken: reply.token, sent: false, error: result.error }
-    try {
-      await this.api.reportReply(this.accountId, reply.id, request)
-    } catch (error) {
-      const failure = chatApiFailure(error)
-      if (failure !== null && (failure.status === 404 || failure.status === 422 || (failure.status === 409 && failure.code === 'result_final'))) {
-        return
-      }
-      throw relayError(error)
-    }
+    await this.keepClaim({ id: reply.id, token: reply.token, result })
+    await this.reportClaim(reply.id, reply.token, result)
   }
 
   /**
    * The heartbeat (`relay/status`), with the same errors as the relay's calls: ChatRelayStopped when another device
-   * relays now or the account is gone, ChatRelayRetryLater on 429.
+   * relays now or the account is gone, ChatRelayRetryLater on 429 and 403.
    */
   async reportStatus(status: Omit<RelayStatusRequest, 'deviceId'>): Promise<void> {
     try {
@@ -232,80 +306,175 @@ export class ServerChatBackend implements ChatBackend {
     }
   }
 
-  /** The messages in batches within the limits, in their order; a message too large alone is a batch of its own. */
-  private batches(items: Sized<RelayMessage>[], described: Map<string, Sized<RelayChat>>, firstImport: boolean): Sized<RelayMessage>[][] {
-    const base = jsonBytes(this.request([], [], firstImport))
-    const batches: Sized<RelayMessage>[][] = []
-    let batch: Sized<RelayMessage>[] = []
-    let chats = new Set<string>()
-    let bytes = base
-    /** What adding the message to the batch adds: itself and its chat when new, each with a comma unless first. */
-    const growth = (item: Sized<RelayMessage>): { bytes: number; chat: Sized<RelayChat> | undefined } => {
-      const chat = chats.has(item.value.chatJid) ? undefined : described.get(item.value.chatJid)
-      return { bytes: item.bytes + (batch.length > 0 ? 1 : 0) + (chat === undefined ? 0 : chat.bytes + (chats.size > 0 ? 1 : 0)), chat }
-    }
-    for (const item of items) {
-      let adds = growth(item)
-      const tooMany = batch.length >= RELAY_MAX_MESSAGES || chats.size + (adds.chat === undefined ? 0 : 1) > RELAY_MAX_CHATS
-      if (batch.length > 0 && (tooMany || bytes + adds.bytes > this.maxBytes)) {
-        batches.push(batch)
-        batch = []
-        chats = new Set()
-        bytes = base
-        adds = growth(item)
-      }
-      bytes += adds.bytes
-      if (adds.chat !== undefined) {
-        chats.add(item.value.chatJid)
-      }
-      batch.push(item)
-    }
-    if (batch.length > 0) {
-      batches.push(batch)
-    }
-    return batches
-  }
-
-  /** Sends a batch, halving it on 413 and 422 down to single messages, which are then counted as refused. */
-  private async send(batch: Sized<RelayMessage>[], described: Map<string, Sized<RelayChat>>, firstImport: boolean, counts: IngestCounts): Promise<void> {
-    const messages = batch.map((item) => item.value)
-    const chats: RelayChat[] = []
-    for (const jid of new Set(messages.map((message) => message.chatJid))) {
-      const chat = described.get(jid)
-      if (chat !== undefined) {
-        chats.push(chat.value)
-      }
-    }
-    const request = this.request(chats, messages, firstImport)
-    let response
-    try {
-      response = await this.api.relayMessages(this.accountId, request)
-    } catch (error) {
-      const failure = chatApiFailure(error)
-      if (failure === null || (failure.status !== 413 && failure.status !== 422)) {
-        throw relayError(error)
-      }
-      if (failure.status === 413 && batch.length > 1) {
-        this.maxBytes = Math.max(RELAY_MIN_BATCH_BYTES, Math.min(this.maxBytes, Math.floor(jsonBytes(request) / 2)))
-      }
-      if (batch.length === 1) {
-        counts.refused += 1
-        return
-      }
-      const half = Math.ceil(batch.length / 2)
-      await this.send(batch.slice(0, half), described, firstImport, counts)
-      await this.send(batch.slice(half), described, firstImport, counts)
+  private async settleClaim(): Promise<void> {
+    const value = await this.store.chatMeta(serverClaimKey(this.accountId))
+    if (value === null) {
       return
     }
+    const record = readClaim(value)
+    if (record === null) {
+      // Not readable: no token to report with; the sweep fails the reply as `unconfirmed`.
+      await this.store.setChatMeta(serverClaimKey(this.accountId), null)
+      return
+    }
+    await this.reportClaim(record.id, record.token, record.result ?? { sent: false, error: 'unconfirmed' })
+  }
+
+  private keepClaim(record: ClaimRecord): Promise<void> {
+    return this.store.setChatMeta(serverClaimKey(this.accountId), JSON.stringify(record))
+  }
+
+  private async reportClaim(id: string, token: string, result: ReplyResult): Promise<void> {
+    const request: RelayResultRequest = result.sent
+      ? { deviceId: this.deviceId, claimToken: token, sent: true, error: null }
+      : { deviceId: this.deviceId, claimToken: token, sent: false, error: result.error }
+    try {
+      await this.api.reportReply(this.accountId, id, request)
+    } catch (error) {
+      const failure = chatApiFailure(error)
+      const final = failure !== null && (failure.status === 404 || failure.status === 422 || (failure.status === 409 && failure.code === 'result_final'))
+      if (!final) {
+        throw relayError(error)
+      }
+      if (failure.status === 422) {
+        this.problem('result_refused')
+      }
+    }
+    // Cleared only when it is still this claim's (a later claim is never cleared by an earlier report).
+    const kept = await this.store.chatMeta(serverClaimKey(this.accountId))
+    if (kept !== null && readClaim(kept)?.id === id) {
+      await this.store.setChatMeta(serverClaimKey(this.accountId), null)
+    }
+  }
+
+  private problem(kind: ServerChatProblem, times = 1): void {
+    this.problems[kind] += times
+    for (let i = 0; i < times; i += 1) {
+      this.onProblem?.(kind)
+    }
+  }
+
+  /** Sends the messages in batches, in their order, as the class comment says. */
+  private async sendAll(items: Item[], described: Map<string, { value: RelayChat; bytes: number }>, firstImport: boolean, counts: IngestCounts, storedNow: string[]): Promise<void> {
+    let remaining = items
+    /** Messages per batch: halved by a 413 at the smallest size, and while halving towards a row a 422 does not name. */
+    let countLimit = RELAY_MAX_MESSAGES
+    let halving = false
+    /** Chats the server refused as entries; their messages go without them. */
+    const withoutEntry = new Set<string>()
+    let refusedHere = 0
+    const refuse = (count: number): void => {
+      if (refusedHere + count > RELAY_MAX_REFUSED) {
+        throw new Error('More messages were refused than one bad row explains; the relay tries again later.')
+      }
+      refusedHere += count
+      counts.refused += count
+      this.problem('row_refused', count)
+    }
+
+    while (remaining.length > 0) {
+      const batch = this.firstBatch(remaining, described, withoutEntry, firstImport, countLimit)
+      const request = this.request(chatsOf(batch, described, withoutEntry), batch.map((item) => item.value), firstImport)
+      let response: RelayImportResponse
+      try {
+        response = await this.api.relayMessages(this.accountId, request)
+      } catch (error) {
+        const failure = chatApiFailure(error)
+        if (failure?.status === 413) {
+          if (batch.length === 1) {
+            refuse(1)
+            remaining = remaining.slice(1)
+          } else {
+            this.maxBytes = Math.max(RELAY_MIN_BATCH_BYTES, Math.min(this.maxBytes, Math.floor(relayBodyBytes(request) / 2)))
+            countLimit = Math.min(countLimit, Math.ceil(batch.length / 2))
+          }
+          continue
+        }
+        if (failure?.status !== 422) {
+          throw relayError(error)
+        }
+        const named = namedRows(failure, request)
+        if (named === null) {
+          // Nothing about a row, or something about the whole request: no row is to blame.
+          throw error
+        }
+        if (named.messages.size > 0 || named.chats.size > 0) {
+          if (named.messages.size > 0) {
+            refuse(named.messages.size)
+            const bad = new Set([...named.messages].map((index) => batch[index]))
+            remaining = remaining.filter((item) => !bad.has(item))
+          }
+          for (const jid of named.chats) {
+            withoutEntry.add(jid)
+          }
+          continue
+        }
+        // Paths about rows that are not in this batch: find the row by halving.
+        if (batch.length === 1) {
+          refuse(1)
+          remaining = remaining.slice(1)
+          countLimit = RELAY_MAX_MESSAGES
+          halving = false
+        } else {
+          countLimit = Math.ceil(batch.length / 2)
+          halving = true
+        }
+        continue
+      }
+      this.tally(response, batch, counts, storedNow)
+      remaining = remaining.slice(batch.length)
+      if (halving) {
+        // The half that went through is clean; the bad row is in what is left, which goes in halves again.
+        countLimit = Math.max(1, Math.min(countLimit, Math.ceil(remaining.length / 2)))
+      }
+    }
+  }
+
+  /** Counts a batch's answer; a message stored by an earlier failed `ingest` counts as stored, not known. */
+  private tally(response: RelayImportResponse, batch: Item[], counts: IngestCounts, storedNow: string[]): void {
     const answered = [response.stored, response.known, response.leftOut, response.refused]
-    if (!answered.every((count) => Number.isSafeInteger(count) && count >= 0) || answered.reduce((sum, count) => sum + count, 0) !== messages.length) {
+    if (!answered.every((count) => Number.isSafeInteger(count) && count >= 0) || answered.reduce((sum, count) => sum + count, 0) !== batch.length) {
       // Not what the server answers; the relay tries the rows again rather than count what it cannot tell.
       throw new Error('The server answered a batch with counts that do not add up.')
     }
-    counts.stored += response.stored
-    counts.known += response.known
+    let storedBefore = 0
+    if (Array.isArray(response.results) && response.results.length === batch.length) {
+      response.results.forEach((result, index) => {
+        const key = batch[index]!.key
+        if (result === 'stored') {
+          storedNow.push(key)
+        } else if (result === 'known' && this.storedBefore.has(key)) {
+          storedBefore += 1
+        }
+      })
+    }
+    counts.stored += response.stored + storedBefore
+    counts.known += response.known - storedBefore
     counts.leftOut += response.leftOut
     counts.refused += response.refused
+  }
+
+  /** The first batch of `items` within the limits; a message too large alone is a batch of its own. */
+  private firstBatch(items: Item[], described: Map<string, { value: RelayChat; bytes: number }>, withoutEntry: Set<string>, firstImport: boolean, countLimit: number): Item[] {
+    const batch: Item[] = []
+    const chats = new Set<string>()
+    let bytes = relayBodyBytes(this.request([], [], firstImport))
+    for (const item of items) {
+      const jid = item.value.chatJid
+      const chat = chats.has(jid) || withoutEntry.has(jid) ? undefined : described.get(jid)
+      // Itself and its chat when new, each with a comma unless first of its list.
+      const adds = item.bytes + (batch.length > 0 ? 1 : 0) + (chat === undefined ? 0 : chat.bytes + (chats.size > 0 ? 1 : 0))
+      const full = batch.length >= Math.min(countLimit, RELAY_MAX_MESSAGES) || chats.size + (chat === undefined ? 0 : 1) > RELAY_MAX_CHATS || bytes + adds > this.maxBytes
+      if (batch.length > 0 && full) {
+        break
+      }
+      bytes += adds
+      if (chat !== undefined) {
+        chats.add(jid)
+      }
+      batch.push(item)
+    }
+    return batch
   }
 
   private request(chats: RelayChat[], messages: RelayMessage[], firstImport: boolean): RelayMessagesRequest {
@@ -313,10 +482,65 @@ export class ServerChatBackend implements ChatBackend {
   }
 }
 
-interface Sized<T> {
-  value: T
-  /** Of the value as JSON in UTF-8. */
-  bytes: number
+/** The chat entries of a batch: those of its messages, in order of first use, but those the server refused as entries. */
+function chatsOf(batch: Item[], described: Map<string, { value: RelayChat }>, withoutEntry: Set<string>): RelayChat[] {
+  const chats: RelayChat[] = []
+  for (const jid of new Set(batch.map((item) => item.value.chatJid))) {
+    const chat = withoutEntry.has(jid) ? undefined : described.get(jid)
+    if (chat !== undefined) {
+      chats.push(chat.value)
+    }
+  }
+  return chats
+}
+
+/**
+ * The rows a 422 names: message indexes and chat JIDs of the request. Null when it names no path, or one that is not
+ * about a row (the device id, the request's shape): then no row is to blame.
+ */
+function namedRows(failure: ChatApiFailure, request: RelayMessagesRequest): { messages: Set<number>; chats: Set<string> } | null {
+  if (failure.violationPaths.length === 0) {
+    return null
+  }
+  const messages = new Set<number>()
+  const chats = new Set<string>()
+  for (const path of failure.violationPaths) {
+    const match = ROW_PATH.exec(path)
+    if (match === null) {
+      return null
+    }
+    const index = Number(match[2])
+    if (match[1] === 'messages' && index < request.messages.length) {
+      messages.add(index)
+    } else if (match[1] === 'chats' && index < request.chats.length) {
+      chats.add(request.chats[index]!.jid)
+    }
+  }
+  return { messages, chats }
+}
+
+const OUTGOING_ERRORS: readonly string[] = ['bridge_stopped', 'not_linked', 'refused', 'unconfirmed'] satisfies ChatOutgoingError[]
+
+function readClaim(value: string): ClaimRecord | null {
+  try {
+    const parsed = JSON.parse(value) as { id?: unknown; token?: unknown; result?: unknown }
+    if (typeof parsed.id !== 'string' || typeof parsed.token !== 'string') {
+      return null
+    }
+    const result = parsed.result as { sent?: unknown; error?: unknown } | null | undefined
+    if (result === null || result === undefined) {
+      return { id: parsed.id, token: parsed.token, result: null }
+    }
+    if (result.sent === true) {
+      return { id: parsed.id, token: parsed.token, result: { sent: true } }
+    }
+    if (result.sent === false && typeof result.error === 'string' && OUTGOING_ERRORS.includes(result.error)) {
+      return { id: parsed.id, token: parsed.token, result: { sent: false, error: result.error as ChatOutgoingError } }
+    }
+    return { id: parsed.id, token: parsed.token, result: null }
+  } catch {
+    return null
+  }
 }
 
 /** A message as the server takes it, with only the fields it knows. */
@@ -347,15 +571,16 @@ function relayError(error: unknown): unknown {
   if (failure.status === 429) {
     return new ChatRelayRetryLater(failure.retryAfterMs ?? RELAY_ERROR_DELAY)
   }
+  if (failure.status === 403) {
+    return new ChatRelayRetryLater(RELAY_RETRY_MAX)
+  }
   return error
 }
 
-/** Bytes of a value as JSON in UTF-8 (JSON.stringify escapes a lone surrogate, so every surrogate left is paired). */
-export function jsonBytes(value: unknown): number {
-  return utf8Bytes(JSON.stringify(value))
-}
-
-function utf8Bytes(text: string): number {
+/** Bytes of a relay request (or a part of one) as JSON in UTF-8, as the ChatApi sends it. */
+export function relayBodyBytes(value: unknown): number {
+  const text = JSON.stringify(value)
+  // JSON.stringify escapes a lone surrogate, so every surrogate left is one of a pair.
   let bytes = 0
   for (let i = 0; i < text.length; i += 1) {
     const unit = text.charCodeAt(i)
