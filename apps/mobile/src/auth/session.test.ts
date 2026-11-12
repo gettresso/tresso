@@ -428,7 +428,9 @@ describe('Session', () => {
     await session.signOut()
     answer(new Response(JSON.stringify({ html: '<p>Previous user</p>' })))
 
-    await expect(loading).rejects.toMatchObject({ status: 401, message: 'Signed out while this request was under way.' })
+    // Made here, not said by the server: no status, so the composer does not take it for a refusal and keeps the send id.
+    await expect(loading).rejects.toMatchObject({ name: 'SessionEndedDuringRequestError', message: 'Signed out while this request was under way.' })
+    await expect(loading).rejects.not.toHaveProperty('status')
   })
 
   it('revokes the refresh token on sign-out, then forgets the tokens and who was signed in', async () => {
@@ -1118,7 +1120,7 @@ describe('Session', () => {
     answer(new Response('{}', { status: 402 }))
 
     // The answer belongs to the session that ended: refused as such, and the notice stays off.
-    await expect(request).rejects.toMatchObject({ status: 401, message: 'Signed out while this request was under way.' })
+    await expect(request).rejects.toMatchObject({ name: 'SessionEndedDuringRequestError', message: 'Signed out while this request was under way.' })
     expect(session.snapshot.paymentRequired).toBe(false)
   })
 

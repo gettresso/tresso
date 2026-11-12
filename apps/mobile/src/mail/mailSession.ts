@@ -57,7 +57,8 @@ export interface MailSessionDeps {
   openSql(name: string): Promise<Sql & { close(): Promise<void> }>
   deleteSql(name: string): Promise<void>
   fetchPage(since: number, limit: number): Promise<ChangePage>
-  fetchAccess(): Promise<RealtimeAccess>
+  /** GET /api/v1/realtime/token; `signal` aborts when the stream stops (a sign-out), so nothing waits for it. */
+  fetchAccess(signal: AbortSignal): Promise<RealtimeAccess>
   /** The time on the server's clock (epoch ms), which hub tokens expire by; the device's by default. */
   serverNow?(): number
   /** POST /api/v1/message-actions */
@@ -354,7 +355,7 @@ export class MailSession {
     // The callbacks only act for the copy that is open when they come.
     let open: Open | null = null
     const realtime = new RealtimeClient({
-      fetchAccess: () => this.deps.fetchAccess(),
+      fetchAccess: (signal) => this.deps.fetchAccess(signal),
       now: () => this.deps.serverNow?.() ?? Date.now(),
       fetch: this.deps.fetch,
       onCursor: (cursor) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { MAX_MESSAGES_PER_ACTION, newDraft, PartialActionError, type ChangePage, type MessageActionRequest, type SyncedHandOver, type SyncedMessage, type SyncedUnsubscription, type ThreadClassificationRequest, type UnsubscribeRequest } from '@tresso/core'
+import { MAX_MESSAGES_PER_ACTION, newDraft, PartialActionError, type ChangePage, type MessageActionRequest, type RealtimeAccess, type SyncedHandOver, type SyncedMessage, type SyncedUnsubscription, type ThreadClassificationRequest, type UnsubscribeRequest } from '@tresso/core'
 import { databaseName, MailSession, type MailSessionDeps, type MailState } from '../mailSession'
 import type { Sql } from '../sql'
 import { memorySql } from '@tresso/core/testing/sql'
@@ -56,13 +56,14 @@ function session(
     classify: () => Promise.reject(new Error('no classification in this test')),
     release: () => Promise.reject(new Error('no classification in this test')),
   },
+  fetchAccess: MailSessionDeps['fetchAccess'] = () => Promise.reject(new Error('no realtime in this test')),
 ) {
   const states: MailState[] = []
   const mail = new MailSession({
     openSql: (name) => disk.openSql(name),
     deleteSql: (name) => disk.deleteSql(name),
     fetchPage,
-    fetchAccess: () => Promise.reject(new Error('no realtime in this test')),
+    fetchAccess,
     postAction,
     postUnsubscribe,
     ...classification,
@@ -96,6 +97,27 @@ describe('MailSession', () => {
     expect(last()).toMatchObject({ userId: null, ready: false })
     expect(disk.files.has(databaseName('kim'))).toBe(false)
     expect(mail.database).toBeNull()
+  })
+
+  it('aborts a realtime token request under way at sign-out, so removing the copy does not wait for it', async () => {
+    const disk = device()
+    let signal: AbortSignal | null = null
+    // A token request that never answers until it is aborted, as fetch does.
+    const hanging = (aborted: AbortSignal) =>
+      new Promise<RealtimeAccess>((_resolve, reject) => {
+        signal = aborted
+        aborted.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      })
+    const { mail, last } = session(disk, undefined, undefined, undefined, undefined, undefined, hanging)
+    await mail.switchTo('kim')
+    await vi.waitFor(() => expect(signal).not.toBeNull())
+
+    const outcome = await Promise.race([mail.switchTo(null).then(() => 'signed out'), new Promise((resolve) => setTimeout(() => resolve('still waiting'), 500))])
+
+    expect(outcome).toBe('signed out')
+    expect(signal!.aborted).toBe(true)
+    expect(last()).toMatchObject({ userId: null })
+    expect(disk.files.has(databaseName('kim'))).toBe(false)
   })
 
   it("never shows one user's copy to the next, and removes it", async () => {

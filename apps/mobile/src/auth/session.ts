@@ -1,4 +1,18 @@
-import { exchangeCode, OAuthError, refreshTokens, RequestTimeoutError, retryAfterMs, revokeToken, ServerClock, withDeadline, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
+import {
+  exchangeCode,
+  OAuthError,
+  refreshRefusalEndsSession,
+  refreshTokens,
+  RequestTimeoutError,
+  retryAfterMs,
+  revokeToken,
+  ServerClock,
+  SessionEndedDuringRequestError,
+  withDeadline,
+  type Me,
+  type OAuthClientConfig,
+  type TokenSet,
+} from '@tresso/core'
 
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
 const EXPIRY_MARGIN_MS = 30_000
@@ -26,12 +40,6 @@ const TOKEN_TIMEOUT_MS = 20_000
  * reaches the server later than that, the server refuses the old token and the session expires, the mail kept.
  */
 const REFRESH_RETRY_DELAY_MS = 2_000
-/**
- * The token endpoint's answers that end the sign-in: the refresh token is no longer good (revoked, expired, already
- * rotated), the request is one the server will never accept, or the server no longer knows or allows this client.
- * Anything else (offline, a timeout, a 5xx) is tried again later.
- */
-const SESSION_ENDING_ERRORS = new Set(['invalid_grant', 'invalid_request', 'invalid_client', 'unauthorized_client'])
 const EXPIRED = 'Your session has expired. Sign in again.'
 
 /** Where the tokens are kept between launches. */
@@ -350,8 +358,9 @@ export class Session {
     }
     if (generation !== this.generation) {
       // Signed out while it was under way: its answer belongs to no one now, and must not reach the next user (a
-      // hand-over step that resumes with it would open the previous user's mail in the next user's composer).
-      throw new ApiError(401, 'Signed out while this request was under way.')
+      // hand-over step that resumes with it would open the previous user's mail in the next user's composer). Not a
+      // 401: the server said nothing of the kind, and may have done what was asked (a send may be queued).
+      throw new SessionEndedDuringRequestError()
     }
     if (response.status === 402) {
       this.update({ paymentRequired: true })
@@ -446,7 +455,7 @@ export class Session {
       if (generation !== this.generation) {
         throw new ApiError(401, this.endedMessage())
       }
-      if (!endsSession(error)) {
+      if (!refreshRefusalEndsSession(error)) {
         throw new RenewalFailedError(error)
       }
       await this.expire()
@@ -594,10 +603,6 @@ export class Session {
 
 function isFresh(tokens: TokenSet): boolean {
   return tokens.expiresAt - EXPIRY_MARGIN_MS > Date.now()
-}
-
-function endsSession(error: unknown): boolean {
-  return error instanceof OAuthError && error.code !== null && SESSION_ENDING_ERRORS.has(error.code)
 }
 
 function wait(ms: number): Promise<void> {
