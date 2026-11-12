@@ -10,6 +10,7 @@ import HighlightText from '@/components/HighlightText.vue'
 import SearchField from '@/components/SearchField.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 const mail = useMailStore()
 const search = useSearchStore()
@@ -106,6 +107,8 @@ function threadLink(hit: SearchHit) {
     <main class="main">
       <section class="results" aria-label="Search results">
         <header class="header">
+          <!-- The desktop shell's title strip; the search field stays here, at the top of the results. -->
+          <FrameTitle framed-only>Search</FrameTitle>
           <SearchField :query="query" autofocus />
           <div class="filters">
             <label class="chip" :class="{ on: accountFilter !== '' }">

@@ -18,6 +18,7 @@ import { cardGhost } from '@/components/cardGhost'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 const mail = useMailStore()
 const compose = useComposeStore()
@@ -286,6 +287,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', shortcut))
 <template>
   <div ref="root" class="triage">
     <header class="top">
+      <!-- The desktop shell's title strip says where the user is; the subject below stays the page's heading. -->
+      <FrameTitle framed-only tag="p">Triage</FrameTitle>
       <RouterLink :to="{ name: 'unified' }" class="exit" aria-keyshortcuts="Escape">
         <AppIcon name="back" :size="16" />Exit triage <KeyShortcut keys="Esc" />
       </RouterLink>

@@ -22,6 +22,9 @@ import { errorMessage } from '@/api/errors'
 import { isDesktop, openInBrowser } from '@/platform/desktop'
 import AppIcon from '@/components/AppIcon.vue'
 import CalendarAccessNotices from '@/components/CalendarAccessNotices.vue'
+import FrameCapsule from '@/components/FrameCapsule.vue'
+import FrameTitle from '@/components/FrameTitle.vue'
+import FrameTools from '@/components/FrameTools.vue'
 import AgendaList from '@/components/calendar/AgendaList.vue'
 import CalendarRail from '@/components/calendar/CalendarRail.vue'
 import EventDetail from '@/components/calendar/EventDetail.vue'
@@ -407,17 +410,26 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside
     />
 
     <main class="main" aria-labelledby="calendar-title">
+      <!-- In the desktop shell the title and these actions are in the title strip (FrameTitle, FrameTools). -->
       <header class="toolbar">
-        <button type="button" class="button button-quiet" @click="today">Today <KeyShortcut keys="T" /></button>
-        <button type="button" class="button button-quiet icon" aria-label="Previous" @click="step(-1)"><AppIcon name="back" :size="16" /></button>
-        <button type="button" class="button button-quiet icon" aria-label="Next" @click="step(1)"><AppIcon name="next" :size="16" /></button>
-        <h1 id="calendar-title">{{ title }} <span v-if="subtitle" class="subtitle">{{ subtitle }}</span></h1>
+        <FrameTools>
+          <FrameCapsule><button type="button" class="button button-quiet" @click="today">Today <KeyShortcut keys="T" /></button></FrameCapsule>
+          <FrameCapsule>
+            <button type="button" class="button button-quiet icon" aria-label="Previous" @click="step(-1)"><AppIcon name="back" :size="16" /></button>
+            <button type="button" class="button button-quiet icon" aria-label="Next" @click="step(1)"><AppIcon name="next" :size="16" /></button>
+          </FrameCapsule>
+        </FrameTools>
+        <FrameTitle id="calendar-title">{{ title }} <span v-if="subtitle" class="subtitle">{{ subtitle }}</span></FrameTitle>
         <span class="spacer" />
-        <button ref="railToggle" type="button" class="button button-quiet rail-toggle" aria-controls="calendar-rail" :aria-expanded="railOpen ? 'true' : 'false'" @click="toggleRail">
-          Calendars <span v-if="calendar.unanswered.length > 0" class="count"><span class="visually-hidden">, </span>{{ calendar.unanswered.length }} to answer</span>
-        </button>
-        <SegmentedControl label="View" :options="VIEWS.map((entry) => ({ value: entry.kind, label: entry.label }))" :selected="calendar.view" @choose="(kind) => go(kind)" />
-        <button type="button" class="button button-primary" @click="newEvent()"><AppIcon name="plus" :size="16" /> New event <KeyShortcut keys="N" /></button>
+        <FrameTools>
+          <FrameCapsule>
+            <button ref="railToggle" type="button" class="button button-quiet rail-toggle" aria-controls="calendar-rail" :aria-expanded="railOpen ? 'true' : 'false'" @click="toggleRail">
+              Calendars <span v-if="calendar.unanswered.length > 0" class="count"><span class="visually-hidden">, </span>{{ calendar.unanswered.length }} to answer</span>
+            </button>
+          </FrameCapsule>
+          <SegmentedControl label="View" :options="VIEWS.map((entry) => ({ value: entry.kind, label: entry.label }))" :selected="calendar.view" @choose="(kind) => go(kind)" />
+          <button type="button" class="button button-primary" @click="newEvent()"><AppIcon name="plus" :size="16" /> New event <KeyShortcut keys="N" /></button>
+        </FrameTools>
       </header>
 
       <p v-if="calendar.notice" class="empty" role="status">{{ calendar.notice }}</p>
@@ -548,6 +560,10 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside
   min-width: 0;
   min-height: 0;
 }
+/* The desktop shell shows this toolbar in its title strip. */
+.frame-shell .toolbar {
+  display: none;
+}
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -637,6 +653,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside
 }
 
 /* Next to the app's sidebar, an open event takes too much of the week below this width: it lies over the week instead. */
+/* Calendars shows only where the rail folds away (below 1100 px), and its capsule in the title strip with it. */
+@media (min-width: 1101px) {
+  :global(.frame-capsule:has(> .rail-toggle)) {
+    display: none;
+  }
+}
 @media (max-width: 1360px) {
   .calendar-shell.detail {
     grid-template-columns: 248px minmax(0, 1fr);

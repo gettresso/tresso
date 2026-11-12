@@ -17,6 +17,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import TodoDetail from '@/components/TodoDetail.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import { collapseLeave, expandEnter } from '@/components/listMotion'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 provideRequiredFields(quickAddSchema)
 
@@ -101,7 +102,7 @@ async function toggle(todo: Todo): Promise<void> {
   <main class="todos" :class="{ 'with-detail': selected !== null }">
     <div class="list-column">
       <header class="header">
-        <h1>Todos</h1>
+        <FrameTitle>Todos</FrameTitle>
         <p class="lead">
           {{ store.openCount }} open<template v-if="doneToday > 0">, {{ doneToday }} done today</template>, synced to all your devices
         </p>

@@ -15,6 +15,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import FieldLabel from '@/forms/FieldLabel.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 /** Closed hand-overs listed below the open ones; older ones stay out of the way. */
 const CLOSED_SHOWN = 20
@@ -184,7 +185,7 @@ const minDay = dayValue(new Date())
     <main class="main">
       <section class="panel waiting" aria-labelledby="waiting-title">
         <header class="head">
-          <h1 id="waiting-title">Waiting on</h1>
+          <FrameTitle id="waiting-title">Waiting on</FrameTitle>
           <span class="summary">{{ summary }}</span>
         </header>
 
