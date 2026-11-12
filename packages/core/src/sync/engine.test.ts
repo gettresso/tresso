@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SessionEndedDuringRequestError } from '../requests'
-import { retryablePull, retryAfterMs, SyncEngine, type PullProgress, type SyncStore } from './engine'
+import { chat, chatAccount, chatMessage, chatOutgoing } from '../store/contract'
+import { itemsIn, retryablePull, retryAfterMs, SyncEngine, type PullProgress, type SyncStore } from './engine'
 import type { ChangePage } from './types'
 
 function page(cursor: number, hasMore = false, ids: string[] = []): ChangePage {
@@ -46,6 +47,23 @@ class MemoryStore implements SyncStore {
     this.stored = p.cursor
   }
 }
+
+describe('itemsIn', () => {
+  it('counts the chat lists and their removals with the rest of a page', () => {
+    const at = '2026-11-12T10:00:00+00:00'
+    const withChats: ChangePage = {
+      ...page(5, false, ['t1']),
+      chatAccounts: [chatAccount('acct')],
+      chats: [chat('anna', 'acct'), chat('bram', 'acct')],
+      chatMessages: [chatMessage('a1', 'anna', 'acct', at), chatMessage('a2', 'anna', 'acct', at), chatMessage('b1', 'bram', 'acct', at)],
+      chatOutgoing: [chatOutgoing('r1', 'anna', 'acct')],
+      deleted: [{ type: 'chat', id: 'old' }, { type: 'chatMessage', id: 'gone' }],
+    }
+
+    expect(itemsIn(withChats)).toBe(1 + 1 + 2 + 3 + 1 + 2)
+    expect(itemsIn(page(5, false, ['t1']))).toBe(1)
+  })
+})
 
 describe('retryablePull', () => {
   it('gives up on a pull whose session ended while it ran, though the error carries no status', () => {

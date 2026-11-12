@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { MissingFolderError } from '../actions'
 import { briefView } from '../brief'
 import type { SyncedCalendar, SyncedCalendarEvent } from '../calendar/types'
+import type { SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from '../chat/types'
 import type { ChangePage, SyncedDailyBrief, SyncedHandOver, SyncedMessage, SyncedOutgoingMessage, SyncedSmartInbox, SyncedThread, SyncedTodo, SyncedUnsubscription } from '../sync/types'
 import type { Draft, MailStore } from './mailStore'
 
@@ -174,6 +175,50 @@ export function draft(id: string, extra: Partial<Draft> = {}): Draft {
     attachments: [],
     ...extra,
   }
+}
+
+/** A chat account as the delta brings it; `wa:account` makes one of the "Only this Mac" mode. */
+export function chatAccount(id: string, extra: Partial<SyncedChatAccount> = {}): SyncedChatAccount {
+  return {
+    id,
+    channel: 'whatsapp',
+    address: '31698765432',
+    displayName: 'Sam',
+    relayDeviceId: '0193a000-0000-7000-8000-000000000001',
+    relayDeviceName: 'MacBook Air',
+    relayOnline: true,
+    relayOfflineSince: null,
+    bridge: 'running',
+    link: 'linked',
+    linkedAt: '2026-11-01T09:00:00+00:00',
+    loopbackOnly: true,
+    includeGroups: true,
+    notify: false,
+    ...extra,
+  }
+}
+
+export function chat(id: string, chatAccountId: string, extra: Partial<SyncedChat> = {}): SyncedChat {
+  return {
+    id,
+    chatAccountId,
+    jid: `${id}@s.whatsapp.net`,
+    kind: 'direct',
+    name: `Chat ${id}`,
+    lastMessageAt: '2026-11-12T10:00:00+00:00',
+    readThrough: null,
+    archivedThrough: null,
+    leftOut: false,
+    ...extra,
+  }
+}
+
+export function chatMessage(id: string, chatId: string, chatAccountId: string, sentAt: string, extra: Partial<SyncedChatMessage> = {}): SyncedChatMessage {
+  return { id, chatId, chatAccountId, waId: `3EB0${id}`, fromMe: false, sender: null, text: `Text ${id}`, sentAt, mediaKind: null, mediaName: null, mediaSize: null, ...extra }
+}
+
+export function chatOutgoing(id: string, chatId: string, chatAccountId: string, extra: Partial<SyncedChatOutgoing> = {}): SyncedChatOutgoing {
+  return { id, chatId, chatAccountId, text: `Reply ${id}`, status: 'waiting', error: null, createdAt: '2026-11-12T10:05:00+00:00', claimedAt: null, sentAt: null, ...extra }
 }
 
 /** The first page of every test: two accounts, an archived thread, read and unread mail. */
@@ -1044,6 +1089,252 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         expect(await db.calendarEvent('holiday')).toBeNull()
         expect(await db.calendarEvent('weekly')).toBeNull()
         expect((await db.calendarEvents(october(1), october(31))).map((e) => e.id)).toEqual(['single'])
+      })
+    })
+
+    describe('chats', () => {
+      const at = (minute: number) => `2026-11-12T10:${String(minute).padStart(2, '0')}:00+00:00`
+      // Three chats of one account: Anna (two incoming, one own), Bram (one incoming, read), a group (one message).
+      const chatPage = page({
+        cursor: 40,
+        chatAccounts: [chatAccount('acct')],
+        chats: [
+          chat('anna', 'acct', { jid: '31611111111@s.whatsapp.net', lastMessageAt: at(3) }),
+          chat('bram', 'acct', { jid: '31622222222@s.whatsapp.net', lastMessageAt: at(5), readThrough: at(5) }),
+          chat('group', 'acct', { jid: '120363025246125486@g.us', kind: 'group', name: null, lastMessageAt: at(1) }),
+        ],
+        chatMessages: [
+          chatMessage('a2', 'anna', 'acct', at(2)),
+          chatMessage('a1', 'anna', 'acct', at(1)),
+          chatMessage('a3', 'anna', 'acct', at(3), { fromMe: true }),
+          chatMessage('b1', 'bram', 'acct', at(5)),
+          chatMessage('g1', 'group', 'acct', at(1), { sender: { id: '31633333333', name: 'Cas' }, mediaKind: 'image', mediaName: 'photo.jpg', mediaSize: 1024 }),
+        ],
+        chatOutgoing: [chatOutgoing('r2', 'anna', 'acct', { createdAt: at(7) }), chatOutgoing('r1', 'anna', 'acct', { createdAt: at(6), status: 'sent', claimedAt: at(6), sentAt: at(6) })],
+      })
+
+      beforeEach(async () => {
+        await db.apply(chatPage)
+      })
+
+      const ids = (rows: { id: string }[]) => rows.map((row) => row.id)
+      const listed = async (options?: { inboxOnly?: boolean; limit?: number }) => (await db.chats(options)).map((summary) => summary.chat.id)
+
+      it('stores all four lists of a page and reads them back as the delta gave them', async () => {
+        expect(await db.chatAccounts()).toEqual([chatAccount('acct')])
+        const anna = await db.chat('anna')
+        expect(anna?.chat).toEqual(chatPage.chats![0])
+        expect(ids(anna!.messages)).toEqual(['a1', 'a2', 'a3'])
+        expect(ids(anna!.outgoing)).toEqual(['r1', 'r2'])
+        expect((await db.chat('group'))?.messages[0]).toEqual(chatPage.chatMessages![4])
+        expect(await db.cursor()).toBe(40)
+      })
+
+      it('stores a page given twice once', async () => {
+        await db.apply({ ...chatPage, cursor: 41 })
+
+        expect(await db.chatAccounts()).toHaveLength(1)
+        expect(await listed()).toEqual(['bram', 'anna', 'group'])
+        expect(ids((await db.chat('anna'))!.messages)).toEqual(['a1', 'a2', 'a3'])
+        expect(ids((await db.chat('anna'))!.outgoing)).toEqual(['r1', 'r2'])
+        expect(await db.unreadChatCount()).toBe(2)
+      })
+
+      it('keeps messages that come before their chat, and shows them once it arrives', async () => {
+        await db.apply(page({ cursor: 41, chatMessages: [chatMessage('d1', 'dirk', 'acct', at(8)), chatMessage('d2', 'dirk', 'acct', at(9))] }))
+        expect(await db.chat('dirk')).toBeNull()
+        expect(await listed()).toEqual(['bram', 'anna', 'group'])
+
+        await db.apply(page({ cursor: 42, chats: [chat('dirk', 'acct', { jid: '31644444444@s.whatsapp.net', lastMessageAt: at(9) })] }))
+
+        expect(ids((await db.chat('dirk'))!.messages)).toEqual(['d1', 'd2'])
+        expect((await db.chats({ limit: 1 }))[0]).toMatchObject({ chat: { id: 'dirk' }, newest: { id: 'd2' }, unread: 2 })
+      })
+
+      it('lists chats newest first with their newest message and unread count, never one left out', async () => {
+        const summaries = await db.chats()
+
+        expect(summaries.map((summary) => [summary.chat.id, summary.newest?.id ?? null, summary.unread, summary.lastMessageAt])).toEqual([
+          ['bram', 'b1', 0, Date.parse(at(5))],
+          ['anna', 'a3', 2, Date.parse(at(3))],
+          ['group', 'g1', 1, Date.parse(at(1))],
+        ])
+        expect(await listed({ limit: 2 })).toEqual(['bram', 'anna'])
+        expect(await listed({ limit: 0 })).toEqual([])
+
+        await db.apply(page({ cursor: 41, chats: [chat('anna', 'acct', { jid: '31611111111@s.whatsapp.net', lastMessageAt: at(3), leftOut: true })] }))
+
+        expect(await listed()).toEqual(['bram', 'group'])
+        expect(await db.chatByJid('acct', '31611111111@s.whatsapp.net')).toMatchObject({ id: 'anna', leftOut: true })
+        expect(await db.unreadChatCount()).toBe(1)
+      })
+
+      it('orders chats of the same time by id, newest id first', async () => {
+        await db.apply(page({ cursor: 41, chats: [chat('anna', 'acct', { jid: '31611111111@s.whatsapp.net', lastMessageAt: at(5) })] }))
+
+        expect(await listed()).toEqual(['bram', 'anna', 'group'])
+      })
+
+      it('keeps archived chats out of the inbox until a message comes in after', async () => {
+        await db.apply(page({ cursor: 41, chats: [chat('bram', 'acct', { jid: '31622222222@s.whatsapp.net', lastMessageAt: at(5), readThrough: at(5), archivedThrough: at(5) })] }))
+        expect(await listed({ inboxOnly: true })).toEqual(['anna', 'group'])
+        expect(await listed()).toEqual(['bram', 'anna', 'group'])
+
+        await db.apply(
+          page({
+            cursor: 42,
+            chats: [chat('bram', 'acct', { jid: '31622222222@s.whatsapp.net', lastMessageAt: at(9), readThrough: at(5), archivedThrough: at(5) })],
+            chatMessages: [chatMessage('b2', 'bram', 'acct', at(9))],
+          }),
+        )
+        expect(await listed({ inboxOnly: true })).toEqual(['bram', 'anna', 'group'])
+      })
+
+      it('counts chats with incoming messages after what the user read', async () => {
+        expect(await db.unreadChatCount()).toBe(2)
+
+        // Read through the second incoming message of Anna: her own message after it is no unread one.
+        await db.apply(page({ cursor: 41, chats: [chat('anna', 'acct', { jid: '31611111111@s.whatsapp.net', lastMessageAt: at(3), readThrough: at(2) })] }))
+        expect(await db.unreadChatCount()).toBe(1)
+        expect((await db.chats()).find((summary) => summary.chat.id === 'anna')?.unread).toBe(0)
+
+        // An archived chat is not in the inbox, so it does not count.
+        await db.apply(page({ cursor: 42, chats: [chat('group', 'acct', { jid: '120363025246125486@g.us', kind: 'group', name: null, lastMessageAt: at(1), archivedThrough: at(1) })] }))
+        expect(await db.unreadChatCount()).toBe(0)
+      })
+
+      it('removes a deleted chat with its messages and replies, and nothing else', async () => {
+        await db.apply(page({ cursor: 41, deleted: [{ type: 'chat', id: 'anna' }] }))
+
+        expect(await db.chat('anna')).toBeNull()
+        expect(await db.waitingOutgoing()).toEqual([])
+        expect(await listed()).toEqual(['bram', 'group'])
+        expect(ids((await db.chat('bram'))!.messages)).toEqual(['b1'])
+        expect(await db.chatByJid('acct', '31611111111@s.whatsapp.net')).toBeNull()
+      })
+
+      it('removes everything of a deleted chat account, also messages stored before their chat', async () => {
+        await db.apply(page({ cursor: 41, chatMessages: [chatMessage('d1', 'dirk', 'acct', at(8))] }))
+
+        await db.apply(page({ cursor: 42, deleted: [{ type: 'chatAccount', id: 'acct' }] }))
+
+        expect(await db.chatAccounts()).toEqual([])
+        expect(await db.chats()).toEqual([])
+        expect(await db.waitingOutgoing()).toEqual([])
+        expect(await db.unreadChatCount()).toBe(0)
+        // The orphan went too: its chat arriving now shows no message of before.
+        await db.apply(page({ cursor: 43, chatAccounts: [chatAccount('acct')], chats: [chat('dirk', 'acct', { jid: '31644444444@s.whatsapp.net', lastMessageAt: at(8) })] }))
+        expect((await db.chat('dirk'))?.messages).toEqual([])
+      })
+
+      it('removes single messages and replies by their own tombstones', async () => {
+        await db.apply(page({ cursor: 41, deleted: [{ type: 'chatMessage', id: 'a1' }, { type: 'chatOutgoing', id: 'r2' }] }))
+
+        const anna = await db.chat('anna')
+        expect(ids(anna!.messages)).toEqual(['a2', 'a3'])
+        expect(ids(anna!.outgoing)).toEqual(['r1'])
+      })
+
+      it('replaces a message stored again under its id', async () => {
+        await db.putChatMessages([chatMessage('a1', 'anna', 'acct', at(1), { text: 'Edited' })])
+        await db.putChatMessages([chatMessage('a1', 'anna', 'acct', at(1), { text: 'Edited' })])
+
+        const anna = await db.chat('anna')
+        expect(ids(anna!.messages)).toEqual(['a1', 'a2', 'a3'])
+        expect(anna!.messages[0]!.text).toBe('Edited')
+      })
+
+      it('gives a JID one chat per account: a chat made again under a new id takes the place of the old one', async () => {
+        await db.putChats([chat('anna-2', 'acct', { jid: '31611111111@s.whatsapp.net', lastMessageAt: at(9) })])
+
+        expect(await db.chat('anna')).toBeNull()
+        expect(await db.chatByJid('acct', '31611111111@s.whatsapp.net')).toMatchObject({ id: 'anna-2' })
+        expect(await db.waitingOutgoing()).toEqual([])
+        expect(await listed()).toEqual(['anna-2', 'bram', 'group'])
+        // The same JID in another account is another chat.
+        await db.putChats([chat('anna-other', 'acct-2', { jid: '31611111111@s.whatsapp.net' })])
+        expect(await db.chatByJid('acct', '31611111111@s.whatsapp.net')).toMatchObject({ id: 'anna-2' })
+        expect(await db.chatByJid('acct-2', '31611111111@s.whatsapp.net')).toMatchObject({ id: 'anna-other' })
+      })
+
+      it('lists the replies waiting to be sent, oldest first', async () => {
+        await db.putChatOutgoing([
+          chatOutgoing('r4', 'bram', 'acct', { createdAt: at(4) }),
+          chatOutgoing('r3', 'bram', 'acct', { createdAt: at(4) }),
+          chatOutgoing('r5', 'bram', 'acct', { createdAt: at(2), status: 'failed', error: 'refused' }),
+        ])
+
+        expect(ids(await db.waitingOutgoing())).toEqual(['r3', 'r4', 'r2'])
+
+        await db.putChatOutgoing([chatOutgoing('r3', 'bram', 'acct', { createdAt: at(4), status: 'sending', claimedAt: at(10) })])
+        expect(ids(await db.waitingOutgoing())).toEqual(['r4', 'r2'])
+      })
+
+      it('writes and removes chats of its own, as the "Only this Mac" relay does', async () => {
+        await db.putChatAccount(chatAccount('wa:account'))
+        await db.putChats([chat('wa:31655555555@s.whatsapp.net', 'wa:account', { jid: '31655555555@s.whatsapp.net', lastMessageAt: at(20) })])
+        await db.putChatMessages([chatMessage('wa:31655555555@s.whatsapp.net:X1', 'wa:31655555555@s.whatsapp.net', 'wa:account', at(20))])
+        await db.putChatOutgoing([chatOutgoing('0193a000-0000-7000-8000-0000000000aa', 'wa:31655555555@s.whatsapp.net', 'wa:account', { createdAt: at(21) })])
+
+        expect(ids(await db.chatAccounts())).toEqual(['acct', 'wa:account'])
+        expect((await db.chats({ limit: 1 }))[0]).toMatchObject({ chat: { id: 'wa:31655555555@s.whatsapp.net' }, unread: 1 })
+
+        await db.removeChat('wa:31655555555@s.whatsapp.net')
+        expect(await db.chat('wa:31655555555@s.whatsapp.net')).toBeNull()
+        expect(ids(await db.waitingOutgoing())).toEqual(['r2'])
+
+        await db.removeChatAccount('acct')
+        expect(ids(await db.chatAccounts())).toEqual(['wa:account'])
+        expect(await db.chats()).toEqual([])
+      })
+
+      it('keeps chat values apart from the copy, and removes one set to null', async () => {
+        expect(await db.chatMeta('cursor')).toBeNull()
+
+        await db.setChatMeta('cursor', '1234')
+        expect(await db.chatMeta('cursor')).toBe('1234')
+        expect(await db.cursor()).toBe(40)
+
+        await db.setChatMeta('cursor', null)
+        expect(await db.chatMeta('cursor')).toBeNull()
+        expect(await db.cursor()).toBe(40)
+      })
+
+      it('refuses a page with a chat time that is no time, storing none of it, and names no chat text', async () => {
+        const bad = page({
+          cursor: 41,
+          chats: [chat('eva', 'acct', { jid: '31666666666@s.whatsapp.net', lastMessageAt: at(30) })],
+          chatMessages: [chatMessage('e1', 'eva', 'acct', 'yesterday', { text: 'Secret plans' })],
+        })
+
+        const error = await db.apply(bad).then(
+          () => null,
+          (thrown: unknown) => thrown,
+        )
+
+        expect(error).toBeInstanceOf(Error)
+        expect(String((error as Error).message)).not.toContain('Secret')
+        expect(String((error as Error).message)).not.toContain('yesterday')
+        expect(await db.chat('eva')).toBeNull()
+        expect(await db.cursor()).toBe(40)
+      })
+
+      it('writes nothing of a chat to the console', async () => {
+        const said: unknown[] = []
+        const methods = ['log', 'info', 'warn', 'error', 'debug'] as const
+        const originals = methods.map((method) => console[method])
+        methods.forEach((method) => (console[method] = (...args: unknown[]) => void said.push(...args)))
+        try {
+          await db.apply({ ...chatPage, cursor: 41 })
+          await db.chats()
+          await db.chat('anna')
+          await db.unreadChatCount()
+          await db.waitingOutgoing()
+          await db.apply(page({ cursor: 42, deleted: [{ type: 'chatAccount', id: 'acct' }] }))
+        } finally {
+          methods.forEach((method, index) => (console[method] = originals[index]!))
+        }
+        expect(said).toEqual([])
       })
     })
   })

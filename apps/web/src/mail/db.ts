@@ -1,7 +1,11 @@
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase, type IDBPTransaction, type StoreNames } from 'idb'
 import {
   actionResult,
+  chatInstant,
+  compareChatMessages,
+  compareChatOutgoing,
   CopyClosingError,
+  inInbox,
   classifiedByUser,
   compareTodos,
   compareHandOvers,
@@ -24,6 +28,7 @@ import {
   syncedDraft,
   type AppliedAction,
   type ChangePage,
+  type ChatSummary,
   type Contact,
   type ConversationSummary,
   type Draft,
@@ -34,6 +39,10 @@ import {
   type MessageAction,
   type SyncedCalendar,
   type SyncedCalendarEvent,
+  type SyncedChat,
+  type SyncedChatAccount,
+  type SyncedChatMessage,
+  type SyncedChatOutgoing,
   type SyncedFolder,
   type SyncedMailAccount,
   type SyncedMessage,
@@ -96,7 +105,8 @@ function toSummary(stored: StoredConversation): ConversationSummary {
 }
 
 interface MailSchema extends DBSchema {
-  meta: { key: string; value: number }
+  /** The cursor and when the copy last synced (numbers), and the chat values (strings, keys `chat:<name>`). */
+  meta: { key: string; value: number | string }
   mailAccounts: { key: string; value: SyncedMailAccount }
   folders: { key: string; value: SyncedFolder; indexes: { byAccount: string } }
   threads: { key: string; value: SyncedThread; indexes: { byAccount: string } }
@@ -129,6 +139,34 @@ interface MailSchema extends DBSchema {
   dailyBriefs: { key: string; value: SyncedDailyBrief }
   calendars: { key: string; value: SyncedCalendar; indexes: { byAccount: string } }
   calendarEvents: { key: string; value: StoredCalendarEvent; indexes: { bySeries: [string, string]; byCalendar: string; bySeriesStart: number; bySeriesEnd: number } }
+  chatAccounts: { key: string; value: SyncedChatAccount }
+  chats: { key: string; value: StoredChat; indexes: { byLast: [number, number]; byJid: [string, string]; byAccount: string } }
+  chatMessages: { key: string; value: StoredChatMessage; indexes: { byChat: [string, number]; byAccount: string } }
+  chatOutgoing: { key: string; value: SyncedChatOutgoing; indexes: { byChat: string; byStatus: [string, string]; byAccount: string } }
+}
+
+/**
+ * A chat with what its indexes need: booleans and ISO times do not sort as index keys, so whether it is left out is a
+ * number and its newest message time epoch ms.
+ */
+interface StoredChat {
+  id: string
+  chatAccountId: string
+  jid: string
+  /** 1 when the user left the chat out. */
+  leftOut: 0 | 1
+  /** `chat.lastMessageAt` in epoch ms. */
+  lastMessageAt: number
+  chat: SyncedChat
+}
+
+/** A chat message with its time in epoch ms, for reading a chat in order through an index. */
+interface StoredChatMessage {
+  id: string
+  chatId: string
+  chatAccountId: string
+  sentAt: number
+  message: SyncedChatMessage
 }
 
 /**
@@ -149,8 +187,35 @@ interface StoredCalendarEvent {
 type Stores = StoreNames<MailSchema>[]
 type WriteTx = IDBPTransaction<MailSchema, Stores, 'readwrite'>
 
-const ALL_STORES: Stores = ['meta', 'mailAccounts', 'folders', 'threads', 'messages', 'conversations', 'outgoing', 'contacts', 'signatures', 'drafts', 'smartInboxes', 'todos', 'unsubscriptions', 'handOvers', 'dailyBriefs', 'calendars', 'calendarEvents']
-const VERSION = 11
+const ALL_STORES: Stores = [
+  'meta',
+  'mailAccounts',
+  'folders',
+  'threads',
+  'messages',
+  'conversations',
+  'outgoing',
+  'contacts',
+  'signatures',
+  'drafts',
+  'smartInboxes',
+  'todos',
+  'unsubscriptions',
+  'handOvers',
+  'dailyBriefs',
+  'calendars',
+  'calendarEvents',
+  'chatAccounts',
+  'chats',
+  'chatMessages',
+  'chatOutgoing',
+]
+/** The stores a chat write touches. */
+const CHAT_STORES: Stores = ['chatAccounts', 'chats', 'chatMessages', 'chatOutgoing']
+const VERSION = 12
+
+/** Keys of `meta` that hold chat values (see MailStore.chatMeta). */
+const CHAT_META = 'chat:'
 
 export function databaseName(userId: string): string {
   return `tresso-mail-${userId}`
@@ -295,8 +360,22 @@ export class IndexedDbMailStore implements MailStore {
             await cursor.update({ ...cursor.value, plannedStart: null, plannedEnd: null, planState: null })
           }
         }
-        // Outgoing mail, contacts, signatures, drafts, smart inboxes, todos, unsubscriptions, hand-overs, daily briefs and
-        // calendars come from the delta: an existing copy syncs again from the start.
+        if (oldVersion < 12) {
+          database.createObjectStore('chatAccounts', { keyPath: 'id' })
+          const chats = database.createObjectStore('chats', { keyPath: 'id' })
+          chats.createIndex('byLast', ['leftOut', 'lastMessageAt'])
+          chats.createIndex('byJid', ['chatAccountId', 'jid'], { unique: true })
+          chats.createIndex('byAccount', 'chatAccountId')
+          const chatMessages = database.createObjectStore('chatMessages', { keyPath: 'id' })
+          chatMessages.createIndex('byChat', ['chatId', 'sentAt'])
+          chatMessages.createIndex('byAccount', 'chatAccountId')
+          const chatOutgoing = database.createObjectStore('chatOutgoing', { keyPath: 'id' })
+          chatOutgoing.createIndex('byChat', 'chatId')
+          chatOutgoing.createIndex('byStatus', ['status', 'id'])
+          chatOutgoing.createIndex('byAccount', 'chatAccountId')
+        }
+        // Outgoing mail, contacts, signatures, drafts, smart inboxes, todos, unsubscriptions, hand-overs, daily briefs,
+        // calendars and chats come from the delta: an existing copy keeps what it has and syncs again from the start.
         if (oldVersion >= 1) {
           await transaction.objectStore('meta').delete('cursor')
           upgraded = true
@@ -314,11 +393,16 @@ export class IndexedDbMailStore implements MailStore {
   }
 
   async cursor(): Promise<number> {
-    return (await this.db.get('meta', 'cursor')) ?? 0
+    return (await this.numberMeta('cursor')) ?? 0
   }
 
   async syncedAt(): Promise<number | null> {
-    return (await this.db.get('meta', 'syncedAt')) ?? null
+    return this.numberMeta('syncedAt')
+  }
+
+  private async numberMeta(key: 'cursor' | 'syncedAt'): Promise<number | null> {
+    const value = await this.db.get('meta', key)
+    return typeof value === 'number' ? value : null
   }
 
   async markSynced(at: number): Promise<void> {
@@ -327,6 +411,14 @@ export class IndexedDbMailStore implements MailStore {
 
   async apply(page: ChangePage): Promise<void> {
     const tx = this.db.transaction(ALL_STORES, 'readwrite')
+    // A page is stored completely or not at all: a row it cannot take (a chat time that is no time) undoes the rest.
+    await allOrNothing(tx, () => this.store(tx, page))
+    if (touchesCalendars(page)) {
+      this.calendarRevision += 1
+    }
+  }
+
+  private async store(tx: WriteTx, page: ChangePage): Promise<void> {
     const affected = new Set<string>()
 
     for (const deleted of page.deleted) {
@@ -375,6 +467,18 @@ export class IndexedDbMailStore implements MailStore {
           break
         case 'calendarEvent':
           await deleteCalendarEvent(tx, deleted.id)
+          break
+        case 'chatAccount':
+          await deleteChatAccount(tx, deleted.id)
+          break
+        case 'chat':
+          await deleteChat(tx, deleted.id)
+          break
+        case 'chatMessage':
+          await tx.objectStore('chatMessages').delete(deleted.id)
+          break
+        case 'chatOutgoing':
+          await tx.objectStore('chatOutgoing').delete(deleted.id)
           break
         case 'draft': {
           const local = await tx.objectStore('drafts').get(deleted.id)
@@ -453,6 +557,20 @@ export class IndexedDbMailStore implements MailStore {
     for (const handOver of page.handOvers) {
       await tx.objectStore('handOvers').put(handOver)
     }
+    // Each row stands on its own: a message stored before its chat (pages follow change numbers, and a chat changes
+    // again with every message) is kept and shows once the chat arrives.
+    for (const account of page.chatAccounts ?? []) {
+      await tx.objectStore('chatAccounts').put(account)
+    }
+    for (const chat of page.chats ?? []) {
+      await writeChat(tx, chat)
+    }
+    for (const message of page.chatMessages ?? []) {
+      await writeChatMessage(tx, message)
+    }
+    for (const outgoing of page.chatOutgoing ?? []) {
+      await writeChatOutgoing(tx, outgoing)
+    }
 
     const lists = await listFoldersOf(tx)
     for (const threadId of affected) {
@@ -460,10 +578,6 @@ export class IndexedDbMailStore implements MailStore {
     }
 
     await tx.objectStore('meta').put(page.cursor, 'cursor')
-    await tx.done
-    if (touchesCalendars(page)) {
-      this.calendarRevision += 1
-    }
   }
 
   /**
@@ -876,6 +990,112 @@ export class IndexedDbMailStore implements MailStore {
     }
     return kept.sort(compareTodos)
   }
+
+  async chatAccounts(): Promise<SyncedChatAccount[]> {
+    // Keys come in order, so the accounts are by id.
+    return this.db.getAll('chatAccounts')
+  }
+
+  async chats(options: { inboxOnly?: boolean; limit?: number } = {}): Promise<ChatSummary[]> {
+    const limit = options.limit ?? Number.POSITIVE_INFINITY
+    const tx: ChatReadTx = this.db.transaction(['chats', 'chatMessages'])
+    const found: ChatSummary[] = []
+    // Newest first; on equal times by id, descending, as the SQLite store orders them.
+    const listed = IDBKeyRange.bound([0, -Infinity], [0, Infinity])
+    for (let cursor = await tx.objectStore('chats').index('byLast').openCursor(listed, 'prev'); cursor !== null && found.length < limit; cursor = await cursor.continue()) {
+      const stored = cursor.value
+      if (options.inboxOnly !== true || inInbox(stored.chat)) {
+        found.push(await chatSummary(tx, stored))
+      }
+    }
+    await tx.done
+    return found
+  }
+
+  async chat(id: string): Promise<{ chat: SyncedChat; messages: SyncedChatMessage[]; outgoing: SyncedChatOutgoing[] } | null> {
+    const tx = this.db.transaction(['chats', 'chatMessages', 'chatOutgoing'])
+    const stored = await tx.objectStore('chats').get(id)
+    if (stored === undefined) {
+      return null
+    }
+    const messages = (await tx.objectStore('chatMessages').index('byChat').getAll(IDBKeyRange.bound([id, -Infinity], [id, Infinity]))).map((row) => row.message)
+    const outgoing = await tx.objectStore('chatOutgoing').index('byChat').getAll(id)
+    await tx.done
+    return { chat: stored.chat, messages: messages.sort(compareChatMessages), outgoing: outgoing.sort(compareChatOutgoing) }
+  }
+
+  async chatByJid(chatAccountId: string, jid: string): Promise<SyncedChat | null> {
+    return (await this.db.getFromIndex('chats', 'byJid', [chatAccountId, jid]))?.chat ?? null
+  }
+
+  async unreadChatCount(): Promise<number> {
+    const tx: ChatReadTx = this.db.transaction(['chats', 'chatMessages'])
+    let count = 0
+    for (const stored of await tx.objectStore('chats').index('byLast').getAll(IDBKeyRange.bound([0, -Infinity], [0, Infinity]))) {
+      if (inInbox(stored.chat) && (await unreadIn(tx, stored.chat)) > 0) {
+        count += 1
+      }
+    }
+    await tx.done
+    return count
+  }
+
+  async waitingOutgoing(): Promise<SyncedChatOutgoing[]> {
+    const rows = await this.db.getAllFromIndex('chatOutgoing', 'byStatus', IDBKeyRange.bound(['waiting'], ['waiting', []]))
+    return rows.sort(compareChatOutgoing)
+  }
+
+  async putChatAccount(account: SyncedChatAccount): Promise<void> {
+    await this.db.put('chatAccounts', account)
+  }
+
+  async putChats(chats: SyncedChat[]): Promise<void> {
+    const tx = this.db.transaction(CHAT_STORES, 'readwrite')
+    await allOrNothing(tx, async () => {
+      for (const chat of chats) {
+        await writeChat(tx, chat)
+      }
+    })
+  }
+
+  async putChatMessages(messages: SyncedChatMessage[]): Promise<void> {
+    const tx = this.db.transaction(CHAT_STORES, 'readwrite')
+    await allOrNothing(tx, async () => {
+      for (const message of messages) {
+        await writeChatMessage(tx, message)
+      }
+    })
+  }
+
+  async putChatOutgoing(rows: SyncedChatOutgoing[]): Promise<void> {
+    const tx = this.db.transaction(CHAT_STORES, 'readwrite')
+    await allOrNothing(tx, async () => {
+      for (const row of rows) {
+        await writeChatOutgoing(tx, row)
+      }
+    })
+  }
+
+  async removeChatAccount(id: string): Promise<void> {
+    const tx = this.db.transaction(CHAT_STORES, 'readwrite')
+    await deleteChatAccount(tx, id)
+    await tx.done
+  }
+
+  async removeChat(id: string): Promise<void> {
+    const tx = this.db.transaction(CHAT_STORES, 'readwrite')
+    await deleteChat(tx, id)
+    await tx.done
+  }
+
+  async chatMeta(key: string): Promise<string | null> {
+    const value = await this.db.get('meta', CHAT_META + key)
+    return typeof value === 'string' ? value : null
+  }
+
+  async setChatMeta(key: string, value: string | null): Promise<void> {
+    await (value === null ? this.db.delete('meta', CHAT_META + key) : this.db.put('meta', value, CHAT_META + key))
+  }
 }
 
 type ConversationStore = ReturnType<IDBPTransaction<MailSchema, ['conversations'], 'readonly'>['objectStore']>
@@ -1014,4 +1234,83 @@ async function refreshConversation(tx: WriteTx, threadId: string, lists: ListFol
     active: summary.active ? 1 : 0,
     unreadActive: summary.active && summary.unreadCount > 0 ? 1 : 0,
   })
+}
+
+type ChatTx = WriteTx
+
+/**
+ * Runs the writes of a transaction and waits for it to commit; when one of them throws, the transaction is aborted so
+ * none of its writes stay (IndexedDB would otherwise commit what was written before the throw).
+ */
+async function allOrNothing(tx: WriteTx, task: () => Promise<void>): Promise<void> {
+  try {
+    await task()
+  } catch (error) {
+    try {
+      tx.abort()
+    } catch {
+      // Aborted already, by the failed write.
+    }
+    await tx.done.catch(() => undefined)
+    throw error
+  }
+  await tx.done
+}
+type ChatReadTx = IDBPTransaction<MailSchema, ('chats' | 'chatMessages')[], 'readonly'>
+
+async function chatSummary(tx: ChatReadTx, stored: StoredChat): Promise<ChatSummary> {
+  const range = IDBKeyRange.bound([stored.id, -Infinity], [stored.id, Infinity])
+  // Newest by time, then by id descending, as the SQLite store picks it.
+  const newest = await tx.objectStore('chatMessages').index('byChat').openCursor(range, 'prev')
+  return { chat: stored.chat, newest: newest?.value.message ?? null, unread: await unreadIn(tx, stored.chat), lastMessageAt: stored.lastMessageAt }
+}
+
+/** Incoming messages after `readThrough`, as unreadCount counts them; all of them when it is null or no time. */
+async function unreadIn(tx: ChatReadTx, chat: SyncedChat): Promise<number> {
+  const readThrough = chat.readThrough === null ? Number.NaN : Date.parse(chat.readThrough)
+  const range = Number.isNaN(readThrough) ? IDBKeyRange.bound([chat.id, -Infinity], [chat.id, Infinity]) : IDBKeyRange.bound([chat.id, readThrough], [chat.id, Infinity], true)
+  return (await tx.objectStore('chatMessages').index('byChat').getAll(range)).filter((row) => !row.message.fromMe).length
+}
+
+async function writeChat(tx: ChatTx, chat: SyncedChat): Promise<void> {
+  const store = tx.objectStore('chats')
+  const lastMessageAt = chatInstant(chat.lastMessageAt, 'lastMessageAt')
+  // One chat per account and JID: another one with this JID was removed and made again, so it goes with what it held.
+  const other = await store.index('byJid').get([chat.chatAccountId, chat.jid])
+  if (other !== undefined && other.id !== chat.id) {
+    await deleteChat(tx, other.id)
+  }
+  await store.put({ id: chat.id, chatAccountId: chat.chatAccountId, jid: chat.jid, leftOut: chat.leftOut ? 1 : 0, lastMessageAt, chat })
+}
+
+async function writeChatMessage(tx: ChatTx, message: SyncedChatMessage): Promise<void> {
+  await tx.objectStore('chatMessages').put({ id: message.id, chatId: message.chatId, chatAccountId: message.chatAccountId, sentAt: chatInstant(message.sentAt, 'sentAt'), message })
+}
+
+async function writeChatOutgoing(tx: ChatTx, row: SyncedChatOutgoing): Promise<void> {
+  chatInstant(row.createdAt, 'createdAt')
+  await tx.objectStore('chatOutgoing').put(row)
+}
+
+async function deleteChat(tx: ChatTx, chatId: string): Promise<void> {
+  const messages = tx.objectStore('chatMessages').index('byChat')
+  for (let cursor = await messages.openCursor(IDBKeyRange.bound([chatId, -Infinity], [chatId, Infinity])); cursor !== null; cursor = await cursor.continue()) {
+    await cursor.delete()
+  }
+  const outgoing = tx.objectStore('chatOutgoing').index('byChat')
+  for (let cursor = await outgoing.openCursor(chatId); cursor !== null; cursor = await cursor.continue()) {
+    await cursor.delete()
+  }
+  await tx.objectStore('chats').delete(chatId)
+}
+
+async function deleteChatAccount(tx: ChatTx, accountId: string): Promise<void> {
+  // By account, not through its chats: a message stored before its chat arrived goes too.
+  for (const store of ['chatMessages', 'chatOutgoing', 'chats'] as const) {
+    const index = tx.objectStore(store).index('byAccount')
+    for (let cursor = await index.openCursor(accountId); cursor !== null; cursor = await cursor.continue()) {
+      await cursor.delete()
+    }
+  }
+  await tx.objectStore('chatAccounts').delete(accountId)
 }

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openDB } from 'idb'
-import { accounts, describeMailStore, page, signature } from '@tresso/core/testing'
+import { accounts, chat, chatAccount, chatMessage, chatOutgoing, describeMailStore, page, signature } from '@tresso/core/testing'
 import { databaseName, deleteMailDatabase, IndexedDbMailStore } from '../db'
 
 const USER = 'user-1'
@@ -34,6 +34,32 @@ describe('IndexedDbMailStore', () => {
 
     expect(await db.cursor()).toBe(0)
     expect(await db.mailAccounts()).toEqual([])
+    await db.close()
+  })
+
+  it('takes the chats with it when the copy is deleted at sign-out', async () => {
+    const at = '2026-11-12T10:00:00+00:00'
+    let db = await IndexedDbMailStore.open(USER)
+    await db.apply(
+      page({
+        cursor: 10,
+        chatAccounts: [chatAccount('acct')],
+        chats: [chat('anna', 'acct', { lastMessageAt: at })],
+        chatMessages: [chatMessage('a1', 'anna', 'acct', at)],
+        chatOutgoing: [chatOutgoing('r1', 'anna', 'acct')],
+      }),
+    )
+    await db.setChatMeta('cursor', '812')
+    await db.close()
+
+    await deleteMailDatabase(USER)
+    db = await IndexedDbMailStore.open(USER)
+
+    expect(await db.chatAccounts()).toEqual([])
+    expect(await db.chats()).toEqual([])
+    expect(await db.chat('anna')).toBeNull()
+    expect(await db.waitingOutgoing()).toEqual([])
+    expect(await db.chatMeta('cursor')).toBeNull()
     await db.close()
   })
 })
