@@ -9,6 +9,7 @@ use App\Entity\ProviderAuthorizationRequest;
 use App\Entity\ProviderGrant;
 use App\Realtime\MercureTokens;
 use App\Tests\Support\RecordingMercureHub;
+use PHPUnit\Framework\Attributes\TestWith;
 
 /**
  * Connecting Gmail and Microsoft 365 accounts through the providers' OAuth flow, with the token endpoints mocked.
@@ -483,6 +484,43 @@ final class ProviderConnectTest extends DatabaseTestCase
         self::assertInstanceOf(RecordingMercureHub::class, $hub);
         $woken = array_filter($hub->takePublished(), static fn (array $update): bool => MercureTokens::OUTBOX_TOPIC === $update['body']['topic']);
         self::assertSame([json_encode(['mailAccountId' => $id])], array_values(array_map(static fn (array $update): string => $update['body']['data'], $woken)));
+    }
+
+    /**
+     * A calendar that failed or was refused before is looked at again by the worker at every heartbeat, not only on the
+     * one realtime message.
+     */
+    #[TestWith(['error'])]
+    #[TestWith(['auth_failed'])]
+    #[TestWith(['not_granted'])]
+    public function testSigningInAgainWithCalendarsPutsEveryCalendarProblemBackToUnknown(string $before): void
+    {
+        $account = $this->connectGoogle();
+        $id = $account->getId()->toRfc4122();
+        $this->connection()->executeStatement('UPDATE mail_account SET calendar_status = :status, calendar_status_detail = :detail', ['status' => $before, 'detail' => 'x']);
+
+        $query = $this->start('google', $id, ['calendar']);
+        $this->googleTokens(access: 'google-access-2', refresh: null, scope: 'openid '.self::GMAIL_SCOPE.' '.self::GOOGLE_CALENDAR_SCOPES);
+
+        self::assertSame(self::WEB.'/settings/accounts?provider=google&connected='.$id, $this->returnFromProvider('google', $query['state'], 'code-2'));
+        $this->entityManager()->clear();
+        $account = $this->onlyAccount();
+        self::assertSame('unknown', $account->getCalendarStatus()->value);
+        self::assertNull($account->getCalendarStatusDetail());
+    }
+
+    public function testSigningInAgainWithCalendarsKeepsAnActiveCalendar(): void
+    {
+        $account = $this->connectGoogle();
+        $id = $account->getId()->toRfc4122();
+        $this->connection()->executeStatement("UPDATE mail_account SET calendar_status = 'active', calendar_status_detail = NULL");
+
+        $query = $this->start('google', $id, ['calendar']);
+        $this->googleTokens(access: 'google-access-2', refresh: null, scope: 'openid '.self::GMAIL_SCOPE.' '.self::GOOGLE_CALENDAR_SCOPES);
+
+        self::assertSame(self::WEB.'/settings/accounts?provider=google&connected='.$id, $this->returnFromProvider('google', $query['state'], 'code-2'));
+        $this->entityManager()->clear();
+        self::assertSame('active', $this->onlyAccount()->getCalendarStatus()->value);
     }
 
     public function testCalendarsAloneNeedAConnectedAccount(): void

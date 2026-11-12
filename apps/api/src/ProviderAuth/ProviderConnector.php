@@ -300,7 +300,11 @@ final readonly class ProviderConnector
             }
 
             if (\in_array(ProviderFeature::Calendar, $covered, true)) {
-                if (CalendarSyncStatus::NotGranted === $mailAccount->getCalendarStatus()) {
+                // Any status but `active` (a refused list, a refused token, a missing permission) becomes `unknown`, so
+                // every heartbeat names the account until the worker listed the calendars, even when the realtime
+                // message below is missed. The accepted list then makes it `active`.
+                $calendarStatus = $mailAccount->getCalendarStatus();
+                if (CalendarSyncStatus::Active !== $calendarStatus && CalendarSyncStatus::Unknown !== $calendarStatus) {
                     $mailAccount->setCalendarStatus(CalendarSyncStatus::Unknown);
                     $this->entityManager->flush();
                 }
