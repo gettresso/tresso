@@ -19,7 +19,7 @@ import {
   timeline,
   unreadCount,
 } from './format'
-import type { ChatMedia, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from './types'
+import type { ChatMediaKind, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from './types'
 
 function chat(extra: Partial<SyncedChat> = {}): SyncedChat {
   return {
@@ -60,12 +60,15 @@ function message(id: string, extra: Partial<SyncedChatMessage> = {}): SyncedChat
   return {
     id,
     chatId: 'chat-1',
+    chatAccountId: 'account-1',
     waId: `wa-${id}`,
     fromMe: false,
     sender: null,
     text: `Text ${id}`,
     sentAt: '2026-11-12T10:00:00+00:00',
-    media: null,
+    mediaKind: null,
+    mediaName: null,
+    mediaSize: null,
     ...extra,
   }
 }
@@ -74,17 +77,19 @@ function outgoing(id: string, extra: Partial<SyncedChatOutgoing> = {}): SyncedCh
   return {
     id,
     chatId: 'chat-1',
+    chatAccountId: 'account-1',
     text: `Reply ${id}`,
     status: 'sent',
     error: null,
     createdAt: '2026-11-12T10:00:00+00:00',
+    claimedAt: null,
     sentAt: '2026-11-12T10:00:05+00:00',
     ...extra,
   }
 }
 
-function media(kind: ChatMedia['kind'], name = 'file'): ChatMedia {
-  return { kind, name, size: 1024 }
+function media(kind: ChatMediaKind, name = 'file'): Pick<SyncedChatMessage, 'mediaKind' | 'mediaName' | 'mediaSize'> {
+  return { mediaKind: kind, mediaName: name, mediaSize: 1024 }
 }
 
 describe('chatKindOf', () => {
@@ -180,18 +185,18 @@ describe('previewLine', () => {
   })
 
   it('names media without text', () => {
-    expect(previewLine(chat(), message('1', { text: '', media: media('image') }))).toBe('Photo')
-    expect(previewLine(chat(), message('1', { text: '', media: media('video') }))).toBe('Video')
-    expect(previewLine(chat(), message('1', { text: '', media: media('audio') }))).toBe('Voice message')
-    expect(previewLine(chat(), message('1', { text: '', media: media('document', 'Offer.pdf') }))).toBe(
+    expect(previewLine(chat(), message('1', { text: '', ...media('image') }))).toBe('Photo')
+    expect(previewLine(chat(), message('1', { text: '', ...media('video') }))).toBe('Video')
+    expect(previewLine(chat(), message('1', { text: '', ...media('audio') }))).toBe('Voice message')
+    expect(previewLine(chat(), message('1', { text: '', ...media('document', 'Offer.pdf') }))).toBe(
       'File: Offer.pdf',
     )
-    const fromAnna = message('1', { text: '', media: media('image'), sender: { id: '1', name: 'Anna' } })
+    const fromAnna = message('1', { text: '', ...media('image'), sender: { id: '1', name: 'Anna' } })
     expect(previewLine(group, fromAnna)).toBe('\u2068Anna\u2069: Photo')
   })
 
   it('keeps the text of media with a caption', () => {
-    expect(previewLine(chat(), message('1', { text: 'The view', media: media('image') }))).toBe('The view')
+    expect(previewLine(chat(), message('1', { text: 'The view', ...media('image') }))).toBe('The view')
   })
 
   it('is empty without a message', () => {
@@ -424,7 +429,7 @@ describe('audit fixes', () => {
       const photo = message('p', {
         fromMe: true,
         text: '',
-        media: media('image'),
+        ...media('image'),
         sentAt: '2026-11-12T10:00:01+00:00',
       })
       expect(ids(timeline([photo], [outgoing('a', { text: '  ', sentAt: '2026-11-12T10:00:00+00:00' })]))).toEqual([
@@ -508,7 +513,7 @@ describe('audit fixes', () => {
         expect(accountSubtitle(account({ relayDeviceName: invisible }), 'device-phone')).toBe(
           '+31698765432, via another device',
         )
-        expect(previewLine(chat(), message('1', { text: '', media: media('document', invisible) }))).toBe('File')
+        expect(previewLine(chat(), message('1', { text: '', ...media('document', invisible) }))).toBe('File')
       }
     })
 
@@ -535,14 +540,14 @@ describe('audit fixes', () => {
     })
 
     it('shows the media label for whitespace-only text', () => {
-      expect(previewLine(chat(), message('1', { text: ' \n ', media: media('image') }))).toBe('Photo')
+      expect(previewLine(chat(), message('1', { text: ' \n ', ...media('image') }))).toBe('Photo')
       expect(previewLine(chat(), message('1', { text: ' \n ' }))).toBe('')
     })
 
     it('says File for a document without a name and for an unknown kind', () => {
-      expect(previewLine(chat(), message('1', { text: '', media: media('document', ' ') }))).toBe('File')
-      const unknown = { kind: 'sticker', name: 'x', size: null } as unknown as ChatMedia
-      expect(previewLine(chat(), message('1', { text: '', media: unknown }))).toBe('File')
+      expect(previewLine(chat(), message('1', { text: '', ...media('document', ' ') }))).toBe('File')
+      const unknown = { mediaKind: 'sticker' as unknown as ChatMediaKind, mediaName: 'x', mediaSize: null }
+      expect(previewLine(chat(), message('1', { text: '', ...unknown }))).toBe('File')
     })
   })
 

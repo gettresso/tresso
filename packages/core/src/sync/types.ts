@@ -2,6 +2,7 @@
 
 import type { BuiltinCategory, Verdict } from '../domain'
 import type { SyncedCalendar, SyncedCalendarEvent } from '../calendar/types'
+import type { SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from '../chat/types'
 import type { SyncedEventNote, SyncedMailNotification, SyncedNotification } from '../notifications'
 
 export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'spam' | 'archive' | 'all' | 'custom'
@@ -289,6 +290,12 @@ export type DeletedType =
   | 'todo'
   | 'handOver'
   | 'dailyBrief'
+  /** Removes its chats, their messages and replies too. */
+  | 'chatAccount'
+  /** Removes its messages and replies too. */
+  | 'chat'
+  | 'chatMessage'
+  | 'chatOutgoing'
 
 export type DraftKind = 'new' | 'reply' | 'replyAll' | 'forward'
 
@@ -365,6 +372,15 @@ export interface ChangePage {
   handOvers: SyncedHandOver[]
   /** Absent from servers made before daily briefs. */
   dailyBriefs?: SyncedDailyBrief[]
+  /**
+   * Chats reach only Tresso's own apps and tokens with `chat:read`; for others the lists come empty. Absent from
+   * servers made before chats.
+   */
+  chatAccounts?: SyncedChatAccount[]
+  chats?: SyncedChat[]
+  chatMessages?: SyncedChatMessage[]
+  /** Never lists a cancelled reply. */
+  chatOutgoing?: SyncedChatOutgoing[]
   deleted: Deleted[]
 }
 
