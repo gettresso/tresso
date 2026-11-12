@@ -181,12 +181,12 @@ final class MailAccountApiTest extends DatabaseTestCase
         $entityManager->clear();
         $account = $this->account($id);
         self::assertNull($account->getLeasedBy(), 'The lease of the worker that held the account has ended.');
-        self::assertGreaterThan(new \DateTimeImmutable(), $account->getLeaseExpiresAt());
+        self::assertGreaterThan(new \DateTimeImmutable('now', new \DateTimeZone('UTC')), $account->getLeaseExpiresAt());
 
         self::assertSame([], $this->lease('w1', $worker), 'The holder no longer gets it back, so it stops its syncer.');
         self::assertSame([], $this->lease('w2', $worker), 'Nobody takes it while the old syncer stops.');
 
-        $this->connection()->executeStatement("UPDATE mail_account SET lease_expires_at = now() - interval '1 second'");
+        $this->connection()->executeStatement('UPDATE mail_account SET lease_expires_at = :past', ['past' => new \DateTimeImmutable('-1 second', new \DateTimeZone('UTC'))->format('Y-m-d H:i:s')]);
         self::assertSame([$id], $this->lease('w1', $worker), 'Once the hold ends a fresh session starts.');
     }
 

@@ -186,7 +186,8 @@ final readonly class MailAccountProcessor implements ProcessorInterface
         // continues with the new settings is reported again. The old failure no longer says anything about them.
         $changesConnection = null !== $input->password || null !== $input->imap || null !== $input->smtp || null !== $input->username;
         if ($changesConnection) {
-            $account->restartSync(new \DateTimeImmutable(\sprintf('+%d seconds', AccountLeaser::LEASE_SECONDS)));
+            // In UTC, as the leaser compares lease times.
+            $account->restartSync(new \DateTimeImmutable(\sprintf('+%d seconds', AccountLeaser::LEASE_SECONDS), new \DateTimeZone('UTC')));
             if (\in_array($account->getStatus(), [MailAccountStatus::AuthFailed, MailAccountStatus::Error], true)) {
                 $account->setStatus(MailAccountStatus::Active);
             }
