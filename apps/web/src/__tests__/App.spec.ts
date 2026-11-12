@@ -105,6 +105,8 @@ describe('App', () => {
     const wrapper = mount(App, { global: { plugins: [router] } })
     const mail = useMailStore()
     const syncNow = vi.spyOn(mail, 'syncNow').mockResolvedValue()
+    // A copy that syncs, whose pull failed.
+    mail.synced = true
     mail.syncState = 'error'
     mail.syncError = 'The server could not be reached'
     await flushPromises()
@@ -326,6 +328,27 @@ describe('App', () => {
       expect(wrapper.text()).toContain('Showing mail kept on this device. Tresso is still connecting.')
       expect(wrapper.text()).not.toContain('could not start')
       expect(wrapper.findAll('button').some((button) => button.text() === 'Try again')).toBe(true)
+      vi.unstubAllGlobals()
+    })
+
+    it('starts again from the sync error when the copy could not be opened again', async () => {
+      const { router, start } = await signedIn([answered, answered])
+      const wrapper = mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(start).toHaveBeenCalledOnce()
+      const mail = useMailStore()
+      mail.syncState = 'error'
+      mail.syncError = 'The mail on this device was removed elsewhere and could not be opened again: refused'
+      await flushPromises()
+
+      await wrapper.findAll('button').find((button) => button.text() === 'Try again')!.trigger('click')
+      await flushPromises()
+
+      // The user is known now: the copy opens to be read, then the start confirms it.
+      expect(start.mock.calls.slice(1)).toEqual([
+        ['user-1', { confirmed: false }],
+        ['user-1', { confirmed: true }],
+      ])
       vi.unstubAllGlobals()
     })
 
