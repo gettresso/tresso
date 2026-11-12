@@ -6,7 +6,7 @@ import { askView, forgetViewRequests } from '@/components/viewRequests'
  * The actions of the desktop app's menu bar that act in the web client (apps/desktop/src-tauri/src/menu.rs, which a
  * test keeps to this list). The shell sends each as the `menu` event with its name.
  */
-export const MENU_ACTIONS = ['new-message', 'new-event', 'new-todo', 'settings', 'find', 'view-inbox', 'view-triage', 'view-todos', 'view-calendar', 'view-search'] as const
+export const MENU_ACTIONS = ['new-message', 'new-event', 'new-todo', 'settings', 'find', 'view-inbox', 'view-triage', 'view-todos', 'view-calendar', 'view-search', 'reload'] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
 
@@ -24,10 +24,19 @@ export interface MenuTargets {
   newMessage(): void
   /** Whether someone is signed in and may use the app; the menu's items follow it. */
   signedIn(): boolean
+  /** Loads the app again once the draft is saved and nothing is on its way (updates.reloadApp). */
+  reload(): Promise<void>
 }
 
-/** Runs one action of the menu bar. Nothing happens while nobody is signed in (the shell disables them then too). */
+/**
+ * Runs one action of the menu bar. Only Reload acts while nobody is signed in; the others do nothing then (the shell
+ * disables them too).
+ */
 export async function runMenuAction(action: MenuAction, targets: MenuTargets): Promise<void> {
+  if (action === 'reload') {
+    await targets.reload()
+    return
+  }
   if (!targets.signedIn()) {
     return
   }

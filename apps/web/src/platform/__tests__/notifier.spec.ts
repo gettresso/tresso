@@ -1,23 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const sent = vi.hoisted(() => [] as Record<string, unknown>[])
-const listening = vi.hoisted(() => ({ fails: false }))
+const listening = vi.hoisted(() => ({ fails: false, click: null as ((event: { actionId: string; notification?: { extra?: Record<string, unknown> } }) => void) | null }))
+const shown = vi.hoisted(() => ({ count: 0, order: [] as string[] }))
 
-vi.mock('@/platform/desktop', () => ({ isDesktop: true }))
-vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ unminimize: async () => {}, setFocus: async () => {} }) }))
+vi.mock('@/platform/desktop', () => ({
+  isDesktop: true,
+  showMainWindow: async () => {
+    shown.count += 1
+    shown.order.push('show')
+  },
+}))
 vi.mock('@tauri-apps/plugin-notification', () => ({
   isPermissionGranted: async () => true,
   requestPermission: async () => 'granted',
-  onAction: async () => {
+  onAction: async (handler: (event: { actionId: string; notification?: { extra?: Record<string, unknown> } }) => void) => {
     if (listening.fails) {
       throw new Error('not allowed')
     }
+    listening.click = handler
     return { unregister: async () => {} }
   },
   sendNotification: (options: Record<string, unknown>) => sent.push(options),
 }))
 
-const { clickedPath, desktopSound, notifier, startNotificationClicks } = await import('../notifier')
+const { clickedPath, desktopSound, notifier, onNotificationClick, startNotificationClicks } = await import('../notifier')
 
 describe('clickedPath', () => {
   it('opens the path a desktop notification carries, only within the app', () => {
@@ -61,5 +68,21 @@ describe('startNotificationClicks', () => {
 
     await vi.waitFor(() => expect(report).toHaveBeenCalledWith(new Error('not allowed')))
     listening.fails = false
+  })
+})
+
+describe('a click on a notification', () => {
+  it('brings a closed or minimized window back through the shell, then opens what it is about', async () => {
+    shown.count = 0
+    shown.order = []
+    const open = vi.fn<(path: string) => void>((path) => void shown.order.push(`open ${path}`))
+    await onNotificationClick(open)
+
+    listening.click!({ actionId: 'tap', notification: { extra: { path: '/thread/t1' } } })
+
+    expect(shown.count).toBe(1)
+    expect(shown.order).toEqual(['show', 'open /thread/t1'])
+    listening.click!({ actionId: 'dismiss' })
+    expect(shown.count).toBe(1)
   })
 })

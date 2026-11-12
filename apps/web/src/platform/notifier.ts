@@ -1,6 +1,5 @@
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { isPermissionGranted, onAction, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
-import { isDesktop } from '@/platform/desktop'
+import { isDesktop, showMainWindow } from '@/platform/desktop'
 import type { MailNotification } from '@/mail/mailNotifications'
 
 /** Shows notifications outside the app. */
@@ -59,8 +58,8 @@ export async function onNotificationClick(open: (path: string) => void): Promise
     if (event.actionId !== 'tap') {
       return
     }
-    const window = getCurrentWindow()
-    void window.unminimize().then(() => window.setFocus())
+    // Also from a window that was closed (hidden) on macOS; the conversation opens in it.
+    showMainWindow().catch((error: unknown) => console.error('Showing the window failed', error))
     const path = clickedPath(event.notification?.extra)
     if (path !== null) {
       open(path)

@@ -317,6 +317,43 @@ describe('updates store', () => {
     expect(platform.restarts).toBe(0)
   })
 
+  it('reloads from the menu bar only once the draft is saved and the files on their way are attached', async () => {
+    const reload = vi.fn<() => void>()
+    vi.stubGlobal('location', { ...window.location, reload })
+    try {
+      compose.unfinished = 'files'
+      const updates = useUpdatesStore()
+      const reloading = updates.reloadApp()
+      await vi.waitFor(() => expect(updates.phase).toBe('waiting'))
+      expect(compose.saves).toBe(1)
+      expect(reload).not.toHaveBeenCalled()
+
+      compose.unfinished = null
+      await reloading
+
+      expect(compose.saves).toBe(2)
+      expect(reload).toHaveBeenCalledOnce()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('does not reload when the draft cannot be saved, and says why', async () => {
+    const reload = vi.fn<() => void>()
+    vi.stubGlobal('location', { ...window.location, reload })
+    try {
+      compose.saveFails = true
+      const updates = useUpdatesStore()
+
+      await updates.reloadApp()
+
+      expect(reload).not.toHaveBeenCalled()
+      expect(updates.error).toBe('The draft could not be saved, so Tresso did not reload: disk full')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('lets Sparkle relaunch once the draft is saved (macOS)', async () => {
     platform.channel = 'sparkle'
     const updates = useUpdatesStore()

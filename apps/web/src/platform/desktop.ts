@@ -34,6 +34,14 @@ export function clearKeychainTokens(): Promise<void> {
   return inOrder(() => invoke('clear_tokens'))
 }
 
+/**
+ * Brings the app's window to the front, also when it was closed (on macOS that only hides it) or minimized. Done by the
+ * shell: the window itself may not show itself again, and a hidden one does nothing on unminimize.
+ */
+export function showMainWindow(): Promise<void> {
+  return invoke('show_main_window_command')
+}
+
 export function openInBrowser(url: string): Promise<void> {
   return openUrl(url)
 }
