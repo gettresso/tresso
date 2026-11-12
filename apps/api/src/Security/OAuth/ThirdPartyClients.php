@@ -14,14 +14,21 @@ final class ThirdPartyClients
 {
     public const array GRANT_TYPES = ['authorization_code', 'refresh_token'];
 
-    /** @return list<string> */
+    /**
+     * The scopes offered to apps that are not ours (the metadata lists them, and an app that names none may ask for
+     * them).
+     *
+     * @return list<string>
+     */
     public static function scopeValues(): array
     {
         return array_map(static fn (Scope $scope): string => $scope->value, Scope::thirdPartyAppScopes());
     }
 
+    /** Whether an app that is not ours may ask for $scope: one offered, or a chat scope it names itself. */
     public static function mayAskFor(string $scope): bool
     {
-        return \in_array($scope, self::scopeValues(), true);
+        return \in_array($scope, self::scopeValues(), true)
+            || \in_array($scope, array_map(static fn (Scope $chat): string => $chat->value, Scope::chatScopes()), true);
     }
 }

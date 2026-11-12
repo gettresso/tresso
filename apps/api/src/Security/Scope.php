@@ -23,6 +23,8 @@ enum Scope: string
     case TeamsRead = 'teams:read';
     case TeamsWrite = 'teams:write';
     case WebhooksManage = 'webhooks:manage';
+    case ChatRead = 'chat:read';
+    case ChatSend = 'chat:send';
     case SyncLease = 'sync:lease';
     case SyncIngest = 'sync:ingest';
     case SyncCredentials = 'sync:credentials';
@@ -41,6 +43,8 @@ enum Scope: string
     public const string ROLE_SETTINGS_WRITE = 'ROLE_OAUTH2_SETTINGS:WRITE';
     public const string ROLE_SIGNATURES_READ = 'ROLE_OAUTH2_SIGNATURES:READ';
     public const string ROLE_SIGNATURES_WRITE = 'ROLE_OAUTH2_SIGNATURES:WRITE';
+    public const string ROLE_CHAT_READ = 'ROLE_OAUTH2_CHAT:READ';
+    public const string ROLE_CHAT_SEND = 'ROLE_OAUTH2_CHAT:SEND';
     public const string ROLE_SYNC_LEASE = 'ROLE_OAUTH2_SYNC:LEASE';
     public const string ROLE_SYNC_INGEST = 'ROLE_OAUTH2_SYNC:INGEST';
     public const string ROLE_SYNC_CREDENTIALS = 'ROLE_OAUTH2_SYNC:CREDENTIALS';
@@ -57,8 +61,8 @@ enum Scope: string
     }
 
     /**
-     * What a personal access token may hold: the user scopes, without those reserved for features not built yet. Never
-     * a sync scope.
+     * What a personal access token may hold: the user scopes, without those reserved for features not built yet and
+     * without the chat scopes. Never a sync scope.
      *
      * @return list<self>
      */
@@ -66,13 +70,28 @@ enum Scope: string
     {
         return array_values(array_filter(
             self::userScopes(),
-            static fn (self $scope): bool => !\in_array($scope, [self::TeamsRead, self::TeamsWrite, self::WebhooksManage], true),
+            static fn (self $scope): bool => !\in_array($scope, [self::TeamsRead, self::TeamsWrite, self::WebhooksManage, ...self::chatScopes()], true),
         ));
     }
 
     /**
-     * What an app that is not ours (registered through dynamic client registration, such as an MCP client) may ask
-     * for: the same as a personal access token. Never a sync scope, and never the scopes of features not built yet.
+     * WhatsApp chats are private: only these scopes reach them for a caller that is not one of our own apps, and no
+     * other scope implies them, so no grant from before gains them. An app that is not ours may ask for them by name
+     * ({@see \App\Security\OAuth\ThirdPartyClients::mayAskFor()}), the user then sees them on the consent screen;
+     * they are not advertised in the metadata, nor offered for personal access tokens, until the MCP tools for chats
+     * exist.
+     *
+     * @return list<self>
+     */
+    public static function chatScopes(): array
+    {
+        return [self::ChatRead, self::ChatSend];
+    }
+
+    /**
+     * What an app that is not ours (registered through dynamic client registration, such as an MCP client) is offered
+     * and may ask for without naming a scope: the same as a personal access token. Never a sync scope, and never the
+     * scopes of features not built yet. It may also ask for the {@see chatScopes()} by name.
      *
      * @return list<self>
      */
@@ -101,6 +120,8 @@ enum Scope: string
             self::TeamsRead => 'See teams',
             self::TeamsWrite => 'Change teams',
             self::WebhooksManage => 'Manage webhooks',
+            self::ChatRead => 'Read your WhatsApp chats',
+            self::ChatSend => 'Send WhatsApp messages as you',
             self::SyncLease, self::SyncIngest, self::SyncCredentials => 'Sync mail for the server',
         };
     }
@@ -123,6 +144,8 @@ enum Scope: string
             self::TeamsRead => 'See your teams.',
             self::TeamsWrite => 'Change your teams.',
             self::WebhooksManage => 'Add, change and delete webhooks.',
+            self::ChatRead => 'Read the WhatsApp chats and messages your Mac passes on to Tresso, and the replies waiting to go out.',
+            self::ChatSend => 'Write replies in your WhatsApp chats; your Mac sends them from your WhatsApp.',
             self::SyncLease, self::SyncIngest, self::SyncCredentials => 'Fetch and store mail as the server does.',
         };
     }

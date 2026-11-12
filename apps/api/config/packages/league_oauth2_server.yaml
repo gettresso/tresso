@@ -26,6 +26,8 @@ league_oauth2_server:
             - 'teams:read'
             - 'teams:write'
             - 'webhooks:manage'
+            - 'chat:read'
+            - 'chat:send'
             - 'sync:lease'
             - 'sync:ingest'
             - 'sync:credentials'

@@ -19,6 +19,9 @@ final class FirstPartyClients
     /** Security attribute: the request comes from one of our own apps, on behalf of a user. */
     public const string ATTRIBUTE = 'FIRST_PARTY_CLIENT';
 
+    /** Security attribute: the request comes from our desktop app, on behalf of a user (it alone relays chats). */
+    public const string DESKTOP_ATTRIBUTE = 'DESKTOP_CLIENT';
+
     public const array IDENTIFIERS = [
         BootstrapOAuthClientsCommand::WEB,
         BootstrapOAuthClientsCommand::DESKTOP,
@@ -39,5 +42,13 @@ final class FirstPartyClients
         return $token instanceof OAuth2Token
             && !$token instanceof PersonalAccessTokenAuthentication
             && self::isFirstParty($token->getOAuthClientId());
+    }
+
+    /** Whether the request was signed with an OAuth2 access token issued to our desktop app. */
+    public static function signedByDesktop(?TokenInterface $token): bool
+    {
+        return self::signedRequest($token)
+            && $token instanceof OAuth2Token
+            && BootstrapOAuthClientsCommand::DESKTOP === $token->getOAuthClientId();
     }
 }
