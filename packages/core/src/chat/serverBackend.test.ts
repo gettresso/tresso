@@ -6,6 +6,7 @@ import {
   ChatApiError,
   RELAY_MAX_BYTES,
   RELAY_MAX_CHATS,
+  RELAY_MAX_FIELD,
   RELAY_MAX_MESSAGES,
   chatApiFailure,
   type ChatApi,
@@ -31,6 +32,7 @@ import {
   type RelayProgress,
 } from './relay'
 import {
+  ChatRelayImportStuck,
   RELAY_MAX_REFUSED,
   RELAY_MIN_BATCH_BYTES,
   ServerChatBackend,
@@ -464,7 +466,7 @@ describe('ServerChatBackend', () => {
       expect(api.messageCalls()[1]!.chats.map((relayed) => relayed.jid)).toEqual([DIRECT])
     })
 
-    it('refuses a message whose chat the server does not know when its entry was refused', async () => {
+    it('rejects instead of refusing a message the server refuses only because its chat entry had to be left out', async () => {
       api.onMessages = (request) => {
         const index = request.chats.findIndex((relayed) => relayed.jid === OTHER)
         if (index !== -1) {
@@ -473,10 +475,31 @@ describe('ServerChatBackend', () => {
         return undefined
       }
 
-      const counts = await backend.ingest([directChat(DIRECT), directChat(OTHER)], [incoming('A1', DIRECT), incoming('B1', OTHER)], false)
+      // The fake's own rule then answers 422 on messages[1].chatJid: the client's doing, so nothing is passed over.
+      const error: unknown = await backend.ingest([directChat(DIRECT), directChat(OTHER)], [incoming('A1', DIRECT), incoming('B1', OTHER)], false).catch((caught: unknown) => caught)
 
-      // The fake's own rule: 422 on messages[1].chatJid, which is then refused.
-      expect(counts).toEqual({ stored: 1, known: 0, leftOut: 0, refused: 1 })
+      expect(error).toBeInstanceOf(ChatRelayImportStuck)
+      expect(error).toMatchObject({ reason: 'chat_refused', refused: 1 })
+      expect(api.stored.has(`${OTHER}\nB1`)).toBe(false)
+      expect(problems).toEqual([])
+    })
+
+    it('sends a chat entry refused for its name alone again without a name', async () => {
+      api.onMessages = (request) => {
+        const index = request.chats.findIndex((relayed) => relayed.jid === OTHER && relayed.name !== null)
+        if (index !== -1) {
+          throw new ChatApiError(422, 'Validation failed.', null, null, { [`chats[${index}].name`]: 'This value is too long.' })
+        }
+        return undefined
+      }
+
+      const counts = await backend.ingest([directChat(DIRECT), directChat(OTHER, 'Bad name')], [incoming('A1', DIRECT), incoming('B1', OTHER)], false)
+
+      expect(counts).toEqual({ stored: 2, known: 0, leftOut: 0, refused: 0 })
+      expect(api.messageCalls()[1]!.chats).toEqual([
+        { jid: DIRECT, name: 'Kim', kind: 'direct' },
+        { jid: OTHER, name: null, kind: 'direct' },
+      ])
     })
 
     it('rejects at once on a 422 with no paths, or one about the request rather than a row', async () => {
@@ -515,8 +538,51 @@ describe('ServerChatBackend', () => {
       messages[107] = incoming('B3', DIRECT)
       messages[157] = incoming('B4', DIRECT)
 
-      await expect(backend.ingest([directChat(DIRECT)], messages, false)).rejects.toThrow('More messages were refused')
+      const error: unknown = await backend.ingest([directChat(DIRECT)], messages, false).catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(ChatRelayImportStuck)
+      expect(error).toMatchObject({ reason: 'too_many_refused', refused: 4 })
+      expect(`${(error as Error).name} ${(error as Error).message}`).not.toMatch(/B1|31612345678/)
       expect(api.messageCalls()).toHaveLength(1)
+    })
+
+    it('tells of refused rows only when the ingest resolves, not for an attempt that rejected', async () => {
+      let bad = ['B1', 'B2']
+      api.onMessages = (request) => {
+        const index = request.messages.findIndex((message) => bad.includes(message.waId))
+        if (index !== -1) {
+          throw new ChatApiError(422, 'Validation failed.', null, null, { [`messages[${index}].text`]: 'This value is too long.' })
+        }
+        return undefined
+      }
+      const messages = ['M1', 'B1', 'M2', 'B2'].map((waId) => incoming(waId, DIRECT))
+      // One more refusal than allowed in the first attempt: rejected, nothing told.
+      bad = ['B1', 'B2', 'M1', 'M2']
+      await expect(backend.ingest([directChat(DIRECT)], messages, false)).rejects.toBeInstanceOf(ChatRelayImportStuck)
+      expect(problems).toEqual([])
+      expect(backend.problems.row_refused).toBe(0)
+
+      bad = ['B1', 'B2']
+      expect(await backend.ingest([directChat(DIRECT)], messages, false)).toMatchObject({ stored: 2, refused: 2 })
+      expect(problems).toEqual(['row_refused', 'row_refused'])
+      expect(backend.problems.row_refused).toBe(2)
+    })
+
+    it('cuts texts and names to 65,536 code points on a code point boundary', async () => {
+      const long = '😀'.repeat(RELAY_MAX_FIELD + 1)
+      const message = incoming('G1', GROUP, { text: long, sender: { id: '31611111111', name: long }, media: { kind: 'document', name: long, size: 1 } })
+
+      await backend.ingest([{ jid: GROUP, name: long, kind: 'group' }], [message], false)
+
+      const call = api.messageCalls()[0]!
+      const sentFields = [call.messages[0]!.text, call.messages[0]!.sender!.name!, call.messages[0]!.media!.name!, call.chats[0]!.name!]
+      for (const field of sentFields) {
+        expect([...field]).toHaveLength(RELAY_MAX_FIELD)
+        expect(field).toBe('😀'.repeat(RELAY_MAX_FIELD))
+        expect(new TextEncoder().encode(field).length).toBe(4 * RELAY_MAX_FIELD)
+      }
+      // At the limit nothing is cut.
+      await backend.ingest([directChat(DIRECT)], [incoming('A1', DIRECT, { text: 'é'.repeat(RELAY_MAX_FIELD) })], false)
+      expect(api.messageCalls()[1]!.messages[0]!.text).toHaveLength(RELAY_MAX_FIELD)
     })
 
     it('rejects when everything is answered 422 about its first row, after a few calls', async () => {
@@ -524,7 +590,7 @@ describe('ServerChatBackend', () => {
         throw new ChatApiError(422, 'Validation failed.', null, null, { 'messages[0].text': 'This value is too long.' })
       }
 
-      await expect(backend.ingest([directChat(DIRECT)], Array.from({ length: 500 }, (_, i) => incoming(`M${i}`, DIRECT)), false)).rejects.toThrow('More messages were refused')
+      await expect(backend.ingest([directChat(DIRECT)], Array.from({ length: 500 }, (_, i) => incoming(`M${i}`, DIRECT)), false)).rejects.toBeInstanceOf(ChatRelayImportStuck)
       expect(api.messageCalls()).toHaveLength(RELAY_MAX_REFUSED + 1)
     })
 
@@ -533,7 +599,7 @@ describe('ServerChatBackend', () => {
         throw new ChatApiError(413, 'Too large.', 'too_large')
       }
 
-      await expect(backend.ingest([directChat(DIRECT)], Array.from({ length: 500 }, (_, i) => incoming(`M${i}`, DIRECT)), false)).rejects.toThrow('More messages were refused')
+      await expect(backend.ingest([directChat(DIRECT)], Array.from({ length: 500 }, (_, i) => incoming(`M${i}`, DIRECT)), false)).rejects.toBeInstanceOf(ChatRelayImportStuck)
       // Halving 200 to 1 takes 8 calls, then a single message per call until one more than allowed.
       expect(api.messageCalls().length).toBeLessThanOrEqual(8 + RELAY_MAX_REFUSED + 1)
     })
@@ -991,7 +1057,7 @@ describe('ServerChatBackend', () => {
 
       expect(await backend.cursor()).toBeNull()
       expect(errors).toHaveLength(1)
-      expect((errors[0] as Error).message).toContain('More messages were refused')
+      expect(errors[0]).toBeInstanceOf(ChatRelayImportStuck)
     })
 
     it('pauses on a 429 in the middle of a page, keeps the cursor, and counts the page once when it goes through', async () => {
