@@ -5,7 +5,7 @@ import { draft } from '@tresso/core/testing'
 import { memorySql } from '@tresso/core/testing/sql'
 import { databaseName, deleteMailDatabase, IndexedDbMailStore } from '../db'
 
-const desktop = vi.hoisted(() => ({ on: true, files: new Map<string, Sql>(), deleted: [] as string[] }))
+const desktop = vi.hoisted(() => ({ on: true, files: new Map<string, Sql>(), deleted: [] as string[], listFails: false }))
 
 vi.mock('@/platform/desktop', () => ({
   get isDesktop() {
@@ -24,7 +24,12 @@ vi.mock('@/platform/desktopSql', () => ({
     desktop.files.delete(name)
   },
   // As the shell's sql_list: the names of the copies in its folder, no paths.
-  listDesktopSql: async () => [...desktop.files.keys()],
+  listDesktopSql: async () => {
+    if (desktop.listFails) {
+      throw new Error('Listing the mail copies failed: permission denied')
+    }
+    return [...desktop.files.keys()]
+  },
 }))
 
 const { copiesOnDevice, copyUserId, deleteMailStore, mailCopyName, openMailStore } = await import('../store')
@@ -180,7 +185,9 @@ describe('copiesOnDevice', () => {
 
   afterEach(async () => {
     desktop.on = true
+    desktop.listFails = false
     desktop.files.clear()
+    vi.restoreAllMocks()
     await deleteMailDatabase(anna)
   })
 
@@ -200,6 +207,14 @@ describe('copiesOnDevice', () => {
       ]),
     )
     expect(found).toHaveLength(3)
+  })
+
+  it('keeps the IndexedDB copies it found when the shell cannot list its folder', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    desktop.listFails = true
+    await (await IndexedDbMailStore.open(anna)).close()
+
+    expect(await copiesOnDevice()).toEqual([{ userId: anna, name: databaseName(anna) }])
   })
 
   it('asks the shell for nothing in the browser', async () => {
