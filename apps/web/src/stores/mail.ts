@@ -328,15 +328,6 @@ export const useMailStore = defineStore('mail', () => {
   async function beginSync(mine: number, database: MailStore): Promise<void> {
     syncing = true
     status.confirmed()
-    // Before the first pull, a copy updated to keep chats checks once whether it must fetch them from the start.
-    await backfillChats(database, () => auth.api<unknown[]>('/api/v1/chat-accounts')).catch((error: unknown) => {
-      if (mine === generation) {
-        console.error('Checking the server for chats failed; the next start asks again', error)
-      }
-    })
-    if (mine !== generation) {
-      return
-    }
     const current = new SyncEngine({
       store: database,
       pageSize: PAGE_SIZE,
@@ -357,6 +348,21 @@ export const useMailStore = defineStore('mail', () => {
       },
     })
     engine = current
+    // Beside the first pull, never before it (a request may hang for minutes): a copy updated to keep chats checks once
+    // whether the server holds any, and if so pulls again from the start. A resync asked while a pull runs makes the
+    // next pull begin from 0 (see resyncFromStart); rows are stored by id, so nothing is lost or stored twice.
+    void backfillChats(database, () => auth.api<unknown[]>('/api/v1/chat-accounts')).then(
+      (outcome) => {
+        if (outcome === 'resync' && engine === current) {
+          void pull(() => engine?.sync())
+        }
+      },
+      (error: unknown) => {
+        if (mine === generation) {
+          console.error('Checking the server for chats failed; the next start asks again', error)
+        }
+      },
+    )
     const stream = new RealtimeClient({
       // Aborted when the stream stops, so a sign-out does not wait for a token request that hangs.
       fetchAccess: (signal) => auth.api<RealtimeAccess>('/api/v1/realtime/token', { signal }),

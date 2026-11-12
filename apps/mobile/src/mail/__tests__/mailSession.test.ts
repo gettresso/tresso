@@ -125,13 +125,55 @@ describe('MailSession', () => {
     it('syncs from the start when the server holds a chat account', async () => {
       const { disk, asked, open } = run(async () => [{ id: 'acct' }])
       await markedCopy(disk)
+      const { mail } = open()
+
+      await mail.switchTo('kim')
+      await vi.waitFor(() => expect(asked).toContain(0))
+
+      expect(asked[0]).toBe(5)
+      await vi.waitFor(async () => expect(await mail.database!.cursor()).toBe(7))
+      expect(await mail.database!.chatMeta(CHAT_BACKFILL)).toBeNull()
+    })
+
+    it('does not hold back the mail while the check hangs', async () => {
+      const { disk, asked, open } = run(() => new Promise<never>(() => undefined))
+      await markedCopy(disk)
       const { mail, last } = open()
 
       await mail.switchTo('kim')
       await vi.waitFor(() => expect(last()).toMatchObject({ synced: true }))
 
-      expect(asked[0]).toBe(0)
-      expect(await mail.database!.chatMeta(CHAT_BACKFILL)).toBeNull()
+      expect(asked).toEqual([5])
+      expect(await mail.database!.chatMeta(CHAT_BACKFILL)).toBe('1')
+    })
+
+    it('pulls from the start when a chat account is reported while the first pull runs', async () => {
+      let answer!: (accounts: unknown[]) => void
+      const disk = device()
+      await markedCopy(disk)
+      const asked: number[] = []
+      let releasePage!: () => void
+      const firstPage = new Promise<void>((resolve) => (releasePage = resolve))
+      const fetchPage = async (since: number) => {
+        asked.push(since)
+        if (asked.length === 1) {
+          await firstPage
+          return page(6)
+        }
+        return page(since === 0 ? 7 : since, since === 0 ? { mailAccounts: [account] } : {})
+      }
+      const { mail } = session(disk, fetchPage, undefined, undefined, undefined, undefined, undefined, () => new Promise((resolve) => (answer = resolve)))
+
+      await mail.switchTo('kim')
+      await vi.waitFor(() => expect(asked).toEqual([5]))
+      answer([{ id: 'acct' }])
+      await vi.waitFor(async () => expect(await mail.database!.chatMeta(CHAT_BACKFILL)).toBeNull())
+      releasePage()
+
+      await vi.waitFor(() => expect(asked).toEqual([5, 0]))
+      // The page of the pull that began before the resync moved no cursor; the one from the start did.
+      await vi.waitFor(async () => expect(await mail.database!.cursor()).toBe(7))
+      expect((await mail.database!.mailAccounts()).map((a) => a.id)).toEqual(['work'])
     })
 
     it('keeps the mark for the next start when the check fails, and syncs on anyway', async () => {
