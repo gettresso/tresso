@@ -1322,6 +1322,19 @@ A signed-out visitor who follows a link into the app (a push notification opened
 sign-in screen; where they were going is kept in the tab (sessionStorage) across the trip to the authorization page,
 and the app opens there once signed in. Only paths inside the app are kept.
 
+The macOS app has a full menu bar (`apps/desktop/src-tauri/src/menu.rs`, described as data and tested for its order,
+ids and shortcuts): Tresso (About Tresso, Check for Updates…, Settings… ⌘,, Services, Hide Tresso ⌘H, Hide Others
+⌥⌘H, Show All, Quit Tresso ⌘Q), File (New Message ⌘N, New Event, New To-do, Close Window ⌘W), Edit (Undo, Redo, Cut,
+Copy, Paste, Paste and Match Style ⌥⇧⌘V, Delete, Select All, Find… ⌘F), View (Inbox, Triage, To-dos, Calendar,
+Search, Reload ⌘R, Enter Full Screen ⌃⌘F), Window (Minimize ⌘M, Zoom, Bring All to Front, Tresso ⌘0) and Help
+(Tresso Help, the README; Release Notes, the releases page). The standard items are AppKit's own, so they act on the
+focused web content; Paste and Match Style and Delete, which Tauri has no item for, are added natively. Items that act
+in the web client reach it as the `menu` event with the action's name, handled in one place
+(`apps/web/src/platform/menu.ts`), and are enabled through the one command `menu_state` while someone is signed in.
+Closing the window hides it and the app stays in the Dock; the Dock icon and Window > Tresso bring it back. The view
+switches have no shortcuts, because the web client has none for them; a Show/Hide Sidebar item waits for a sidebar that
+collapses. Windows and Linux keep no menu bar, as before.
+
 The desktop app runs the web client unchanged; only signing in and keeping the tokens go through the shell
 (`apps/web/src/platform/desktop.ts`). It is its own OAuth client (`desktop`) with the redirect URI
 `tresso://auth/callback`: sign-in opens the authorization page in the system browser, where the user's password
@@ -1533,7 +1546,25 @@ protocol, so every client syncs the same way:
   for dead and opened again, since a connection lost without being closed (a laptop that slept, a proxy that dropped
   it) never ends a read. The token answer says the heartbeat (`heartbeat`, seconds, from `MERCURE_HEARTBEAT_SECONDS`,
   which the Caddyfile gives the hub too; 40 by default); without it the client takes 100 s, and with a heartbeat of 0
-  only the token renewal ends a dead stream.
+  only the token renewal ends a dead stream. It says when a connection is being made (`onConnecting`), but not when it
+  only renews its token, which reopens the stream at once.
+- Every client opens the stream together with the first pull of a copy, not after it. The stream only carries cursors,
+  which make the engine pull again; pulls never overlap and a notification during one makes it go round once more, so
+  nothing is lost or stored twice, and the copy is live the moment the pull is done.
+- One sync status for every client (`packages/core/src/sync/status.ts`): `SyncStatusMachine` keeps what a client
+  knows (the copy opening or open, the sign-in confirmed, the engine's `PullProgress`, the stream, the network, the
+  last completed pull, an error) and `describeSync` says it in words, with a fraction when the server gives one:
+  "Opening your mail…", "Showing mail kept on this device" (before the sign-in is confirmed), "Getting your mail, 62%"
+  (a copy that never synced), "Updating your mail on this device after the update, 25%", "Catching up: 12,400 changes
+  to go" (a pull that began more than `BEHIND_CHANGES`, 1,000, change numbers behind, or of more than one page after
+  `STALE_AFTER_MS`, 30 minutes, away), "Up to date", "Connecting…" (only while the first connection is being made),
+  "Reconnecting… Last synced 14:02", "Offline. Last synced 14:02" and "Sync stopped. Last synced 14:02" (the banner
+  says "Sync stopped: " and the reason, from the same state). From a server that sends no `latest` the status counts
+  the items stored so far ("Syncing… 1,240 items so far"). While a sync is under way, or a copy that cannot sync has
+  not synced for 30 minutes, the mail lists show a quiet notice that what they show may be out of date. The web and
+  desktop clients show the status at the foot of the sidebar, with a thin progress line when the fraction is known and
+  a polite live region that speaks per quarter; the phone shows it under the inbox's title. The engine notes every
+  completed pull in the copy (`markSynced`), so "Last synced" holds after a restart.
 - `mailFrameDocument` wraps a sanitized body in the document for the sandboxed frame, with its Content-Security-Policy.
 
 Every client keeps a copy of the user's mail behind one interface, `MailStore` in `packages/core`: the browser in
@@ -1555,8 +1586,13 @@ both stores run the same tests (`describeMailStore`, exported as `@tresso/core/t
 
 The SQLite store writes one change at a time (a device may give each exclusive transaction its own connection without
 a busy timeout), refuses writes once closing and waits for the ones under way, and stores each page with its cursor
-in one transaction. A copy made by another schema version is dropped and rebuilt, keeping the drafts that exist only
-on the device. A resync (after a change the server refused could not be put back) makes the next pull start from the
+in one transaction. A copy of an older schema version is brought up to date in place when `MIGRATIONS` has a step for
+every version on the way (`MIGRATIONS[n]` brings version n to n + 1, all steps in one transaction); a step that adds
+data the old copy never stored asks for a sync from the start, which keeps the rows on screen and overwrites them page
+by page. A copy of a newer version, or one a step is missing for, is dropped and rebuilt, keeping the drafts that exist
+only on the device. Either way the store says so (`afterUpdate`), and the status says "Updating your mail on this
+device after the update" until that pull is done. The browser's store upgrades in place per IndexedDB version and syncs
+again from the start, which it says the same way. A resync (after a change the server refused could not be put back) makes the next pull start from the
 beginning, and holds across a restart and against a pull that was already running.
 
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
