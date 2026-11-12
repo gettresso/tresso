@@ -189,8 +189,15 @@ web, where the sign-out form already ended the browser session: it costs nothing
 form could not be sent). The sign-in pages then ask for the password although they may still remember the browser.
 
 Scopes: `mail:read`, `mail:write`, `mail:send`, `todos:read`, `todos:write`, `calendar:read`, `calendar:write`,
-`settings:read`, `settings:write`, `signatures:read`, `signatures:write`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
+`settings:read`, `settings:write`, `signatures:read`, `signatures:write`, `chat:read`, `chat:send`. The scopes `teams:read`, `teams:write` and `webhooks:manage` are reserved for
 the planned features in 3.9.
+
+WhatsApp chats relayed to the server have their own scopes: `chat:read` (read chat accounts, chats, messages and
+replies) and `chat:send` (queue a reply); no other scope implies them. `App\Security\ChatAccessVoter` is the one rule:
+our own apps reach chats with the mail scope of the action (`mail:read` to read, `mail:send` to queue a reply,
+`mail:write` to change or remove the chat account), and any other caller only with `chat:read` or `chat:send`, never to
+change the account. Until the MCP tools for chats exist no app that is not ours can obtain the chat scopes (they are
+not offered, so registering or authorizing with them is refused) and personal access tokens cannot hold them.
 
 #### Personal access tokens
 
@@ -205,8 +212,8 @@ curl -H "Authorization: Bearer $TRESSO_TOKEN" https://tresso.example/api/v1/sign
   `POST /api/v1/personal-access-tokens`; it stores only its SHA-256 (`personal_access_token.token_hash`, unique) and
   the first characters (`prefix`, such as `tresso_pat_Xk3f9a`) so the user can tell tokens apart. The name is
   plaintext like other names users write themselves (3.16).
-- **Scopes.** Chosen per token from the user scopes, without the reserved `teams:*` and `webhooks:manage`; never a
-  `sync:*` scope. Anything else is refused with 422.
+- **Scopes.** Chosen per token from the user scopes, without the reserved `teams:*` and `webhooks:manage` and without
+  the chat scopes `chat:read` and `chat:send` (not yet); never a `sync:*` scope. Anything else is refused with 422.
 - **Lifetime.** 30, 90 (default) or 365 days, always with an end. Revoking sets `revoked_at`; revoked and expired
   tokens stay in the list for 30 days, after which a nightly job deletes them. Deleting the user deletes their tokens
   (foreign key cascade).
@@ -241,7 +248,8 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
 
 - **Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414): issuer, authorization, token,
   registration and revocation endpoints, `scopes_supported` (only what such an app may ask for: the user scopes without `teams:*`,
-  `webhooks:manage` and `sync:*`, the same set as a personal access token), response type `code`, grants
+  `webhooks:manage`, `sync:*` and, until the MCP tools for chats exist, `chat:*`, the same set as a personal access
+  token), response type `code`, grants
   `authorization_code` and `refresh_token`, PKCE `S256` and token endpoint authentication `none`. There is no
   `/.well-known/openid-configuration`: this server issues no ID tokens. `GET /.well-known/oauth-protected-resource`
   and `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728) describe the API and the MCP endpoint
@@ -947,7 +955,10 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
   ours gets only what the user allowed it: mail accounts, folders, threads, messages, outgoing messages, drafts,
   unsubscriptions, mail notifications, hand-overs and daily briefs with `mail:read`; calendars, calendar events,
   notifications and event notes with `calendar:read`; todos with `todos:read`; signatures with `signatures:read`;
-  smart inboxes with `settings:read`. A list the token may not read comes empty, and so do its `deleted` entries.
+  smart inboxes with `settings:read`. Chat accounts, chats, chat messages and chat replies (`chatAccounts`, `chats`,
+  `chatMessages`, `chatOutgoing`) follow `ChatAccessVoter`: our own apps, or a token with `chat:read`; the endpoint
+  itself still needs `mail:read`, so a token with `chat:read` alone gets 403 here and reads its chat accounts at
+  `/api/v1/chat-accounts`. A list the token may not read comes empty, and so do its `deleted` entries.
   The cursor and the paging count every change, so the cursor is the same for every token of a user. Only our own
   apps make the user's Tresso calendar or the older built-in smart inboxes on a pull; for any other token the delta
   writes nothing. Threads and messages also carry `heldUntil` and `batchedAt` (batched delivery, 3.7), messages the
