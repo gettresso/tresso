@@ -4,7 +4,7 @@ import type { Verdict } from '../domain'
 import { compareHandOvers } from '../handOvers'
 import { sortCalendars, touchesCalendars } from '../calendar/calendars'
 import { chatAccountFromDelta, chatFromDelta, chatInstant, chatMessageFromDelta, chatOnlyHere, chatOutgoingFromDelta, compareChatMessages, compareChatOutgoing, deltaInstant, optionalInstant } from '../chat/rows'
-import type { ChatSummary, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from '../chat/types'
+import { LOCAL_CHAT_PREFIX, type ChatSummary, type SyncedChat, type SyncedChatAccount, type SyncedChatMessage, type SyncedChatOutgoing } from '../chat/types'
 import { eventSpan } from '../calendar/occurrences'
 import type { SyncedCalendar, SyncedCalendarEvent } from '../calendar/types'
 import { sortSmartInboxes } from '../smartInboxes'
@@ -952,6 +952,11 @@ export class SqliteMailStore implements MailStore {
 
   async waitingOutgoing(): Promise<SyncedChatOutgoing[]> {
     const rows = await this.reader.all<JsonRow>("SELECT json FROM chat_outgoing WHERE status = 'waiting'")
+    return rows.map((row) => parse<SyncedChatOutgoing>(row)).sort(compareChatOutgoing)
+  }
+
+  async sendingOutgoingHere(): Promise<SyncedChatOutgoing[]> {
+    const rows = await this.reader.all<JsonRow>("SELECT json FROM chat_outgoing WHERE status = 'sending' AND substr(chat_account_id, 1, ?) = ?", [LOCAL_CHAT_PREFIX.length, LOCAL_CHAT_PREFIX])
     return rows.map((row) => parse<SyncedChatOutgoing>(row)).sort(compareChatOutgoing)
   }
 

@@ -1271,6 +1271,20 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         expect(ids(await db.waitingOutgoing())).toEqual(['r4', 'r2'])
       })
 
+      it('lists the replies being sent of accounts on this device only, oldest first', async () => {
+        await db.putChatAccount(chatAccount('wa:account'))
+        await db.putChats([chat('wa:31655555555@s.whatsapp.net', 'wa:account', { jid: '31655555555@s.whatsapp.net' })])
+        await db.putChatOutgoing([
+          chatOutgoing('l2', 'wa:31655555555@s.whatsapp.net', 'wa:account', { createdAt: at(6), status: 'sending', claimedAt: at(7) }),
+          chatOutgoing('l1', 'wa:31655555555@s.whatsapp.net', 'wa:account', { createdAt: at(5), status: 'sending', claimedAt: at(7) }),
+          chatOutgoing('l3', 'wa:31655555555@s.whatsapp.net', 'wa:account', { createdAt: at(5), status: 'waiting' }),
+          // A server row being sent (or of an unknown status a newer server sent) is not this device's.
+          chatOutgoing('s1', 'bram', 'acct', { createdAt: at(4), status: 'sending', claimedAt: at(7) }),
+        ])
+
+        expect(ids(await db.sendingOutgoingHere())).toEqual(['l1', 'l2'])
+      })
+
       it('writes and removes chats of its own, as the "Only this Mac" relay does', async () => {
         await db.putChatAccount(chatAccount('wa:account'))
         await db.putChats([chat('wa:31655555555@s.whatsapp.net', 'wa:account', { jid: '31655555555@s.whatsapp.net', lastMessageAt: at(20) })])

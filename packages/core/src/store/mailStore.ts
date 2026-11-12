@@ -230,6 +230,12 @@ export interface MailStore extends SyncStore {
   unreadChatCount(): Promise<number>
   /** Replies waiting to be sent, oldest first (see compareChatOutgoing). */
   waitingOutgoing(): Promise<SyncedChatOutgoing[]>
+  /**
+   * Replies marked `sending` of chat accounts that exist only on this device (see chatOnlyHere), oldest first: what the
+   * "Only this Mac" relay was sending. A server account's `sending` rows (also an unknown status of a newer server, which
+   * the delta reader stores as `sending`) are never listed.
+   */
+  sendingOutgoingHere(): Promise<SyncedChatOutgoing[]>
   putChatAccount(account: SyncedChatAccount): Promise<void>
   /**
    * Stores chats as given. A chat of the same account and JID under another id is gone with its messages and replies:
