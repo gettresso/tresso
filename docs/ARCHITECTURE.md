@@ -1711,34 +1711,64 @@ What the desktop wiring (the WhatsApp settings and connect package) and the serv
 
 `ServerChatBackend` (`packages/core/src/chat/serverBackend.ts`) is the backend for "All my devices", over `ChatApi`
 (`packages/core/src/chat/api.ts`: the request and answer types of the chat endpoints of 3.17, one method per endpoint;
-the web client implements it). Every relay call names the desktop's device id. It writes nothing to the copy but its
-cursor: what the server stored comes back through the delta, a chat's messages possibly a page before the chat. The
-cursor lives in the chat values under `server-cursor:<account id>` (`serverCursorKey`), apart from the local backend's
-and per account, so a switch between the modes, or an account made again, starts from 0 with a first import;
-`removeServerChatCursor` clears it. `settings` takes `includeGroups` from the server's account in the copy (and rejects
-until the delta brought it), `importSince` from the desktop's config (the server's account does not keep it), and checks
-every chat of a batch in the copy (`chatByJid`): nothing of a chat held as left out leaves the device, and the chats it
-found left out are the relay's `leftOut`. Batches are at most 200 messages and 200 chats, each with the chats of its
-messages, and at most 8 MB of the request as JSON in UTF-8. A 413 halves the batch and lowers later batches to half the
-size that got it (at least 64 KB); a 422 halves it too, to find the message it is about; a single message that still
-gets either is counted `refused`, so it never holds the cursor (at most 2n - 1 calls for n messages). The per-row
-results are summed into the relay's counts; an answer whose counts do not add up is an error, so the rows go again.
-409 `not_the_relay` and 404 stop the relay, 429 pauses it for `Retry-After`, anything else (network, 5xx, 400, 401,
-403) is an error after which the relay sends the same rows again. Replies are claimed one at a time; the claim's token
-goes back with the result. A result answered 404, 409 `result_final` or 422 is final (the relay moves on and never
-sends again; a reply left `sending` fails as `unconfirmed` through the sweep); a former relay may still report
-`sent: true` for its own claim, and any other result of it stops the relay. A store read again from 0 sends every row again,
-which the server answers with `known` (no write, no change in the delta). That is accepted rather than avoided with a
-high-water mark: `ingest` gets no rowids and the relay learns of a new `storeId` only after it stored the rows, and a
-history sync stores the rows it brings again under new rowids, which are read again in any mode. At about 300 bytes of
-JSON a message, 100,000 messages are 500 calls and 30 MB once, within the import limit's burst; a million are 5,000
-calls, which the limit spreads over about 30 minutes. `reportStatus` sends the heartbeat with the same errors. The
-wiring must:
+the web client implements it). Every relay call names the desktop's device id. It writes nothing to the copy but two
+chat values: what the server stored comes back through the delta, a chat's messages possibly a page before the chat.
 
-- Implement `ChatApi` by sending `JSON.stringify(request)` and rejecting with `status`, the problem's `code` and
-  `retryAfterMs` (`ChatApiError`, or the web client's `ApiError` once it reads `code`).
-- Start the relay once the account is in the copy, stop it when the account's `relayDeviceId` in the delta names
-  another device or the account is removed, and then call `removeServerChatCursor`.
+- **Cursor.** Under `server-cursor:<account id>` (`serverCursorKey`), apart from the local backend's and per account,
+  so a switch between the modes, or an account made again, starts from 0 with a first import. A value it cannot read
+  starts a first import too: the server honours `firstImport` only until the relay's first batch without it, so after
+  the history was imported the flag marks nothing read, and before, it keeps the history from arriving unread.
+- **Settings.** `includeGroups` from the server's account in the copy (it rejects until the delta brought it),
+  `importSince` from the desktop's config (the server's account does not keep it), and every chat of a batch is looked
+  up in the copy (`chatByJid`): nothing of a chat held as left out leaves the device, and the chats it found left out
+  are the relay's `leftOut`.
+- **Batches.** At most 200 messages and 200 chats, each with the chats of its messages, and at most 8 MB of the request
+  as JSON in UTF-8. A 413 makes the rest of the call, and later calls, half the size that got it (at least 64 KB). A 422
+  that names rows (`messages[i]...`) refuses those rows and sends the rest again; one that names a chat entry
+  (`chats[i]...`) sends that chat without its entry (the server may know it); one whose row paths name nothing in the
+  batch halves it towards the row. A 422 without paths, or with a path that is about the request (`deviceId`), is no
+  bad row and rejects as it came. At most 3 messages are refused that way per call (`RELAY_MAX_REFUSED`), also single
+  messages answered 413; one more rejects with an error, so the cursor holds and the relay tries again: a cause that
+  affects every row (a proxy, a newer server, a broken client) costs a few calls and drops nothing. Messages the server
+  itself answers `refused` are counted as such without limit. The per-row results are summed into the relay's counts;
+  an answer whose counts do not add up is an error, so the rows go again. Messages a call stored before a later call
+  of the same page failed are counted as stored, not known, when the page goes again.
+- **Errors.** 409 `not_the_relay` and 404 stop the relay, 429 pauses it for `Retry-After`, 403 for the longest pause
+  (10 minutes); anything else (network, 5xx, 400, 401) is an error after which the relay sends the same rows again.
+- **Replies.** Claimed one at a time; the claim (id and token, no text) is kept as a chat value (`server-claim:<account
+  id>`) until its result is reported, and the result is kept with it before the report. `prepare`, and a claim asked
+  for while one is kept, report a kept claim first: its kept result, or `unconfirmed` when none was kept (it may have
+  gone out; a `sent: true` of the same claim still wins on the server). A crash between the server's claim and keeping
+  it leaves a reply the sweep fails as `unconfirmed`. A result answered 404, 409 `result_final` or 422 is final (the
+  relay moves on and never sends again; a 422 is counted and told through `onProblem`); a former relay may still report
+  `sent: true` for its own claim, and any other result of it stops the relay.
+- **A store read again from 0** sends every row again, which the server answers with `known` (no write, no change in
+  the delta). That is accepted rather than avoided with a high-water mark: `ingest` gets no rowids and the relay
+  learns of a new `storeId` only after it stored the rows, and a history sync stores the rows it brings again under new
+  rowids, which are read again in any mode. At about 300 bytes of JSON a message, 100,000 messages are 500 calls and
+  30 MB once, within the import limit's burst; a million are 5,000 calls, which the limit spreads over about 30
+  minutes. The better fix is in the relay or the shell (a first row stored again is no new store).
+- `reportStatus` sends the heartbeat with the same errors.
+
+What the wiring (the WhatsApp UI package) must respect:
+
+- Implement `ChatApi` by sending exactly `JSON.stringify(request)` (a PATCH as `application/merge-patch+json`) and
+  rejecting with `status`, the problem's `code`, `retryAfterMs` and the violation paths (`ChatApiError`, or the web
+  client's `ApiError` once it reads `code`). Never retry `claimReply` by itself: a claim sent again takes the next
+  reply, and the first stays `sending` until the sweep fails it.
+- The device id is an RFC 4122 v4 UUID made once per desktop, the same one `connect` sent; the constructor refuses
+  anything the server's `Assert\Uuid` would.
+- Keep `importSince` in the desktop's config, set once at connect, and pass it unchanged on every start and switch
+  (0 uploads the whole history).
+- Start the relay once the copy has caught up with the delta after the account arrived, not as soon as the account is
+  there: a chat left out on another device is known as left out only from its row in the copy, and until then its
+  messages would be uploaded (the server drops them, but they left the device).
+- Stop the relay when the account's `relayDeviceId` in the delta names another device (after this device's own
+  takeover, only once the delta shows it) or the account is removed, then call `removeServerChatState`.
+- Taking a chat in again or turning groups on needs a cursor reset (with the relay stopped, clear the chat value
+  `serverCursorKey(accountId)`; keep the claim): rows the relay skipped before are behind the cursor and are read again
+  only from 0, as `known` for what the server has.
+- Words for `unconfirmed` must say that the reply may have been sent.
 - Send the heartbeat (`reportStatus`) on connect, on every bridge change and every 60 seconds.
 
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
