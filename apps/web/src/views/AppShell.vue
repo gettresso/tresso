@@ -112,7 +112,6 @@ function toggled(event: Event): void {
         :batches="inBatches"
         :next-batch="batches.nextBatchLabel"
         :page="page"
-        :live="mail.live"
         @sign-out="signOut.request"
       />
     </details>

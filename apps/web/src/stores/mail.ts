@@ -3,6 +3,8 @@ import { defineStore } from 'pinia'
 import {
   RealtimeClient,
   SyncEngine,
+  SyncStatusMachine,
+  type SyncStatus,
   MAX_MESSAGES_PER_ACTION,
   appliedFor,
   briefView,
@@ -125,6 +127,17 @@ export const useMailStore = defineStore('mail', () => {
   const live = ref(false)
   const ready = ref(false)
   /**
+   * What the footer (and the notice above the lists) says about the sync, from the shared status model: opening,
+   * read only, getting the mail, catching up, up to date, reconnecting, offline, stopped.
+   */
+  const syncStatus = shallowRef<SyncStatus>({ kind: 'closed', text: '', fraction: null, remaining: null, notice: null, announcement: '' })
+  const status = new SyncStatusMachine({
+    onChange: (next) => {
+      syncStatus.value = next
+    },
+    online: typeof navigator === 'undefined' ? true : navigator.onLine,
+  })
+  /**
    * Pulls of the delta that completed: a conversation opened from a notification waits for one after it opened
    * before it says the conversation is not there (it may not have reached the copy yet).
    */
@@ -152,7 +165,11 @@ export const useMailStore = defineStore('mail', () => {
   let engine: SyncEngine | null = null
   let realtime: RealtimeClient | null = null
   // A pull that failed and waits to be tried again goes at once when the network may be back.
-  window.addEventListener('online', () => engine?.wake())
+  window.addEventListener('online', () => {
+    status.online(true)
+    engine?.wake()
+  })
+  window.addEventListener('offline', () => status.online(false))
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       engine?.wake()
@@ -259,6 +276,7 @@ export const useMailStore = defineStore('mail', () => {
       opened = resolve
     })
     openings.add(opening)
+    status.opening()
     let database: MailStore
     try {
       database = await openMailStore(forUserId, (reason) => void closedElsewhere(mine, forUserId, reason, confirmed))
@@ -275,13 +293,16 @@ export const useMailStore = defineStore('mail', () => {
       }
       // Not claimed after all, so starting the same user again (the app retries) opens the copy anew.
       userId = null
+      status.closed()
       throw error
     } finally {
       openings.delete(opening)
       opened()
     }
+    let syncedAt: number | null
     try {
       await refresh()
+      syncedAt = await database.syncedAt()
     } catch (error) {
       if (mine === generation) {
         // Reading the copy failed: close it again, so a retry of the same user starts from the beginning.
@@ -293,18 +314,30 @@ export const useMailStore = defineStore('mail', () => {
       return null
     }
     ready.value = true
+    status.opened({ confirmed, afterUpdate: database.afterUpdate, lastSyncedAt: syncedAt })
     return database
   }
 
-  /** Keeps the open copy current: the first pull, pending drafts, and the realtime stream for what comes next. */
+  /**
+   * Keeps the open copy current: the first pull, pending drafts, and the realtime stream for what comes next. The
+   * stream opens together with the first pull, not after it: it only carries cursors, which make the engine pull again
+   * once the pull under way is done (pulls never overlap, and a notification during one makes it go round once more),
+   * so nothing is lost or stored twice, and the status can say "Up to date" the moment the pull is.
+   */
   async function beginSync(mine: number, database: MailStore): Promise<void> {
     syncing = true
-    engine = new SyncEngine({
+    status.confirmed()
+    const current = new SyncEngine({
       store: database,
       pageSize: PAGE_SIZE,
       fetchPage: (since, limit) => auth.api<ChangePage>(`/api/v1/sync/changes?since=${since}&limit=${limit}`),
       // A failed pull is tried again by the engine, shown as any other pull ("Sync stopped" until one works).
       retry: (run) => void pull(run),
+      onProgress: (progress) => {
+        if (engine === current) {
+          status.progress(progress)
+        }
+      },
       onApplied: (page) => {
         delivered.push(...page.mailNotifications)
         deliveredHandOvers.push(...page.handOvers)
@@ -313,21 +346,36 @@ export const useMailStore = defineStore('mail', () => {
         void notifyOverdue()
       },
     })
+    engine = current
     const stream = new RealtimeClient({
       // Aborted when the stream stops, so a sign-out does not wait for a token request that hangs.
       fetchAccess: (signal) => auth.api<RealtimeAccess>('/api/v1/realtime/token', { signal }),
       now: () => auth.serverNow(),
       onCursor: (cursor) => void pull(() => engine?.notify(cursor)),
+      onConnecting: () => {
+        if (realtime === stream) {
+          status.streamConnecting()
+        }
+      },
       onConnected: () => {
+        if (realtime !== stream) {
+          return
+        }
         live.value = true
+        status.streamLive()
         // Back online: drafts whose upload failed meanwhile go up after the pull, not only at the next start.
         void pull(() => engine?.sync(), { uploadDrafts: true })
       },
       onError: () => {
+        if (realtime !== stream) {
+          return
+        }
         live.value = false
+        status.streamRetrying()
       },
     })
     realtime = stream
+    stream.start()
     await pull(() => engine?.sync())
     if (mine !== generation) {
       return
@@ -335,7 +383,6 @@ export const useMailStore = defineStore('mail', () => {
     await refresh()
     synced.value = true
     void uploadPendingDrafts()
-    stream.start()
   }
 
   /**
@@ -344,11 +391,15 @@ export const useMailStore = defineStore('mail', () => {
    */
   async function pull(run: () => Promise<void> | undefined, options: { uploadDrafts?: boolean } = {}): Promise<void> {
     const failedBefore = syncState.value === 'error'
+    const mine = generation
     syncState.value = 'syncing'
     try {
       await run()
       syncState.value = 'idle'
       syncError.value = null
+      if (mine === generation) {
+        status.synced()
+      }
       pulls.value += 1
       if (failedBefore || options.uploadDrafts === true) {
         void uploadPendingDrafts()
@@ -362,10 +413,16 @@ export const useMailStore = defineStore('mail', () => {
       if (error instanceof CopyClosingError) {
         // A page that arrived while the copy closed (a sign-out or another user): nothing is wrong.
         syncState.value = 'idle'
+        if (mine === generation) {
+          status.cleared()
+        }
         return
       }
       syncState.value = 'error'
       syncError.value = error instanceof Error ? error.message : String(error)
+      if (mine === generation) {
+        status.failed(syncError.value)
+      }
     }
   }
 
@@ -484,6 +541,7 @@ export const useMailStore = defineStore('mail', () => {
     db.value = null
     userId = null
     live.value = false
+    status.closed()
     ready.value = false
     synced.value = false
     syncing = false
@@ -1101,6 +1159,7 @@ export const useMailStore = defineStore('mail', () => {
     syncError,
     updatedElsewhere,
     live,
+    syncStatus,
     ready,
     synced,
     start,

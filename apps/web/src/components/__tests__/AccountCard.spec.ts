@@ -67,5 +67,12 @@ describe('AccountCard', () => {
     expect(wrapper.find('.status.calendar').exists()).toBe(false)
     expect(wrapper.get('button.head').attributes('aria-expanded')).toBe('false')
   })
-})
 
+  it("names the server's sync of the account in the words of the sync status, never as connecting", () => {
+    const first = mount(AccountCard, { props: { account: { ...account('imap'), lastSyncedAt: null } } })
+    const on = mount(AccountCard, { props: { account: account('imap') } })
+
+    expect(first.get('.status.active').text()).toBe('Getting mail')
+    expect(on.get('.status.active').text()).toBe('Active')
+  })
+})
