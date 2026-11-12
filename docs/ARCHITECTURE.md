@@ -1206,7 +1206,8 @@ files attached to drafts (uploads, and files a forward or reply takes along).
   transaction commits. Scans have their own Messenger transport (`scan`), and in the dev stack their own worker
   (`scanner`), so a backlog never delays outgoing mail or search. A dispatch can still get lost (the queue down at the
   wrong moment), and attachments stored before scanning existed have none: a sweeper (`SweepPendingScans`, every 5
-  minutes on the `scheduler_default` transport) claims attachments never queued, then those still pending 15 minutes
+  minutes on the `scheduler_default` transport, which the `maintenance` worker in Compose consumes alone, so a sweep
+  never holds up outgoing mail) claims attachments never queued, then those still pending 15 minutes
   after their scan was queued, and queues one scan per distinct content. Claims are batches of `UPDATE ... SKIP
   LOCKED` along the `(scan_status, scan_requested_at)` index, repeated for up to 20 seconds per run, so several workers
   never queue the same ones and a backlog moves on every run.

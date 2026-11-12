@@ -19,7 +19,8 @@ use Symfony\Component\Scheduler\ScheduleProviderInterface;
 use Symfony\Contracts\Cache\CacheInterface;
 
 /**
- * Recurring work, sent to the `scheduler_default` transport that a messenger worker consumes.
+ * Recurring work, sent to the `scheduler_default` transport. The `maintenance` worker consumes it alone, so a long
+ * sweep never holds up outgoing mail on `async`.
  */
 #[AsSchedule]
 final readonly class Schedule implements ScheduleProviderInterface

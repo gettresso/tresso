@@ -61,7 +61,7 @@ services:
       context: .
       dockerfile: docker/api/Dockerfile
       target: dev
-    command: ["php", "bin/console", "messenger:consume", "async", "search", "push", "scheduler_notifications", "scheduler_default", "scheduler_batches", "scheduler_daily_brief", "--time-limit=3600", "--memory-limit=256M", "-vv"]
+    command: ["php", "bin/console", "messenger:consume", "async", "search", "push", "scheduler_notifications", "scheduler_batches", "scheduler_daily_brief", "--time-limit=3600", "--memory-limit=256M", "-vv"]
     environment: *api-env
     volumes:
       - ./apps/api:/app
@@ -70,6 +70,24 @@ services:
         condition: service_healthy
     # The image's healthcheck probes the FrankenPHP admin endpoint, which this console process does not serve.
     # The container exits when the consumer stops, and restart brings it back.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  # The sweeps and nightly purges (scheduler_default) have their own consumer: a sweep with much to delete must never
+  # hold up sending.
+  maintenance:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+      target: dev
+    command: ["php", "bin/console", "messenger:consume", "scheduler_default", "--time-limit=3600", "--memory-limit=256M", "-vv"]
+    environment: *api-env
+    volumes:
+      - ./apps/api:/app
+    depends_on:
+      api:
+        condition: service_healthy
     healthcheck:
       disable: true
     restart: unless-stopped
