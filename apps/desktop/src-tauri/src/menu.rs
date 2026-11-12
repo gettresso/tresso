@@ -19,6 +19,7 @@ pub const CHECK_FOR_UPDATES: &str = "check-for-updates";
 
 /// The project's home: the updater's endpoint in tauri.conf.json lives under it (a test keeps the two together). The
 /// app has no help pages of its own; its README is the documentation.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const REPOSITORY: &str = "https://github.com/gettresso/tresso";
 /// Help > Tresso Help.
 pub const HELP_URL: &str = "https://github.com/gettresso/tresso#readme";
@@ -32,8 +33,29 @@ pub enum Action {
   /// Sent to the web client as MENU_EVENT with this name. It needs someone signed in, so it is disabled until the web
   /// client says so (`menu_state`).
   Web(&'static str),
+  /// Sent to the web client like Web, but it acts signed out too (Reload).
+  WebAlways(&'static str),
   /// Done by the shell itself.
   Shell(Shell),
+}
+
+/// Whether the item acts in the web client only while someone is signed in: those are the items `menu_state` enables
+/// and disables. The one rule both the bar's setup and its tests use.
+pub fn needs_sign_in(action: Action) -> bool {
+  matches!(action, Action::Web(_))
+}
+
+/// The ids of the items `menu_state` enables and disables, in the bar's order.
+#[cfg(test)]
+pub fn signed_in_ids() -> Vec<&'static str> {
+  bar()
+    .into_iter()
+    .flat_map(|submenu| submenu.entries)
+    .filter_map(|entry| match entry {
+      Entry::Item { id, action, .. } if needs_sign_in(action) => Some(id),
+      _ => None,
+    })
+    .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,9 +63,6 @@ pub enum Action {
 pub enum Shell {
   /// Sparkle's "Check for Updates…"; disabled when Sparkle does not run (a development build).
   CheckForUpdates,
-  /// Loads the web client again. It survives that: the sign-in is in the keychain, the copy reopens (the SQL handles
-  /// of the earlier page load are dropped, sql.rs), and a draft is saved shortly after typing stops.
-  Reload,
   /// Shows the main window again, also after it was closed (Window > Tresso).
   ShowMainWindow,
   /// Opens a web page in the user's browser.
@@ -79,6 +98,7 @@ pub enum Native {
 
 impl Native {
   /// The shortcut AppKit gives the item, for the test that no two items share one.
+  #[cfg_attr(not(test), allow(dead_code))]
   pub fn accelerator(self) -> Option<&'static str> {
     match self {
       Native::Hide => Some("Cmd+H"),
@@ -184,7 +204,9 @@ pub fn bar() -> Vec<Submenu> {
         // "Show Sidebar" / "Hide Sidebar" (Ctrl+Cmd+S) goes here, before Reload, once the sidebar can collapse: that
         // waits for a design shared across the owner's apps.
         Separator,
-        Entry::Item { id: "reload", label: "Reload", accelerator: Some("Cmd+R"), action: Action::Shell(Shell::Reload) },
+        // Loads the web client again, after it saved the draft and waited for files and a send under way, as before a
+        // restart for an update (the web client does it: platform/menu.ts). No ⌘R: other mail apps answer with it.
+        Entry::Item { id: "reload", label: "Reload", accelerator: None, action: Action::WebAlways("reload") },
         N(Native::EnterFullScreen),
       ],
     },
@@ -223,23 +245,60 @@ pub fn action_of(id: &str) -> Option<Action> {
   })
 }
 
-/// The items the web client acts on: enabled while someone is signed in.
-#[derive(Default)]
-pub struct MenuItems(#[cfg_attr(not(target_os = "macos"), allow(dead_code))] std::sync::Mutex<Vec<tauri::menu::MenuItem<tauri::Wry>>>);
+/// A menu item that can be enabled and disabled: Tauri's, or a test's.
+pub trait Toggle {
+  fn set_enabled(&self, enabled: bool) -> Result<(), String>;
+}
 
-/// The web client says whether someone is signed in (and may use the app): the items that act in it follow. Nothing to
-/// do where the app has no menu bar.
+impl<R: tauri::Runtime> Toggle for tauri::menu::MenuItem<R> {
+  fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+    tauri::menu::MenuItem::set_enabled(self, enabled).map_err(|error| error.to_string())
+  }
+}
+
+/// The items the web client acts on, by id: enabled while someone is signed in. Managed once (lib.rs); the bar's setup
+/// fills it, as Tauri keeps the first value managed for a type and ignores a second.
+pub struct MenuItems<T: Toggle = tauri::menu::MenuItem<tauri::Wry>>(std::sync::Mutex<Vec<(&'static str, T)>>);
+
+impl<T: Toggle> Default for MenuItems<T> {
+  fn default() -> Self {
+    Self(std::sync::Mutex::new(Vec::new()))
+  }
+}
+
+impl<T: Toggle> MenuItems<T> {
+  /// Takes the items the bar was built with.
+  #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+  pub fn fill(&self, items: Vec<(&'static str, T)>) -> Result<(), String> {
+    self.0.lock().map_err(|error| error.to_string())?.extend(items);
+    Ok(())
+  }
+
+  /// Enables or disables every item; empty where the app has no menu bar.
+  pub fn enable(&self, enabled: bool) -> Result<(), String> {
+    for (_, item) in self.0.lock().map_err(|error| error.to_string())?.iter() {
+      item.set_enabled(enabled)?;
+    }
+    Ok(())
+  }
+
+  #[cfg(test)]
+  fn ids(&self) -> Vec<&'static str> {
+    self.0.lock().unwrap().iter().map(|(id, _)| *id).collect()
+  }
+}
+
+/// The web client says whether someone is signed in (and may use the app): the items that act in it follow.
 #[tauri::command]
 pub fn menu_state(items: tauri::State<'_, MenuItems>, signed_in: bool) -> Result<(), String> {
-  #[cfg(target_os = "macos")]
-  {
-    for item in items.0.lock().map_err(|error| error.to_string())?.iter() {
-      item.set_enabled(signed_in).map_err(|error| error.to_string())?;
-    }
-  }
-  #[cfg(not(target_os = "macos"))]
-  let _ = (items, signed_in);
-  Ok(())
+  items.enable(signed_in)
+}
+
+/// Brings the main window to the front, also from hidden (a closed window on macOS): for a click on a notification,
+/// which opens what it is about in the window.
+#[tauri::command]
+pub fn show_main_window_command<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+  show_main_window(&app);
 }
 
 /// Builds the menu bar and handles its items (macOS). `updates`: whether Sparkle runs, so Check for Updates can act.
@@ -250,7 +309,7 @@ pub fn setup(app: &tauri::App, updates: bool) -> tauri::Result<()> {
 
   let handle = app.handle();
   let mut submenus = Vec::new();
-  let mut for_signed_in = Vec::new();
+  let mut for_signed_in: Vec<(&'static str, MenuItem<tauri::Wry>)> = Vec::new();
   for spec in bar() {
     let submenu = match spec.id {
       Some(id) => tauri::menu::Submenu::with_id(handle, id, spec.title, true)?,
@@ -266,14 +325,14 @@ pub fn setup(app: &tauri::App, updates: bool) -> tauri::Result<()> {
         }
         Entry::Item { id, label, accelerator, action } => {
           let enabled = match action {
-            Action::Web(_) => false,
             Action::Shell(Shell::CheckForUpdates) => updates,
-            Action::Shell(_) => true,
+            // Disabled until the web client says someone is signed in (menu_state).
+            action => !needs_sign_in(action),
           };
           let item = MenuItem::with_id(handle, id, label, enabled, accelerator)?;
           submenu.append(&item)?;
-          if matches!(action, Action::Web(_)) {
-            for_signed_in.push(item);
+          if needs_sign_in(action) {
+            for_signed_in.push((id, item));
           }
         }
       }
@@ -284,7 +343,8 @@ pub fn setup(app: &tauri::App, updates: bool) -> tauri::Result<()> {
   app.set_menu(Menu::with_items(handle, &items)?)?;
   // After set_menu's own work on the main thread, which made it AppKit's main menu.
   app.run_on_main_thread(appkit::add_edit_actions)?;
-  app.manage(MenuItems(std::sync::Mutex::new(for_signed_in)));
+  // Into the state lib.rs manages: a second manage() of the type would be ignored, leaving menu_state nothing to enable.
+  app.state::<MenuItems>().fill(for_signed_in).map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?;
   app.on_menu_event(|app, event| run(app, event.id().as_ref()));
   Ok(())
 }
@@ -325,13 +385,13 @@ fn predefined(handle: &tauri::AppHandle, native: Native) -> tauri::Result<Option
 /// Runs a menu item of our own.
 #[cfg(target_os = "macos")]
 fn run(app: &tauri::AppHandle, id: &str) {
-  use tauri::{Emitter, Manager};
+  use tauri::Emitter;
 
   let Some(action) = action_of(id) else {
     return;
   };
   match action {
-    Action::Web(name) => {
+    Action::Web(name) | Action::WebAlways(name) => {
       // The window may be closed (hidden): what the item does happens in it, so it comes back first.
       show_main_window(app);
       if let Err(error) = app.emit_to("main", MENU_EVENT, name) {
@@ -339,13 +399,6 @@ fn run(app: &tauri::AppHandle, id: &str) {
       }
     }
     Action::Shell(Shell::CheckForUpdates) => crate::updates::check_or_relaunch(app),
-    Action::Shell(Shell::Reload) => {
-      if let Some(window) = app.get_webview_window("main")
-        && let Err(error) = window.reload()
-      {
-        log::error!("Reloading the window failed: {error}");
-      }
-    }
     Action::Shell(Shell::ShowMainWindow) => show_main_window(app),
     Action::Shell(Shell::Open(url)) => {
       if let Err(error) = tauri_plugin_opener::open_url(url, None::<&str>) {
@@ -356,7 +409,6 @@ fn run(app: &tauri::AppHandle, id: &str) {
 }
 
 /// Brings the main window back: after Close Window (which only hides it on macOS), when minimized, or behind others.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
   use tauri::Manager;
 
@@ -523,7 +575,7 @@ mod tests {
     let mut web: Vec<_> = items()
       .into_iter()
       .filter_map(|(id, _, _, action)| match action {
-        Action::Web(name) => {
+        Action::Web(name) | Action::WebAlways(name) => {
           assert_eq!(name, id, "a web action is named after its item");
           Some(name)
         }
@@ -532,11 +584,70 @@ mod tests {
       .collect();
     web.sort_unstable();
     // The same list as MENU_ACTIONS in apps/web/src/platform/menu.ts.
-    assert_eq!(web, ["find", "new-event", "new-message", "new-todo", "settings", "view-calendar", "view-inbox", "view-search", "view-todos", "view-triage"]);
+    assert_eq!(web, ["find", "new-event", "new-message", "new-todo", "reload", "settings", "view-calendar", "view-inbox", "view-search", "view-todos", "view-triage"]);
     let source = include_str!("../../../web/src/platform/menu.ts");
     for name in web {
       assert!(source.contains(&format!("'{name}'")), "the web client does not handle {name}");
     }
+  }
+
+  /// A menu item of a test, which remembers whether it is enabled.
+  struct FakeItem(std::cell::Cell<bool>);
+
+  // SAFETY for the tests only: MenuItems is used from one thread here.
+  unsafe impl Sync for FakeItem {}
+
+  impl Toggle for FakeItem {
+    fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+      self.0.set(enabled);
+      Ok(())
+    }
+  }
+
+  /// What setup stores is what menu_state enables: every item that acts in the web client while someone is signed
+  /// in, and nothing else (Reload acts signed out too).
+  #[test]
+  fn the_items_menu_state_enables_are_the_web_actions() {
+    let items = MenuItems::<FakeItem>::default();
+    items.fill(signed_in_ids().into_iter().map(|id| (id, FakeItem(std::cell::Cell::new(false)))).collect()).unwrap();
+
+    assert_eq!(items.ids(), ["settings", "new-message", "new-event", "new-todo", "find", "view-inbox", "view-triage", "view-todos", "view-calendar", "view-search"]);
+    items.enable(true).unwrap();
+    assert!(items.0.lock().unwrap().iter().all(|(_, item)| item.0.get()));
+    items.enable(false).unwrap();
+    assert!(items.0.lock().unwrap().iter().all(|(_, item)| !item.0.get()));
+    assert!(!needs_sign_in(Action::WebAlways("reload")) && !needs_sign_in(Action::Shell(Shell::ShowMainWindow)));
+  }
+
+  /// Tauri keeps the first value managed for a type: the state is managed once, in lib.rs, and setup fills it. A
+  /// second manage() left menu_state with nothing to enable (every app item stayed disabled after sign-in).
+  #[test]
+  fn the_menu_state_is_managed_once_and_filled_by_setup() {
+    let lib = include_str!("lib.rs");
+    let menu = include_str!("menu.rs");
+    assert_eq!(lib.matches(&["MenuItems>", "::default()"].concat()).count(), 1);
+    assert!(!menu.contains(&["app", ".manage("].concat()), "menu.rs must not manage MenuItems a second time");
+    assert_eq!(menu.matches(&["app.state::<MenuItems>()", ".fill("].concat()).count(), 1);
+  }
+
+  /// The commands the web client calls are registered.
+  #[test]
+  fn the_web_client_can_call_the_menu_commands() {
+    let lib = include_str!("lib.rs");
+    assert!(lib.contains("menu::menu_state,"));
+    assert!(lib.contains("menu::show_main_window_command,"));
+    let notifier = include_str!("../../../web/src/platform/desktop.ts");
+    assert!(notifier.contains("'show_main_window_command'"));
+  }
+
+  /// A link (the sign-in's return), a second launch and Sparkle's relaunch question each bring a closed window back.
+  #[test]
+  fn every_way_into_the_window_shows_it_first() {
+    let lib = include_str!("lib.rs");
+    assert!(lib.contains("on_open_url(move |_| menu::show_main_window(&handle))"));
+    assert!(lib.contains("tauri_plugin_single_instance::init(|app, _args, _cwd| crate::menu::show_main_window(app))"));
+    assert!(lib.contains("has_visible_windows: false, .. } => menu::show_main_window(_app)"));
+    assert!(include_str!("updates.rs").contains("crate::menu::show_main_window(app);"));
   }
 
   #[test]
