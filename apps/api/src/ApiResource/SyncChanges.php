@@ -15,13 +15,16 @@ use Symfony\Component\Validator\Constraints as Assert;
  * Everything that changed for the signed-in user after a change number: the client's way to keep a local copy.
  *
  * Start with since=0, store the returned cursor, and call again with since=cursor while hasMore is true. A page never
- * splits the changes of one change number. "deleted" lists removed entities; a removed mail account means everything
- * under it (folders, threads, messages, outgoing messages, calendars) is gone too, and a removed calendar means its
- * events are gone. Calendar events come as stored (series with their rule, overrides with their recurrenceId), for
- * series that end after two years ago. Notifications come once delivered (from the last week), so every device can
- * show and clear them; event notes are the user's private notes. A todo whose email is gone changes too, without
- * the link; clients also treat a link to an email they do not have as no link. Mail notifications (new mail that
- * needs the user) come once delivered, from the last week, so the desktop app shows them.
+ * splits the changes of one change number. "latest" is the newest change number handed out to the user when the page
+ * was read: with "since" and "cursor" it tells a client how far behind it is (how much of a pull is left). It is never
+ * below "cursor", but may stay above the last cursor a pull reaches, so a pull ends at hasMore false, not at "latest".
+ * "deleted" lists removed entities; a removed mail account means everything under it (folders, threads, messages,
+ * outgoing messages, calendars) is gone too, and a removed calendar means its events are gone. Calendar events come as
+ * stored (series with their rule, overrides with their recurrenceId), for series that end after two years ago.
+ * Notifications come once delivered (from the last week), so every device can show and clear them; event notes are the
+ * user's private notes. A todo whose email is gone changes too, without the link; clients also treat a link to an email
+ * they do not have as no link. Mail notifications (new mail that needs the user) come once delivered, from the last
+ * week, so the desktop app shows them.
  *
  * Each list needs the scope of its own endpoints (SyncChangesProvider::SCOPES); without it the list and its removals
  * come empty, while the cursor stays the same for every token.
@@ -54,6 +57,7 @@ use Symfony\Component\Validator\Constraints as Assert;
 final readonly class SyncChanges
 {
     /**
+     * @param int                                       $latest       the newest change number of the user, never below the cursor
      * @param list<array<string, mixed>>                $mailAccounts
      * @param list<array<string, mixed>>                $folders
      * @param list<array<string, mixed>>                $threads
@@ -76,6 +80,7 @@ final readonly class SyncChanges
     public function __construct(
         public int $cursor,
         public bool $hasMore,
+        public int $latest,
         public array $mailAccounts,
         public array $folders,
         public array $threads,

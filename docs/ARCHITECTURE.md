@@ -939,7 +939,11 @@ Goal: fast synchronisation that scales horizontally to billions of accounts' wor
 - `GET /api/v1/sync/changes?since=N&limit=500` (scope `mail:read`) returns mail accounts, folders (with role),
   threads (with their smart inbox, verdict and classification reason), messages (metadata, flags, folder ids, smart
   inbox and verdict, never bodies), smart inboxes, todos, hand-overs, daily briefs and `deleted` entries above N, plus the new `cursor` and
-  `hasMore`. Every list needs the scope its own endpoints need, so a personal access token or an app that is not
+  `hasMore`, and `latest`: the newest change number of the user (one primary-key read of `app_user.change_seq`, taken
+  after the page's boundary, so never below `cursor`). From `since`, `cursor` and `latest` a client tells how far
+  behind it is and shows a real fraction; `latest` can stay above the last cursor a pull reaches (a number whose rows
+  changed again, or that only rows the token cannot read carry), so a pull ends at `hasMore: false`. Servers from
+  before 0.9 send no `latest`; clients then show a pull without a fraction. Every list needs the scope its own endpoints need, so a personal access token or an app that is not
   ours gets only what the user allowed it: mail accounts, folders, threads, messages, outgoing messages, drafts,
   unsubscriptions, mail notifications, hand-overs and daily briefs with `mail:read`; calendars, calendar events,
   notifications and event notes with `calendar:read`; todos with `todos:read`; signatures with `signatures:read`;

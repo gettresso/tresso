@@ -88,11 +88,13 @@ final readonly class SyncChangesProvider implements ProviderInterface
         }
 
         [$until, $hasMore] = $this->boundary($userId, $since, $limit);
+        $latest = $this->latest($userId, $until);
         // Named arguments: a list added to SyncChanges but not here (or the other way round) fails loudly.
         if ($until === $since) {
             return new SyncChanges(
                 cursor: $since,
                 hasMore: false,
+                latest: $latest,
                 mailAccounts: [],
                 folders: [],
                 threads: [],
@@ -120,6 +122,7 @@ final readonly class SyncChangesProvider implements ProviderInterface
         return new SyncChanges(
             cursor: $until,
             hasMore: $hasMore,
+            latest: $latest,
             mailAccounts: $this->readIf($granted, 'mailAccount', $this->mailAccounts(...), $range),
             folders: $this->readIf($granted, 'folder', $this->folders(...), $range),
             threads: $this->readIf($granted, 'thread', $this->threads(...), $range),
@@ -168,6 +171,21 @@ final readonly class SyncChangesProvider implements ProviderInterface
         }
 
         return $granted;
+    }
+
+    /**
+     * The newest change number handed out to the user, so a client can tell how far behind it is: one primary-key read
+     * of the user's row, which the {@see \App\Sync\Change\ChangeSequencer} keeps current. Read after the page's
+     * boundary, so it is never below the page's cursor: the rows the boundary saw were committed with their numbers,
+     * and the row's number commits with them. It may be above the last row a client will ever get (a number whose rows
+     * changed again later, or that only rows another token cannot read carry), so clients take `hasMore: false`, not
+     * reaching this number, as the end of a pull.
+     */
+    private function latest(string $userId, int $until): int
+    {
+        $latest = $this->connection->fetchOne('SELECT change_seq FROM app_user WHERE id = :user', ['user' => $userId]);
+
+        return max($until, is_numeric($latest) ? (int) $latest : 0);
     }
 
     /**
