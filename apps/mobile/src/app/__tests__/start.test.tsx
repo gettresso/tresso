@@ -23,7 +23,7 @@ const { auth, mail } = vi.hoisted(() => ({
     handOvers: async () => [],
     version: 0,
     live: true,
-    status: { kind: 'catchingUp', text: 'Catching up: 12,400 changes to go', fraction: 0.4, remaining: 12_400, notice: 'Catching up on changes. What you see may be out of date until it is done.', announcement: 'Catching up, 25%' },
+    status: { kind: 'catchingUp', text: 'Catching up: 12,400 changes to go', fraction: 0.4, remaining: 12_400, notice: 'Catching up on changes. What you see may be out of date until it is done.', problem: null, announcement: 'Catching up, 25%' },
   },
 }))
 vi.mock('@/auth/AuthProvider', () => ({ useAuth: () => auth }))

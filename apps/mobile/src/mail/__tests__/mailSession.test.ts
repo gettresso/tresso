@@ -119,8 +119,8 @@ describe('MailSession', () => {
 
     release()
     // No realtime in this test: up to date, but not live.
-    await vi.waitFor(() => expect(last().status.kind).toBe('reconnecting'))
-    expect(last().status.text).toMatch(/^Reconnecting… Last synced /)
+    await vi.waitFor(() => expect(last().status.kind).toBe('connecting'))
+    expect(last().status.text).toBe('Connecting…')
 
     await mail.switchTo(null)
     expect(last().status).toMatchObject({ kind: 'closed', text: '' })
@@ -138,6 +138,18 @@ describe('MailSession', () => {
     await vi.waitFor(() => expect(second.last().status.kind).toBe('error'))
     expect(second.last().status.text).toMatch(/^Sync stopped\. Last synced /)
     await second.mail.switchTo(null)
+  })
+
+  it('says the sync stopped, not "Opening your mail…" for good, when the copy cannot be opened', async () => {
+    const disk = device()
+    const openSql = disk.openSql.bind(disk)
+    const failing = { ...disk, openSql: async (name: string) => (name === databaseName('kim') ? Promise.reject(new Error('disk full')) : openSql(name)) }
+    const { mail, last } = session(failing as unknown as ReturnType<typeof device>)
+
+    await mail.switchTo('kim')
+
+    expect(last().status).toMatchObject({ kind: 'error', problem: 'Sync stopped: disk full' })
+    expect(last().syncError).toBe('disk full')
   })
 
   it('aborts a realtime token request under way at sign-out, so removing the copy does not wait for it', async () => {
