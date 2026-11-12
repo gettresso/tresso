@@ -197,6 +197,10 @@ export interface MailStore extends SyncStore {
   todo(id: string): Promise<SyncedTodo | null>
   /** The todos made from the emails of a thread, in list order. */
   todosOfThread(threadId: string): Promise<SyncedTodo[]>
-  /** Finishes the writes under way and closes the copy; it takes no more writes. */
-  close(): Promise<void>
+  /**
+   * Finishes the writes under way and closes the copy; it takes no more writes. With `waitMs`, writes and reads that
+   * have not finished by then are no longer waited for: the copy closes anyway (said in a log line), so storage that
+   * never answers cannot hold up what comes next.
+   */
+  close(options?: { waitMs?: number }): Promise<void>
 }
