@@ -189,6 +189,38 @@ func TestReportsAProblemOnceUntilTheSyncWorksAgain(t *testing.T) {
 	}
 }
 
+func TestAProblemTheAPIStillHoldsIsNotReportedAgain(t *testing.T) {
+	server := newFakeServer(t, true)
+	fake := newFakeAPI(server.server.URL + "/dav/")
+	syncer := New(fake, plainDialer{}, "w1", Options{AllowHTTP: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	status := newStatusReporter(syncer, "a1", syncer.logger)
+	ctx := context.Background()
+
+	status.report(ctx, api.CalendarError, `The calendar "Home" could not be synced; trying again.`)
+	status.listed(api.CalendarError)
+	status.report(ctx, api.CalendarError, `The calendar "Home" could not be synced; trying again.`)
+	if len(fake.statuses) != 1 {
+		t.Fatalf("the API still holds the error: %v", fake.statuses)
+	}
+
+	status.report(ctx, api.CalendarError, `2 calendars could not be synced ("Home" and others); trying again.`)
+	if len(fake.statuses) != 2 {
+		t.Fatalf("a changed text is reported: %v", fake.statuses)
+	}
+
+	status.listed(api.CalendarActive)
+	status.report(ctx, api.CalendarError, `2 calendars could not be synced ("Home" and others); trying again.`)
+	if len(fake.statuses) != 3 {
+		t.Fatalf("the list made it active, so the error is reported again: %v", fake.statuses)
+	}
+
+	status.listed("")
+	status.report(ctx, api.CalendarError, `2 calendars could not be synced ("Home" and others); trying again.`)
+	if len(fake.statuses) != 4 {
+		t.Fatalf("an API that does not say the status gets it again: %v", fake.statuses)
+	}
+}
+
 func TestAWrongPasswordReachesTheUser(t *testing.T) {
 	server := newFakeServer(t, true)
 	fake := newFakeAPI(server.server.URL + "/dav/")

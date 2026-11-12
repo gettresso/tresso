@@ -26,7 +26,7 @@ import (
 // API is the part of the API client the syncer needs.
 type API interface {
 	Credentials(ctx context.Context, accountID, workerID string) (api.Credentials, error)
-	Calendars(ctx context.Context, accountID string, list api.CalendarList) ([]api.CalendarState, error)
+	Calendars(ctx context.Context, accountID string, list api.CalendarList) (api.CalendarListAnswer, error)
 	CalendarInventory(ctx context.Context, accountID, calendarID, workerID string, objects []api.RemoteObject, partial bool) (api.InventoryResult, error)
 	CalendarObjects(ctx context.Context, accountID, calendarID string, batch api.ObjectBatch) (api.ObjectBatchResult, error)
 	ClaimCalendarOperations(ctx context.Context, accountID, workerID string) ([]api.CalendarOperation, error)
@@ -176,8 +176,11 @@ type statusReporter struct {
 	syncer    *Syncer
 	accountID string
 	logger    *slog.Logger
-	last      string
-	recovery  calfailures.Recovery
+	// last, lastDetail and lastFound are the problem this reporter told the API about, while the API still holds it.
+	last       string
+	lastDetail string
+	lastFound  string
+	recovery   calfailures.Recovery
 }
 
 func newStatusReporter(s *Syncer, accountID string, logger *slog.Logger) *statusReporter {
@@ -193,11 +196,11 @@ func (r *statusReporter) report(ctx context.Context, status, detail string) {
 // itself still goes in, and the client reads the address from the detail instead.
 func (r *statusReporter) reportFound(ctx context.Context, status, detail, foundURL string) {
 	detail = truncateText(detail, maxDetail)
-	if r.last == status {
-		return
-	}
 	if !acceptableFoundURL(foundURL) {
 		foundURL = ""
+	}
+	if r.last == status && r.lastDetail == detail && r.lastFound == foundURL {
+		return
 	}
 	err := r.syncer.api.CalendarStatus(ctx, r.accountID, r.syncer.workerID, status, detail, foundURL)
 	var httpErr *api.HTTPError
@@ -211,7 +214,7 @@ func (r *statusReporter) reportFound(ctx context.Context, status, detail, foundU
 		r.logger.Warn("reporting the calendar status failed", "error", err)
 		return
 	}
-	r.last = status
+	r.last, r.lastDetail, r.lastFound = status, detail, foundURL
 	r.recovery.Problem()
 }
 
@@ -260,7 +263,15 @@ func (r *statusReporter) recovered(ctx context.Context) {
 }
 
 func (r *statusReporter) reset() {
-	r.last = ""
+	r.last, r.lastDetail, r.lastFound = "", "", ""
+}
+
+// listed takes the account's calendar status from the API's answer to a calendar list. The reported problem stands
+// only while the API still has that status; an API that does not send it gets the problem reported again.
+func (r *statusReporter) listed(status string) {
+	if status == "" || status != r.last {
+		r.reset()
+	}
 }
 
 // session opens the server and syncs until something fails. healthy reports whether a sync of every calendar went
@@ -296,9 +307,9 @@ func (s *Syncer) session(ctx context.Context, account api.Account, wake <-chan s
 			return healthy, err
 		}
 		healthy = true
-		// A calendar list the API accepted makes the status active there; calendars that keep failing make it an
-		// error again.
-		status.reset()
+		// A calendar list the API accepted makes the status active there unless it was an error; calendars that keep
+		// failing make it an error again, reported only when the API does not hold that error already.
+		status.listed(run.listStatus)
 		if detail, failing := failing.Detail(); failing {
 			status.report(ctx, api.CalendarError, detail)
 		} else if run.clean {
@@ -325,6 +336,8 @@ type run struct {
 	failing *calfailures.Tracker
 	// clean is set by syncAll when every calendar was synced and none failed or refused the login.
 	clean bool
+	// listStatus is the account's calendar status the API answered the last calendar list with.
+	listStatus string
 }
 
 // cursor is what the API keeps per calendar for this syncer: the sync token, or the ctag for servers without one.
@@ -350,10 +363,12 @@ func (r *run) syncAll(ctx context.Context) error {
 		}
 		list.Calendars = append(list.Calendars, remote)
 	}
-	states, err := r.syncer.api.Calendars(ctx, r.account.ID, list)
+	answer, err := r.syncer.api.Calendars(ctx, r.account.ID, list)
 	if err != nil {
 		return err
 	}
+	states := answer.Calendars
+	r.listStatus = answer.Status
 	r.states = make(map[string]api.CalendarState, len(states))
 	for _, state := range states {
 		r.states[state.RemoteID] = state

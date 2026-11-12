@@ -317,9 +317,11 @@ type fakeAPI struct {
 	results    map[string]api.OperationResult
 	statuses   []string
 	details    []string
-	foundURLs  []string
-	refuseURL  bool // answer a report with an address with 422
-	password   string
+	// status is the account's calendar status as the API keeps it: a list makes it active unless it is an error.
+	status    string
+	foundURLs []string
+	refuseURL bool // answer a report with an address with 422
+	password  string
 	// listFails answers the calendar list of that call (counted from 1) with an error; listedAt is when each came.
 	listFails map[int]bool
 	listedAt  []time.Time
@@ -346,19 +348,22 @@ func (a *fakeAPI) secret() string {
 	return "app-password"
 }
 
-func (a *fakeAPI) Calendars(_ context.Context, _ string, list api.CalendarList) ([]api.CalendarState, error) {
+func (a *fakeAPI) Calendars(_ context.Context, _ string, list api.CalendarList) (api.CalendarListAnswer, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.listedAt = append(a.listedAt, time.Now())
 	if a.listFails[len(a.listedAt)] {
-		return nil, fmt.Errorf("calendar list %d: unexpected status 503", len(a.listedAt))
+		return api.CalendarListAnswer{}, fmt.Errorf("calendar list %d: unexpected status 503", len(a.listedAt))
 	}
 	a.lists = append(a.lists, list)
 	states := make([]api.CalendarState, 0, len(list.Calendars))
 	for _, calendar := range list.Calendars {
 		states = append(states, api.CalendarState{RemoteID: calendar.RemoteID, ID: "cal-" + calendar.Name, Cursor: a.cursors["cal-"+calendar.Name]})
 	}
-	return states, nil
+	if a.status != api.CalendarError {
+		a.status = api.CalendarActive
+	}
+	return api.CalendarListAnswer{Calendars: states, Status: a.status}, nil
 }
 
 func (a *fakeAPI) CalendarInventory(_ context.Context, _, _, _ string, objects []api.RemoteObject, partial bool) (api.InventoryResult, error) {
@@ -423,6 +428,9 @@ func (a *fakeAPI) CalendarStatus(_ context.Context, _, _, status, detail, foundU
 	a.statuses = append(a.statuses, status)
 	a.details = append(a.details, detail)
 	a.foundURLs = append(a.foundURLs, foundURL)
+	if status != api.CalendarActive || a.status == api.CalendarError {
+		a.status = status
+	}
 	return nil
 }
 

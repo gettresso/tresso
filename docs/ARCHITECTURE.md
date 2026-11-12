@@ -1854,7 +1854,10 @@ accepted. An `error` is about the sync itself, so a list does not clear it (a ca
 make the status flip every round). The worker ends it: after a round in which every calendar synced (also when none
 had changes) it reports `active` once, and while a calendar keeps failing it reports `error`, never `active`. The API
 takes `active` only over `error`; any other status (a login, a permission, an address to confirm) stays until a
-calendar list shows it is solved.
+calendar list shows it is solved. The list's answer carries the account's `calendarStatus` after the list, so the
+worker reports a problem again only when it changed (another status or another text) or the API no longer holds it
+(a sign-in again sets it back to `unknown`, and the list then makes it `active`); an API that does not send the field
+gets the problem after every round, as before.
 The clients show it where the user looks: the account's card in Settings, Accounts carries a badge for
 `not_granted`, `auth_failed`, `error` and `unconfirmed` and opens by itself, and the calendar page lists every account
 whose calendars do not show, with "Allow calendar access" (one sign-in that adds the calendar scopes) for
@@ -1901,7 +1904,7 @@ reads the address from `calendarStatusDetail`.
     is skipped; only when every calendar refuses is the account's status `auth_failed`. Status details are cut to 500
     characters and name server addresses without login or query.
   - Ingest: `POST /internal/sync/accounts/{id}/calendars` (the complete calendar list, answers each calendar's
-    cursor; calendars missing from the list are deleted, except after an empty list, after the first list from
+    cursor and the account's `calendarStatus`; calendars missing from the list are deleted, except after an empty list, after the first list from
     another server, and while they have writes to make) and `POST /internal/sync/accounts/{id}/calendars/{calendarId}/objects`
     (up to 100 changed resources as `href`, `etag` and raw iCalendar, removed hrefs, and the new cursor). The API
     parses every resource with sabre/vobject, so there is one iCalendar implementation on the server. The cursor only
