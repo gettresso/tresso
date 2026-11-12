@@ -6,7 +6,7 @@ import { askView, forgetViewRequests } from '@/components/viewRequests'
  * The actions of the desktop app's menu bar that act in the web client (apps/desktop/src-tauri/src/menu.rs, which a
  * test keeps to this list). The shell sends each as the `menu` event with its name.
  */
-export const MENU_ACTIONS = ['new-message', 'new-event', 'new-todo', 'settings', 'find', 'view-inbox', 'view-triage', 'view-todos', 'view-calendar', 'view-search', 'reload'] as const
+export const MENU_ACTIONS = ['new-message', 'new-event', 'new-todo', 'settings', 'find', 'view-inbox', 'view-triage', 'view-todos', 'view-calendar', 'view-search', 'toggle-sidebar', 'reload'] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
 
@@ -26,6 +26,10 @@ export interface MenuTargets {
   signedIn(): boolean
   /** Loads the app again once the draft is saved and nothing is on its way (updates.reloadApp). */
   reload(): Promise<void>
+  /** Hides or shows the sidebar (the frame store's toggle). */
+  toggleSidebar(): void
+  /** Whether the sidebar shows; View > Hide Sidebar or Show Sidebar is named after it. */
+  sidebarShown(): boolean
 }
 
 /**
@@ -77,18 +81,22 @@ export async function runMenuAction(action: MenuAction, targets: MenuTargets): P
     case 'view-search':
       await targets.router.push({ name: 'search' })
       return
+    case 'toggle-sidebar':
+      targets.toggleSidebar()
+      return
   }
 }
 
 /** The shell's side: hearing its events and telling it whether the items may act. */
 export interface MenuShell {
   listen(event: string, handler: (event: { payload: unknown }) => void): Promise<() => void>
-  invoke(command: 'menu_state', args: { signedIn: boolean }): Promise<unknown>
+  invoke(command: 'menu_state', args: { signedIn: boolean; sidebarShown: boolean }): Promise<unknown>
 }
 
 /**
- * The bridge to the desktop app's menu bar (desktop only): runs its actions, and enables the items that act in the
- * web client while someone is signed in, through the one command `menu_state`. Returns the function that stops it.
+ * The bridge to the desktop app's menu bar (desktop only): runs its actions, enables the items that act in the web
+ * client while someone is signed in, and names the sidebar item after the sidebar's state, through the one command
+ * `menu_state`. Returns the function that stops it.
  */
 export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, onError: (error: unknown) => void = (error) => console.error('A menu action failed', error)): Promise<() => void> {
   const unlisten = await shell.listen(MENU_EVENT, ({ payload }) => {
@@ -97,12 +105,12 @@ export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, on
     }
   })
   const stopWatching = watch(
-    () => targets.signedIn(),
-    (signedIn) => {
-      if (!signedIn) {
+    () => [targets.signedIn(), targets.sidebarShown()] as const,
+    ([signedIn, sidebarShown], before) => {
+      if (!signedIn && before?.[0] !== false) {
         forgetViewRequests()
       }
-      shell.invoke('menu_state', { signedIn }).catch(onError)
+      shell.invoke('menu_state', { signedIn, sidebarShown }).catch(onError)
     },
     { immediate: true },
   )

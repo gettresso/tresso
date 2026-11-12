@@ -305,6 +305,10 @@ watch(
   z-index: 60;
   height: var(--titlebar);
 }
+/* The signed-in desktop shell has its own title strip and moves the window there (AppShell). */
+html.frame-shell .titlebar {
+  display: none;
+}
 .problem {
   animation: fade-in var(--motion-base) ease-out;
   position: fixed;
