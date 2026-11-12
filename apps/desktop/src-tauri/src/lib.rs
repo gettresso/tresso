@@ -37,6 +37,7 @@ pub fn run() {
       sql::sql_select,
       sql::sql_close,
       sql::sql_delete,
+      sql::sql_list,
     ])
     .setup(|app| {
       main_window(app)?;
