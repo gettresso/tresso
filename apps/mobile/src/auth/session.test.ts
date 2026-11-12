@@ -142,16 +142,29 @@ describe('Session', () => {
     expect(store.saved).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' })
   })
 
-  it.each(['invalid_grant', 'invalid_request'])('ends the sign-in as expired when the refresh token is refused (%s), and keeps who it was', async (code) => {
+  it.each(['invalid_grant', 'invalid_request', 'invalid_client', 'unauthorized_client'])('ends the sign-in as expired when the token endpoint refuses the refresh (%s), and keeps who it was', async (code) => {
     const store = memoryStore(expired())
-    const session = await restored(store, vi.fn<Fetch>(async () => refused(code)))
+    const fetchImpl = vi.fn<Fetch>(async () => refused(code))
+    const session = await restored(store, fetchImpl)
 
-    await expect(session.accessToken()).rejects.toThrow('The refresh token is invalid.')
+    await expect(session.accessToken()).rejects.toMatchObject({ status: 401, message: 'Your session has expired. Sign in again.' })
 
+    expect(fetchImpl).toHaveBeenCalledOnce()
     expect(session.snapshot.tokens).toBeNull()
     expect(session.snapshot.ended).toBe('expired')
     expect(store.saved).toBeNull()
     expect(store.lastUser).toBe('kim')
+  })
+
+  it.each(['invalid_scope', 'server_error', 'temporarily_unavailable'])('keeps the sign-in when the token endpoint answers %s', async (code) => {
+    const store = memoryStore(expired())
+    const session = await restored(store, vi.fn<Fetch>(async () => refused(code)))
+
+    await expect(session.accessToken()).rejects.toBeInstanceOf(RenewalFailedError)
+
+    expect(session.snapshot.tokens?.refreshToken).toBe('refresh-1')
+    expect(session.snapshot.ended).toBeNull()
+    expect(store.saved?.refreshToken).toBe('refresh-1')
   })
 
   it('keeps the sign-in when the refresh request and its retry fail without an answer', async () => {

@@ -15,8 +15,12 @@ const TOKEN_TIMEOUT_MS = 20_000
  * answers the same refresh token with the same new pair for 30 seconds, so the retry has to come well within that.
  */
 const REFRESH_RETRY_DELAY_MS = 2_000
-/** The token endpoint's answers that mean the refresh token is no longer good; anything else is tried again later. */
-const REFUSED_REFRESH = new Set(['invalid_grant', 'invalid_request'])
+/**
+ * The token endpoint's answers that end the sign-in: the refresh token is no longer good (revoked, expired, already
+ * rotated), the request is one the server will never accept, or the server no longer knows or allows this client.
+ * Anything else (offline, a timeout, a 5xx) is tried again later.
+ */
+const SESSION_ENDING_ERRORS = new Set(['invalid_grant', 'invalid_request', 'invalid_client', 'unauthorized_client'])
 const EXPIRED = 'Your session has expired. Sign in again.'
 
 /** Where the tokens are kept between launches. */
@@ -322,11 +326,11 @@ export class Session {
       if (generation !== this.generation) {
         throw new ApiError(401, 'Signed out.')
       }
-      if (!(error instanceof OAuthError && error.code !== null && REFUSED_REFRESH.has(error.code))) {
+      if (!endsSession(error)) {
         throw new RenewalFailedError(error)
       }
       await this.expire()
-      throw error
+      throw new ApiError(401, EXPIRED)
     }
     if (generation !== this.generation) {
       // The sign-in ended while this was underway: the new refresh token is not kept, so it should not stay valid.
@@ -452,6 +456,10 @@ export class Session {
     this.state = { ...this.state, ...change }
     this.listeners.forEach((listener) => listener())
   }
+}
+
+function endsSession(error: unknown): boolean {
+  return error instanceof OAuthError && error.code !== null && SESSION_ENDING_ERRORS.has(error.code)
 }
 
 function wait(ms: number): Promise<void> {
