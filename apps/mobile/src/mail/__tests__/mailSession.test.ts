@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_MESSAGES_PER_ACTION, newDraft, PartialActionError, type ChangePage, type MessageActionRequest, type RealtimeAccess, type SyncedHandOver, type SyncedMessage, type SyncedUnsubscription, type ThreadClassificationRequest, type UnsubscribeRequest } from '@tresso/core'
 import { databaseName, MailSession, type MailSessionDeps, type MailState } from '../mailSession'
+import { CHAT_BACKFILL, SqliteMailStore } from '@tresso/core'
 import type { Sql } from '../sql'
 import { memorySql } from '@tresso/core/testing/sql'
 
@@ -57,6 +58,7 @@ function session(
     release: () => Promise.reject(new Error('no classification in this test')),
   },
   fetchAccess: MailSessionDeps['fetchAccess'] = () => Promise.reject(new Error('no realtime in this test')),
+  fetchChatAccounts: MailSessionDeps['fetchChatAccounts'] = async () => [],
 ) {
   const states: MailState[] = []
   const mail = new MailSession({
@@ -64,6 +66,7 @@ function session(
     deleteSql: (name) => disk.deleteSql(name),
     fetchPage,
     fetchAccess,
+    fetchChatAccounts,
     postAction,
     postUnsubscribe,
     ...classification,
@@ -84,6 +87,72 @@ function session(
 }
 
 describe('MailSession', () => {
+  describe('after the update that added chats', () => {
+    /** A copy synced up to cursor 5 and marked by the update, as version 10 leaves a version 9 copy. */
+    async function markedCopy(disk: ReturnType<typeof device>): Promise<void> {
+      const sql = await disk.openSql(databaseName('kim'))
+      const store = await SqliteMailStore.open(sql)
+      await store.apply(page(5, { mailAccounts: [account] }))
+      await store.setChatMeta(CHAT_BACKFILL, '1')
+      await store.close()
+    }
+
+    function run(chatAccounts: MailSessionDeps['fetchChatAccounts']) {
+      const disk = device()
+      const asked: number[] = []
+      const fetchPage = async (since: number) => {
+        asked.push(since)
+        return page(since === 0 ? 7 : since, since === 0 ? { mailAccounts: [account] } : {})
+      }
+      return { disk, asked, open: () => session(disk, fetchPage, undefined, undefined, undefined, undefined, undefined, chatAccounts) }
+    }
+
+    it('goes on from its cursor when the server holds no chat account, and asks only once', async () => {
+      let checks = 0
+      const { disk, asked, open } = run(async () => (checks++, []))
+      await markedCopy(disk)
+      const { mail, last } = open()
+
+      await mail.switchTo('kim')
+      await vi.waitFor(() => expect(last()).toMatchObject({ synced: true }))
+
+      expect(checks).toBe(1)
+      expect(asked[0]).toBe(5)
+      expect(await mail.database!.chatMeta(CHAT_BACKFILL)).toBeNull()
+      expect(last().status.text).not.toContain('after the update')
+    })
+
+    it('syncs from the start when the server holds a chat account', async () => {
+      const { disk, asked, open } = run(async () => [{ id: 'acct' }])
+      await markedCopy(disk)
+      const { mail, last } = open()
+
+      await mail.switchTo('kim')
+      await vi.waitFor(() => expect(last()).toMatchObject({ synced: true }))
+
+      expect(asked[0]).toBe(0)
+      expect(await mail.database!.chatMeta(CHAT_BACKFILL)).toBeNull()
+    })
+
+    it('keeps the mark for the next start when the check fails, and syncs on anyway', async () => {
+      const error = console.error
+      console.error = () => undefined
+      try {
+        const { disk, asked, open } = run(() => Promise.reject(new TypeError('Network request failed')))
+        await markedCopy(disk)
+        const { mail, last } = open()
+
+        await mail.switchTo('kim')
+        await vi.waitFor(() => expect(last()).toMatchObject({ synced: true }))
+
+        expect(asked[0]).toBe(5)
+        expect(await mail.database!.chatMeta(CHAT_BACKFILL)).toBe('1')
+      } finally {
+        console.error = error
+      }
+    })
+  })
+
   it("opens the user's copy, syncs it, and deletes it on sign-out only after closing it", async () => {
     const disk = device()
     const { mail, last } = session(disk)

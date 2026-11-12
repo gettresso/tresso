@@ -1,5 +1,6 @@
 import {
   appliedFor,
+  backfillChats,
   MAX_MESSAGES_PER_ACTION,
   PartialActionError,
   RealtimeClient,
@@ -61,6 +62,8 @@ export interface MailSessionDeps {
   openSql(name: string): Promise<Sql & { close(): Promise<void> }>
   deleteSql(name: string): Promise<void>
   fetchPage(since: number, limit: number): Promise<ChangePage>
+  /** GET /api/v1/chat-accounts, for the one check of a copy updated to keep chats (see backfillChats). */
+  fetchChatAccounts(): Promise<readonly unknown[]>
   /** GET /api/v1/realtime/token; `signal` aborts when the stream stops (a sign-out), so nothing waits for it. */
   fetchAccess(signal: AbortSignal): Promise<RealtimeAccess>
   /** The time on the server's clock (epoch ms), which hub tokens expire by; the device's by default. */
@@ -414,8 +417,12 @@ export class MailSession {
     this.open = opened
     this.update({ userId, ready: true, synced: false, version: this.state.version + 1, syncError: null })
     this.status.opened({ confirmed: true, afterUpdate: database.afterUpdate, lastSyncedAt })
-    // Not awaited: the copy on the device shows right away, and a switch (a sign-out) does not wait for the pull.
-    void this.pull(opened, () => engine.sync()).then(() => {
+    // Not awaited: the copy on the device shows right away, and a switch (a sign-out) does not wait for the pull. Before
+    // the first pull, a copy updated to keep chats checks once whether it must fetch them from the start.
+    void this.pull(opened, async () => {
+      await this.backfillChats(opened)
+      return engine.sync()
+    }).then(() => {
       if (this.open === opened) {
         this.update({ synced: true })
       }
@@ -424,6 +431,17 @@ export class MailSession {
     void this.drafts.uploadPending()
     if (this.foreground) {
       opened.realtime.start()
+    }
+  }
+
+  /** The one check of a copy updated to keep chats (see backfillChats); a failure leaves it for the next start. */
+  private async backfillChats(open: Open): Promise<void> {
+    try {
+      await backfillChats(open.database, () => this.deps.fetchChatAccounts())
+    } catch (error) {
+      if (this.open === open) {
+        console.error('Checking the server for chats failed; the next start asks again', error)
+      }
     }
   }
 
