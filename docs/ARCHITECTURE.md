@@ -1862,7 +1862,7 @@ an account has none yet. A notice can be hidden; that is remembered in the brows
 as the account keeps that status, so a problem that goes away and comes back shows again. An IMAP account's settings show its CalDAV status and take the CalDAV address
 (`calendarUrl`), with "Use this address" for one the worker found but may not trust on its own (`unconfirmed`). The
 worker may send that address as `url` with the status; the API keeps it while the status is `unconfirmed` and returns
-it as the account's `calendarFoundUrl`. A worker that sends only the sentence is still understood: the client then
+it as the account's `calendarFoundUrl`, in the account resource and in the sync delta alike. A worker that sends only the sentence is still understood: the client then
 reads the address from `calendarStatusDetail`.
 
 - **CalDAV** for IMAP accounts (`apps/sync/internal/caldavsync` on a small WebDAV client in `internal/caldav`, through
