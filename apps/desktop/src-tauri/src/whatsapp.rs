@@ -1,21 +1,29 @@
 //! WhatsApp through whatsapp-mcp's bridge, on macOS. The user installs whatsapp-mcp and builds its Go bridge once;
-//! Tresso starts that binary from the folder the user picked (or uses a bridge that already runs), reads the bridge's
-//! SQLite store read only, and calls its REST API on 127.0.0.1. No MCP client and no Python: the relay logic lives in
+//! Tresso starts that binary from the folder the user picked, reads the bridge's SQLite store read only, and calls its
+//! REST API on 127.0.0.1. No MCP client and no Python: the relay logic lives in
 //! the web client (packages/core/src/chat), these commands only start, watch and stop the process, read, send and
 //! download.
 //!
 //! The rules this module keeps, each with a test at the bottom:
 //! - The bridge starts only from a folder the user picked in the folder dialog: the binary
 //!   `<folder>/whatsapp-bridge/whatsapp-bridge`, without a shell, without arguments, with `<folder>/whatsapp-bridge` as
-//!   working directory (so its store stays where whatsapp-mcp's own server looks) and the port in
-//!   `WHATSAPP_BRIDGE_PORT` (the patched bridge reads it, upstream ignores it and listens on 8080).
+//!   working directory (so its store stays where whatsapp-mcp's own server looks), an environment of HOME, PATH and
+//!   TMPDIR only, and the port and a token in `WHATSAPP_BRIDGE_PORT` and `WHATSAPP_BRIDGE_TOKEN`. The binary and its
+//!   folder must belong to the user and be writable by nobody else.
+//! - The bridge's REST API has no authentication of its own, and any page or program on the Mac can reach 127.0.0.1.
+//!   So Tresso makes a random token per launch, gives it only to the bridge it starts (never to the web view, a file
+//!   or the log) and sends it on every request; a bridge that answers without it is not used (`unprotected`). The
+//!   contract a bridge must keep is in docs/whatsapp-bridge.md. A bridge Tresso did not start never has the token, so
+//!   Tresso no longer attaches to one: it says the port is taken instead.
 //! - HTTP goes to 127.0.0.1 only, on a port the bridge itself confirmed (the probe below), never through a proxy and
 //!   never following a redirect.
 //! - The store is opened read only with `query_only` on: no write, no journal, no WAL file reaches the user's store.
-//! - A download is copied into the app's own folder under a name Tresso makes, and only when its SHA-256 matches the
-//!   one the store holds; a file that differs is removed and refused. The bridge's path is used only after it proved
-//!   to be a file inside the store folder.
-//! - A file is sent only when the user picked it in the file dialog, and only files in the app's download folder open.
+//! - A download is asked for only when the stored file name is one plain name (the bridge joins it to its folder, so a
+//!   name with `../` would make the bridge write anywhere). It is copied into the app's own folder (0700) under a name
+//!   Tresso makes, marked as downloaded from the internet (quarantine), and kept only when its SHA-256 matches the one
+//!   the store holds; a file that differs is removed and refused. The bridge's path is used only after it proved to
+//!   be a file inside the store folder.
+//! - A file is sent only when the user picked it in the file dialog, and only Tresso's own downloads open.
 //! - The bridge's output carries the text of incoming messages, and a message can hold line breaks, so a line in it
 //!   proves nothing by itself: a QR code is read only while the store has no session (no message arrives then), the
 //!   REST port only once the port answers as a bridge, a log out only once the session is gone from the store. Output
@@ -63,17 +71,28 @@ const MAX_TEXT_BYTES: usize = 65_536;
 const MAX_LEFT_OUT: usize = 10_000;
 const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_ANSWER_BYTES: u64 = 1024 * 1024;
+/// A longer line of the bridge's output is dropped (a message can be long; no line Tresso reads is).
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+/// Text and file names longer than this are cut when read (WhatsApp's own limit for a text is 65536 characters).
+const MAX_FIELD_CHARS: u32 = 65_536;
+const TOKEN_VARIABLE: &str = "WHATSAPP_BRIDGE_TOKEN";
+const TOKEN_HEADER: &str = "X-Bridge-Token";
+/// The only variables the bridge gets besides the port and the token: no proxy, no library paths.
+const PASSED_VARIABLES: [&str; 3] = ["HOME", "PATH", "TMPDIR"];
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a bridge has to answer after it printed that its REST API starts (the server starts right after the line).
 const LISTEN_WAIT: Duration = Duration::from_secs(5);
+/// How long the end of a run waits for the rest of its output.
+const READ_TO_END: Duration = Duration::from_secs(1);
 const UNSUPPORTED: &str = "unsupported";
-/// Extensions a downloaded file keeps; anything else is saved as `.bin`, so opening a received file never runs it
-/// (a `.command` or `.app` would).
-const SAFE_EXTENSIONS: [&str; 36] = [
+/// Extensions a downloaded file keeps; anything else is saved as `.bin`, so opening a received file never runs code:
+/// pictures, sound, video, PDF, plain text and documents whose apps run no code (Office's macro formats, archives,
+/// web pages, SVG, disk images, installers, apps and scripts are not here).
+const SAFE_EXTENSIONS: [&str; 32] = [
   "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "mp4", "mov", "m4v", "3gp", "ogg", "oga", "opus", "mp3", "m4a", "aac", "wav",
-  "pdf", "txt", "csv", "rtf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "pages", "numbers", "key", "vcf", "zip",
+  "pdf", "txt", "csv", "rtf", "docx", "xlsx", "pptx", "odt", "ods", "odp", "pages", "numbers", "key", "vcf",
 ];
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -92,8 +111,6 @@ fn code(text: &str) -> String {
 pub enum Process {
   /// Tresso started it and reads its output.
   Owned,
-  /// It already ran when Tresso looked; Tresso uses it and never stops it.
-  Attached,
   Stopped,
 }
 
@@ -113,8 +130,13 @@ pub enum Failure {
   NotBuilt,
   /// It stopped three times within a minute; Tresso no longer starts it by itself.
   Exited,
-  /// Its REST API could not listen: something else holds the port.
+  /// Its REST API could not listen, or another bridge already answers on the port.
   PortBusy,
+  /// A bridge answers without Tresso's token (upstream whatsapp-mcp, or one started in a terminal): anything on the
+  /// Mac could send messages through it, so Tresso does not use it.
+  Unprotected,
+  /// The binary or its folder can be changed by another user.
+  Unsafe,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -318,11 +340,14 @@ impl Default for Settings {
 
 type Emit = Arc<dyn Fn(&Snapshot) + Send + Sync>;
 
-/// The bridge Tresso started or uses, managed as Tauri state.
+/// The bridge Tresso started, managed as Tauri state.
 pub struct Bridge(Arc<Shared>);
 
 struct Shared {
   settings: Settings,
+  /// 32 random bytes from the OS, in hex, made once per launch. Only the bridge's environment and the requests to it
+  /// carry it.
+  token: String,
   inner: Mutex<Inner>,
   /// Notified when a run ends.
   ended: Condvar,
@@ -330,8 +355,15 @@ struct Shared {
   control: Mutex<()>,
   emit: Mutex<Option<Emit>>,
   data_dir: Mutex<Option<PathBuf>>,
-  /// The files the user picked in the file dialog this session: the only ones a message may carry.
+  /// The files the user picked in the file dialog since the last sign-out: the only ones a message may carry.
   chosen_files: Mutex<HashSet<PathBuf>>,
+}
+
+/// A fresh token. Without random bytes from the OS nothing here can be made safe, so that stops the app.
+fn new_token() -> String {
+  let mut bytes = [0u8; 32];
+  getrandom::fill(&mut bytes).expect("the operating system gave no random bytes");
+  hex(&bytes)
 }
 
 struct Inner {
@@ -369,19 +401,22 @@ struct Run {
   relink: bool,
   qr_timeout: bool,
   listen_failed: bool,
+  /// It answered without the token.
+  unprotected: bool,
 }
 
 impl Default for Bridge {
   fn default() -> Self {
-    Bridge::new(Settings::default())
+    Bridge::new(Settings::default(), new_token())
   }
 }
 
 impl Bridge {
-  fn new(settings: Settings) -> Self {
+  fn new(settings: Settings, token: String) -> Self {
     let backoff = settings.first_backoff;
     Bridge(Arc::new(Shared {
       settings,
+      token,
       inner: Mutex::new(Inner { snapshot: Snapshot::stopped(None), generation: 0, run: None, launch: None, exits: VecDeque::new(), backoff }),
       ended: Condvar::new(),
       control: Mutex::new(()),
@@ -405,13 +440,14 @@ impl Bridge {
     lock(&self.0.inner).launch.as_ref().map(|launch| launch.dir.clone())
   }
 
-  /// Uses the bridge that already runs, or starts the one in `folder` (canonical, picked by the user).
+  /// Starts the bridge in `folder` (canonical, picked by the user), unless another bridge already answers on one of
+  /// the ports: two bridges on one session knock each other off, so that one has to stop first.
   fn start(&self, folder: &Path) -> Snapshot {
     let _control = lock(&self.0.control);
     let launch = launch_of(folder);
     {
       let inner = lock(&self.0.inner);
-      if inner.run.is_some() && launch.is_some() && inner.launch == launch {
+      if inner.run.is_some() && launch.as_ref().ok() == inner.launch.as_ref() {
         return inner.snapshot.clone();
       }
     }
@@ -419,15 +455,13 @@ impl Bridge {
     if let Some(data_dir) = lock(&self.0.data_dir).clone() {
       stop_left_over(&data_dir, self.0.settings.grace);
     }
-    if let Some(port) = self.0.settings.ports.iter().copied().find(|port| is_bridge(*port)) {
-      let mut inner = lock(&self.0.inner);
-      inner.snapshot = Snapshot { process: Process::Attached, port: Some(port), loopback_only: loopback_only(port), link: Link::Unknown, qr: None, error: None };
-      return self.0.publish(inner);
-    }
+    let found = self.0.settings.ports.iter().map(|port| probe(*port, &self.0.token)).find(|found| *found != Probe::Nothing);
     let mut inner = lock(&self.0.inner);
-    match launch {
-      None => inner.snapshot = Snapshot::stopped(Some(Failure::NotBuilt)),
-      Some(launch) => {
+    match (found, launch) {
+      (Some(Probe::Unprotected), _) => inner.snapshot = Snapshot::stopped(Some(Failure::Unprotected)),
+      (Some(_), _) => inner.snapshot = Snapshot::stopped(Some(Failure::PortBusy)),
+      (None, Err(failure)) => inner.snapshot = Snapshot::stopped(Some(failure)),
+      (None, Ok(launch)) => {
         inner.exits.clear();
         inner.backoff = self.0.settings.first_backoff;
         if let Err(failure) = Shared::spawn(&self.0, &mut inner, launch) {
@@ -438,7 +472,7 @@ impl Bridge {
     self.0.publish(inner)
   }
 
-  /// Stops the bridge Tresso started (SIGTERM, then SIGKILL after the grace time) and lets go of one it attached to.
+  /// Stops the bridge Tresso started: SIGTERM, then SIGKILL after the grace time.
   fn stop(&self) -> Snapshot {
     let _control = lock(&self.0.control);
     self.stop_now()
@@ -472,6 +506,23 @@ impl Bridge {
       log::error!("The WhatsApp bridge is still running after SIGKILL");
     }
     inner.snapshot.clone()
+  }
+
+  /// Stops a bridge an earlier run left behind, under the same lock as a start, so a start cannot begin meanwhile.
+  fn stop_left_over(&self) {
+    let _control = lock(&self.0.control);
+    if lock(&self.0.inner).run.is_some() {
+      return;
+    }
+    if let Some(data_dir) = lock(&self.0.data_dir).clone() {
+      stop_left_over(&data_dir, self.0.settings.grace);
+    }
+  }
+
+  /// The sign-in ended: the bridge stops and the files picked for the user who left can no longer be sent.
+  fn signed_out(&self) {
+    lock(&self.0.chosen_files).clear();
+    self.stop();
   }
 
   #[cfg(test)]
@@ -516,12 +567,18 @@ impl Shared {
 
   fn spawn(shared: &Arc<Shared>, inner: &mut Inner, launch: Launch) -> Result<(), Failure> {
     // whatsmeow prints a QR code only when the store holds no session; a store that holds one can show no code, so
-    // whatever looks like one in the output is message text.
-    let expect_qr = !matches!(identity(&launch.session_db()), Ok(Some(_)));
+    // whatever looks like one in the output is message text. A store that cannot be read shows no code either.
+    let expect_qr = matches!(identity(&launch.session_db()), Ok(None));
     let mut command = Command::new(&launch.binary);
+    command.current_dir(&launch.dir).env_clear();
+    for name in PASSED_VARIABLES {
+      if let Some(value) = std::env::var_os(name) {
+        command.env(name, value);
+      }
+    }
     command
-      .current_dir(&launch.dir)
       .env(PORT_VARIABLE, shared.settings.ports[0].to_string())
+      .env(TOKEN_VARIABLE, &shared.token)
       .stdin(Stdio::null())
       .stdout(Stdio::piped())
       .stderr(Stdio::piped());
@@ -547,6 +604,7 @@ impl Shared {
       relink: false,
       qr_timeout: false,
       listen_failed: false,
+      unprotected: false,
     });
     inner.snapshot = Snapshot { process: Process::Owned, port: None, loopback_only: None, link: Link::Unknown, qr: None, error: None };
     if let Some(data_dir) = lock(&shared.data_dir).clone() {
@@ -554,19 +612,20 @@ impl Shared {
     }
     inner.launch = Some(launch);
 
-    let readers: Vec<_> = [stdout.map(|out| Box::new(out) as Box<dyn Read + Send>), stderr.map(|err| Box::new(err) as Box<dyn Read + Send>)]
-      .into_iter()
-      .flatten()
-      .map(|source| {
-        let shared = Arc::clone(shared);
-        thread::spawn(move || read_output(&shared, generation, source))
-      })
-      .collect();
+    let (finished, read_to_end) = std::sync::mpsc::channel::<()>();
+    let mut readers = 0;
+    for source in [stdout.map(|out| Box::new(out) as Box<dyn Read + Send>), stderr.map(|err| Box::new(err) as Box<dyn Read + Send>)].into_iter().flatten() {
+      readers += 1;
+      let shared = Arc::clone(shared);
+      let finished = finished.clone();
+      thread::spawn(move || {
+        read_output(&shared, generation, source);
+        let _ = finished.send(());
+      });
+    }
     let shared = Arc::clone(shared);
     thread::spawn(move || {
-      for reader in readers {
-        let _ = reader.join();
-      }
+      // The exit decides, not the end of the output: a process the bridge started can keep its pipes open.
       loop {
         // Not held while sleeping: a stop takes the same lock to signal the child.
         let status = lock(&child).try_wait();
@@ -574,6 +633,13 @@ impl Shared {
           break;
         }
         thread::sleep(shared.settings.poll);
+      }
+      // The last lines (a port error, a QR timeout) say why it ended: a moment for the readers to get to them.
+      let deadline = Instant::now() + READ_TO_END;
+      for _ in 0..readers {
+        if read_to_end.recv_timeout(deadline.saturating_duration_since(Instant::now())).is_err() {
+          break;
+        }
       }
       Shared::ended(&shared, generation);
     });
@@ -593,6 +659,11 @@ impl Shared {
           return;
         }
         QrFeed::Code(rows) => {
+          // Checked again as the code is shown: a session in the store means this is message text.
+          if !inner.launch.as_ref().is_some_and(|launch| matches!(identity(&launch.session_db()), Ok(None))) {
+            log::warn!("Ignored a QR code in the bridge's output while its store holds a session");
+            return;
+          }
           inner.snapshot.link = Link::WaitingForScan;
           inner.snapshot.qr = Some(rows);
           shared.publish(inner);
@@ -634,10 +705,24 @@ impl Shared {
     }
   }
 
-  /// Takes the port of a `Starting REST API server` line once the port answers as a bridge.
+  /// Takes the port of a `Starting REST API server` line once the port answers as this bridge, with the token. A
+  /// bridge that answers without it is stopped and not used.
   fn confirm_port(shared: &Arc<Shared>, generation: u64, port: u16, line_says_loopback: bool) {
     let deadline = Instant::now() + LISTEN_WAIT;
-    while !is_bridge(port) {
+    loop {
+      match probe(port, &shared.token) {
+        Probe::Ours => break,
+        Probe::Unprotected => {
+          log::error!("The WhatsApp bridge answers without Tresso's token; stopping it");
+          let mut inner = lock(&shared.inner);
+          if let Some(run) = inner.run.as_mut().filter(|run| run.generation == generation && !run.stopping) {
+            run.unprotected = true;
+            terminate(&run.child);
+          }
+          return;
+        }
+        Probe::Nothing | Probe::Foreign => {}
+      }
       if Instant::now() >= deadline || !shared.runs(generation) {
         log::warn!("The WhatsApp bridge named port {port}, which does not answer as a bridge");
         if let Some(run) = lock(&shared.inner).run.as_mut().filter(|run| run.generation == generation) {
@@ -692,7 +777,10 @@ impl Shared {
     if let Some(data_dir) = lock(&shared.data_dir).clone() {
       remove_pid_file(&data_dir);
     }
-    if run.stopping {
+    if run.unprotected {
+      inner.launch = None;
+      inner.snapshot = Snapshot::stopped(Some(Failure::Unprotected));
+    } else if run.stopping {
       inner.snapshot = Snapshot::stopped(None);
     } else if run.relink && let Some(launch) = inner.launch.clone() {
       // The session is gone: the new process asks for a code. Not an unexpected exit.
@@ -755,23 +843,41 @@ impl Shared {
 }
 
 fn read_output(shared: &Arc<Shared>, generation: u64, source: Box<dyn Read + Send>) {
-  let mut reader = BufReader::new(source);
   let mut qr = QrReader::default();
+  read_lines(source, MAX_LINE_BYTES, |line| Shared::on_line(shared, generation, line, &mut qr));
+}
+
+/// Calls `line` with each line of `source`, without its line break; spaces stay (a space is a dark module of a QR
+/// code). A line longer than `max` bytes is dropped whole, without holding more than `max` bytes of it.
+fn read_lines(source: impl Read, max: usize, mut line: impl FnMut(&str)) {
+  let mut reader = BufReader::new(source);
   let mut buffer = Vec::new();
+  let limit = max as u64 + 1;
   loop {
     buffer.clear();
-    match reader.read_until(b'\n', &mut buffer) {
+    match (&mut reader).take(limit).read_until(b'\n', &mut buffer) {
       Ok(0) | Err(_) => return,
       Ok(_) => {}
     }
-    // Only the line break goes; spaces stay (a space is a dark module of a QR code).
+    if buffer.last() != Some(&b'\n') && buffer.len() > max {
+      log::warn!("Dropped a line of the WhatsApp bridge's output longer than {max} bytes");
+      loop {
+        buffer.clear();
+        match (&mut reader).take(limit).read_until(b'\n', &mut buffer) {
+          Ok(0) | Err(_) => return,
+          Ok(_) if buffer.last() == Some(&b'\n') => break,
+          Ok(_) => {}
+        }
+      }
+      continue;
+    }
     if buffer.last() == Some(&b'\n') {
       buffer.pop();
       if buffer.last() == Some(&b'\r') {
         buffer.pop();
       }
     }
-    Shared::on_line(shared, generation, &String::from_utf8_lossy(&buffer), &mut qr);
+    line(&String::from_utf8_lossy(&buffer));
   }
 }
 
@@ -862,7 +968,8 @@ enum Answer {
   Lost,
 }
 
-fn post(port: u16, path: &'static str, body: &Value, timeout: Duration) -> Answer {
+/// A POST to the bridge on 127.0.0.1, with the token when one is given.
+fn post(port: u16, token: Option<&str>, path: &'static str, body: &Value, timeout: Duration) -> Answer {
   let agent: ureq::Agent = ureq::Agent::config_builder()
     // ureq reads HTTP_PROXY and the like by default; a message must never go anywhere but the bridge.
     .proxy(None)
@@ -874,7 +981,11 @@ fn post(port: u16, path: &'static str, body: &Value, timeout: Duration) -> Answe
     .into();
   let url = format!("http://{}{path}", SocketAddr::from((Ipv4Addr::LOCALHOST, port)));
   let text = body.to_string();
-  match agent.post(&url).content_type("application/json").send(text.as_str()) {
+  let mut request = agent.post(&url).content_type("application/json");
+  if let Some(token) = token {
+    request = request.header(TOKEN_HEADER, token);
+  }
+  match request.send(text.as_str()) {
     Ok(mut response) => {
       let status = response.status().as_u16();
       match response.body_mut().with_config().limit(MAX_ANSWER_BYTES).read_to_string() {
@@ -890,10 +1001,38 @@ fn post(port: u16, path: &'static str, body: &Value, timeout: Duration) -> Answe
   }
 }
 
-/// Whether a bridge listens on the port: it answers an empty send with exactly `Recipient is required` (400) and
-/// sends nothing. Anything else on the port is not one, and gets no message text.
-fn is_bridge(port: u16) -> bool {
-  matches!(post(port, "/api/send", &json!({}), PROBE_TIMEOUT), Answer::Reply { status: 400, body } if body.trim_end() == "Recipient is required")
+/// What answers on a port. A bridge answers an empty send with exactly `Recipient is required` (400) and sends
+/// nothing; anything else is not one, and gets no message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Probe {
+  /// Nothing listens, or something that is not a bridge.
+  Nothing,
+  /// A bridge that answers without a token: anything on the Mac can use it.
+  Unprotected,
+  /// A bridge that refuses a request without the token and takes Tresso's.
+  Ours,
+  /// Something that refuses a request without a token and Tresso's token as well: another bridge.
+  Foreign,
+}
+
+fn is_bridge_answer(answer: &Answer) -> bool {
+  matches!(answer, Answer::Reply { status: 400, body } if body.trim_end() == "Recipient is required")
+}
+
+fn probe(port: u16, token: &str) -> Probe {
+  let empty = json!({});
+  let bare = post(port, None, "/api/send", &empty, PROBE_TIMEOUT);
+  if is_bridge_answer(&bare) {
+    return Probe::Unprotected;
+  }
+  if !matches!(bare, Answer::Reply { status: 401, .. }) {
+    return Probe::Nothing;
+  }
+  match post(port, Some(token), "/api/send", &empty, PROBE_TIMEOUT) {
+    answer if is_bridge_answer(&answer) => Probe::Ours,
+    Answer::Reply { status: 401, .. } => Probe::Foreign,
+    _ => Probe::Nothing,
+  }
 }
 
 /// Whether the port is closed to the network: asked by connecting to it on the Mac's own network address. None when
@@ -919,10 +1058,10 @@ fn sent(ok: bool, message: &str) -> Sent {
   Sent { ok, message: message.to_string() }
 }
 
-fn send(port: u16, recipient: &str, text: &str, media: Option<&Path>, timeout: Duration) -> Sent {
+fn send(port: u16, token: &str, recipient: &str, text: &str, media: Option<&Path>, timeout: Duration) -> Sent {
   let media_path = media.map(|path| path.display().to_string()).unwrap_or_default();
   let body = json!({ "recipient": recipient, "message": text, "media_path": media_path });
-  match post(port, "/api/send", &body, timeout) {
+  match post(port, Some(token), "/api/send", &body, timeout) {
     Answer::NotConnected => sent(false, "bridge_stopped"),
     // It may have gone out: the user checks WhatsApp before trying again, Tresso never sends it twice by itself.
     Answer::Lost => sent(false, "unconfirmed"),
@@ -974,18 +1113,47 @@ pub struct Inspection {
   built: bool,
   /// The bridge ran once: `whatsapp-bridge/store/messages.db` is there.
   has_store: bool,
+  /// The binary and its folder belong to this user and nobody else may write them (else Tresso does not start it).
+  safe: bool,
+}
+
+/// Whether only this user can change the file or folder: it is theirs, and neither its group nor others may write it.
+fn only_mine(path: &Path) -> bool {
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let user = unsafe { libc::geteuid() };
+    fs::metadata(path).is_ok_and(|metadata| metadata.uid() == user && metadata.mode() & 0o022 == 0)
+  }
+  #[cfg(not(unix))]
+  {
+    let _ = path;
+    true
+  }
 }
 
 fn inspect(folder: &Path) -> Inspection {
   let bridge = folder.join(BRIDGE_DIR);
   let file = |path: PathBuf| inside(folder, &path).is_some_and(|path| path.is_file());
-  Inspection { found: file(bridge.join("main.go")), built: launch_of(folder).is_some(), has_store: file(bridge.join(STORE_DIR).join(MESSAGES_DB)) }
+  let launch = launch_of(folder);
+  Inspection {
+    found: file(bridge.join("main.go")),
+    built: !matches!(launch, Err(Failure::NotBuilt)),
+    has_store: file(bridge.join(STORE_DIR).join(MESSAGES_DB)),
+    safe: launch.is_ok(),
+  }
 }
 
-fn launch_of(folder: &Path) -> Option<Launch> {
-  let dir = inside(folder, &folder.join(BRIDGE_DIR)).filter(|dir| dir.is_dir())?;
-  let binary = inside(folder, &dir.join(BINARY)).filter(|binary| executable(binary))?;
-  Some(Launch { binary, dir })
+/// The binary to start: built, inside the folder after every link is followed, and changeable by this user only (a
+/// binary another user can replace would run as this one, with their WhatsApp).
+fn launch_of(folder: &Path) -> Result<Launch, Failure> {
+  let dir = inside(folder, &folder.join(BRIDGE_DIR)).filter(|dir| dir.is_dir()).ok_or(Failure::NotBuilt)?;
+  let binary = inside(folder, &dir.join(BINARY)).filter(|binary| executable(binary)).ok_or(Failure::NotBuilt)?;
+  if !only_mine(&dir) || !only_mine(&binary) {
+    return Err(Failure::Unsafe);
+  }
+  Ok(Launch { binary, dir })
 }
 
 fn store_file(folder: &Path, name: &str) -> Result<PathBuf, String> {
@@ -1223,6 +1391,9 @@ pub struct BridgeRow {
 pub struct Rows {
   rows: Vec<BridgeRow>,
   max_rowid: i64,
+  /// Names this store and its numbering: the file (its inode) and its first row. It changes when the store is
+  /// rebuilt or renumbered (VACUUM), and then a rowid cursor means nothing any more: the relay reads from 0 again.
+  store_id: String,
 }
 
 fn text_of(value: rusqlite::types::ValueRef<'_>) -> Option<String> {
@@ -1236,19 +1407,23 @@ fn non_empty(text: Option<String>) -> Option<String> {
   text.filter(|text| !text.is_empty())
 }
 
-/// The rows after `after`, by rowid (`INSERT OR REPLACE` gives a replaced row a new one), and the highest rowid.
+/// The rows after `after`, by rowid, and the highest rowid. A row the bridge stores again (`INSERT OR REPLACE`) gets a
+/// rowid after every other one, also when it was the newest: SQLite picks the rowid before it removes the old row
+/// (tested below), so a cursor never passes a row stored again. Only a deleted newest row frees its rowid, and the
+/// bridge deletes none. VACUUM may number the rows anew, and a store made again does: `store_id` shows both. Text and
+/// file names are cut at 65536 characters (WhatsApp's own limit for a text).
 fn read_rows(db: &Path, after: i64, limit: u32) -> Result<Rows, String> {
   let mut connection = open_read_only(db)?;
   let transaction = connection.transaction().map_err(store_error)?;
   let rows = {
     let mut statement = transaction
       .prepare(
-        "SELECT m.rowid, m.id, m.chat_jid, m.sender, m.content, m.timestamp, m.is_from_me, m.media_type, m.filename, m.file_length, c.name \
-         FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid WHERE m.rowid > ?1 ORDER BY m.rowid LIMIT ?2",
+        "SELECT m.rowid, m.id, m.chat_jid, m.sender, substr(m.content, 1, ?3), m.timestamp, m.is_from_me, m.media_type, substr(m.filename, 1, ?3), \
+         m.file_length, substr(c.name, 1, ?3) FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid WHERE m.rowid > ?1 ORDER BY m.rowid LIMIT ?2",
       )
       .map_err(store_error)?;
     statement
-      .query_map(params![after, limit], |row| {
+      .query_map(params![after, limit, MAX_FIELD_CHARS], |row| {
         Ok(BridgeRow {
           rowid: row.get(0)?,
           id: text_of(row.get_ref(1)?).unwrap_or_default(),
@@ -1271,8 +1446,32 @@ fn read_rows(db: &Path, after: i64, limit: u32) -> Result<Rows, String> {
       .map_err(store_error)?
   };
   let max_rowid = transaction.query_row("SELECT COALESCE(MAX(rowid), 0) FROM messages", [], |row| row.get(0)).map_err(store_error)?;
+  let first: Option<(i64, Option<String>, Option<String>)> = transaction
+    .query_row("SELECT rowid, chat_jid, id FROM messages ORDER BY rowid LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+    .optional()
+    .map_err(store_error)?;
   transaction.commit().map_err(store_error)?;
-  Ok(Rows { rows, max_rowid })
+  let file = file_id(db).map_err(|error| format!("Reading the WhatsApp store failed: {error}"))?;
+  let store_id = match first {
+    Some((rowid, chat, id)) => format!("{file}:{rowid}:{}/{}", chat.unwrap_or_default(), id.unwrap_or_default()),
+    None => format!("{file}:0"),
+  };
+  Ok(Rows { rows, max_rowid, store_id })
+}
+
+/// The file's identity on its disk: device and inode (a store deleted and made again is another file).
+fn file_id(path: &Path) -> io::Result<String> {
+  let metadata = fs::metadata(path)?;
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::MetadataExt;
+    Ok(format!("{}.{}", metadata.dev(), metadata.ino()))
+  }
+  #[cfg(not(unix))]
+  {
+    let created = metadata.created()?.duration_since(std::time::UNIX_EPOCH).map(|since| since.as_nanos()).unwrap_or_default();
+    Ok(created.to_string())
+  }
 }
 
 fn days_in_month(year: i64, month: i64) -> i64 {
@@ -1371,14 +1570,16 @@ fn valid_sender_id(id: &str) -> bool {
 }
 
 /// A phone number has at most 13 digits in practice (E.164 allows 15, no country uses them all); LIDs are longer. Only
-/// used when the store does not say which one an id is.
+/// used when no JID in either store says which one an id is.
 fn looks_like_number(id: &str) -> bool {
   id.len() <= 13
 }
 
 /// Names and numbers for sender ids, from `whatsmeow_lid_map` (LID to phone number) and `whatsmeow_contacts` (full
-/// name, else the name they gave themselves, else the business name) in the session store.
-fn names(db: Option<&Path>, ids: &[String]) -> Result<HashMap<String, Name>, String> {
+/// name, else the name they gave themselves, else the business name) in the session store. Whether an id is a phone
+/// number comes from a JID that holds it (its server part, `s.whatsapp.net` or `lid`): the LID map, a contact, else a
+/// direct chat in the message store; only an id no JID names is judged by its length.
+fn names(db: Option<&Path>, messages: Option<&Path>, ids: &[String]) -> Result<HashMap<String, Name>, String> {
   if ids.len() > MAX_IDS || !ids.iter().all(|id| valid_sender_id(id)) {
     return Err(code("The sender ids are not valid."));
   }
@@ -1392,6 +1593,13 @@ fn names(db: Option<&Path>, ids: &[String]) -> Result<HashMap<String, Name>, Str
       has_table(connection, "whatsmeow_contacts", &["their_jid", "full_name", "push_name", "business_name"])?,
     ),
     None => (false, false),
+  };
+  let chats = match messages {
+    Some(messages) => {
+      let connection = open_read_only(messages)?;
+      has_table(&connection, "chats", &["jid"])?.then_some(connection)
+    }
+    None => None,
   };
   let mut result = HashMap::new();
   for id in ids {
@@ -1428,6 +1636,20 @@ fn names(db: Option<&Path>, ids: &[String]) -> Result<HashMap<String, Name>, Str
           }
           break;
         }
+      }
+    }
+    if !known && let Some(chats) = &chats {
+      let server: Option<String> = chats
+        .query_row(
+          "SELECT substr(jid, length(?1) + 2) FROM chats WHERE jid IN (?1 || '@s.whatsapp.net', ?1 || '@lid') ORDER BY jid LIKE '%@s.whatsapp.net' DESC LIMIT 1",
+          [id],
+          |row| row.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+      if let Some(server) = server {
+        number = (server == "s.whatsapp.net").then(|| id.clone());
+        known = true;
       }
     }
     if !known && looks_like_number(id) {
@@ -1522,6 +1744,46 @@ pub struct Downloaded {
   verified: bool,
 }
 
+/// Whether a file name the store holds is one plain name. The bridge writes a download to `store/<chat>/<name>`, and a
+/// document's name comes from whoever sent it: `../../Library/LaunchAgents/x.plist` would be written there.
+fn plain_file_name(name: &str) -> bool {
+  !name.is_empty()
+    && name.len() <= 255
+    && name != "."
+    && name != ".."
+    && !name.contains(['/', '\\', '\0'])
+    && Path::new(name).file_name() == Some(std::ffi::OsStr::new(name))
+}
+
+/// The download folder, made only this user's (also when it existed with other rights).
+fn media_folder(media_dir: &Path) -> io::Result<()> {
+  fs::create_dir_all(media_dir)?;
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(media_dir, fs::Permissions::from_mode(0o700))?;
+  }
+  Ok(())
+}
+
+/// Marks a file as downloaded from the internet, as a browser does: Gatekeeper then checks whatever it holds before
+/// anything in it runs, and apps open it with care.
+#[cfg(target_os = "macos")]
+fn quarantine(path: &Path) -> io::Result<()> {
+  use std::os::unix::ffi::OsStrExt;
+  let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|since| since.as_secs()).unwrap_or_default();
+  let value = format!("0083;{seconds:x};Tresso;");
+  let path = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+  // SAFETY: both strings end in NUL, and the value is valid for the length passed along.
+  let result = unsafe { libc::setxattr(path.as_ptr(), c"com.apple.quarantine".as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) };
+  if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quarantine(_path: &Path) -> io::Result<()> {
+  Ok(())
+}
+
 /// Copies the file the bridge reported into `media_dir`, checking it against the store's hash.
 fn copy_verified(store: &Path, reported: &str, media_dir: &Path, media: &Media, chat_jid: &str, message_id: &str) -> Result<Downloaded, String> {
   let reported = Path::new(reported);
@@ -1530,10 +1792,13 @@ fn copy_verified(store: &Path, reported: &str, media_dir: &Path, media: &Media, 
   }
   let source = inside(store, reported).filter(|path| path.is_file()).ok_or_else(|| code("refused"))?;
   let limit = media.length.filter(|length| *length > 0).unwrap_or(MAX_DOWNLOAD_BYTES).min(MAX_DOWNLOAD_BYTES);
-  fs::create_dir_all(media_dir).map_err(|error| format!("Creating the download folder failed: {error}"))?;
+  media_folder(media_dir).map_err(|error| format!("Creating the download folder failed: {error}"))?;
   let name = media_name(chat_jid, message_id, &media.kind, media.filename.as_deref());
   let target = media_dir.join(&name);
-  let partial = media_dir.join(format!(".{name}.part"));
+  // A name of its own per download, so two downloads of one message never write into one file.
+  let mut suffix = [0u8; 8];
+  getrandom::fill(&mut suffix).map_err(|error| format!("Saving the WhatsApp file failed: {error}"))?;
+  let partial = media_dir.join(format!(".{name}.{}.part", hex(&suffix)));
   let copied = (|| -> io::Result<(Vec<u8>, u64)> {
     let mut input = File::open(&source)?.take(limit + 1);
     let mut options = OpenOptions::new();
@@ -1557,6 +1822,7 @@ fn copy_verified(store: &Path, reported: &str, media_dir: &Path, media: &Media, 
       written += read as u64;
     }
     output.sync_all()?;
+    quarantine(&partial)?;
     Ok((hasher.finalize().to_vec(), written))
   })();
   let fail = |reason: String| {
@@ -1581,9 +1847,13 @@ fn copy_verified(store: &Path, reported: &str, media_dir: &Path, media: &Media, 
   Ok(Downloaded { path: target.display().to_string(), verified })
 }
 
-fn download(port: u16, folder: &Path, media_dir: &Path, message_id: &str, chat_jid: &str, timeout: Duration) -> Result<Downloaded, String> {
+fn download(port: u16, token: &str, folder: &Path, media_dir: &Path, message_id: &str, chat_jid: &str, timeout: Duration) -> Result<Downloaded, String> {
   let media = media_of(&store_file(folder, MESSAGES_DB)?, message_id, chat_jid)?;
-  let reported = match post(port, "/api/download", &json!({ "message_id": message_id, "chat_jid": chat_jid }), timeout) {
+  if !media.filename.as_deref().is_some_and(plain_file_name) {
+    log::warn!("Refused to ask the WhatsApp bridge for a file whose stored name is not one plain name");
+    return Err(code("refused"));
+  }
+  let reported = match post(port, Some(token), "/api/download", &json!({ "message_id": message_id, "chat_jid": chat_jid }), timeout) {
     Answer::NotConnected => return Err(code("bridge_stopped")),
     Answer::Lost => return Err(code("failed")),
     Answer::Reply { status, body } => {
@@ -1601,7 +1871,14 @@ fn download(port: u16, folder: &Path, media_dir: &Path, message_id: &str, chat_j
   copy_verified(&store, &reported, media_dir, &media, chat_jid, message_id)
 }
 
-/// A downloaded file the user may open: inside the app's download folder, not a partial one.
+/// Whether a name is one Tresso gives a download it may open: 32 hex digits and a harmless extension.
+fn own_download_name(name: &str) -> bool {
+  name.split_once('.').is_some_and(|(stem, extension)| {
+    stem.len() == 32 && stem.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) && SAFE_EXTENSIONS.contains(&extension)
+  })
+}
+
+/// A download the user may open: one of Tresso's own, directly in the app's download folder.
 fn openable(media_dir: &Path, path: &str) -> Result<PathBuf, String> {
   let path = Path::new(path);
   let base = media_dir.canonicalize().map_err(|_| code("refused"))?;
@@ -1609,7 +1886,7 @@ fn openable(media_dir: &Path, path: &str) -> Result<PathBuf, String> {
     return Err(code("refused"));
   }
   inside(&base, path)
-    .filter(|path| path.is_file() && path.parent() == Some(base.as_path()) && !path.file_name().and_then(|name| name.to_str()).is_none_or(|name| name.starts_with('.')))
+    .filter(|path| path.is_file() && path.parent() == Some(base.as_path()) && path.file_name().and_then(|name| name.to_str()).is_some_and(own_download_name))
     .ok_or_else(|| code("refused"))
 }
 
@@ -1638,8 +1915,8 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) {
     }),
   );
   if supported().is_ok() {
-    let grace = bridge.0.settings.grace;
-    thread::spawn(move || stop_left_over(&dir, grace));
+    let shared = Arc::clone(&bridge.0);
+    thread::spawn(move || Bridge(shared).stop_left_over());
   }
 }
 
@@ -1651,10 +1928,8 @@ pub fn stop_on_exit<R: Runtime>(app: &AppHandle<R>) {
 /// The user signed out (or the sign-in ended): the bridge started for them stops. Off the caller's thread, since a
 /// bridge may take its grace time.
 pub fn signed_out<R: Runtime>(app: &AppHandle<R>) {
-  let app = app.clone();
-  thread::spawn(move || {
-    app.state::<Bridge>().stop();
-  });
+  let shared = Arc::clone(&app.state::<Bridge>().0);
+  thread::spawn(move || Bridge(shared).signed_out());
 }
 
 #[tauri::command]
@@ -1720,14 +1995,13 @@ pub fn whatsapp_config_save(app: AppHandle, user_id: String, config: Config) -> 
   save_config(&data_dir(&app)?, &user_id, &config)
 }
 
-/// Disconnecting and signing out: the config goes, the bridge Tresso started from its folder stops, and one it
-/// attached to is let go (not stopped: the user started it).
+/// Disconnecting and signing out: the config goes, and the bridge Tresso started from its folder stops.
 #[tauri::command(async)]
 pub fn whatsapp_config_clear(app: AppHandle, bridge: State<'_, Bridge>, user_id: String) -> Result<(), String> {
   supported()?;
   if let Some(old) = clear_config(&data_dir(&app)?, &user_id)?
     && let Ok(folder) = Path::new(&old.folder).canonicalize()
-    && (bridge.serving().is_some_and(|dir| dir.starts_with(&folder)) || bridge.snapshot().process == Process::Attached)
+    && bridge.serving().is_some_and(|dir| dir.starts_with(&folder))
   {
     bridge.stop();
   }
@@ -1796,7 +2070,7 @@ pub fn whatsapp_read(app: AppHandle, folder: String, after_rowid: i64, limit: u3
 pub fn whatsapp_names(app: AppHandle, folder: String, ids: Vec<String>) -> Result<HashMap<String, Name>, String> {
   supported()?;
   let folder = chosen_folder(&data_dir(&app)?, &folder)?;
-  names(store_file(&folder, SESSION_DB).ok().as_deref(), &ids)
+  names(store_file(&folder, SESSION_DB).ok().as_deref(), store_file(&folder, MESSAGES_DB).ok().as_deref(), &ids)
 }
 
 /// Checks a message before it goes to the bridge; the file must be one the user picked.
@@ -1829,7 +2103,7 @@ pub fn whatsapp_send(bridge: State<'_, Bridge>, recipient: String, text: String,
   let media = checked_message(&lock(&bridge.0.chosen_files), &recipient, &text, media_path.as_deref())?;
   let snapshot = bridge.snapshot();
   match snapshot.port {
-    Some(port) => Ok(send(port, &recipient, &text, media.as_deref(), REQUEST_TIMEOUT)),
+    Some(port) => Ok(send(port, &bridge.0.token, &recipient, &text, media.as_deref(), REQUEST_TIMEOUT)),
     None if snapshot.process == Process::Owned && snapshot.link != Link::Linked => Ok(sent(false, "not_linked")),
     None => Ok(sent(false, "bridge_stopped")),
   }
@@ -1844,7 +2118,7 @@ pub fn whatsapp_download(app: AppHandle, bridge: State<'_, Bridge>, folder: Stri
   let data_dir = data_dir(&app)?;
   let folder = chosen_folder(&data_dir, &folder)?;
   let port = bridge.snapshot().port.ok_or_else(|| code("bridge_stopped"))?;
-  download(port, &folder, &data_dir.join(MEDIA_DIR), &message_id, &chat_jid, REQUEST_TIMEOUT)
+  download(port, &bridge.0.token, &folder, &data_dir.join(MEDIA_DIR), &message_id, &chat_jid, REQUEST_TIMEOUT)
 }
 
 #[tauri::command(async)]
@@ -2166,7 +2440,7 @@ mod tests {
     let dir = temp();
     let db = session_db(&dir, true);
     let ids: Vec<String> = ["31611111111", "31622222222", "123456789012345", "987654321098765", "31644444444", "111122223333444"].map(str::to_string).to_vec();
-    let found = names(Some(&db), &ids).unwrap();
+    let found = names(Some(&db), None, &ids).unwrap();
     assert_eq!(found["31611111111"], name(Some("31611111111"), Some("Bram Visser")));
     assert_eq!(found["31622222222"], name(Some("31622222222"), Some("Joost")));
     assert_eq!(found["123456789012345"], name(Some("31633333333"), Some("Mom")));
@@ -2177,15 +2451,15 @@ mod tests {
     // Without the LID map (whatsmeow before 2024) a LID has no number; contacts still name people.
     let old = temp();
     let db = session_db(&old, false);
-    let found = names(Some(&db), &["123456789012345".to_string(), "31611111111".to_string()]).unwrap();
+    let found = names(Some(&db), None, &["123456789012345".to_string(), "31611111111".to_string()]).unwrap();
     assert_eq!(found["123456789012345"], name(None, None));
     assert_eq!(found["31611111111"], name(Some("31611111111"), Some("Bram Visser")));
 
     // No session store at all, and ids that are not ids.
-    assert_eq!(names(None, &["31655555555".to_string()]).unwrap()["31655555555"], name(Some("31655555555"), None));
-    assert!(names(Some(&db), &["abc".to_string()]).is_err());
-    assert!(names(Some(&db), &["1@s.whatsapp.net".to_string()]).is_err());
-    assert!(names(Some(&db), &vec!["1".to_string(); MAX_IDS + 1]).is_err());
+    assert_eq!(names(None, None, &["31655555555".to_string()]).unwrap()["31655555555"], name(Some("31655555555"), None));
+    assert!(names(Some(&db), None, &["abc".to_string()]).is_err());
+    assert!(names(Some(&db), None, &["1@s.whatsapp.net".to_string()]).is_err());
+    assert!(names(Some(&db), None, &vec!["1".to_string(); MAX_IDS + 1]).is_err());
   }
 
   #[test]
@@ -2224,19 +2498,19 @@ mod tests {
     let root = temp();
     let empty = root.join("empty");
     fs::create_dir_all(&empty).unwrap();
-    assert_eq!(inspect(&empty), Inspection { found: false, built: false, has_store: false });
+    assert_eq!(inspect(&empty), Inspection { found: false, built: false, has_store: false, safe: false });
 
     let source = install(&root.join("source"), None);
-    assert_eq!(inspect(&source), Inspection { found: true, built: false, has_store: false });
+    assert_eq!(inspect(&source), Inspection { found: true, built: false, has_store: false, safe: false });
 
     let built = install(&root.join("built"), Some("exit 0"));
-    assert_eq!(inspect(&built), Inspection { found: true, built: true, has_store: false });
+    assert_eq!(inspect(&built), Inspection { found: true, built: true, has_store: false, safe: true });
 
     let used = install(&root.join("used"), Some("exit 0"));
     let store = used.join(BRIDGE_DIR).join(STORE_DIR);
     fs::create_dir_all(&store).unwrap();
     messages_db(&store);
-    assert_eq!(inspect(&used), Inspection { found: true, built: true, has_store: true });
+    assert_eq!(inspect(&used), Inspection { found: true, built: true, has_store: true, safe: true });
   }
 
   #[cfg(unix)]
@@ -2252,7 +2526,7 @@ mod tests {
     let folder = install(&root.join("linked"), None);
     std::os::unix::fs::symlink(outside.join(BRIDGE_DIR).join(BINARY), folder.join(BRIDGE_DIR).join(BINARY)).unwrap();
     assert!(!inspect(&folder).built);
-    assert!(launch_of(&folder).is_none());
+    assert_eq!(launch_of(&folder), Err(Failure::NotBuilt));
   }
 
   #[test]
@@ -2342,14 +2616,26 @@ mod tests {
 
   // ---- HTTP
 
-  /// A server on 127.0.0.1 that answers every request with `answer(path, body)`, a whole HTTP response, and records
-  /// the requests. `None` keeps the connection open without answering.
-  struct Server {
-    port: u16,
-    requests: Arc<Mutex<Vec<(String, String)>>>,
+  /// A request as the fake server got it: its path, its body and its token header.
+  #[derive(Clone, Debug)]
+  struct Request {
+    path: String,
+    body: String,
+    token: Option<String>,
+    json: bool,
   }
 
-  fn server(answer: impl Fn(&str, &str) -> Option<String> + Send + 'static) -> Server {
+  /// A server on 127.0.0.1 that answers every request with `answer(request)`, a whole HTTP response, and records the
+  /// requests. `None` keeps the connection open without answering.
+  struct Server {
+    port: u16,
+    requests: Arc<Mutex<Vec<Request>>>,
+  }
+
+  /// The token every test bridge is started with and expects.
+  const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+  fn server(answer: impl Fn(&Request) -> Option<String> + Send + 'static) -> Server {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -2363,21 +2649,27 @@ mod tests {
         reader.read_line(&mut first).unwrap();
         let path = first.split_whitespace().nth(1).unwrap_or_default().to_string();
         let mut length = 0;
+        let mut token = None;
+        let mut json = false;
         loop {
           let mut header = String::new();
           reader.read_line(&mut header).unwrap();
           if header == "\r\n" || header.is_empty() {
             break;
           }
-          if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = value.trim().parse().unwrap();
+          let (name, value) = header.split_once(':').unwrap();
+          match name.to_ascii_lowercase().as_str() {
+            "content-length" => length = value.trim().parse().unwrap(),
+            "x-bridge-token" => token = Some(value.trim().to_string()),
+            "content-type" => json = value.trim() == "application/json",
+            _ => {}
           }
         }
         let mut body = vec![0; length];
         reader.read_exact(&mut body).unwrap();
-        let body = String::from_utf8(body).unwrap();
-        lock(&recorded).push((path.clone(), body.clone()));
-        match answer(&path, &body) {
+        let request = Request { path, body: String::from_utf8(body).unwrap(), token, json };
+        lock(&recorded).push(request.clone());
+        match answer(&request) {
           Some(response) => {
             stream.write_all(response.as_bytes()).unwrap();
           }
@@ -2397,48 +2689,60 @@ mod tests {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port()
   }
 
-  fn bridge_answer(path: &str, body: &str) -> Option<String> {
-    (path == "/api/send" && body == "{}").then(|| http(400, "Recipient is required\n")).flatten()
+  /// upstream whatsapp-mcp: no token check.
+  fn unprotected_answer(request: &Request) -> Option<String> {
+    (request.path == "/api/send" && request.body == "{}").then(|| http(400, "Recipient is required\n")).flatten()
+  }
+
+  /// A bridge that keeps docs/whatsapp-bridge.md: 401 without its token.
+  fn protected_answer(token: &'static str) -> impl Fn(&Request) -> Option<String> + Send + 'static {
+    move |request| if request.token.as_deref() == Some(token) && request.json { unprotected_answer(request) } else { http(401, "Unauthorized\n") }
   }
 
   #[test]
-  fn recognises_a_bridge_by_its_exact_answer() {
-    assert!(is_bridge(server(bridge_answer).port));
-    assert!(!is_bridge(server(|_, _| http(404, "404 page not found\n")).port));
-    assert!(!is_bridge(server(|_, _| http(400, "Bad Request")).port));
-    assert!(!is_bridge(server(|_, _| http(200, "Recipient is required")).port));
-    assert!(!is_bridge(closed_port()));
+  fn uses_only_a_bridge_that_insists_on_the_token() {
+    assert_eq!(probe(server(protected_answer(TOKEN)).port, TOKEN), Probe::Ours);
+    assert_eq!(probe(server(unprotected_answer).port, TOKEN), Probe::Unprotected);
+    assert_eq!(probe(server(protected_answer("another launch's token")).port, TOKEN), Probe::Foreign);
+    assert_eq!(probe(server(|_| http(404, "404 page not found\n")).port, TOKEN), Probe::Nothing);
+    assert_eq!(probe(server(|_| http(400, "Bad Request")).port, TOKEN), Probe::Nothing);
+    assert_eq!(probe(server(|_| http(200, "Recipient is required")).port, TOKEN), Probe::Nothing);
+    assert_eq!(probe(closed_port(), TOKEN), Probe::Nothing);
+    // The first request of a probe goes without the token, so a bridge that ignores it never sees it.
+    let open = server(unprotected_answer);
+    probe(open.port, TOKEN);
+    assert!(lock(&open.requests).iter().all(|request| request.token.is_none()));
   }
 
   #[test]
   fn sends_to_the_bridge_and_names_why_not() {
-    let ok = server(|_, _| http(200, r#"{"success":true,"message":"Message sent to 31612345678"}"#));
-    assert_eq!(send(ok.port, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(true, "sent"));
+    let ok = server(|_| http(200, r#"{"success":true,"message":"Message sent to 31612345678"}"#));
+    assert_eq!(send(ok.port, TOKEN, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(true, "sent"));
     let file = PathBuf::from("/tmp/photo.jpg");
-    assert_eq!(send(ok.port, "120363000000000001@g.us", "", Some(&file), REQUEST_TIMEOUT), sent(true, "sent"));
+    assert_eq!(send(ok.port, TOKEN, "120363000000000001@g.us", "", Some(&file), REQUEST_TIMEOUT), sent(true, "sent"));
     let requests = lock(&ok.requests).clone();
-    assert_eq!(requests[0].0, "/api/send");
-    assert_eq!(serde_json::from_str::<Value>(&requests[0].1).unwrap(), json!({ "recipient": "31612345678", "message": "Hi", "media_path": "" }));
-    assert_eq!(serde_json::from_str::<Value>(&requests[1].1).unwrap()["media_path"], "/tmp/photo.jpg");
+    assert_eq!(requests[0].path, "/api/send");
+    assert_eq!(serde_json::from_str::<Value>(&requests[0].body).unwrap(), json!({ "recipient": "31612345678", "message": "Hi", "media_path": "" }));
+    assert_eq!(serde_json::from_str::<Value>(&requests[1].body).unwrap()["media_path"], "/tmp/photo.jpg");
 
-    let unlinked = server(|_, _| http(500, r#"{"success":false,"message":"Not connected to WhatsApp"}"#));
-    assert_eq!(send(unlinked.port, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "not_linked"));
-    let refused = server(|_, _| http(500, r#"{"success":false,"message":"Error sending message: server returned error 479"}"#));
-    assert_eq!(send(refused.port, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "refused"));
-    let plain = server(|_, _| http(400, "Message or media path is required\n"));
-    assert_eq!(send(plain.port, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "refused"));
-    assert_eq!(send(closed_port(), "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "bridge_stopped"));
+    let unlinked = server(|_| http(500, r#"{"success":false,"message":"Not connected to WhatsApp"}"#));
+    assert_eq!(send(unlinked.port, TOKEN, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "not_linked"));
+    let refused = server(|_| http(500, r#"{"success":false,"message":"Error sending message: server returned error 479"}"#));
+    assert_eq!(send(refused.port, TOKEN, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "refused"));
+    let plain = server(|_| http(400, "Message or media path is required\n"));
+    assert_eq!(send(plain.port, TOKEN, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "refused"));
+    assert_eq!(send(closed_port(), TOKEN, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "bridge_stopped"));
     // Taken, never answered: it may have gone out, so it is not called refused.
-    let silent = server(|_, _| None);
-    assert_eq!(send(silent.port, "31612345678", "Hi", None, Duration::from_millis(300)), sent(false, "unconfirmed"));
+    let silent = server(|_| None);
+    assert_eq!(send(silent.port, TOKEN, "31612345678", "Hi", None, Duration::from_millis(300)), sent(false, "unconfirmed"));
   }
 
   #[test]
   fn never_follows_a_redirect_away_from_the_bridge() {
-    let elsewhere = server(|_, _| http(200, r#"{"success":true}"#));
+    let elsewhere = server(|_| http(200, r#"{"success":true}"#));
     let location = format!("http://127.0.0.1:{}/api/send", elsewhere.port);
-    let redirecting = server(move |_, _| Some(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")));
-    assert_eq!(send(redirecting.port, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "refused"));
+    let redirecting = server(move |_| Some(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")));
+    assert_eq!(send(redirecting.port, TOKEN, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "refused"));
     assert!(lock(&elsewhere.requests).is_empty());
   }
 
@@ -2484,9 +2788,9 @@ mod tests {
     (folder, file)
   }
 
-  fn download_answer(path: &Path) -> impl Fn(&str, &str) -> Option<String> + Send + 'static {
+  fn download_answer(path: &Path) -> impl Fn(&Request) -> Option<String> + Send + 'static {
     let body = json!({ "success": true, "message": "Successfully downloaded image media", "filename": "x", "path": path }).to_string();
-    move |_, _| http(200, &body)
+    move |_| http(200, &body)
   }
 
   #[test]
@@ -2498,29 +2802,29 @@ mod tests {
     let media_dir = data.join(MEDIA_DIR);
     let bridge = server(download_answer(&file));
 
-    let downloaded = download(bridge.port, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT).unwrap();
+    let downloaded = download(bridge.port, TOKEN, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT).unwrap();
     assert!(downloaded.verified);
     let saved = PathBuf::from(&downloaded.path);
     assert_eq!(saved.parent(), Some(media_dir.canonicalize().unwrap().as_path()).or(Some(media_dir.as_path())));
     assert_eq!(saved.file_name().unwrap().to_str().unwrap(), media_name("120363000000000001@g.us", "A3", "image", Some("image_20261112_145000.jpg")));
     assert_eq!(fs::read(&saved).unwrap(), content);
-    assert_eq!(serde_json::from_str::<Value>(&lock(&bridge.requests)[0].1).unwrap(), json!({ "message_id": "A3", "chat_jid": "120363000000000001@g.us" }));
+    assert_eq!(serde_json::from_str::<Value>(&lock(&bridge.requests)[0].body).unwrap(), json!({ "message_id": "A3", "chat_jid": "120363000000000001@g.us" }));
 
     // Another message's picture under the same name: refused, and nothing is left behind.
     fs::write(&file, b"another p").unwrap();
     fs::remove_file(&saved).unwrap();
-    assert_eq!(download(bridge.port, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("mismatch".to_string()));
+    assert_eq!(download(bridge.port, TOKEN, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("mismatch".to_string()));
     assert_eq!(fs::read_dir(&media_dir).unwrap().count(), 0);
     // Longer than the store says: not read to the end.
     fs::write(&file, b"a picture, and more").unwrap();
-    assert_eq!(download(bridge.port, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("too_large".to_string()));
+    assert_eq!(download(bridge.port, TOKEN, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("too_large".to_string()));
     assert_eq!(fs::read_dir(&media_dir).unwrap().count(), 0);
 
-    assert_eq!(download(bridge.port, &folder, &media_dir, "A9", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("not_found".to_string()));
-    assert_eq!(download(bridge.port, &folder, &media_dir, "A1", "31612345678@s.whatsapp.net", REQUEST_TIMEOUT), Err("not_media".to_string()));
-    assert_eq!(download(closed_port(), &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("bridge_stopped".to_string()));
-    let failing = server(|_, _| http(500, r#"{"success":false,"message":"Failed to download media: incomplete media information for download"}"#));
-    assert_eq!(download(failing.port, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("failed".to_string()));
+    assert_eq!(download(bridge.port, TOKEN, &folder, &media_dir, "A9", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("not_found".to_string()));
+    assert_eq!(download(bridge.port, TOKEN, &folder, &media_dir, "A1", "31612345678@s.whatsapp.net", REQUEST_TIMEOUT), Err("not_media".to_string()));
+    assert_eq!(download(closed_port(), TOKEN, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("bridge_stopped".to_string()));
+    let failing = server(|_| http(500, r#"{"success":false,"message":"Failed to download media: incomplete media information for download"}"#));
+    assert_eq!(download(failing.port, TOKEN, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("failed".to_string()));
   }
 
   #[test]
@@ -2528,7 +2832,7 @@ mod tests {
     let root = temp();
     let data = temp();
     let (folder, file) = media_install(&root, b"old", None, "image_20261112_145000.jpg");
-    let downloaded = download(server(download_answer(&file)).port, &folder, &data.join(MEDIA_DIR), "A3", "120363000000000001@g.us", REQUEST_TIMEOUT).unwrap();
+    let downloaded = download(server(download_answer(&file)).port, TOKEN, &folder, &data.join(MEDIA_DIR), "A3", "120363000000000001@g.us", REQUEST_TIMEOUT).unwrap();
     assert!(!downloaded.verified);
   }
 
@@ -2546,7 +2850,7 @@ mod tests {
     let store = folder.join(BRIDGE_DIR).join(STORE_DIR);
     for reported in [outside.clone(), link, store.join("..").join("..").join("..").join("outside.jpg"), PathBuf::from("store/120363000000000001@g.us/image_20261112_145000.jpg"), store.clone()] {
       let bridge = server(download_answer(&reported));
-      assert_eq!(download(bridge.port, &folder, &data.join(MEDIA_DIR), "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("refused".to_string()), "{reported:?}");
+      assert_eq!(download(bridge.port, TOKEN, &folder, &data.join(MEDIA_DIR), "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("refused".to_string()), "{reported:?}");
     }
   }
 
@@ -2571,32 +2875,282 @@ mod tests {
 
   #[cfg(unix)]
   #[test]
-  fn opens_only_files_in_the_download_folder() {
+  fn opens_only_tressos_own_downloads() {
     let data = temp();
     let media_dir = data.join(MEDIA_DIR);
     fs::create_dir_all(&media_dir).unwrap();
-    let file = media_dir.join("0123.jpg");
+    let own = format!("{}.jpg", "0123456789abcdef".repeat(2));
+    let file = media_dir.join(&own);
     fs::write(&file, b"x").unwrap();
-    fs::write(media_dir.join(".0123.jpg.part"), b"x").unwrap();
     let secret = data.join("whatsapp-u1.json");
     fs::write(&secret, b"{}").unwrap();
-    std::os::unix::fs::symlink(&secret, media_dir.join("link.jpg")).unwrap();
+    std::os::unix::fs::symlink(&secret, media_dir.join(format!("{}.pdf", "ab".repeat(16)))).unwrap();
     fs::create_dir_all(media_dir.join("sub")).unwrap();
-    fs::write(media_dir.join("sub").join("deeper.jpg"), b"x").unwrap();
+    fs::write(media_dir.join("sub").join(&own), b"x").unwrap();
+    let mut planted = Vec::new();
+    for name in [
+      "x.command".to_string(),
+      format!("{}.command", "ab".repeat(16)),
+      format!("{}.zip", "ab".repeat(16)),
+      format!("{}.bin", "ab".repeat(16)),
+      format!("{}.html", "ab".repeat(16)),
+      format!("{}.JPG", "ab".repeat(16)),
+      format!("{}.jpg", "AB".repeat(16)),
+      format!("{}.jpg", "ab".repeat(15)),
+      format!(".{own}.0011223344556677.part"),
+    ] {
+      fs::write(media_dir.join(&name), b"x").unwrap();
+      planted.push(media_dir.join(name));
+    }
 
     assert_eq!(openable(&media_dir, file.to_str().unwrap()), Ok(file.canonicalize().unwrap()));
-    for path in [
+    let mut refused = vec![
       secret.clone(),
       media_dir.join("..").join("whatsapp-u1.json"),
-      media_dir.join("link.jpg"),
-      media_dir.join(".0123.jpg.part"),
+      media_dir.join(format!("{}.pdf", "ab".repeat(16))),
       media_dir.join("sub"),
-      media_dir.join("sub").join("deeper.jpg"),
-      PathBuf::from("0123.jpg"),
+      media_dir.join("sub").join(&own),
+      PathBuf::from(&own),
       PathBuf::from("/etc/hosts"),
-    ] {
+    ];
+    refused.extend(planted);
+    for path in refused {
       assert_eq!(openable(&media_dir, path.to_str().unwrap()), Err("refused".to_string()), "{path:?}");
     }
+  }
+
+  #[test]
+  fn keeps_no_extension_that_opens_into_code() {
+    for extension in ["zip", "html", "htm", "svg", "webloc", "inetloc", "fileloc", "terminal", "command", "tool", "app", "pkg", "mpkg", "dmg", "jar", "sh", "py", "scpt", "applescript", "workflow", "doc", "xls", "ppt", "docm", "xlsm", "pptm"] {
+      assert!(!SAFE_EXTENSIONS.contains(&extension), "{extension}");
+      assert!(media_name("1@g.us", "A", "document", Some(&format!("x.{extension}"))).ends_with(".bin"), "{extension}");
+    }
+  }
+
+  /// The bridge writes a download to `store/<chat>/<stored name>`: a name that is not one plain name is never asked
+  /// for, so the bridge writes nothing anywhere.
+  #[test]
+  fn never_asks_the_bridge_for_a_file_whose_name_leaves_its_folder() {
+    let data = temp();
+    let content = b"a picture".to_vec();
+    let long = "x".repeat(256);
+    for name in ["../../../../Library/LaunchAgents/x.plist", "a/b.pdf", "/etc/x.pdf", "..", ".", "", "a\\b.pdf", "nul\0.pdf", long.as_str()] {
+      let root = temp();
+      let (folder, file) = media_install(&root, &content, Some(Sha256::digest(&content).to_vec()), name);
+      let bridge = server(download_answer(&file));
+      assert_eq!(download(bridge.port, TOKEN, &folder, &data.join(MEDIA_DIR), "A3", "120363000000000001@g.us", REQUEST_TIMEOUT), Err("refused".to_string()), "{name:?}");
+      assert!(lock(&bridge.requests).is_empty(), "{name:?}");
+    }
+    for name in ["Invoice 2026.pdf", "image_20261112_145000.jpg", "..hidden", "a..b"] {
+      assert!(plain_file_name(name), "{name}");
+    }
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn keeps_downloads_private_and_marked_as_from_the_internet() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp();
+    let data = temp();
+    let media_dir = data.join(MEDIA_DIR);
+    fs::create_dir_all(&media_dir).unwrap();
+    fs::set_permissions(&media_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let content = b"a picture".to_vec();
+    let (folder, file) = media_install(&root, &content, Some(Sha256::digest(&content).to_vec()), "image_20261112_145000.jpg");
+    let downloaded = download(server(download_answer(&file)).port, TOKEN, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT).unwrap();
+    assert_eq!(fs::metadata(&media_dir).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(fs::metadata(&downloaded.path).unwrap().permissions().mode() & 0o777, 0o600);
+    #[cfg(target_os = "macos")]
+    {
+      use std::os::unix::ffi::OsStrExt;
+      let path = std::ffi::CString::new(Path::new(&downloaded.path).as_os_str().as_bytes()).unwrap();
+      let mut value = vec![0u8; 256];
+      // SAFETY: the buffer is valid for its length, which is passed along; both names end in NUL.
+      let length = unsafe { libc::getxattr(path.as_ptr(), c"com.apple.quarantine".as_ptr(), value.as_mut_ptr().cast(), value.len(), 0, 0) };
+      assert!(length > 0, "no quarantine on {}", downloaded.path);
+      let value = String::from_utf8(value[..length as usize].to_vec()).unwrap();
+      assert!(value.starts_with("0083;") && value.ends_with(";Tresso;"), "{value}");
+    }
+  }
+
+  #[test]
+  fn two_downloads_of_one_message_do_not_share_a_file() {
+    let root = temp();
+    let data = temp();
+    let content = vec![7u8; 4 * 1024 * 1024];
+    let (folder, file) = media_install(&root, &content, Some(Sha256::digest(&content).to_vec()), "image_20261112_145000.jpg");
+    let bridge = server(download_answer(&file));
+    let media_dir = data.join(MEDIA_DIR);
+    let downloads: Vec<_> = (0..4)
+      .map(|_| {
+        let (folder, media_dir, port) = (folder.clone(), media_dir.clone(), bridge.port);
+        thread::spawn(move || download(port, TOKEN, &folder, &media_dir, "A3", "120363000000000001@g.us", REQUEST_TIMEOUT))
+      })
+      .collect();
+    for download in downloads {
+      let downloaded = download.join().unwrap().unwrap();
+      assert!(downloaded.verified);
+      assert_eq!(fs::read(&downloaded.path).unwrap(), content);
+    }
+    assert_eq!(fs::read_dir(&media_dir).unwrap().count(), 1);
+  }
+
+  #[test]
+  fn drops_a_line_longer_than_the_limit_and_reads_on() {
+    let mut input = "a".repeat(50);
+    input.push('\n');
+    input.push_str(&"b".repeat(40));
+    input.push_str("\nok\r\n \u{2580} \n");
+    input.push_str(&"c".repeat(45));
+    let mut lines = Vec::new();
+    read_lines(io::Cursor::new(input), 40, |line| lines.push(line.to_string()));
+    assert_eq!(lines, vec!["b".repeat(40), "ok".to_string(), " \u{2580} ".to_string()]);
+  }
+
+  #[test]
+  fn tells_a_renumbered_store_from_a_row_stored_again() {
+    let dir = temp();
+    let db = messages_db(&dir);
+    let before = read_rows(&db, 0, 500).unwrap();
+    assert_eq!(read_rows(&db, 0, 500).unwrap().store_id, before.store_id);
+    // Stored again, the newest row gets a rowid after every other one, not its own back; the numbering stays.
+    let connection = Connection::open(&db).unwrap();
+    connection.pragma_update(None, "foreign_keys", false).unwrap();
+    connection
+      .execute("INSERT OR REPLACE INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES ('A4', '99999@s.whatsapp.net', '99999', 'edited', '2026-11-12 14:51:00Z', 0)", [])
+      .unwrap();
+    drop(connection);
+    let again = read_rows(&db, 0, 500).unwrap();
+    assert_eq!((again.max_rowid, again.rows[3].rowid, again.rows[3].text.as_str()), (5, 5, "edited"));
+    assert_eq!(read_rows(&db, 4, 500).unwrap().rows.len(), 1);
+    assert_eq!(again.store_id, before.store_id);
+    // A store made anew (the README's advice when out of sync), with its rows numbered differently.
+    fs::remove_file(&db).unwrap();
+    let rebuilt = Connection::open(&db).unwrap();
+    rebuilt
+      .execute_batch(
+        "CREATE TABLE chats (jid TEXT PRIMARY KEY, name TEXT, last_message_time TIMESTAMP);
+         CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, content TEXT, timestamp TIMESTAMP, is_from_me BOOLEAN, media_type TEXT,
+           filename TEXT, url TEXT, media_key BLOB, file_sha256 BLOB, file_enc_sha256 BLOB, file_length INTEGER, PRIMARY KEY (id, chat_jid));
+         INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES ('A2', '31612345678@s.whatsapp.net', '1', 'Sure', '2026-11-12 14:49:00+01:00', 1);
+         INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES ('A1', '31612345678@s.whatsapp.net', '1', 'Hi', '2026-11-12 14:48:14+01:00', 0);",
+      )
+      .unwrap();
+    drop(rebuilt);
+    let renumbered = read_rows(&db, 0, 500).unwrap();
+    assert_ne!(renumbered.store_id, before.store_id);
+    assert!(renumbered.max_rowid < before.max_rowid);
+  }
+
+  #[test]
+  fn cuts_long_text_and_file_names() {
+    let dir = temp();
+    let db = messages_db(&dir);
+    let long = "\u{e9}".repeat(MAX_FIELD_CHARS as usize + 10);
+    Connection::open(&db).unwrap().execute("UPDATE messages SET content = ?1, filename = ?1 WHERE id = 'A3'", [&long]).unwrap();
+    let rows = read_rows(&db, 2, 1).unwrap();
+    assert_eq!(rows.rows[0].text.chars().count(), MAX_FIELD_CHARS as usize);
+    assert_eq!(rows.rows[0].filename.as_deref().map(|name| name.chars().count()), Some(MAX_FIELD_CHARS as usize));
+  }
+
+  /// Which ids are phone numbers comes from a JID that holds them wherever the stores have one; the length rule only
+  /// decides for an id no JID names.
+  #[test]
+  fn takes_number_or_lid_from_a_chat_jid_before_the_length() {
+    let dir = temp();
+    let messages = messages_db(&dir);
+    let connection = Connection::open(&messages).unwrap();
+    connection.execute_batch("INSERT INTO chats VALUES ('31612345678901@s.whatsapp.net', 'Long number', NULL); INSERT INTO chats VALUES ('1234567@lid', 'Short lid', NULL);").unwrap();
+    drop(connection);
+    let ids = ["31612345678901", "1234567", "7654321", "123456789012345"].map(str::to_string).to_vec();
+    let found = names(None, Some(&messages), &ids).unwrap();
+    assert_eq!(found["31612345678901"], name(Some("31612345678901"), None));
+    assert_eq!(found["1234567"], name(None, None));
+    assert_eq!(found["7654321"], name(Some("7654321"), None));
+    assert_eq!(found["123456789012345"], name(None, None));
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn starts_no_binary_others_can_change() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp();
+    let data = temp();
+    let folder = install(&root, Some("echo x >> starts\nexit 0"));
+    let dir = folder.join(BRIDGE_DIR);
+    let binary = dir.join(BINARY);
+    assert!(inspect(&folder).safe);
+    for (path, mode) in [(&binary, 0o775), (&binary, 0o757), (&dir, 0o775), (&dir, 0o777)] {
+      let before = fs::metadata(path).unwrap().permissions().mode();
+      fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+      let inspection = inspect(&folder);
+      assert!(inspection.built && !inspection.safe, "{path:?} {mode:o}");
+      let (bridge, _) = watched(quick(vec![closed_port()]), &data);
+      assert_eq!(bridge.start(&folder), Snapshot::stopped(Some(Failure::Unsafe)), "{path:?} {mode:o}");
+      fs::set_permissions(path, fs::Permissions::from_mode(before)).unwrap();
+    }
+    assert_eq!(starts(&folder), 0);
+  }
+
+  /// A session store that cannot be read is not taken as "no session": a code is shown only when the store surely
+  /// holds none.
+  #[cfg(unix)]
+  #[test]
+  fn shows_no_code_while_the_session_store_cannot_be_read() {
+    let root = temp();
+    let data = temp();
+    let script = format!("echo x >> starts\necho 'Scan this QR code with your WhatsApp app:'\ncat qr.txt\necho done > printed\n{KEEP_RUNNING}");
+    let folder = install(&root, Some(&script));
+    with_qr(&folder);
+    let store = folder.join(BRIDGE_DIR).join(STORE_DIR);
+    fs::create_dir_all(&store).unwrap();
+    fs::write(store.join(SESSION_DB), b"this is not a database, and it is long enough to be read as one: 0123456789abcdef0123456789").unwrap();
+    let (bridge, seen) = watched(quick(vec![closed_port()]), &data);
+    bridge.start(&folder);
+    while !folder.join(BRIDGE_DIR).join("printed").exists() {
+      thread::sleep(Duration::from_millis(10));
+    }
+    thread::sleep(Duration::from_millis(200));
+    assert!(lock(&seen).iter().all(|snapshot| snapshot.qr.is_none() && snapshot.link != Link::WaitingForScan));
+    bridge.stop();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn reads_on_after_an_endless_line() {
+    let root = temp();
+    let data = temp();
+    let script = format!(
+      "echo x >> starts\nhead -c 2100000 /dev/zero | tr '\\000' a\necho\necho \"\u{2713} Connected to WhatsApp! Type 'help' for commands.\"\n{KEEP_RUNNING}"
+    );
+    let folder = install(&root, Some(&script));
+    let (bridge, _) = watched(quick(vec![closed_port()]), &data);
+    bridge.start(&folder);
+    assert_eq!(bridge.wait_until(|snapshot| snapshot.link == Link::Linked).process, Process::Owned);
+    bridge.stop();
+  }
+
+  /// A process the bridge started keeps its output open after the bridge ended: the end is seen anyway.
+  #[cfg(unix)]
+  #[test]
+  fn sees_the_bridge_end_while_a_process_it_started_holds_its_output() {
+    let root = temp();
+    let data = temp();
+    let folder = install(&root, Some("echo x >> starts\necho 'REST API server error: listen tcp 127.0.0.1:8741: bind: address already in use'\nsleep 5 &\nexit 1"));
+    let (bridge, _) = watched(quick(vec![closed_port()]), &data);
+    let began = Instant::now();
+    bridge.start(&folder);
+    assert_eq!(bridge.wait_until(|snapshot| snapshot.error.is_some()), Snapshot::stopped(Some(Failure::PortBusy)));
+    assert!(began.elapsed() < Duration::from_secs(3), "{:?}", began.elapsed());
+  }
+
+  #[test]
+  fn forgets_the_picked_files_at_sign_out() {
+    let data = temp();
+    let (bridge, _) = watched(quick(vec![closed_port()]), &data);
+    lock(&bridge.0.chosen_files).insert(data.join("photo.jpg"));
+    bridge.signed_out();
+    assert!(lock(&bridge.0.chosen_files).is_empty());
   }
 
   // ---- the process
@@ -2614,7 +3168,7 @@ mod tests {
   }
 
   fn watched(settings: Settings, data: &Path) -> (Bridge, Arc<Mutex<Vec<Snapshot>>>) {
-    let bridge = Bridge::new(settings);
+    let bridge = Bridge::new(settings, TOKEN.to_string());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let record = Arc::clone(&seen);
     bridge.connect(data.to_path_buf(), Arc::new(move |snapshot: &Snapshot| lock(&record).push(snapshot.clone())));
@@ -2630,10 +3184,16 @@ mod tests {
     fs::write(folder.join(BRIDGE_DIR).join("qr.txt"), qr_lines(SHORT_QR).join("\n") + "\n").unwrap();
   }
 
-  /// Answers as a bridge once the fake bridge started (it writes `starts`), so the probe before the start finds none.
-  fn bridge_after_start(folder: &Path) -> Server {
+  /// Answers as a bridge (one that insists on the test token, or not) once the fake bridge started (it writes
+  /// `starts`), so the probe before the start finds none.
+  fn bridge_after_start(folder: &Path, protected: bool) -> Server {
     let marker = folder.join(BRIDGE_DIR).join("starts");
-    server(move |path, body| if marker.exists() { bridge_answer(path, body) } else { http(404, "404 page not found\n") })
+    let ours = protected_answer(TOKEN);
+    server(move |request| match (marker.exists(), protected) {
+      (false, _) => http(404, "404 page not found\n"),
+      (true, true) => ours(request),
+      (true, false) => unprotected_answer(request),
+    })
   }
 
   const KEEP_RUNNING: &str = "trap 'echo term > got-term; exit 0' TERM\nwhile :; do sleep 0.05; done";
@@ -2644,7 +3204,8 @@ mod tests {
     let root = temp();
     let data = temp();
     let script = format!(
-      "echo \"$#\" > args\npwd -P > cwd\necho \"$WHATSAPP_BRIDGE_PORT\" > port\necho x >> starts\n\
+      "echo \"$#\" > args\npwd -P > cwd\necho \"$WHATSAPP_BRIDGE_PORT\" > port\nenv | cut -d= -f1 | sort > env\n\
+       [ \"$WHATSAPP_BRIDGE_TOKEN\" = \"{TOKEN}\" ] && echo yes > token\necho x >> starts\n\
        echo\necho 'Scan this QR code with your WhatsApp app:'\ncat qr.txt\nsleep 0.3\n\
        echo\necho 'Successfully connected and authenticated!'\n\
        echo\necho \"\u{2713} Connected to WhatsApp! Type 'help' for commands.\"\n\
@@ -2652,7 +3213,7 @@ mod tests {
     );
     let folder = install(&root, Some(&script));
     with_qr(&folder);
-    let fake = bridge_after_start(&folder);
+    let fake = bridge_after_start(&folder, true);
     let (bridge, seen) = watched(quick(vec![fake.port, closed_port()]), &data);
 
     assert_eq!(bridge.start(&folder).process, Process::Owned);
@@ -2662,6 +3223,14 @@ mod tests {
     assert_eq!(fs::read_to_string(dir.join("args")).unwrap().trim(), "0");
     assert_eq!(PathBuf::from(fs::read_to_string(dir.join("cwd")).unwrap().trim()), dir);
     assert_eq!(fs::read_to_string(dir.join("port")).unwrap().trim(), fake.port.to_string());
+    assert!(dir.join("token").exists());
+    // env_clear: HOME, PATH and TMPDIR, the port and the token, and what the shell adds itself; no proxy variables.
+    let passed: HashSet<String> = fs::read_to_string(dir.join("env")).unwrap().lines().map(str::to_string).collect();
+    let allowed: HashSet<String> = ["HOME", "PATH", "TMPDIR", "WHATSAPP_BRIDGE_PORT", "WHATSAPP_BRIDGE_TOKEN", "PWD", "OLDPWD", "SHLVL", "_"].map(str::to_string).into();
+    assert!(passed.is_subset(&allowed), "{passed:?}");
+    assert!(passed.contains("WHATSAPP_BRIDGE_TOKEN") && passed.contains("PATH"));
+    // Every request after the first one of the probe carries the token.
+    assert!(lock(&fake.requests).iter().any(|request| request.token.as_deref() == Some(TOKEN)));
     let code = parse_half_blocks(&qr_lines(SHORT_QR));
     assert!(lock(&seen).iter().any(|snapshot| snapshot.link == Link::WaitingForScan && snapshot.qr == code));
     assert!(data.join(PID_FILE).exists());
@@ -2805,24 +3374,48 @@ mod tests {
     assert_eq!(bridge.start(&folder), Snapshot::stopped(Some(Failure::NotBuilt)));
   }
 
+  /// A bridge that already runs is never used: one without a token check says so (`unprotected`), one with another
+  /// token holds the port. Tresso starts no second bridge next to either. Something that is not a bridge is ignored.
   #[cfg(unix)]
   #[test]
-  fn uses_a_bridge_that_already_runs_and_never_stops_it() {
+  fn never_uses_or_doubles_a_bridge_it_did_not_start() {
     let root = temp();
     let data = temp();
-    let folder = install(&root, Some("echo x >> starts\nexit 0"));
-    let running = server(bridge_answer);
-    let (bridge, _) = watched(quick(vec![closed_port(), running.port]), &data);
-    let attached = bridge.start(&folder);
-    assert_eq!((attached.process, attached.port, attached.link, attached.qr), (Process::Attached, Some(running.port), Link::Unknown, None));
+    let folder = install(&root, Some(&format!("echo x >> starts\n{KEEP_RUNNING}")));
+    let open = server(unprotected_answer);
+    let (bridge, _) = watched(quick(vec![closed_port(), open.port]), &data);
+    assert_eq!(bridge.start(&folder), Snapshot::stopped(Some(Failure::Unprotected)));
+    let other = server(protected_answer("another launch's token"));
+    let (bridge, _) = watched(quick(vec![other.port]), &data);
+    assert_eq!(bridge.start(&folder), Snapshot::stopped(Some(Failure::PortBusy)));
     assert_eq!(starts(&folder), 0);
-    assert_eq!(bridge.stop(), Snapshot::stopped(None));
-    assert!(is_bridge(running.port));
-    // A port that answers but is not a bridge is not used: Tresso starts its own.
-    let impostor = server(|_, _| http(404, "404 page not found\n"));
+    let impostor = server(|_| http(404, "404 page not found\n"));
     let (bridge, _) = watched(quick(vec![impostor.port]), &data);
     assert_eq!(bridge.start(&folder).process, Process::Owned);
     bridge.stop();
+  }
+
+  /// The bridge Tresso started answers without the token (upstream whatsapp-mcp ignores WHATSAPP_BRIDGE_TOKEN): it is
+  /// stopped, and the state says why.
+  #[cfg(unix)]
+  #[test]
+  fn stops_a_started_bridge_that_does_not_check_the_token() {
+    let root = temp();
+    let data = temp();
+    let script = format!(
+      "echo x >> starts\necho \"\u{2713} Connected to WhatsApp! Type 'help' for commands.\"\n\
+       echo \"Starting REST API server on :$WHATSAPP_BRIDGE_PORT...\"\n{KEEP_RUNNING}"
+    );
+    let folder = install(&root, Some(&script));
+    let fake = bridge_after_start(&folder, false);
+    let (bridge, _) = watched(quick(vec![fake.port]), &data);
+    bridge.start(&folder);
+    assert_eq!(bridge.wait_until(|snapshot| snapshot.error.is_some()), Snapshot::stopped(Some(Failure::Unprotected)));
+    assert!(folder.join(BRIDGE_DIR).join("got-term").exists());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(starts(&folder), 1);
+    // No request with the token ever went to it.
+    assert!(lock(&fake.requests).iter().all(|request| request.token.is_none()));
   }
 
   /// Not a test: the process the next test starts, this test binary waiting (a script would run as /bin/sh, and macOS
@@ -2861,6 +3454,27 @@ mod tests {
     assert!(!data.join(PID_FILE).exists());
     other.kill().unwrap();
     other.wait().unwrap();
+  }
+
+  /// The clean-up at launch waits for a start that holds the lock, so the two never act on the same port at once.
+  #[cfg(unix)]
+  #[test]
+  fn the_clean_up_at_launch_waits_for_a_start() {
+    use std::os::unix::process::ExitStatusExt;
+    let data = temp();
+    let (bridge, _) = watched(quick(vec![closed_port()]), &data);
+    let mut left = waiting_child();
+    thread::sleep(Duration::from_millis(100));
+    write_pid_file(&data, left.id(), &std::env::current_exe().unwrap().canonicalize().unwrap());
+    let control = lock(&bridge.0.control);
+    let shared = Arc::clone(&bridge.0);
+    let cleaning = thread::spawn(move || Bridge(shared).stop_left_over());
+    thread::sleep(Duration::from_millis(300));
+    assert!(left.try_wait().unwrap().is_none());
+    assert!(data.join(PID_FILE).exists());
+    drop(control);
+    cleaning.join().unwrap();
+    assert_eq!(left.wait().unwrap().signal(), Some(libc::SIGTERM));
   }
 
   #[test]
