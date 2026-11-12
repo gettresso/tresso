@@ -17,9 +17,9 @@ interface Auth extends SessionState {
   /** Reads the kept sign-in again, after it could not be read (see `restoreFailed`). */
   retryRestore(): Promise<void>
   /**
-   * Removes this phone from the user's push devices, then signs out, which removes the mail on the phone. Signed out
-   * either way; rejects when the server could not be told, so this phone may still get the user's notifications until
-   * someone signs in here again.
+   * Signs out at once, which removes the mail on the phone, and removes this phone from the user's push devices before
+   * the refresh token is revoked, a few seconds at most (see `signingOut`). Signed out either way; rejects when the
+   * server could not be told, so this phone may still get the user's notifications until someone signs in here again.
    */
   signOut(): Promise<void>
 }
@@ -64,13 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return true
       },
       retryRestore: () => session.restore(),
-      async signOut() {
-        try {
-          await forgetPushDevice((path, init) => session.api(path, init), secureDeviceId)
-        } finally {
-          await session.signOut()
-        }
-      },
+      signOut: () => session.signOut((api) => forgetPushDevice(api, secureDeviceId)),
     }),
     [state, session, restoring],
   )

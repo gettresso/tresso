@@ -543,6 +543,111 @@ describe('Session', () => {
     expect(await session.loginRequired()).toBe(true)
   })
 
+  it('removes the push device with the access token, then revokes, and says the sign-out is under way meanwhile', async () => {
+    const store = memoryStore(fresh())
+    const calls: string[] = []
+    const fetchImpl = server(
+      vi.fn<Fetch>(async (input, init) => {
+        calls.push(`${init?.method} ${String(input)} ${new Headers(init?.headers).get('Authorization')}`)
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const session = await restored(store, fetchImpl)
+
+    const signingOut = session.signOut((api) => api('/api/v1/notification-devices/d1', { method: 'DELETE' }))
+    expect(session.snapshot).toMatchObject({ tokens: null, ended: 'signedOut', signingOut: true })
+    await signingOut
+
+    expect(calls).toEqual(['DELETE https://api.example.test/api/v1/notification-devices/d1 Bearer access-1'])
+    expect(fetchImpl.revoked).toEqual(['refresh-1'])
+    expect(session.snapshot.signingOut).toBe(false)
+    expect(store.saved).toBeNull()
+  })
+
+  it('signs out within 6 seconds when neither the push device removal nor the revocation gets an answer', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = memoryStore(fresh())
+      const asked: string[] = []
+      const signals: AbortSignal[] = []
+      const session = await restored(
+        store,
+        vi.fn<Fetch>((input, init) => {
+          asked.push(String(input))
+          signals.push(init!.signal ?? new AbortController().signal)
+          return new Promise<Response>(() => undefined)
+        }),
+      )
+
+      const signingOut = session.signOut((api) => api('/api/v1/notification-devices/d1', { method: 'DELETE' }))
+      const untold = expect(signingOut).rejects.toThrow('The server did not answer in time.')
+      await vi.advanceTimersByTimeAsync(2_500)
+      // The removal was given up and aborted; the revocation gets what is left of the 6 seconds.
+      expect(signals[0]?.aborted).toBe(true)
+      expect(asked).toEqual(['https://api.example.test/api/v1/notification-devices/d1', 'https://api.example.test/oauth/revoke'])
+      expect(session.snapshot.signingOut).toBe(true)
+      await vi.advanceTimersByTimeAsync(3_500)
+      await untold
+
+      expect(session.snapshot).toMatchObject({ tokens: null, ended: 'signedOut', signingOut: false })
+      expect(store.saved).toBeNull()
+      expect(store.lastUser).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('renews an access token about to expire before removing the push device, and revokes the new refresh token without keeping it', async () => {
+    const store = memoryStore(expired())
+    const removedWith: (string | null)[] = []
+    const fetchImpl = server(
+      vi.fn<Fetch>(async (input, init) => {
+        if (String(input).endsWith('/oauth/token')) {
+          return tokenResponse('access-2', 'refresh-2')
+        }
+        removedWith.push(new Headers(init?.headers).get('Authorization'))
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const session = await restored(store, fetchImpl)
+
+    await session.signOut((api) => api('/api/v1/notification-devices/d1', { method: 'DELETE' }))
+
+    expect(removedWith).toEqual(['Bearer access-2'])
+    expect(fetchImpl.revoked).toEqual(['refresh-2'])
+    expect(session.snapshot.tokens).toBeNull()
+    expect(store.saved).toBeNull()
+  })
+
+  it('signs out and says so when the server refuses to remove the push device', async () => {
+    const store = memoryStore(fresh())
+    const fetchImpl = server(vi.fn<Fetch>(async () => new Response(JSON.stringify({ detail: 'Unavailable.' }), { status: 503 })))
+    const session = await restored(store, fetchImpl)
+
+    await expect(session.signOut((api) => api('/api/v1/notification-devices/d1', { method: 'DELETE' }))).rejects.toMatchObject({ status: 503, message: 'Unavailable.' })
+
+    expect(fetchImpl.revoked).toEqual(['refresh-1'])
+    expect(session.snapshot).toMatchObject({ tokens: null, ended: 'signedOut', signingOut: false })
+    expect(store.saved).toBeNull()
+  })
+
+  it('joins a second sign-out to the one under way', async () => {
+    let answer: (response: Response) => void = () => undefined
+    const removal = vi.fn<Fetch>(() => new Promise<Response>((resolve) => (answer = resolve)))
+    const fetchImpl = server(removal)
+    const session = await restored(memoryStore(fresh()), fetchImpl)
+    const forget = vi.fn(async (api: <T>(path: string, init?: RequestInit) => Promise<T>) => api<void>('/api/v1/notification-devices/d1', { method: 'DELETE' }))
+
+    const first = session.signOut(forget)
+    const second = session.signOut(forget)
+    await vi.waitFor(() => expect(removal).toHaveBeenCalledOnce())
+    answer(new Response(null, { status: 204 }))
+    await Promise.all([first, second])
+
+    expect(forget).toHaveBeenCalledOnce()
+    expect(fetchImpl.revoked).toEqual(['refresh-1'])
+  })
+
   it('starts no refresh while the sign-out waits for the revocation', async () => {
     vi.useFakeTimers()
     try {
