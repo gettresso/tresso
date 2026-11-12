@@ -682,6 +682,17 @@ mod tests {
     assert!(enabled("reload") && enabled("help") && enabled("main-window"));
   }
 
+  /// A source check, not a behaviour test: setup's own line that fills the state runs only on macOS inside a real app,
+  /// which no test can start. Tauri keeps the first value managed for a type and ignores a second, so a `manage` call
+  /// here would leave menu_state with nothing to enable (as it once did); the state is managed only in lib.rs.
+  #[test]
+  fn menu_rs_manages_no_state_of_its_own() {
+    // The app's code only: the tests below manage state on their own mock app.
+    let source = include_str!("menu.rs");
+    let code = &source[..source.find(&["#[cfg(test)]", "\nmod tests"].concat()).expect("menu.rs has its tests at the end")];
+    assert!(!code.contains(".manage("), "menu.rs must not manage state; lib.rs manages MenuItems");
+  }
+
   #[test]
   fn each_item_finds_its_action() {
     assert_eq!(action_of(CHECK_FOR_UPDATES), Some(Action::Shell(Shell::CheckForUpdates)));
