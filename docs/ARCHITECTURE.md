@@ -1568,7 +1568,8 @@ protocol, so every client syncs the same way:
   once, until the stream is live for the first time), "Reconnecting… Last synced 14:02", "Offline. Last synced 14:02"
   and "Sync stopped. Last synced 14:02". The banner ("Sync stopped: " and the reason) reads the same status
   (`problem`), so the two never disagree; a copy that could not be opened says so there too. The failure stands until a
-  pull works, also while a long retry shows its progress, so a dismissed banner stays dismissed across retries. A copy that finished a
+  retry stores a page or a pull completes, so a dismissed banner stays dismissed across retries that fail again; a
+  failure after that is news and shows again. A copy that finished a
   pull before is never a new device again, also at cursor 0, and the fraction of one sync never steps back. A
   notification at or below the stored cursor pulls nothing and proves nothing (`notify` resolves false): it neither
   clears a failure nor notes the copy as synced; after a failure every notification pulls. From a server that sends no `latest` the status counts
