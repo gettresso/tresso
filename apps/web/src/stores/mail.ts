@@ -1,6 +1,7 @@
 import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import {
+  backfillChats,
   RealtimeClient,
   SyncEngine,
   SyncStatusMachine,
@@ -327,6 +328,15 @@ export const useMailStore = defineStore('mail', () => {
   async function beginSync(mine: number, database: MailStore): Promise<void> {
     syncing = true
     status.confirmed()
+    // Before the first pull, a copy updated to keep chats checks once whether it must fetch them from the start.
+    await backfillChats(database, () => auth.api<unknown[]>('/api/v1/chat-accounts')).catch((error: unknown) => {
+      if (mine === generation) {
+        console.error('Checking the server for chats failed; the next start asks again', error)
+      }
+    })
+    if (mine !== generation) {
+      return
+    }
     const current = new SyncEngine({
       store: database,
       pageSize: PAGE_SIZE,
