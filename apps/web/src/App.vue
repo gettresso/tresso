@@ -47,7 +47,7 @@ const HandOverDialog = defineAsyncComponent(() => import('@/components/HandOverD
 const PaymentScreen = defineAsyncComponent(() => import('@/components/PaymentScreen.vue'))
 const billing = useBillingStore()
 // Started with the app: a bulk action this tab followed before a reload is followed again to its result and undo.
-useBulkStore()
+const bulk = useBulkStore()
 const router = useRouter()
 
 /** Reminds an owner a few days before their own trial ends, once per launch. */
@@ -135,9 +135,9 @@ function cancelRetry(): void {
 /**
  * Starts the signed-in session: who the user is, then their mail copy. The copy of the user the server last confirmed
  * for these tokens opens at once, before it answers, so the mail is there when the app starts offline; until the
- * server confirms that user it is only read (no sync, no upload, nothing removed). A start that fails (offline, the
- * server down, the copy refused) says so with a Retry button and tries again by itself: after a growing wait, and at
- * once when the device is back online.
+ * server confirms that user it is only read (no sync, nothing sent, no other copy removed). A start that fails
+ * (offline, the server down, the copy refused) says so, with what still shows, and a button to try again; it also
+ * tries again by itself: after a growing wait, and at once when the device is back online.
  */
 async function startSession(): Promise<void> {
   cancelRetry()
@@ -166,7 +166,10 @@ async function startSession(): Promise<void> {
       if (auth.me.id === known) {
         await openedEarly
       } else if (known !== null) {
+        // Nothing shown of the other copy carries over: the message being written, a hand-over, a followed bulk action.
         compose.reset()
+        handOvers.reset()
+        bulk.reset()
       }
       await mail.start(auth.me.id, { confirmed: true })
       if (run !== startRun || !auth.isAuthenticated) {
@@ -263,6 +266,11 @@ watch(
   <p v-if="mail.updatedElsewhere" class="problem" :class="problemPlace" role="alert">
     {{ mail.updatedElsewhere }}
     <button type="button" class="reload" @click="reload">Reload</button>
+  </p>
+  <!-- The mail kept on this device shows already, read only, while the server cannot say who is signed in. -->
+  <p v-else-if="!auth.paymentRequired && error && mail.ready" class="problem" :class="problemPlace" role="status">
+    Showing mail kept on this device. Tresso is still connecting.
+    <button type="button" class="reload" @click="retryNow">Try again</button>
   </p>
   <p v-else-if="!auth.paymentRequired && error" class="problem" :class="problemPlace" role="alert">
     Tresso could not start, it tries again by itself: {{ error }}

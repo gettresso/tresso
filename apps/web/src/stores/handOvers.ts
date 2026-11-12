@@ -205,15 +205,20 @@ export const useHandOversStore = defineStore('handOvers', () => {
     },
   )
 
+  /** Lets go of the hand-over on screen and what was being written for it, before another user's copy opens. */
+  function reset(): void {
+    composer.reset()
+    close()
+  }
+
   watch(
     () => auth.isAuthenticated,
     (authenticated) => {
       if (!authenticated) {
-        composer.reset()
-        close()
+        reset()
       }
     },
   )
 
-  return { handingOver, open, openForThread, handOverAndWait, takeBack, close, handOver, nudge, editFollowUp, markDone, reopen, reschedule }
+  return { reset, handingOver, open, openForThread, handOverAndWait, takeBack, close, handOver, nudge, editFollowUp, markDone, reopen, reschedule }
 })
