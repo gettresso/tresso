@@ -1824,11 +1824,11 @@ calendar list shows it is solved.
     calendar changes until the user applies it; the invitation answer carries `senderUnconfirmed` (only together with
     `canApply`, when the user can act), and the message in the sync delta carries `calendarWaiting`, so a message list
     can show it without opening the mail. A new invitation changes nothing that is there and lands by itself.
-  - What the sync worker must send for this (its `headers`): `authentication-results` as the topmost header of that
-    name, up to 8,000 characters (the API's bound for that one header), cut at its last `;` when longer, since Gmail
-    writes the DMARC result last; and for Microsoft accounts `x-ms-exchange-organization-authas`. Until the worker
-    sends the latter, calendar mail on Microsoft accounts that changes an event waits for the user (the safe side).
-    A header that ends inside a comment or quoted string counts only up to where that begins.
+  - What the sync worker sends for this (its `headers`, see the classification section): `authentication-results` as
+    the topmost header of that name, up to 8,000 characters, and for Microsoft accounts
+    `x-ms-exchange-organization-authas`. A message without the latter (from an older worker) on a Microsoft account
+    waits for the user when it changes an event (the safe side). A header that ends inside a comment or quoted string
+    counts only up to where that begins.
   - Known limit: the Microsoft rule rests on Exchange Online's documented header firewall and was not checked against
     a live tenant, nor whether consumer Outlook.com mailboxes carry the header at all.
   - Known limit: the mobile app has no apply action yet; mail that waits is applied in the web app.
