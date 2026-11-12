@@ -1332,7 +1332,8 @@ focused web content; Paste and Match Style and Delete, which Tauri has no item f
 in the web client reach it as the `menu` event with the action's name, handled in one place
 (`apps/web/src/platform/menu.ts`), and are enabled through the one command `menu_state` while someone is signed in
 (the state lib.rs manages once, which the bar's setup fills). Reload acts signed out too, and only after the draft is
-saved and nothing is on its way, as before a restart for an update; it has no ⌘R, which other mail apps use for Reply.
+saved and nothing is on its way, as before a restart for an update (one at a time: a second Reload while one waits is
+the same one, and "Later" ends it); it has no ⌘R, which other mail apps use for Reply.
 Closing the window hides it and the app stays in the Dock; the Dock icon and Window > Tresso bring it back, and so do
 a click on a notification (`show_main_window_command`), a `tresso://` link (the sign-in coming back), a second launch
 and Sparkle's question before a relaunch, each through the shell. The view
@@ -1561,18 +1562,21 @@ protocol, so every client syncs the same way:
   "Opening your mail…", "Showing mail kept on this device" (before the sign-in is confirmed), "Getting your mail, 62%"
   (a copy that never synced), "Updating your mail on this device after the update, 25%", "Catching up: 12,400 changes
   to go" (a pull that began more than `BEHIND_CHANGES`, 1,000, change numbers behind, or of more than one page after
-  `STALE_AFTER_MS`, 30 minutes, away), "Checking for new mail…" (a pull whose first page has not answered yet, not
-  announced), "Up to date" (a live stream, also when the device says it is offline), "Connecting…" (one text, said
+  `STALE_AFTER_MS`, 30 minutes, away), "Checking for new mail…" (a pull whose first page has not answered yet, for
+  a copy not known to be current: never synced, or not for longer than `STALE_AFTER_MS`, as after a laptop woke up;
+  not announced; a copy synced a moment ago stays "Up to date" through the short pulls of notifications and writes), "Up to date" (a live stream, also when the device says it is offline), "Connecting…" (one text, said
   once, until the stream is live for the first time), "Reconnecting… Last synced 14:02", "Offline. Last synced 14:02"
   and "Sync stopped. Last synced 14:02". The banner ("Sync stopped: " and the reason) reads the same status
-  (`problem`), so the two never disagree; a copy that could not be opened says so there too. A copy that finished a
+  (`problem`), so the two never disagree; a copy that could not be opened says so there too. The failure stands until a
+  pull works, also while a long retry shows its progress, so a dismissed banner stays dismissed across retries. A copy that finished a
   pull before is never a new device again, also at cursor 0, and the fraction of one sync never steps back. A
   notification at or below the stored cursor pulls nothing and proves nothing (`notify` resolves false): it neither
   clears a failure nor notes the copy as synced; after a failure every notification pulls. From a server that sends no `latest` the status counts
   the items stored so far ("Syncing… 1,240 items so far"). While a sync is under way, or a copy that cannot sync has
   not synced for 30 minutes, the mail lists show a quiet notice that what they show may be out of date. The web and
   desktop clients show the status at the foot of the sidebar, with a thin progress line when the fraction is known and
-  a polite live region that speaks per quarter; the phone shows it under the inbox's title. The engine notes every
+  a polite live region that speaks per quarter; the phone shows it under the inbox's title. The phone has no network listener, so it never says "Offline"; a lost
+  connection shows there as "Reconnecting…". The engine notes every
   completed pull in the copy (`markSynced`), so "Last synced" holds after a restart.
 - `mailFrameDocument` wraps a sanitized body in the document for the sandboxed frame, with its Content-Security-Policy.
 
