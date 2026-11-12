@@ -61,8 +61,9 @@ A server has two public addresses, the web client's (`WEB_APP_URL`) and the API'
 things a host of their own (`App\Deployment\PublicAddresses`):
 
 - `AUTH_PUBLIC_URL`: the sign-in pages (`/login`, `/logout`, `/oauth/authorize` with the consent screen). Tresso Cloud
-  sets it to the web address, where its proxy sends those paths and `/auth/*` to the API, so the browser's sign-in
-  belongs to the address people use. The authorization server metadata names it as `authorization_endpoint`; the
+  sets it to the web address, where its proxy sends `/login`, `/logout`, `/oauth/authorize` and the pages' files
+  (`/auth/auth.css`, `/auth/tresso.svg`, `/auth/fonts/*`) to the API, and nothing else: `/auth/callback` is the web
+  client's own route and stays with it. So the browser's sign-in belongs to the address people use. The authorization server metadata names it as `authorization_endpoint`; the
   issuer, the token, registration and revocation endpoints and the metadata stay on the API host (RFC 8414 allows
   that), so no app sees another authorization server. A GET of a sign-in page on the API or web host that is not
   `AUTH_PUBLIC_URL` is redirected there with its path and query (`SignInHost`): installed apps that open
@@ -171,7 +172,8 @@ Only first-party clients are approved automatically; every other app goes throug
   tokens that no remaining refresh token was issued with (disconnecting an app finds its refresh tokens through
   them), and expired authorization codes.
 
-The first-party clients keep a sign-in until the server refuses it. They refresh the access token before it expires,
+The web client and the desktop app keep a sign-in until the server refuses it, by these rules; the phone follows the
+same rules as of this release (the mobile app in section 3.10). They refresh the access token before it expires,
 one refresh at a time (refresh tokens rotate, so a second refresh with the same token would be refused), and only an
 `invalid_grant`, `invalid_request`, `invalid_client` or `unauthorized_client` answer of the token endpoint, or a 401
 from the API that a refresh and one retry do not cure, ends the session. A network error, a timeout (20 seconds for
@@ -1426,9 +1428,11 @@ sends the browser on. The token and revocation endpoints stay on the API. `Sessi
 in expo-secure-store (Keychain on iOS, Keystore-encrypted on Android) as three entries, because some iOS releases
 refuse values above about 2 KB, refreshes them before they expire with one shared request (refresh tokens rotate),
 and never lets a refresh that finishes after sign-out sign the user back in. A save writes the refresh token first and
-the expiry last, so one cut off at any step still loads with the newest refresh token. Only a refused refresh token
-(`invalid_grant` or `invalid_request` from `/oauth/token`) ends the sign-in: offline, a timeout or a server error keeps
-the tokens and the next request tries again. A 401 from the API renews the token once and asks once more before the
+the expiry last, so one cut off at any step still loads with the newest refresh token. As of this release it renews
+by the same rules as the web client and the desktop app (section 3.2): only an `invalid_grant`,
+`invalid_request`, `invalid_client` or `unauthorized_client` answer of `/oauth/token` ends the sign-in; offline, a
+timeout (20 seconds for the whole answer) or a server error keeps the tokens and the next request tries again, and a
+lost answer is asked for once more after 2 seconds. A 401 from the API renews the token once and asks once more before the
 sign-in ends. A sign-in that ends this way has expired: the tokens go, but who was signed in and their mail on the
 phone stay, so unsent drafts are still there when they sign in again. Only a sign-out the user asks for revokes the
 refresh token at the server (`/oauth/revoke`, best effort, waiting a few seconds at most) and removes the mail on the
