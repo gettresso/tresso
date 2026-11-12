@@ -232,7 +232,7 @@ export class LocalChatBackend implements ChatBackend {
     if (value === null) {
       return null
     }
-    const cursor = readCursor(value)
+    const cursor = readRelayCursor(value)
     // A value this version cannot read: read the store again from 0, as live messages (what is stored stays).
     return cursor ?? { storeId: '', rowid: 0, firstImport: null }
   }
@@ -306,7 +306,8 @@ export class LocalChatBackend implements ChatBackend {
   }
 }
 
-function readCursor(value: string): RelayCursor | null {
+/** A cursor as a backend stored it (JSON); null for a value this version cannot read. */
+export function readRelayCursor(value: string): RelayCursor | null {
   try {
     const parsed = JSON.parse(value) as Partial<Record<keyof RelayCursor, unknown>>
     const firstImport = parsed.firstImport === null ? null : readFirstImport(parsed.firstImport)
