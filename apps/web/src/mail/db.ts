@@ -302,7 +302,8 @@ export class IndexedDbMailStore implements MailStore {
     return store
   }
 
-  async close(): Promise<void> {
+  /** IndexedDB closes at once (the browser finishes the transactions under way itself), so there is nothing to wait for. */
+  async close(_options?: { waitMs?: number }): Promise<void> {
     this.connection.close()
   }
 

@@ -31,6 +31,8 @@ const copies = vi.hoisted(() => ({
   deleteFails: null as Error | null,
   /** The copies the device lists (IndexedDB databases), as copiesOnDevice reports them. */
   onDevice: [] as { userId: string; name: string }[],
+  /** What each close was asked to wait for. */
+  closeOptions: [] as ({ waitMs?: number } | undefined)[],
 }))
 
 vi.mock('@/mail/store', () => ({
@@ -50,9 +52,10 @@ vi.mock('@/mail/store', () => ({
     copies.opened.push(userId)
     await copies.afterOpen?.(store)
     const close = store.close.bind(store)
-    store.close = async () => {
+    store.close = async (options) => {
+      copies.closeOptions.push(options)
       await copies.holdClose.get(userId)
-      await close()
+      await close(options)
       copies.closed.push(userId)
     }
     return store
@@ -111,6 +114,7 @@ describe('the mail copy across sign-out and sign-in', () => {
     copies.afterOpen = null
     copies.deleteFails = null
     copies.onDevice = []
+    copies.closeOptions = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -229,7 +233,7 @@ describe('the mail copy across sign-out and sign-in', () => {
     const mail = useMailStore()
     await mail.start('anna')
     // Storage that never answers the write of the draft on screen.
-    mail.beforeKeptCopyCloses(() => new Promise<void>(() => undefined))
+    mail.beforeKeptCopyCloses(() => new Promise<void>(() => undefined), () => undefined)
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
@@ -242,6 +246,8 @@ describe('the mail copy across sign-out and sign-in', () => {
     }
     await vi.waitFor(() => expect(copies.closed).toEqual(['anna']))
     expect(mail.ready).toBe(false)
+    // The close itself is bounded the same way: on the desktop it waits for writes under way, which may never answer.
+    expect(copies.closeOptions).toEqual([{ waitMs: KEPT_SAVE_LIMIT_MS }])
   })
 
   it('opens and syncs the copy of the same user who signs in again while the last draft is still being written', async () => {
@@ -250,7 +256,7 @@ describe('the mail copy across sign-out and sign-in', () => {
     const mail = useMailStore()
     await mail.start('anna')
     let written!: () => void
-    mail.beforeKeptCopyCloses(() => new Promise<void>((resolve) => (written = resolve)))
+    mail.beforeKeptCopyCloses(() => new Promise<void>((resolve) => (written = resolve)), () => undefined)
 
     window.dispatchEvent(new StorageEvent('storage', { key: 'auth.tokens', newValue: null }))
     await vi.waitFor(() => expect(written).toBeDefined())

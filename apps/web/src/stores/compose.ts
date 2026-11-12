@@ -171,14 +171,10 @@ export const useComposeStore = defineStore('compose', () => {
   )
 
   // A session that ended without a sign-out (expired, or ended in another tab) keeps the copy so that unsent text
-  // survives: the typing since the last autosave goes into it before it closes, and only then is the form let go.
-  mail.beforeKeptCopyCloses(async () => {
-    try {
-      await composer.saveNow()
-    } finally {
-      reset()
-    }
-  })
+  // survives: the typing since the last autosave goes into it before it closes. The form is let go once that write is
+  // done or its time is up (the mail store decides), never later: a write still under way must not keep the draft on
+  // screen for whoever signs in next.
+  mail.beforeKeptCopyCloses(() => composer.saveNow(), reset)
 
   // The copy was opened again for the same user (removed or closed under this tab): the open draft moves to it, so
   // typing is kept and Send works. Before another user's copy opens, the draft on screen was let go: by the sign-out,
