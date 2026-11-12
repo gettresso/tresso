@@ -2,11 +2,14 @@
 import { computed } from 'vue'
 import { oauthProviderFor, type MailServiceProvider, type OAuthProviderId } from '@tresso/core'
 import ProviderMark from './ProviderMark.vue'
-import { PICKER_ORDER, PROVIDERS, type ProviderChoice } from './providers'
+import { PICKER_ORDER, PROVIDERS, WHATSAPP_CARD, type ProviderChoice } from './providers'
 
-/** Step "Select your email provider": every provider Tresso knows, and setting up any other by hand. */
-const props = defineProps<{ address: string | null; signInProviders: OAuthProviderId[] }>()
-const emit = defineEmits<{ pick: [choice: ProviderChoice]; otherAddress: [] }>()
+/**
+ * Step "Select your email provider": every provider Tresso knows, and setting up any other by hand. `whatsapp` adds
+ * the WhatsApp card (the desktop app on macOS, once WhatsApp is turned on); nothing of it shows otherwise.
+ */
+const props = defineProps<{ address: string | null; signInProviders: OAuthProviderId[]; whatsapp?: boolean }>()
+const emit = defineEmits<{ pick: [choice: ProviderChoice]; otherAddress: []; whatsapp: [] }>()
 
 function available(choice: ProviderChoice): boolean {
   if (choice === 'exchange' || choice === 'manual') return true
@@ -40,6 +43,13 @@ const someUnavailable = computed(() => PICKER_ORDER.some((choice) => !available(
       <span class="tile-text">
         <span class="tile-name">{{ PROVIDERS[choice].name }}</span>
         <span class="tile-note">{{ PROVIDERS[choice].note }}</span>
+      </span>
+    </button>
+    <button v-if="whatsapp" type="button" class="tile wide whatsapp" @click="emit('whatsapp')">
+      <span class="wa-mark" aria-hidden="true">{{ WHATSAPP_CARD.mark }}</span>
+      <span class="tile-text">
+        <span class="tile-name">{{ WHATSAPP_CARD.name }}</span>
+        <span class="tile-note">{{ WHATSAPP_CARD.note }}</span>
       </span>
     </button>
   </div>
@@ -86,6 +96,22 @@ const someUnavailable = computed(() => PICKER_ORDER.some((choice) => !available(
 .tile.wide {
   grid-column: 1 / -1;
   border-style: dashed;
+}
+.tile.whatsapp {
+  border-style: solid;
+}
+.wa-mark {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: var(--know);
+  color: var(--paper);
+  font: 700 15px var(--font-display);
+  line-height: 1;
 }
 .tile-text {
   display: flex;

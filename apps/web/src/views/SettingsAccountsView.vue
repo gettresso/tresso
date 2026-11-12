@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { providerSignInOutcome, signedInAgainNotice } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { useAccountsStore } from '@/stores/accounts'
 import { useMailStore } from '@/stores/mail'
+import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
+import { phoneNumber } from '@/components/chat/whatsappTexts'
 import AccountCard from '@/components/AccountCard.vue'
 import ApprovalLink from '@/components/ApprovalLink.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
@@ -17,6 +19,12 @@ const props = withDefaults(defineProps<{ finishesSignIn?: boolean }>(), { finish
 
 const accounts = useAccountsStore()
 const mail = useMailStore()
+const whatsapp = useWhatsAppRelayStore()
+/** The WhatsApp card's second line: the linked number when known, and where the chats live. */
+const whatsappLine = computed(() => {
+  const number = whatsapp.identity?.number
+  return number ? `${phoneNumber(number)}, via this Mac` : 'Via this Mac'
+})
 const error = ref<string | null>(null)
 const route = useRoute()
 const router = useRouter()
@@ -97,6 +105,17 @@ watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.
     <p v-else-if="accounts.accounts.length === 0" class="state">No mail accounts yet. Add one to see your mail in Tresso.</p>
 
     <AccountCard v-for="account in accounts.accounts" :key="account.id" :account="account" />
+
+    <!-- WhatsApp: the desktop app on macOS once it is turned on there; nothing of it shows elsewhere. -->
+    <section v-if="whatsapp.available" class="whatsapp" aria-label="WhatsApp">
+      <span class="wa-mark" aria-hidden="true">WA</span>
+      <span class="wa-who">
+        <span class="wa-name">WhatsApp</span>
+        <span class="wa-line">{{ whatsapp.connected ? whatsappLine : 'Chats next to your mail, through whatsapp-mcp on this Mac.' }}</span>
+      </span>
+      <RouterLink v-if="whatsapp.connected" :to="{ name: 'settings-whatsapp' }" class="button button-quiet wa-open">Settings</RouterLink>
+      <RouterLink v-else-if="whatsapp.configLoaded" :to="{ name: 'settings-whatsapp-connect' }" class="button button-quiet wa-open">Connect WhatsApp</RouterLink>
+    </section>
   </section>
 </template>
 
@@ -132,5 +151,45 @@ h2 {
   margin: 0;
   color: var(--know);
   font-weight: 500;
+}
+.whatsapp {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+.wa-mark {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--know);
+  color: var(--paper);
+  font-size: 12px;
+  font-weight: 700;
+}
+.wa-who {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.wa-name {
+  font-weight: 600;
+}
+.wa-line {
+  color: var(--ink-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.wa-open {
+  flex-shrink: 0;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
 }
 </style>

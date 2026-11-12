@@ -27,6 +27,7 @@ import { isDesktop, openInBrowser } from '@/platform/desktop'
 import { useAccountsStore } from '@/stores/accounts'
 import { useAuthStore } from '@/stores/auth'
 import { useMailStore } from '@/stores/mail'
+import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import AppIcon from '@/components/AppIcon.vue'
 import ApprovalLink from '@/components/ApprovalLink.vue'
 import TressoMark from '@/components/TressoMark.vue'
@@ -80,6 +81,7 @@ const BUSY_RETRY_STEP_MS = 2000
 const auth = useAuthStore()
 const accounts = useAccountsStore()
 const mail = useMailStore()
+const whatsapp = useWhatsAppRelayStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -133,6 +135,12 @@ function back(): void {
 function close(): void {
   stopRun()
   emit('close', null)
+}
+
+/** WhatsApp is no mail account: its own dialog, over Settings, WhatsApp. */
+function connectWhatsApp(): void {
+  stopRun()
+  void router.push({ name: 'settings-whatsapp-connect' })
 }
 
 // ---- Step 1: the address ------------------------------------------------------------------------------------------
@@ -1042,7 +1050,15 @@ onBeforeUnmount(() => {
       @connect="connectAppPassword"
     />
 
-    <ConnectPicker v-else-if="step === 'picker'" :address="address" :sign-in-providers="signInProviders" @pick="pick" @other-address="startOver" />
+    <ConnectPicker
+      v-else-if="step === 'picker'"
+      :address="address"
+      :sign-in-providers="signInProviders"
+      :whatsapp="whatsapp.available"
+      @pick="pick"
+      @other-address="startOver"
+      @whatsapp="connectWhatsApp"
+    />
 
     <ConnectManual
       v-else-if="step === 'manual'"
