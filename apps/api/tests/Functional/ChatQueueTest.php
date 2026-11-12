@@ -246,7 +246,7 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame($error, $this->decodedResponse()['error'] ?? null);
         $this->report($id, ['sent' => false, 'error' => $error]);
         self::assertResponseStatusCodeSame(200, 'The same result again.');
-        $this->report($id, ['sent' => true]);
+        $this->report($id, ['sent' => 'unconfirmed' === $error ? false : true] + ('unconfirmed' === $error ? ['error' => 'refused'] : []));
         self::assertResponseStatusCodeSame(409, 'Another result is refused.');
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(204, 'Nothing sends a failed reply again by itself.');
@@ -259,6 +259,18 @@ final class ChatQueueTest extends DatabaseTestCase
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(200);
         self::assertSame($id, $this->decodedResponse()['id'] ?? null, 'Try again hands it to the relay once more.');
+    }
+
+    public function testASendTheRelayCouldNotConfirmMayStillBeReportedSent(): void
+    {
+        $id = $this->claimedReply('Count me in!');
+        $this->report($id, ['sent' => false, 'error' => 'unconfirmed']);
+        self::assertResponseStatusCodeSame(200);
+
+        $this->report($id, ['sent' => true]);
+
+        self::assertResponseStatusCodeSame(200, 'It went out after all: the truth wins.');
+        self::assertSame('sent', $this->decodedResponse()['status'] ?? null);
     }
 
     public function testAResultNeedsAClaim(): void

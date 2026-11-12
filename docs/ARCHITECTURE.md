@@ -2964,8 +2964,8 @@ chat's JID and WhatsApp id, so it never needs either readable.
   the call nor on the server) is still 422 as a whole. JIDs are stored in one form (lower case, without agent and
   device suffix); the cases both sides test are in `packages/core/src/chat/importable-jids.json`. Names lose control
   characters and direction overrides and are cut to 255 characters. `firstImport` is honoured until the relay's first
-  batch without it (and again for a relay that takes over): then a chat that had nothing unread is read through its
-  newest message, so the history arrives read.
+  batch without it (and again for a relay that takes over): then a chat made in that import, or one read through its last
+  message, is read through its newest message, so the history arrives read; a chat with unread messages stays unread.
 - **Reply queue.** A reply's id is a UUIDv7 the client made in the last 10 minutes; the same id again returns the stored
   reply (200), the same id for another chat or user is 409 `id_taken` (the chat is looked up first, so another user's
   chat is a 404 whatever the id), and the id of a reply that was cancelled or went with a chat left out is 409
