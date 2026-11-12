@@ -1,30 +1,29 @@
 # Operations
 
-Steps for whoever runs a Tresso server or tags a release. A self-hosted server needs only the README
-([Your own server](../README.md#-your-own-server)); this page adds what Tresso Cloud does around it and what is
-checked by hand.
+Steps for whoever runs a Tresso server or tags a release, beyond the README
+([Your own server](../README.md#-your-own-server)): moving sign-in and MCP to their own addresses, and what is checked
+by hand.
 
 ## Moving sign-in and MCP to their own addresses
 
-Tresso Cloud moves its sign-in pages from `api.gettresso.com` to `app.gettresso.com` (`TRESSO_AUTH_URL`) and gives MCP
-a host of its own, `mcp.gettresso.com` (`TRESSO_MCP_URL`). Section "Self-hosted and Tresso Cloud" in
-[ARCHITECTURE.md](ARCHITECTURE.md) describes what the two settings do. Tresso Cloud's deployment lives in
-`gettresso/tresso-internal`; the steps below name its files. Do them in this order.
+For a server that runs the web client, the API and MCP on separate addresses behind a proxy: the sign-in pages move
+from the API address to the web address (`TRESSO_AUTH_URL`) and MCP gets a host of its own (`TRESSO_MCP_URL`).
+Section "Self-hosted and Tresso Cloud" in [ARCHITECTURE.md](ARCHITECTURE.md) describes what the two settings do. In
+the steps, `<web>`, `<api>` and `<mcp>` stand for your three addresses. Do them in this order.
 
-1. **Tag the release with both settings unset.** The release workflow's "Tell Tresso Cloud" step deploys it to
-   production by itself; the server behaves as before, plus the fixes of the release. Right after the deploy, sign in
-   once on the web and once from the desktop app: this is the first real use of the Redis session handler, which the
-   tests only drive directly. Every browser signs in once more after this deploy (sessions moved from files to Redis);
-   apps and their tokens are not touched.
-2. **DNS** (`SherinBloemendaal/dns`, `zone_gettresso_com.tf`): add `mcp.gettresso.com`, A and AAAA, proxied, to the
-   same server as `api` and `app`. No firewall or Terraform change.
-3. **One change in tresso-internal, deployed as one:**
-   - `infra/server/env.tpl`: add `TRESSO_AUTH_URL=https://app.gettresso.com` and
-     `TRESSO_MCP_URL=https://mcp.gettresso.com`. Leave `TRESSO_MCP_ON_API_HOST` unset (it means on). Then run
-     `scripts/push-env`.
-   - `infra/server/compose.cloud.yaml`, `configs.proxy` (kept in step with `compose.prod.yaml` by hand): in the
-     `${TRESSO_WEB_URL}` block, before the web route, send the six sign-in paths to the API and put the web route in a
-     `handle` of its own:
+1. **Deploy the release with both settings unset.** The server behaves as before, plus the fixes of the release. Right
+   after the deploy, sign in once on the web and once from the desktop app: this is the first real use of the Redis
+   session handler, which the tests only drive directly. Every browser signs in once more after this deploy (sessions
+   moved from files to Redis); apps and their tokens are not touched. If a release workflow deploys your server by
+   itself, this step happens at the tag.
+2. **DNS**: add a record (A and AAAA) for `<mcp>`, pointing at the same server as `<web>` and `<api>`, behind the same
+   proxy or CDN as they are.
+3. **One change, deployed as one:**
+   - In your environment file: set `TRESSO_AUTH_URL=<web>` and `TRESSO_MCP_URL=<mcp>`. Leave `TRESSO_MCP_ON_API_HOST`
+     unset (it means on). Load the file wherever your deployment keeps it.
+   - In your proxy configuration (if it is not the `compose.prod.yaml` of this release, which has these routes): in
+     the site block of `<web>`, before the web route, send the six sign-in paths to the API and put the web route in a
+     `handle` of its own. In Caddy:
 
      ```
      @signin path /login /logout /oauth/authorize /auth/auth.css /auth/tresso.svg /auth/fonts/*
@@ -39,43 +38,43 @@ a host of its own, `mcp.gettresso.com` (`TRESSO_MCP_URL`). Section "Self-hosted 
      ```
 
      `/auth/callback` is the web client's own route: never send `/auth/*` as a whole to the API, or every web sign-in
-     ends on a 404 after the password. Add the MCP host to the API site address,
-     `${TRESSO_API_URL} ${TRESSO_MCP_URL:-} {`, with the same `reverse_proxy api:80` and `header_up` line.
+     ends on a 404 after the password. Add `<mcp>` to the API's site address (in `compose.prod.yaml`,
+     `${TRESSO_API_URL} ${TRESSO_MCP_URL:-} {`), with the same `reverse_proxy api:80` and `header_up` line.
    - Login throttling behind the proxy: the sign-in form counts wrong passwords per client address (5 per address and
      IP, 25 per IP, 15 minutes). The API takes that address from `X-Forwarded-For` only from a proxy that
      `SYMFONY_TRUSTED_PROXIES` covers (`compose.prod.yaml` sets `private_ranges`, which covers the proxy container),
-     and the `header_up` line makes the proxy pass the visitor's address instead of Cloudflare's. `{client_ip}` is the
-     visitor's address only when Caddy trusts Cloudflare's ranges (`trusted_proxies`); check that it does. Without
-     both, every visitor counts as one address and 25 wrong passwords lock the form for everyone.
-   - The API and web services get the three settings from the release's `compose.prod.yaml`; pass them on yourself
-     only where `compose.cloud.yaml` overrides those environments (`AUTH_PUBLIC_URL`, `MCP_PUBLIC_URL`,
-     `MCP_ON_API_HOST` for the API, `TRESSO_AUTH_URL` for the web image).
+     and the `header_up` line makes the proxy pass the visitor's address on. With a CDN in front of the proxy,
+     `{client_ip}` is the visitor's address only when Caddy trusts the CDN's address ranges (`trusted_proxies`);
+     check that it does. Without both, every visitor counts as one address and 25 wrong passwords lock the form for
+     everyone.
+   - The API and web services get the three settings from this release's `compose.prod.yaml`. Pass them on yourself
+     only where your own configuration overrides those environments: `AUTH_PUBLIC_URL`, `MCP_PUBLIC_URL` and
+     `MCP_ON_API_HOST` for the API, `TRESSO_AUTH_URL` for the web image.
    - Never set `TRESSO_AUTH_URL` before the proxy routes are live: `/login` on the web address would reach the web
      client and nobody could sign in.
-4. **`.github/workflows/deploy.yml`**: besides `/health` and the web root, check that
-   `https://app.gettresso.com/login` answers 200, and that a POST without a token to `https://mcp.gettresso.com/mcp`
-   answers 401 naming `https://mcp.gettresso.com/.well-known/oauth-protected-resource/mcp` in its `resource_metadata`.
-5. **Cloudflare**: no cache or page rule may cache `/login`, `/logout` or `/oauth/authorize` on `app.gettresso.com`
-   (the API sends `no-store` on all three). The web image sends a Content-Security-Policy with `script-src 'self'`:
-   Rocket Loader must be off for `app.gettresso.com` (it would break the app), and Web Analytics injection would only
-   log an error. Open the browser console on `app.gettresso.com` once after the deploy and look for CSP errors.
+4. **Deploy checks**: besides the health check and the web root, check that `<web>/login` answers 200, and that a
+   POST without a token to `<mcp>/mcp` answers 401 naming `<mcp>/.well-known/oauth-protected-resource/mcp` in its
+   `resource_metadata`.
+5. **CDN**: no cache or page rule may cache `/login`, `/logout` or `/oauth/authorize` on `<web>` (the API sends
+   `no-store` on all three). The web image sends a Content-Security-Policy with `script-src 'self'`: a CDN feature
+   that rewrites or injects scripts (such as Cloudflare's Rocket Loader) breaks the app, and an injected analytics
+   script only logs an error. Open the browser console on `<web>` once after the deploy and look for CSP errors.
 6. **Check by hand:**
-   - Web sign-in from a signed-out browser, on `app.gettresso.com`.
-   - An installed desktop app signs in: it opens the API address and is sent on to the app address.
-   - An existing MCP connection on `https://api.gettresso.com/mcp` still calls a tool and refreshes its token.
-   - A new MCP connection on `https://mcp.gettresso.com/mcp` registers and signs in.
-   - A third-party client that sends `resource=https://api.gettresso.com/mcp` still reaches its consent screen.
+   - Web sign-in from a signed-out browser, on `<web>`.
+   - An installed desktop app signs in: it opens the API address and is sent on to the web address.
+   - An existing MCP connection on `<api>/mcp` still calls a tool and refreshes its token.
+   - A new MCP connection on `<mcp>/mcp` registers and signs in.
+   - A third-party client that sends `resource=<api>/mcp` still reaches its consent screen.
 
-   Every browser signs in once more on the app address, since its sign-in cookie belonged to the API host. Tokens are
+   Every browser signs in once more on the web address, since its sign-in cookie belonged to the API host. Tokens are
    not touched.
-7. **Then** change the public MCP address to `https://mcp.gettresso.com/mcp` in the README (the Claude section) and on
-   the website, and add `mcp.gettresso.com` and the sign-in on `app.gettresso.com` to the address table in
-   tresso-internal's `docs/CLOUD-RUNBOOK.md`.
-8. **Much later**, on the owner's decision: `TRESSO_MCP_ON_API_HOST=0` ends MCP on the API host. Clients set up with
-   the old address then add the server again under the new one and sign in once.
+7. **Then** point people at `<mcp>/mcp` (for Tresso Cloud: the README's Claude section and the website), and update
+   your own notes on which address serves what.
+8. **Much later**, by decision: `TRESSO_MCP_ON_API_HOST=0` ends MCP on the API host. Clients set up with the old
+   address then add the server again under the new one and sign in once.
 9. **Nothing changes at Google, Microsoft or Stripe:** `/connect/...` and the Stripe webhook stay on the API host.
 
-A self-hosted server does the same with its own names; the README has the short version
+The README has the short version
 ([Sign-in on the web address, MCP on its own host](../README.md#sign-in-on-the-web-address-mcp-on-its-own-host)).
 
 ## Check by hand after a release
