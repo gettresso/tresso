@@ -264,6 +264,67 @@ final class SyncChangesTest extends DatabaseTestCase
         }
     }
 
+    /**
+     * Every page says the newest change number of the user, so a client can tell how far behind it is: on the first
+     * page of a paged pull it is ahead of the cursor, on the last page the pull is done (hasMore false).
+     */
+    public function testEachPageSaysTheNewestChangeNumber(): void
+    {
+        $this->changes(0);
+        $newest = $this->changeNumberOf('kim@example.test');
+
+        $first = $this->changes(0, 1);
+        self::assertTrue($first['hasMore']);
+        self::assertSame($newest, $first['latest']);
+        self::assertGreaterThan($first['cursor'], $first['latest'], 'The first of several pages is behind the newest number.');
+
+        $cursor = $first['cursor'];
+        $pages = 1;
+        do {
+            $page = $this->changes($cursor, 1);
+            self::assertSame($newest, $page['latest']);
+            self::assertGreaterThanOrEqual($page['cursor'], $page['latest']);
+            $cursor = $page['cursor'];
+            ++$pages;
+        } while ($page['hasMore'] && $pages < 50);
+
+        self::assertFalse($page['hasMore'], 'The last page says no more follow.');
+        self::assertLessThanOrEqual($newest, $page['cursor']);
+
+        $nothingNew = $this->changes($cursor);
+        self::assertSame($cursor, $nothingNew['cursor']);
+        self::assertSame($newest, $nothingNew['latest'], 'An empty page says it too.');
+    }
+
+    /**
+     * A number can be handed out whose rows a client never gets (rows changed again later, or of a kind left out): the
+     * newest number then stays ahead of the last cursor, and only hasMore says the pull is over.
+     */
+    public function testTheNewestChangeNumberMayStayAheadOfTheLastPage(): void
+    {
+        $cursor = $this->changes(0)['cursor'];
+        $this->connection()->executeStatement("UPDATE app_user SET change_seq = change_seq + 5 WHERE email = 'kim@example.test'");
+
+        $page = $this->changes($cursor);
+
+        self::assertFalse($page['hasMore']);
+        self::assertSame($cursor, $page['cursor']);
+        self::assertSame($cursor + 5, $page['latest']);
+    }
+
+    public function testTheNewestChangeNumberIsTheUsersOwn(): void
+    {
+        $this->changes(0);
+        $lisa = $this->userHeaders('lisa@example.test', ['mail:read']);
+
+        $this->client->request('GET', '/api/v1/sync/changes?since=0', server: $lisa);
+
+        self::assertResponseIsSuccessful();
+        $page = $this->decodedResponse();
+        self::assertSame($this->changeNumberOf('lisa@example.test'), $page['latest']);
+        self::assertNotSame($this->changeNumberOf('kim@example.test'), $page['latest']);
+    }
+
     public function testALargeFolderDeletionIsPagedLikeAnyOtherChange(): void
     {
         $this->ingest('folders', ['folders' => [
@@ -491,15 +552,21 @@ final class SyncChangesTest extends DatabaseTestCase
     }
 
     /**
-     * @return array{cursor: int, hasMore: bool, mailAccounts: list<array<string, mixed>>, folders: list<array<string, mixed>>, threads: list<array<string, mixed>>, messages: list<array<string, mixed>>, signatures: list<array<string, mixed>>, smartInboxes: list<array<string, mixed>>, todos: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>}
+     * @return array{cursor: int, hasMore: bool, latest: int, mailAccounts: list<array<string, mixed>>, folders: list<array<string, mixed>>, threads: list<array<string, mixed>>, messages: list<array<string, mixed>>, signatures: list<array<string, mixed>>, smartInboxes: list<array<string, mixed>>, todos: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>}
      */
     private function changes(int $since, int $limit = 500): array
     {
         $this->client->request('GET', \sprintf('/api/v1/sync/changes?since=%d&limit=%d', $since, $limit), server: $this->kim);
         self::assertResponseIsSuccessful();
 
-        /** @var array{cursor: int, hasMore: bool, mailAccounts: list<array<string, mixed>>, folders: list<array<string, mixed>>, threads: list<array<string, mixed>>, messages: list<array<string, mixed>>, signatures: list<array<string, mixed>>, smartInboxes: list<array<string, mixed>>, todos: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>} */
+        /** @var array{cursor: int, hasMore: bool, latest: int, mailAccounts: list<array<string, mixed>>, folders: list<array<string, mixed>>, threads: list<array<string, mixed>>, messages: list<array<string, mixed>>, signatures: list<array<string, mixed>>, smartInboxes: list<array<string, mixed>>, todos: list<array<string, mixed>>, deleted: list<array{type: string, id: string}>} */
         return $this->decodedResponse();
+    }
+
+    /** The newest change number handed out to this user. */
+    private function changeNumberOf(string $email): int
+    {
+        return $this->countRows('SELECT change_seq FROM app_user WHERE email = :email', ['email' => $email]);
     }
 
     /**
