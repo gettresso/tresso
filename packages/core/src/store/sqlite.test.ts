@@ -243,18 +243,35 @@ describe('SqliteMailStore', () => {
     expect(await reopened.cursor()).toBe(10)
   })
 
-  it('rebuilds when a step on the way is missing, and leaves the copy as it was when a step fails', async () => {
-    const broken = await SqliteMailStore.open(sql, { version: SCHEMA_VERSION + 1, migrations: { [SCHEMA_VERSION]: { sql: 'CREATE TABLE threads (id TEXT)', resync: true } } }).catch((error: unknown) => error)
-    expect(broken).toBeInstanceOf(Error)
-    expect(await sql.first<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'")).toEqual({ value: String(SCHEMA_VERSION) })
-    expect(await sql.first("SELECT value FROM meta WHERE key = 'resync'")).toBeNull()
-
+  it('rebuilds when a step on the way is missing', async () => {
     const rebuilt = await SqliteMailStore.open(sql, { version: SCHEMA_VERSION + 2, migrations: { [SCHEMA_VERSION]: { sql: 'SELECT 1', resync: false } } })
 
     expect(rebuilt.upgrade).toBe('rebuilt')
     expect(rebuilt.afterUpdate).toBe(true)
     expect(await rebuilt.cursor()).toBe(0)
     expect(await rebuilt.inbox(null, 10)).toEqual([])
+  })
+
+  it('rebuilds when a step fails, keeping the drafts that exist only here, so the copy still opens', async () => {
+    await db.saveDraft(draft('unsent', { pendingSave: true, version: 3 }))
+    const logged: unknown[] = []
+    const error = console.error
+    console.error = (...args: unknown[]) => void logged.push(args[0])
+    try {
+      const reopened = await SqliteMailStore.open(sql, { version: SCHEMA_VERSION + 1, migrations: { [SCHEMA_VERSION]: { sql: 'CREATE TABLE threads (id TEXT)', resync: true } } })
+
+      expect(reopened.upgrade).toBe('rebuilt')
+      expect(reopened.afterUpdate).toBe(true)
+      expect(await sql.first<{ value: string }>("SELECT value FROM meta WHERE key = 'schema'")).toEqual({ value: String(SCHEMA_VERSION + 1) })
+      expect(await reopened.cursor()).toBe(0)
+      expect(await reopened.inbox(null, 10)).toEqual([])
+      expect(await reopened.draft('unsent')).toMatchObject({ pendingSave: true, version: 0 })
+      expect(logged).toEqual(['Bringing the mail copy up to date in place failed; it is rebuilt'])
+      // And it opens again as it is now.
+      expect((await SqliteMailStore.open(sql, { version: SCHEMA_VERSION + 1 })).upgrade).toBe('none')
+    } finally {
+      console.error = error
+    }
   })
 
   it('rebuilds a copy of a newer version, which this one cannot read', async () => {
