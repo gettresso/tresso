@@ -1,5 +1,4 @@
-import { exchangeCode, OAuthError, refreshTokens, RequestTimeoutError, retryAfterMs, ServerClock, withDeadline, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
-import { revokeToken } from '@/auth/revokeToken'
+import { exchangeCode, OAuthError, refreshTokens, RequestTimeoutError, retryAfterMs, revokeToken, ServerClock, withDeadline, type Me, type OAuthClientConfig, type TokenSet } from '@tresso/core'
 
 /** Refresh slightly before expiry so a request never leaves with a token that dies in flight. */
 const EXPIRY_MARGIN_MS = 30_000
