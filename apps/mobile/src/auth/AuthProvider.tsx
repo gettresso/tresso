@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { AppState } from 'react-native'
-import { Session, type SessionState } from '@/auth/session'
+import { Session, type SessionState, type SignOutApi } from '@/auth/session'
 import { secureTokenStore } from '@/auth/secureTokenStore'
 import { signInInBrowser } from '@/auth/browserSignIn'
 import { config } from '@/config'
@@ -26,6 +26,9 @@ interface Auth extends SessionState {
 
 const AuthContext = createContext<Auth | null>(null)
 
+/** Removes this phone from the user's push devices; the sign-out runs it before the refresh token is revoked. */
+const forgetDevice = (api: SignOutApi) => forgetPushDevice(api, secureDeviceId)
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const session = useMemo(() => new Session(config, secureTokenStore), [])
   const state = useSyncExternalStore(
@@ -35,7 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [restoring, setRestoring] = useState(true)
 
   useEffect(() => {
-    void session.restore().finally(() => setRestoring(false))
+    void session.restore(forgetDevice).finally(() => setRestoring(false))
   }, [session])
 
   // A store that could not be read at launch (the Keychain not available yet, a Keystore error) is read again each
@@ -43,7 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (next) => {
       if (next === 'active' && session.snapshot.restoreFailed) {
-        void session.restore()
+        void session.restore(forgetDevice)
       }
     })
     return () => subscription.remove()
@@ -63,8 +66,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await session.completeSignIn(authorization.code, authorization.codeVerifier)
         return true
       },
-      retryRestore: () => session.restore(),
-      signOut: () => session.signOut((api) => forgetPushDevice(api, secureDeviceId)),
+      retryRestore: () => session.restore(forgetDevice),
+      signOut: () => session.signOut(forgetDevice),
     }),
     [state, session, restoring],
   )

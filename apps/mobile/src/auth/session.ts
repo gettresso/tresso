@@ -22,6 +22,8 @@ const TOKEN_TIMEOUT_MS = 20_000
 /**
  * The wait before a refresh whose answer never came is sent again. The server may have rotated the token already; it
  * answers the same refresh token with the same new pair for 30 seconds, so the retry has to come well within that.
+ * After the time limit the retry goes out 22 seconds after the first request, leaving 8 of those seconds; when it
+ * reaches the server later than that, the server refuses the old token and the session expires, the mail kept.
  */
 const REFRESH_RETRY_DELAY_MS = 2_000
 /**
@@ -120,6 +122,8 @@ export class Session {
   private signingOut: Promise<void> | null = null
   /** Goes up whenever a sign-in ends, so a refresh that finishes afterwards cannot sign the user back in. */
   private generation = 0
+  /** How the sign-in ended that last moved {@link generation} on, for requests that were under way then. */
+  private lastEnd: SessionEnd = 'signedOut'
   /** Every write to the store, one after another, so a removal never lands between the steps of an earlier save. */
   private writes: Promise<void> = Promise.resolve()
   /**
@@ -148,9 +152,10 @@ export class Session {
   /**
    * Reads the sign-in kept from the previous launch. Called again after it failed; a sign-in or sign-out made in the
    * meantime wins over what it reads. A sign-out the user asked for that was cut off (the app was killed) is finished
-   * here: it ends as signed out, so the mail on the phone is removed too.
+   * here: it ends as signed out, so the mail on the phone is removed too, and the server is told with `beforeRevoke`
+   * (see {@link signOut}).
    */
-  async restore(): Promise<void> {
+  async restore(beforeRevoke?: (api: SignOutApi) => Promise<void>): Promise<void> {
     const generation = this.generation
     try {
       const [tokens, signedOut] = await Promise.all([this.store.load(), this.store.loginRequired()])
@@ -163,7 +168,7 @@ export class Session {
       }
       this.update({ tokens: null, restored: false, restoreFailed: false, ended: 'signedOut', storageError: null })
       // Also without a loadable set: a sign-out cut off inside the removal can leave a refresh token or the last user.
-      await this.finishSignOut(tokens?.refreshToken ?? null)
+      await this.finishSignOut(tokens, beforeRevoke)
     } catch (error) {
       if (generation === this.generation && this.state.tokens === null) {
         this.update({ restoreFailed: true, storageError: `The saved sign-in could not be read: ${message(error)}` })
@@ -199,10 +204,10 @@ export class Session {
 
   /**
    * The sign-out the user asked for. The tokens leave the app at once. Then the server is told, within a few seconds
-   * in all: `beforeRevoke` (removing this phone's push device, 2.5 seconds at most) with the access token the sign-out
-   * found, then the revocation of the refresh token, which ends the access token too. Last the tokens and who was signed in are removed from the
-   * phone, and with them the mail on it (MailProvider). The next sign-in asks for the password again
-   * ({@link loginRequired}). Signed out either way; rejects with the failure of `beforeRevoke` once all that is done.
+   * in all ({@link tellServer}): `beforeRevoke` (removing this phone's push device), then the revocation of the refresh
+   * token, which ends the access token too. Last the tokens and who was signed in are removed from the phone, and with
+   * them the mail on it (MailProvider). The next sign-in asks for the password again ({@link loginRequired}). Signed
+   * out either way; rejects with the failure of `beforeRevoke` once all that is done.
    */
   signOut(beforeRevoke?: (api: SignOutApi) => Promise<void>): Promise<void> {
     if (this.signingOut === null) {
@@ -218,6 +223,7 @@ export class Session {
   private async endSignIn(beforeRevoke?: (api: SignOutApi) => Promise<void>): Promise<void> {
     const ending = this.state.tokens
     this.generation++
+    this.lastEnd = 'signedOut'
     this.refreshing = null
     // Signed out at once: a request made while the server is told finds no tokens and starts no refresh.
     this.update({ tokens: null, restored: false, ended: 'signedOut', paymentRequired: false, signingOut: true })
@@ -228,9 +234,36 @@ export class Session {
     } catch (error) {
       failure = error
     }
+    let untold: unknown = null
+    try {
+      await this.tellServer(ending, beforeRevoke)
+    } catch (error) {
+      untold = error
+    }
+    try {
+      await this.removeSignIn()
+    } catch (error) {
+      failure ??= error
+    }
+    // A sign-in completed while the server was told: its own write prepared the store and kept its tokens, and its
+    // state is not this sign-out's to report on.
+    if (this.state.tokens === null) {
+      this.update({ storageError: failure === null ? null : `You are signed out here, but the sign-in could not be removed from this device: ${message(failure)}` })
+    }
+    if (untold !== null) {
+      throw untold
+    }
+  }
+
+  /**
+   * Tells the server about a sign-out, within {@link SIGN_OUT_BUDGET_MS}: `beforeRevoke` first (2.5 seconds at most),
+   * with an access token renewed first when it is about to expire, then the revocation of the newest refresh token.
+   * Rejects with the failure of `beforeRevoke` once the revocation is done too.
+   */
+  private async tellServer(ending: TokenSet | null, beforeRevoke?: (api: SignOutApi) => Promise<void>): Promise<void> {
+    let untold: unknown = null
     const deadline = Date.now() + SIGN_OUT_BUDGET_MS
     let refreshToken = ending?.refreshToken ?? null
-    let untold: unknown = null
     if (beforeRevoke !== undefined) {
       try {
         await withDeadline(
@@ -254,16 +287,6 @@ export class Session {
     }
     if (refreshToken !== null) {
       await this.revoke(refreshToken, Math.min(REVOKE_WAIT_MS, deadline - Date.now()))
-    }
-    try {
-      await this.removeSignIn()
-    } catch (error) {
-      failure ??= error
-    }
-    // A sign-in completed while the server was told: its own write prepared the store and kept its tokens, and its
-    // state is not this sign-out's to report on.
-    if (this.state.tokens === null) {
-      this.update({ storageError: failure === null ? null : `You are signed out here, but the sign-in could not be removed from this device: ${message(failure)}` })
     }
     if (untold !== null) {
       throw untold
@@ -355,7 +378,10 @@ export class Session {
         return
       }
       if (!this.prepared) {
+        // The sign-in's own write could not prepare the store, so its tokens were not kept: they go in with the user.
         await this.prepareStore()
+        await this.store.save(this.state.tokens)
+        this.update({ storageError: null })
       }
       await this.store.rememberUser(userId)
     })
@@ -418,7 +444,7 @@ export class Session {
       }
     } catch (error) {
       if (generation !== this.generation) {
-        throw new ApiError(401, 'Signed out.')
+        throw new ApiError(401, this.endedMessage())
       }
       if (!endsSession(error)) {
         throw new RenewalFailedError(error)
@@ -431,7 +457,7 @@ export class Session {
       if (next.refreshToken !== null) {
         void this.revoke(next.refreshToken)
       }
-      throw new ApiError(401, 'Signed out.')
+      throw new ApiError(401, this.endedMessage())
     }
     this.update({ tokens: next })
     await this.saveTokens(next)
@@ -444,6 +470,7 @@ export class Session {
    */
   private async expire(): Promise<void> {
     this.generation++
+    this.lastEnd = 'expired'
     this.refreshing = null
     this.update({ tokens: null, ended: 'expired', paymentRequired: false })
     try {
@@ -487,9 +514,14 @@ export class Session {
     this.prepared = true
   }
 
-  private async finishSignOut(refreshToken: string | null): Promise<void> {
+  /**
+   * Finishes a sign-out cut off by the app's end. The server is told as the sign-out would have (the push device and
+   * the revocation, best effort, within the same few seconds) while the sign-in is removed from the phone; a sign-in
+   * waits for it ({@link SessionState.signingOut}).
+   */
+  private async finishSignOut(tokens: TokenSet | null, beforeRevoke?: (api: SignOutApi) => Promise<void>): Promise<void> {
     // A sign-out cut off inside the removal can leave the refresh token without the rest of the set.
-    let leftover = refreshToken
+    let leftover = tokens?.refreshToken ?? null
     if (leftover === null) {
       try {
         leftover = await this.store.refreshToken()
@@ -497,8 +529,17 @@ export class Session {
         // Unreadable: it is removed below all the same, and runs out on its own at the server.
       }
     }
-    if (leftover !== null) {
-      void this.revoke(leftover)
+    // Without a set, only the refresh token is left: an access token for the push device comes from renewing it.
+    const ending = tokens ?? (leftover === null ? null : { accessToken: '', refreshToken: leftover, expiresAt: 0 })
+    if (ending !== null && this.signingOut === null) {
+      const told = this.tellServer(ending, beforeRevoke)
+        .catch(() => undefined)
+        .finally(() => {
+          this.signingOut = null
+          this.update({ signingOut: false })
+        })
+      this.signingOut = told
+      this.update({ signingOut: true })
     }
     try {
       await this.removeSignIn()
@@ -527,16 +568,14 @@ export class Session {
     return done
   }
 
-  /** Revokes a refresh token, waiting `waitMs` at most; the request itself may still finish after that. */
+  /** Revokes a refresh token within `waitMs`, past which the request is aborted. */
   private async revoke(refreshToken: string, waitMs: number = REVOKE_WAIT_MS): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const waited = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, Math.max(0, waitMs))
-    })
     // Best effort: when the server cannot be told, the token still leaves the phone and runs out on its own.
-    const revoked = revokeToken(this.config, refreshToken, this.fetchImpl).catch(() => undefined)
-    await Promise.race([revoked, waited])
-    clearTimeout(timer)
+    await this.limited(Math.max(0, waitMs), (fetchImpl) => revokeToken(this.config, refreshToken, fetchImpl)).catch(() => undefined)
+  }
+
+  private endedMessage(): string {
+    return this.lastEnd === 'expired' ? EXPIRED : 'Signed out.'
   }
 
   /**
