@@ -33,16 +33,17 @@ trait AuthenticatesUsers
     }
 
     /**
-     * Signs the user in through /oauth/authorize and returns the request headers for API calls.
+     * Signs the user in through /oauth/authorize and returns the request headers for API calls: as the web app, or as
+     * another of our own apps ($clientId `desktop` or `mobile`).
      *
      * @param list<string> $scopes
      *
      * @return array<string, string>
      */
-    protected function userHeaders(string $email, array $scopes): array
+    protected function userHeaders(string $email, array $scopes, string $clientId = 'web'): array
     {
         $verifier = bin2hex(random_bytes(32));
-        $redirectUri = $this->webRedirectUri();
+        $redirectUri = 'web' === $clientId ? $this->webRedirectUri() : $this->nativeRedirectUri();
 
         $this->client->getCookieJar()->clear();
         $crawler = $this->client->request('GET', '/login');
@@ -50,7 +51,7 @@ trait AuthenticatesUsers
 
         $this->client->request('GET', '/oauth/authorize?'.http_build_query([
             'response_type' => 'code',
-            'client_id' => 'web',
+            'client_id' => $clientId,
             'redirect_uri' => $redirectUri,
             'scope' => implode(' ', $scopes),
             'state' => 'test',
@@ -63,7 +64,7 @@ trait AuthenticatesUsers
 
         $this->client->request('POST', '/oauth/token', [
             'grant_type' => 'authorization_code',
-            'client_id' => 'web',
+            'client_id' => $clientId,
             'redirect_uri' => $redirectUri,
             'code' => $code,
             'code_verifier' => $verifier,
@@ -133,5 +134,14 @@ trait AuthenticatesUsers
         self::assertIsString($webAppUrl);
 
         return rtrim($webAppUrl, '/').'/auth/callback';
+    }
+
+    /** Where the desktop and mobile apps get their authorization code. */
+    private function nativeRedirectUri(): string
+    {
+        $uri = $_SERVER['NATIVE_REDIRECT_URI'] ?? null;
+        self::assertIsString($uri);
+
+        return $uri;
     }
 }

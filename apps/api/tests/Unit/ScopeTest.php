@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Unit;
 
+use App\Security\OAuth\ThirdPartyClients;
 use App\Security\Scope;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Yaml\Yaml;
@@ -34,6 +35,8 @@ final class ScopeTest extends TestCase
         self::assertSame(Scope::SettingsWrite->role(), Scope::ROLE_SETTINGS_WRITE);
         self::assertSame(Scope::SignaturesRead->role(), Scope::ROLE_SIGNATURES_READ);
         self::assertSame(Scope::SignaturesWrite->role(), Scope::ROLE_SIGNATURES_WRITE);
+        self::assertSame(Scope::ChatRead->role(), Scope::ROLE_CHAT_READ);
+        self::assertSame(Scope::ChatSend->role(), Scope::ROLE_CHAT_SEND);
         self::assertSame(Scope::SyncLease->role(), Scope::ROLE_SYNC_LEASE);
         self::assertSame(Scope::SyncIngest->role(), Scope::ROLE_SYNC_INGEST);
         self::assertSame(Scope::SyncCredentials->role(), Scope::ROLE_SYNC_CREDENTIALS);
@@ -58,5 +61,24 @@ final class ScopeTest extends TestCase
         self::assertNotContains('webhooks:manage', $scopes);
         self::assertContains('mail:read', $scopes);
         self::assertContains('settings:write', $scopes);
+    }
+
+    /**
+     * Chats are reached only by their own scopes: no other scope grants them, they are not offered for personal access
+     * tokens nor advertised to apps that are not ours, which may only ask for them by name.
+     */
+    public function testChatScopesAreOnlyAskedForByName(): void
+    {
+        $offered = array_map(static fn (Scope $s): string => $s->value, [...Scope::personalAccessTokenScopes(), ...Scope::thirdPartyAppScopes()]);
+
+        self::assertSame([Scope::ChatRead, Scope::ChatSend], Scope::chatScopes());
+        self::assertNotContains('chat:read', $offered);
+        self::assertNotContains('chat:send', $offered);
+        self::assertTrue(ThirdPartyClients::mayAskFor('chat:read'));
+        self::assertTrue(ThirdPartyClients::mayAskFor('chat:send'));
+        self::assertFalse(ThirdPartyClients::mayAskFor('sync:ingest'));
+        self::assertFalse(ThirdPartyClients::mayAskFor('teams:read'));
+        self::assertSame('Read your WhatsApp chats', Scope::ChatRead->label());
+        self::assertSame('Send WhatsApp messages as you', Scope::ChatSend->label());
     }
 }

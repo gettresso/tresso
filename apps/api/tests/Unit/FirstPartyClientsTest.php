@@ -35,4 +35,14 @@ final class FirstPartyClientsTest extends TestCase
         self::assertFalse(FirstPartyClients::isFirstParty($token->getOAuthClientId()));
         self::assertSame(['ROLE_OAUTH2_SETTINGS:READ', 'ROLE_OAUTH2_SETTINGS:WRITE', 'ROLE_USER'], $token->getRoleNames(), 'The same roles as an OAuth2 access token with these scopes.');
     }
+
+    public function testOnlyTheDesktopAppIsTheDesktop(): void
+    {
+        self::assertTrue(FirstPartyClients::signedByDesktop(new OAuth2Token(new User('kim@example.test', 'Kim'), 'access', 'desktop', ['mail:write'], 'ROLE_OAUTH2_')));
+        foreach (['web', 'mobile', 'some-third-party-app'] as $client) {
+            self::assertFalse(FirstPartyClients::signedByDesktop(new OAuth2Token(new User('kim@example.test', 'Kim'), 'access', $client, ['mail:write'], 'ROLE_OAUTH2_')), $client);
+        }
+        self::assertFalse(FirstPartyClients::signedByDesktop(null));
+        self::assertFalse(FirstPartyClients::signedByDesktop(new PersonalAccessTokenAuthentication(new User('kim@example.test', 'Kim'), '0190b4a0-0000-7000-8000-000000000000', ['mail:write'])));
+    }
 }
