@@ -11,8 +11,9 @@
 //!   TMPDIR only, and the port and a token in `WHATSAPP_BRIDGE_PORT` and `WHATSAPP_BRIDGE_TOKEN`. The binary and its
 //!   folder must belong to the user and be writable by nobody else.
 //! - The bridge's REST API has no authentication of its own, and any page or program on the Mac can reach 127.0.0.1.
-//!   So Tresso makes a random token per launch, gives it only to the bridge it starts (never to the web view, a file
-//!   or the log) and sends it on every request; a bridge that answers without it is not used (`unprotected`). The
+//!   So Tresso makes a random token for every start, gives it only to the bridge it starts (never to the web view, a
+//!   file or the log) and sends it only to that process; a bridge that answers without it is not used (`unprotected`).
+//!   Before a start Tresso asks the port without a token, so whatever already listens there never sees one. The
 //!   contract a bridge must keep is in docs/whatsapp-bridge.md. A bridge Tresso did not start never has the token, so
 //!   Tresso no longer attaches to one: it says the port is taken instead.
 //! - HTTP goes to 127.0.0.1 only, on a port the bridge itself confirmed (the probe below), never through a proxy and
@@ -345,9 +346,6 @@ pub struct Bridge(Arc<Shared>);
 
 struct Shared {
   settings: Settings,
-  /// 32 random bytes from the OS, in hex, made once per launch. Only the bridge's environment and the requests to it
-  /// carry it.
-  token: String,
   inner: Mutex<Inner>,
   /// Notified when a run ends.
   ended: Condvar,
@@ -379,7 +377,9 @@ struct Inner {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Launch {
-  /// Canonical, inside the folder the user picked.
+  /// The folder the user picked, canonical: checked again before every start of the process.
+  folder: PathBuf,
+  /// Canonical, inside that folder.
   binary: PathBuf,
   dir: PathBuf,
 }
@@ -393,6 +393,9 @@ impl Launch {
 struct Run {
   generation: u64,
   child: Arc<Mutex<Child>>,
+  /// 32 random bytes from the OS, in hex, made for this process only: its environment and the requests to it carry
+  /// it, and it is gone when the process ends.
+  token: String,
   /// Whether this run may show a QR code: only when the store had no session as it started.
   expect_qr: bool,
   /// A port line is being checked, or was.
@@ -407,16 +410,15 @@ struct Run {
 
 impl Default for Bridge {
   fn default() -> Self {
-    Bridge::new(Settings::default(), new_token())
+    Bridge::new(Settings::default())
   }
 }
 
 impl Bridge {
-  fn new(settings: Settings, token: String) -> Self {
+  fn new(settings: Settings) -> Self {
     let backoff = settings.first_backoff;
     Bridge(Arc::new(Shared {
       settings,
-      token,
       inner: Mutex::new(Inner { snapshot: Snapshot::stopped(None), generation: 0, run: None, launch: None, exits: VecDeque::new(), backoff }),
       ended: Condvar::new(),
       control: Mutex::new(()),
@@ -433,6 +435,12 @@ impl Bridge {
 
   fn snapshot(&self) -> Snapshot {
     lock(&self.0.inner).snapshot.clone()
+  }
+
+  /// Where to reach the running bridge: its confirmed port and the token of this run.
+  fn endpoint(&self) -> Option<(u16, String)> {
+    let inner = lock(&self.0.inner);
+    Some((inner.snapshot.port?, inner.run.as_ref()?.token.clone()))
   }
 
   /// The bridge folder of the bridge Tresso started, while it runs or waits to start again.
@@ -455,11 +463,16 @@ impl Bridge {
     if let Some(data_dir) = lock(&self.0.data_dir).clone() {
       stop_left_over(&data_dir, self.0.settings.grace);
     }
-    let found = self.0.settings.ports.iter().map(|port| probe(*port, &self.0.token)).find(|found| *found != Probe::Nothing);
+    // Without a token: whatever listens is not Tresso's. Anything on the port the bridge is asked to use holds it; on
+    // the other port (upstream's 8080, where other servers often run) only a bridge counts.
+    let found = self.0.settings.ports.iter().enumerate().find_map(|(index, port)| match (index, probe(*port, None)) {
+      (_, Probe::Unprotected) => Some(Failure::Unprotected),
+      (0, Probe::Taken | Probe::Ours) => Some(Failure::PortBusy),
+      _ => None,
+    });
     let mut inner = lock(&self.0.inner);
     match (found, launch) {
-      (Some(Probe::Unprotected), _) => inner.snapshot = Snapshot::stopped(Some(Failure::Unprotected)),
-      (Some(_), _) => inner.snapshot = Snapshot::stopped(Some(Failure::PortBusy)),
+      (Some(failure), _) => inner.snapshot = Snapshot::stopped(Some(failure)),
       (None, Err(failure)) => inner.snapshot = Snapshot::stopped(Some(failure)),
       (None, Ok(launch)) => {
         inner.exits.clear();
@@ -566,6 +579,9 @@ impl Shared {
   }
 
   fn spawn(shared: &Arc<Shared>, inner: &mut Inner, launch: Launch) -> Result<(), Failure> {
+    // Checked again for every process, also a restart: the folder or binary may have changed since.
+    let launch = launch_of(&launch.folder)?;
+    let token = new_token();
     // whatsmeow prints a QR code only when the store holds no session; a store that holds one can show no code, so
     // whatever looks like one in the output is message text. A store that cannot be read shows no code either.
     let expect_qr = matches!(identity(&launch.session_db()), Ok(None));
@@ -578,7 +594,7 @@ impl Shared {
     }
     command
       .env(PORT_VARIABLE, shared.settings.ports[0].to_string())
-      .env(TOKEN_VARIABLE, &shared.token)
+      .env(TOKEN_VARIABLE, &token)
       .stdin(Stdio::null())
       .stdout(Stdio::piped())
       .stderr(Stdio::piped());
@@ -598,6 +614,7 @@ impl Shared {
     inner.run = Some(Run {
       generation,
       child: Arc::clone(&child),
+      token,
       expect_qr,
       listening: false,
       stopping: false,
@@ -687,8 +704,11 @@ impl Shared {
       }
       Line::Listening { port, loopback_only } if !run.listening && shared.settings.ports.contains(&port) => {
         run.listening = true;
+        // The token goes only to the port the bridge was asked to use; on another one (upstream ignores the
+        // variable) Tresso only asks without it, which shows a bridge that does not check one.
+        let token = (port == shared.settings.ports[0]).then(|| run.token.clone());
         let shared = Arc::clone(shared);
-        thread::spawn(move || Shared::confirm_port(&shared, generation, port, loopback_only));
+        thread::spawn(move || Shared::confirm_port(&shared, generation, port, token, loopback_only));
       }
       Line::LoggedOut if !run.relink => {
         let session = inner.launch.as_ref().map(Launch::session_db);
@@ -705,12 +725,12 @@ impl Shared {
     }
   }
 
-  /// Takes the port of a `Starting REST API server` line once the port answers as this bridge, with the token. A
-  /// bridge that answers without it is stopped and not used.
-  fn confirm_port(shared: &Arc<Shared>, generation: u64, port: u16, line_says_loopback: bool) {
+  /// Takes the port of a `Starting REST API server` line once the port answers as this bridge, with this run's token.
+  /// A bridge that answers without it is stopped and not used.
+  fn confirm_port(shared: &Arc<Shared>, generation: u64, port: u16, token: Option<String>, line_says_loopback: bool) {
     let deadline = Instant::now() + LISTEN_WAIT;
     loop {
-      match probe(port, &shared.token) {
+      match probe(port, token.as_deref()) {
         Probe::Ours => break,
         Probe::Unprotected => {
           log::error!("The WhatsApp bridge answers without Tresso's token; stopping it");
@@ -721,7 +741,7 @@ impl Shared {
           }
           return;
         }
-        Probe::Nothing | Probe::Foreign => {}
+        Probe::Nothing | Probe::Taken => {}
       }
       if Instant::now() >= deadline || !shared.runs(generation) {
         log::warn!("The WhatsApp bridge named port {port}, which does not answer as a bridge");
@@ -1005,33 +1025,38 @@ fn post(port: u16, token: Option<&str>, path: &'static str, body: &Value, timeou
 /// nothing; anything else is not one, and gets no message text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Probe {
-  /// Nothing listens, or something that is not a bridge.
+  /// Nothing listens.
   Nothing,
   /// A bridge that answers without a token: anything on the Mac can use it.
   Unprotected,
-  /// A bridge that refuses a request without the token and takes Tresso's.
+  /// A bridge that refuses a request without the token and takes this run's.
   Ours,
-  /// Something that refuses a request without a token and Tresso's token as well: another bridge.
-  Foreign,
+  /// Something else answers (or, asked with a token, refuses it).
+  Taken,
 }
 
 fn is_bridge_answer(answer: &Answer) -> bool {
   matches!(answer, Answer::Reply { status: 400, body } if body.trim_end() == "Recipient is required")
 }
 
-fn probe(port: u16, token: &str) -> Probe {
+/// Asks without a token first. Only a process Tresso just started may get `token`, and only once it refused the
+/// bare request (401).
+fn probe(port: u16, token: Option<&str>) -> Probe {
   let empty = json!({});
   let bare = post(port, None, "/api/send", &empty, PROBE_TIMEOUT);
   if is_bridge_answer(&bare) {
     return Probe::Unprotected;
   }
-  if !matches!(bare, Answer::Reply { status: 401, .. }) {
-    return Probe::Nothing;
-  }
-  match post(port, Some(token), "/api/send", &empty, PROBE_TIMEOUT) {
-    answer if is_bridge_answer(&answer) => Probe::Ours,
-    Answer::Reply { status: 401, .. } => Probe::Foreign,
-    _ => Probe::Nothing,
+  match (bare, token) {
+    (Answer::NotConnected, _) => Probe::Nothing,
+    (Answer::Reply { status: 401, .. }, Some(token)) => {
+      if is_bridge_answer(&post(port, Some(token), "/api/send", &empty, PROBE_TIMEOUT)) {
+        Probe::Ours
+      } else {
+        Probe::Taken
+      }
+    }
+    _ => Probe::Taken,
   }
 }
 
@@ -1145,15 +1170,16 @@ fn inspect(folder: &Path) -> Inspection {
   }
 }
 
-/// The binary to start: built, inside the folder after every link is followed, and changeable by this user only (a
-/// binary another user can replace would run as this one, with their WhatsApp).
+/// The binary to start: built, inside the folder after every link is followed, and changeable by this user only, with
+/// its folder and the picked folder (a binary another user can replace would run as this one, with their WhatsApp).
 fn launch_of(folder: &Path) -> Result<Launch, Failure> {
   let dir = inside(folder, &folder.join(BRIDGE_DIR)).filter(|dir| dir.is_dir()).ok_or(Failure::NotBuilt)?;
   let binary = inside(folder, &dir.join(BINARY)).filter(|binary| executable(binary)).ok_or(Failure::NotBuilt)?;
-  if !only_mine(&dir) || !only_mine(&binary) {
+  // The picked folder too: whoever may write it may replace whatsapp-bridge/ inside it.
+  if !only_mine(folder) || !only_mine(&dir) || !only_mine(&binary) {
     return Err(Failure::Unsafe);
   }
-  Ok(Launch { binary, dir })
+  Ok(Launch { folder: folder.to_path_buf(), binary, dir })
 }
 
 fn store_file(folder: &Path, name: &str) -> Result<PathBuf, String> {
@@ -1391,8 +1417,9 @@ pub struct BridgeRow {
 pub struct Rows {
   rows: Vec<BridgeRow>,
   max_rowid: i64,
-  /// Names this store and its numbering: the file (its inode) and its first row. It changes when the store is
-  /// rebuilt or renumbered (VACUUM), and then a rowid cursor means nothing any more: the relay reads from 0 again.
+  /// Names this store and its numbering: the file (device and inode), its schema version (which VACUUM raises, also
+  /// when it keeps the file) and its first row. When it changes, a rowid cursor means nothing any more: the relay
+  /// reads from 0 again. It also changes on a schema change that renumbers nothing, which only costs a read from 0.
   store_id: String,
 }
 
@@ -1410,8 +1437,8 @@ fn non_empty(text: Option<String>) -> Option<String> {
 /// The rows after `after`, by rowid, and the highest rowid. A row the bridge stores again (`INSERT OR REPLACE`) gets a
 /// rowid after every other one, also when it was the newest: SQLite picks the rowid before it removes the old row
 /// (tested below), so a cursor never passes a row stored again. Only a deleted newest row frees its rowid, and the
-/// bridge deletes none. VACUUM may number the rows anew, and a store made again does: `store_id` shows both. Text and
-/// file names are cut at 65536 characters (WhatsApp's own limit for a text).
+/// bridge deletes none. VACUUM may number the rows anew (it raises the schema version), and a store made again does:
+/// `store_id` changes for both. Text and file names are cut at 65536 characters (WhatsApp's own limit for a text).
 fn read_rows(db: &Path, after: i64, limit: u32) -> Result<Rows, String> {
   let mut connection = open_read_only(db)?;
   let transaction = connection.transaction().map_err(store_error)?;
@@ -1446,6 +1473,7 @@ fn read_rows(db: &Path, after: i64, limit: u32) -> Result<Rows, String> {
       .map_err(store_error)?
   };
   let max_rowid = transaction.query_row("SELECT COALESCE(MAX(rowid), 0) FROM messages", [], |row| row.get(0)).map_err(store_error)?;
+  let schema: i64 = transaction.query_row("PRAGMA schema_version", [], |row| row.get(0)).map_err(store_error)?;
   let first: Option<(i64, Option<String>, Option<String>)> = transaction
     .query_row("SELECT rowid, chat_jid, id FROM messages ORDER BY rowid LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
     .optional()
@@ -1453,8 +1481,8 @@ fn read_rows(db: &Path, after: i64, limit: u32) -> Result<Rows, String> {
   transaction.commit().map_err(store_error)?;
   let file = file_id(db).map_err(|error| format!("Reading the WhatsApp store failed: {error}"))?;
   let store_id = match first {
-    Some((rowid, chat, id)) => format!("{file}:{rowid}:{}/{}", chat.unwrap_or_default(), id.unwrap_or_default()),
-    None => format!("{file}:0"),
+    Some((rowid, chat, id)) => format!("{file}:{schema}:{rowid}:{}/{}", chat.unwrap_or_default(), id.unwrap_or_default()),
+    None => format!("{file}:{schema}:0"),
   };
   Ok(Rows { rows, max_rowid, store_id })
 }
@@ -2102,8 +2130,8 @@ pub fn whatsapp_send(bridge: State<'_, Bridge>, recipient: String, text: String,
   supported()?;
   let media = checked_message(&lock(&bridge.0.chosen_files), &recipient, &text, media_path.as_deref())?;
   let snapshot = bridge.snapshot();
-  match snapshot.port {
-    Some(port) => Ok(send(port, &bridge.0.token, &recipient, &text, media.as_deref(), REQUEST_TIMEOUT)),
+  match bridge.endpoint() {
+    Some((port, token)) => Ok(send(port, &token, &recipient, &text, media.as_deref(), REQUEST_TIMEOUT)),
     None if snapshot.process == Process::Owned && snapshot.link != Link::Linked => Ok(sent(false, "not_linked")),
     None => Ok(sent(false, "bridge_stopped")),
   }
@@ -2117,8 +2145,8 @@ pub fn whatsapp_download(app: AppHandle, bridge: State<'_, Bridge>, folder: Stri
   }
   let data_dir = data_dir(&app)?;
   let folder = chosen_folder(&data_dir, &folder)?;
-  let port = bridge.snapshot().port.ok_or_else(|| code("bridge_stopped"))?;
-  download(port, &bridge.0.token, &folder, &data_dir.join(MEDIA_DIR), &message_id, &chat_jid, REQUEST_TIMEOUT)
+  let (port, token) = bridge.endpoint().ok_or_else(|| code("bridge_stopped"))?;
+  download(port, &token, &folder, &data_dir.join(MEDIA_DIR), &message_id, &chat_jid, REQUEST_TIMEOUT)
 }
 
 #[tauri::command(async)]
@@ -2623,6 +2651,7 @@ mod tests {
     body: String,
     token: Option<String>,
     json: bool,
+    host: Option<String>,
   }
 
   /// A server on 127.0.0.1 that answers every request with `answer(request)`, a whole HTTP response, and records the
@@ -2632,14 +2661,18 @@ mod tests {
     requests: Arc<Mutex<Vec<Request>>>,
   }
 
-  /// The token every test bridge is started with and expects.
+  /// A token for the probe and request tests (a started bridge gets a new one every time).
   const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
   fn server(answer: impl Fn(&Request) -> Option<String> + Send + 'static) -> Server {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let recorded = Arc::clone(&requests);
+    serve(listener, Arc::clone(&requests), answer);
+    Server { port, requests }
+  }
+
+  fn serve(listener: TcpListener, recorded: Arc<Mutex<Vec<Request>>>, answer: impl Fn(&Request) -> Option<String> + Send + 'static) {
     thread::spawn(move || {
       let mut held = Vec::new();
       for stream in listener.incoming() {
@@ -2651,6 +2684,7 @@ mod tests {
         let mut length = 0;
         let mut token = None;
         let mut json = false;
+        let mut host = None;
         loop {
           let mut header = String::new();
           reader.read_line(&mut header).unwrap();
@@ -2662,12 +2696,13 @@ mod tests {
             "content-length" => length = value.trim().parse().unwrap(),
             "x-bridge-token" => token = Some(value.trim().to_string()),
             "content-type" => json = value.trim() == "application/json",
+            "host" => host = Some(value.trim().to_string()),
             _ => {}
           }
         }
         let mut body = vec![0; length];
         reader.read_exact(&mut body).unwrap();
-        let request = Request { path, body: String::from_utf8(body).unwrap(), token, json };
+        let request = Request { path, body: String::from_utf8(body).unwrap(), token, json, host };
         lock(&recorded).push(request.clone());
         match answer(&request) {
           Some(response) => {
@@ -2677,7 +2712,6 @@ mod tests {
         }
       }
     });
-    Server { port, requests }
   }
 
   fn http(status: u16, body: &str) -> Option<String> {
@@ -2701,17 +2735,23 @@ mod tests {
 
   #[test]
   fn uses_only_a_bridge_that_insists_on_the_token() {
-    assert_eq!(probe(server(protected_answer(TOKEN)).port, TOKEN), Probe::Ours);
-    assert_eq!(probe(server(unprotected_answer).port, TOKEN), Probe::Unprotected);
-    assert_eq!(probe(server(protected_answer("another launch's token")).port, TOKEN), Probe::Foreign);
-    assert_eq!(probe(server(|_| http(404, "404 page not found\n")).port, TOKEN), Probe::Nothing);
-    assert_eq!(probe(server(|_| http(400, "Bad Request")).port, TOKEN), Probe::Nothing);
-    assert_eq!(probe(server(|_| http(200, "Recipient is required")).port, TOKEN), Probe::Nothing);
-    assert_eq!(probe(closed_port(), TOKEN), Probe::Nothing);
-    // The first request of a probe goes without the token, so a bridge that ignores it never sees it.
+    let ours = server(protected_answer(TOKEN));
+    assert_eq!(probe(ours.port, Some(TOKEN)), Probe::Ours);
+    assert_eq!(probe(ours.port, None), Probe::Taken);
+    assert_eq!(probe(server(protected_answer("another run's token")).port, Some(TOKEN)), Probe::Taken);
+    for answer in [http(404, "404 page not found\n"), http(400, "Bad Request"), http(200, "Recipient is required")] {
+      let other = server(move |_| answer.clone());
+      assert_eq!(probe(other.port, Some(TOKEN)), Probe::Taken);
+      // Only a refusal for want of a token earns the token.
+      assert!(lock(&other.requests).iter().all(|request| request.token.is_none()));
+    }
+    assert_eq!(probe(closed_port(), Some(TOKEN)), Probe::Nothing);
+    // The first request goes without the token, so a bridge that ignores it never sees it.
     let open = server(unprotected_answer);
-    probe(open.port, TOKEN);
+    assert_eq!(probe(open.port, Some(TOKEN)), Probe::Unprotected);
     assert!(lock(&open.requests).iter().all(|request| request.token.is_none()));
+    // Every request names 127.0.0.1 and the port as its host (the patched bridge refuses any other).
+    assert!(lock(&ours.requests).iter().all(|request| request.host == Some(format!("127.0.0.1:{}", ours.port))));
   }
 
   #[test]
@@ -3040,6 +3080,12 @@ mod tests {
     let renumbered = read_rows(&db, 0, 500).unwrap();
     assert_ne!(renumbered.store_id, before.store_id);
     assert!(renumbered.max_rowid < before.max_rowid);
+    // VACUUM keeps the file (and here its numbering), yet may renumber: the store id changes with it.
+    let vacuumed = read_rows(&db, 0, 500).unwrap();
+    Connection::open(&db).unwrap().execute_batch("VACUUM").unwrap();
+    let after = read_rows(&db, 0, 500).unwrap();
+    assert_eq!(file_id(&db).unwrap(), after.store_id.split(':').next().unwrap());
+    assert_ne!(after.store_id, vacuumed.store_id);
   }
 
   #[test]
@@ -3080,7 +3126,7 @@ mod tests {
     let dir = folder.join(BRIDGE_DIR);
     let binary = dir.join(BINARY);
     assert!(inspect(&folder).safe);
-    for (path, mode) in [(&binary, 0o775), (&binary, 0o757), (&dir, 0o775), (&dir, 0o777)] {
+    for (path, mode) in [(&binary, 0o775), (&binary, 0o757), (&dir, 0o775), (&dir, 0o777), (&folder, 0o775), (&folder, 0o757)] {
       let before = fs::metadata(path).unwrap().permissions().mode();
       fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
       let inspection = inspect(&folder);
@@ -3168,7 +3214,7 @@ mod tests {
   }
 
   fn watched(settings: Settings, data: &Path) -> (Bridge, Arc<Mutex<Vec<Snapshot>>>) {
-    let bridge = Bridge::new(settings, TOKEN.to_string());
+    let bridge = Bridge::new(settings);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let record = Arc::clone(&seen);
     bridge.connect(data.to_path_buf(), Arc::new(move |snapshot: &Snapshot| lock(&record).push(snapshot.clone())));
@@ -3184,16 +3230,27 @@ mod tests {
     fs::write(folder.join(BRIDGE_DIR).join("qr.txt"), qr_lines(SHORT_QR).join("\n") + "\n").unwrap();
   }
 
-  /// Answers as a bridge (one that insists on the test token, or not) once the fake bridge started (it writes
-  /// `starts`), so the probe before the start finds none.
+  /// Answers as a bridge once the fake bridge started (it writes `starts`), so nothing listens for the probe before
+  /// the start. A protected one insists on the token the fake bridge got in its environment (it writes it to `token`).
   fn bridge_after_start(folder: &Path, protected: bool) -> Server {
-    let marker = folder.join(BRIDGE_DIR).join("starts");
-    let ours = protected_answer(TOKEN);
-    server(move |request| match (marker.exists(), protected) {
-      (false, _) => http(404, "404 page not found\n"),
-      (true, true) => ours(request),
-      (true, false) => unprotected_answer(request),
-    })
+    let dir = folder.join(BRIDGE_DIR);
+    let port = closed_port();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&requests);
+    thread::spawn(move || {
+      while !dir.join("starts").exists() {
+        thread::sleep(Duration::from_millis(5));
+      }
+      let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+      serve(listener, recorded, move |request| {
+        let token = fs::read_to_string(dir.join("token")).ok();
+        if protected && (token.is_none() || request.token != token || !request.json) {
+          return http(401, "Unauthorized\n");
+        }
+        unprotected_answer(request)
+      });
+    });
+    Server { port, requests }
   }
 
   const KEEP_RUNNING: &str = "trap 'echo term > got-term; exit 0' TERM\nwhile :; do sleep 0.05; done";
@@ -3205,7 +3262,7 @@ mod tests {
     let data = temp();
     let script = format!(
       "echo \"$#\" > args\npwd -P > cwd\necho \"$WHATSAPP_BRIDGE_PORT\" > port\nenv | cut -d= -f1 | sort > env\n\
-       [ \"$WHATSAPP_BRIDGE_TOKEN\" = \"{TOKEN}\" ] && echo yes > token\necho x >> starts\n\
+       printf %s \"$WHATSAPP_BRIDGE_TOKEN\" > token\necho x >> starts\n\
        echo\necho 'Scan this QR code with your WhatsApp app:'\ncat qr.txt\nsleep 0.3\n\
        echo\necho 'Successfully connected and authenticated!'\n\
        echo\necho \"\u{2713} Connected to WhatsApp! Type 'help' for commands.\"\n\
@@ -3223,14 +3280,17 @@ mod tests {
     assert_eq!(fs::read_to_string(dir.join("args")).unwrap().trim(), "0");
     assert_eq!(PathBuf::from(fs::read_to_string(dir.join("cwd")).unwrap().trim()), dir);
     assert_eq!(fs::read_to_string(dir.join("port")).unwrap().trim(), fake.port.to_string());
-    assert!(dir.join("token").exists());
+    let token = fs::read_to_string(dir.join("token")).unwrap();
+    assert!(token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()), "{token}");
     // env_clear: HOME, PATH and TMPDIR, the port and the token, and what the shell adds itself; no proxy variables.
     let passed: HashSet<String> = fs::read_to_string(dir.join("env")).unwrap().lines().map(str::to_string).collect();
     let allowed: HashSet<String> = ["HOME", "PATH", "TMPDIR", "WHATSAPP_BRIDGE_PORT", "WHATSAPP_BRIDGE_TOKEN", "PWD", "OLDPWD", "SHLVL", "_"].map(str::to_string).into();
     assert!(passed.is_subset(&allowed), "{passed:?}");
     assert!(passed.contains("WHATSAPP_BRIDGE_TOKEN") && passed.contains("PATH"));
-    // Every request after the first one of the probe carries the token.
-    assert!(lock(&fake.requests).iter().any(|request| request.token.as_deref() == Some(TOKEN)));
+    // The probe before the start sent no token; after it, only this run's token went to the bridge.
+    let requests = lock(&fake.requests).clone();
+    assert!(requests.iter().any(|request| request.token.as_deref() == Some(token.as_str())));
+    assert!(requests.iter().all(|request| request.token.is_none() || request.token.as_deref() == Some(token.as_str())));
     let code = parse_half_blocks(&qr_lines(SHORT_QR));
     assert!(lock(&seen).iter().any(|snapshot| snapshot.link == Link::WaitingForScan && snapshot.qr == code));
     assert!(data.join(PID_FILE).exists());
@@ -3385,14 +3445,57 @@ mod tests {
     let open = server(unprotected_answer);
     let (bridge, _) = watched(quick(vec![closed_port(), open.port]), &data);
     assert_eq!(bridge.start(&folder), Snapshot::stopped(Some(Failure::Unprotected)));
-    let other = server(protected_answer("another launch's token"));
+    let other = server(protected_answer("another run's token"));
     let (bridge, _) = watched(quick(vec![other.port]), &data);
     assert_eq!(bridge.start(&folder), Snapshot::stopped(Some(Failure::PortBusy)));
-    assert_eq!(starts(&folder), 0);
+    // Anything on the port the bridge is asked to use holds it.
     let impostor = server(|_| http(404, "404 page not found\n"));
     let (bridge, _) = watched(quick(vec![impostor.port]), &data);
+    assert_eq!(bridge.start(&folder), Snapshot::stopped(Some(Failure::PortBusy)));
+    assert_eq!(starts(&folder), 0);
+    // No token went to any of them before a start.
+    for server in [&open, &other, &impostor] {
+      assert!(lock(&server.requests).iter().all(|request| request.token.is_none()));
+    }
+    // A server that is not a bridge on the other port (upstream's 8080) does not stop a start.
+    let elsewhere = server(|_| http(404, "404 page not found\n"));
+    let (bridge, _) = watched(quick(vec![closed_port(), elsewhere.port]), &data);
     assert_eq!(bridge.start(&folder).process, Process::Owned);
     bridge.stop();
+    assert!(lock(&elsewhere.requests).iter().all(|request| request.token.is_none()));
+  }
+
+  /// Every process gets a token of its own, and the folder is checked again before each one.
+  #[cfg(unix)]
+  #[test]
+  fn each_start_gets_its_own_token() {
+    let root = temp();
+    let data = temp();
+    let folder = install(&root, Some("echo \"$WHATSAPP_BRIDGE_TOKEN\" >> tokens\necho x >> starts\nexit 1"));
+    let (bridge, _) = watched(quick(vec![closed_port()]), &data);
+    bridge.start(&folder);
+    assert_eq!(bridge.wait_until(|snapshot| snapshot.error.is_some()), Snapshot::stopped(Some(Failure::Exited)));
+    let tokens: Vec<String> = fs::read_to_string(folder.join(BRIDGE_DIR).join("tokens")).unwrap().lines().map(str::to_string).collect();
+    assert_eq!(tokens.len(), 3);
+    assert!(tokens.iter().all(|token| token.len() == 64));
+    assert_eq!(tokens.iter().collect::<HashSet<_>>().len(), 3, "{tokens:?}");
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn checks_the_folder_again_before_a_restart() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp();
+    let data = temp();
+    let folder = install(&root, Some("echo x >> starts\nexit 1"));
+    let mut settings = quick(vec![closed_port()]);
+    settings.first_backoff = Duration::from_millis(300);
+    let (bridge, _) = watched(settings, &data);
+    bridge.start(&folder);
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o775)).unwrap();
+    assert_eq!(bridge.wait_until(|snapshot| snapshot.error.is_some()), Snapshot::stopped(Some(Failure::Unsafe)));
+    assert_eq!(starts(&folder), 1);
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
   }
 
   /// The bridge Tresso started answers without the token (upstream whatsapp-mcp ignores WHATSAPP_BRIDGE_TOKEN): it is
