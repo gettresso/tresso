@@ -42,13 +42,15 @@
   /*
    * The traffic lights' inset in tauri.macos.conf.json (trafficLightPosition), kept here so the two are one number: the
    * values a test app measured on macOS 26.7 for centres at x 25.5 / 48.5 / 71.5, y 25.5, on the toggle's line.
-   * frame.spec.ts keeps the config equal to them.
+   * the_window_opens_as_the_frame_says (apps/desktop/src-tauri/src/lib.rs) keeps the config equal to them.
    */
   --frame-traffic-light-inset-x: 17.5px;
   --frame-traffic-light-inset-y: 27.5px;
-  /* Collapse toggle: the sidebar.left glyph, about 20 x 15, centred at y 26, 13 from the card's right edge. */
+  /*
+   * Collapse toggle: the sidebar.left glyph, about 20 x 15 (the 15 is the icon's own drawing, AppIcon's `sidebar`),
+   * centred at y 26, 13 from the card's right edge.
+   */
   --frame-toggle-glyph-width: 20px;
-  --frame-toggle-glyph-height: 15px;
   --frame-toggle-y: 26px;
   --frame-toggle-from-card: 13px;
   /* Chosen: the button around the glyph, a hit target above 24 x 24. */

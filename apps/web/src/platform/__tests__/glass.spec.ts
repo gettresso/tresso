@@ -57,7 +57,7 @@ describe('the sidebar glass reporter', () => {
     const { shell, calls } = fakeShell()
     let box = { left: 8, top: 8, width: 202, height: 764 }
     const supported = vi.fn<(supported: boolean) => void>()
-    startGlassReporter({ card: () => card(box), radius: 18, onSupported: supported, shell, view })
+    startGlassReporter({ card: () => card(box), radius: 18, onSupported: supported, onPlaced: () => {}, shell, view })
     await vi.waitFor(() => expect(supported).toHaveBeenCalledWith(true))
     expect(calls).toEqual([{ rects: [{ id: 'sidebar', x: 8, y: 8, width: 202, height: 764, radius: 18 }], viewportWidth: 1240 }])
 
@@ -74,7 +74,7 @@ describe('the sidebar glass reporter', () => {
     const { calls, shell } = fakeShell()
     let shown = true
     let left = 8
-    const reporter = startGlassReporter({ card: () => (shown || left > -210 ? card({ left, top: 8, width: 202, height: 764 }) : null), radius: 18, onSupported: () => {}, shell, view })
+    const reporter = startGlassReporter({ card: () => (shown || left > -210 ? card({ left, top: 8, width: 202, height: 764 }) : null), radius: 18, onPlaced: () => {}, shell, view })
 
     shown = false
     reporter.follow(270)
@@ -94,7 +94,7 @@ describe('the sidebar glass reporter', () => {
     const view = fakeView()
     const { calls, shell } = fakeShell()
     let width = 202
-    const reporter = startGlassReporter({ card: () => card({ left: 8, top: 8, width, height: 764 }), radius: 18, onSupported: () => {}, shell, view })
+    const reporter = startGlassReporter({ card: () => card({ left: 8, top: 8, width, height: 764 }), radius: 18, onPlaced: () => {}, shell, view })
     reporter.startFollowing()
     for (const next of [210, 240, 282]) {
       width = next
@@ -111,7 +111,7 @@ describe('the sidebar glass reporter', () => {
     const { calls, shell } = fakeShell(false)
     let left = 8
     const supported = vi.fn<(supported: boolean) => void>()
-    const reporter = startGlassReporter({ card: () => card({ left, top: 8, width: 202, height: 764 }), radius: 18, onSupported: supported, shell, view })
+    const reporter = startGlassReporter({ card: () => card({ left, top: 8, width: 202, height: 764 }), radius: 18, onSupported: supported, onPlaced: () => {}, shell, view })
     await vi.waitFor(() => expect(supported).toHaveBeenCalledWith(false))
     left = 20
     view.dispatchEvent(new Event('resize'))
@@ -125,7 +125,7 @@ describe('the sidebar glass reporter', () => {
     const view = fakeView()
     const { calls, shell } = fakeShell()
     let present = true
-    const reporter = startGlassReporter({ card: () => (present ? card({ left: 8, top: 8, width: 202, height: 764 }) : null), radius: 18, onSupported: () => {}, shell, view })
+    const reporter = startGlassReporter({ card: () => (present ? card({ left: 8, top: 8, width: 202, height: 764 }) : null), radius: 18, onPlaced: () => {}, shell, view })
     await Promise.resolve()
     present = false
     reporter.report()
@@ -136,5 +136,43 @@ describe('the sidebar glass reporter', () => {
     expect(calls[calls.length - 1]!.rects).toEqual([])
     view.dispatchEvent(new Event('resize'))
     expect(calls).toHaveLength(4)
+  })
+
+  it('says the glass is in place only once the shell answered for the card, and not after it took it away', async () => {
+    const view = fakeView()
+    const answers: ((answer: { supported: boolean }) => void)[] = []
+    const shell: GlassShell = { invoke: vi.fn<GlassShell['invoke']>(() => new Promise((resolve) => answers.push(resolve))) }
+    let present = true
+    const placed = vi.fn<(placed: boolean) => void>()
+    const reporter = startGlassReporter({ card: () => (present ? card({ left: 8, top: 8, width: 202, height: 764 }) : null), radius: 18, onPlaced: placed, shell, view })
+    // Not before the shell answers: the card stays solid meanwhile.
+    expect(placed).not.toHaveBeenCalled()
+    answers[0]!({ supported: true })
+    await vi.waitFor(() => expect(placed).toHaveBeenLastCalledWith(true))
+
+    // Signed out, then in again: the empty list, then the card; an answer that comes late for an older request says
+    // nothing, so the card stays solid until the shell answered for the newest.
+    present = false
+    reporter.report()
+    present = true
+    reporter.report()
+    answers[2]!({ supported: true })
+    await vi.waitFor(() => expect(placed).toHaveBeenCalledTimes(2))
+    answers[1]!({ supported: true })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(placed.mock.calls).toEqual([[true], [true]])
+
+    present = false
+    reporter.report()
+    answers[3]!({ supported: true })
+    await vi.waitFor(() => expect(placed).toHaveBeenLastCalledWith(false))
+  })
+
+  it('never says glass is in place where the shell has none', async () => {
+    const placed = vi.fn<(placed: boolean) => void>()
+    startGlassReporter({ card: () => card({ left: 8, top: 8, width: 202, height: 764 }), radius: 18, onPlaced: placed, shell: fakeShell(false).shell, view: fakeView() })
+    await vi.waitFor(() => expect(placed).toHaveBeenCalledWith(false))
+    expect(placed).not.toHaveBeenCalledWith(true)
   })
 })
