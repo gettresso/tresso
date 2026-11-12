@@ -76,14 +76,14 @@ describe('SettingsWhatsAppView', () => {
     expect(row(wrapper, 'Bridge')).toMatchObject({ value: 'Running, last message 2 minutes ago', ok: true })
     expect(row(wrapper, 'Linked to phone')).toMatchObject({ value: 'Linked 17 days ago. WhatsApp can ask you to link again.', ok: true })
 
-    // No smart inboxes, Notify me off, and "All my devices" not yet to choose.
+    // No smart inboxes, no Notify me before the chat screens send notifications, and "All my devices" not yet.
     expect(wrapper.text()).not.toContain('Sort into smart inboxes')
-    expect(wrapper.get('[role="switch"]').attributes('aria-checked')).toBe('false')
-    expect(wrapper.get('[role="switch"]').attributes('aria-labelledby')).toBe('wa-notify-label')
+    expect(wrapper.text()).not.toContain('Notify me')
+    expect(wrapper.find('[role="switch"]').exists()).toBe(false)
+    expect(wrapper.get('.later').text()).toBe('Your chats will show in Tresso in a later version.')
     expect(wrapper.get<HTMLSelectElement>('#wa-place').element.disabled).toBe(true)
     expect(wrapper.get<HTMLOptionElement>('#wa-place option[value="all"]').element.disabled).toBe(true)
     expect(wrapper.get<HTMLSelectElement>('#wa-groups').element.value).toBe('all')
-    expect(wrapper.text()).toContain('Desktop notifications for new WhatsApp messages on this Mac.')
     expect(wrapper.text()).toContain('Disconnecting removes the WhatsApp chats Tresso copied. WhatsApp itself, the bridge and its own message store on this Mac stay as they are.')
   })
 
@@ -97,7 +97,7 @@ describe('SettingsWhatsAppView', () => {
     await flushPromises()
     expect(row(wrapper, 'Bridge')).toMatchObject({ value: 'Running, open to your network on port 8741', ok: false })
     expect(row(wrapper, 'Bridge').element.get('a').text()).toBe('Show how to close it')
-    expect(row(wrapper, 'Bridge').element.get('a').attributes('href')).toBe('https://github.com/gettresso/tresso/blob/main/docs/whatsapp-bridge.md')
+    expect(row(wrapper, 'Bridge').element.get('a').attributes('href')).toBe('https://github.com/gettresso/tresso/blob/main/docs/whatsapp-bridge.md#closing-the-bridges-port')
 
     wa.bridge = { ...LINKED, port: null, link: 'unknown' }
     await flushPromises()
@@ -107,6 +107,7 @@ describe('SettingsWhatsAppView', () => {
     wa.bridge = STOPPED
     await flushPromises()
     expect(row(wrapper, 'Bridge')).toMatchObject({ value: 'Stopped', ok: false })
+    expect(row(wrapper, 'whatsapp-mcp')).toMatchObject({ value: '~/whatsapp-mcp, bridge not running', ok: false })
     expect(wrapper.get('.pill').text()).toBe('Bridge stopped')
     expect(row(wrapper, 'Linked to phone').value).toBe('Not known while the bridge is stopped.')
     await row(wrapper, 'Bridge').element.get('button').trigger('click')
@@ -152,7 +153,8 @@ describe('SettingsWhatsAppView', () => {
     wa.importState = 'reading'
     wa.progress = { chats: 3, stored: 120, known: 0, leftOut: 0, refused: 0, skipped: { not_a_chat: 0, groups_off: 0, left_out: 0, before_import: 0, no_time: 0, bad_time: 0, bad_id: 0, nothing_to_show: 0 }, firstImport: true }
     await flushPromises()
-    expect(wrapper.get('.import').text()).toBe('Bringing in your chats from the last 30 days.120 messages from 3 chats so far.')
+    const since = new Date('2026-10-13T10:00:00.000Z').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+    expect(wrapper.get('.import').text()).toBe(`Bringing in your chats since ${since}.120 messages from 3 chats so far.`)
     expect(wrapper.get('[role="status"]').text()).toBe('Bringing in your recent chats.')
 
     wa.importState = 'stuck'
@@ -206,11 +208,22 @@ describe('SettingsWhatsAppView', () => {
     expect(groups).toHaveBeenLastCalledWith(true)
   })
 
-  it('switches Notify me', async () => {
-    const notify = vi.spyOn(wa, 'setNotify').mockResolvedValue(true)
+  it('shows the disconnect waiting, with Cancel off and the pill following', async () => {
+    let finish!: (done: boolean) => void
+    vi.spyOn(wa, 'disconnect').mockImplementation(() => {
+      wa.busy = 'disconnect'
+      return new Promise((resolve) => (finish = resolve))
+    })
     const wrapper = open()
-    await wrapper.get('[role="switch"]').trigger('click')
-    expect(notify).toHaveBeenCalledWith(true)
+    await wrapper.get('.disconnect > button').trigger('click')
+    await wrapper.get('[role="alertdialog"] .button-danger').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alertdialog"] .button-danger').text()).toBe('Disconnecting…')
+    expect(wrapper.get<HTMLButtonElement>('[role="alertdialog"] .button-quiet').element.disabled).toBe(true)
+    expect(wrapper.get('.pill').text()).toBe('Disconnecting')
+    expect(wrapper.get('.waiting').text()).toBe('Disconnecting… A reply being sent goes out first; this can take up to two minutes.')
+    wa.busy = null
+    finish(true)
   })
 
   it('offers to connect while not connected, and shows the dialog over itself on its address', async () => {

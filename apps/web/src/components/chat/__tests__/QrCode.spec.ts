@@ -30,6 +30,11 @@ describe('QrCode', () => {
     const wrapper = mount(QrCode, { props: { rows, label: 'QR code to scan with WhatsApp on your phone' } })
 
     const svg = wrapper.get('svg')
+    // A whole number of pixels per module, at least 3: 33 x 7 = 231 and 65 x 4 = 260 for the default 232.
+    expect(svg.attributes('width')).toBe(String(side === 33 ? 231 : 260))
+    expect(svg.attributes('height')).toBe(svg.attributes('width'))
+    expect(Number(svg.attributes('width')) % side).toBe(0)
+    expect(Number(svg.attributes('width')) / side).toBeGreaterThanOrEqual(3)
     expect(svg.attributes('role')).toBe('img')
     expect(svg.attributes('aria-label')).toBe('QR code to scan with WhatsApp on your phone')
     expect(svg.attributes('viewBox')).toBe(`0 0 ${side} ${side}`)
@@ -62,5 +67,10 @@ describe('QrCode', () => {
     for (const rows of [[], ['0101'], shellRows(QR_SIZE_25).slice(0, 20), shellRows(QR_SIZE_25).map((row) => row.replace(/1/, '2'))]) {
       expect(mount(QrCode, { props: { rows, label: 'QR code' } }).find('svg').exists()).toBe(false)
     }
+  })
+
+  it('never draws a module under 3 pixels, also when asked for a small code', () => {
+    const wrapper = mount(QrCode, { props: { rows: shellRows(QR_SIZE_57), label: 'QR code', size: 100 } })
+    expect(wrapper.get('svg').attributes('width')).toBe(String(65 * 3))
   })
 })
