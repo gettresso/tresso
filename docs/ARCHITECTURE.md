@@ -1649,7 +1649,7 @@ numbers above the cursor, so the normal pull brings it.
 
 The desktop app brings WhatsApp in with `ChatRelay` (`packages/core/src/chat/relay.ts`), one per account, through the
 shell's bridge commands (`ChatBridge`) and a backend (`ChatBackend`): `LocalChatBackend` for "Only this Mac", which
-writes the `wa:` rows above and sends nothing to the server, and later one for the server. Its rounds never overlap:
+writes the `wa:` rows above and sends nothing to the server, and `ServerChatBackend` for "All my devices" (below). Its rounds never overlap:
 the next is planned when one ends, 3 seconds later, at once after a full page of 500 rows, 15 seconds after an error,
 or as long as the backend asks (1 second to 10 minutes; a round in which it asked claims no reply). A round reads the
 bridge's store by rowid from the cursor, leaves out what Tresso does not take before anything is stored (anything but
@@ -1668,8 +1668,7 @@ stored again from a new one and counts both as stored). A row the bridge stores 
 again the same way. The cursor names the store it belongs to (`storeId`); when that changes, or the store's highest
 rowid falls below the cursor, the store was replaced or renumbered and is read again from 0. That includes a history
 sync that stores the store's first row again (`storeId` holds that row): harmless in the copy, but against the server
-it sends every row again, which the server answers with `known`; the server backend should keep its own high-water mark
-of what it sent so a re-read costs no upload.
+it sends every row again, which the server answers with `known` (see `ServerChatBackend` below for why that is accepted).
 
 The first import runs from the first read until the store had no new rows for 60 seconds, since after linking the
 bridge's history sync streams in over minutes, and ends at the latest once the relay ran 30 minutes during it; a
@@ -1709,6 +1708,38 @@ What the desktop wiring (the WhatsApp settings and connect package) and the serv
 - Downloads look up a message by the chat JID the bridge stored, which may differ in case or device suffix from the
   stored one.
 - The same contact under `@lid` and `@s.whatsapp.net` gives two chats (hand-check).
+
+`ServerChatBackend` (`packages/core/src/chat/serverBackend.ts`) is the backend for "All my devices", over `ChatApi`
+(`packages/core/src/chat/api.ts`: the request and answer types of the chat endpoints of 3.17, one method per endpoint;
+the web client implements it). Every relay call names the desktop's device id. It writes nothing to the copy but its
+cursor: what the server stored comes back through the delta, a chat's messages possibly a page before the chat. The
+cursor lives in the chat values under `server-cursor:<account id>` (`serverCursorKey`), apart from the local backend's
+and per account, so a switch between the modes, or an account made again, starts from 0 with a first import;
+`removeServerChatCursor` clears it. `settings` takes `includeGroups` from the server's account in the copy (and rejects
+until the delta brought it), `importSince` from the desktop's config (the server's account does not keep it), and checks
+every chat of a batch in the copy (`chatByJid`): nothing of a chat held as left out leaves the device, and the chats it
+found left out are the relay's `leftOut`. Batches are at most 200 messages and 200 chats, each with the chats of its
+messages, and at most 8 MB of the request as JSON in UTF-8. A 413 halves the batch and lowers later batches to half the
+size that got it (at least 64 KB); a 422 halves it too, to find the message it is about; a single message that still
+gets either is counted `refused`, so it never holds the cursor (at most 2n - 1 calls for n messages). The per-row
+results are summed into the relay's counts; an answer whose counts do not add up is an error, so the rows go again.
+409 `not_the_relay` and 404 stop the relay, 429 pauses it for `Retry-After`, anything else (network, 5xx, 400, 401,
+403) is an error after which the relay sends the same rows again. Replies are claimed one at a time; the claim's token
+goes back with the result. A result answered 404, 409 `result_final` or 422 is final (the relay moves on and never
+sends again; a reply left `sending` fails as `unconfirmed` through the sweep); a former relay may still report
+`sent: true` for its own claim, and any other result of it stops the relay. A store read again from 0 sends every row again,
+which the server answers with `known` (no write, no change in the delta). That is accepted rather than avoided with a
+high-water mark: `ingest` gets no rowids and the relay learns of a new `storeId` only after it stored the rows, and a
+history sync stores the rows it brings again under new rowids, which are read again in any mode. At about 300 bytes of
+JSON a message, 100,000 messages are 500 calls and 30 MB once, within the import limit's burst; a million are 5,000
+calls, which the limit spreads over about 30 minutes. `reportStatus` sends the heartbeat with the same errors. The
+wiring must:
+
+- Implement `ChatApi` by sending `JSON.stringify(request)` and rejecting with `status`, the problem's `code` and
+  `retryAfterMs` (`ChatApiError`, or the web client's `ApiError` once it reads `code`).
+- Start the relay once the account is in the copy, stop it when the account's `relayDeviceId` in the delta names
+  another device or the account is removed, and then call `removeServerChatCursor`.
+- Send the heartbeat (`reportStatus`) on connect, on every bridge change and every 60 seconds.
 
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
 whether the conversation is in an inbox or junk folder, and date (`ListScope`: an inbox or a smart inbox).
