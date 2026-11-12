@@ -27,8 +27,10 @@ use Symfony\Component\Validator\Constraints as Assert;
  * week, so the desktop app shows them.
  *
  * Chats (chat accounts, chats, chat messages and replies) reach only our own apps and callers holding chat:read
- * (ChatAccessVoter). A removed chat account means its chats, messages and replies are gone too, and a removed chat
- * means its messages and replies are gone. Replies the user cancelled are not listed.
+ * (ChatAccessVoter). The endpoint itself needs mail:read, so a token with chat:read alone gets 403 here and reads its
+ * chat accounts at /api/v1/chat-accounts; that keeps the delta, which carries all mail, from being opened by a chat
+ * scope. A removed chat account means its chats, messages and replies are gone too, and a removed chat means its
+ * messages and replies are gone. Replies the user cancelled are not listed.
  *
  * Each list needs the scope of its own endpoints (SyncChangesProvider::SCOPES); without it the list and its removals
  * come empty, while the cursor stays the same for every token.
