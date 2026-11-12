@@ -9,6 +9,7 @@ function targets(signedIn = true) {
     state,
     router: { push: vi.fn<(to: { name: string }) => Promise<undefined>>(async () => undefined) },
     newMessage: vi.fn<() => void>(),
+    reload: vi.fn<() => Promise<void>>(async () => undefined),
     signedIn: () => state.value,
   }
 }
@@ -57,7 +58,10 @@ describe('the menu bar bridge', () => {
     expect(to.newMessage).toHaveBeenCalledOnce()
     expect(to.router.push).not.toHaveBeenCalled()
     // Every action is covered above.
-    expect(new Set([...routes.map(([action]) => action), 'new-message'])).toEqual(new Set(MENU_ACTIONS))
+    const reloading = targets()
+    await runMenuAction('reload', reloading)
+    expect(reloading.reload).toHaveBeenCalledOnce()
+    expect(new Set([...routes.map(([action]) => action), 'new-message', 'reload'])).toEqual(new Set(MENU_ACTIONS))
   })
 
   it('asks the calendar for a new event and the to-dos for their quick add, once they are on screen', async () => {
@@ -94,13 +98,14 @@ describe('the menu bar bridge', () => {
     expect(to.router.push).toHaveBeenCalledWith({ name: 'search' })
   })
 
-  it('does nothing while nobody is signed in', async () => {
+  it('does nothing while nobody is signed in, except Reload, which saves first (updates.reloadApp)', async () => {
     const to = targets(false)
     for (const action of MENU_ACTIONS) {
       await runMenuAction(action, to)
     }
     expect(to.router.push).not.toHaveBeenCalled()
     expect(to.newMessage).not.toHaveBeenCalled()
+    expect(to.reload).toHaveBeenCalledOnce()
   })
 
   it('runs what the shell sends, ignores what it does not know, and stops listening when stopped', async () => {

@@ -197,6 +197,24 @@ export const useUpdatesStore = defineStore('updates', () => {
     }
   }
 
+  /**
+   * Reload in the desktop app's menu bar: loads the app again as a restart does, once the draft is saved and no files
+   * or send are on their way (the user can say "Later"). When the draft cannot be saved it stays, and the card says
+   * why.
+   */
+  async function reloadApp(): Promise<void> {
+    error.value = null
+    let ready = false
+    try {
+      ready = await readyToRestart()
+    } catch (cause) {
+      error.value = `The draft could not be saved, so Tresso did not reload: ${cause instanceof Error ? cause.message : String(cause)}`
+    }
+    if (ready) {
+      window.location.reload()
+    }
+  }
+
   /** The user's answer while the restart waits: go now (losing what is still under way), or keep working. */
   function restartNow(): void {
     answer?.(true)
@@ -315,5 +333,5 @@ export const useUpdatesStore = defineStore('updates', () => {
     }
   }
 
-  return { channel, version, phase, update, progress, error, dismissed, waitingFor, start, stop, checkNow, install, restartNow, later }
+  return { channel, version, phase, update, progress, error, dismissed, waitingFor, start, stop, checkNow, install, reloadApp, restartNow, later }
 })
