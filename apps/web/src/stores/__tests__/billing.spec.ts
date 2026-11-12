@@ -156,7 +156,8 @@ describe('auth store and 402', () => {
     auth.generation++
     answer(new Response('{}', { status: 401 }))
 
-    await expect(request).rejects.toMatchObject({ status: 401 })
+    // Dropped as an answer of the previous session, not taken for the server's refusal of this one.
+    await expect(request).rejects.toMatchObject({ name: 'SessionEndedDuringRequestError' })
     expect(auth.tokens).not.toBeNull()
   })
 })
