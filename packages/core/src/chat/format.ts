@@ -227,6 +227,35 @@ const ERROR_TEXTS: Record<ChatOutgoingError, string> = {
   unconfirmed: 'Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.',
 }
 
+/** The longest reply in characters after trimming (the server's `QueueReply::MAX_TEXT`). */
+export const CHAT_REPLY_MAX = 4096
+
+/** What PHP's trim() removes, the way the server trims a reply. */
+const REPLY_EDGE = /^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g
+/** Control characters a reply may not hold (line feed, carriage return and tab are fine), as QueueReply's rule. */
+const REPLY_CONTROL = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/
+
+export type ReplyTextProblem = 'empty' | 'too_long' | 'control'
+
+/**
+ * A reply as it is stored and sent: trimmed as the server trims it, or why it cannot be queued. The one rule for the
+ * composer, the "Only this Mac" queue and the server (`QueueReply`): not blank, at most CHAT_REPLY_MAX characters (code
+ * points) after trimming, no control characters but tab, line feed and carriage return.
+ */
+export function replyText(text: string): { ok: true; text: string } | { ok: false; problem: ReplyTextProblem } {
+  const trimmed = text.replace(REPLY_EDGE, '')
+  if (trimmed === '') {
+    return { ok: false, problem: 'empty' }
+  }
+  if ([...trimmed].length > CHAT_REPLY_MAX) {
+    return { ok: false, problem: 'too_long' }
+  }
+  if (REPLY_CONTROL.test(text)) {
+    return { ok: false, problem: 'control' }
+  }
+  return { ok: true, text: trimmed }
+}
+
 /** Why a reply was not sent, for under its bubble. */
 export function replyErrorText(error: ChatOutgoingError): string {
   return ERROR_TEXTS[error]

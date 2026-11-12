@@ -15,6 +15,8 @@ import {
   previewLine,
   replyErrorText,
   replyLabel,
+  replyText,
+  CHAT_REPLY_MAX,
   SENDER_COLORS,
   senderColor,
   timeline,
@@ -241,6 +243,26 @@ describe('bubbleMeta', () => {
 
   it('lets the failed label stand alone', () => {
     expect(bubbleMeta('10:02', 'Not sent, tap to retry')).toBe('Not sent, tap to retry')
+  })
+})
+
+describe('replyText', () => {
+  it('trims as the server does and keeps line breaks and tabs inside', () => {
+    expect(replyText('  Count me in!\n\t')).toEqual({ ok: true, text: 'Count me in!' })
+    expect(replyText('line one\n\tline two\r\nend')).toEqual({ ok: true, text: 'line one\n\tline two\r\nend' })
+    // PHP's trim() leaves other whitespace, so the server keeps it too.
+    expect(replyText('\u00a0hi\u00a0')).toEqual({ ok: true, text: '\u00a0hi\u00a0' })
+  })
+
+  it('refuses a blank reply, one too long after trimming, and control characters', () => {
+    expect(replyText(' \n\t\r ')).toEqual({ ok: false, problem: 'empty' })
+    expect(replyText(`  ${'😀'.repeat(CHAT_REPLY_MAX)}  `)).toEqual({ ok: true, text: '😀'.repeat(CHAT_REPLY_MAX) })
+    expect(replyText('x'.repeat(CHAT_REPLY_MAX + 1))).toEqual({ ok: false, problem: 'too_long' })
+    for (const control of ['\u0000', '\u0007', '\u000b', '\u000c', '\u001b', '\u007f']) {
+      expect(replyText(`a${control}b`), JSON.stringify(control)).toEqual({ ok: false, problem: 'control' })
+    }
+    // C1 characters are not in the server's rule.
+    expect(replyText('a\u0085b')).toEqual({ ok: true, text: 'a\u0085b' })
   })
 })
 
