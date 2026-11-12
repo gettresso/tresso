@@ -1779,6 +1779,35 @@ What the desktop wiring (the WhatsApp settings and connect package) and the serv
   stored one.
 - The same contact under `@lid` and `@s.whatsapp.net` gives two chats (hand-check).
 
+The desktop wiring for "Only this Mac" is `apps/web/src/stores/whatsappRelay.ts`, started once by `App.vue` in the
+desktop app. WhatsApp is hidden until it is turned on for a Mac, while it waits for a hand-check with a real phone: the
+shell's `whatsapp_available` answers true only on macOS and only with `defaults write app.tresso.desktop EnableWhatsApp
+-bool YES` (or `TRESSO_ENABLE_WHATSAPP=1`; `defaults delete app.tresso.desktop EnableWhatsApp` hides it again), asked
+once per launch. Until then, and always in the browser, nothing of WhatsApp shows: no card in the provider list or on
+Settings, Accounts, and every WhatsApp address (`/settings/whatsapp`, `/settings/whatsapp/connect`, and `/whatsapp`,
+`/whatsapp/:chatId` and `/chats/:chatId` for the chat screens) leads back to Accounts or the Unified Inbox; no bridge
+starts, also not for a WhatsApp connected before. Once on, the store loads the signed-in user's config
+(`whatsapp-<userId>.json`, `apps/desktop/src-tauri/src/whatsapp.rs`) and starts the bridge from its folder; the relay
+runs while the bridge is linked and the copy has caught up (`mail.synced`), one at a time, each new one only after the
+previous one's `stop()` resolved. Connecting (`/settings/whatsapp/connect`, a modal dialog over Settings, WhatsApp)
+goes folder, risk, bridge, link: nothing starts the bridge before the user confirmed the risk (WhatsApp's unofficial
+web protocol, a possible limit or ban, messages stored on the Mac in the bridge's folder), the QR code is drawn from
+the shell's rows as an SVG that stays dark on white in both themes, and Connect saves the config with a new device id
+and `importSince` (the connect moment less 30 days), which nothing changes afterwards. The dialog then shows the first
+import in counts (messages and chats so far, chats when done, a stuck import with what could not be stored).
+"Only this Mac" is the only mode; "All my devices" shows as coming later. Notify me is off until the user turns it on;
+WhatsApp gets no classification, no search index and no smart inbox. Settings, WhatsApp shows the relaying Mac, the
+folder (Change folder: picked and checked first, the chats stay, a new store is read from the start), the bridge (each
+failure in plain words with what to do: not built, quit three times, port in use, not protected, not safe to start),
+the link (how long ago Tresso saw it link, no countdown) with the code when it needs one, which chats come in (groups
+off removes the copied group chats; on again reads the store from the start as a first import), Notify me, and
+Disconnect: the relay stops and is waited for, the bridge stops, `removeLocalChats` removes the copied chats and the
+cursor, and the config goes; Tresso deletes nothing in the user's whatsapp-mcp folder, so the bridge's own store stays
+and the phone keeps the Mac under Linked devices until the user removes it there. A sign-out stops the relay without
+waiting for it and removes the config (an expired session keeps it); the shell stops the bridge. The store keeps the
+bridge's state and Notify me on the `wa:account` row (`setLocalChatAccount`), and offers `pollNow` and `leaveOut` for
+the chat screens.
+
 `ServerChatBackend` (`packages/core/src/chat/serverBackend.ts`) is the backend for "All my devices", over `ChatApi`
 (`packages/core/src/chat/api.ts`: the request and answer types of the chat endpoints of 3.17, one method per endpoint;
 the web client implements it). Every relay call names the desktop's device id. It writes nothing to the copy but two
