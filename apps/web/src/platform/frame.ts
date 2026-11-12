@@ -9,19 +9,24 @@ import { isDesktop } from '@/platform/desktop'
  */
 export const framed = isDesktop
 
-/** A token of frame.css in pixels (or `ms`); the frame's numbers live there only. */
-export function frameToken(name: string, unit: 'px' | 'ms' = 'px', css: string = frameTokens): number {
+/**
+ * A token of frame.css in pixels (or `ms`); the frame's numbers live there only. Read when the app loads, before
+ * anything is on screen, so a token that went missing must not stop the app: it is said in the console and the spec's
+ * own value (`fallback`) is used. A test keeps every token present.
+ */
+export function frameToken(name: string, fallback: number, unit: 'px' | 'ms' = 'px', css: string = frameTokens): number {
   const match = new RegExp(`--${name}:\\s*(\\d+(?:\\.\\d+)?)${unit};`).exec(css)
   if (match === null) {
-    throw new Error(`frame.css has no --${name} in ${unit}`)
+    console.error(`frame.css has no --${name} in ${unit}; using ${fallback}${unit}`)
+    return fallback
   }
   return Number(match[1])
 }
 
 /** The sidebar's width: the user drags it between these; a first launch starts at the default. */
-export const SIDEBAR_MIN = frameToken('frame-sidebar-min')
-export const SIDEBAR_DEFAULT = frameToken('frame-sidebar-default')
-export const SIDEBAR_MAX = frameToken('frame-sidebar-max')
+export const SIDEBAR_MIN = frameToken('frame-sidebar-min', 190)
+export const SIDEBAR_DEFAULT = frameToken('frame-sidebar-default', 220)
+export const SIDEBAR_MAX = frameToken('frame-sidebar-max', 300)
 
 /** A width the sidebar can take: whole pixels, within the limits; anything unreadable is the default. */
 export function clampSidebarWidth(width: number): number {

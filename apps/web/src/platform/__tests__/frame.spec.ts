@@ -41,12 +41,23 @@ function lightToken(name: string): string {
 describe('the frame tokens (assets/frame.css)', () => {
   it('give the sidebar 190 to 300, 220 by default, read from the stylesheet', () => {
     expect([SIDEBAR_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX]).toEqual([190, 220, 300])
-    expect(frameToken('frame-sidebar-motion', 'ms')).toBe(220)
-    expect(() => frameToken('frame-nothing')).toThrow('frame.css has no --frame-nothing in px')
+    expect(frameToken('frame-sidebar-motion', 0, 'ms')).toBe(220)
+  })
+
+  it('has every token the code reads, and a missing one falls back to the spec value instead of stopping the app', () => {
+    // Everything the app reads at load (platform/frame.ts, AppShell.vue), as written in frame.css.
+    for (const token of ['--frame-sidebar-min: 190px;', '--frame-sidebar-default: 220px;', '--frame-sidebar-max: 300px;', '--frame-sidebar-motion: 220ms;', '--frame-card-radius: 18px;']) {
+      expect(frameCss).toContain(token)
+    }
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(frameToken('frame-sidebar-min', 190, 'px', ':root {}')).toBe(190)
+    expect(error).toHaveBeenCalledWith('frame.css has no --frame-sidebar-min in px; using 190px')
+    error.mockRestore()
   })
 
   it('put the spec measurements where the spec measured them, at the default width', () => {
-    const t = (name: string) => frameToken(name)
+    // NaN as the fallback: a missing token fails these sums instead of passing with the spec's own number.
+    const t = (name: string) => frameToken(name, Number.NaN)
     const width = SIDEBAR_DEFAULT
     // Card: 8 in, 202 wide, 10 to the content.
     expect(width - t('frame-inset') - t('frame-sidebar-gap')).toBe(202)

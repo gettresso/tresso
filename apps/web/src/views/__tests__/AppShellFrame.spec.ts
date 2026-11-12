@@ -154,6 +154,16 @@ describe('the shell in the desktop frame', () => {
     expect(JSON.parse(localStorage.getItem('tresso.sidebar')!)).toEqual({ width: 300, shown: true })
   })
 
+  it('scrolls only the rows: the title band above and the sync status below stay in the card', async () => {
+    const wrapper = await shell()
+    const nav = wrapper.get('nav.sidebar')
+    const children = [...nav.element.children].map((child) => child.className)
+    expect(children).toEqual([expect.stringContaining('frame-scroll'), expect.stringContaining('sync-status')])
+    const scroller = nav.get('.frame-scroll')
+    expect(scroller.find('.profile').exists() && scroller.find('.compose').exists() && scroller.find('.item.settings').exists()).toBe(true)
+    expect(scroller.find('.sync-status').exists()).toBe(false)
+  })
+
   it('moves the focus to the toggle when the sidebar or its edge had it and the sidebar is hidden (⌃⌘S)', async () => {
     const wrapper = await shell()
     const toggle = wrapper.get('button.frame-toggle').element as HTMLElement
@@ -212,6 +222,22 @@ describe('the shell in the desktop frame', () => {
     await vi.waitFor(() => expect(glassCalls()[glassCalls().length - 1]).toEqual([]))
     document.documentElement.classList.remove('reduce-transparency')
     await vi.waitFor(() => expect(glassCalls()[glassCalls().length - 1]).toHaveLength(1))
+
+    // Signed out: the glass goes and the card is drawn solid again; signed in, it stays solid until the shell answers.
+    let answer: (value: unknown) => void = () => {}
+    invoke.mockImplementation(async (command: string) => (command === 'set_glass' ? new Promise((resolve) => (answer = resolve)) : undefined))
+    useAuthStore().tokens = null
+    await flushPromises()
+    answer({ supported: true })
+    await vi.waitFor(() => expect(document.documentElement.classList.contains('liquid-glass')).toBe(false))
+    expect(glassCalls()[glassCalls().length - 1]).toEqual([])
+    useAuthStore().tokens = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 60_000 }
+    await flushPromises()
+    expect(glassCalls()[glassCalls().length - 1]).toHaveLength(1)
+    expect(document.documentElement.classList.contains('liquid-glass')).toBe(false)
+    answer({ supported: true })
+    await vi.waitFor(() => expect(document.documentElement.classList.contains('liquid-glass')).toBe(true))
+    invoke.mockImplementation(async () => ({ supported: true }))
 
     wrapper.unmount()
     expect(glassCalls()[glassCalls().length - 1]).toEqual([])

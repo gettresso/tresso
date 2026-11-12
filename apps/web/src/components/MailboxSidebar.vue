@@ -15,6 +15,7 @@ import type { SidebarPage } from '@/components/sidebarPage'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import TickCount from '@/components/TickCount.vue'
 import SyncStatusLine from '@/components/SyncStatusLine.vue'
+import FrameScroll from '@/components/FrameScroll.vue'
 
 const props = defineProps<{
   displayName: string
@@ -73,112 +74,116 @@ function failed(account: SyncedMailAccount): boolean {
 
 <template>
   <nav class="sidebar" aria-label="Mailboxes">
-    <div class="profile">
-      <SenderAvatar :sender="{ name: displayName, address: email }" :size="28" />
-      <span class="profile-text">
-        <span class="profile-name">{{ displayName }}</span>
-        <span class="profile-detail">{{ accounts.length === 1 ? '1 account' : `${accounts.length} accounts` }}</span>
-      </span>
-      <button type="button" class="button button-quiet sign-out" :disabled="auth.signingOut" :aria-busy="auth.signingOut" @click="emit('signOut')">
-        {{ auth.signingOut ? 'Signing out…' : 'Sign out' }}
-      </button>
-    </div>
-
-    <button type="button" class="button button-primary compose" @click="compose.openNew()">Compose <KeyShortcut keys="C" /></button>
-
-    <div class="group">
-      <RouterLink :to="{ name: 'unified' }" class="item" :aria-current="inList && mailbox === null && smartInbox === null && !batches ? 'page' : undefined">
-        <AppIcon name="inbox" />
-        <span class="label">Unified Inbox</span>
-        <span v-if="totalUnread > 0" class="count"><TickCount :value="totalUnread" /><span class="visually-hidden"> unread</span></span>
-      </RouterLink>
-      <RouterLink :to="{ name: 'brief' }" class="item" :aria-current="page === 'brief' ? 'page' : undefined">
-        <AppIcon name="know" />
-        <span class="label">Daily brief</span>
-        <span v-if="briefIsNew" class="new">New</span>
-        <span v-if="briefLeft > 0" class="count"><TickCount :value="briefLeft" /><span class="visually-hidden"> to note</span></span>
-      </RouterLink>
-      <RouterLink :to="{ name: 'todos' }" class="item" :aria-current="page === 'todos' ? 'page' : undefined">
-        <AppIcon name="todo" />
-        <span class="label">Todos</span>
-        <span v-if="todos.openCount > 0" class="count"><TickCount :value="todos.openCount" /><span class="visually-hidden"> open</span></span>
-      </RouterLink>
-      <RouterLink :to="{ name: 'waiting' }" class="item" :aria-current="page === 'waiting' ? 'page' : undefined">
-        <AppIcon name="delegate" />
-        <span class="label">Waiting on</span>
-        <span v-if="waitingCount > 0" class="count" :class="{ failed: overdueCount > 0 }"
-          ><TickCount :value="waitingCount" /><span class="visually-hidden">{{ overdueCount > 0 ? `, ${overdueCount} past due` : ' waiting' }}</span></span
-        >
-      </RouterLink>
-      <RouterLink :to="{ name: 'calendar' }" class="item" :aria-current="page === 'calendar' ? 'page' : undefined">
-        <AppIcon name="calendar" />
-        <span class="label">Calendar</span>
-      </RouterLink>
-      <RouterLink :to="{ name: 'triage' }" class="item" :aria-current="page === 'triage' ? 'page' : undefined">
-        <AppIcon name="triage" />
-        <span class="label">Triage</span>
-      </RouterLink>
-      <RouterLink :to="{ name: 'drafts' }" class="item" :aria-current="page === 'drafts' ? 'page' : undefined">
-        <AppIcon name="draft" />
-        <span class="label">Drafts</span>
-      </RouterLink>
-      <RouterLink :to="{ name: 'cleanup' }" class="item" :aria-current="page === 'cleanup' ? 'page' : undefined">
-        <AppIcon name="archive" />
-        <span class="label">Clean up</span>
-      </RouterLink>
-      <RouterLink v-if="outboxCount > 0" :to="{ name: 'outbox' }" class="item" :aria-current="page === 'outbox' ? 'page' : undefined">
-        <AppIcon name="outbox" />
-        <span class="label">Outbox</span>
-        <span class="count" :class="{ failed: failedCount > 0 }"><TickCount :value="outboxCount" /></span>
-      </RouterLink>
-    </div>
-
-    <div v-if="smartInboxes.length > 0" class="group">
-      <h2 class="group-title">Smart inboxes</h2>
-      <RouterLink
-        v-for="item in smartInboxes"
-        :key="item.id"
-        :to="{ name: 'smart-inbox', params: { smartInboxId: item.id } }"
-        class="item smart"
-        :aria-current="inList && smartInbox === item.id ? 'page' : undefined"
-      >
-        <SmartInboxMark :smart-inbox="item" />
-        <span class="label">{{ item.name }}</span>
-        <span v-if="(smartInboxCounts.get(item.id) ?? 0) > 0" class="count"><TickCount :value="smartInboxCounts.get(item.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
-      </RouterLink>
-      <RouterLink :to="{ name: 'batches' }" class="item smart" :aria-current="batches ? 'page' : undefined">
-        <AppIcon name="clock" :size="20" class="batches-icon" />
-        <span class="label">Batches</span>
-        <span v-if="nextBatch" class="count"><span class="visually-hidden">Next batch at </span>{{ nextBatch }}</span>
-      </RouterLink>
-      <RouterLink :to="{ name: 'settings-smart-inbox', params: { smartInboxId: 'new' } }" class="add">+ New smart inbox</RouterLink>
-    </div>
-
-    <div class="group">
-      <h2 class="group-title">Accounts</h2>
-      <div v-for="account in accounts" :key="account.id" class="account-row">
-        <RouterLink
-          :to="{ name: 'account', params: { accountId: account.id } }"
-          class="item account"
-          :aria-current="inList && mailbox === account.id && smartInbox === null && !batches ? 'page' : undefined"
-        >
-          <SenderAvatar :sender="{ name: account.displayName, address: account.emailAddress }" :size="24" />
-          <span class="account-text">
-            <span class="account-name">{{ account.displayName }}</span>
-            <span class="account-address" :class="{ problem: failed(account) }">{{ statusText[account.status] ?? account.emailAddress }}</span>
-          </span>
-          <span v-if="(unreadCounts.get(account.id) ?? 0) > 0" class="count"><TickCount :value="unreadCounts.get(account.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
-        </RouterLink>
-        <!-- A link of its own beside the row (a link cannot hold another): where a failed account is fixed. -->
-        <RouterLink v-if="failed(account)" :to="{ name: 'settings-accounts' }" class="fix" :aria-label="`Fix ${account.displayName}`">Fix</RouterLink>
+    <!-- In the desktop shell only the rows scroll, under the window's title band and above the sync status. -->
+    <FrameScroll>
+      <div class="profile">
+        <SenderAvatar :sender="{ name: displayName, address: email }" :size="28" />
+        <span class="profile-text">
+          <span class="profile-name">{{ displayName }}</span>
+          <span class="profile-detail">{{ accounts.length === 1 ? '1 account' : `${accounts.length} accounts` }}</span>
+        </span>
+        <button type="button" class="button button-quiet sign-out" :disabled="auth.signingOut" :aria-busy="auth.signingOut" @click="emit('signOut')">
+          {{ auth.signingOut ? 'Signing out…' : 'Sign out' }}
+        </button>
       </div>
-      <RouterLink :to="{ name: 'settings-accounts-new' }" class="add">+ Add account</RouterLink>
-    </div>
 
-    <RouterLink :to="{ name: 'settings-accounts' }" class="item settings" :aria-current="page === 'settings' ? 'page' : undefined">
-      <AppIcon name="settings" />
-      <span class="label">Settings</span>
-    </RouterLink>
+      <button type="button" class="button button-primary compose" @click="compose.openNew()">Compose <KeyShortcut keys="C" /></button>
+
+      <div class="group">
+        <RouterLink :to="{ name: 'unified' }" class="item" :aria-current="inList && mailbox === null && smartInbox === null && !batches ? 'page' : undefined">
+          <AppIcon name="inbox" />
+          <span class="label">Unified Inbox</span>
+          <span v-if="totalUnread > 0" class="count"><TickCount :value="totalUnread" /><span class="visually-hidden"> unread</span></span>
+        </RouterLink>
+        <RouterLink :to="{ name: 'brief' }" class="item" :aria-current="page === 'brief' ? 'page' : undefined">
+          <AppIcon name="know" />
+          <span class="label">Daily brief</span>
+          <span v-if="briefIsNew" class="new">New</span>
+          <span v-if="briefLeft > 0" class="count"><TickCount :value="briefLeft" /><span class="visually-hidden"> to note</span></span>
+        </RouterLink>
+        <RouterLink :to="{ name: 'todos' }" class="item" :aria-current="page === 'todos' ? 'page' : undefined">
+          <AppIcon name="todo" />
+          <span class="label">Todos</span>
+          <span v-if="todos.openCount > 0" class="count"><TickCount :value="todos.openCount" /><span class="visually-hidden"> open</span></span>
+        </RouterLink>
+        <RouterLink :to="{ name: 'waiting' }" class="item" :aria-current="page === 'waiting' ? 'page' : undefined">
+          <AppIcon name="delegate" />
+          <span class="label">Waiting on</span>
+          <span v-if="waitingCount > 0" class="count" :class="{ failed: overdueCount > 0 }"
+            ><TickCount :value="waitingCount" /><span class="visually-hidden">{{ overdueCount > 0 ? `, ${overdueCount} past due` : ' waiting' }}</span></span
+          >
+        </RouterLink>
+        <RouterLink :to="{ name: 'calendar' }" class="item" :aria-current="page === 'calendar' ? 'page' : undefined">
+          <AppIcon name="calendar" />
+          <span class="label">Calendar</span>
+        </RouterLink>
+        <RouterLink :to="{ name: 'triage' }" class="item" :aria-current="page === 'triage' ? 'page' : undefined">
+          <AppIcon name="triage" />
+          <span class="label">Triage</span>
+        </RouterLink>
+        <RouterLink :to="{ name: 'drafts' }" class="item" :aria-current="page === 'drafts' ? 'page' : undefined">
+          <AppIcon name="draft" />
+          <span class="label">Drafts</span>
+        </RouterLink>
+        <RouterLink :to="{ name: 'cleanup' }" class="item" :aria-current="page === 'cleanup' ? 'page' : undefined">
+          <AppIcon name="archive" />
+          <span class="label">Clean up</span>
+        </RouterLink>
+        <RouterLink v-if="outboxCount > 0" :to="{ name: 'outbox' }" class="item" :aria-current="page === 'outbox' ? 'page' : undefined">
+          <AppIcon name="outbox" />
+          <span class="label">Outbox</span>
+          <span class="count" :class="{ failed: failedCount > 0 }"><TickCount :value="outboxCount" /></span>
+        </RouterLink>
+      </div>
+
+      <div v-if="smartInboxes.length > 0" class="group">
+        <h2 class="group-title">Smart inboxes</h2>
+        <RouterLink
+          v-for="item in smartInboxes"
+          :key="item.id"
+          :to="{ name: 'smart-inbox', params: { smartInboxId: item.id } }"
+          class="item smart"
+          :aria-current="inList && smartInbox === item.id ? 'page' : undefined"
+        >
+          <SmartInboxMark :smart-inbox="item" />
+          <span class="label">{{ item.name }}</span>
+          <span v-if="(smartInboxCounts.get(item.id) ?? 0) > 0" class="count"><TickCount :value="smartInboxCounts.get(item.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
+        </RouterLink>
+        <RouterLink :to="{ name: 'batches' }" class="item smart" :aria-current="batches ? 'page' : undefined">
+          <AppIcon name="clock" :size="20" class="batches-icon" />
+          <span class="label">Batches</span>
+          <span v-if="nextBatch" class="count"><span class="visually-hidden">Next batch at </span>{{ nextBatch }}</span>
+        </RouterLink>
+        <RouterLink :to="{ name: 'settings-smart-inbox', params: { smartInboxId: 'new' } }" class="add">+ New smart inbox</RouterLink>
+      </div>
+
+      <div class="group">
+        <h2 class="group-title">Accounts</h2>
+        <div v-for="account in accounts" :key="account.id" class="account-row">
+          <RouterLink
+            :to="{ name: 'account', params: { accountId: account.id } }"
+            class="item account"
+            :aria-current="inList && mailbox === account.id && smartInbox === null && !batches ? 'page' : undefined"
+          >
+            <SenderAvatar :sender="{ name: account.displayName, address: account.emailAddress }" :size="24" />
+            <span class="account-text">
+              <span class="account-name">{{ account.displayName }}</span>
+              <span class="account-address" :class="{ problem: failed(account) }">{{ statusText[account.status] ?? account.emailAddress }}</span>
+            </span>
+            <span v-if="(unreadCounts.get(account.id) ?? 0) > 0" class="count"><TickCount :value="unreadCounts.get(account.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
+          </RouterLink>
+          <!-- A link of its own beside the row (a link cannot hold another): where a failed account is fixed. -->
+          <RouterLink v-if="failed(account)" :to="{ name: 'settings-accounts' }" class="fix" :aria-label="`Fix ${account.displayName}`">Fix</RouterLink>
+        </div>
+        <RouterLink :to="{ name: 'settings-accounts-new' }" class="add">+ Add account</RouterLink>
+      </div>
+
+      <RouterLink :to="{ name: 'settings-accounts' }" class="item settings" :aria-current="page === 'settings' ? 'page' : undefined">
+        <AppIcon name="settings" />
+        <span class="label">Settings</span>
+      </RouterLink>
+
+    </FrameScroll>
 
     <SyncStatusLine :status="mail.syncStatus" />
   </nav>
@@ -362,9 +367,24 @@ function failed(account: SyncedMailAccount): boolean {
  * profile (44, avatar and Sign out), the ink Compose button (40) and the account rows (44, two lines: name, and address
  * or what failed).
  */
+/*
+ * The card itself does not scroll: its top band (the traffic lights and the toggle) stays put, the sync status stays at
+ * its foot, and only the rows between scroll (FrameScroll). The scroller's 4 px of padding keep a focus ring inside it,
+ * and a row brought into view by the keyboard stops that far from its edges.
+ */
 .frame-shell .sidebar {
   gap: 0;
-  padding: calc(var(--frame-first-row-y) - var(--frame-inset)) var(--frame-row-inset) var(--frame-row-inset);
+  overflow: hidden;
+  padding: calc(var(--frame-first-row-y) - var(--frame-inset) - 4px) 0 var(--frame-row-inset);
+}
+.frame-shell .frame-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px var(--frame-row-inset);
+  scroll-padding-block: 4px;
 }
 .frame-shell .profile {
   padding: 0 4px 0 var(--frame-row-icon-x);
@@ -416,8 +436,9 @@ function failed(account: SyncedMailAccount): boolean {
   margin-bottom: var(--frame-group-gap);
 }
 .frame-shell .sync-status {
-  margin-top: 8px;
-  padding: 0 var(--frame-row-icon-x);
+  flex: none;
+  margin-top: 4px;
+  padding: 0 calc(var(--frame-row-inset) + var(--frame-row-icon-x));
 }
 /* The selected row: grey while the content has focus (or the window is in the back), the accent while the sidebar has. */
 .frame-shell .item[aria-current='page'] {

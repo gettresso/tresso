@@ -6,9 +6,9 @@ import { describe, expect, it } from 'vitest'
 import { compileStyle, parse } from 'vue/compiler-sfc'
 
 /**
- * Vue's scoped styles take `:global(A) B` as plain `A`: everything after `:global(...)` is dropped, so a rule meant
- * for one element lands on the whole document (once it hid the whole desktop app). These tests compile the real style
- * blocks the way the build does.
+ * Vue's scoped styles take `:global(A) B` and `B :global(A)` as plain `A`: everything around `:global(...)` is dropped,
+ * so a rule meant for one element lands on the whole document (once it hid the whole desktop app). These tests compile
+ * the real style blocks the way the build does.
  */
 const src = fileURLToPath(new URL('..', import.meta.url))
 
@@ -22,21 +22,35 @@ function vueFiles(folder: string): string[] {
   })
 }
 
-/** Every `:global(...)` in a style, with what follows it; nested brackets are counted. */
-function globals(css: string): { inside: string; after: string }[] {
-  const found: { inside: string; after: string }[] = []
-  let at = css.indexOf(':global(')
-  while (at >= 0) {
-    let end = at + ':global('.length
-    let depth = 1
-    while (depth > 0 && end < css.length) {
-      depth += css[end] === '(' ? 1 : css[end] === ')' ? -1 : 0
-      end += 1
-    }
-    found.push({ inside: css.slice(at + ':global('.length, end - 1), after: css.slice(end, end + 40) })
-    at = css.indexOf(':global(', end)
+/** The selectors of a style's rules, each split on its top-level commas (`:is(a, b)` stays whole). */
+function selectors(css: string): string[] {
+  const heads = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{};]+)\{/g)].map((match) => match[1]!.trim())
+  return heads
+    .filter((head) => !head.startsWith('@'))
+    .flatMap((head) => {
+      const parts: string[] = []
+      let depth = 0
+      let start = 0
+      for (let at = 0; at < head.length; at += 1) {
+        depth += head[at] === '(' ? 1 : head[at] === ')' ? -1 : 0
+        if (head[at] === ',' && depth === 0) {
+          parts.push(head.slice(start, at).trim())
+          start = at + 1
+        }
+      }
+      return [...parts, head.slice(start).trim()]
+    })
+}
+
+/**
+ * A scoped selector Vue compiles as written: one with `:global(...)` (or `::v-global(...)`) must be nothing but that one
+ * global, as Vue drops everything before and after it.
+ */
+function keptWhole(selector: string): boolean {
+  if (!/:global\(|::v-global\(/.test(selector)) {
+    return true
   }
-  return found
+  return /^(?::global|::v-global)\((?:[^()]|\([^()]*\))*\)$/.test(selector)
 }
 
 function compiled(file: string): { code: string; errors: string[] } {
@@ -55,14 +69,27 @@ function rules(css: string): { selector: string; body: string }[] {
 }
 
 describe('scoped styles', () => {
-  it('never put a selector after :global(...), which Vue would drop', () => {
+  it('tell a whole global from one Vue would cut', () => {
+    expect(keptWhole('.frame-shell .title')).toBe(true)
+    expect(keptWhole(':global(.frame-capsule:has(> .rail-toggle))')).toBe(true)
+    expect(keptWhole('::v-global(html.dark)')).toBe(true)
+    // What follows is dropped: `html.frame-shell` alone once hid the whole app.
+    expect(keptWhole(':global(html.frame-shell) .titlebar')).toBe(false)
+    // What comes before is dropped too: `.x :global(.a)` compiles to `.a`.
+    expect(keptWhole('.x :global(.a)')).toBe(false)
+    expect(keptWhole('::v-global(.a) .b')).toBe(false)
+    expect(keptWhole('.b ::v-global(.a)')).toBe(false)
+    expect(selectors('.a, :global(.b) .c { x: 1 }\n@media (min-width: 1px) { .d:is(.e, .f) { y: 2 } }')).toEqual(['.a', ':global(.b) .c', '.d:is(.e, .f)'])
+  })
+
+  it('never put a selector before or after a :global(...), which Vue would drop', () => {
     const wrong = vueFiles(src).flatMap((file) => {
       const { descriptor } = parse(readFileSync(file, 'utf8'), { filename: file })
       return descriptor.styles
         .filter((style) => style.scoped)
-        .flatMap((style) => globals(style.content))
-        .filter(({ after }) => /^\s*[^\s{,]/.test(after))
-        .map(({ inside, after }) => `${relative(src, file)}: :global(${inside})${after.split('{')[0]}`)
+        .flatMap((style) => selectors(style.content))
+        .filter((selector) => !keptWhole(selector))
+        .map((selector) => `${relative(src, file)}: ${selector}`)
     })
     expect(wrong).toEqual([])
   })

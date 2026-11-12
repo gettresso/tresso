@@ -128,7 +128,7 @@ onBeforeUnmount(() => document.documentElement.classList.remove('frame-shell'))
  * the window or the card changes size, and every frame while the card slides or its edge is dragged. A hidden card,
  * the sign-in screen and "Reduce transparency" have none; the card is then drawn solid as before.
  */
-const SLIDE_MS = frameToken('frame-sidebar-motion', 'ms')
+const SLIDE_MS = frameToken('frame-sidebar-motion', 220, 'ms')
 let glass: GlassReporter | null = null
 /** Until when the card is followed while it slides out, before its glass goes. */
 let slidingUntil = 0
@@ -147,8 +147,9 @@ onMounted(() => {
   }
   const reporter = startGlassReporter({
     card: glassCard,
-    radius: frameToken('frame-card-radius'),
-    onSupported: (supported) => document.documentElement.classList.toggle('liquid-glass', supported),
+    radius: frameToken('frame-card-radius', 18),
+    // The card drops its own fill only once the shell has put the glass behind it.
+    onPlaced: (placed) => document.documentElement.classList.toggle('liquid-glass', placed),
   })
   glass = reporter
   // "Reduce transparency" turned on or off (platform/vibrancy.ts sets the class).

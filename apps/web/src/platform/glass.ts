@@ -35,7 +35,12 @@ export interface GlassOptions {
   /** The card's corner radius in CSS pixels (frame.css). */
   radius: number
   /** Told once, with the shell's first answer. */
-  onSupported(supported: boolean): void
+  onSupported?(supported: boolean): void
+  /**
+   * Told after each answer whether glass is behind the card now: true once the shell placed it, false when it took it
+   * away. Until then the card stays solid, so it never shows the bare window (at launch, after a sign-in, when shown).
+   */
+  onPlaced(placed: boolean): void
   shell?: GlassShell
   view?: Pick<Window, 'addEventListener' | 'removeEventListener' | 'requestAnimationFrame' | 'cancelAnimationFrame' | 'innerWidth'>
   onError?(error: unknown): void
@@ -68,6 +73,8 @@ export function startGlassReporter(options: GlassOptions): GlassReporter {
   let frame: number | null = null
   let until = 0
   let following = false
+  /** Raised with every request: only the answer to the latest one says whether glass is in place. */
+  let sent = 0
 
   function send(rects: GlassRect[]): void {
     const key = JSON.stringify(rects)
@@ -75,12 +82,16 @@ export function startGlassReporter(options: GlassOptions): GlassReporter {
       return
     }
     last = key
+    const request = ++sent
     shell
       .invoke('set_glass', { rects, viewportWidth: view.innerWidth })
       .then((answer) => {
         if (supported === null) {
           supported = answer.supported
-          options.onSupported(answer.supported)
+          options.onSupported?.(answer.supported)
+        }
+        if (request === sent) {
+          options.onPlaced(answer.supported && rects.length > 0)
         }
         if (!answer.supported) {
           end()
