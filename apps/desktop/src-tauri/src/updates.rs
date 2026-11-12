@@ -240,6 +240,8 @@ fn request_relaunch<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     && app.get_webview_window("main").is_some_and(|window| window.emit(UPDATE_RELAUNCH_REQUESTED, ()).is_ok());
   if asked {
     sparkle::set_asked(true);
+    // The web client may have to say what it waits for (files on their way, a send): a closed window comes back.
+    crate::menu::show_main_window(app);
   }
   asked
 }

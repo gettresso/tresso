@@ -14,7 +14,7 @@ pub fn run() {
     .manage(sql::Databases::default())
     .manage(updates::UpdateListener::default())
     // Filled on macOS once the menu bar is built (menu.rs); empty where the app has none.
-    .manage(menu::MenuItems::default())
+    .manage(<menu::MenuItems>::default())
     // A new page in the main window does not listen for Sparkle's relaunch question until it says so (updates.rs).
     .on_page_load(|webview, payload| {
       use tauri::Manager;
@@ -29,6 +29,7 @@ pub fn run() {
       updates::update_listening,
       updates::update_relaunch,
       menu::menu_state,
+      menu::show_main_window_command,
       tokens::load_tokens,
       tokens::save_tokens,
       tokens::clear_tokens,
@@ -60,6 +61,13 @@ pub fn run() {
             .level(log::LevelFilter::Info)
             .build(),
         )?;
+      }
+      // A `tresso://` link (the sign-in coming back from the browser, a link the user clicked) is handled in the window,
+      // which may be closed (hidden, macOS) or minimized: it comes to the front first.
+      {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        let handle = app.handle().clone();
+        app.deep_link().on_open_url(move |_| menu::show_main_window(&handle));
       }
       // Installed apps register the scheme through their bundle; a development build registers it at runtime
       // (macOS only accepts the bundle, so sign-in there needs `tauri build` or the debug bundle).
@@ -121,14 +129,7 @@ fn opens_outside(url: &tauri::Url) -> bool {
 /// (the deep link plugin then emits it there). It must be the first plugin.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn single_instance(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-  use tauri::Manager;
-
-  builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-    if let Some(window) = app.get_webview_window("main") {
-      let _ = window.unminimize();
-      let _ = window.set_focus();
-    }
-  }))
+  builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| crate::menu::show_main_window(app)))
 }
 
 /// macOS delivers links to the running app itself.
