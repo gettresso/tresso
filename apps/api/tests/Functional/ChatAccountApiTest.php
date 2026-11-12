@@ -313,10 +313,11 @@ final class ChatAccountApiTest extends DatabaseTestCase
         $this->client->request('GET', '/api/v1/chat-accounts', server: $lisa);
         self::assertResponseIsSuccessful();
         self::assertSame([], $this->decodedResponse());
+        // chat:read changes no account at all, so the request is refused before any account is looked up.
         $this->patch($id, ['notify' => true], $lisa);
-        self::assertResponseStatusCodeSame(404);
+        self::assertResponseStatusCodeSame(403);
         $this->client->request('DELETE', '/api/v1/chat-accounts/'.$id, server: $lisa);
-        self::assertResponseStatusCodeSame(404);
+        self::assertResponseStatusCodeSame(403);
         self::assertFalse($this->onlyAccount()['notify'] ?? null);
     }
 
