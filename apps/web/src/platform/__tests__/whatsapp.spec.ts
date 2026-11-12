@@ -62,7 +62,7 @@ describe('the WhatsApp shell commands', () => {
   })
 
   it('hands on what the shell answers and the codes it rejects with', async () => {
-    const rows = { rows: [], maxRowid: 7 }
+    const rows = { rows: [], maxRowid: 7, storeId: '16777232.4242:1:31612345678@s.whatsapp.net/A1' }
     expect(await whatsAppShell(fakeShell(rows)).read('/f', 0, 10)).toBe(rows)
     const shell = fakeShell()
     shell.invoke.mockRejectedValueOnce('busy')
