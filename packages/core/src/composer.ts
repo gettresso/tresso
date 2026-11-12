@@ -191,6 +191,14 @@ export class Composer {
    */
   private release(id: string, gone: boolean): void {
     this.held.delete(id)
+    const send = this.sends.get(id)
+    const store = this.storeOfDraft()
+    if (!gone && send !== undefined && this.current.draft?.id === id && store !== null) {
+      // The copy may have been opened again during the send (rebind leaves a draft being sent alone): its send comes
+      // along before the autosave writes the form there, so a lost answer is recognised there, not sent twice.
+      const draft = this.current.draft
+      void store.changeDraft(id, (stored) => (stored !== null ? null : { ...withEditsOver(null, draft, null), ...send, pendingSave: true })).catch(() => undefined)
+    }
     const asked = this.heldSaves.get(id)
     this.heldSaves.delete(id)
     if (!gone && asked !== undefined && this.current.draft?.id !== id) {
@@ -382,9 +390,13 @@ export class Composer {
   async openReply(message: SyncedMessage, kind: 'reply' | 'replyAll' | 'forward', options: { strict?: boolean } = {}): Promise<void> {
     let body: Pick<MessageBody, 'html' | 'text' | 'attachments'>
     let missing: string | null = null
+    const session = this.resets
     try {
       body = await this.deps.body(message.id)
     } catch (error) {
+      if (this.resets !== session) {
+        return this.signedOutMeanwhile(options.strict === true)
+      }
       missing = this.deps.explain(error).message
       if (kind === 'forward') {
         const failure = new OriginalUnavailableError(`The message could not be forwarded: it could not be loaded (${missing}).`)
@@ -396,6 +408,10 @@ export class Composer {
       }
       // Replying stays possible offline, quoting what the copy here has.
       body = { html: null, text: message.snippet, attachments: [] }
+    }
+    if (this.resets !== session) {
+      // Signed out while the original was loading: it was the previous user's, and must not open for the next.
+      return this.signedOutMeanwhile(options.strict === true)
     }
     const draft = replyDraft(message, body, kind, this.deps.accounts(), this.deps.signatures())
     this.open(draft)
@@ -424,6 +440,13 @@ export class Composer {
       })),
       ...files.map((file, index) => ({ token: tokens[images.length + index]!, name: file.filename, request: () => this.deps.drafts.forward(draft.id, file.id) })),
     ])
+  }
+
+  /** A reply or forward asked for before a sign-out opens nothing; with `strict` the caller hears why. */
+  private signedOutMeanwhile(strict: boolean): void {
+    if (strict) {
+      throw new OriginalUnavailableError('You were signed out. Sign in again to hand this over.')
+    }
   }
 
   /** Attaches files to the open draft, which goes to the server first if it is not there yet. */
@@ -1178,30 +1201,57 @@ export class Composer {
    * deletion was someone else's (sent or deleted on another device, or a server that does not take the send's id).
    * It goes as a deleted draft goes; text typed on it since stays, as a new draft. Returns whether it was settled.
    */
-  private async settleHidden(store: MailStore, draft: Draft): Promise<boolean> {
-    if (draft.outgoingId !== null || draft.hiddenOnServer !== true || this.held.has(draft.id)) {
+  private async settleHidden(store: MailStore, listed: Draft): Promise<boolean> {
+    if (listed.outgoingId !== null || listed.hiddenOnServer !== true || this.held.has(listed.id)) {
+      return false
+    }
+    // Any save under way (also of a form being closed) is waited out: the next round settles the draft with it.
+    if (this.writes.size > 0) {
+      return false
+    }
+    // Decided on the draft as it is now, not as listed at the start of the round.
+    const writesBefore = this.writesStarted
+    const draft = await store.draft(listed.id)
+    if (draft === null) {
+      return true
+    }
+    if (draft.outgoingId !== null || draft.hiddenOnServer !== true || this.held.has(draft.id) || this.writes.size > 0 || this.writesStarted !== writesBefore) {
       return false
     }
     const form = this.current.draft?.id === draft.id ? this.current.draft : null
-    if (form !== null && this.writes.size > 0) {
-      return false
-    }
     const subject = draft.subject || '(no subject)'
+    // True whether this device's own send hid it (on a server that does not take the send's id) or another device did.
+    const gone = `"${subject}" is no longer a draft on the server: it was sent, or deleted on another device.`
+    const kept = `${gone} What you wrote here since is kept as a new draft${withoutFiles(draft)}.`
     // Text the server never had (typed in the form, or saved here and not uploaded) is never thrown away.
     if (draft.pendingSave || (form !== null && editedFields(form) !== editedFields(draft))) {
-      await store.deleteDraft(draft.id)
-      await this.keepAsNewDraft(store, form ?? draft)
-      this.deps.notify({ text: `"${subject}" was sent or deleted on another device. What you wrote here since is kept as a new draft${withoutFiles(draft)}.`, tone: 'info' }, 30000)
+      if (form === null) {
+        // The copy is written before the draft goes, so a copy that closes in between still has the text.
+        await this.keepAsNewDraft(store, draft)
+        await store.deleteDraft(draft.id)
+      } else {
+        // The form holds the text: the draft goes first, then the form as it is by then, keystrokes typed meanwhile too.
+        await store.deleteDraft(draft.id)
+        await this.keepAsNewDraft(store, this.current.draft?.id === draft.id ? this.current.draft : form)
+      }
+      this.deps.notify({ text: kept, tone: 'info' }, 30000)
       return true
     }
     await store.deleteDraft(draft.id)
     this.deps.changed?.()
-    if (form !== null && this.current.draft?.id === draft.id) {
+    const now = this.current.draft
+    if (now !== null && now.id === draft.id) {
+      if (editedFields(now) !== editedFields(draft)) {
+        // Typed while the draft was deleted: kept, not closed away.
+        await this.keepAsNewDraft(store, now)
+        this.deps.notify({ text: kept, tone: 'info' }, 30000)
+        return true
+      }
       this.clearSaveTimer()
       this.dirty = false
       this.bases.delete(draft.id)
       this.set({ draft: null, conflict: false })
-      this.deps.notify({ text: `"${subject}" was sent or deleted on another device.`, tone: 'info' }, 8000)
+      this.deps.notify({ text: gone, tone: 'info' }, 8000)
     }
     return true
   }

@@ -1232,7 +1232,7 @@ describe('Composer', () => {
 
       expect(await store.draft(id)).toBeNull()
       expect(composer.state.draft).toBeNull()
-      expect(notices.map((notice) => notice.text)).toContain('"Sent from the laptop" was sent or deleted on another device.')
+      expect(notices.map((notice) => notice.text)).toContain('"Sent from the laptop" is no longer a draft on the server: it was sent, or deleted on another device.')
     })
 
     it('keeps what was typed on such a draft as a new draft, without the send', async () => {
@@ -1323,7 +1323,7 @@ describe('Composer', () => {
       expect(kept).toMatchObject({ sendAttemptId: null, outgoingId: null })
       expect(kept!.id).not.toBe(id)
       expect(composer.state.draft).toMatchObject({ id: kept!.id, subject: 'Typed offline' })
-      expect(notices.map((notice) => notice.text)).toContain('"Typed offline" was sent or deleted on another device. What you wrote here since is kept as a new draft.')
+      expect(notices.map((notice) => notice.text)).toContain('"Typed offline" is no longer a draft on the server: it was sent, or deleted on another device. What you wrote here since is kept as a new draft.')
     })
 
     it('keeps text written offline the same way when its form is closed, and says so', async () => {
@@ -1331,7 +1331,7 @@ describe('Composer', () => {
 
       expect(await store.draft(id)).toBeNull()
       expect((await store.drafts()).find((each) => each.subject === 'Typed offline')).toMatchObject({ sendAttemptId: null, unsureSendId: null })
-      expect(notices.map((notice) => notice.text)).toContain('"Typed offline" was sent or deleted on another device. What you wrote here since is kept as a new draft.')
+      expect(notices.map((notice) => notice.text)).toContain('"Typed offline" is no longer a draft on the server: it was sent, or deleted on another device. What you wrote here since is kept as a new draft.')
     })
 
     it('keeps text edited after a failed send when another device sent or deleted the draft', async () => {
@@ -1397,6 +1397,123 @@ describe('Composer', () => {
       sendFails = null
       await composer.send()
       expect(sent[0]!.outgoingId).toBe(attempt)
+    })
+
+    /** A send whose answer was lost, then the server's deletion of the draft without the message (another device's). */
+    async function hiddenAfterLostAnswer(subject: string): Promise<string> {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject })
+      const id = composer.state.draft!.id
+      sendFails = lost
+      await composer.send()
+      sendFails = null
+      await vi.advanceTimersByTimeAsync(1000)
+      await store.apply(page({ cursor: 3, deleted: [{ type: 'draft', id }] }))
+      return id
+    }
+
+    it('keeps text of a form closed while the follow-up was on its way to settling the hidden draft', async () => {
+      const id = await hiddenAfterLostAnswer('Closing')
+      composer.update({ html: '<p>Typed, then closed</p>' })
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => (release = resolve))
+      const outgoingOf = store.outgoing.bind(store)
+      vi.spyOn(store, 'outgoing').mockImplementationOnce(async (outgoingId) => {
+        await gate
+        return outgoingOf(outgoingId)
+      })
+      const following = composer.followUp()
+      await vi.advanceTimersByTimeAsync(10)
+
+      composer.close()
+      release()
+      await following
+      await composer.followUp()
+
+      expect(await store.draft(id)).toBeNull()
+      expect((await store.drafts()).find((each) => each.html === '<p>Typed, then closed</p>')).toMatchObject({ sendAttemptId: null })
+    })
+
+    it('keeps what is typed while the hidden draft is deleted', async () => {
+      const id = await hiddenAfterLostAnswer('Typing on')
+      const deleteDraft = store.deleteDraft.bind(store)
+      vi.spyOn(store, 'deleteDraft').mockImplementationOnce(async (draftId) => {
+        await deleteDraft(draftId)
+        composer.update({ html: '<p>Just now</p>' })
+      })
+
+      await composer.followUp()
+
+      expect(await store.draft(id)).toBeNull()
+      const kept = (await store.drafts()).find((each) => each.html === '<p>Just now</p>')
+      expect(kept).toBeDefined()
+      expect(composer.state.draft).toMatchObject({ id: kept!.id, html: '<p>Just now</p>' })
+    })
+
+    it('writes the kept copy before the hidden draft goes when no form is open', async () => {
+      const id = await hiddenAfterLostAnswer('Written here')
+      api.offline = true
+      composer.update({ html: '<p>Not on the server</p>' })
+      await vi.advanceTimersByTimeAsync(1000)
+      composer.close()
+      await vi.advanceTimersByTimeAsync(10)
+      api.offline = false
+      const order: string[] = []
+      const saveDraft = store.saveDraft.bind(store)
+      const deleteDraft = store.deleteDraft.bind(store)
+      vi.spyOn(store, 'saveDraft').mockImplementation(async (draft) => {
+        order.push(draft.id === id ? 'save hidden' : 'save copy')
+        await saveDraft(draft)
+      })
+      vi.spyOn(store, 'deleteDraft').mockImplementation(async (draftId) => {
+        order.push(draftId === id ? 'delete hidden' : 'delete other')
+        await deleteDraft(draftId)
+      })
+
+      await composer.followUp()
+
+      expect(order.slice(0, 2)).toEqual(['save copy', 'delete hidden'])
+      expect((await store.drafts()).find((each) => each.html === '<p>Not on the server</p>')).toBeDefined()
+    })
+
+    it('carries the send id into a copy reopened while the send was under way', async () => {
+      composer.openNew([{ address: 'anna@example.test', name: null }])
+      composer.update({ subject: 'Mid-send' })
+      const id = composer.state.draft!.id
+      let answer!: () => void
+      sendGate = new Promise<void>((resolve) => (answer = resolve))
+      sendFails = lost
+      const sending = composer.send()
+      await vi.waitFor(() => expect(tried).toHaveLength(1))
+      const attempt = tried[0]!.outgoingId!
+      const reopened = await SqliteMailStore.open(await memorySql())
+      currentStore = reopened
+      await composer.rebind()
+      answer()
+      await sending
+      await vi.advanceTimersByTimeAsync(1000)
+
+      expect(await reopened.draft(id)).toMatchObject({ sendAttemptId: attempt })
+      sendGate = null
+      sendFails = null
+      await composer.send()
+      expect(sent[0]!.outgoingId).toBe(attempt)
+    })
+
+    it('opens nothing for a reply whose original loaded only after a sign-out', async () => {
+      let answer!: () => void
+      const loading = new Promise<void>((resolve) => (answer = resolve))
+      const late = new Composer({ ...deps, body: async () => {
+        await loading
+        return { html: '<p>Old user</p>', text: null, attachments: [] }
+      } })
+      const opening = late.openReply(original, 'forward', { strict: true })
+      late.reset()
+      answer()
+
+      await expect(opening).rejects.toBeInstanceOf(OriginalUnavailableError)
+      expect(late.state.draft).toBeNull()
+      late.dispose()
     })
 
     it('is dropped by an undo, so sending again is a new send', async () => {
