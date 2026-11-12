@@ -13,6 +13,8 @@ import SenderAvatar from '@/components/SenderAvatar.vue'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
 import SegmentedControl from '@/components/SegmentedControl.vue'
+import FrameTitle from '@/components/FrameTitle.vue'
+import FrameTools from '@/components/FrameTools.vue'
 
 const mail = useMailStore()
 const brief = useBriefStore()
@@ -154,18 +156,21 @@ function briefLabel(createdAt: string): string {
         <header class="header">
           <div class="heading">
             <span class="kind"><AppIcon name="know" :size="16" />Mail to just know</span>
-            <h1 id="brief-title">Daily brief</h1>
+            <FrameTitle id="brief-title">Daily brief</FrameTitle>
             <span v-if="madeAt" class="made">
               <time :datetime="madeAt.iso">Brief for {{ madeAt.day }}, made at {{ madeAt.time }}</time>
               from {{ entries.length === 1 ? '1 conversation' : `${entries.length} conversations` }}
               across {{ accountCount === 1 ? '1 account' : `${accountCount} accounts` }}
             </span>
           </div>
+          <!-- In the desktop shell these are in the title strip (FrameTools). -->
           <div v-if="entries.length > 0" class="header-actions">
-            <span class="progress" role="status">{{ progressText }}</span>
-            <button type="button" class="button button-primary mark-all" :disabled="actions.busy.value || progress.noted === progress.total" @click="noteAll">
-              Mark all noted <KeyShortcut keys="Shift+K" />
-            </button>
+            <FrameTools>
+              <span class="progress" role="status">{{ progressText }}</span>
+              <button type="button" class="button button-primary mark-all" :disabled="actions.busy.value || progress.noted === progress.total" @click="noteAll">
+                Mark all noted <KeyShortcut keys="Shift+K" />
+              </button>
+            </FrameTools>
           </div>
         </header>
 
@@ -257,6 +262,9 @@ function briefLabel(createdAt: string): string {
 </template>
 
 <style scoped>
+.frame-shell .header-actions {
+  display: none;
+}
 .shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

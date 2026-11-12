@@ -2,6 +2,7 @@
 import { RouterLink, RouterView } from 'vue-router'
 import { isDesktop } from '@/platform/desktop'
 import { useBillingStore } from '@/stores/billing'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 const billing = useBillingStore()
 </script>
@@ -9,7 +10,7 @@ const billing = useBillingStore()
 <template>
   <div class="settings">
     <nav class="nav" aria-label="Settings">
-      <h1>Settings</h1>
+      <FrameTitle>Settings</FrameTitle>
       <RouterLink :to="{ name: 'settings-accounts' }" class="item">Accounts</RouterLink>
       <RouterLink :to="{ name: 'settings-signatures' }" class="item">Signatures</RouterLink>
       <RouterLink :to="{ name: 'settings-smart-inboxes' }" class="item">Smart inboxes</RouterLink>

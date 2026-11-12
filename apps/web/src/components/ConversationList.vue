@@ -9,6 +9,9 @@ import { useSelectionStore } from '@/stores/selection'
 import AppIcon from '@/components/AppIcon.vue'
 import BulkBar from '@/components/BulkBar.vue'
 import ClassificationMenu from '@/components/ClassificationMenu.vue'
+import FrameCapsule from '@/components/FrameCapsule.vue'
+import FrameTitle from '@/components/FrameTitle.vue'
+import FrameTools from '@/components/FrameTools.vue'
 import MenuButton from '@/components/MenuButton.vue'
 import SearchField from '@/components/SearchField.vue'
 import SyncNotice from '@/components/SyncNotice.vue'
@@ -113,10 +116,12 @@ const days = computed(() => {
   <section class="list" :aria-label="title">
     <header class="header">
       <div class="title">
-        <h1 :title="title">{{ title }}</h1>
+        <FrameTitle :title="title">{{ title }}</FrameTitle>
         <span class="title-actions">
-          <RouterLink v-if="manageTo" :to="manageTo" class="manage">Manage senders</RouterLink>
-          <MenuButton label="Select" menu-label="Select conversations" :items="ages" :disabled="conversations.length === 0" @choose="selectOlderThan" />
+          <FrameTools>
+            <FrameCapsule v-if="manageTo"><RouterLink :to="manageTo" class="manage">Manage senders</RouterLink></FrameCapsule>
+            <FrameCapsule><MenuButton label="Select" menu-label="Select conversations" :items="ages" :disabled="conversations.length === 0" @choose="selectOlderThan" /></FrameCapsule>
+          </FrameTools>
         </span>
       </div>
       <slot name="aside" />
@@ -238,11 +243,20 @@ h1 {
   align-items: center;
   gap: 8px;
 }
+/* A capsule in the desktop shell's title strip gives the link its height. */
+.frame-shell .manage {
+  display: inline-flex;
+  align-items: center;
+}
 .manage {
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
   white-space: nowrap;
+}
+/* In the desktop shell the title and its actions are in the title strip (FrameTitle, FrameTools). */
+.frame-shell .title {
+  display: none;
 }
 .title {
   display: flex;

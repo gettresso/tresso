@@ -5,6 +5,7 @@ import type { Draft } from '@/mail/db'
 import { senderName, shortTime } from '@/mail/format'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 const mail = useMailStore()
 const compose = useComposeStore()
@@ -39,7 +40,7 @@ async function remove(draft: Draft): Promise<void> {
 
 <template>
   <main class="drafts">
-    <h1>Drafts</h1>
+    <FrameTitle>Drafts</FrameTitle>
     <p class="lead">Messages you started, on every device and in each account's Drafts folder.</p>
     <p v-if="drafts.length === 0" class="lead">No drafts.</p>
     <ul class="list">

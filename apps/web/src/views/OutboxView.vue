@@ -4,6 +4,7 @@ import type { SyncedOutgoingMessage } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 const mail = useMailStore()
 const compose = useComposeStore()
@@ -51,7 +52,7 @@ async function edit(message: SyncedOutgoingMessage): Promise<void> {
 
 <template>
   <main class="outbox">
-    <h1>Outbox</h1>
+    <FrameTitle>Outbox</FrameTitle>
     <p class="lead">Mail that is scheduled, on its way, or could not be sent.</p>
     <p v-if="mail.outbox.length === 0" class="lead">Nothing waiting.</p>
     <ul class="list">

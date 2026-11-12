@@ -7,6 +7,7 @@ import { useBulkStore } from '@/stores/bulk'
 import { useMailStore } from '@/stores/mail'
 import AppIcon from '@/components/AppIcon.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 /**
  * What to clean up, from fixed rules over the user's mail: each suggestion says what it found and why, with one button
@@ -43,7 +44,7 @@ async function clean(suggestion: CleanupSuggestion): Promise<void> {
 <template>
   <section class="panel" aria-label="Clean up">
     <header class="header">
-      <h1>Clean up</h1>
+      <FrameTitle>Clean up</FrameTitle>
       <p class="subtitle">Suggestions from fixed rules about your mail. Nothing is guessed, and every action can be undone.</p>
     </header>
 

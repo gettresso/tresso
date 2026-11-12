@@ -21,6 +21,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import MenuButton from '@/components/MenuButton.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import FrameTitle from '@/components/FrameTitle.vue'
 
 /**
  * Manages a smart inbox in bulk: everything it lists (or only what is older than an age) and each of its senders,
@@ -129,7 +130,7 @@ async function onSuggestion(item: CleanupSuggestion): Promise<void> {
   <section class="panel" :aria-label="`${name}: senders`">
     <header class="header">
       <RouterLink :to="{ name: 'smart-inbox', params: { smartInboxId } }" class="back"><AppIcon name="back" :size="14" />{{ name }}</RouterLink>
-      <h1>Senders</h1>
+      <FrameTitle>Senders</FrameTitle>
       <p class="subtitle">{{ subtitle }}</p>
     </header>
 
