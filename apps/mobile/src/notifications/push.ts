@@ -67,10 +67,10 @@ export async function forgetPushDevice(api: Api, store: DeviceIdStore): Promise<
 
 /**
  * The screens a notification may open on the phone, by the path the server gives (PushMessage.php): a conversation
- * (mail), the batches (a batch's summary), the daily brief, the todos and Waiting on (a hand-over). Paths the phone has
- * no screen for (a calendar event) open the app as it is.
+ * (mail), a WhatsApp chat, the batches (a batch's summary), the daily brief, the todos and Waiting on (a hand-over).
+ * Paths the phone has no screen for (a calendar event) open the app as it is.
  */
-const TAP_ROUTES = [/^\/thread\/[^/?#]+$/, /^\/batches$/, /^\/brief(\?[^#]*)?$/, /^\/todos$/, /^\/waiting(\?[^#]*)?$/]
+const TAP_ROUTES = [/^\/thread\/[^/?#]+$/, /^\/chats\/[^/?#]+$/, /^\/batches$/, /^\/brief(\?[^#]*)?$/, /^\/todos$/, /^\/waiting(\?[^#]*)?$/]
 
 /** Where a tapped notification leads in the app, or null to open it as it is. */
 export function tappedRoute(data: unknown): string | null {
@@ -86,12 +86,12 @@ export interface ForegroundBehavior {
 }
 
 /**
- * How a push shows while the app is open: mail goes to the list only (the user is in their mail already), silent
- * deliveries (quiet hours, focus) without banner or sound, reminders as a banner with sound.
+ * How a push shows while the app is open: mail and WhatsApp messages go to the list only (the user is in the app
+ * already), silent deliveries (quiet hours, focus) without banner or sound, reminders as a banner with sound.
  */
 export function foregroundBehavior(data: unknown): ForegroundBehavior {
   const payload = typeof data === 'object' && data !== null ? (data as { kind?: unknown; silent?: unknown }) : {}
-  const quiet = payload.kind === 'mail' || payload.silent === true
+  const quiet = payload.kind === 'mail' || payload.kind === 'whatsapp' || payload.silent === true
 
   return { shouldShowBanner: !quiet, shouldShowList: true, shouldPlaySound: !quiet, shouldSetBadge: false }
 }
