@@ -14,7 +14,7 @@ use Symfony\Component\Validator\Constraints as Assert;
  */
 final class UpdateMeetingPreferences
 {
-    #[Assert\Length(max: MeetingLinkAddress::MAX_LENGTH, maxMessage: MeetingLinkAddress::TOO_LONG)]
+    #[Assert\Length(max: MeetingLinkAddress::MAX_LENGTH, maxMessage: 'Use a link of at most 2048 characters.')]
     public ?string $ownLink = null;
 
     public ?bool $addWithGuests = null;

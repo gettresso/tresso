@@ -22,8 +22,13 @@ use Symfony\Component\Serializer\Normalizer\AbstractObjectNormalizer;
  * in Tresso for one account (`meet` for a Google account, `teams` for a Microsoft account). `apps` (read only) are the
  * apps this server can offer.
  *
- * PATCH changes only the fields sent; an empty `ownLink` clears it, `defaults` and `disabled` replace the whole map or
- * list. Entries for mail accounts that no longer exist are dropped when the preferences are saved.
+ * PATCH changes only the fields sent: `ownLink: null` (or leaving it out) keeps the link and `ownLink: ""` clears it;
+ * `defaults` and `disabled` replace the whole map or list. Entries for mail accounts that no longer exist are dropped
+ * when the preferences are saved. The own link must be a plain https web address (`App\Calendar\MeetingLinkAddress`,
+ * the rule of packages/core); a refused one is named by field, never repeated.
+ *
+ * App names are plain strings: a client ignores one it does not know (a later server may offer more apps, and a
+ * default may name an app that `apps` does not offer on this server).
  */
 #[ApiResource(
     shortName: 'MeetingPreferences',
