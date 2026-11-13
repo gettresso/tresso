@@ -6,12 +6,13 @@ import { LocalChatBackend, type SqliteMailStore, type SyncedChatOutgoing } from 
 import type { WhatsAppCommands } from '@/platform/whatsapp'
 import { at, copyWith, DIRECT, DIRECT_ID, direct, fakeMail, fakeRelay, fakeShell, GROUP, GROUP_ID, group, incoming, LINKED, NOW, STOPPED } from '@/stores/__tests__/chatFixtures'
 
-const fakes = vi.hoisted(() => ({ relay: null as unknown, mail: null as unknown, shell: null as unknown, todos: { create: null as unknown } }))
+const fakes = vi.hoisted(() => ({ relay: null as unknown, mail: null as unknown, shell: null as unknown, todos: { create: null as unknown }, selection: { active: false } }))
 vi.mock('@/stores/whatsappRelay', () => ({ useWhatsAppRelayStore: () => fakes.relay }))
 vi.mock('@/stores/mail', () => ({ useMailStore: () => fakes.mail }))
 vi.mock('@/stores/todos', () => ({ useTodosStore: () => fakes.todos }))
 vi.mock('@/stores/compose', () => ({ useComposeStore: () => ({ draft: null, minimized: false, notify: () => undefined }) }))
 vi.mock('@/platform/notifier', () => ({ notifier: null }))
+vi.mock('@/stores/selection', () => ({ useSelectionStore: () => fakes.selection }))
 vi.mock('@/platform/whatsapp', async (original) => ({
   ...(await original<typeof import('@/platform/whatsapp')>()),
   whatsAppShell: (): Partial<WhatsAppCommands> => {
@@ -50,6 +51,7 @@ describe('ChatPane', () => {
     fakes.relay = relay
     fakes.mail = mail
     fakes.shell = shell
+    fakes.selection.active = false
     fakes.todos.create = vi.fn<(todo: { title: string }) => Promise<object>>(async () => ({}))
     setActivePinia(createPinia())
     router = createRouter({
@@ -140,7 +142,7 @@ describe('ChatPane', () => {
   it('says each reply state as the boards do, with Cancel only while it waits', async () => {
     relay.relayRunning = false
     let view = await withReply({ status: 'waiting' })
-    expect(metaOf(view)[1]).toMatch(/^\d{1,2}:\d\d(?: [AP]M)?, waiting for your Mac$/)
+    expect(metaOf(view)[1]).toMatch(/^\d{1,2}:\d\d(?: [AP]M)?, waiting for the bridge$/)
     expect(bubbles(view)[1]!.get('.meta').classes()).toContain('waiting')
     expect(bubbles(view)[1]!.findAll('button').map((button) => button.text())).toEqual(['Cancel'])
     view.unmount()
@@ -168,7 +170,7 @@ describe('ChatPane', () => {
     ] as const) {
       view = await withReply({ status: 'failed', error })
       const failed = bubbles(view)[1]!
-      expect(failed.get('button.meta').text()).toBe('Not sent, tap to retry')
+      expect(failed.get('button.meta').text()).toBe('Not sent, click to retry')
       expect(failed.get('.why').text()).toBe(why)
       expect(failed.findAll('.under button').map((button) => button.text())).toEqual(['Try again', 'Delete'])
       view.unmount()
@@ -197,7 +199,7 @@ describe('ChatPane', () => {
     await bubbles(view)[1]!.get('button.meta').trigger('click')
     await flushPromises()
     expect((await store.chat(DIRECT_ID))!.outgoing[0]).toMatchObject({ status: 'waiting', error: null })
-    expect(view.get('.composer [role="status"]').text()).toBe('Waiting for your Mac.')
+    expect(view.get('.composer .visually-hidden[role="status"]').text()).toBe('Waiting for the bridge.')
     wrapper = view
   })
 
@@ -346,7 +348,6 @@ describe('ChatPane', () => {
     await flushPromises()
     expect(leaveOut).toHaveBeenCalledWith(DIRECT)
     expect(router.currentRoute.value.path).toBe('/')
-    expect(view.emitted('left')).toHaveLength(1)
   })
 
   it('reads a long chat in windows: the newest first, older ones on scrolling up, keeping the scroll position', async () => {
@@ -393,5 +394,169 @@ describe('ChatPane', () => {
     view = await open('wa:999@s.whatsapp.net', copy)
     expect(view.text()).toContain('This chat is not on this Mac any more.')
     wrapper = view
+  })
+
+  it('never sends the Enter that confirms an input method composition, in the reply or in the todo field', async () => {
+    const view = await open(DIRECT_ID, await copyWith([direct], [incoming('A1', DIRECT, -10)]))
+    const field = view.get<HTMLTextAreaElement>('textarea')
+    await field.setValue('こんにちは')
+    // WKWebView: after compositionend, isComposing false but keyCode 229.
+    await field.trigger('keydown', { key: 'Enter', keyCode: 229 })
+    await field.trigger('keydown', { key: 'Enter', isComposing: true })
+    await flushPromises()
+    expect((await store.chat(DIRECT_ID))!.outgoing).toEqual([])
+    expect(field.element.value).toBe('こんにちは')
+
+    await view.get('.verdict.do').trigger('click')
+    await flushPromises()
+    const todo = view.get<HTMLInputElement>('#chat-todo')
+    const composed = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, cancelable: true, bubbles: true })
+    todo.element.dispatchEvent(composed)
+    expect(composed.defaultPrevented).toBe(true)
+    const plain = new KeyboardEvent('keydown', { key: 'Enter', cancelable: true, bubbles: true })
+    todo.element.dispatchEvent(plain)
+    expect(plain.defaultPrevented).toBe(false)
+  })
+
+  it('sends one reply for Enter twice or Send twice', async () => {
+    const view = await open(DIRECT_ID, await copyWith([direct], [incoming('A1', DIRECT, -10)]))
+    const field = view.get<HTMLTextAreaElement>('textarea')
+    await field.setValue('Once')
+    void field.trigger('keydown', { key: 'Enter' })
+    void field.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    await field.setValue('Twice')
+    void view.get('form.composer').trigger('submit')
+    void view.get('form.composer').trigger('submit')
+    await flushPromises()
+    expect((await store.chat(DIRECT_ID))!.outgoing.map((row) => row.text).sort()).toEqual(['Once', 'Twice'])
+  })
+
+  it('keeps what was typed per chat when the user looks at another chat and comes back', async () => {
+    const copy = await copyWith([direct, group], [incoming('A1', DIRECT, -10), incoming('G1', GROUP, -9, { sender: { id: '1', name: 'Mom' } })])
+    let view = await open(DIRECT_ID, copy)
+    await view.get('textarea').setValue('Half a thought')
+    view.unmount()
+    view = await open(GROUP_ID, copy)
+    expect(view.get<HTMLTextAreaElement>('textarea').element.value).toBe('')
+    view.unmount()
+    view = await open(DIRECT_ID, copy)
+    expect(view.get<HTMLTextAreaElement>('textarea').element.value).toBe('Half a thought')
+
+    // Sent: the draft goes.
+    await view.get('textarea').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    view.unmount()
+    view = await open(DIRECT_ID, copy)
+    expect(view.get<HTMLTextAreaElement>('textarea').element.value).toBe('')
+
+    // A chat left out takes its draft along.
+    await view.get('textarea').setValue('Never mind')
+    const { setLocalChatState } = await import('@tresso/core')
+    vi.spyOn(relay, 'leaveOut').mockImplementation(async () => {
+      await setLocalChatState(copy, DIRECT_ID, { leftOut: true })
+      return true
+    })
+    const { useChatsStore } = await import('@/stores/chats')
+    await useChatsStore().leaveChatOut((await copy.chat(DIRECT_ID))!.chat)
+    expect(useChatsStore().draftOf(DIRECT_ID)).toBe('')
+    wrapper = view
+  })
+
+  it('leaves K and E to the bulk bar while mail is ticked', async () => {
+    fakes.selection.active = true
+    const view = await open(DIRECT_ID, await copyWith([direct], [incoming('A1', DIRECT, -10)]))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }))
+    await flushPromises()
+    expect((await store.chat(DIRECT_ID))!.chat.archivedThrough).toBeNull()
+    expect(router.currentRoute.value.path).toBe('/chats/x')
+    wrapper = view
+  })
+
+  it('keeps the older messages it loaded when a reload started before them lands after', async () => {
+    const messages = Array.from({ length: 80 }, (_, index) => incoming(`M${String(index).padStart(3, '0')}`, DIRECT, -300 + index))
+    const copy = await copyWith([direct], messages)
+    const view = await open(DIRECT_ID, copy)
+    expect(bubbles(view)).toHaveLength(50)
+
+    // A reload starts (the chats changed) and is held; older messages load meanwhile; then the reload lands.
+    const real = copy.chatPage.bind(copy)
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const spy = vi.spyOn(copy, 'chatPage').mockImplementationOnce(async (...args) => {
+      const page = await real(...args)
+      await held
+      return page
+    })
+    relay.revision++
+    await flushPromises()
+    await view.get('button.older').trigger('click')
+    await flushPromises()
+    expect(bubbles(view)).toHaveLength(80)
+    release()
+    await flushPromises()
+    // The overtaken reload ran again from the window as it is now: nothing loaded vanished.
+    expect(bubbles(view)).toHaveLength(80)
+    expect(spy.mock.calls.length).toBeGreaterThanOrEqual(3)
+    wrapper = view
+  })
+
+  it('reads the open chat once the window has the focus, the same way on opening and on new messages', async () => {
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const view = await open(DIRECT_ID, await copyWith([direct], [incoming('A1', DIRECT, -10)]))
+    expect((await store.chats())[0]!.unread).toBe(1)
+    focus.mockReturnValue(true)
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect((await store.chats())[0]!.unread).toBe(0)
+    wrapper = view
+  })
+
+  it('shows a reply that waits or failed even when it is older than the window', async () => {
+    const messages = Array.from({ length: 60 }, (_, index) => incoming(`M${String(index).padStart(3, '0')}`, DIRECT, -300 + index))
+    const copy = await copyWith([direct], messages)
+    await copy.putChatOutgoing([
+      { id: 'old-failed', chatId: DIRECT_ID, chatAccountId: 'wa:account', text: 'Failed long ago', status: 'failed', error: 'refused', createdAt: at(-299), claimedAt: at(-299), sentAt: null },
+      { id: 'old-sent', chatId: DIRECT_ID, chatAccountId: 'wa:account', text: 'Sent long ago', status: 'sent', error: null, createdAt: at(-299), claimedAt: at(-299), sentAt: at(-299) },
+    ])
+    const view = await open(DIRECT_ID, copy)
+    const texts = bubbles(view).map((item) => item.find('.text').exists() ? item.get('.text').text() : '')
+    expect(texts).toContain('Failed long ago')
+    expect(texts).not.toContain('Sent long ago')
+    wrapper = view
+  })
+
+  it('says a file\'s fate only in the chat it was attached in, and forgets it once the user types', async () => {
+    const copy = await copyWith([direct, group], [incoming('A1', DIRECT, -10), incoming('G1', GROUP, -9, { sender: { id: '1', name: 'Mom' } })])
+    let view = await open(DIRECT_ID, copy)
+    await view.get('button[aria-label="Attach a file"]').trigger('click')
+    await flushPromises()
+    expect(view.get('.attach-line').text()).toBe('plan.pdf was sent.')
+    expect(view.get('.attach-line').attributes('role')).toBe('status')
+    view.unmount()
+    view = await open(GROUP_ID, copy)
+    expect(view.get('.attach-line').text()).toBe('')
+    view.unmount()
+    view = await open(DIRECT_ID, copy)
+    expect(view.get('.attach-line').text()).toBe('plan.pdf was sent.')
+    await view.get('textarea').setValue('x')
+    expect(view.get('.attach-line').text()).toBe('')
+    wrapper = view
+  })
+
+  it('shows markup and direction overrides from WhatsApp as text, kept inside their bubble', async () => {
+    const view = await open(
+      GROUP_ID,
+      await copyWith([group], [incoming('G1', GROUP, -10, { sender: { id: '1', name: '‮Mom<b>' }, text: '<img src=x onerror=alert(1)>‮dlrow olleh' })]),
+    )
+    const bubble = bubbles(view)[0]!
+    expect(bubble.find('img').exists()).toBe(false)
+    expect(bubble.get('.text').text()).toBe('<img src=x onerror=alert(1)>‮dlrow olleh')
+    expect(bubble.get('.text').attributes('dir')).toBe('auto')
+    // The name is cleaned of the override; the text is isolated, so an override in it ends at the bubble.
+    expect(bubble.get('.sender').text()).toBe('Mom<b>')
+    expect(view.get('h2').text()).toBe('Family')
+    expect(view.get('.timeline').attributes('role')).toBe('region')
   })
 })

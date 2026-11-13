@@ -41,6 +41,7 @@ export function fakeRelay() {
     relayRunning: true,
     importState: 'done' as 'waiting' | 'reading' | 'done' | 'stuck',
     revision: 0,
+    liveFrom: null as number | null,
     senderNames: new Map<string, string>() as ReadonlyMap<string, string>,
     identity: { number: '31698765432', name: 'Kim Visser' } as { number: string; name: string | null } | null,
     busy: null as string | null,

@@ -7,11 +7,40 @@ import {
   senderColor,
   type ChatMediaKind,
   type ChatOutgoingError,
+  type ReplyLabel,
   type SyncedChat,
   type SyncedChatMessage,
 } from '@tresso/core'
 import type { BridgeState } from '@/platform/whatsapp'
 import type { AttachState, MediaFailure, MediaState } from '@/stores/chats'
+
+/**
+ * A reply's label on this Mac, which relays itself ("Only this Mac"): a reply waits for the bridge, not for a Mac that is
+ * offline, and is retried with a click. Core's replyLabel keeps the board's words for the other devices (server mode).
+ */
+export type LocalReplyLabel = 'Sending' | 'Sent' | 'Waiting for the bridge' | 'Not sent, click to retry'
+
+export function localReplyLabel(label: ReplyLabel | null): LocalReplyLabel | null {
+  switch (label) {
+    case 'Waiting for your Mac':
+      return 'Waiting for the bridge'
+    case 'Not sent, tap to retry':
+      return 'Not sent, click to retry'
+    default:
+      return label
+  }
+}
+
+/** `10:02`, `10:02, sent`, `10:02, waiting for the bridge`; the failed label stands alone (as core's bubbleMeta). */
+export function localBubbleMeta(time: string, label: LocalReplyLabel | null): string {
+  if (label === null) {
+    return time
+  }
+  if (label === 'Not sent, click to retry') {
+    return label
+  }
+  return `${time}, ${label.charAt(0).toLowerCase()}${label.slice(1)}`
+}
 
 /**
  * What the chat screens say (the WhatsAppInbox and WhatsAppStates boards, with the corrections of the WhatsApp plan,
@@ -104,6 +133,9 @@ export function attachText(state: AttachState): string | null {
     case 'sent':
       return `${state.name} was sent.`
     case 'failed':
+      if (state.error === 'too_large') {
+        return `${state.name} was not sent. It is larger than 2 GB, the most Tresso sends.`
+      }
       return state.error === 'unconfirmed' ? `${state.name}: ${replyErrorText('unconfirmed')}` : `${state.name || 'The file'} was not sent. ${replyErrorText(state.error)}`
     default:
       return null
@@ -118,7 +150,7 @@ export function replyAnnouncement(status: 'waiting' | 'sending' | 'sent' | 'fail
     case 'sent':
       return 'Sent.'
     case 'waiting':
-      return relayOnline ? 'Sending.' : 'Waiting for your Mac.'
+      return relayOnline ? 'Sending.' : 'Waiting for the bridge.'
     default:
       return error === 'unconfirmed' ? replyErrorText('unconfirmed') : `Not sent. ${error === null ? '' : replyErrorText(error)}`.trim()
   }

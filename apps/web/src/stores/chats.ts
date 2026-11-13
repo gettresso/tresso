@@ -47,11 +47,20 @@ export type MediaState =
  */
 export type MediaFailure = 'failed' | 'stopped' | 'mismatch' | 'unverified' | 'refused' | 'too_large' | 'open'
 
-/** A file attached from the composer: on its way, or why it did not go. */
-export type AttachState = { state: 'idle' } | { state: 'sending'; name: string } | { state: 'sent'; name: string } | { state: 'failed'; name: string; error: ChatOutgoingError }
+/** Why an attached file did not go: a reply's error, or `too_large` (over what Attach sends, refused before the bridge). */
+export type AttachError = ChatOutgoingError | 'too_large'
+
+/** A file attached from the composer of a chat: on its way, or why it did not go. */
+export type AttachState =
+  | { state: 'idle' }
+  | { state: 'sending'; chatId: string; name: string }
+  | { state: 'sent'; chatId: string; name: string }
+  | { state: 'failed'; chatId: string; name: string; error: AttachError }
 
 /** How often a chat screen reads its replies again while one waits or is being sent (the relay sends in its rounds). */
 const REPLY_POLL_MS = 3_000
+/** While the store is read in, the chats are read again at most this often (the relay stores a page at a time). */
+const IMPORT_REFRESH_MS = 1_000
 
 const IDLE: MediaState = { state: 'idle' }
 
@@ -94,6 +103,8 @@ export const useChatsStore = defineStore('chats', () => {
   const openChatId = ref<string | null>(null)
   const media = shallowRef<ReadonlyMap<string, MediaState>>(new Map())
   const attaching = shallowRef<AttachState>({ state: 'idle' })
+  /** What the user typed and did not send yet, per chat: kept while they look at another chat, in memory only. */
+  const drafts = new Map<string, string>()
 
   let refreshing: Promise<void> | null = null
   let again = false
@@ -132,6 +143,10 @@ export const useChatsStore = defineStore('chats', () => {
       leftOut.value = []
       seen = new Map()
       primed = false
+      // Signed out, disconnected or switched off: nothing typed into a chat stays behind.
+      drafts.clear()
+      media.value = new Map()
+      attaching.value = { state: 'idle' }
       return
     }
     try {
@@ -139,6 +154,13 @@ export const useChatsStore = defineStore('chats', () => {
       const local = all.filter((summary) => chatOnlyHere(summary.chat.chatAccountId))
       account.value = accounts.find((row) => row.id === LOCAL_CHAT_ACCOUNT) ?? null
       summaries.value = local
+      // A chat that went (left out, removed with groups or the account) takes what was typed into it along.
+      const shown = new Set(local.map((summary) => summary.chat.id))
+      for (const chatId of drafts.keys()) {
+        if (!shown.has(chatId)) {
+          drafts.delete(chatId)
+        }
+      }
       leftOut.value = (await Promise.all((wa.config?.leftOut ?? []).map((jid) => copy.chatByJid(LOCAL_CHAT_ACCOUNT, jid)))).filter((chat): chat is SyncedChat => chat !== null)
       version.value++
       notify(local)
@@ -155,7 +177,7 @@ export const useChatsStore = defineStore('chats', () => {
       seen,
       now: Date.now(),
       notify: primed && wa.config?.notify === true,
-      firstImport: wa.importState !== 'done',
+      historyThrough: wa.importState === 'done' ? null : (wa.liveFrom ?? Number.POSITIVE_INFINITY),
       focusedChatId: focused,
       named,
     })
@@ -176,7 +198,46 @@ export const useChatsStore = defineStore('chats', () => {
     return known === undefined ? message : { ...message, sender: { ...sender, name: known } }
   }
 
-  watch([enabled, () => wa.revision, () => mail.synced, () => mail.ready, () => wa.config?.leftOut], () => void refresh(), { immediate: true })
+  watch([enabled, () => mail.synced, () => mail.ready, () => wa.config?.leftOut], () => void refresh(), { immediate: true })
+
+  /*
+   * The relay stored something or reported a reply. While the store is read in it stores a page at a time, so the chats
+   * are read again at most once a second then (the last change always gets its read).
+   */
+  let lastRead = 0
+  let pending: ReturnType<typeof setTimeout> | null = null
+  watch(
+    () => wa.revision,
+    () => {
+      if (wa.importState === 'done') {
+        lastRead = Date.now()
+        void refresh()
+        return
+      }
+      if (pending !== null) {
+        return
+      }
+      const wait = Math.max(0, lastRead + IMPORT_REFRESH_MS - Date.now())
+      pending = setTimeout(() => {
+        pending = null
+        lastRead = Date.now()
+        void refresh()
+      }, wait)
+    },
+  )
+
+  /** What was typed into a chat and not sent; '' when nothing. */
+  function draftOf(chatId: string): string {
+    return drafts.get(chatId) ?? ''
+  }
+
+  function setDraft(chatId: string, text: string): void {
+    if (text === '') {
+      drafts.delete(chatId)
+    } else {
+      drafts.set(chatId, text)
+    }
+  }
 
   /** A window of a chat (MailStore.chatPage); null when it is not on this Mac. */
   async function page(chatId: string, options: { limit: number; before?: ChatMessageKey | null; from?: ChatMessageKey | null }): Promise<ChatPage | null> {
@@ -231,6 +292,7 @@ export const useChatsStore = defineStore('chats', () => {
       throw new LocalChatError('no_chat')
     }
     const row = await queueLocalReply(copy, chatId, text, uuidV7(), Date.now())
+    drafts.delete(chatId)
     void afterReply()
     return row
   }
@@ -257,6 +319,9 @@ export const useChatsStore = defineStore('chats', () => {
   /** Leaves the chat out: Tresso removes its copy and stops reading it; WhatsApp keeps it. */
   async function leaveChatOut(chat: SyncedChat): Promise<boolean> {
     const done = await wa.leaveOut(chat.jid)
+    if (done) {
+      drafts.delete(chat.id)
+    }
     await refresh()
     return done
   }
@@ -341,25 +406,26 @@ export const useChatsStore = defineStore('chats', () => {
       path = await commands.chooseFile()
     } catch (cause) {
       console.error('Choosing a file to attach failed', errorName(cause))
-      attaching.value = { state: 'failed', name: '', error: 'refused' }
+      attaching.value = { state: 'failed', chatId: chat.id, name: '', error: 'refused' }
       return
     }
     if (path === null) {
       return
     }
     const name = baseName(path)
-    attaching.value = { state: 'sending', name }
-    let error: ChatOutgoingError | null = null
+    attaching.value = { state: 'sending', chatId: chat.id, name }
+    let error: AttachError | null = null
     try {
       const result = await commands.send(chat.jid, '', path)
       error = result.ok ? null : result.message
     } catch (cause) {
-      // The shell refused the request before the bridge saw it: nothing went out.
+      // The shell refused the request before the bridge saw it: nothing went out. A file over what Attach sends is said
+      // as such; the bridge's own refusal of a large file cannot be told apart from any other (it logs the reason only).
       console.error('Sending a WhatsApp file failed', errorName(cause))
-      error = 'refused'
+      error = cause === 'too_large' ? 'too_large' : 'refused'
     }
     if (error !== null) {
-      attaching.value = { state: 'failed', name, error }
+      attaching.value = { state: 'failed', chatId: chat.id, name, error }
       return
     }
     try {
@@ -367,14 +433,15 @@ export const useChatsStore = defineStore('chats', () => {
     } catch (cause) {
       console.error('Recording a sent WhatsApp file failed', errorName(cause))
     }
-    attaching.value = { state: 'sent', name }
+    attaching.value = { state: 'sent', chatId: chat.id, name }
     version.value++
     await refresh()
   }
 
-  /** The composer's attach line was read; it goes. */
-  function clearAttach(): void {
-    if (attaching.value.state !== 'sending') {
+  /** The composer's attach line was read (in `chatId`'s chat, or any): it goes, unless a file is still on its way. */
+  function clearAttach(chatId: string | null = null): void {
+    const state = attaching.value
+    if (state.state !== 'idle' && state.state !== 'sending' && (chatId === null || state.chatId === chatId)) {
       attaching.value = { state: 'idle' }
     }
   }
@@ -385,6 +452,8 @@ export const useChatsStore = defineStore('chats', () => {
   }
 
   return {
+    draftOf,
+    setDraft,
     enabled,
     canReply,
     account,

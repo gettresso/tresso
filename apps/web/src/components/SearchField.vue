@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { shortcutAllowed } from '@/mail/useMessageActions'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useForm } from 'vee-validate'
@@ -43,10 +44,9 @@ function escape(): void {
 }
 
 // "/" jumps to search, unless the user is typing somewhere.
+// Not while typing, nor while a dialog or a confirmation holds the keys (shortcutAllowed, as every single-key shortcut).
 function shortcut(event: KeyboardEvent): void {
-  const target = event.target as HTMLElement | null
-  const typing = target !== null && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
-  if (!typing && event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+  if (event.key === '/' && shortcutAllowed(event, false)) {
     event.preventDefault()
     input.value?.focus()
     input.value?.select()

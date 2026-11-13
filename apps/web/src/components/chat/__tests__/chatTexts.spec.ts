@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SENDER_COLORS, senderColor } from '@tresso/core'
 import type { BridgeState } from '@/platform/whatsapp'
-import { attachText, chatName, chatNoticeKind, mediaRetry, mediaStateText, mediaTitle, replyAnnouncement, senderLabel, senderTone } from '../chatTexts'
+import { attachText, localBubbleMeta, localReplyLabel, chatName, chatNoticeKind, mediaRetry, mediaStateText, mediaTitle, replyAnnouncement, senderLabel, senderTone } from '../chatTexts'
 
 const OWNED: BridgeState = { process: 'owned', port: 8741, loopbackOnly: true, link: 'linked', qr: null, error: null }
 
@@ -52,18 +52,30 @@ describe('chat texts', () => {
 
   it('says what happened to an attached file', () => {
     expect(attachText({ state: 'idle' })).toBeNull()
-    expect(attachText({ state: 'sending', name: 'plan.pdf' })).toBe('Sending plan.pdf…')
-    expect(attachText({ state: 'sent', name: 'plan.pdf' })).toBe('plan.pdf was sent.')
-    expect(attachText({ state: 'failed', name: 'plan.pdf', error: 'bridge_stopped' })).toBe('plan.pdf was not sent. The bridge is not running.')
-    expect(attachText({ state: 'failed', name: 'plan.pdf', error: 'unconfirmed' })).toBe('plan.pdf: Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.')
+    const chatId = 'wa:c'
+    expect(attachText({ state: 'sending', chatId, name: 'plan.pdf' })).toBe('Sending plan.pdf…')
+    expect(attachText({ state: 'sent', chatId, name: 'plan.pdf' })).toBe('plan.pdf was sent.')
+    expect(attachText({ state: 'failed', chatId, name: 'plan.pdf', error: 'bridge_stopped' })).toBe('plan.pdf was not sent. The bridge is not running.')
+    expect(attachText({ state: 'failed', chatId, name: 'plan.pdf', error: 'unconfirmed' })).toBe('plan.pdf: Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.')
+    expect(attachText({ state: 'failed', chatId, name: 'film.mov', error: 'too_large' })).toBe('film.mov was not sent. It is larger than 2 GB, the most Tresso sends.')
   })
 
   it('announces a reply\'s change of state', () => {
     expect(replyAnnouncement('sending', null, true)).toBe('Sending.')
-    expect(replyAnnouncement('waiting', null, false)).toBe('Waiting for your Mac.')
+    expect(replyAnnouncement('waiting', null, false)).toBe('Waiting for the bridge.')
     expect(replyAnnouncement('sent', null, true)).toBe('Sent.')
     expect(replyAnnouncement('failed', 'not_linked', true)).toBe('Not sent. WhatsApp is not linked.')
     expect(replyAnnouncement('failed', 'unconfirmed', true)).toBe('Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.')
+  })
+
+  it('says on this Mac that a reply waits for the bridge, and is retried with a click', () => {
+    expect(localReplyLabel('Waiting for your Mac')).toBe('Waiting for the bridge')
+    expect(localReplyLabel('Not sent, tap to retry')).toBe('Not sent, click to retry')
+    expect(localReplyLabel('Sent')).toBe('Sent')
+    expect(localReplyLabel(null)).toBeNull()
+    expect(localBubbleMeta('10:02', 'Waiting for the bridge')).toBe('10:02, waiting for the bridge')
+    expect(localBubbleMeta('10:02', 'Not sent, click to retry')).toBe('Not sent, click to retry')
+    expect(localBubbleMeta('10:02', null)).toBe('10:02')
   })
 
   it('picks the notice the bridge calls for', () => {

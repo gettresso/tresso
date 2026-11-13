@@ -5,6 +5,8 @@ import {
   ChatRelayImportStuck,
   LOCAL_CHAT_ACCOUNT,
   LOCAL_CURSOR,
+  LOCAL_HISTORY_THROUGH,
+  readHistoryThrough,
   LocalChatBackend,
   LocalChatError,
   localChatId,
@@ -15,6 +17,7 @@ import {
   resetLocalCursor,
   setLocalChatAccount,
   setLocalChatState,
+  type ChatBackend,
   type ChatBridge,
   type MailStore,
   type RelayProgress,
@@ -107,10 +110,17 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   /** The last action's failure, in plain words. */
   const error = ref<string | null>(null)
   /**
-   * Raised whenever the chats in the copy changed through this store: the relay stored messages or sent replies, or
-   * the user left a chat out, took one back in or changed which chats come in. The chat screens read again on it.
+   * Raised whenever the chats in the copy changed through this store: the relay stored messages or reported a reply's
+   * result, or the user left a chat out, took one back in or changed which chats come in. The chat screens read again
+   * on it.
    */
   const revision = ref(0)
+  /**
+   * While the store is read again after a chat was taken back in or groups were turned on: the moment that began (epoch
+   * ms). Rows sent before it are history, rows after it live (LOCAL_HISTORY_THROUGH); null otherwise, also during the
+   * first import after connecting, where everything is history.
+   */
+  const liveFrom = ref<number | null>(null)
   /**
    * What group senders are called, by sender id, as far as this session learned it (the relay's lookups and the chat
    * screens' own, lookUpNames): a message stored before its sender's name was known shows the name once it is. Kept
@@ -291,6 +301,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   function resetImport(): void {
     senderNames.value = new Map()
     askedNames.clear()
+    liveFrom.value = null
     importState.value = 'waiting'
     progress.value = null
     stuckRefused.value = 0
@@ -473,7 +484,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     backend = made
     relay = new ChatRelay({
       bridge: chatBridge(current.folder),
-      backend: made,
+      backend: reporting(made, mine),
       now: Date.now,
       schedule,
       onProgress: (next) => progressed(mine, store, next),
@@ -482,6 +493,27 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     })
     relayRunning.value = true
     relay.start()
+  }
+
+  /**
+   * The backend as the relay uses it, telling the chat screens each reply's result: the list's last message time and the
+   * pane's reply state move as soon as a reply was sent or refused, not only after the next stored message.
+   */
+  function reporting(made: LocalChatBackend, mine: number): ChatBackend {
+    return {
+      prepare: () => made.prepare(),
+      settings: () => made.settings(),
+      ingest: (chats, messages, firstImport) => made.ingest(chats, messages, firstImport),
+      cursor: () => made.cursor(),
+      setCursor: (cursor) => made.setCursor(cursor),
+      claimNext: () => made.claimNext(),
+      async report(reply, result) {
+        await made.report(reply, result)
+        if (mine === relayRun) {
+          revision.value++
+        }
+      },
+    }
   }
 
   /** Keeps the names a lookup found (a name, else the number), so stored messages without one show it. */
@@ -550,6 +582,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
 
   async function readImportState(store: MailStore): Promise<void> {
     try {
+      liveFrom.value = readHistoryThrough(await store.chatMeta(LOCAL_HISTORY_THROUGH))
       const value = await store.chatMeta(LOCAL_CURSOR)
       const cursor = value === null ? null : readRelayCursor(value)
       importState.value = value === null ? 'waiting' : cursor !== null && cursor.firstImport !== null ? 'reading' : 'done'
@@ -581,6 +614,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     progress.value = next
     relayFailing.value = null
     importState.value = next.firstImport ? 'reading' : 'done'
+    if (!next.firstImport) {
+      liveFrom.value = null
+    }
     readChats(store, ended).catch((cause: unknown) => logRelayError(cause, 'read'))
   }
 
@@ -815,7 +851,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         await stopRelay()
         await updateConfig(id, (latest) => ({ ...latest, includeGroups: include }))
         if (include) {
-          await resetLocalCursor(store)
+          await resetLocalCursor(store, Date.now())
+          await readImportState(store)
         } else {
           await removeLocalGroupChats(store)
         }
@@ -883,7 +920,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
             throw cause
           }
         }
-        await resetLocalCursor(store)
+        await resetLocalCursor(store, Date.now())
         await readImportState(store)
         revision.value++
       })
@@ -947,6 +984,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     busy,
     error,
     revision,
+    liveFrom,
     senderNames,
     connected,
     folderReady,

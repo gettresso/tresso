@@ -287,7 +287,7 @@ onBeforeUnmount(() => {
 
       <section v-if="leftOutRows.length > 0" class="panel left-out" aria-labelledby="wa-left-out">
         <h3 id="wa-left-out">Chats left out</h3>
-        <p class="option-note">Tresso does not read these chats. WhatsApp keeps them; taking one back in brings its messages back.</p>
+        <p class="option-note">Tresso does not read these chats; WhatsApp keeps them. Taking one back in reads the bridge's store again: its messages come back as read, also those that came while it was left out, and new ones arrive as usual.</p>
         <ul class="left-list">
           <li v-for="row in leftOutRows" :key="row.jid" class="left-row">
             <span class="left-name" dir="auto">{{ row.name }}</span>

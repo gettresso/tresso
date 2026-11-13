@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { RouterLink, useRouter, type RouteLocationRaw } from 'vue-router'
 import {
-  bubbleMeta,
   chatMessageKey,
   chatSubtitle,
   nameText,
@@ -20,6 +19,7 @@ import { dayLabel } from '@/mail/format'
 import { shortcutAllowed } from '@/mail/useMessageActions'
 import { useChatsStore } from '@/stores/chats'
 import { useComposeStore } from '@/stores/compose'
+import { useSelectionStore } from '@/stores/selection'
 import { useTodosStore } from '@/stores/todos'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import AppIcon from '@/components/AppIcon.vue'
@@ -30,7 +30,8 @@ import SenderAvatar from '@/components/SenderAvatar.vue'
 import ChatBubble, { type BubbleView } from '@/components/chat/ChatBubble.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatNotice from '@/components/chat/ChatNotice.vue'
-import { attachText, chatName, chatNoticeKind, clockTime, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
+import { attachText, chatName, chatNoticeKind, clockTime, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, localBubbleMeta, localReplyLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
+import { composing } from '@/components/chat/composition'
 
 /**
  * A WhatsApp chat (the WhatsAppInbox and WhatsAppStates boards): the header with Do, Noted, Archive and Leave this
@@ -39,7 +40,6 @@ import { attachText, chatName, chatNoticeKind, clockTime, LEAVE_OUT_BODY, LEAVE_
  * was), so a chat of thousands of messages never loads at once. Opening a chat reads it in Tresso (never in WhatsApp).
  */
 const props = defineProps<{ chatId: string; backTo: RouteLocationRaw }>()
-const emit = defineEmits<{ left: [] }>()
 
 /** Messages read at a time. */
 const PAGE = 50
@@ -51,6 +51,7 @@ const wa = useWhatsAppRelayStore()
 const todos = useTodosStore()
 const compose = useComposeStore()
 const router = useRouter()
+const selection = useSelectionStore()
 
 const chat = shallowRef<SyncedChat | null>(null)
 const messages = shallowRef<SyncedChatMessage[]>([])
@@ -82,11 +83,24 @@ const isGroup = computed(() => chat.value?.kind === 'group')
 const notice = computed(() => (chats.enabled ? chatNoticeKind(wa.bridge) : null))
 const relayOnline = computed(() => wa.relayRunning)
 const composerNote = computed(() => (notice.value !== null ? null : wa.linked ? null : 'Replies can be written once the bridge is linked.'))
-const attachLine = computed(() => attachText(chats.attaching))
+/** The line about a file attached in this chat; one attached in another chat says nothing here. */
+const attachLine = computed(() => {
+  const state = chats.attaching
+  return state.state !== 'idle' && state.chatId === props.chatId ? attachText(state) : null
+})
+/** What was typed here before and not sent; the composer starts with it. */
+const draft = chats.draftOf(props.chatId)
+
+function onDraft(text: string): void {
+  chats.setDraft(props.chatId, text)
+  // Typing something else: the line about the last file is old news.
+  chats.clearAttach(props.chatId)
+}
 
 /**
- * Replies shown with the window: all of them once the oldest message is here, else those after its first message
- * (with a minute to spare, so a reply whose stored copy is just above the window is not shown twice meanwhile).
+ * Replies shown with the window: all of them once the oldest message is here. Else a sent reply only after the
+ * window's first message (with a minute to spare, so one whose stored copy is just above the window is not shown twice
+ * meanwhile); a reply that waits, is being sent or was not sent always shows, whatever its time.
  */
 const shownOutgoing = computed(() => {
   const first = messages.value[0]
@@ -95,6 +109,9 @@ const shownOutgoing = computed(() => {
   }
   const from = chatMessageKey(first).sentAt + 60_000
   return outgoing.value.filter((row) => {
+    if (row.status !== 'sent') {
+      return true
+    }
     const at = Date.parse(row.sentAt ?? row.createdAt)
     return Number.isNaN(at) || at >= from
   })
@@ -147,8 +164,8 @@ function view(entry: TimelineEntry): BubbleView {
   }
   const reply = entry.outgoing
   const unconfirmed = reply.status === 'failed' && reply.error === 'unconfirmed'
-  const label = replyLabel(reply, relayOnline.value)
-  const meta = unconfirmed ? `${time}, not confirmed` : bubbleMeta(time, label)
+  const label = localReplyLabel(replyLabel(reply, relayOnline.value))
+  const meta = unconfirmed ? `${time}, not confirmed` : localBubbleMeta(time, label)
   const state = unconfirmed ? 'unconfirmed' : reply.status === 'cancelled' ? 'none' : reply.status === 'waiting' && relayOnline.value ? 'sending' : reply.status
   return {
     key: reply.id,
@@ -162,6 +179,18 @@ function view(entry: TimelineEntry): BubbleView {
     outgoingId: reply.id,
     label: `You, ${time}, ${unconfirmed ? 'not confirmed' : (label ?? '').toLowerCase()}`,
     grouped: false,
+  }
+}
+
+/** The user sees the chat: the window has the focus. Opening a chat, new messages and focus coming back read it then. */
+function readable(): boolean {
+  return typeof document === 'undefined' || document.hasFocus()
+}
+
+function markReadIfSeen(): void {
+  const current = chat.value
+  if (loaded.value && current !== null && !current.leftOut && readable()) {
+    void chats.markRead(current)
   }
 }
 
@@ -238,19 +267,41 @@ async function open(): Promise<void> {
   await nextTick()
   toBottom()
   heading.value?.focus()
-  void chats.markRead(page.chat)
+  markReadIfSeen()
 }
 
-/** The window again (the chats changed): from its first message on, so nothing above moves. */
+/** Reloads under way. */
+let reloading = 0
+/** Older messages were read while a reload was under way: that reload is overtaken and runs again after both. */
+let reloadAgain = false
+
+/**
+ * The window again (the chats changed): from its first message on, so nothing above moves, and never fewer messages
+ * than are loaded now.
+ */
 async function reload(): Promise<void> {
   if (!loaded.value || chat.value === null || chat.value.leftOut) {
     return
   }
   const mine = ++loads
+  reloading++
   const first = messages.value[0]
   const follow = nearBottom()
-  const page = await chats.page(props.chatId, { limit: Math.max(PAGE, messages.value.length + PAGE), from: first === undefined ? null : chatMessageKey(first) })
-  if (unmounted || mine !== loads) {
+  let page: ChatPage | null
+  try {
+    page = await chats.page(props.chatId, { limit: Math.max(PAGE, messages.value.length + PAGE), from: first === undefined ? null : chatMessageKey(first) })
+  } finally {
+    reloading--
+  }
+  if (unmounted) {
+    return
+  }
+  if (mine !== loads) {
+    // Overtaken: by a later reload (which brings what this one would), or by older messages, after which it runs again.
+    if (reloadAgain && !loadingOlder.value && reloading === 0) {
+      reloadAgain = false
+      void reload()
+    }
     return
   }
   if (page === null) {
@@ -262,9 +313,7 @@ async function reload(): Promise<void> {
   if (follow) {
     toBottom()
   }
-  if (typeof document !== 'undefined' && document.hasFocus() && !page.chat.leftOut) {
-    void chats.markRead(page.chat)
-  }
+  markReadIfSeen()
 }
 
 /** Older messages before the first one, keeping what is on screen where it is. */
@@ -274,7 +323,11 @@ async function loadOlder(): Promise<void> {
     return
   }
   loadingOlder.value = true
-  const mine = loads
+  // A reload under way when this lands would replace the window with one from before: it is overtaken (and runs again).
+  const mine = ++loads
+  if (reloading > 0) {
+    reloadAgain = true
+  }
   try {
     const page = await chats.page(props.chatId, { limit: PAGE, before: chatMessageKey(first) })
     if (unmounted || mine !== loads || page === null) {
@@ -293,6 +346,10 @@ async function loadOlder(): Promise<void> {
     }
   } finally {
     loadingOlder.value = false
+    if (reloadAgain && reloading === 0 && !unmounted) {
+      reloadAgain = false
+      void reload()
+    }
   }
 }
 
@@ -336,6 +393,7 @@ async function act(work: () => Promise<void>): Promise<void> {
 
 async function send(text: string): Promise<boolean> {
   sendError.value = null
+  chats.clearAttach(props.chatId)
   try {
     await chats.send(props.chatId, text)
     await nextTick()
@@ -433,9 +491,9 @@ function leaveOut(): Promise<void> {
       return
     }
     if (await chats.leaveChatOut(current)) {
+      // MailView moves the focus to the list once the chat is gone from the route.
       confirmingLeave.value = false
       await router.push(props.backTo)
-      emit('left')
     } else if (wa.error !== null) {
       throw new Error(wa.error)
     }
@@ -452,7 +510,8 @@ function onNotice(): void {
 
 // D makes a todo, K notes, E archives: only while the chat has the user's attention, not while they type.
 function shortcut(event: KeyboardEvent): void {
-  if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized) || chat.value === null || chat.value.leftOut || menu.value?.open === true || confirmingLeave.value || todoTitle.value !== null) {
+  // Not while mail is ticked in the list either: the bulk bar takes the keys then (as ReadingPane leaves them).
+  if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized) || selection.active || chat.value === null || chat.value.leftOut || menu.value?.open === true || confirmingLeave.value || todoTitle.value !== null) {
     return
   }
   const action = { d: startTodo, k: noted, e: archive }[event.key.toLowerCase()]
@@ -462,17 +521,20 @@ function shortcut(event: KeyboardEvent): void {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', shortcut))
+onMounted(() => {
+  window.addEventListener('keydown', shortcut)
+  window.addEventListener('focus', markReadIfSeen)
+})
 onBeforeUnmount(() => {
   unmounted = true
   window.removeEventListener('keydown', shortcut)
+  window.removeEventListener('focus', markReadIfSeen)
   if (poll !== null) {
     clearInterval(poll)
   }
   if (chats.openChatId === props.chatId) {
     chats.openChatId = null
   }
-  chats.clearAttach()
 })
 </script>
 
@@ -505,7 +567,7 @@ onBeforeUnmount(() => {
 
       <form v-if="todoTitle !== null" class="todo" @submit.prevent="addTodo" @keydown.esc.prevent="closeTodo">
         <label for="chat-todo" class="todo-label">Todo</label>
-        <input id="chat-todo" ref="todoField" v-model="todoTitle" :maxlength="TODO_TITLE_MAX_LENGTH" autocomplete="off" />
+        <input id="chat-todo" ref="todoField" v-model="todoTitle" :maxlength="TODO_TITLE_MAX_LENGTH" autocomplete="off" @keydown.enter="($event: KeyboardEvent) => composing($event) && $event.preventDefault()" />
         <button type="submit" class="button button-primary" :disabled="addingTodo || todoTitle.trim() === ''">Add</button>
         <button type="button" class="button button-quiet" @click="closeTodo">Cancel</button>
       </form>
@@ -522,7 +584,8 @@ onBeforeUnmount(() => {
 
       <ChatNotice v-if="notice" :kind="notice" :busy="wa.busy !== null" @act="onNotice" />
 
-      <div ref="scroller" class="timeline" tabindex="0" aria-label="Messages" @scroll.passive="onScroll">
+      <!-- A region, not a log: a log would read out the history as it loads; changes of a reply are said by the composer. -->
+      <div ref="scroller" class="timeline" role="region" tabindex="0" aria-label="Messages" @scroll.passive="onScroll">
         <button v-if="hasOlder" type="button" class="button button-quiet older" :disabled="loadingOlder" @click="loadOlder">
           {{ loadingOlder ? 'Loading older messages…' : 'Show older messages' }}
         </button>
@@ -554,6 +617,8 @@ onBeforeUnmount(() => {
         :attach-line="attachLine"
         :announcement="announcement"
         :error="sendError"
+        :draft="draft"
+        @update:draft="onDraft"
         @attach="chats.attach(chat)"
       />
     </template>
