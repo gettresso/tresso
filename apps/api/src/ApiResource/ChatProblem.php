@@ -23,6 +23,8 @@ use Symfony\Component\WebLink\Link;
  * - `result_final`: the reply has a result already, or the relay did not claim it; a result is never changed.
  * - `not_failed`: only a reply that failed can be tried again.
  * - `cancelled`: a reply with this id was cancelled or removed; it is never queued again.
+ * - `other_number`: a desktop linked to another WhatsApp number than the account's tried to relay an account that holds
+ *   chats; its chats would land in the wrong account and the waiting replies would go out from the wrong number.
  *
  * 413:
  *
@@ -75,6 +77,7 @@ final class ChatProblem extends \RuntimeException implements ProblemExceptionInt
     public const string NOT_FAILED = 'not_failed';
     public const string CANCELLED = 'cancelled';
     public const string TOO_LARGE = 'too_large';
+    public const string OTHER_NUMBER = 'other_number';
 
     private function __construct(private readonly string $reason, string $detail, private readonly int $status = 409)
     {
@@ -89,6 +92,11 @@ final class ChatProblem extends \RuntimeException implements ProblemExceptionInt
     public static function tooLarge(int $maxBytes): self
     {
         return new self(self::TOO_LARGE, \sprintf('The batch is larger than %d bytes; send fewer messages at once.', $maxBytes), 413);
+    }
+
+    public static function otherNumber(): self
+    {
+        return new self(self::OTHER_NUMBER, 'This desktop is linked to another WhatsApp number than this account holds.');
     }
 
     public static function notTheRelay(): self
