@@ -58,6 +58,20 @@ final readonly class ChatQueue
     /** How long a claimed reply may stay `sending` before it counts as unconfirmed. */
     public const string CLAIM_LEASE = 'PT5M';
 
+    /**
+     * The same for a reply that carries a file: the relay fetches it from the server, hands it to its shell and the bridge
+     * uploads it to WhatsApp (up to 100 MB), which takes far longer than a text. A lease in the sweep rather than the relay
+     * renewing its claim: a lease holds also when the relay crashed or lost its network halfway, which is exactly when a
+     * renewal would stop, and it needs no call that could itself fail while the file goes out.
+     */
+    public const string FILE_CLAIM_LEASE = 'PT30M';
+
+    /** How long a claim of this reply lasts before the sweep fails it as unconfirmed. */
+    public static function leaseOf(ChatOutgoing $outgoing): \DateInterval
+    {
+        return new \DateInterval(null === $outgoing->getFileObjectKey() ? self::CLAIM_LEASE : self::FILE_CLAIM_LEASE);
+    }
+
     public function __construct(
         private EntityManagerInterface $entityManager,
         private Connection $connection,
@@ -147,6 +161,15 @@ final readonly class ChatQueue
                 $outgoing = $this->fields->newOutgoing($id, $chat, trim($input->text), $now);
                 if (null !== $input->file) {
                     $upload = $this->uploads->findOneForChat($user, $chat, $input->file->uploadId);
+                    if (null !== $upload) {
+                        // Taken under its row lock, so the sweep of uploads nobody queued (which skips locked rows) cannot
+                        // remove it and its file between here and the commit.
+                        try {
+                            $this->entityManager->refresh($upload, LockMode::PESSIMISTIC_WRITE);
+                        } catch (EntityNotFoundException) {
+                            $upload = null;
+                        }
+                    }
                     if (null === $upload) {
                         throw new ValidationException(new ConstraintViolationList([
                             new ConstraintViolation('This file is not uploaded to this chat, or it waited too long. Upload it again.', null, [], null, 'file.uploadId', null),
@@ -190,7 +213,8 @@ final readonly class ChatQueue
      *
      * - A reply being sent takes the result of its claim.
      * - `sent: true` over `unconfirmed` of the same claim is taken: the reply did go out, and Try again would send it
-     *   twice.
+     *   twice. A definite `sent: false` of the same claim over `unconfirmed` is taken too: nothing went out, and the user
+     *   sees why instead of "check your phone". Neither sends anything: it is the claim's answer arriving late.
      * - A desktop that no longer relays the account may still say that a reply it claimed went out ($fromRelay false):
      *   `sent: true`, with its claim's token, from the device that claimed it; anything else is 409 `not_the_relay`.
      * - A result that changes nothing (the same result again, after its answer got lost) is answered as the first time;
@@ -217,8 +241,12 @@ final readonly class ChatQueue
             && ($fromRelay || (null !== $claimedBy && Uuid::isValid($deviceId) && $claimedBy->equals(Uuid::fromString($deviceId))));
 
         $status = $outgoing->getStatus();
-        $wentOutAfterAll = $sent && ChatOutgoingStatus::Failed === $status && ChatOutgoingError::Unconfirmed === $outgoing->getError();
-        if ($theClaim && ($fromRelay || $sent) && (ChatOutgoingStatus::Sending === $status || $wentOutAfterAll)) {
+        // The sweep (or the relay itself) said `unconfirmed`, and the claim's own outcome arrives after all: it is the
+        // answer, not a send. `sent: true` (it did go out: Try again would send it twice) and a definite `sent: false`
+        // (nothing went out: the user sees the real reason) both replace it; `unconfirmed` again changes nothing.
+        $lateOutcome = ChatOutgoingStatus::Failed === $status && ChatOutgoingError::Unconfirmed === $outgoing->getError()
+            && ($sent || ChatOutgoingError::Unconfirmed !== $result->error);
+        if ($theClaim && ($fromRelay || $sent) && (ChatOutgoingStatus::Sending === $status || $lateOutcome)) {
             if ($sent) {
                 // It went out: the file it carried is no longer needed here.
                 $this->collector->release([$outgoing->markSent($now)]);
@@ -256,12 +284,18 @@ final readonly class ChatQueue
     /**
      * The user's Try again: a reply that failed waits for the relay again.
      */
-    public function retry(User $user, mixed $outgoingId): ChatOutgoing
+    public function retry(User $user, mixed $outgoingId, \DateTimeImmutable $now): ChatOutgoing
     {
-        return $this->entityManager->wrapInTransaction(function () use ($user, $outgoingId): ChatOutgoing {
+        return $this->entityManager->wrapInTransaction(function () use ($user, $outgoingId, $now): ChatOutgoing {
             $outgoing = $this->lockedOwned($user, $outgoingId);
             if (ChatOutgoingStatus::Failed !== $outgoing->getStatus()) {
                 throw ChatProblem::notFailed();
+            }
+            // A reply that may have gone out whose claim still runs: its relay may still be sending it, and handing it out
+            // again now could send it twice. It waits until the claim's lease is over (its own answer may come meanwhile).
+            $claimedAt = $outgoing->getClaimedAt();
+            if (ChatOutgoingError::Unconfirmed === $outgoing->getError() && null !== $outgoing->getClaimToken() && null !== $claimedAt && $claimedAt->add(self::leaseOf($outgoing)) > $now) {
+                throw ChatProblem::stillSending();
             }
             $outgoing->retry();
             $this->entityManager->flush();

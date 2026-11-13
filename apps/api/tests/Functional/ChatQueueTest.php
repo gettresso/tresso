@@ -249,10 +249,18 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame($error, $this->decodedResponse()['error'] ?? null);
         $this->report($id, ['sent' => false, 'error' => $error]);
         self::assertResponseStatusCodeSame(200, 'The same result again.');
-        $this->report($id, ['sent' => 'unconfirmed' === $error ? false : true] + ('unconfirmed' === $error ? ['error' => 'refused'] : []));
+        // After `unconfirmed` only the claim's own answer is taken (see testTheSweepFailsAReplyWhoseSendCouldNotBeConfirmed).
+        $this->report($id, ['sent' => 'unconfirmed' === $error ? false : true] + ('unconfirmed' === $error ? ['error' => 'refused', 'claimToken' => 'another claim'] : []));
         self::assertResponseStatusCodeSame(409, 'Another result is refused.');
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(204, 'Nothing sends a failed reply again by itself.');
+        if ('unconfirmed' === $error) {
+            // Try again waits until the claim's lease is over: the relay may still be sending it.
+            $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$id.'/retry', [], $this->web);
+            self::assertResponseStatusCodeSame(409);
+            self::assertSame('still_sending', $this->decodedResponse()['code'] ?? null);
+            $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '6 minutes' WHERE id = :id", ['id' => $id]);
+        }
 
         $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$id.'/retry', [], $this->web);
         self::assertResponseStatusCodeSame(200);
@@ -332,13 +340,21 @@ final class ChatQueueTest extends DatabaseTestCase
         $this->report($fresh, ['sent' => true]);
         self::assertResponseStatusCodeSame(200, 'A reply within its lease is left alone.');
         self::assertSame(['offline' => 0, 'unconfirmed' => 0], $this->sweep());
-        $this->report($stuck, ['sent' => false, 'error' => 'refused']);
-        self::assertResponseStatusCodeSame(409, 'A late failure does not overwrite what the sweep said.');
         $this->report($stuck, ['sent' => true]);
         self::assertResponseStatusCodeSame(200, 'It went out after all: the truth wins, and Try again cannot send it twice.');
         self::assertSame('sent', $this->decodedResponse()['status'] ?? null);
         $this->report($stuck, ['sent' => true]);
         self::assertResponseStatusCodeSame(200);
+
+        // The claim's own definite failure, late, replaces `unconfirmed` too: nothing went out, and the user sees why.
+        $late = $this->claimedReply('Late');
+        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '6 minutes' WHERE id = :id", ['id' => $late]);
+        self::assertSame(['offline' => 0, 'unconfirmed' => 1], $this->sweep());
+        $this->report($late, ['sent' => false, 'error' => 'refused']);
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame(['failed', 'refused'], [$this->decodedResponse()['status'] ?? null, $this->decodedResponse()['error'] ?? null]);
+        $this->report($late, ['sent' => true]);
+        self::assertResponseStatusCodeSame(409, 'Then it is final.');
     }
 
     public function testCancelsAReplyThatWaitsOrFailed(): void
@@ -636,6 +652,8 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(403, 'Nor a script.');
         self::assertSame('failed', $this->connection()->fetchOne('SELECT status FROM chat_outgoing WHERE id = :id', ['id' => $failed]));
 
+        // Once the claim's lease is over (before, the relay may still be sending it).
+        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '6 minutes' WHERE id = :id", ['id' => $failed]);
         $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$failed.'/retry', [], $this->web);
         self::assertResponseStatusCodeSame(200, 'The user does, in our app.');
         self::assertSame('waiting', $this->decodedResponse()['status'] ?? null);
