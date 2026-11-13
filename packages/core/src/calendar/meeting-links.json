@@ -455,6 +455,139 @@
       "ownLink": false,
       "join": false,
       "problem": "invalid"
+    },
+    {
+      "name": "fragment with an at sign",
+      "link": "https://a.com#@b.com",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "query with an at sign",
+      "link": "https://a.com?@b.com",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "upper case host",
+      "link": "https://Meet.Google.COM/abc",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "exactly 2048 characters",
+      "link": "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "port before an at sign",
+      "link": "https://a.com:443@b.com",
+      "ownLink": false,
+      "join": false,
+      "problem": "credentials"
+    },
+    {
+      "name": "encoded slash before an at sign",
+      "link": "https://a.com%2f@b.com",
+      "ownLink": false,
+      "join": false,
+      "problem": "credentials"
+    },
+    {
+      "name": "percent escape in host",
+      "link": "https://exa%6dple.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "backslash in path",
+      "link": "https://a.com\\b/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "port 65536",
+      "link": "https://example.com:65536/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "https with one slash",
+      "link": "https:/a.com",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "vbscript",
+      "link": "vbscript:x",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "blob",
+      "link": "blob:https://a.com/x",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "Zoom app scheme",
+      "link": "zoommtg://zoom.us/join",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "tel",
+      "link": "tel:+31201234567",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "tab inside javascript",
+      "link": "java\tscript:alert(1)",
+      "ownLink": false,
+      "join": false,
+      "problem": "whitespace"
+    },
+    {
+      "name": "IPv4 with trailing dot",
+      "link": "https://127.0.0.1./",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "IPv4 mapped IPv6",
+      "link": "https://[::ffff:1.2.3.4]/",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "fullwidth digit in last label",
+      "link": "https://127.0.0.\uff11/",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "fullwidth x in hex last label",
+      "link": "https://1.0\uff587f/",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
     }
   ]
 }

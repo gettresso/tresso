@@ -211,11 +211,16 @@ export function inputFromEvent(event: SyncedCalendarEvent): EventInput {
 /**
  * The meeting a save keeps asking for: a link asked for and not made yet, pending or failed (the user wanted a link,
  * and asking again is idempotent), so an edit while it is made does not drop it. Not Zoom: the first version does not
- * ask for it this way.
+ * ask for it this way. Not a request that failed as `not_supported`: asking again would make the API refuse the
+ * whole save when the calendar no longer offers that meeting. The editor sets `conferenceProvider` from the meeting
+ * row whenever the calendar changes, so this is only the starting value.
  */
 function requestedProvider(event: SyncedCalendarEvent): ConferenceProvider | null {
   const request = event.conferenceRequest ?? null
   if (event.conference !== null || request === null) {
+    return null
+  }
+  if (request.status === 'failed' && request.reason === 'not_supported') {
     return null
   }
   return request.provider === 'meet' || request.provider === 'teams' ? request.provider : null
