@@ -4,6 +4,7 @@ import { SqliteMailStore } from '../store/sqlite'
 import { CopyClosingError } from '../store/mailStore'
 import { LOCAL_CHAT_ACCOUNT, LOCAL_CURSOR, LocalChatBackend, localChatId, queueLocalReply, removeLocalChats, retryLocalReply, setLocalChatState } from './localBackend'
 import {
+  BridgeFileTooLarge,
   ChatRelay,
   ChatRelayRetryLater,
   ChatRelayStopped,
@@ -1282,5 +1283,35 @@ describe('ChatRelay with files', () => {
       expect(bridge.sent, failure).toEqual([])
       expect(reported, failure).toEqual([{ sent: false, error: 'file_unavailable' }])
     }
+  })
+
+  it('reports a file the shell will not read as too large, and never asks for it again', async () => {
+    const bridge = new FakeBridge()
+    bridge.offer('HUGE', 'x')
+    bridge.file = async () => Promise.reject(new BridgeFileTooLarge())
+    const failed: [string, string][] = []
+    const backend = backendWith({
+      claimMedia: requests(request('HUGE')),
+      failMedia: async (media, error) => {
+        failed.push([media.waId, error])
+      },
+    })
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: fakeScheduler().schedule })
+
+    await relay.pollNow()
+
+    expect(failed).toEqual([['HUGE', 'too_large']])
+  })
+
+  it('refuses a file above what the shell reads, whatever the server allows', async () => {
+    const bridge = new FakeBridge()
+    bridge.offer('BIG', 'x')
+    bridge.downloads.BIG = { ok: true, file: { path: '/media/BIG.bin', sha256: 'a', size: 101 * 1024 * 1024, verified: true } }
+    const failed: string[] = []
+    const backend = backendWith({ claimMedia: requests(request('BIG', { size: null, maxBytes: 200 * 1024 * 1024 })), failMedia: async (_media, error) => void failed.push(error) })
+
+    await new ChatRelay({ now: () => NOW, bridge, backend, schedule: fakeScheduler().schedule }).pollNow()
+
+    expect(failed).toEqual(['too_large'])
   })
 })

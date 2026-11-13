@@ -98,6 +98,9 @@ export class ChatRelayOtherNumber extends ChatRelayStopped {
   }
 }
 
+/** Uploads of one file that may get no answer before its request ends as `unavailable`. */
+export const RELAY_MEDIA_MAX_TRIES = 3
+
 /** Problems the backend saw and went past; counts only, no content (ServerChatBackend.problems). */
 export type ServerChatProblem = 'row_refused' | 'result_refused'
 
@@ -188,6 +191,8 @@ export class ServerChatBackend implements ChatBackend {
   private readonly leftOut = new Set<string>()
   /** Messages answered `stored` by an `ingest` that then failed: its repeat counts them as stored, not known. */
   private storedBefore = new Set<string>()
+  /** Uploads of a file that got no answer (no network, a proxy that cut the connection, a 5xx), by message. */
+  private readonly uploadTries = new Map<string, number>()
   /** What the backend went past, by kind. */
   readonly problems: Record<ServerChatProblem, number> = { row_refused: 0, result_refused: 0 }
 
@@ -346,13 +351,25 @@ export class ServerChatBackend implements ChatBackend {
    * Uploads a file that was asked for. The server refusing it ends the request, so the user sees why: 413 as
    * `too_large`, 422 (what arrived is not what was sent) as `mismatch`. A message that is gone (404) or a file nobody
    * asks for any more (409 `not_requested`) is passed over. Anything else rejects as the relay's other calls do; the
-   * request is handed out again later.
+   * request is handed out again later, and after RELAY_MEDIA_MAX_TRIES uploads without an answer it ends as
+   * `unavailable`.
    */
   async deliverMedia(request: MediaRequest, content: Blob, sha256: string): Promise<void> {
     try {
       await this.api.uploadMedia(this.accountId, request.messageId, { deviceId: this.deviceId, sha256, body: content })
+      this.uploadTries.delete(request.messageId)
     } catch (error) {
       const failure = chatApiFailure(error)
+      if (failure === null || failure.status === 408 || failure.status >= 500) {
+        // No answer: tried again with the next claim, but not for ever (a proxy that cuts large bodies would cut it
+        // every time). After RELAY_MEDIA_MAX_TRIES the request ends, and the user may ask again.
+        const tries = (this.uploadTries.get(request.messageId) ?? 0) + 1
+        if (tries >= RELAY_MEDIA_MAX_TRIES) {
+          this.uploadTries.delete(request.messageId)
+          return this.failMedia(request, 'unavailable')
+        }
+        this.uploadTries.set(request.messageId, tries)
+      }
       if (failure?.status === 413) {
         return this.failMedia(request, 'too_large')
       }

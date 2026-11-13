@@ -1,4 +1,5 @@
 import { CopyClosingError } from '../store/mailStore'
+import { CHAT_MAX_FILE_BYTES } from './api'
 import { canonicalChatJid, chatKindOf, importable, importableChat, phoneLabel } from './format'
 import type { BridgeRow, ChatKind, ChatMedia, ChatMediaError, ChatMediaKind, ChatOutgoingError, ChatSender } from './types'
 
@@ -89,7 +90,7 @@ export interface ChatBridge {
    * itself (the relay tries again later).
    */
   download(chatJid: string, waId: string): Promise<BridgeDownload>
-  /** The content of a file `download` gave. */
+  /** The content of a file `download` gave; rejects with BridgeFileTooLarge above CHAT_MAX_FILE_BYTES. */
   file(path: string): Promise<Blob>
   /**
    * Hands content to the shell to send (a file a reply carries): the shell keeps it in a folder of its own under `name`
@@ -228,6 +229,14 @@ export interface ChatBackend {
   deliverMedia(request: MediaRequest, content: Blob, sha256: string): Promise<void>
   /** Says why a file that was asked for could not be brought. */
   failMedia(request: MediaRequest, error: ChatMediaError): Promise<void>
+}
+
+/** The shell will not read a file this large (above CHAT_MAX_FILE_BYTES): it is reported `too_large`. */
+export class BridgeFileTooLarge extends Error {
+  constructor() {
+    super('The file is larger than the shell reads.')
+    this.name = 'BridgeFileTooLarge'
+  }
 }
 
 /** The relay must stop: another device relays now, or the chats were removed. */
@@ -777,11 +786,22 @@ export class ChatRelay {
         await backend.failMedia(request, 'unverified')
         continue
       }
-      if (file.size > request.maxBytes) {
+      if (file.size > Math.min(request.maxBytes, CHAT_MAX_FILE_BYTES)) {
         await backend.failMedia(request, 'too_large')
         continue
       }
-      await backend.deliverMedia(request, await bridge.file(file.path), file.sha256)
+      let content: Blob
+      try {
+        content = await bridge.file(file.path)
+      } catch (error) {
+        if (error instanceof BridgeFileTooLarge) {
+          // Never handed out again for a file the shell will not read.
+          await backend.failMedia(request, 'too_large')
+          continue
+        }
+        throw error
+      }
+      await backend.deliverMedia(request, content, file.sha256)
     }
   }
 
