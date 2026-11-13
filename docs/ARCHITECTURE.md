@@ -1644,14 +1644,17 @@ messages (`MailStore.chatPage`): the newest first, older ones as the list reache
 its first message when the copy changes. Bubbles follow core's `timeline` (a reply the bridge stored too shows once),
 with day rows, group senders in their colour, and files as their kind and size only: the phone downloads nothing and
 says to open the file on the Mac. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
-made; it shows as waiting at once (held in memory, not in the copy, so a closed app leaves no reply the server never
-got), the server's answer is stored, and a refusal takes it back and puts the text back in the box. A request without
-an answer may have been queued: the same text sent again within 9 minutes goes under the same id, which the server
-answers with the reply it has. A long press cancels a waiting reply or deletes one that was not sent (after a
+made by the server's clock (`Session.serverNow`, so a phone whose clock is off is not refused); it shows as waiting at
+once (held in memory, not in the copy, so a closed app leaves no reply the server never got), the server's answer is
+stored, and a refusal takes it back and puts the text back in the box. A request without an answer, a 408 or a 5xx may
+have been queued: the box says so, and the same text sent again in that chat within 9 minutes goes under the same id,
+which the server answers with the reply it has. That id is kept in the copy's chat values with a hash of the text (not
+the text), so it is reused after the app was closed too, and forgotten once the delta brings that reply. A long press cancels a waiting reply or deletes one that was not sent (after a
 question); a tap on one that was not sent tries it again; one the Mac could not confirm (`unconfirmed`) is sent again
 only by its own Try again. Nothing resends by itself. Opening a chat while the app is in front reads it in Tresso
 through its last message (in the copy first, then `PATCH /api/v1/chats/{id}`; the copy goes back when the server does
-not take it). A banner says when the relaying Mac is offline (`relayOnline`), WhatsApp is not linked or the bridge
+not take it, and that read is not asked again for the same last message until the chat is looked at again, and never
+before the server's `Retry-After`). A banner says when the relaying Mac is offline (`relayOnline`), WhatsApp is not linked or the bridge
 does not run, from the chat account's row. Drafts of replies stay in memory per chat while the app runs. Nothing of a
 chat is logged.
 
@@ -3355,14 +3358,18 @@ chat's JID and WhatsApp id, so it never needs either readable.
   with the change number update and with the key locks of `UserKeys`, and not with the KEY SHARE of an insert that
   refers to the user. Claims, imports, cancels and the sweep of one user therefore take turns (tested on two real
   connections); the sweep skips an owner whose row is busy.
-- **Push.** With the account's `notify` on (Notify me, off by default), a relay batch hands each chat's newest incoming
-  message it stored to `App\Chat\ChatNotifier`, never for a batch with `firstImport`, a message of the user's own or
-  one older than 15 minutes. After the commit and 10 seconds later (`NotifyChatMessage` on the `push` queue) it decides:
-  nothing when a newer incoming message of the chat was stored meanwhile (that one notifies, so a burst notifies once),
-  when the chat was read through it on another device, was left out, or Notify me went off. Then one push to the phone
-  only (kind `whatsapp`, Android channel `whatsapp`, silent in quiet hours and busy events, keyed `whatsapp:{message}`
-  so a repeat never notifies twice): title `WhatsApp`, body the chat's name opened from its seal (`New WhatsApp
-  message` for a chat without one), path `/chats/{id}`. The text, a sender and a number never leave in a push. A failed
+- **Push.** With the account's `notify` on (Notify me, off by default; no client sets it on the server yet), a relay
+  batch hands each chat's newest incoming message it stored to `App\Chat\ChatNotifier`, never for a batch the server
+  honoured as part of the first import, a message of the user's own or one older than 15 minutes. After the commit and
+  10 seconds later (`NotifyChatMessage` on the `push` queue) it decides: nothing for a message sent before the chat's
+  last push (that push named the chat), when the chat was read through it on another device, was left out, or Notify me
+  went off; nothing when a newer incoming message of the chat (by time, then id) was stored meanwhile and the oldest
+  message the chat was not pushed for is younger than a minute (the newer one notifies, so a burst notifies once and a
+  busy chat at least once a minute). The last push is read from the deliveries of the chat's messages, so no column is
+  needed. Then one push to the phone only (kind `whatsapp`, Android channel `whatsapp`, silent in quiet hours and busy
+  events, keyed `whatsapp:{message}` so a repeat never notifies twice): title `WhatsApp`, body the chat's name opened
+  from its seal, or `New WhatsApp message` for a chat without a name or named by a phone number (the bridge names an
+  unsaved contact by its number), path `/chats/{id}`. The text, a sender and a number never leave in a push. A failed
   delivery is not tried again by a sweep (a chat push is stale within minutes).
 - **Delta.** Every write is a change in `chatAccounts`, `chats`, `chatMessages` and `chatOutgoing`; removals (a
   cancelled reply, the messages and replies of a chat left out) are tombstones. A relay batch gets a change number per
