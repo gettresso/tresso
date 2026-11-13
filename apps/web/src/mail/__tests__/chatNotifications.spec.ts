@@ -18,7 +18,7 @@ function summary(id: string, newest: Partial<SyncedChatMessage> | null, extra: P
   }
 }
 
-const base = { seen: new Map<string, string | null>(), now: NOW, notify: true, firstImport: false, focusedChatId: null }
+const base = { seen: new Map<string, string | null>(), now: NOW, notify: true, historyThrough: null, focusedChatId: null }
 
 describe('chat notifications', () => {
   it('notifies a fresh incoming message with the chat name and the start of the text, linking to the chat', () => {
@@ -57,10 +57,13 @@ describe('chat notifications', () => {
     }
   })
 
-  it('says nothing during the first import or for the focused chat, but notes what it saw', () => {
-    const first = chatNotifications({ ...base, summaries: [summary('wa:a', {})], firstImport: true })
+  it('says nothing for history being read in or for the focused chat, but notes what it saw', () => {
+    const first = chatNotifications({ ...base, summaries: [summary('wa:a', {})], historyThrough: Number.POSITIVE_INFINITY })
     expect(first.notifications).toEqual([])
     expect(first.seen.get('wa:a')).toBe('wa:a:m')
+    // A re-read after a chat was taken back in: history up to the reset says nothing, what came in since does.
+    expect(chatNotifications({ ...base, summaries: [summary('wa:a', {})], historyThrough: NOW - 30_000 }).notifications).toEqual([])
+    expect(chatNotifications({ ...base, summaries: [summary('wa:a', {})], historyThrough: NOW - 90_000 }).notifications).toHaveLength(1)
     expect(chatNotifications({ ...base, summaries: [summary('wa:a', {})], focusedChatId: 'wa:a' }).notifications).toEqual([])
     // Another chat focused: this one notifies.
     expect(chatNotifications({ ...base, summaries: [summary('wa:a', {})], focusedChatId: 'wa:b' }).notifications).toHaveLength(1)

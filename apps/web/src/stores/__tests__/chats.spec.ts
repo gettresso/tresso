@@ -193,14 +193,18 @@ describe('the chats store', () => {
     const bram = chats.summaries[0]!.chat
     await chats.attach(bram)
     expect(shell.sent).toEqual([{ recipient: DIRECT, text: '', mediaPath: '/Users/kim/Documents/plan.pdf' }])
-    expect(chats.attaching).toEqual({ state: 'sent', name: 'plan.pdf' })
+    expect(chats.attaching).toEqual({ state: 'sent', chatId: DIRECT_ID, name: 'plan.pdf' })
     expect((await store.chat(DIRECT_ID))!.outgoing).toEqual([expect.objectContaining({ status: 'sent', text: 'File: plan.pdf' })])
 
     for (const error of ['bridge_stopped', 'not_linked', 'refused', 'unconfirmed'] as const) {
       shell.sendAnswer = () => Promise.resolve({ ok: false, message: error })
       await chats.attach(bram)
-      expect(chats.attaching).toEqual({ state: 'failed', name: 'plan.pdf', error })
+      expect(chats.attaching).toEqual({ state: 'failed', chatId: DIRECT_ID, name: 'plan.pdf', error })
     }
+    // Over what Attach sends: the shell refuses before the bridge reads it, said as such.
+    shell.sendAnswer = () => Promise.reject('too_large')
+    await chats.attach(bram)
+    expect(chats.attaching).toEqual({ state: 'failed', chatId: DIRECT_ID, name: 'plan.pdf', error: 'too_large' })
     expect((await store.chat(DIRECT_ID))!.outgoing).toHaveLength(1)
 
     // Cancelled in the picker: nothing happens.
@@ -208,7 +212,7 @@ describe('the chats store', () => {
     chats.clearAttach()
     await chats.attach(bram)
     expect(chats.attaching).toEqual({ state: 'idle' })
-    expect(shell.sent).toHaveLength(5)
+    expect(shell.sent).toHaveLength(6)
   })
 
   it('leaves a chat out and takes it back in through the relay store', async () => {
@@ -271,18 +275,70 @@ describe('the chats store', () => {
       await chats.refresh()
       expect(fakes.shown).toEqual([])
 
+      // A re-read after a chat was taken back in: what came in after it began is news.
+      relay.liveFrom = NOW - 60_000
+      await arrive('A7', 0)
+      await chats.refresh()
+      expect(fakes.shown).toHaveLength(1)
+      fakes.shown.length = 0
+
       relay.importState = 'done'
       vi.spyOn(document, 'hasFocus').mockReturnValue(true)
       chats.openChatId = DIRECT_ID
-      await arrive('A5', 0)
+      await arrive('A5', 1)
       await chats.refresh()
       expect(fakes.shown).toEqual([])
 
       // Focused, but on another chat: it notifies.
       chats.openChatId = GROUP_ID
-      await arrive('A6', 0)
+      await arrive('A6', 2)
       await chats.refresh()
       expect(fakes.shown).toHaveLength(1)
     })
+  })
+
+  it('keeps drafts per chat in memory, and drops them for a chat that went and at sign-out', async () => {
+    const chats = await ready()
+    chats.setDraft(DIRECT_ID, 'Half a thought')
+    chats.setDraft(GROUP_ID, 'For the family')
+    expect(chats.draftOf(DIRECT_ID)).toBe('Half a thought')
+    chats.setDraft(GROUP_ID, '')
+    expect(chats.draftOf(GROUP_ID)).toBe('')
+
+    // Removed from the copy (groups off, disconnect): its draft goes at the next read.
+    chats.setDraft(GROUP_ID, 'For the family')
+    await store.removeChat(GROUP_ID)
+    await chats.refresh()
+    expect(chats.draftOf(GROUP_ID)).toBe('')
+    expect(chats.draftOf(DIRECT_ID)).toBe('Half a thought')
+
+    // Signed out: nothing typed stays.
+    relay.connected = false
+    relay.config = null
+    await chats.refresh()
+    expect(chats.draftOf(DIRECT_ID)).toBe('')
+  })
+
+  it('reads the chats at most once a second while the store is read in', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    vi.setSystemTime(NOW)
+    const chats = await ready()
+    const reads = vi.spyOn(store, 'chats')
+    relay.importState = 'reading'
+    for (let page = 0; page < 5; page++) {
+      relay.revision++
+      await vi.advanceTimersByTimeAsync(100)
+    }
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(reads.mock.calls.length).toBeLessThanOrEqual(2)
+    expect(reads.mock.calls.length).toBeGreaterThanOrEqual(1)
+
+    // Once done, each change is read at once.
+    relay.importState = 'done'
+    reads.mockClear()
+    relay.revision++
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads).toHaveBeenCalledTimes(1)
+    expect(chats.enabled).toBe(true)
   })
 })

@@ -108,12 +108,58 @@ function chatLinkTo(id: string): RouteLocationRaw {
   return inWhatsApp.value ? { name: 'whatsapp-chat', params: { chatId: id } } : { name: 'unified-chat', params: { chatId: id } }
 }
 
-/** A chat was left out: the pane went back to the list, and focus goes to the list's first row (or the list). */
-async function chatLeft(): Promise<void> {
-  await nextTick()
+/** The row links of the list as on screen now, by their address. */
+function rowLinks(): HTMLAnchorElement[] {
   const element = list.value?.$el as HTMLElement | undefined
-  element?.querySelector<HTMLElement>('.scroll a')?.focus()
+  return [...(element?.querySelectorAll<HTMLAnchorElement>('.scroll a.link') ?? [])]
 }
+
+/**
+ * The rows after the open chat, by address, as last on screen while it was open: when the chat goes (Leave out, Noted,
+ * Archive) its row may already be gone from the list by the time the route changes.
+ */
+let followers: string[] = []
+watch(
+  [chatId, chatRows, conversations],
+  () => {
+    const links = rowLinks()
+    const open = links.findIndex((link) => link.getAttribute('aria-current') === 'true')
+    if (chatId.value !== null && open !== -1) {
+      followers = links.slice(open + 1).map((link) => link.getAttribute('href') ?? '')
+    }
+  },
+  { flush: 'post' },
+)
+
+/**
+ * A chat closed by leaving the screen to the list (Leave out, Noted, Archive, Back): focus goes to the row that came
+ * after the one that was open, else the list itself, so it is never lost with the pane.
+ */
+watch(chatId, async (now, before) => {
+  if (before === null || now !== null) {
+    return
+  }
+  const after = followers
+  followers = []
+  await nextTick()
+  const shown = rowLinks()
+  const target = after.map((href) => shown.find((link) => link.getAttribute('href') === href)).find((link) => link !== undefined)
+  if (target !== undefined) {
+    target.focus()
+    return
+  }
+  const scroll = (list.value?.$el as HTMLElement | undefined)?.querySelector<HTMLElement>('.scroll')
+  if (scroll) {
+    scroll.tabIndex = -1
+    scroll.focus()
+  }
+})
+
+// A selection belongs to the mail on screen: another channel tab shows other rows, so it goes.
+watch(
+  () => chats.channel,
+  () => selection.clear(),
+)
 
 const selection = useSelectionStore()
 // A selection belongs to the list it was made in.
@@ -196,7 +242,7 @@ watch(
         </template>
       </ConversationList>
 
-      <ChatPane v-if="chatId" :key="chatId" class="reading-pane" :chat-id="chatId" :back-to="backTo" @left="chatLeft" />
+      <ChatPane v-if="chatId" :key="chatId" class="reading-pane" :chat-id="chatId" :back-to="backTo" />
       <ReadingPane v-else-if="threadId" :key="threadId" class="reading-pane" :thread-id="threadId" :back-to="backTo" />
       <div v-else class="reading-pane placeholder">
         <MiniAgenda />

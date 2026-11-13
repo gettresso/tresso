@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { CHAT_REPLY_MAX, replyText } from '@tresso/core'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 import { COMPOSER_NOTE, COUNTER_FROM } from '@/components/chat/chatTexts'
+import { composing } from '@/components/chat/composition'
 
 /**
  * The reply box (the WhatsAppInbox board's composer): Attach a file, a text field that grows to six lines, Send with
@@ -27,12 +28,14 @@ const props = defineProps<{
   error?: string | null
   /** Labels the field: `Reply to <chat>`. */
   label: string
+  /** What was typed into this chat before and not sent (chats.draftOf); the field starts with it. */
+  draft?: string
 }>()
-const emit = defineEmits<{ attach: [] }>()
+const emit = defineEmits<{ attach: []; 'update:draft': [text: string] }>()
 
 const MAX_LINES = 6
 const LINE_HEIGHT = 22
-const text = ref('')
+const text = ref(props.draft ?? '')
 const sending = ref(false)
 const field = ref<HTMLTextAreaElement | null>(null)
 
@@ -53,7 +56,11 @@ function grow(): void {
   const padding = 16
   element.style.height = `${Math.min(element.scrollHeight, MAX_LINES * LINE_HEIGHT + padding)}px`
 }
-watch(text, () => void nextTick(grow))
+watch(text, (value) => {
+  emit('update:draft', value)
+  void nextTick(grow)
+})
+onMounted(() => void nextTick(grow))
 
 async function submit(): Promise<void> {
   if (!canSend.value) {
@@ -72,7 +79,7 @@ async function submit(): Promise<void> {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !event.altKey && !event.metaKey && !event.ctrlKey) {
+  if (event.key === 'Enter' && !event.shiftKey && !composing(event) && !event.altKey && !event.metaKey && !event.ctrlKey) {
     event.preventDefault()
     void submit()
   }
@@ -105,7 +112,7 @@ defineExpose({ focus: () => field.value?.focus() })
     </div>
     <span v-if="showCounter" id="chat-composer-counter" class="counter" :class="{ over: tooLong }">{{ counter }}</span>
     <span v-if="checked.ok === false && checked.problem === 'control'" class="problem">The reply cannot contain control characters.</span>
-    <span v-if="attachLine" class="attach-line">{{ attachLine }}</span>
+    <span class="attach-line" role="status">{{ attachLine ?? '' }}</span>
     <span v-if="error" class="problem" role="alert">{{ error }}</span>
     <span id="chat-composer-note" class="note">{{ disabled && note ? note : COMPOSER_NOTE }}</span>
     <span class="visually-hidden" role="status">{{ announcement }}</span>
@@ -174,6 +181,9 @@ defineExpose({ focus: () => field.value?.focus() })
 .send {
   flex: none;
   height: 40px;
+}
+.attach-line:empty {
+  display: none;
 }
 .counter,
 .note,

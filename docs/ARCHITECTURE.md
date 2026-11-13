@@ -1851,8 +1851,13 @@ and the phone keeps the Mac under Linked devices until the user removes it there
 waiting for it and removes the config (an expired session keeps it); the shell stops the bridge. The store keeps the
 bridge's state and Notify me on the `wa:account` row (`setLocalChatAccount`), and offers the chat screens `pollNow`,
 `leaveOut`, `takeBackIn` (Settings lists the chats left out: the config first, then with the relay stopped the row is
-marked in again and the cursor reset, so the chat's messages come back read, as a first import), a `revision` raised
-whenever the relay stored something or the chats changed through it, and `senderNames`: the names its lookups found by
+marked in again and the cursor reset with the moment of the reset (`resetLocalCursor(store, liveFrom)`, kept as the
+chat value `history-through` until the re-read ends): rows sent before it come back read, rows after it arrive unread
+and notify as live ones; turning groups on again does the same. This re-read is local mode only: against the server a
+first-import batch may never follow a live one, so there a chat taken back in must be read with live batches and its
+history marked read by a chat state change. A `revision` is raised whenever the relay stored something, reported a
+reply's result, or the chats changed through it (the chats are read again at most once a second while the store is
+read in), and `senderNames`: the names its lookups found by
 sender id, in memory only, with `lookUpNames` for the senders of messages stored before their name was known (they show
 the name once it is; the stored rows are not rewritten).
 
@@ -1872,8 +1877,13 @@ again. Files: Download asks the shell for Tresso's own checked copy (a mismatch,
 file too large are said and nothing opens), Open opens only that copy, Attach takes a file from the native picker and
 sends it at once; only a file that went out is recorded (`recordLocalAttachment`, a sent reply `File: <name>`), so Try
 again never sends a file as text. Desktop notifications (`apps/web/src/mail/chatNotifications.ts`) come only with
-Notify me on: one per chat per read, the chat's name and the start of its newest message (D5: local only), never during
-the first import, never for the chat open in a focused window; a click opens `/chats/<id>`.
+Notify me on: one per chat per read, the chat's name and the start of its newest message (D5: local only), never for
+history being read in, never for the chat open in a focused window; a click opens `/chats/<id>`. Replies on this Mac say
+`waiting for the bridge` and `Not sent, click to retry` (core's labels keep the board's words for other devices). What
+was typed into a chat is kept per chat in memory until it is sent, the chat goes or the session ends. A file the
+desktop sent matches the bridge's later copy of it (a history sync stores the own message with no text, a made-up name
+and the kind the bridge sent it as) instead of showing twice; the bridge stores nothing when it sends. Attach refuses a
+file over 2 GB in the shell, before the bridge reads it whole into memory.
 
 `ServerChatBackend` (`packages/core/src/chat/serverBackend.ts`) is the backend for "All my devices", over `ChatApi`
 (`packages/core/src/chat/api.ts`: the request and answer types of the chat endpoints of 3.17, one method per endpoint;

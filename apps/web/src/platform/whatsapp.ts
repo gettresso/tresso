@@ -129,7 +129,7 @@ export function whatsAppShell(shell: WhatsAppShell = tauriShell) {
     /** At most 500 rows after `afterRowid`; rejects with `busy` while the bridge writes (skip the round). */
     read: (folder: string, afterRowid: number, limit: number) => shell.invoke<BridgeRows>('whatsapp_read', { folder, afterRowid, limit }),
     names: (folder: string, ids: string[]) => shell.invoke<Record<string, SenderName>>('whatsapp_names', { folder, ids }),
-    /** `mediaPath` must be a file `chooseFile` returned. */
+    /** `mediaPath` must be a file `chooseFile` returned, of at most 2 GB; a larger one rejects with `too_large`. */
     send: (recipient: string, text: string, mediaPath: string | null = null) => shell.invoke<SendResult>('whatsapp_send', { recipient, text, mediaPath }),
     download: (folder: string, messageId: string, chatJid: string) => shell.invoke<DownloadedFile>('whatsapp_download', { folder, messageId, chatJid }),
     /** Opens a file `download` returned with its default app. */

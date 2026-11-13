@@ -14,8 +14,12 @@ export interface ChatNotificationRound {
   now: number
   /** The user's Notify me (off by default). */
   notify: boolean
-  /** The first import runs: history arriving is no news. */
-  firstImport: boolean
+  /**
+   * While the store is read in as history: messages sent up to this moment (epoch ms) are no news. Infinity during the
+   * first import after connecting (all of it is history), the moment of the reset during a re-read (a chat taken back
+   * in, groups turned on: what came in since is news), null once reading in ended.
+   */
+  historyThrough: number | null
   /** The chat open in a window that has the focus; it notifies nothing (the user sees it come in). */
   focusedChatId: string | null
   /** A message with its sender's name as this session knows it (a name learned after it was stored). */
@@ -41,8 +45,8 @@ function cut(text: string, max: number): string {
 /**
  * The notifications of one round, at most one per chat, and what the round saw. A chat notifies when its newest message
  * is new since the last round, from someone else, unread, younger than FRESHNESS_MS, and the chat is not the one the
- * user looks at. Nothing while Notify me is off or during the first import (the round still notes what it saw, so
- * turning it on later does not announce old messages). The text is the start of the preview (D5: the chat name and the
+ * user looks at. Nothing while Notify me is off, nor for history being read in (`historyThrough`); the round still notes
+ * what it saw, so turning it on later does not announce old messages. The text is the start of the preview (D5: the chat name and the
  * start of the text on the desktop; a phone push says the name only).
  */
 export function chatNotifications(round: ChatNotificationRound): { notifications: MailNotification[]; seen: Map<string, string | null> } {
@@ -54,7 +58,6 @@ export function chatNotifications(round: ChatNotificationRound): { notifications
     const before = round.seen.get(summary.chat.id)
     if (
       !round.notify ||
-      round.firstImport ||
       newest === null ||
       before === newest.id ||
       newest.fromMe ||
@@ -64,7 +67,7 @@ export function chatNotifications(round: ChatNotificationRound): { notifications
       continue
     }
     const sentAt = Date.parse(newest.sentAt)
-    if (Number.isNaN(sentAt) || round.now - sentAt > FRESHNESS_MS) {
+    if (Number.isNaN(sentAt) || round.now - sentAt > FRESHNESS_MS || (round.historyThrough !== null && sentAt <= round.historyThrough)) {
       continue
     }
     const message = round.named?.(newest) ?? newest

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive, shallowReactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
-import { ChatRelayImportStuck, LOCAL_CHAT_ACCOUNT, LOCAL_CURSOR, SqliteMailStore, localChatId, queueLocalReply, type BridgeRow } from '@tresso/core'
+import { ChatRelayImportStuck, LOCAL_CHAT_ACCOUNT, LOCAL_CURSOR, LOCAL_HISTORY_THROUGH, SqliteMailStore, localChatId, queueLocalReply, type BridgeRow } from '@tresso/core'
 import { memorySql } from '@tresso/core/testing/sql'
 import type { BridgeInspection, BridgeRows, BridgeState, SendResult, WhatsAppCommands, WhatsAppConfig } from '@/platform/whatsapp'
 import type { SessionEnd } from '@/stores/auth'
@@ -743,8 +743,12 @@ describe('the WhatsApp relay store', () => {
     expect(await store.chat(localChatId(DIRECT))).toMatchObject({ chat: { leftOut: true }, messages: [] })
     const before = wa.revision
 
+    const takenAt = Date.now()
     expect(await wa.takeBackIn(DIRECT)).toBe(true)
     expect(shell.saved[shell.saved.length - 1]!.leftOut).toEqual([])
+    // Rows sent from now on are live: unread, and notified.
+    expect(wa.liveFrom).toBe(takenAt)
+    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(takenAt))
     await pass(3_000)
     const back = (await store.chats()).find(({ chat }) => chat.jid === DIRECT)
     expect(back).toMatchObject({ unread: 0, chat: { leftOut: false } })
@@ -769,5 +773,30 @@ describe('the WhatsApp relay store', () => {
     await wa.lookUpNames(['31611111111'])
     expect(shell.calls.filter((call) => call === 'names').length).toBe(asked)
     expect(errors).toEqual([])
+  })
+
+  it('raises the revision when a reply was reported, so the lists move with it', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.add('A1', DIRECT, 10)
+    shell.emit(LINKED)
+    await pass(3_000)
+    await queueLocalReply(store, localChatId(DIRECT), 'On my way', '0193a000-0000-7000-8000-0000000000a1', Date.now())
+    const before = wa.revision
+    await wa.pollNow()
+    await pass()
+    expect(shell.sent).toEqual([{ recipient: DIRECT, text: 'On my way' }])
+    expect(wa.revision).toBeGreaterThan(before)
+  })
+
+  it('turning groups on again reads the store with only rows from before as history', async () => {
+    const wa = await signedIn(connectedConfig({ includeGroups: false }))
+    mail.synced = true
+    shell.emit(LINKED)
+    await pass(3_000)
+    const at = Date.now()
+    expect(await wa.setIncludeGroups(true)).toBe(true)
+    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(at))
+    expect(wa.liveFrom).toBe(at)
   })
 })
