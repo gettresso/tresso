@@ -258,9 +258,12 @@ export interface MenuShell {
  * titles follow the state, through the one command `menu_state`. The command goes once per change of what it says:
  * changes in one tick go together, and a change that ends where it began (a conversation reloaded by a sync, the focus
  * moving from one field to the next) sends nothing. A state counts as sent once the shell took it; one it refused is
- * sent once more, and after a second refusal the next change sends the whole state again. Returns the function that
- * stops it.
+ * sent once more at once, and after a second refusal once more after {@link MENU_STATE_RETRY_MS} (so the last state of a
+ * quiet moment is not lost); after that, the next change sends the whole state again. Returns the function that stops it.
  */
+/** How long a twice refused menu state waits before its last attempt. */
+export const MENU_STATE_RETRY_MS = 3_000
+
 export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, onError: (error: unknown) => void = (error) => console.error('A menu action failed', error)): Promise<() => void> {
   const unlisten = await shell.listen(MENU_EVENT, ({ payload }) => {
     if (isMenuAction(payload)) {
@@ -271,7 +274,16 @@ export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, on
   let taken: string | null = null
   /** The state on its way to the shell. */
   let underway: string | null = null
-  const send = (state: MenuState, key: string, again: boolean): void => {
+  /** The last attempt of a twice refused state, while it waits. */
+  let later: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Sends the state; `tries` is how it may be tried again when refused: at once, then after a while, then not.
+   */
+  const send = (state: MenuState, key: string, tries: 'now' | 'later' | 'last'): void => {
+    if (later !== null) {
+      clearTimeout(later)
+      later = null
+    }
     underway = key
     shell.invoke('menu_state', state).then(
       () => {
@@ -285,13 +297,22 @@ export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, on
         if (underway !== key) {
           return
         }
-        if (again) {
-          send(state, key, false)
+        if (tries === 'now') {
+          send(state, key, 'later')
           return
         }
         underway = null
         taken = null
         onError(error)
+        if (tries === 'later') {
+          later = setTimeout(() => {
+            later = null
+            // A newer state went meanwhile, or is on its way: it says everything.
+            if (underway === null && taken === null) {
+              send(state, key, 'last')
+            }
+          }, MENU_STATE_RETRY_MS)
+        }
       },
     )
   }
@@ -308,12 +329,15 @@ export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, on
       if (key === underway || (underway === null && key === taken)) {
         return
       }
-      send(state, key, true)
+      send(state, key, 'now')
     },
     { immediate: true },
   )
   return () => {
     unlisten()
     stopWatching()
+    if (later !== null) {
+      clearTimeout(later)
+    }
   }
 }
