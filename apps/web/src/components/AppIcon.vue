@@ -41,6 +41,13 @@ const paths = {
   triage: ['M4 6h16', 'M4 12h9', 'M4 18h9', 'M15 15l2.5 2.5L21 13'],
   // The desktop frame's sidebar toggle, drawn after the system's sidebar.left: a window with its left pane marked.
   sidebar: ['M5 4.5h14a3 3 0 013 3v9a3 3 0 01-3 3H5a3 3 0 01-3-3v-9a3 3 0 013-3z', 'M9 4.5v15'],
+  // Meeting links (the EventPopoverMeetingLink and MeetingLinkStates boards): copy, copied, the amber warning, the red
+  // error, and a link that Tresso shows but does not open.
+  copy: ['M11 9h7a2 2 0 012 2v7a2 2 0 01-2 2h-7a2 2 0 01-2-2v-7a2 2 0 012-2z', 'M5 15V6a1 1 0 011-1h9'],
+  check: ['M5 12l5 5L20 7'],
+  alert: ['M12 3l9.5 17h-19z', 'M12 10v4', 'M12 17.5v.01'],
+  error: ['M12 3a9 9 0 100 18 9 9 0 000-18z', 'M12 7v6', 'M12 16.5v.01'],
+  link: ['M10 14a4.5 4.5 0 006.4 0l3.2-3.2a4.5 4.5 0 00-6.4-6.4L12 5.6', 'M14 10a4.5 4.5 0 00-6.4 0l-3.2 3.2a4.5 4.5 0 006.4 6.4l1.2-1.2'],
   settings: ['M4 6h9', 'M17 6h3', 'M13 4v4', 'M4 12h3', 'M11 12h9', 'M7 10v4', 'M4 18h11', 'M19 18h1', 'M15 16v4'],
 } as const
 
