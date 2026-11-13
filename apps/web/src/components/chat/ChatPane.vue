@@ -406,7 +406,14 @@ async function loadOlder(retried = false): Promise<void> {
     reloadAgain = true
   }
   try {
-    const page = await chats.page(props.chatId, { limit: PAGE, before: chatMessageKey(first) })
+    let page: ChatPage | null
+    try {
+      page = await chats.page(props.chatId, { limit: PAGE, before: chatMessageKey(first) })
+    } catch (cause) {
+      // The window and its scroll position stay as they are; scrolling up or Older reads them again.
+      console.error('Reading older chat messages failed', errorName(cause))
+      return
+    }
     if (unmounted || page === null) {
       return
     }
