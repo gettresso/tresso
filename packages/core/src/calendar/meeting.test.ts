@@ -9,6 +9,8 @@ import {
   conferenceLabel,
   CREATING_HINT,
   defaultMeetingApp,
+  DISPLAY_LINK_MAX,
+  displayLink,
   failureHint,
   joinLabel,
   linkText,
@@ -118,7 +120,58 @@ describe('link text', () => {
     expect(text.startsWith('teams.microsoft.com/l/')).toBe(true)
     expect(text).toContain('\u2026')
     expect(text.endsWith('%22%7d')).toBe(true)
-    expect(linkText(TEAMS_URL, 20)).toHaveLength(20)
+    // The host stays whole even when only the ellipsis fits after it.
+    expect(linkText(TEAMS_URL, 20)).toBe('teams.microsoft.com\u2026')
+  })
+
+  it('never cuts the host, so a lookalike shows where it leads', () => {
+    const lookalike = 'https://teams.microsoft.com.evil.example/l/meetup-join/19%3ameeting_abc%40thread.v2/0'
+    const text = linkText(lookalike)
+    expect(text).toHaveLength(44)
+    expect(text.startsWith('teams.microsoft.com.evil.example/')).toBe(true)
+    expect(text).toBe('teams.microsoft.com.evil.example/l/mee\u2026.v2/0')
+    // Before a query or a fragment too, and with a user name in front of the host.
+    expect(linkText(`https://teams.microsoft.com.evil.example?x=${'a'.repeat(60)}`)).toMatch(/^teams\.microsoft\.com\.evil\.example\?x=/)
+    expect(linkText(`https://teams.microsoft.com@evil.example/${'a'.repeat(60)}`).startsWith('teams.microsoft.com@evil.example/')).toBe(true)
+    // Other schemes keep their scheme with the host.
+    expect(linkText(`http://teams.microsoft.com.evil.example/${'a'.repeat(60)}`).startsWith('http://teams.microsoft.com.evil.example/')).toBe(true)
+  })
+
+  it('cuts a host longer than the limit on the left, keeping its registrable end', () => {
+    const host = `${'teams.microsoft.com.'.repeat(4)}evil.example`
+    const text = linkText(`https://${host}/l/meetup-join/1`)
+    expect(text).toHaveLength(44)
+    expect(text.startsWith('\u2026')).toBe(true)
+    expect(text.endsWith('.evil.example')).toBe(true)
+    expect(text).toBe(`\u2026${host.slice(host.length - 43)}`)
+  })
+
+  it('cuts a link without a host in the middle', () => {
+    const text = linkText(`javascript:${'a'.repeat(80)}`, 20)
+    expect(text).toHaveLength(20)
+    expect(text).toBe(`javascript\u2026${'a'.repeat(9)}`)
+  })
+
+  it('shows hidden and reversing characters as a visible mark', () => {
+    expect(linkText('https://evil.example/\u202emoc.smaet')).toBe('evil.example/\ufffdmoc.smaet')
+    expect(linkText('https://exa\u200bmple.com/x')).toBe('exa\ufffdmple.com/x')
+  })
+})
+
+describe('a link shown as text', () => {
+  it('makes hidden and reversing characters visible and keeps the rest', () => {
+    expect(displayLink('https://evil.example/\u202emoc.smaet.www//:sptth')).toBe('https://evil.example/\ufffdmoc.smaet.www//:sptth')
+    expect(displayLink('https://a.example/\u2066x\u2069\u200f\ufeff\u0000')).toBe('https://a.example/\ufffdx\ufffd\ufffd\ufffd\ufffd')
+    expect(displayLink(TEAMS_URL)).toBe(TEAMS_URL)
+  })
+
+  it('caps a very long link with an ellipsis', () => {
+    const long = `https://example.com/${'a'.repeat(5000)}`
+    const text = displayLink(long)
+    expect(DISPLAY_LINK_MAX).toBe(300)
+    expect(Array.from(text)).toHaveLength(300)
+    expect(text.endsWith('\u2026')).toBe(true)
+    expect(text.startsWith('https://example.com/aaa')).toBe(true)
   })
 
   it('never splits a character made of two code units', () => {

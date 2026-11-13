@@ -130,19 +130,60 @@ export function joinLabel(provider: Conference['provider']): string {
   }
 }
 
+/** The longest a link is shown as text; a longer one ends in an ellipsis (Copy still copies all of it). */
+export const DISPLAY_LINK_MAX = 300
+
+/** Every character that shows nothing or turns text around (see HIDDEN) as a visible U+FFFD. */
+function visible(url: string): string {
+  return url.replace(HIDDEN_ALL, '\ufffd')
+}
+
 /**
- * A link as one short line: without a leading `https://`, cut in the middle with an ellipsis when longer than `max` characters
- * (real Teams links are about 250). Show the full link in a title; Copy always copies the full link.
+ * A link as text on screen, never as a key to open it: characters that show nothing or reverse the text (a right to
+ * left override can make "evil.example/moc.smaet" read as another host) become a visible U+FFFD, and the text ends in an
+ * ellipsis after {@link DISPLAY_LINK_MAX} characters. Copy keeps the link as it is.
+ */
+export function displayLink(url: string): string {
+  const chars = Array.from(visible(url))
+  return chars.length <= DISPLAY_LINK_MAX ? chars.join('') : `${chars.slice(0, DISPLAY_LINK_MAX - 1).join('')}\u2026`
+}
+
+/**
+ * A link as one short line: without a leading `https://`, at most `max` characters (real Teams links are about 250),
+ * with hidden characters made visible as in {@link displayLink}. The host is never cut in the middle, so a lookalike
+ * such as "teams.microsoft.com.evil.example" always shows where it leads: the scheme (other than https) and the host,
+ * up to the first `/`, `?` or `#`, stay whole and the rest is cut in the middle; a host longer than `max` alone loses
+ * its left end, keeping the registrable part on the right. A link without a host (`javascript:`) is cut in the
+ * middle. Show the full link in a title; Copy always copies the full link.
  */
 export function linkText(url: string, max = 44): string {
-  const bare = Array.from(url.startsWith('https://') ? url.slice('https://'.length) : url)
   const limit = Math.max(3, Math.floor(max))
-  if (bare.length <= limit) {
-    return bare.join('')
+  const https = url.startsWith('https://')
+  const rest = visible(https ? url.slice('https://'.length) : url)
+  const scheme = https ? null : /^[a-z][a-z0-9+.-]*:\/\//i.exec(rest)
+  const chars = Array.from(rest)
+  if (chars.length <= limit) {
+    return chars.join('')
   }
-  const head = Math.ceil((limit - 1) / 2)
-  const tail = limit - 1 - head
-  return `${bare.slice(0, head).join('')}\u2026${bare.slice(bare.length - tail).join('')}`
+  const cutMiddle = (part: string[], room: number): string => {
+    if (room <= 1) {
+      return '\u2026'
+    }
+    const head = Math.ceil((room - 1) / 2)
+    const tail = room - 1 - head
+    return `${part.slice(0, head).join('')}\u2026${tail > 0 ? part.slice(part.length - tail).join('') : ''}`
+  }
+  if (!https && scheme === null) {
+    return cutMiddle(chars, limit)
+  }
+  const lead = scheme === null ? 0 : Array.from(scheme[0]).length
+  const found = chars.findIndex((char, index) => index >= lead && (char === '/' || char === '?' || char === '#'))
+  const hostEnd = found === -1 ? chars.length : found
+  const host = chars.slice(0, hostEnd)
+  if (host.length >= limit) {
+    return `\u2026${host.slice(host.length - (limit - 1)).join('')}`
+  }
+  return host.join('') + cutMiddle(chars.slice(hostEnd), limit - host.length)
 }
 
 /**
@@ -163,6 +204,7 @@ export type MeetingLinkProblem = 'empty' | 'too_long' | 'whitespace' | 'control'
 // the byte order mark, the interlinear annotation and object replacement characters, and the Hangul fillers: letters
 // that show nothing and that a browser drops from a host, so "exa<filler>mple.com" would open example.com.
 const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\u3164\ufeff\uffa0\ufff9-\ufffc]/
+const HIDDEN_ALL = new RegExp(HIDDEN.source, 'g')
 const LABEL = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
 
 /**
