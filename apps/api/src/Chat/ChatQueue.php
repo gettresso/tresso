@@ -86,11 +86,14 @@ final readonly class ChatQueue
         if (!$chat instanceof Chat) {
             throw new NotFoundHttpException('Chat not found.');
         }
-        // A request sent again (its answer got lost) gets the reply back, whatever the age of its id says now.
+        // A request sent again (its answer got lost) gets the reply back, whatever the age of its id says now, and one
+        // the user cancelled meanwhile is refused as cancelled: both are looked up before the id's age, so a late repeat
+        // never reads as "too old, make a new id", which would queue the cancelled reply again under another id.
         $queued = $this->alreadyQueued($id, $user, $chat);
         if (null !== $queued) {
             return [$queued, false];
         }
+        $this->refuseCancelled($user, $id);
         $late = $input->idViolations($now);
         if (\count($late) > 0) {
             throw new ValidationException($late);
@@ -121,16 +124,8 @@ final readonly class ChatQueue
                 if (null !== $queued) {
                     return [$queued, false];
                 }
-                // A reply the user cancelled (or that went with a chat left out) is gone, and its removal is all that is
-                // left of it: a repeat of the request that queued it must not queue it again.
-                // The type is written into the statement, not bound, so the planner sees that the partial index on it
-                // applies (sync_tombstone_chat_outgoing) for a generic plan too.
-                if (false !== $this->connection->fetchOne(
-                    \sprintf("SELECT 1 FROM sync_tombstone WHERE user_id = :user AND entity_type = '%s' AND entity_id = :id", ChatOutgoing::changeType()),
-                    ['user' => $user->getId()->toRfc4122(), 'id' => $id->toRfc4122()],
-                )) {
-                    throw ChatProblem::cancelled();
-                }
+                // Cancelled while this request waited for the lock.
+                $this->refuseCancelled($user, $id);
                 // Left out or removed while this request waited.
                 try {
                     $this->entityManager->refresh($chat);
@@ -262,6 +257,21 @@ final readonly class ChatQueue
         $this->entityManager->refresh($outgoing);
 
         return $outgoing;
+    }
+
+    /**
+     * A reply the user cancelled (or that went with a chat left out) is gone, and its removal is all that is left of it:
+     * a repeat of the request that queued it must not queue it again. The type is written into the statement, not bound,
+     * so the planner sees that the partial index on it applies (sync_tombstone_chat_outgoing) for a generic plan too.
+     */
+    private function refuseCancelled(User $user, Uuid $id): void
+    {
+        if (false !== $this->connection->fetchOne(
+            \sprintf("SELECT 1 FROM sync_tombstone WHERE user_id = :user AND entity_type = '%s' AND entity_id = :id", ChatOutgoing::changeType()),
+            ['user' => $user->getId()->toRfc4122(), 'id' => $id->toRfc4122()],
+        )) {
+            throw ChatProblem::cancelled();
+        }
     }
 
     private function alreadyQueued(Uuid $id, User $user, Chat $chat): ?ChatOutgoing
