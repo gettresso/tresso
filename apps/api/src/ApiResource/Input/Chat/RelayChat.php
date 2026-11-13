@@ -30,6 +30,14 @@ final class RelayChat
     #[Assert\NotNull]
     public ?ChatKind $kind = null;
 
+    /**
+     * The user left this chat out on the desktop before the server knew it: the server keeps a left-out chat row for it
+     * (its JID sealed, no name, no messages), so every device that relays leaves it out too. A chat the server holds
+     * already is left as it is (the server's word wins: it may have been taken in again). Messages of it in the same
+     * call are left out.
+     */
+    public bool $leftOut = false;
+
     /** The kind the relay derives from the JID; another one is the relay's own bug. */
     #[Assert\Callback]
     public function validateKind(ExecutionContextInterface $context): void

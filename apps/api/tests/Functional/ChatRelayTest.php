@@ -51,6 +51,25 @@ final class ChatRelayTest extends DatabaseTestCase
         self::assertSame('unlinked', $this->delta($cursor)['chatAccounts'][0]['link'] ?? null);
     }
 
+    public function testAStatusFromABridgeLinkedToAnotherNumberIsRefused(): void
+    {
+        $status = ['bridge' => 'running', 'link' => 'linked', 'linkedAt' => null, 'loopbackOnly' => true];
+
+        $this->relay('status', $status + ['address' => '31698765432']);
+        self::assertResponseStatusCodeSame(200);
+
+        $this->relay('status', $status + ['address' => '31611112222']);
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('other_number', $this->decodedResponse()['code'] ?? null);
+
+        // An account that did not know its number learns it from the first status that says it.
+        $this->connection()->executeStatement('UPDATE chat_account SET sealed_address = NULL');
+        $this->relay('status', $status + ['address' => '31611112222']);
+        self::assertResponseStatusCodeSame(200);
+        $this->relay('status', $status + ['address' => '31698765432']);
+        self::assertResponseStatusCodeSame(409);
+    }
+
     public function testMessagesAreStoredSealedAndReachTheDelta(): void
     {
         $cursor = $this->delta(0)['cursor'];
@@ -170,6 +189,41 @@ final class ChatRelayTest extends DatabaseTestCase
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_message'));
         self::assertSame([$chatId], $this->connection()->fetchFirstColumn('SELECT id FROM chat'), 'No chat is made for an excluded group.');
         self::assertSame('Bram Visser', $this->delta(0)['chats'][0]['name'] ?? null, 'Nothing of a left-out chat is taken, not its name either.');
+    }
+
+    public function testAChatLeftOutOnTheDesktopIsKeptAsALeftOutRowWithNothingButItsJid(): void
+    {
+        $leftOut = ['jid' => self::OTHER_JID, 'name' => 'Not to be kept', 'kind' => 'direct', 'leftOut' => true];
+
+        $answer = $this->relayMessages([self::waMessage('M1', 'A secret plan', extra: ['chatJid' => self::OTHER_JID])], [$leftOut]);
+        $this->relayMessages([], [$leftOut]);
+
+        self::assertSame(['stored' => 0, 'known' => 0, 'leftOut' => 1, 'refused' => 0], array_intersect_key($answer, array_flip(['stored', 'known', 'leftOut', 'refused'])));
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM chat'), 'Once, also when handed over again.');
+        $row = $this->connection()->fetchAssociative('SELECT left_out, sealed_name, sealed_jid FROM chat');
+        self::assertIsArray($row);
+        self::assertTrue((bool) $row['left_out']);
+        self::assertNull($row['sealed_name'], 'No name is kept.');
+        self::assertStringNotContainsString(self::OTHER_JID, (string) $row['sealed_jid']);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_message'));
+        $chats = $this->delta(0)['chats'];
+        self::assertCount(1, $chats);
+        self::assertTrue($chats[0]['leftOut'] ?? null);
+        self::assertSame(self::OTHER_JID, $chats[0]['jid'] ?? null);
+
+        // Later batches leave its messages out too.
+        $later = $this->relayMessages([self::waMessage('M2', 'Another', extra: ['chatJid' => self::OTHER_JID])], []);
+        self::assertSame(1, $later['leftOut'] ?? null);
+    }
+
+    public function testALeftOutEntryLeavesAChatTheServerHoldsAsItIs(): void
+    {
+        $this->relayMessages([self::waMessage('M1', 'Hi')]);
+
+        $this->relayMessages([], [['jid' => self::JID, 'name' => null, 'kind' => 'direct', 'leftOut' => true]]);
+
+        self::assertFalse((bool) $this->connection()->fetchOne('SELECT left_out FROM chat'));
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM chat_message'));
     }
 
     public function testTheFirstImportArrivesRead(): void
