@@ -67,8 +67,11 @@ describe('chat texts', () => {
   })
 
   it('says what failed in plain words: the server\'s own, or that it could not be reached', () => {
-    expect(sendFailureText(new ApiError(429, 'Too many WhatsApp replies at once. Wait a few minutes, then try again.'))).toBe('Not sent. Too many WhatsApp replies at once. Wait a few minutes, then try again.')
-    expect(sendFailureText(new TypeError('Network request failed'))).toBe('Not sent. The server could not be reached. Check your connection.')
+    expect(sendFailureText(new ApiError(429, 'Too many WhatsApp replies at once. Wait a few minutes, then try again.'), false)).toBe('Not sent. Too many WhatsApp replies at once. Wait a few minutes, then try again.')
+    expect(sendFailureText(new TypeError('Network request failed'), true)).toBe(
+      'This reply may have been sent. The server could not be reached. Check your connection. Check the chat before you send it again.',
+    )
+    expect(sendFailureText(new ApiError(502, 'Bad Gateway'), true)).toBe('This reply may have been sent. Bad Gateway. Check the chat before you send it again.')
     expect(cancelFailureText(new ApiError(409, 'This reply is being sent or was sent; it can no longer be cancelled.', {}, null, 'already_going_out'))).toBe(
       'This reply is being sent already and can no longer be cancelled.',
     )

@@ -15,6 +15,8 @@ export interface Chats {
    * WhatsApp is set to "Only this Mac". Without it the phone shows nothing of WhatsApp.
    */
   account: SyncedChatAccount | null
+  /** The copy was read for the account at least once since it opened; until then `account` null means nothing yet. */
+  accountRead: boolean
   /** The account's chats the Unified Inbox shows (not archived, not left out), newest first; empty without an account. */
   inbox: ChatSummary[]
   /** A window of a chat (MailStore.chatPage); null when the chat is not on the phone. */
@@ -49,6 +51,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const mail = useMail()
   const { store, version, userId, touch, syncNow } = mail
   const [account, setAccount] = useState<SyncedChatAccount | null>(null)
+  /** The store the account was last read from: `accountRead` is true only for the one open now. */
+  const [readFrom, setReadFrom] = useState<object | null>(null)
   const [inbox, setInbox] = useState<ChatSummary[]>([])
   const [revision, setRevision] = useState(0)
   const drafts = useRef(new Map<string, string>())
@@ -58,7 +62,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       new ChatActions({
         store,
         api: phoneChatApi((path, init) => auth.session.api(path, init)),
-        now: Date.now,
+        // The server's time: a reply id is a UUIDv7 the server takes only when it was made about now by its clock.
+        now: () => auth.session.serverNow(),
         newId: (at) => uuidV7(at),
         changed: touch,
         onError: (what, error) => console.error(what, errorName(error)),
@@ -83,6 +88,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         if (current) {
           setAccount(found)
           setInbox(chats)
+          setReadFrom(copy)
           // WhatsApp went (the account removed, or set to "Only this Mac"): what was typed into its chats goes along.
           if (found === null) {
             drafts.current.clear()
@@ -121,7 +127,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [todos, syncNow],
   )
 
-  const value = useMemo<Chats>(() => ({ account, inbox, page, actions, revision, draftOf, setDraft, createTodo }), [account, inbox, page, actions, revision, draftOf, setDraft, createTodo])
+  // Read for the copy open now (a copy that is not open yet, or another user's, has not been read).
+  const accountRead = readFrom !== null && readFrom === store()
+  const value = useMemo<Chats>(
+    () => ({ account, accountRead, inbox, page, actions, revision, draftOf, setDraft, createTodo }),
+    [account, accountRead, inbox, page, actions, revision, draftOf, setDraft, createTodo],
+  )
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
 }
 

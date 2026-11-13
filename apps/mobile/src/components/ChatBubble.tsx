@@ -1,5 +1,6 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import { Pressable, StyleSheet, Text, View, type AccessibilityActionEvent } from 'react-native'
+import type { SyncedChatOutgoing } from '@tresso/core'
 import type { BubbleRow } from '@/chat/timelineRows'
 import { MEDIA_ON_MAC, mediaTitle } from '@/chat/texts'
 import { useTheme, type Theme } from '@/theme'
@@ -9,9 +10,9 @@ interface Props {
   /** A change of this reply is under way: its actions wait. */
   busy: boolean
   /** Try again: a tap on a reply that was not sent, or the button under one that could not be confirmed. */
-  onRetry(): void
+  onRetry(reply: SyncedChatOutgoing): void
   /** Long press on a reply that waits (Cancel) or was not sent (Delete): asks first. */
-  onMenu(): void
+  onMenu(reply: SyncedChatOutgoing): void
 }
 
 /**
@@ -21,12 +22,23 @@ interface Props {
  * that was not sent is sent again with a tap (or deleted with a long press); one whose sending the Mac could not confirm
  * is sent again only by its own Try again, never by a tap on the bubble. Screen readers get the same as actions.
  */
-export function ChatBubble({ bubble, busy, onRetry, onMenu }: Props) {
+export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retryReply, onMenu: openMenu }: Props) {
   const theme = useTheme()
   const styles = useMemo(() => makeStyles(theme), [theme])
   const waiting = bubble.state === 'waiting'
   const failed = bubble.state === 'failed'
   const unconfirmed = bubble.state === 'unconfirmed'
+  const reply = bubble.reply
+  const onRetry = () => {
+    if (reply !== null) {
+      retryReply(reply)
+    }
+  }
+  const onMenu = () => {
+    if (reply !== null) {
+      openMenu(reply)
+    }
+  }
 
   const actions = [
     ...(failed ? [{ name: 'activate', label: 'Try again' }] : []),
@@ -78,7 +90,7 @@ export function ChatBubble({ bubble, busy, onRetry, onMenu }: Props) {
       )}
     </View>
   )
-}
+})
 
 function makeStyles(theme: Theme) {
   return StyleSheet.create({

@@ -23,6 +23,7 @@ const env = vi.hoisted(() => {
     },
     chats: null as unknown as {
       account: SyncedChatAccount | null
+      accountRead?: boolean
       actions: ChatActions
       store: SqliteMailStore
       drafts: Map<string, string>
@@ -68,6 +69,7 @@ vi.mock('@/chat/ChatProvider', async () => {
       const { store, drafts } = env.chats
       return {
         account: env.chats.account,
+        accountRead: env.chats.accountRead ?? true,
         inbox: [],
         actions: env.chats.actions,
         revision,
@@ -103,11 +105,12 @@ function fakeApi(overrides: Partial<PhoneChatApi> = {}): PhoneChatApi {
   }
 }
 
-async function open(rows: { account?: SyncedChatAccount | null; chats?: SyncedChat[]; outgoing?: SyncedChatOutgoing[] } = {}, api: PhoneChatApi = fakeApi()) {
+async function open(rows: { account?: SyncedChatAccount | null; chats?: SyncedChat[]; outgoing?: SyncedChatOutgoing[]; accountRead?: boolean } = {}, api: PhoneChatApi = fakeApi()) {
   const store = await copyWith({ account: rows.account, chats: rows.chats ?? [BRAM], messages: BRAM_SAYS, outgoing: rows.outgoing ?? [] })
   let ids = 0
   env.chats = {
     account: rows.account === undefined ? account() : rows.account,
+    accountRead: rows.accountRead,
     store,
     drafts: new Map(),
     createTodo: vi.fn(async () => undefined),
@@ -239,6 +242,39 @@ describe('the chat screen', () => {
 
     await waitFor(() => expect(api.updateChat).toHaveBeenCalledWith('c1', { readThrough: BRAM.lastMessageAt }))
     expect((await store.chatByJid(BRAM.chatAccountId, BRAM.jid))?.readThrough).toBe(BRAM.lastMessageAt)
+  })
+
+  it('asks the server once for a read it refuses, however often the copy changes', async () => {
+    const updateChat = vi.fn(async (): Promise<SyncedChat> => Promise.reject(new ApiError(503, 'Service Unavailable')))
+    await open({}, fakeApi({ updateChat }))
+
+    await waitFor(() => expect(updateChat).toHaveBeenCalledTimes(1))
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        env.bump()
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      })
+    }
+
+    expect(updateChat).toHaveBeenCalledTimes(1)
+    expect(env.version, 'The read and its rollback changed the copy, and the window was read again.').toBeGreaterThanOrEqual(5)
+  })
+
+  it('shows loading, not that the chat is missing, until the copy was read for the account', async () => {
+    await open({ account: null, accountRead: false })
+
+    expect(await screen.findByLabelText('Loading the chat')).toBeTruthy()
+    expect(screen.queryByText(/This chat is not on this phone/)).toBeNull()
+  })
+
+  it('says a reply whose sending is unknown may have been sent', async () => {
+    await open({}, fakeApi({ queueReply: vi.fn(async () => Promise.reject(new ApiError(504, 'Gateway Timeout'))) }))
+    const field = await screen.findByLabelText('Reply to Bram Visser')
+
+    fireEvent.change(field, { target: { value: 'On my way' } })
+    fireEvent.click(sendButton())
+
+    expect(await screen.findByText('This reply may have been sent. Gateway Timeout. Check the chat before you send it again.')).toBeTruthy()
   })
 
   it('shows nothing of WhatsApp without an account on the server', async () => {

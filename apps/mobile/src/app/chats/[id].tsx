@@ -3,6 +3,7 @@ import { AccessibilityInfo, AppState, FlatList, KeyboardAvoidingView, Platform, 
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { replyText, TODO_TITLE_MAX_LENGTH, type ChatPage, type SyncedChatOutgoing } from '@tresso/core'
+import { outcomeUnknown } from '@/chat/chatActions'
 import { useChats } from '@/chat/ChatProvider'
 import { CHAT_MISSING, cancelFailureText, chatInitials, chatName, COUNTER_FROM, counterText, relayBanner, replyProblemText, retryFailureText, sendFailureText } from '@/chat/texts'
 import { timelineRows, windowReplies, type BubbleRow, type TimelineRow } from '@/chat/timelineRows'
@@ -69,8 +70,10 @@ export default function ChatScreen() {
   }
   const pulledFor = useRef<string | null>(null)
   const chat = win.chat !== null && account !== null && win.chat.chatAccountId === account.id && !win.chat.leftOut ? win.chat : null
-  // A chat the copy has but the phone does not show (left out, or no WhatsApp on the server) is not coming either.
-  const absent = !win.loaded || chat !== null ? null : win.chat !== null ? 'missing' : absentConversation(pulls, opened.pulls, syncState)
+  // Until the copy was read for the account (a cold start from a notification), nothing is known yet. A chat the copy
+  // has but the phone does not show (left out, or no WhatsApp on the server) is not coming either.
+  const absent = !win.loaded || !chats.accountRead || chat !== null ? null : win.chat !== null ? 'missing' : absentConversation(pulls, opened.pulls, syncState)
+  const loading = !win.loaded || !chats.accountRead || absent === 'loading'
   useEffect(() => {
     if (win.loaded && win.chat === null && pulledFor.current !== id) {
       pulledFor.current = id
@@ -132,6 +135,12 @@ export default function ChatScreen() {
       return () => setFocused(false)
     }, []),
   )
+  // Looked at again: a read the server refused may be asked once more (ChatActions.lookedAt). Before the read below.
+  useEffect(() => {
+    if (active && focused) {
+      actions.lookedAt(id)
+    }
+  }, [active, focused, id, actions])
   useEffect(() => {
     if (chat !== null && active && focused) {
       void actions.markRead(chat)
@@ -185,7 +194,7 @@ export default function ChatScreen() {
       chats.setDraft(forChat, draft === '' ? typed : `${typed}\n${draft}`)
       if (mounted.current && onScreen.current === forChat) {
         setText(chats.draftOf(forChat))
-        setSendError(sendFailureText(error))
+        setSendError(sendFailureText(error, outcomeUnknown(error)))
       }
     } finally {
       sending.current = false
@@ -197,22 +206,29 @@ export default function ChatScreen() {
 
   // Cancel, Delete and Try again, one at a time per reply.
   const [busyReply, setBusyReply] = useState<string | null>(null)
+  const busyNow = useRef<string | null>(null)
   const [menuFor, setMenuFor] = useState<SyncedChatOutgoing | null>(null)
-  async function onReply(reply: SyncedChatOutgoing, what: 'retry' | 'cancel') {
-    if (busyReply !== null) {
-      return
-    }
-    setBusyReply(reply.id)
-    try {
-      await (what === 'retry' ? actions.retry(reply) : actions.cancel(reply))
-    } catch (error) {
-      notices.notify({ text: what === 'retry' ? retryFailureText(error) : cancelFailureText(error), tone: 'error' })
-    } finally {
-      if (mounted.current) {
-        setBusyReply(null)
+  const onReply = useCallback(
+    async (reply: SyncedChatOutgoing, what: 'retry' | 'cancel') => {
+      if (busyNow.current !== null) {
+        return
       }
-    }
-  }
+      busyNow.current = reply.id
+      setBusyReply(reply.id)
+      try {
+        await (what === 'retry' ? actions.retry(reply) : actions.cancel(reply))
+      } catch (error) {
+        notices.notify({ text: what === 'retry' ? retryFailureText(error) : cancelFailureText(error), tone: 'error' })
+      } finally {
+        busyNow.current = null
+        if (mounted.current) {
+          setBusyReply(null)
+        }
+      }
+    },
+    [actions, notices],
+  )
+  const onRetry = useCallback((reply: SyncedChatOutgoing) => void onReply(reply, 'retry'), [onReply])
 
   // Make todo: `Reply to <name>`, which the user sees and may change first; nothing else of the chat goes in.
   const [todoTitle, setTodoTitle] = useState<string | null>(null)
@@ -246,28 +262,25 @@ export default function ChatScreen() {
     }
   }
 
-  const renderRow = ({ item }: { item: TimelineRow }) => {
-    if (item.kind === 'day') {
-      return (
-        <View style={styles.dayRow}>
-          <Text style={styles.day} accessibilityRole="header">
-            {item.label}
-          </Text>
-        </View>
-      )
-    }
-    const reply = item.reply
-    return (
-      <ChatBubble
-        bubble={item}
-        busy={reply !== null && busyReply === reply.id}
-        onRetry={() => reply !== null && void onReply(reply, 'retry')}
-        onMenu={() => reply !== null && setMenuFor(reply)}
-      />
-    )
-  }
+  // Stable, so typing in the reply box does not draw the bubbles again (ChatBubble is memoised).
+  const renderRow = useCallback(
+    ({ item }: { item: TimelineRow }) => {
+      if (item.kind === 'day') {
+        return (
+          <View style={styles.dayRow}>
+            <Text style={styles.day} accessibilityRole="header">
+              {item.label}
+            </Text>
+          </View>
+        )
+      }
+      return <ChatBubble bubble={item} busy={item.reply !== null && busyReply === item.reply.id} onRetry={onRetry} onMenu={setMenuFor} />
+    },
+    [styles, busyReply, onRetry],
+  )
 
   const menuWaiting = menuFor?.status === 'waiting'
+  const menuTitle = menuWaiting ? 'This reply waits for your Mac.' : menuFor?.error === 'unconfirmed' ? 'This reply may have been sent.' : 'This reply was not sent.'
 
   return (
     <>
@@ -329,7 +342,7 @@ export default function ChatScreen() {
             </Pressable>
           </View>
         )}
-        {!win.loaded || absent === 'loading' ? (
+        {loading ? (
           <LogoLoader size={32} style={styles.loading} accessibilityLabel="Loading the chat" />
         ) : chat === null ? (
           <View style={styles.missing}>
@@ -402,7 +415,7 @@ export default function ChatScreen() {
       </KeyboardAvoidingView>
       <ChoiceSheet<'cancel'>
         visible={menuFor !== null}
-        title={menuWaiting ? 'This reply waits for your Mac.' : 'This reply was not sent.'}
+        title={menuTitle}
         choices={[{ key: 'cancel', label: menuWaiting ? 'Cancel this reply' : 'Delete this reply', tone: 'danger' }]}
         onChoose={() => {
           const reply = menuFor
