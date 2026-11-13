@@ -304,9 +304,25 @@ describe('ChatPane in the browser', () => {
       await flushPromises()
       expect(server.callsOf('unscannedMediaLink')).toHaveLength(1)
       expect(tab.location.href).toContain('unscanned=1')
+      expect(document.activeElement?.textContent?.trim(), 'The focus is back on the row after accepting.').toBe('Download anyway')
       expect(confirm, 'Never the browser\'s own confirm.').not.toHaveBeenCalled()
       opened.mockRestore()
       confirm.mockRestore()
+    })
+
+    it('closes the warning when the file changes meanwhile, with the focus back on the row', async () => {
+      const view = await open(GROUP_CHAT)
+      await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'confirm' })
+      await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+      expect(view.find('[role="alertdialog"]').exists()).toBe(true)
+
+      await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'allowed' })
+      await flushPromises()
+
+      expect(view.find('[role="alertdialog"]').exists(), 'Accepting it no longer means anything.').toBe(false)
+      expect(document.activeElement?.textContent?.trim()).toBe('Open')
+      expect(server.callsOf('unscannedMediaLink')).toEqual([])
     })
 
     it('says when the browser blocked the new tab, and asks nothing then', async () => {
@@ -388,7 +404,8 @@ describe('ChatPane in the browser', () => {
       await pick(view, plan())
       await flushPromises()
 
-      expect(view.get('.attach-line').text()).toBe('Uploading plan.pdf, 50%…')
+      // The live line says it once; the percentage is the progress bar's value, not read out at every step.
+      expect(view.get('.attach-line').text()).toBe('Uploading plan.pdf…')
       expect(view.get('progress').attributes('value')).toBe('0.5')
       await view.get('.upload-cancel').trigger('click')
       await flushPromises()
@@ -413,9 +430,73 @@ describe('ChatPane in the browser', () => {
       await flushPromises()
 
       const queued = (server.callsOf('queueReply')[0]![1] as { id: string }).id
-      expect(server.callsOf('cancelReply')).toEqual([[queued]])
-      expect(server.outgoing.has(queued), 'The server cancel went out after the queueing.').toBe(false)
+      expect(server.callsOf('cancelReply'), 'The cancel went at once, before the queueing answered.').toEqual([[queued]])
+      expect(server.outgoing.has(queued), 'The server refused the queueing of a cancelled reply.').toBe(false)
       expect(view.get('.attach-line').text()).toBe('plan.pdf was not sent.')
+      expect(view.find('.composer [role="alert"]').exists(), 'The refusal of the queueing is the cancel working.').toBe(false)
+    })
+
+    it('cancels again once the queueing answered, also when the queueing answer was lost after the server took it', async () => {
+      let release!: () => void
+      server.held.set('queueReply', new Promise<void>((resolve) => (release = resolve)))
+      server.answersLost.add('queueReply')
+      server.fail('cancelReply', new TypeError('Failed to fetch'))
+      const view = await open(SERVER_CHAT)
+      await pick(view, plan())
+      await flushPromises()
+
+      await view.get('.upload-cancel').trigger('click')
+      await flushPromises()
+      release()
+      await flushPromises()
+      await vi.waitFor(() => expect(view.get('.attach-line').text()).toBe('plan.pdf was not sent.'))
+
+      const queued = (server.callsOf('queueReply')[0]![1] as { id: string }).id
+      expect(server.callsOf('cancelReply')).toEqual([[queued], [queued]])
+      expect(server.outgoing.has(queued), 'Cancelled on the server: it never goes.').toBe(false)
+    })
+
+    it('says a file may still be sent when its cancel was not confirmed, and keeps the reply in the chat', async () => {
+      let release!: () => void
+      server.held.set('queueReply', new Promise<void>((resolve) => (release = resolve)))
+      server.fail('cancelReply', new TypeError('Failed to fetch'), true)
+      const view = await open(SERVER_CHAT, { relayOnline: false })
+      await pick(view, plan())
+      await flushPromises()
+
+      await view.get('.upload-cancel').trigger('click')
+      await flushPromises()
+      release()
+      await flushPromises()
+      await vi.waitFor(() => expect(view.get('.attach-line').text()).toBe('plan.pdf may still be sent. Check the chat.'))
+
+      const queued = (server.callsOf('queueReply')[0]![1] as { id: string }).id
+      expect(server.outgoing.get(queued)?.status).toBe('waiting')
+      await server.deliver(store)
+      mail.chatChanges++
+      await vi.waitFor(() => expect(bubbles(view).some((item) => item.text().includes('File: plan.pdf'))).toBe(true))
+    })
+
+    it('cancels at a sign-out, with the ending token, a reply that is being queued', async () => {
+      let release!: () => void
+      server.held.set('queueReply', new Promise<void>((resolve) => (release = resolve)))
+      const auth = useAuthStore()
+      const steps: ((send: (method: string, path: string) => Promise<unknown>) => Promise<void>)[] = []
+      vi.spyOn(auth, 'onSigningOut').mockImplementation((step) => {
+        steps.push(step as never)
+        return () => undefined
+      })
+      const view = await open(SERVER_CHAT)
+      await pick(view, plan())
+      await flushPromises()
+      expect(steps).toHaveLength(1)
+
+      const sent: [string, string][] = []
+      await steps[0]!(async (method, path) => void sent.push([method, path]))
+      const queued = (server.callsOf('queueReply')[0]![1] as { id: string }).id
+      expect(sent).toEqual([['DELETE', `/api/v1/chat-outgoing/${queued}`]])
+      release()
+      await flushPromises()
     })
 
     it('stops an upload when the user leaves the chat, and queues nothing', async () => {
@@ -489,9 +570,9 @@ describe('ChatPane in the browser', () => {
       const view = await open(SERVER_CHAT)
       for (const [error, text] of [
         [new ChatApiError(413, 'Too much.', 'too_much_waiting'), 'Files waiting for your Mac take up too much space. Wait until they are sent, or cancel some, then attach this one again.'],
-        [new ChatApiError(429, 'Slow down.', null, 60_000), 'Too many files sent at once. Wait a few minutes, then attach it again.'],
         [new ChatApiError(413, 'Too large.', 'too_large'), 'The file is larger than 100 MB, the most Tresso sends.'],
         [new ChatApiError(409, 'Taken.', 'id_taken'), 'Your Tresso server did not take this change.'],
+        [new ChatApiError(429, 'Slow down.', null, 60_000), 'Too many files sent at once. Wait a few minutes, then attach it again.'],
       ] as const) {
         server.fail('uploadFile', error)
         await pick(view, plan())
@@ -501,6 +582,30 @@ describe('ChatPane in the browser', () => {
       const ids = server.callsOf('uploadFile').map((call) => call[1])
       expect(new Set(ids).size, 'A refusal is final: new ids each time.').toBe(ids.length)
       expect(server.callsOf('queueReply')).toEqual([])
+    })
+
+    it('holds Attach after too many files until the server\'s Retry-After passed', async () => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+      vi.setSystemTime(NOW)
+      const view = await open(SERVER_CHAT)
+      server.fail('uploadFile', new ChatApiError(429, 'Slow down.', null, 90_000))
+      await pick(view, plan())
+      await flushPromises()
+
+      const attach = view.get('button[aria-label="Attach a file"]')
+      expect(attach.attributes('disabled')).toBeDefined()
+      expect(view.get('#chat-attach-note').text()).toBe('Too many files sent at once. Wait a few minutes, then attach it again.')
+      await useChatsStore().attachFile((await store.chatPage(SERVER_CHAT, { limit: 1 }))!.chat, plan())
+      await flushPromises()
+      expect(server.callsOf('uploadFile'), 'Nothing is asked while held.').toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(90_000)
+      await flushPromises()
+      expect(view.find('#chat-attach-note').exists()).toBe(false)
+      expect(view.get('button[aria-label="Attach a file"]').attributes('disabled')).toBeUndefined()
+      await pick(view, plan())
+      await flushPromises()
+      expect(server.callsOf('uploadFile')).toHaveLength(2)
     })
 
     it('uploads again under the same id when the upload itself got no answer', async () => {
@@ -628,6 +733,31 @@ describe('ChatPane in the browser', () => {
       expect(server.callsOf('queueReply')[0]![1]).toMatchObject({ text: 'On my way' })
       expect(field.element.value).toBe('')
       await vi.waitFor(() => expect(metaOf(view)[0]).toMatch(/waiting for your Mac$/))
+    })
+
+    it('takes a reply the user cancelled before its queueing answered as cancelled, not as an error', async () => {
+      let release!: () => void
+      server.held.set('queueReply', new Promise<void>((resolve) => (release = resolve)))
+      const view = await open(SERVER_CHAT, { relayOnline: false, relayOfflineSince: at(-30) })
+      const field = view.get<HTMLTextAreaElement>('textarea')
+      await field.setValue('On my way')
+      void view.get('form.composer').trigger('submit')
+      await flushPromises()
+      // The reply shows while it is being queued (here after a pull read the copy again), with its Cancel.
+      mail.chatChanges++
+      await flushPromises()
+      await vi.waitFor(() => expect(view.findAll('.mine .under button').map((button) => button.text())).toEqual(['Cancel']))
+
+      await view.get('.mine .under button').trigger('click')
+      await flushPromises()
+      release()
+      await flushPromises()
+
+      const queued = (server.callsOf('queueReply')[0]![1] as { id: string }).id
+      expect(server.callsOf('cancelReply')).toEqual([[queued]])
+      expect(server.outgoing.has(queued), 'Nothing was queued: it is never sent.').toBe(false)
+      expect(view.find('.composer [role="alert"]').exists()).toBe(false)
+      await vi.waitFor(() => expect(bubbles(view).filter((item) => item.classes().includes('mine'))).toEqual([]))
     })
 
     it('keeps the text and says it may already be queued when the answer is lost, and sends it once', async () => {

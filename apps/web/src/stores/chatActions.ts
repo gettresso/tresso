@@ -298,6 +298,10 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
         throw new ChatActionError('unsure', shown.id)
       }
       const failure = chatApiFailure(error)
+      if (failure?.status === 409 && failure.code === 'cancelled' && cancelledHere.has(shown.id)) {
+        // The user's Cancel overtook the queueing (the server kept it): what they asked for, not a failure.
+        throw new ChatActionError('cancelled', shown.id)
+      }
       if (again !== undefined && failure?.status === 422 && failure.violationPaths.includes('id')) {
         // Too old to be queued now, and maybe queued (or cancelled) before: never under a new id by itself.
         throw new ChatActionError('maybe_queued')
@@ -307,6 +311,9 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
       pulled()
     }
   }
+
+  /** Replies the user cancelled here, so a queueing refused as `cancelled` afterwards is known as their own doing. */
+  const cancelledHere = new Set<string>()
 
   /** Per chat with changes under way: what the server last confirmed of it, to put a refused change back to. */
   const confirmed = new Map<string, { row: SyncedChat; pending: number }>()
@@ -344,12 +351,14 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
         return
       }
       const shown: SyncedChatOutgoing = { ...row, status: 'cancelled' }
+      cancelledHere.add(id)
       await store.putChatOutgoing([shown])
       try {
         await api.cancelReply(id)
       } catch (error) {
         // Gone from the server already: what the user wanted.
         if (chatApiFailure(error)?.status !== 404) {
+          cancelledHere.delete(id)
           await replaceReply(store, shown, row)
           throw chatActionError(error)
         }

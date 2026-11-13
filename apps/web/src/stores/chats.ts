@@ -69,6 +69,7 @@ export type AttachState =
   | { state: 'sent'; chatId: string; name: string }
   | { state: 'queued'; chatId: string; name: string }
   | { state: 'cancelled'; chatId: string; name: string }
+  | { state: 'maybe_sent'; chatId: string; name: string }
   | { state: 'failed'; chatId: string; name: string; error: AttachError; detail?: string }
 
 /**
@@ -77,6 +78,19 @@ export type AttachState =
  * goes under the same upload and reply ids, so it is queued once, also after a reload.
  */
 export const UNSURE_FILES = 'unsure-files'
+
+/**
+ * An attach under way in a chat: how to stop its upload, whether the user cancelled it, the reply id it is queued under
+ * (made before the queueing, so a Cancel during it can name it), and whether that queueing is under way.
+ */
+interface Run {
+  controller: AbortController
+  abandoned: boolean
+  replyId: string
+  queueing: boolean
+  /** The cancel sent for the reply while it was being queued (R1: the server keeps it even before it saw the reply). */
+  cancelling: Promise<boolean> | null
+}
 
 /** The ids an attach went under whose outcome was not known; `replyId` null when the upload itself got no answer. */
 interface UnsureFile {
@@ -202,7 +216,7 @@ export const useChatsStore = defineStore('chats', () => {
       (wa.modeSwitch !== null || (wa.config?.mode === 'all' && wa.serverAccount === null) || (relaysHere.value && (wa.importState === 'waiting' || wa.importState === 'reading'))),
   )
   /** Why Attach is off; null while it can be used (both modes send files now). */
-  const attachNote = computed<string | null>(() => null)
+  const attachNote = computed<string | null>(() => (serverFiles.value && attachHeldUntil.value !== null ? new ChatActionError('too_many_files').message : null))
   const localActions = localChatActions(() => mail.currentStore())
   const serverActions = serverChatActions({ api, store: () => mail.currentStore(), now: () => auth.serverNow(), pulled: () => void mail.syncNow() })
   /**
@@ -261,7 +275,9 @@ export const useChatsStore = defineStore('chats', () => {
    * reply is cancelled on the server once the queueing answered, so it never goes out.
    */
   const uploads = shallowRef<ReadonlyMap<string, AttachState>>(new Map())
-  const running = new Map<string, { controller: AbortController; abandoned: boolean }>()
+  const running = new Map<string, Run>()
+  /** Runs whose reply is being queued right now, until the queueing answered (for the sign-out step). */
+  const queueing = new Set<Run>()
   // A sign-out or an ended sign-in: no upload goes on for the user who left.
   auth.onSessionEnd(() => abandonUploads())
   /** What the user typed and did not send yet, per chat: kept while they look at another chat, in memory only. */
@@ -664,6 +680,15 @@ export const useChatsStore = defineStore('chats', () => {
     try {
       row = await actions.value.send(chatId, text, again)
     } catch (cause) {
+      if (cause instanceof ChatActionError && cause.code === 'cancelled' && cause.replyId !== null) {
+        // The user cancelled it while it was being queued, and the server kept that: it is cancelled, as they asked.
+        if (earlier !== undefined) {
+          await keepUnsure(copy, chatId, null)
+        }
+        drafts.delete(chatId)
+        version.value++
+        return { ...(await cancelledRow(copy, chatId, cause.replyId)) }
+      }
       if (cause instanceof ChatActionError && cause.code === 'unsure' && cause.replyId !== null && checked.ok) {
         await keepUnsure(copy, chatId, { text: checked.text, id: cause.replyId })
       } else if (earlier !== undefined && checked.ok && checked.text === earlier.text) {
@@ -682,8 +707,23 @@ export const useChatsStore = defineStore('chats', () => {
     return row
   }
 
+  /** The reply as the copy holds it now (cancelled), for a send the user cancelled meanwhile. */
+  async function cancelledRow(copy: MailStore, chatId: string, id: string): Promise<SyncedChatOutgoing> {
+    const row = (await copy.chatPage(chatId, { limit: 1 }))?.outgoing.find((reply) => reply.id === id)
+    if (row === undefined) {
+      throw new ChatActionError('cancelled', id)
+    }
+    return row
+  }
+
   /** Cancels a reply that waits or was not sent; one being sent cannot be (`already_going_out`). */
   async function cancel(chatId: string, id: string): Promise<void> {
+    const run = running.get(chatId)
+    if (run !== undefined && run.replyId === id) {
+      // A file on its way: its Cancel is the upload's (nothing more is queued, a queued reply is cancelled).
+      cancelAttach(chatId)
+      return
+    }
     if (store() !== null) {
       checkWritable()
       try {
@@ -1033,8 +1073,10 @@ export const useChatsStore = defineStore('chats', () => {
    * carries it is queued for the relaying Mac, which sends it in its next round. One upload at a time in a chat; others
    * go on in other chats. When the outcome was not known, attaching the same file again within UNSURE_FILE_MS goes with
    * the same upload and reply ids (kept in the copy, by fingerprint), so it is queued once; once the copy has that
-   * reply, or the time passed, the ids are new. At most 100 MB. Cancelled while uploading, nothing is queued; cancelled
-   * while the reply is being queued, the reply is cancelled on the server once the queueing answered.
+   * reply, or the time passed, the ids are new. At most 100 MB, and nothing while the server asked to wait (a 429:
+   * attachHeldUntil). Cancel while uploading queues nothing. Cancel while the reply is being queued sends the cancel at
+   * once (the server keeps it even before it saw the reply, so the queueing is then refused) and again once the
+   * queueing answered; a cancel that could not be confirmed says that the file may still be sent.
    */
   async function attachFile(chat: SyncedChat, file: File): Promise<void> {
     const copy = store()
@@ -1046,17 +1088,17 @@ export const useChatsStore = defineStore('chats', () => {
       setUpload(chat.id, { state: 'failed', chatId: chat.id, name, error: 'too_large' })
       return
     }
-    if (writesHeld.value) {
-      setUpload(chat.id, { state: 'failed', chatId: chat.id, name, error: 'not_queued', detail: new ChatActionError('checking').message })
+    if (attachHeldUntil.value !== null && auth.serverNow() < attachHeldUntil.value) {
+      setUpload(chat.id, { state: 'failed', chatId: chat.id, name, error: 'not_queued', detail: new ChatActionError('too_many_files').message })
       return
     }
-    const run = { controller: new AbortController(), abandoned: false }
-    running.set(chat.id, run)
-    setUpload(chat.id, { state: 'sending', chatId: chat.id, name, phase: 'uploading', progress: 0 })
     const key = `${chat.id}\n${fileFingerprint(name, file.size, file.lastModified)}`
     let known = await readUnsureFiles(copy)
     const earlier = known.get(key) ?? null
     const uploadId = earlier?.uploadId ?? uuidV7(auth.serverNow())
+    const run: Run = { controller: new AbortController(), abandoned: false, replyId: earlier?.replyId ?? uuidV7(auth.serverNow()), queueing: false, cancelling: null }
+    running.set(chat.id, run)
+    setUpload(chat.id, { state: 'sending', chatId: chat.id, name, phase: 'uploading', progress: 0 })
     const remember = async (replyId: string | null): Promise<void> => {
       known = new Map(await readUnsureFiles(copy)).set(key, { uploadId, replyId, at: earlier?.at ?? auth.serverNow() })
       await keepUnsureFiles(copy, known)
@@ -1066,75 +1108,93 @@ export const useChatsStore = defineStore('chats', () => {
       known.delete(key)
       await keepUnsureFiles(copy, known)
     }
-    let replyId: string | null = null
+    /** The user cancelled: ends as cancelled when the server confirmed the cancel, else as maybe sent. */
+    const settleCancel = async (queued: boolean): Promise<void> => {
+      if (running.get(chat.id) !== run) {
+        // Signed out, switched off or the copy went (abandonUploads): its cancel went from there, and nothing is shown.
+        await run.cancelling
+        return
+      }
+      if (!queued && run.cancelling === null) {
+        setUpload(chat.id, { state: 'cancelled', chatId: chat.id, name })
+        return
+      }
+      // Again now that the queueing answered (the first may have gone before the server could keep it).
+      const confirmed = (await (run.cancelling ?? Promise.resolve(false))) || (await cancelOnServer(run.replyId))
+      await forget()
+      setUpload(chat.id, confirmed ? { state: 'cancelled', chatId: chat.id, name } : { state: 'maybe_sent', chatId: chat.id, name })
+    }
     try {
       try {
         await api.uploadFile(chat.id, uploadId, file, {
           signal: run.controller.signal,
           onProgress: (sent, total) => {
-            if (running.get(chat.id) === run) {
+            if (running.get(chat.id) === run && !run.abandoned) {
               setUpload(chat.id, { state: 'sending', chatId: chat.id, name, phase: 'uploading', progress: total > 0 ? Math.min(1, sent / total) : null })
             }
           },
         })
       } catch (cause) {
-        if (run.controller.signal.aborted) {
-          throw cause
+        if (run.abandoned) {
+          await settleCancel(false)
+          return
         }
         // Not uploaded as far as this device knows: the same file again goes under the same upload id. A refusal (an
         // answer of the server) ends it: the next try gets new ids.
-        if (chatApiFailure(cause) === null) {
+        const failure = chatApiFailure(cause)
+        if (failure === null) {
           await remember(earlier?.replyId ?? null)
         } else {
           await forget()
-        }
-        throw chatActionError(cause, 'upload')
-      }
-      if (run.controller.signal.aborted) {
-        throw new DOMException('The upload was cancelled.', 'AbortError')
-      }
-      setUpload(chat.id, { state: 'sending', chatId: chat.id, name, phase: 'queueing', progress: 1 })
-      replyId = earlier?.replyId ?? null
-      try {
-        const queued = await actions.value.sendFile(chat.id, { uploadId, name, size: file.size }, '', replyId ?? undefined)
-        replyId = queued.id
-      } catch (cause) {
-        if (cause instanceof ChatActionError && cause.code === 'unsure' && cause.replyId !== null) {
-          replyId = cause.replyId
-          if (!run.abandoned) {
-            await remember(cause.replyId)
+          if (failure.status === 429) {
+            holdAttach(failure.retryAfterMs)
           }
+        }
+        setUpload(chat.id, { state: 'failed', chatId: chat.id, name, error: 'not_queued', detail: chatActionError(cause, 'upload').message })
+        return
+      }
+      if (run.abandoned) {
+        await settleCancel(false)
+        return
+      }
+      run.queueing = true
+      queueing.add(run)
+      setUpload(chat.id, { state: 'sending', chatId: chat.id, name, phase: 'queueing', progress: 1 })
+      try {
+        await actions.value.sendFile(chat.id, { uploadId, name, size: file.size }, '', run.replyId)
+      } catch (cause) {
+        queueing.delete(run)
+        if (run.abandoned) {
+          // A queueing refused as `cancelled` is the user's cancel having worked; anything else is settled the same way.
+          await settleCancel(true)
+          return
+        }
+        if (cause instanceof ChatActionError && cause.code === 'unsure') {
+          await remember(run.replyId)
         } else if (!(cause instanceof ChatActionError && cause.code === 'checking')) {
-          // Refused: never sent again under these ids.
+          // Refused: never sent again under these ids. Held writes (`checking`) asked nothing, so the ids stay as they were.
           await forget()
         }
-        throw cause
+        console.error('Sending a WhatsApp file failed', errorName(cause))
+        setUpload(chat.id, { state: 'failed', chatId: chat.id, name, error: 'not_queued', detail: chatActionError(cause, 'upload').message })
+        return
       }
+      queueing.delete(run)
       await forget()
       if (run.abandoned) {
-        throw new DOMException('The upload was cancelled.', 'AbortError')
+        await settleCancel(true)
+        return
       }
       setUpload(chat.id, { state: 'queued', chatId: chat.id, name })
       void afterReply()
     } catch (cause) {
-      if (run.abandoned && replyId !== null) {
-        // Cancelled while it was being queued: the reply is cancelled now that the queueing answered, so it never goes.
-        await forget()
-        try {
-          await actions.value.cancel(chat.id, replyId)
-        } catch (cancelling) {
-          console.error('Cancelling a WhatsApp file failed', errorName(cancelling))
-        }
-      }
-      if (run.controller.signal.aborted || run.abandoned) {
-        if (running.get(chat.id) === run && store() !== null) {
-          setUpload(chat.id, { state: 'cancelled', chatId: chat.id, name })
-        }
-      } else {
-        console.error('Sending a WhatsApp file failed', errorName(cause))
+      // The copy could not be read or written (it may have gone meanwhile).
+      console.error('Sending a WhatsApp file failed', errorName(cause))
+      if (running.get(chat.id) === run && store() !== null) {
         setUpload(chat.id, { state: 'failed', chatId: chat.id, name, error: 'not_queued', detail: chatActionError(cause, 'upload').message })
       }
     } finally {
+      queueing.delete(run)
       if (running.get(chat.id) === run) {
         running.delete(chat.id)
       }
@@ -1144,26 +1204,76 @@ export const useChatsStore = defineStore('chats', () => {
   }
 
   /**
+   * Cancels a reply on the server and says whether the server confirmed it (a 2xx, or 404: it is not there to send). A
+   * reply the server has not seen yet is kept as cancelled there, so its queueing, arriving later, is refused.
+   */
+  async function cancelOnServer(replyId: string): Promise<boolean> {
+    try {
+      await api.cancelReply(replyId)
+      return true
+    } catch (cause) {
+      console.error('Cancelling a WhatsApp file failed', errorName(cause))
+      return chatApiFailure(cause)?.status === 404
+    }
+  }
+
+  /** Attach waits until the server's Retry-After has passed (on its clock), after it said too many files at once. */
+  const attachHeldUntil = ref<number | null>(null)
+  let attachHoldTimer: ReturnType<typeof setTimeout> | null = null
+  function holdAttach(retryAfterMs: number | null): void {
+    const wait = retryAfterMs ?? 60_000
+    attachHeldUntil.value = auth.serverNow() + wait
+    if (attachHoldTimer !== null) {
+      clearTimeout(attachHoldTimer)
+    }
+    attachHoldTimer = setTimeout(() => {
+      attachHeldUntil.value = null
+      attachHoldTimer = null
+    }, wait)
+  }
+
+  /**
    * Cancel on a file on its way in a chat: an upload under way stops and nothing is queued; a reply being queued is
-   * cancelled on the server as soon as the queueing answered (attachFile).
+   * cancelled on the server at once and again once the queueing answered (attachFile).
    */
   function cancelAttach(chatId: string): void {
     const run = running.get(chatId)
-    if (run === undefined) {
+    if (run === undefined || run.abandoned) {
       return
     }
     run.abandoned = true
-    run.controller.abort()
+    if (run.queueing) {
+      run.cancelling = cancelOnServer(run.replyId)
+    } else {
+      run.controller.abort()
+    }
   }
 
-  /** Signed out, switched off or the copy went: every upload stops, and none is queued. */
+  /**
+   * Signed out, switched off or the copy went: every upload stops, and none is queued. A reply being queued is cancelled
+   * while the session is still there (switched off); at a sign-out the sign-out step below did that with the token
+   * that was ending.
+   */
   function abandonUploads(): void {
     for (const run of running.values()) {
       run.abandoned = true
       run.controller.abort()
+      if (run.queueing && run.cancelling === null && auth.isAuthenticated) {
+        run.cancelling = cancelOnServer(run.replyId)
+      }
     }
     running.clear()
   }
+
+  /**
+   * At the user's own sign-out, with the session's token before it is revoked: a reply being queued is cancelled on the
+   * server, so it never goes. A session that ended by itself has no token left: such a reply, if the server took it,
+   * waits in the queue like any other (it can be cancelled from another device).
+   */
+  auth.onSigningOut(async (send) => {
+    // Every reply whose queueing has not answered yet, also one abandoned meanwhile (the copy may go first).
+    await Promise.allSettled([...queueing].map((run) => send('DELETE', `/api/v1/chat-outgoing/${encodeURIComponent(run.replyId)}`)))
+  })
 
   /** The composer's attach line was read (in `chatId`'s chat, or any): it goes, unless a file is still on its way. */
   function clearAttach(chatId: string | null = null): void {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { SyncedChatMessage } from '@tresso/core'
 import type { MediaState } from '@/stores/chats'
 import AppIcon from '@/components/AppIcon.vue'
@@ -26,11 +26,30 @@ const failed = computed(() => (view.value === null ? props.state.state === 'fail
 /**
  * "Download anyway" asks first, in the row (as leaving a chat out does): an alertdialog with the warning, the focus on
  * Cancel, Escape to cancel. The browser's own confirm is not used: Enter would accept it, and the desktop webview has
- * none of its own.
+ * none of its own. Closing it (Cancel, Escape, accepting) puts the focus back on the row's button; when the file's state
+ * changes meanwhile (no longer one that asks), the dialog closes the same way.
  */
 const confirming = ref(false)
+const row = ref<HTMLElement | null>(null)
 const cancelButton = ref<HTMLButtonElement | null>(null)
 const anyway = ref<HTMLButtonElement | null>(null)
+
+/** The focus back in the row: on "Download anyway" while it is there, else on the row's other button, else the row. */
+async function focusRow(): Promise<void> {
+  await nextTick()
+  const target = anyway.value ?? row.value?.querySelector<HTMLButtonElement>('button.action:not([disabled])') ?? row.value
+  target?.focus()
+}
+
+watch(
+  () => view.value?.action,
+  (action) => {
+    if (confirming.value && action !== 'confirm') {
+      confirming.value = false
+      void focusRow()
+    }
+  },
+)
 
 async function askUnscanned(): Promise<void> {
   confirming.value = true
@@ -40,18 +59,18 @@ async function askUnscanned(): Promise<void> {
 
 async function closeConfirm(): Promise<void> {
   confirming.value = false
-  await nextTick()
-  anyway.value?.focus()
+  await focusRow()
 }
 
-function acceptUnscanned(): void {
+async function acceptUnscanned(): Promise<void> {
   confirming.value = false
   emit('openUnscanned')
+  await focusRow()
 }
 </script>
 
 <template>
-  <span class="media" :class="{ failed }">
+  <span ref="row" class="media" :class="{ failed }" tabindex="-1">
     <span class="icon" aria-hidden="true">
       <svg v-if="message.mediaKind === 'audio'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z" />
