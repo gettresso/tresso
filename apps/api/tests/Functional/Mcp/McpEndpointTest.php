@@ -24,6 +24,7 @@ final class McpEndpointTest extends DatabaseTestCase
     use TalksMcp;
 
     private const string METADATA_URL = 'http://localhost/.well-known/oauth-protected-resource/mcp';
+    private const string DEFAULT_SCOPES = 'mail:read mail:write mail:send todos:read todos:write calendar:read calendar:write settings:read settings:write signatures:read signatures:write';
 
     protected function setUp(): void
     {
@@ -38,7 +39,7 @@ final class McpEndpointTest extends DatabaseTestCase
         $this->mcpPost(['HTTP_ACCEPT' => 'application/json'], ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize']);
 
         self::assertResponseStatusCodeSame(401);
-        self::assertSame(\sprintf('Bearer resource_metadata="%s"', self::METADATA_URL), $this->client->getResponse()->headers->get('WWW-Authenticate'));
+        self::assertSame(\sprintf('Bearer resource_metadata="%s", scope="%s"', self::METADATA_URL, self::DEFAULT_SCOPES), $this->client->getResponse()->headers->get('WWW-Authenticate'), 'The scopes to ask for leave WhatsApp out.');
 
         $this->client->request('GET', self::METADATA_URL);
         self::assertResponseIsSuccessful();
@@ -53,6 +54,8 @@ final class McpEndpointTest extends DatabaseTestCase
             self::assertResponseStatusCodeSame(401);
             $challenge = (string) $this->client->getResponse()->headers->get('WWW-Authenticate');
             self::assertStringStartsWith(\sprintf('Bearer resource_metadata="%s", error="invalid_token"', self::METADATA_URL), $challenge);
+            self::assertStringEndsWith(\sprintf(', scope="%s"', self::DEFAULT_SCOPES), $challenge);
+            self::assertStringNotContainsString('chat:', $challenge);
         }
     }
 
@@ -125,7 +128,7 @@ final class McpEndpointTest extends DatabaseTestCase
             self::assertIsBool($annotations['destructiveHint'] ?? null, $name);
             self::assertIsBool($annotations['idempotentHint'] ?? null, $name);
             self::assertSame(str_starts_with($name, 'get_') || str_starts_with($name, 'list_') || str_starts_with($name, 'search_'), $annotations['readOnlyHint'], $name);
-            self::assertSame(str_starts_with($name, 'delete_'), $annotations['destructiveHint'], $name);
+            self::assertSame(str_starts_with($name, 'delete_') || str_starts_with($name, 'send_'), $annotations['destructiveHint'], $name.': deleting and sending cannot be taken back.');
             self::assertSame(str_starts_with($name, 'send_'), $annotations['openWorldHint'] ?? null, $name.': only sending reaches other people.');
         }
     }

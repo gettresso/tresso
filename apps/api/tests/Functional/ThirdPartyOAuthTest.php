@@ -530,7 +530,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
 
     /**
      * An app that names the chat scopes when it registers may ask for them; the consent screen lists them apart from
-     * the others, under WhatsApp, with a line that this is separate from mail.
+     * the others, under WhatsApp, with a line that this is separate from mail, as boxes the user ticks.
      */
     public function testAnAppThatNamesTheChatScopesIsAskedForThemApart(): void
     {
@@ -547,13 +547,111 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $items = static fn (string $selector): array => $crawler->filter($selector)->each(static fn (Crawler $item): string => $item->text());
         self::assertSame(['Read mail', 'Read your WhatsApp chats', 'Send WhatsApp messages as you'], $items('.scopes li strong'));
         self::assertSame(['Read your WhatsApp chats', 'Send WhatsApp messages as you'], $items('.chat-scopes li strong'), 'The chat scopes are listed on their own.');
-        self::assertSame(['WhatsApp'], $items('.chat-scopes h2'));
+        self::assertSame(['WhatsApp'], $items('form.decision fieldset.chat-scopes legend'), 'Inside the form, as a group of boxes.');
         self::assertStringContainsString('This is separate from mail.', $crawler->filter('.chat-scopes-note')->text());
+        self::assertStringContainsString('messages other people sent you', $crawler->filter('.chat-scopes-note')->text());
+        $this->assertChatBoxesUnticked($crawler, ['chat:read', 'chat:send']);
 
-        $token = $this->exchange($clientId, $this->answer($crawler, 'Allow', 'state-chat'), $verifier);
+        $token = $this->exchange($clientId, $this->allowTicking($crawler, ['chat:read'], 'state-chat'), $verifier);
+        self::assertSame('mail:read chat:read', $this->decodedResponse()['scope'] ?? null, 'Only what was ticked; the answer says so.');
         $this->client->request('GET', '/api/v1/chat-accounts/whatsapp/status', server: $this->bearer($token['access_token']));
         self::assertResponseIsSuccessful();
         self::assertFalse($this->decodedResponse()['onServer'] ?? null);
+        $this->client->request('POST', '/api/v1/chat-messages/search', server: $this->bearer($token['access_token']) + ['CONTENT_TYPE' => 'application/json'], content: '{"q":"hello"}');
+        self::assertResponseIsSuccessful('chat:read was ticked.');
+
+        $scopes = $this->connection()->fetchOne('SELECT scopes FROM oauth_consent');
+        self::assertIsString($scopes);
+        self::assertSame(['mail:read', 'chat:read'], json_decode($scopes, true));
+    }
+
+    public function testAllowingWithoutATickGivesNoWhatsApp(): void
+    {
+        $clientId = $this->registeredClientId(['scope' => 'mail:read chat:read chat:send']);
+        $this->signIn('kim@example.test');
+        $verifier = $this->verifier();
+        $crawler = $this->authorize($clientId, ['mail:read', 'chat:read', 'chat:send'], $verifier, 'state-none');
+        self::assertResponseIsSuccessful();
+
+        // The page's own Allow button, as a browser without JavaScript sends it: no box ticked.
+        $token = $this->exchange($clientId, $this->answer($crawler, 'Allow', 'state-none'), $verifier);
+
+        self::assertSame('mail:read', $this->decodedResponse()['scope'] ?? null);
+        $this->client->request('GET', '/api/v1/chat-accounts/whatsapp/status', server: $this->bearer($token['access_token']));
+        self::assertResponseStatusCodeSame(403);
+        $scopes = $this->connection()->fetchOne('SELECT scopes FROM oauth_consent');
+        self::assertIsString($scopes);
+        self::assertSame(['mail:read'], json_decode($scopes, true));
+    }
+
+    public function testARequestForWhatsAppAloneWithNothingTickedIsDenied(): void
+    {
+        $clientId = $this->registeredClientId(['scope' => 'mail:read chat:read']);
+        $this->signIn('kim@example.test');
+        $crawler = $this->authorize($clientId, ['chat:read'], $this->verifier(), 'state-chat-only');
+
+        $this->client->submit($crawler->selectButton('Allow')->form());
+
+        parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
+        self::assertSame('access_denied', $query['error'] ?? null, 'Nothing would be allowed.');
+        self::assertArrayNotHasKey('code', $query);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+    }
+
+    public function testTheBoxesAreNeverTickedBeforehandEvenForAnAppAllowedThem(): void
+    {
+        $clientId = $this->registeredClientId(['scope' => 'mail:read chat:read chat:send']);
+        $this->signIn('kim@example.test');
+        $crawler = $this->authorize($clientId, ['mail:read', 'chat:read', 'chat:send'], $this->verifier(), 'first');
+        $this->allowTicking($crawler, ['chat:read', 'chat:send'], 'first');
+
+        $crawler = $this->authorize($clientId, ['mail:read', 'chat:read', 'chat:send'], $this->verifier(), 'again');
+
+        self::assertResponseIsSuccessful('An app on this computer is asked every time.');
+        self::assertStringContainsString('You allowed this app before', $crawler->filter('.warning')->text());
+        $this->assertChatBoxesUnticked($crawler, ['chat:read', 'chat:send']);
+    }
+
+    /**
+     * Leaving a box unticked that the app held takes the scope back: its access tokens end at once, and a refresh gets
+     * a token without it.
+     */
+    public function testUntickingTakesWhatsAppBackAndEndsTheAppsTokens(): void
+    {
+        $clientId = $this->registeredClientId(['scope' => 'mail:read chat:read']);
+        $this->signIn('kim@example.test');
+        $verifier = $this->verifier();
+        $crawler = $this->authorize($clientId, ['mail:read', 'chat:read'], $verifier, 'first');
+        $tokens = $this->exchange($clientId, $this->allowTicking($crawler, ['chat:read'], 'first'), $verifier);
+        self::assertSame('mail:read chat:read', $this->decodedResponse()['scope'] ?? null);
+        $this->client->request('GET', '/api/v1/chat-accounts/whatsapp/status', server: $this->bearer($tokens['access_token']));
+        self::assertResponseIsSuccessful();
+
+        $this->signIn('kim@example.test');
+        $crawler = $this->authorize($clientId, ['mail:read', 'chat:read'], $this->verifier(), 'again');
+        $this->answer($crawler, 'Allow', 'again');
+
+        $scopes = $this->connection()->fetchOne('SELECT scopes FROM oauth_consent');
+        self::assertIsString($scopes);
+        self::assertSame(['mail:read'], json_decode($scopes, true));
+        $this->client->getCookieJar()->clear();
+        $this->client->request('GET', '/api/v1/chat-accounts/whatsapp/status', server: $this->bearer($tokens['access_token']));
+        self::assertResponseStatusCodeSame(401, 'The access token that held chat:read ended at once.');
+
+        $refreshed = $this->refresh($clientId, $tokens['refresh_token']);
+        self::assertResponseIsSuccessful('The refresh token stays, for what is still allowed.');
+        self::assertSame('mail:read', $this->decodedResponse()['scope'] ?? null);
+        $this->client->request('GET', '/api/v1/chat-accounts/whatsapp/status', server: $this->bearer($refreshed['access_token']));
+        self::assertResponseStatusCodeSame(403, 'The refreshed token has no chat:read.');
+    }
+
+    public function testATokenResponseAlwaysNamesItsScopes(): void
+    {
+        $clientId = $this->registeredClientId();
+        $tokens = $this->connect('kim@example.test', $clientId, ['signatures:read', 'todos:read']);
+        $this->refresh($clientId, $tokens['refresh_token']);
+
+        self::assertSame('signatures:read todos:read', $this->decodedResponse()['scope'] ?? null);
     }
 
     public function testAConsentScreenForMailAloneShowsNoWhatsAppSection(): void
@@ -1133,6 +1231,44 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
             'code_challenge_method' => 'S256',
             ...$extra,
         ]));
+    }
+
+    /**
+     * Allows on the consent screen with these WhatsApp boxes ticked, as the page's form posts it, and returns the code.
+     *
+     * @param list<string> $chatScopes
+     */
+    private function allowTicking(Crawler $consentScreen, array $chatScopes, string $state): string
+    {
+        $this->client->request('POST', (string) $consentScreen->filter('form.decision')->attr('action'), [
+            '_csrf_token' => (string) $consentScreen->filter('input[name="_csrf_token"]')->attr('value'),
+            'decision' => 'allow',
+            'chat_scopes' => $chatScopes,
+        ]);
+
+        $location = (string) $this->client->getResponse()->headers->get('Location');
+        self::assertStringStartsWith(self::REDIRECT.'?', $location);
+        parse_str((string) parse_url($location, \PHP_URL_QUERY), $query);
+        self::assertSame($state, $query['state'] ?? null);
+        $code = $query['code'] ?? null;
+        self::assertIsString($code);
+
+        return $code;
+    }
+
+    /**
+     * @param list<string> $scopes
+     */
+    private function assertChatBoxesUnticked(Crawler $consentScreen, array $scopes): void
+    {
+        $boxes = $consentScreen->filter('form.decision input[type="checkbox"][name="chat_scopes[]"]');
+        self::assertSame($scopes, $boxes->each(static fn (Crawler $box): string => (string) $box->attr('value')));
+        foreach ($boxes as $box) {
+            self::assertInstanceOf(\DOMElement::class, $box);
+            self::assertFalse($box->hasAttribute('checked'), 'Never ticked beforehand.');
+            $id = $box->getAttribute('id');
+            self::assertCount(1, $consentScreen->filter(\sprintf('label[for="%s"]', $id)), 'Each box has its label.');
+        }
     }
 
     /** Presses a button on the consent screen and returns the code the app gets. */

@@ -28,7 +28,7 @@ use Twig\Environment;
  * user allowed the app before. Denying sends the app `access_denied`.
  *
  * The WhatsApp scopes ({@see Scope::chatScopes()}) are listed apart from the others, with a line that they are
- * separate from mail.
+ * separate from mail, each as a box the user ticks; Allow grants the other scopes and the ticked ones only.
  *
  * Before anything is shown, the request must only ask for scopes such an app may have, and a `resource` (RFC 8707)
  * must be one this server protects; anything else goes back to the app as `invalid_scope` or `invalid_target`.
@@ -90,22 +90,48 @@ final readonly class ConsentScreen
         }
 
         match ($request->request->getString('decision')) {
-            self::ALLOW => $this->allow($event, $user, $client, $scopes),
+            self::ALLOW => $this->allow($event, $user, $client, $scopes, $this->tickedChatScopes($request)),
             self::DENY => $event->resolveAuthorization(AuthorizationRequestResolveEvent::AUTHORIZATION_DENIED),
             default => $event->setResponse($this->page($event, $client, $user, $scopes, $allowedBefore, 'Choose Allow or Deny.')),
         };
     }
 
     /**
+     * Allows what was asked, except the chat scopes the user did not tick: those are withdrawn, also when the app held
+     * them before. Nothing to allow at all (a request for chat scopes only, none ticked) is a denial.
+     *
+     * The authorization code still names every scope asked for (the bundle cannot narrow it here); the token issued for
+     * it gets only what the consent holds ({@see TokensNeedConsent}).
+     *
      * @param list<string> $scopes
+     * @param list<string> $ticked
      */
-    private function allow(AuthorizationRequestResolveEvent $event, User $user, Client $client, array $scopes): void
+    private function allow(AuthorizationRequestResolveEvent $event, User $user, Client $client, array $scopes, array $ticked): void
     {
-        $this->consents->allow($user, $client, $scopes);
+        $granted = array_values(array_filter($scopes, static fn (string $scope): bool => !Scope::from($scope)->isChat() || \in_array($scope, $ticked, true)));
+        $withdrawn = array_values(array_diff($scopes, $granted));
         // One answer per page: a second post of the same page needs a new token.
         $this->csrfTokens->refreshToken(self::CSRF_TOKEN_ID);
+        if ([] === $granted) {
+            $event->resolveAuthorization(AuthorizationRequestResolveEvent::AUTHORIZATION_DENIED);
+
+            return;
+        }
+        $this->consents->allow($user, $client, $granted, $withdrawn);
 
         $event->resolveAuthorization(AuthorizationRequestResolveEvent::AUTHORIZATION_APPROVED);
+    }
+
+    /**
+     * The chat scopes ticked on the page. The boxes are never ticked beforehand, not even for an app allowed them before.
+     *
+     * @return list<string>
+     */
+    private function tickedChatScopes(Request $request): array
+    {
+        $ticked = $request->request->all()['chat_scopes'] ?? [];
+
+        return \is_array($ticked) ? array_values(array_filter($ticked, \is_string(...))) : [];
     }
 
     /**

@@ -50,7 +50,12 @@ trait ConnectsThirdPartyApps
             'code_challenge_method' => 'S256',
         ]));
         self::assertResponseIsSuccessful('The consent screen is shown.');
-        $this->client->submit($crawler->selectButton('Allow')->form());
+        // The WhatsApp scopes are boxes the user ticks; the test ticks the ones it asks for.
+        $this->client->request('POST', (string) $crawler->filter('form.decision')->attr('action'), [
+            '_csrf_token' => (string) $crawler->filter('input[name="_csrf_token"]')->attr('value'),
+            'decision' => 'allow',
+            'chat_scopes' => array_values(array_intersect($scopes, ['chat:read', 'chat:send'])),
+        ]);
         parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
         $code = $query['code'] ?? null;
         self::assertIsString($code, 'Allowing did not return a code.');

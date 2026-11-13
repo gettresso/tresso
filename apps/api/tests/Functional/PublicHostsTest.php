@@ -107,7 +107,7 @@ final class PublicHostsTest extends DatabaseTestCase
         foreach (['mcp.localhost' => 'http://mcp.localhost', 'localhost' => 'http://localhost'] as $host => $base) {
             $this->mcpPost(['HTTP_HOST' => $host], ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize']);
             self::assertResponseStatusCodeSame(401);
-            self::assertSame(\sprintf('Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp"', $base), $this->client->getResponse()->headers->get('WWW-Authenticate'), 'The challenge names the host that was asked.');
+            self::assertStringStartsWith(\sprintf('Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp", scope="', $base), (string) $this->client->getResponse()->headers->get('WWW-Authenticate'), 'The challenge names the host that was asked.');
 
             $this->client->request('GET', $base.'/.well-known/oauth-protected-resource/mcp');
             self::assertResponseIsSuccessful();

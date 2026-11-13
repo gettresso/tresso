@@ -115,4 +115,19 @@ class OAuthConsent
         }
         $this->scopes = array_values(array_unique([...$this->scopes, ...$scopes]));
     }
+
+    /**
+     * Takes scopes back: the user left a WhatsApp scope unticked. Tokens issued for them must be ended by the caller.
+     *
+     * @param list<string> $scopes
+     *
+     * @return list<string> the scopes the consent held and no longer holds
+     */
+    public function withdraw(array $scopes): array
+    {
+        $withdrawn = array_values(array_intersect($this->scopes, $scopes));
+        $this->scopes = array_values(array_diff($this->scopes, $scopes));
+
+        return $withdrawn;
+    }
 }

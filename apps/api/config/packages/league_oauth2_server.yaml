@@ -7,6 +7,8 @@ league_oauth2_server:
         refresh_token_ttl: P30D
         enable_password_grant: false
         enable_implicit_grant: false
+        # Answers with the scopes the token holds, which can be fewer than asked for (App\Security\OAuth\TokensNeedConsent).
+        response_type_class: App\Security\OAuth\ScopedBearerTokenResponse
     resource_server:
         public_key: '%env(resolve:OAUTH_PUBLIC_KEY)%'
     scopes:
