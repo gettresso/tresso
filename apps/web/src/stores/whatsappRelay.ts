@@ -163,6 +163,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   let runningTask: Promise<void> | null = null
   /** The config changes, in order (updateConfig). */
   let saves: Promise<void> = Promise.resolve()
+  /** When the read whose rows the relay stored last began (epoch ms): every row the bridge had stored by then is in. */
+  let lastReadAt: number | null = null
+  /** When the read under way (or the last one) began, until its rows are stored. */
+  let readStartedAt: number | null = null
   /** Sender ids the chat screens asked the store about in this session (lookUpNames), found or not. */
   const askedNames = new Set<string>()
 
@@ -302,6 +306,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     senderNames.value = new Map()
     askedNames.clear()
     liveFrom.value = null
+    lastReadAt = null
+    readStartedAt = null
     importState.value = 'waiting'
     progress.value = null
     stuckRefused.value = 0
@@ -496,6 +502,14 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /**
+   * The moment a re-read begins from (resetLocalCursor's `liveFrom`): the start of the last read whose rows were stored,
+   * so a message that came in between that read and the reset still counts as live; now when no read was stored yet.
+   */
+  function resetMoment(): number {
+    return lastReadAt ?? Date.now()
+  }
+
+  /**
    * The backend as the relay uses it, telling the chat screens each reply's result: the list's last message time and the
    * pane's reply state move as soon as a reply was sent or refused, not only after the next stored message.
    */
@@ -505,7 +519,11 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       settings: () => made.settings(),
       ingest: (chats, messages, firstImport) => made.ingest(chats, messages, firstImport),
       cursor: () => made.cursor(),
-      setCursor: (cursor) => made.setCursor(cursor),
+      async setCursor(cursor) {
+        await made.setCursor(cursor)
+        // The rows of that read are stored now.
+        lastReadAt = readStartedAt ?? lastReadAt
+      },
       claimNext: () => made.claimNext(),
       async report(reply, result) {
         await made.report(reply, result)
@@ -557,8 +575,11 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   function chatBridge(from: string): ChatBridge {
     return {
       async read(afterRowid, limit) {
+        const started = Date.now()
         try {
-          return await commands.read(from, afterRowid, limit)
+          const page = await commands.read(from, afterRowid, limit)
+          readStartedAt = started
+          return page
         } catch (cause) {
           // The bridge writes to its store just now: this round is skipped, the next one reads.
           if (cause === 'busy') {
@@ -851,7 +872,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         await stopRelay()
         await updateConfig(id, (latest) => ({ ...latest, includeGroups: include }))
         if (include) {
-          await resetLocalCursor(store, Date.now())
+          await resetLocalCursor(store, resetMoment())
           await readImportState(store)
         } else {
           await removeLocalGroupChats(store)
@@ -920,7 +941,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
             throw cause
           }
         }
-        await resetLocalCursor(store, Date.now())
+        await resetLocalCursor(store, resetMoment())
         await readImportState(store)
         revision.value++
       })

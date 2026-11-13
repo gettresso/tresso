@@ -36,6 +36,8 @@ class FakeShell {
   failures: Record<string, unknown> = {}
   readonly saved: WhatsAppConfig[] = []
   readonly sent: { recipient: string; text: string }[] = []
+  /** When each read began. */
+  readonly readTimes: number[] = []
 
   emit(state: BridgeState): void {
     this.state = state
@@ -100,6 +102,7 @@ class FakeShell {
       identity: () => record('identity', () => ({ number: '31698765432', name: 'Kim Visser' })),
       read: (_folder, afterRowid, limit) =>
         record('read', (): BridgeRows => {
+          this.readTimes.push(Date.now())
           if (this.readFails !== null) {
             throw this.readFails
           }
@@ -746,9 +749,11 @@ describe('the WhatsApp relay store', () => {
     const takenAt = Date.now()
     expect(await wa.takeBackIn(DIRECT)).toBe(true)
     expect(shell.saved[shell.saved.length - 1]!.leftOut).toEqual([])
-    // Rows sent from now on are live: unread, and notified.
-    expect(wa.liveFrom).toBe(takenAt)
-    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(takenAt))
+    // Rows sent since the last read the relay stored are live (unread, notified): the reset counts from that read, not
+    // from the click, so a message that came in between is not taken for history.
+    expect(shell.readTimes).toContain(wa.liveFrom)
+    expect(wa.liveFrom!).toBeLessThanOrEqual(takenAt)
+    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(wa.liveFrom))
     await pass(3_000)
     const back = (await store.chats()).find(({ chat }) => chat.jid === DIRECT)
     expect(back).toMatchObject({ unread: 0, chat: { leftOut: false } })
@@ -796,7 +801,8 @@ describe('the WhatsApp relay store', () => {
     await pass(3_000)
     const at = Date.now()
     expect(await wa.setIncludeGroups(true)).toBe(true)
-    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(at))
-    expect(wa.liveFrom).toBe(at)
+    expect(wa.liveFrom).not.toBeNull()
+    expect(wa.liveFrom!).toBeLessThanOrEqual(at)
+    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(wa.liveFrom))
   })
 })

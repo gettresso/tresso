@@ -132,11 +132,13 @@ watch(
 )
 
 /**
- * A chat closed by leaving the screen to the list (Leave out, Noted, Archive, Back): focus goes to the row that came
- * after the one that was open, else the list itself, so it is never lost with the pane.
+ * A chat closed by going back to the list (Leave out, Noted, Archive, Back): focus goes to the row that came after the
+ * one that was open, else the list itself, so it is never lost with the pane.
  */
 watch(chatId, async (now, before) => {
-  if (before === null || now !== null) {
+  // Only when the route went back to a list: a mail conversation opened from the chat keeps the focus it gets.
+  if (before === null || now !== null || threadId.value !== null) {
+    followers = []
     return
   }
   const after = followers

@@ -559,4 +559,64 @@ describe('ChatPane', () => {
     expect(view.get('h2').text()).toBe('Family')
     expect(view.get('.timeline').attributes('role')).toBe('region')
   })
+
+  it('reads older messages again once when a reload that started during their read overtook them', async () => {
+    const messages = Array.from({ length: 80 }, (_, index) => incoming(`M${String(index).padStart(3, '0')}`, DIRECT, -300 + index))
+    const copy = await copyWith([direct], messages)
+    const view = await open(DIRECT_ID, copy)
+    const real = copy.chatPage.bind(copy)
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    // The older page is held; a reload starts and lands meanwhile; then the older page lands, overtaken.
+    vi.spyOn(copy, 'chatPage').mockImplementationOnce(async (...args) => {
+      const page = await real(...args)
+      await held
+      return page
+    })
+    await view.get('button.older').trigger('click')
+    await flushPromises()
+    relay.revision++
+    await flushPromises()
+    expect(bubbles(view)).toHaveLength(50)
+    release()
+    await flushPromises()
+    expect(bubbles(view)).toHaveLength(80)
+    wrapper = view
+  })
+
+  it('says incoming messages that land at the newest end, and nothing for own messages or the first load', async () => {
+    const copy = await copyWith([direct], [incoming('A1', DIRECT, -10)])
+    const view = await open(DIRECT_ID, copy)
+    const live = () => view.get('.incoming')
+    expect(live().attributes('aria-live')).toBe('polite')
+    expect(live().text()).toBe('')
+    const backend = new LocalChatBackend(copy, { includeGroups: true, leftOut: [], importSince: 0 }, { number: null, name: null, deviceId: 'd', deviceName: 'Mac' })
+
+    await backend.ingest([direct], [incoming('A2', DIRECT, 1, { text: 'Can you bring\nthe drill?' })], false)
+    relay.revision++
+    await flushPromises()
+    expect(live().text()).toBe('Bram Visser: Can you bring the drill?')
+
+    await backend.ingest([direct], [incoming('A3', DIRECT, 2), incoming('A4', DIRECT, 3), incoming('A5', DIRECT, 4)], false)
+    relay.revision++
+    await flushPromises()
+    expect(live().text()).toBe('3 new messages')
+
+    await backend.ingest([direct], [incoming('A6', DIRECT, 5, { fromMe: true, text: 'Typed on the phone' })], false)
+    relay.revision++
+    await flushPromises()
+    expect(live().text()).toBe('3 new messages')
+    wrapper = view
+  })
+
+  it('names the sender in a group, and a file by its kind', async () => {
+    const copy = await copyWith([group], [incoming('G1', GROUP, -10, { sender: { id: '1', name: 'Mom' } })])
+    const view = await open(GROUP_ID, copy)
+    const backend = new LocalChatBackend(copy, { includeGroups: true, leftOut: [], importSince: 0 }, { number: null, name: null, deviceId: 'd', deviceName: 'Mac' })
+    await backend.ingest([group], [incoming('G2', GROUP, 1, { sender: { id: '2', name: 'Joost' }, text: '', media: { kind: 'image', name: 'image_1.jpg', size: 1 } })], false)
+    relay.revision++
+    await flushPromises()
+    expect(view.get('.incoming').text()).toBe('Joost: Photo')
+    wrapper = view
+  })
 })

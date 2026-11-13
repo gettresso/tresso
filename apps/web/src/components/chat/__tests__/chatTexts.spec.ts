@@ -57,7 +57,7 @@ describe('chat texts', () => {
     expect(attachText({ state: 'sent', chatId, name: 'plan.pdf' })).toBe('plan.pdf was sent.')
     expect(attachText({ state: 'failed', chatId, name: 'plan.pdf', error: 'bridge_stopped' })).toBe('plan.pdf was not sent. The bridge is not running.')
     expect(attachText({ state: 'failed', chatId, name: 'plan.pdf', error: 'unconfirmed' })).toBe('plan.pdf: Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.')
-    expect(attachText({ state: 'failed', chatId, name: 'film.mov', error: 'too_large' })).toBe('film.mov was not sent. It is larger than 2 GB, the most Tresso sends.')
+    expect(attachText({ state: 'failed', chatId, name: 'film.mov', error: 'too_large' })).toBe('film.mov was not sent. It is larger than 100 MB, the most Tresso sends for now.')
   })
 
   it('announces a reply\'s change of state', () => {
