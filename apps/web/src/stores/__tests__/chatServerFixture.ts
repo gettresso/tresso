@@ -44,6 +44,10 @@ export class FakeChatServer implements ChatApi {
   failures = new Map<keyof ChatApi, { error: unknown; always: boolean }>()
   /** A call that waits for the test before it answers. */
   held = new Map<keyof ChatApi, Promise<void>>()
+  /** Calls the server carries out whose answer is lost on the way (the client sees no answer), once each. */
+  readonly answersLost = new Set<keyof ChatApi>()
+  /** Replies cancelled before the server saw them (their tombstones): a queueing of one is refused as `cancelled`. */
+  readonly cancelledUnseen = new Set<string>()
   private claims = new Map<string, string>()
   /** Files uploaded for replies, by upload id: chat, size, content. */
   readonly uploads = new Map<string, { chatId: string; size: number; content: string }>()
@@ -69,6 +73,13 @@ export class FakeChatServer implements ChatApi {
 
   fail(name: keyof ChatApi, error: unknown, always = false): void {
     this.failures.set(name, { error, always })
+  }
+
+  /** Throws as a lost answer would, when the test asked for that once for `name`. */
+  private loseAnswer(name: keyof ChatApi): void {
+    if (this.answersLost.delete(name)) {
+      throw new TypeError('Failed to fetch')
+    }
   }
 
   callsOf(name: keyof ChatApi): unknown[][] {
@@ -282,6 +293,9 @@ export class FakeChatServer implements ChatApi {
 
   async queueReply(chatId: string, request: Parameters<ChatApi['queueReply']>[1]): Promise<SyncedChatOutgoing> {
     await this.enter('queueReply', [chatId, request])
+    if (this.cancelledUnseen.has(request.id)) {
+      throw new ChatApiError(409, 'Cancelled.', 'cancelled')
+    }
     const known = this.outgoing.get(request.id)
     if (known !== undefined) {
       return known
@@ -312,6 +326,7 @@ export class FakeChatServer implements ChatApi {
       ...(file === undefined ? {} : { file }),
     }
     this.outgoing.set(row.id, row)
+    this.loseAnswer('queueReply')
     return row
   }
 
@@ -429,7 +444,11 @@ export class FakeChatServer implements ChatApi {
 
   async cancelReply(id: string): Promise<void> {
     await this.enter('cancelReply', [id])
-    this.outgoing.delete(id)
+    if (!this.outgoing.delete(id)) {
+      // Not seen yet: kept as cancelled, so its queueing, arriving later, is refused.
+      this.cancelledUnseen.add(id)
+    }
+    this.loseAnswer('cancelReply')
   }
 
   async retryReply(id: string): Promise<SyncedChatOutgoing> {

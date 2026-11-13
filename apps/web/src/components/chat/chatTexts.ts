@@ -159,11 +159,14 @@ export function attachText(state: AttachState): string | null {
   switch (state.state) {
     case 'sending':
       if (state.phase === 'uploading') {
-        return state.progress === null || state.progress === undefined ? `Uploading ${state.name}…` : `Uploading ${state.name}, ${Math.round(state.progress * 100)}%…`
+        // The percentage is on the progress bar (its value), not in this live line: a screen reader would read every step.
+        return `Uploading ${state.name}…`
       }
       return state.phase === 'queueing' ? `Queueing ${state.name} for your Mac…` : `Sending ${state.name}…`
     case 'cancelled':
       return `${state.name} was not sent.`
+    case 'maybe_sent':
+      return `${state.name} may still be sent. Check the chat.`
     case 'sent':
       return `${state.name} was sent.`
     case 'queued':

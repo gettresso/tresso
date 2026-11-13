@@ -463,6 +463,16 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /** Registers what has to happen when a session ends; returns the function that removes it again. */
+  /**
+   * Work a sign-out by the user does with the session's own access token before it is revoked (a session that ended by
+   * itself has no token left to do it with): `send` is `send` with that token, no refresh, no retry.
+   */
+  const signOutSteps = new Set<(send: <T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<T>) => Promise<void>>()
+  function onSigningOut(step: (send: <T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<T>) => Promise<void>): () => void {
+    signOutSteps.add(step)
+    return () => signOutSteps.delete(step)
+  }
+
   function onSessionEnd(handler: (reason: SessionEnd) => Promise<void> | void): () => void {
     endHandlers.add(handler)
     return () => endHandlers.delete(handler)
@@ -503,7 +513,10 @@ export const useAuthStore = defineStore('auth', () => {
     await store(null)
     let revocationAnswered = false
     const tellServer = (async () => {
-      // The pushes first, while the access token is still valid at the server; then the revocation, which ends it.
+      // What other stores still owe the server (a reply the user cancelled while it was being queued), then the pushes,
+      // while the access token is still valid at the server; then the revocation, which ends it.
+      const send = sendWith(ending?.accessToken ?? null)
+      await Promise.allSettled([...signOutSteps].map((step) => withinTime(PUSH_BUDGET_MS, step(send))))
       await withinTime(PUSH_BUDGET_MS, disableWebPush(sendWith(ending?.accessToken ?? null))).catch((error: unknown) => {
         // The subscription in the browser went before the server was asked (disableWebPush).
         console.error('Telling the server this browser signed out failed', error)
@@ -905,6 +918,7 @@ export const useAuthStore = defineStore('auth', () => {
     completeSignIn,
     signOut,
     onSessionEnd,
+    onSigningOut,
     followSignOutElsewhere,
     loadMe,
     api,
