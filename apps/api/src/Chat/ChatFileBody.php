@@ -22,7 +22,7 @@ use Symfony\Component\Validator\ConstraintViolationList;
  * `X-Content-SHA256` (hex), when sent, must match what arrived (422); the relay always sends it, for the SHA-256 the
  * bridge's store holds.
  */
-final readonly class ChatFileBody
+final class ChatFileBody
 {
     public const string SHA256_HEADER = 'X-Content-SHA256';
 
@@ -31,12 +31,24 @@ final readonly class ChatFileBody
 
     private const int CHUNK = 1024 * 1024;
 
-    public function __construct(private ChatMediaLimits $limits)
+    /** How often a process looks for temporary files a killed worker left behind, at most (seconds). */
+    private const int SWEEP_EVERY = 600;
+
+    /** When this process last looked (epoch seconds). */
+    private static int $sweptAt = 0;
+
+    public function __construct(private readonly ChatMediaLimits $limits)
     {
     }
 
     public function receive(Request $request, bool $hashRequired): ReceivedChatFile
     {
+        // The API's own temporary folder, which is where the files of killed workers stay (the maintenance worker runs
+        // elsewhere): cheap, and at most once every few minutes per process.
+        if (time() - self::$sweptAt >= self::SWEEP_EVERY) {
+            self::$sweptAt = time();
+            SweepChatMediaHandler::sweepTemporary(sys_get_temp_dir(), time() - SweepChatMediaHandler::TEMPORARY_FOR);
+        }
         $max = $this->limits->maxFileBytes;
         $announced = $request->headers->get('Content-Length');
         if (is_numeric($announced) && (int) $announced > $max) {

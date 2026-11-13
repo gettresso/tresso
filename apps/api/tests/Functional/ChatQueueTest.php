@@ -9,6 +9,7 @@ use App\Security\Scope;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Uid\UuidV7;
 
 /**
  * The reply queue: a reply written on any of Kim's devices waits until her relaying Mac claims it, and goes out once.
@@ -381,6 +382,117 @@ final class ChatQueueTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$sending.'/retry', [], $this->web);
         self::assertResponseStatusCodeSame(409);
         self::assertSame('not_failed', $this->decodedResponse()['code'] ?? null);
+    }
+
+    public function testACancelThatOvertakesItsQueueingIsKept(): void
+    {
+        $id = self::newReplyId();
+        $cursor = $this->delta(0)['cursor'];
+
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$id, server: $this->web);
+        self::assertResponseStatusCodeSame(204, 'An id a new reply could have: the cancel is recorded.');
+        self::assertSame([['type' => 'chatOutgoing', 'id' => $id]], $this->delta($cursor)['deleted']);
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$id, server: $this->web);
+        self::assertResponseStatusCodeSame(204, 'Again: the same.');
+
+        $this->queueReply($this->chatId, 'Too late', $id);
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('cancelled', $this->decodedResponse()['code'] ?? null);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'), 'Nothing goes out.');
+
+        // In the other order the reply is there and goes as before.
+        $queued = self::newReplyId();
+        $this->queueReply($this->chatId, 'In time', $queued);
+        self::assertResponseStatusCodeSame(201);
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$queued, server: $this->web);
+        self::assertResponseStatusCodeSame(204);
+        $this->relay('outgoing/claim');
+        self::assertResponseStatusCodeSame(204);
+    }
+
+    public function testACancelOfAnIdNoNewReplyCouldHaveIsNotFound(): void
+    {
+        $old = new UuidV7(UuidV7::generate(new \DateTimeImmutable('-11 minutes')))->toRfc4122();
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$old, server: $this->web);
+        self::assertResponseStatusCodeSame(404);
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.Uuid::v4()->toRfc4122(), server: $this->web);
+        self::assertResponseStatusCodeSame(404);
+
+        $kims = $this->queueReply($this->chatId, 'Mine')['id'] ?? null;
+        self::assertIsString($kims);
+        $this->createUser('ann@example.test', 'Ann');
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$kims, server: $this->userHeaders('ann@example.test', ['mail:read', 'mail:write', 'mail:send']));
+        self::assertResponseStatusCodeSame(404, 'Another user\'s reply is not found, and stays.');
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'));
+        self::assertSame(0, $this->countRows("SELECT COUNT(*) FROM sync_tombstone WHERE entity_type = 'chatOutgoing'"));
+    }
+
+    public function testCancelsOfUnseenRepliesAreLimited(): void
+    {
+        for ($i = 0; $i < 4; ++$i) {
+            $this->client->request('DELETE', '/api/v1/chat-outgoing/'.self::newReplyId(), server: $this->web);
+            self::assertResponseStatusCodeSame(204);
+        }
+
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.self::newReplyId(), server: $this->web);
+
+        self::assertResponseStatusCodeSame(429);
+    }
+
+    public function testACancelledReplyThatWentOutAfterAllShowsAsSent(): void
+    {
+        $id = $this->unconfirmedReply('Maybe out');
+        $cursor = $this->delta(0)['cursor'];
+
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$id, server: $this->web);
+        self::assertResponseStatusCodeSame(204);
+        self::assertSame([['type' => 'chatOutgoing', 'id' => $id]], $this->delta($cursor)['deleted']);
+        self::assertSame('cancelled', $this->connection()->fetchOne('SELECT status FROM chat_outgoing WHERE id = :id', ['id' => $id]));
+        $this->relay('outgoing/claim');
+        self::assertResponseStatusCodeSame(204, 'Never handed out again.');
+        $this->queueReply($this->chatId, 'Maybe out', $id);
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('cancelled', $this->decodedResponse()['code'] ?? null);
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$id.'/retry', [], $this->web);
+        self::assertResponseStatusCodeSame(409);
+        $cursor = $this->delta(0)['cursor'];
+
+        $this->report($id, ['sent' => true, 'claimToken' => 'another claim']);
+        self::assertResponseStatusCodeSame(409, 'Only its own claim.');
+        $this->report($id, ['sent' => true]);
+
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame('sent', $this->decodedResponse()['status'] ?? null);
+        self::assertSame([$id], array_column($this->delta($cursor)['chatOutgoing'], 'id'), 'Every device shows it again, as sent.');
+    }
+
+    public function testACancelledReplyStaysCancelledWithoutItsRelaysWordOrWithALateFailure(): void
+    {
+        $quiet = $this->unconfirmedReply('Quiet');
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$quiet, server: $this->web);
+        self::assertResponseStatusCodeSame(204);
+        self::assertSame([], $this->delta(0)['chatOutgoing'], 'Out of every list.');
+
+        $failed = $this->unconfirmedReply('Not out');
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$failed, server: $this->web);
+        $cursor = $this->delta(0)['cursor'];
+        $this->report($failed, ['sent' => false, 'error' => 'refused']);
+
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame('cancelled', $this->decodedResponse()['status'] ?? null);
+        self::assertSame([], $this->delta($cursor)['chatOutgoing']);
+        self::assertSame(['cancelled', 'cancelled'], $this->connection()->fetchFirstColumn('SELECT status FROM chat_outgoing ORDER BY id'));
+    }
+
+    /** A reply its relay claimed and said `unconfirmed` for: its claim is still on it. */
+    private function unconfirmedReply(string $text): string
+    {
+        $id = $this->claimedReply($text);
+        $this->report($id, ['sent' => false, 'error' => 'unconfirmed']);
+        self::assertResponseStatusCodeSame(200);
+        self::assertNotNull($this->tokenOf($id));
+
+        return $id;
     }
 
     /**

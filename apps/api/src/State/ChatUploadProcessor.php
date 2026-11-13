@@ -35,9 +35,12 @@ final readonly class ChatUploadProcessor implements ProcessorInterface
         if (!$request instanceof Request) {
             throw new \LogicException('A file upload needs the request.');
         }
+        $user = $this->currentUser->get();
+        // Before the body is read.
+        $this->uploads->admit($user);
         $file = $this->body->receive($request, false);
         try {
-            [$upload, $made] = $this->uploads->upload($this->currentUser->get(), $uriVariables['chatId'] ?? null, $uriVariables['id'] ?? null, $file, new \DateTimeImmutable());
+            [$upload, $made] = $this->uploads->upload($user, $uriVariables['chatId'] ?? null, $uriVariables['id'] ?? null, $file, new \DateTimeImmutable());
         } finally {
             $file->discard();
         }

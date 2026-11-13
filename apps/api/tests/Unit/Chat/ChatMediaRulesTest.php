@@ -24,6 +24,21 @@ final class ChatMediaRulesTest extends TestCase
         new ChatMediaLimits(ChatMediaLimits::MAC_MAX_BYTES + 1);
     }
 
+    public function testTheSettingIsCheckedAsTheAppStarts(): void
+    {
+        ChatMediaLimits::check(null);
+        ChatMediaLimits::check('104857600');
+        ChatMediaLimits::check(4096);
+        foreach (['104857601', '0', '-1', '1e6', '', 'ten'] as $wrong) {
+            try {
+                ChatMediaLimits::check($wrong);
+                self::fail('Refused: '.$wrong);
+            } catch (\InvalidArgumentException $exception) {
+                self::assertStringContainsString('CHAT_MAX_FILE_BYTES', $exception->getMessage());
+            }
+        }
+    }
+
     public function testNoFileSizeIsRefused(): void
     {
         $this->expectException(\InvalidArgumentException::class);

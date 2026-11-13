@@ -18,6 +18,7 @@ use App\Repository\ChatOutgoingRepository;
 use App\Repository\ChatRepository;
 use App\Repository\ChatUploadRepository;
 use App\Security\CallerKey;
+use App\Sync\Change\ChangeSequencer;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\DBAL\LockMode;
@@ -88,6 +89,9 @@ final readonly class ChatQueue
         private RateLimiterFactoryInterface $callerLimiter,
         #[Autowire(service: 'limiter.chat_reply_caller_day')]
         private RateLimiterFactoryInterface $callerDailyLimiter,
+        #[Autowire(service: 'limiter.chat_reply_cancel')]
+        private RateLimiterFactoryInterface $cancelLimiter,
+        private ChangeSequencer $sequencer,
     ) {
     }
 
@@ -217,6 +221,8 @@ final readonly class ChatQueue
      *   sees why instead of "check your phone". Neither sends anything: it is the claim's answer arriving late.
      * - A desktop that no longer relays the account may still say that a reply it claimed went out ($fromRelay false):
      *   `sent: true`, with its claim's token, from the device that claimed it; anything else is 409 `not_the_relay`.
+     * - A reply the user cancelled while it was `unconfirmed` keeps its claim: `sent: true` of that claim turns it into
+     *   `sent` (back in every list), any other answer leaves it cancelled.
      * - A result that changes nothing (the same result again, after its answer got lost) is answered as the first time;
      *   the claim may have ended with it, so no token is asked. Any other is refused: 409 `result_final`.
      *
@@ -246,6 +252,17 @@ final readonly class ChatQueue
         // (nothing went out: the user sees the real reason) both replace it; `unconfirmed` again changes nothing.
         $lateOutcome = ChatOutgoingStatus::Failed === $status && ChatOutgoingError::Unconfirmed === $outgoing->getError()
             && ($sent || ChatOutgoingError::Unconfirmed !== $result->error);
+        if (ChatOutgoingStatus::Cancelled === $status && $theClaim && ($fromRelay || $sent)) {
+            // Cancelled while it may have gone out: `sent: true` says it did, and every device shows it again as sent; any
+            // other answer leaves it cancelled. Nothing is sent either way.
+            if ($sent) {
+                $outgoing->markSent($now);
+                $outgoing->getChat()->messageAt($now);
+                $this->entityManager->flush();
+            }
+
+            return $outgoing;
+        }
         if ($theClaim && ($fromRelay || $sent) && (ChatOutgoingStatus::Sending === $status || $lateOutcome)) {
             if ($sent) {
                 // It went out: the file it carried is no longer needed here.
@@ -268,17 +285,62 @@ final readonly class ChatQueue
     /**
      * Removes a reply that waits or failed; one that is being sent or was sent stays.
      */
-    public function cancel(User $user, mixed $outgoingId): void
+    public function cancel(User $user, mixed $outgoingId, \DateTimeImmutable $now): void
     {
-        $this->entityManager->wrapInTransaction(function () use ($user, $outgoingId): void {
-            $outgoing = $this->lockedOwned($user, $outgoingId);
-            if (!\in_array($outgoing->getStatus(), [ChatOutgoingStatus::Waiting, ChatOutgoingStatus::Failed], true)) {
+        $this->entityManager->wrapInTransaction(function () use ($user, $outgoingId, $now): void {
+            $this->ownerLock->lock($user->getId());
+            $outgoing = \is_string($outgoingId) ? $this->outgoing->findOneOwnedBy($user, $outgoingId) : null;
+            if (!$outgoing instanceof ChatOutgoing) {
+                $this->cancelUnseen($user, $outgoingId, $now);
+
+                return;
+            }
+            $this->entityManager->refresh($outgoing);
+            $status = $outgoing->getStatus();
+            if (ChatOutgoingStatus::Cancelled === $status) {
+                return;
+            }
+            if (!\in_array($status, [ChatOutgoingStatus::Waiting, ChatOutgoingStatus::Failed], true)) {
                 throw ChatProblem::alreadyGoingOut();
+            }
+            if (ChatOutgoingError::Unconfirmed === $outgoing->getError() && null !== $outgoing->getClaimToken()) {
+                // It may have gone out, and its relay may still say so: kept as cancelled with its claim (out of every
+                // list, never handed out again), so a late `sent: true` can still show on every device that it did go.
+                $this->collector->release([$outgoing->markCancelled()]);
+                $this->entityManager->flush();
+
+                return;
             }
             $this->collector->release([$outgoing->getFileObjectKey()]);
             $this->entityManager->remove($outgoing);
             $this->entityManager->flush();
         });
+    }
+
+    /**
+     * A cancel for a reply the server has not seen: its queueing may still be on its way (the cancel overtook it). When
+     * the id is one a new reply could have (a UUIDv7 made in the last 10 minutes) and nobody holds it, the removal is
+     * written now, so that queueing, arriving later, is refused for good (409 `cancelled`, {@see refuseCancelled()}).
+     * Limited per user (`chat_reply_cancel`). Another id is not found. Inside the cancel's transaction, under the owner's
+     * lock, which queueing takes too.
+     */
+    private function cancelUnseen(User $user, mixed $outgoingId, \DateTimeImmutable $now): void
+    {
+        if (!\is_string($outgoingId) || !Uuid::isValid($outgoingId)) {
+            throw new NotFoundHttpException('Reply not found.');
+        }
+        $id = Uuid::fromString($outgoingId);
+        if (null !== $this->entityManager->find(ChatOutgoing::class, $id) || !QueueReply::freshId($id, $now)) {
+            throw new NotFoundHttpException('Reply not found.');
+        }
+        if ($this->isCancelled($user, $id)) {
+            return;
+        }
+        $limit = $this->cancelLimiter->create($user->getId()->toRfc4122())->consume();
+        if (!$limit->isAccepted()) {
+            throw new TooManyRequestsHttpException(max(1, $limit->getRetryAfter()->getTimestamp() - time()), 'Too many replies cancelled at once. Wait a few minutes, then try again.');
+        }
+        $this->sequencer->tombstones($user->getId(), ChatOutgoing::changeType(), [$id->toRfc4122()], $this->sequencer->next($user->getId()));
     }
 
     /**
@@ -323,12 +385,17 @@ final readonly class ChatQueue
      */
     private function refuseCancelled(User $user, Uuid $id): void
     {
-        if (false !== $this->connection->fetchOne(
-            \sprintf("SELECT 1 FROM sync_tombstone WHERE user_id = :user AND entity_type = '%s' AND entity_id = :id", ChatOutgoing::changeType()),
-            ['user' => $user->getId()->toRfc4122(), 'id' => $id->toRfc4122()],
-        )) {
+        if ($this->isCancelled($user, $id)) {
             throw ChatProblem::cancelled();
         }
+    }
+
+    private function isCancelled(User $user, Uuid $id): bool
+    {
+        return false !== $this->connection->fetchOne(
+            \sprintf("SELECT 1 FROM sync_tombstone WHERE user_id = :user AND entity_type = '%s' AND entity_id = :id", ChatOutgoing::changeType()),
+            ['user' => $user->getId()->toRfc4122(), 'id' => $id->toRfc4122()],
+        );
     }
 
     private function alreadyQueued(Uuid $id, User $user, Chat $chat): ?ChatOutgoing
@@ -339,6 +406,10 @@ final readonly class ChatQueue
         }
         if (!$existing->getChat()->getId()->equals($chat->getId()) || !$existing->getChatAccount()->getOwner()->getId()->equals($user->getId())) {
             throw ChatProblem::idTaken();
+        }
+        if (ChatOutgoingStatus::Cancelled === $existing->getStatus()) {
+            // Cancelled while it may have gone out: never queued again under its id.
+            throw ChatProblem::cancelled();
         }
 
         return $existing;

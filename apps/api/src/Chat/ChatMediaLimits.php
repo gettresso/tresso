@@ -20,9 +20,23 @@ final readonly class ChatMediaLimits
         #[Autowire(env: 'int:CHAT_MAX_FILE_BYTES')]
         public int $maxFileBytes,
     ) {
-        if ($maxFileBytes < 1 || $maxFileBytes > self::MAC_MAX_BYTES) {
-            // Above what the Mac reads, a file the server would take is one the Mac can never bring or send.
-            throw new \InvalidArgumentException(\sprintf('CHAT_MAX_FILE_BYTES must be a positive number of bytes, at most %d (what the Mac sends).', self::MAC_MAX_BYTES));
+        self::check($maxFileBytes);
+    }
+
+    /**
+     * Refuses a setting the app cannot work with; run as the kernel boots ({@see \App\Kernel::boot()}), so the app does
+     * not start with one. Above what the Mac reads, a file the server would take is one the Mac can never bring or send.
+     *
+     * @param mixed $value the setting as the environment holds it (null when it is not set: the default applies)
+     */
+    public static function check(mixed $value): void
+    {
+        if (null === $value) {
+            return;
+        }
+        $bytes = \is_int($value) ? $value : (\is_string($value) && 1 === preg_match('/^[0-9]+$/', $value) ? (int) $value : null);
+        if (null === $bytes || $bytes < 1 || $bytes > self::MAC_MAX_BYTES) {
+            throw new \InvalidArgumentException(\sprintf('CHAT_MAX_FILE_BYTES must be a whole number of bytes from 1 to %d (what the Mac sends).', self::MAC_MAX_BYTES));
         }
     }
 }

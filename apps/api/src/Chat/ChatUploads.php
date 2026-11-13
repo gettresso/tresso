@@ -61,6 +61,18 @@ final readonly class ChatUploads
     }
 
     /**
+     * Counts an upload against the user's limit (`chat_upload`), before its body is read: a user over it costs the server
+     * no reading.
+     */
+    public function admit(User $user): void
+    {
+        $limit = $this->limiter->create($user->getId()->toRfc4122())->consume();
+        if (!$limit->isAccepted()) {
+            throw new TooManyRequestsHttpException(max(1, $limit->getRetryAfter()->getTimestamp() - time()), 'Too many files uploaded at once. Wait a few minutes, then attach it again.');
+        }
+    }
+
+    /**
      * @return array{ChatUpload, bool} the upload, and whether this request made it
      */
     public function upload(User $user, mixed $chatId, mixed $uploadId, ReceivedChatFile $file, \DateTimeImmutable $now): array
@@ -74,10 +86,6 @@ final readonly class ChatUploads
             throw new NotFoundHttpException('Chat not found.');
         }
         self::refuseLeftOut($chat);
-        $limit = $this->limiter->create($user->getId()->toRfc4122())->consume();
-        if (!$limit->isAccepted()) {
-            throw new TooManyRequestsHttpException(max(1, $limit->getRetryAfter()->getTimestamp() - time()), 'Too many files uploaded at once. Wait a few minutes, then attach it again.');
-        }
 
         $owner = $user->getId();
         $key = BlobKey::of(BlobKind::ChatMedia, $owner, $this->blobs->fingerprint($owner, $file->sha256));
@@ -92,6 +100,7 @@ final readonly class ChatUploads
                 if ($this->waitingBytes($owner) + $file->size > $this->maxWaitingBytes) {
                     throw ChatProblem::tooMuchWaiting($this->maxWaitingBytes);
                 }
+                $this->refuseFullChat($chat);
                 $handle = $file->open();
                 try {
                     $stored = $this->blobs->store($owner, BlobKind::ChatMedia, $handle);
@@ -109,10 +118,7 @@ final readonly class ChatUploads
                 if ($this->waitingBytes($owner) + $file->size > $this->maxWaitingBytes) {
                     throw ChatProblem::tooMuchWaiting($this->maxWaitingBytes);
                 }
-                $waiting = $this->connection->fetchOne('SELECT COUNT(*) FROM chat_upload WHERE chat_id = :chat', ['chat' => $chat->getId()->toRfc4122()]);
-                if (is_numeric($waiting) && (int) $waiting >= self::MAX_UNQUEUED) {
-                    throw new TooManyRequestsHttpException(600, 'Too many files wait in this chat. Send or remove some first.');
-                }
+                $this->refuseFullChat($chat);
                 $upload = new ChatUpload($id, $chat, $stored->key, $stored->keyVersion, $stored->fingerprint, $file->size, $file->contentType, $now);
                 $this->entityManager->persist($upload);
                 $this->entityManager->flush();
@@ -127,6 +133,15 @@ final readonly class ChatUploads
             // Written but maybe not referred to: it goes again unless a message, reply or upload has it.
             $this->bus->dispatch(new CollectChatMedia($key), [new DelayStamp(60_000)]);
             throw $exception;
+        }
+    }
+
+    /** At most {@see MAX_UNQUEUED} uploads wait in a chat (checked before storing, and again under the owner's lock). */
+    private function refuseFullChat(Chat $chat): void
+    {
+        $waiting = $this->connection->fetchOne('SELECT COUNT(*) FROM chat_upload WHERE chat_id = :chat', ['chat' => $chat->getId()->toRfc4122()]);
+        if (is_numeric($waiting) && (int) $waiting >= self::MAX_UNQUEUED) {
+            throw new TooManyRequestsHttpException(600, 'Too many files wait in this chat. Send or remove some first.');
         }
     }
 
