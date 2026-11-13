@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AccessibilityInfo, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native'
+// Imported statically: the app has no over-the-air updates today, so every build that runs this code has the native
+// module. If over-the-air updates are ever added, this must become a guarded lazy require, or an update reaching an
+// older build without expo-clipboard would crash the screen.
 import * as Clipboard from 'expo-clipboard'
 import {
   canJoin,
@@ -20,6 +23,20 @@ import { useTheme, type Theme } from '@/theme'
 
 /** How long "Copied" stays on the button. */
 const COPIED_MS = 2000
+
+/**
+ * The link's text: at most {@link LINK_MAX} characters (core's linkText), on its own line above the buttons and
+ * allowed {@link LINK_LINES} lines, so a narrow phone wraps it rather than cutting it a second time (and so loses no
+ * part of the host). Exported for the test that checks it fits a 320 pt wide screen.
+ */
+export const LINK_MAX = 44
+export const LINK_LINES = 2
+export const LINK_FONT_SIZE = 12
+/** Inner padding of the link box, left and right. */
+export const LINK_PADDING = 12
+
+/** Said under a link the phone does not open (core's canJoin refused it), as on the web. */
+export const NOT_OPENED = 'Tresso does not open this link. Check where it leads before you use it.'
 
 interface Props {
   conference: Conference | null
@@ -47,19 +64,32 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
   const [openFailed, setOpenFailed] = useState(false)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Renders again when a link that is being made has waited too long, so it then reads as failed.
-  const [, setTick] = useState(0)
+  const [tick, setTick] = useState(0)
 
   const now = clock()
   const state = requestState({ conference, conferenceRequest: request }, now)
 
+  // Armed again after every tick until the state changes: the server's clock can still read under the limit when the
+  // timer fires. The wait is capped, so a requestedAt far in the future cannot overflow setTimeout into a tight loop.
   useEffect(() => {
     if (state !== 'creating' || request === null) {
       return
     }
-    const wait = Math.max(0, Date.parse(request.requestedAt) + MEETING_PENDING_MS - clock()) + 500
-    const timer = setTimeout(() => setTick((tick) => tick + 1), wait)
+    const left = Date.parse(request.requestedAt) + MEETING_PENDING_MS - clock()
+    const timer = setTimeout(() => setTick((value) => value + 1), Math.min(Math.max(0, left), MEETING_PENDING_MS) + 250)
     return () => clearTimeout(timer)
-  }, [state, request, clock])
+  }, [state, request, clock, tick])
+
+  // A link that stops being made while the screen is open is said once, also on iOS, where live regions are not read.
+  const said = useRef(state)
+  useEffect(() => {
+    const before = said.current
+    said.current = state
+    if (before === 'creating' && state === 'failed' && organizes && request !== null) {
+      const at = clock()
+      AccessibilityInfo.announceForAccessibility(`${requestTitle(request, at)}. ${failureHint(request, at)}`)
+    }
+  }, [state, organizes, request, clock])
 
   useEffect(
     () => () => {
@@ -117,15 +147,17 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
         ) : (
           <Text style={styles.app}>{conferenceLabel(conference, null)}</Text>
         )}
-        <View style={styles.linkRow}>
-          <Text style={styles.link} numberOfLines={1}>
-            {linkText(conference.url)}
+        <View style={styles.linkBox}>
+          <Text style={styles.link} numberOfLines={LINK_LINES}>
+            {linkText(conference.url, LINK_MAX)}
           </Text>
-          <Pressable style={styles.copy} onPress={() => void copy(conference)} accessibilityRole="button" accessibilityLabel="Copy meeting link">
+          {/* The visible words are the button's accessible name, so voice control finds it by what it says. */}
+          <Pressable style={styles.copy} onPress={() => void copy(conference)} accessibilityRole="button">
             <Icon name={copied ? 'check' : 'copy'} size={16} color={copied ? theme.know : theme.ink} strokeWidth={copied ? 2.4 : 2} />
             <Text style={styles.copyLabel}>{copied ? 'Copied' : 'Copy link'}</Text>
           </Pressable>
         </View>
+        {!joinable && <Text style={styles.hint}>{NOT_OPENED}</Text>}
         {copyFailed && (
           <View style={styles.fallback}>
             <Text style={styles.error}>Could not copy the link. Press and hold it here to copy it.</Text>
@@ -170,9 +202,9 @@ function makeStyles(theme: Theme) {
     join: { height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, borderRadius: 12, backgroundColor: theme.ink },
     joinLabel: { fontSize: 16, fontWeight: '600', color: theme.surface },
     app: { fontSize: 13, fontWeight: '600', color: theme.ink },
-    linkRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 12, borderRadius: 12, backgroundColor: theme.ground },
-    link: { flex: 1, minWidth: 0, fontFamily: MONO, fontSize: 12, color: theme.ink },
-    copy: { height: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, borderRadius: 12 },
+    linkBox: { paddingTop: 10, paddingHorizontal: LINK_PADDING, borderRadius: 12, backgroundColor: theme.ground },
+    link: { fontFamily: MONO, fontSize: LINK_FONT_SIZE, lineHeight: 16, color: theme.ink },
+    copy: { alignSelf: 'flex-end', height: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2 },
     copyLabel: { fontSize: 14, fontWeight: '600', color: theme.ink },
     fallback: { gap: 4 },
     fullLink: { fontFamily: MONO, fontSize: 12, color: theme.ink },

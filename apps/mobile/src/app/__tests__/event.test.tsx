@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { AccessibilityInfo, Linking } from 'react-native'
 import type { Conference, ConferenceRequest, Occurrence, SyncedCalendar, SyncedCalendarEvent } from '@tresso/core'
 import EventScreen from '@/app/calendar/event'
+import { LINK_FONT_SIZE, LINK_LINES, LINK_MAX, LINK_PADDING, NOT_OPENED } from '@/calendar/MeetingLink'
 
 const START = Date.parse('2026-10-23T08:00:00Z')
 
@@ -123,15 +124,16 @@ describe('the meeting link on the event screen', () => {
 
     fireEvent.click(screen.getByLabelText('Join with Microsoft Teams'))
     expect(openURL).toHaveBeenCalledExactlyOnceWith(teams.url)
+    expect(screen.queryByText(NOT_OPENED)).toBeNull()
 
     expect(screen.getByText('teams.microsoft.com/l/…22Tid%22%3a%22x%22%7d')).toBeTruthy()
     expect(clipboard.setStringAsync).not.toHaveBeenCalled()
 
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Copy meeting link'))
+      fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
     })
     expect(clipboard.setStringAsync).toHaveBeenCalledExactlyOnceWith(teams.url)
-    expect(screen.getByText('Copied')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy()
     expect(announce).toHaveBeenCalledWith('Meeting link copied')
 
     act(() => {
@@ -171,8 +173,9 @@ describe('the meeting link on the event screen', () => {
       expect(screen.queryByLabelText('Join with Microsoft Teams'), url).toBeNull()
       expect(screen.queryByRole('link'), url).toBeNull()
       expect(screen.getByText('Microsoft Teams')).toBeTruthy()
+      expect(screen.getByText(NOT_OPENED)).toBeTruthy()
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('Copy meeting link'))
+        fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
       })
       expect(clipboard.setStringAsync).toHaveBeenLastCalledWith(url)
       view.unmount()
@@ -191,7 +194,7 @@ describe('the meeting link on the event screen', () => {
     show(event({ location: 'Room 3.2' }))
 
     expect(screen.getByText('Room 3.2')).toBeTruthy()
-    expect(screen.queryByLabelText('Copy meeting link')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull()
   })
 
   it('says when copying failed and shows the whole link to copy by hand', async () => {
@@ -199,7 +202,7 @@ describe('the meeting link on the event screen', () => {
     show(event({ conference: teams }))
 
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Copy meeting link'))
+      fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
     })
 
     expect(screen.getByText('Could not copy the link. Press and hold it here to copy it.')).toBeTruthy()
@@ -268,7 +271,95 @@ describe('the meeting link on the event screen', () => {
   it('shows nothing about a link when there is none and none was asked for', () => {
     show(event())
 
-    expect(screen.queryByLabelText('Copy meeting link')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull()
     expect(screen.queryByText(/link/i)).toBeNull()
+  })
+
+  it('arms the wait again when the clock still reads under the limit, until the link reads as failed', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    show(event({ conferenceRequest: request() }))
+
+    // The timer fires after the 110 s left, but the server's clock moved only 50 s.
+    state.now += 50_000
+    act(() => {
+      vi.advanceTimersByTime(110_250)
+    })
+    expect(screen.getByText('Making the Teams link')).toBeTruthy()
+
+    state.now += 70_000
+    act(() => {
+      vi.advanceTimersByTime(60_250)
+    })
+    expect(screen.getByText('Could not make the Teams link')).toBeTruthy()
+  })
+
+  it('caps the wait for a request time far in the future', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const timeout = vi.spyOn(globalThis, 'setTimeout')
+    show(event({ conferenceRequest: request({ requestedAt: new Date(state.now + 365 * 86_400_000).toISOString() }) }))
+
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    const waits = timeout.mock.calls.map((call) => call[1] ?? 0).filter((ms) => ms > 1000)
+    expect(waits).toEqual([120_250])
+    expect(screen.getByText('Making the Teams link')).toBeTruthy()
+  })
+
+  it('says once, also to screen readers, when a link that was being made could not be made', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    show(event({ conferenceRequest: request() }))
+    expect(announce).not.toHaveBeenCalled()
+
+    state.now += 120_000
+    act(() => {
+      vi.advanceTimersByTime(120_000)
+    })
+    act(() => {
+      vi.advanceTimersByTime(300_000)
+    })
+
+    expect(announce).toHaveBeenCalledExactlyOnceWith('Could not make the Teams link. The event is saved without a link. Microsoft did not answer in time.')
+  })
+
+  it('says nothing to screen readers about a link that had already failed when the screen opened', () => {
+    show(event({ conferenceRequest: request({ status: 'failed', reason: 'refused' }) }))
+
+    expect(screen.getByText('Could not make the Teams link')).toBeTruthy()
+    expect(announce).not.toHaveBeenCalled()
+  })
+
+  it('uses neutral words for an app this phone does not know', () => {
+    show(event({ conferenceRequest: request({ provider: 'webex' as unknown as ConferenceRequest['provider'] }) }))
+
+    expect(screen.getByText('Making the meeting link')).toBeTruthy()
+  })
+
+  it('clears its timers when the screen closes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    clipboard.setStringAsync.mockResolvedValue(true)
+    const made = show(event({ conference: teams }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
+    })
+    expect(vi.getTimerCount()).toBe(1)
+    made.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+
+    const making = show(event({ conferenceRequest: request() }))
+    expect(vi.getTimerCount()).toBe(1)
+    making.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('the meeting link layout', () => {
+  it('fits the cut link in its lines on a 320 pt wide phone, so the host is never cut a second time', () => {
+    // The screen's padding (20 on each side) and the link box's; a monospaced character is at most 0.61 em wide
+    // (Menlo 0.602, Android's monospace 0.6).
+    const width = 320 - 2 * 20 - 2 * LINK_PADDING
+    const perLine = Math.floor(width / (0.61 * LINK_FONT_SIZE))
+    expect(LINK_MAX).toBeLessThanOrEqual(perLine * LINK_LINES)
   })
 })
