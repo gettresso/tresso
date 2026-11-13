@@ -15,7 +15,7 @@ function row(kind: MeetingRow['kind'], extra: Partial<MeetingRow> = {}): Meeting
   return { kind, title: 'Meeting link', hint: 'A hint.', tone: 'plain', icon: 'camera', ...extra }
 }
 
-function mountRow(props: { row: MeetingRow; on?: boolean; chosen?: MeetingChoice | null; link?: { provider: 'teams' | 'other'; url: string } | null; locked?: boolean; removable?: boolean; choices?: MeetingChoice[] }) {
+function mountRow(props: { row: MeetingRow; canLeave?: boolean; on?: boolean; chosen?: MeetingChoice | null; link?: { provider: 'teams' | 'other'; url: string } | null; locked?: boolean; removable?: boolean; choices?: MeetingChoice[] }) {
   return mount(MeetingLinkRow, {
     props: {
       row: props.row,
@@ -29,6 +29,7 @@ function mountRow(props: { row: MeetingRow; on?: boolean; chosen?: MeetingChoice
       removable: props.removable ?? false,
       busy: false,
       error: null,
+      canLeave: props.canLeave ?? true,
     },
     attachTo: document.body,
   })
@@ -197,5 +198,10 @@ describe('the meeting link row', () => {
       expect(item.attributes('aria-describedby')).toBe(id)
     }
     expect(wrapper.findAll('[role="menuitem"]')[0]!.attributes('aria-describedby')).toBe(id)
+  })
+
+  it('offers Leave without a link only where the server can drop the request alone', () => {
+    const failed = row('failed', { title: 'Could not make the Teams link', tone: 'error', icon: 'error' })
+    expect(mountRow({ row: failed, on: false, canLeave: false }).findAll('.actions button').map((button) => button.text())).toEqual(['Retry', 'Use another app'])
   })
 })

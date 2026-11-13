@@ -27,6 +27,8 @@ const props = defineProps<{
   busy: boolean
   /** An error of Retry or Leave without a link. */
   error: string | null
+  /** The server can drop the request without touching a link; without that, no "Leave without a link". */
+  canLeave?: boolean
 }>()
 const emit = defineEmits<{
   toggle: []
@@ -214,7 +216,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
     <div v-else-if="row.kind === 'failed'" class="actions">
       <button type="button" class="button button-primary" :disabled="busy" @click="act(() => emit('retry'))">Retry</button>
       <button type="button" class="button" aria-haspopup="menu" :aria-expanded="open" :disabled="busy" @click="openMenu($event)">Use another app</button>
-      <button type="button" class="button button-quiet" :disabled="busy" @click="act(() => emit('leave'))">Leave without a link</button>
+      <button v-if="canLeave" type="button" class="button button-quiet" :disabled="busy" @click="act(() => emit('leave'))">Leave without a link</button>
     </div>
     <div v-else-if="row.kind === 'reconnect'" class="actions">
       <button type="button" class="button button-primary" @click="emit('reconnect')">Reconnect</button>

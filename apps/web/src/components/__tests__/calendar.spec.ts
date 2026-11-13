@@ -221,6 +221,9 @@ describe('editor and invitation card', () => {
         const url = new URL(String(input))
         const method = init?.method ?? 'GET'
         // What the editor reads besides the save: the meeting preferences, and the event as the server has it.
+        if (method === 'GET' && url.pathname === '/api/v1/calendar/capabilities') {
+          return new Response(JSON.stringify({ eventDrafts: false, meetingTimes: false, attendeeAvailability: false, eventSuggestions: false, textSuggestions: false, meetingBriefs: false, briefSummaries: false, meetingRequestDrop: true }))
+        }
         if (method === 'GET' && url.pathname === '/api/v1/calendar/meeting-preferences') {
           return new Response(JSON.stringify({ ownLink: null, addWithGuests: false, defaults: {}, defaultOther: null, disabled: [], apps: ['meet', 'teams', 'own'] }))
         }
