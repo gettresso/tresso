@@ -6,6 +6,7 @@ import { CHAT_REPLY_MAX } from './format'
 import {
   LOCAL_CHAT_ACCOUNT,
   LOCAL_CURSOR,
+  LOCAL_HISTORY_THROUGH,
   LocalChatBackend,
   LocalChatError,
   cancelLocalReply,
@@ -370,5 +371,30 @@ describe('LocalChatBackend', () => {
     await setLocalChatState(store, localChatId(DIRECT), { leftOut: true })
     await expect(recordLocalAttachment(store, localChatId(DIRECT), 'a.pdf', 'x3', NOW)).rejects.toMatchObject({ code: 'left_out' })
     await expect(recordLocalAttachment(store, localChatId(GROUP), 'a.pdf', 'x4', NOW)).rejects.toMatchObject({ code: 'no_chat' })
+  })
+
+  it('reads the store again with only rows from before the reset as history', async () => {
+    await backend.ingest([direct], [incoming('A1', DIRECT, -30)], true)
+    expect((await store.chats())[0]).toMatchObject({ unread: 0 })
+
+    // Taken back in at NOW: the re-read brings an old row (history) and one sent since (live, unread).
+    await resetLocalCursor(store, NOW)
+    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(NOW))
+    expect(await backend.cursor()).toBeNull()
+    await backend.ingest([direct], [incoming('A1', DIRECT, -30), incoming('A2', DIRECT, -20), incoming('A3', DIRECT, 5)], true)
+    const summary = (await store.chats())[0]!
+    expect(summary.unread).toBe(1)
+    expect(summary.chat.readThrough).toBe(iso(0))
+
+    // A chat that comes in new during the re-read, with only live rows: all unread.
+    const other: IncomingChat = { jid: '31687654321@s.whatsapp.net', name: null, kind: 'direct' }
+    await backend.ingest([other], [incoming('B1', other.jid, 2)], true)
+    expect((await store.chats()).find(({ chat }) => chat.jid === other.jid)?.unread).toBe(1)
+
+    // The re-read ends: the mark goes, and a later first import counts everything as history again.
+    await backend.setCursor({ storeId: 's1', rowid: 9, firstImport: null })
+    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBeNull()
+    await resetLocalCursor(store)
+    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBeNull()
   })
 })

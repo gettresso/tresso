@@ -937,6 +937,9 @@ export class SqliteMailStore implements MailStore {
     return { chat: parse<SyncedChat>(row), messages: messages.sort(compareChatMessages), outgoing: outgoing.sort(compareChatOutgoing) }
   }
 
+  // Three or four separate reads (the chat, the window, whether older ones exist, the replies), each a call into the
+  // shell on the desktop. Kept apart on purpose: one statement joining them would repeat the chat and its replies on
+  // every message row, and a window is read only when a chat opens, changes or scrolls back.
   async chatPage(id: string, options: { limit: number; before?: ChatMessageKey | null; from?: ChatMessageKey | null }): Promise<ChatPage | null> {
     const row = await this.reader.first<JsonRow>('SELECT json FROM chats WHERE id = ?', [id])
     if (row === null) {
