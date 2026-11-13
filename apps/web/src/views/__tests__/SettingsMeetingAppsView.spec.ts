@@ -5,6 +5,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import type { MailAccount, MeetingPreferences } from '@tresso/core'
 import { calendar } from '@tresso/core/testing'
 import { useAccountsStore } from '@/stores/accounts'
+import { useMeetingAppsStore } from '@/stores/meetingApps'
 import { useMailStore } from '@/stores/mail'
 import SettingsMeetingAppsView from '../SettingsMeetingAppsView.vue'
 
@@ -57,6 +58,11 @@ describe('Settings, Meeting apps', () => {
   let stored: MeetingPreferences
   let accounts: MailAccount[]
   let refuse: string | null
+  let violations: { propertyPath: string; message: string }[]
+  let offline: boolean
+  let failRead: boolean
+  /** While set, PATCH answers wait for it: a test releases them one by one. */
+  let hold: Promise<void> | null
 
   beforeEach(() => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
@@ -65,6 +71,10 @@ describe('Settings, Meeting apps', () => {
     stored = preferences()
     accounts = [GMAIL, WORK, PERSONAL, FASTMAIL]
     refuse = null
+    violations = []
+    offline = false
+    failRead = false
+    hold = null
     useMailStore().calendars = CALENDARS
     vi.stubGlobal(
       'fetch',
@@ -73,11 +83,20 @@ describe('Settings, Meeting apps', () => {
         const path = new URL(String(input)).pathname
         const body = init?.body ? (JSON.parse(String(init.body)) as Partial<MeetingPreferences>) : undefined
         requests.push({ method, path, body })
+        if (offline && method === 'PATCH') {
+          throw new TypeError('Failed to fetch')
+        }
+        if (failRead && method === 'GET' && path === '/api/v1/calendar/meeting-preferences') {
+          return new Response(JSON.stringify({ detail: 'The server is busy. Try again in a moment.' }), { status: 503, headers: { 'Content-Type': 'application/problem+json' } })
+        }
+        if (method === 'PATCH' && hold !== null) {
+          await hold
+        }
         if (path === '/api/v1/mail-accounts') {
           return new Response(JSON.stringify(accounts))
         }
         if (method === 'PATCH' && refuse !== null) {
-          return new Response(JSON.stringify({ detail: refuse }), { status: 422, headers: { 'Content-Type': 'application/problem+json' } })
+          return new Response(JSON.stringify({ detail: refuse, violations }), { status: 422, headers: { 'Content-Type': 'application/problem+json' } })
         }
         if (method === 'PATCH') {
           const patch = body ?? {}
@@ -180,7 +199,7 @@ describe('Settings, Meeting apps', () => {
     await input.setValue('http://meet.example.com/kim')
     await input.trigger('blur')
     await settle()
-    expect(wrapper.get('#own-link-error').text()).toBe('Use a link that starts with https://.')
+    expect(wrapper.get('#meeting-error-ownLink').text()).toBe('Use a link that starts with https://.')
     expect(input.attributes('aria-invalid')).toBe('true')
     expect(patches()).toEqual([])
 
@@ -188,7 +207,7 @@ describe('Settings, Meeting apps', () => {
     await input.trigger('keydown', { key: 'Enter' })
     await settle()
     expect(patches()).toEqual([{ ownLink: 'https://meet.example.com/kim' }])
-    expect(wrapper.find('#own-link-error').exists()).toBe(false)
+    expect(wrapper.find('#meeting-error-ownLink').exists()).toBe(false)
     expect(card(wrapper, 'My own link').get('.pill').text()).toBe('Link set')
     // Blur after Enter sends nothing more.
     await input.trigger('blur')
@@ -261,7 +280,7 @@ describe('Settings, Meeting apps', () => {
     await input.trigger('blur')
     await settle()
     expect((input.element as HTMLInputElement).value).toBe('')
-    expect(wrapper.get('#own-link-error').text()).toBe('The server could not save this.')
+    expect(wrapper.get('#meeting-error-ownLink').text()).toBe('The server could not save this.')
   })
 
   it('shows a Zoom choice only when the server offers Zoom', async () => {
@@ -270,5 +289,176 @@ describe('Settings, Meeting apps', () => {
     expect(wrapper.findAll('#default-other option').map((option) => option.text())).toContain('Zoom (connect first)')
     // V1 has no Zoom card: connecting Zoom needs the owner first.
     expect(wrapper.findAll('article.card h4').map((item) => item.text())).not.toContain('Zoom')
+  })
+
+  it('shows the field message of a refusal, without the field name in front', async () => {
+    const wrapper = await page()
+    refuse = 'ownLink: This link does not look right. Check it and paste it again.'
+    violations = [{ propertyPath: 'ownLink', message: 'This link does not look right. Check it and paste it again.' }]
+    const input = wrapper.get('#own-link')
+    await input.setValue('https://meet.example.com/kim')
+    await input.trigger('blur')
+    await settle()
+    expect(wrapper.get('#meeting-error-ownLink').text()).toBe('This link does not look right. Check it and paste it again.')
+  })
+
+  it('says in plain words when the server cannot be reached', async () => {
+    const wrapper = await page()
+    offline = true
+    await wrapper.get('input[role="switch"]').setValue(false)
+    await settle()
+    expect(wrapper.get('#meeting-error-addWithGuests').text()).toBe('Tresso could not reach the server. Check your connection and try again.')
+  })
+
+  it('says when the preferences cannot be read', async () => {
+    failRead = true
+    const wrapper = await page()
+    expect(wrapper.get('[role="alert"]').text()).toBe('The server is busy. Try again in a moment.')
+  })
+
+  it('reads the preferences on opening, after a failed save, and when the window comes back', async () => {
+    const reads = () => requests.filter((request) => request.method === 'GET' && request.path === '/api/v1/calendar/meeting-preferences').length
+    const store = useMeetingAppsStore()
+    await store.ensureLoaded()
+    expect(reads()).toBe(1)
+    const wrapper = await page()
+    // Read again although the store had them: another tab may have changed them.
+    expect(reads()).toBe(2)
+    stored = { ...stored, disabled: [{ app: 'meet', mailAccountId: 'gmail' }] }
+    window.dispatchEvent(new Event('focus'))
+    await settle()
+    expect(reads()).toBe(3)
+    expect(card(wrapper, 'Google Meet').get('.row .status').text()).toBe('Not connected')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await settle()
+    expect(reads()).toBe(4)
+    refuse = 'The mail account is gone.'
+    await wrapper.get('#default-work').setValue('none')
+    await settle()
+    expect(reads()).toBe(5)
+  })
+
+  it('sends changes one after the other, each built on the answer before it', async () => {
+    const wrapper = await page()
+    let release: () => void = () => undefined
+    hold = new Promise<void>((resolve) => (release = resolve))
+    await card(wrapper, 'Google Meet').get('.row button').trigger('click')
+    await card(wrapper, 'Microsoft Teams').get('.row button').trigger('click')
+    await flushPromises()
+    // The second waits for the first answer.
+    expect(patches()).toHaveLength(1)
+    hold = null
+    release()
+    await settle()
+    expect(patches()).toEqual([{ disabled: [{ app: 'meet', mailAccountId: 'gmail' }] }, { disabled: [{ app: 'meet', mailAccountId: 'gmail' }, { app: 'teams', mailAccountId: 'work' }] }])
+    expect(card(wrapper, 'Google Meet').get('.row .status').text()).toBe('Not connected')
+    expect(card(wrapper, 'Microsoft Teams').get('.row .status').text()).toBe('Not connected')
+  })
+
+  it('lets Remove win over the typed link that its click blurs', async () => {
+    stored = preferences({ ownLink: 'https://meet.example.com/kim' })
+    const wrapper = await page()
+    const input = wrapper.get('#own-link')
+    await input.setValue('https://meet.example.com/other')
+    const remove = wrapper.get('button[aria-label="Remove your room link"]')
+    await remove.trigger('pointerdown')
+    await input.trigger('blur')
+    await remove.trigger('click')
+    await settle()
+    expect(patches()).toEqual([{ ownLink: '' }])
+    expect((input.element as HTMLInputElement).value).toBe('')
+  })
+
+  it('puts the link back when Remove fails', async () => {
+    stored = preferences({ ownLink: 'https://meet.example.com/kim' })
+    const wrapper = await page()
+    refuse = 'The server could not save this.'
+    await wrapper.get('button[aria-label="Remove your room link"]').trigger('click')
+    await settle()
+    expect((wrapper.get('#own-link').element as HTMLInputElement).value).toBe('https://meet.example.com/kim')
+    expect(wrapper.get('#meeting-error-ownLink').text()).toBe('The server could not save this.')
+  })
+
+  it('shows a saved app that cannot apply as such, and Not set only when nothing is saved', async () => {
+    stored = preferences({ defaults: { personal: 'teams' }, defaultOther: 'meet' })
+    const wrapper = await page()
+    const personal = wrapper.get('#default-personal')
+    expect((personal.element as HTMLSelectElement).value).toBe('teams')
+    expect(personal.findAll('option').map((option) => option.text())).toContain('Microsoft Teams (not available here)')
+    expect(personal.text()).not.toContain('Not set')
+    const other = wrapper.get('#default-other')
+    expect((other.element as HTMLSelectElement).value).toBe('meet')
+    expect(other.findAll('option').map((option) => option.text())).toContain('Google Meet (not available here)')
+  })
+
+  it('names Microsoft accounts by what they can do', async () => {
+    const plain = account('plain', 'microsoft', 'kim@contoso.example', 'Contoso')
+    const live = account('live', 'microsoft', 'kim@outlook.com', 'Live')
+    accounts = [PERSONAL, plain, live]
+    useMailStore().calendars = [...CALENDARS, calendar('c', 'plain', { source: 'microsoft', name: 'Contoso', isDefault: true, conferenceProviders: [] }), calendar('l', 'live', { source: 'microsoft', name: 'Live', isDefault: true, conferenceProviders: [] })]
+    const wrapper = await page()
+    expect(card(wrapper, 'Microsoft Teams').get('.row').text()).toContain('No work or school account yet')
+    const kinds = wrapper.findAll('tbody th .status').map((cell) => cell.text())
+    expect(kinds).toContain('kim@outlook.com, Outlook')
+    expect(kinds).toContain('kim@contoso.example, Microsoft, without Teams')
+    expect(kinds).toContain('kim@outlook.example, Microsoft, without Teams')
+    accounts = [GMAIL]
+    const none = await page()
+    expect(card(none, 'Microsoft Teams').get('.row').text()).toContain('No Microsoft 365 account yet')
+  })
+
+  it('says why an app is not offered on a calendar of the right kind', async () => {
+    useMailStore().calendars = [calendar('g', 'gmail', { source: 'google', name: 'Kim', isDefault: true, conferenceProviders: [] }), ...CALENDARS.slice(1)]
+    const wrapper = await page()
+    const lines = wrapper.findAll('.not-offered').map((line) => line.text())
+    expect(lines).toContain('Microsoft Teams is not offered for Personal Outlook: Teams links need a Microsoft 365 work or school account. kim@outlook.example cannot make them.')
+    expect(lines).toContain('Google Meet is not offered for Kim at Google: Google Meet is not available for Kim.')
+  })
+
+  it('keys the not offered lines by account, also when two accounts share a name', async () => {
+    accounts = [FASTMAIL, account('fastmail2', 'imap', 'kim@fastmail2.example', 'Fastmail')]
+    useMailStore().calendars = [...CALENDARS, calendar('f2', 'fastmail2', { source: 'caldav', name: 'Fastmail', isDefault: true })]
+    const wrapper = await page()
+    expect(wrapper.findAll('.not-offered')).toHaveLength(4)
+  })
+
+  it('ties each error to its control and keeps the focus there', async () => {
+    const wrapper = await page()
+    refuse = 'The server could not save this.'
+    const toggle = wrapper.get('input[role="switch"]')
+    ;(toggle.element as HTMLInputElement).focus()
+    await toggle.setValue(false)
+    await settle()
+    expect(document.activeElement).toBe(toggle.element)
+    expect(toggle.attributes('aria-invalid')).toBe('true')
+    expect(toggle.attributes('aria-describedby')).toBe('guests-hint meeting-error-addWithGuests')
+
+    const select = wrapper.get('#default-work')
+    await select.setValue('none')
+    await settle()
+    expect(select.attributes('aria-invalid')).toBe('true')
+    expect(document.getElementById(select.attributes('aria-describedby')!)?.textContent).toBe('The server could not save this.')
+
+    const button = card(wrapper, 'Google Meet').get('.row button')
+    await button.trigger('click')
+    await settle()
+    expect(document.getElementById(button.attributes('aria-describedby')!)?.textContent).toBe('The server could not save this.')
+  })
+
+  it('asks a Gmail account without calendar access to connect, in the same word everywhere', async () => {
+    accounts = [account('gmail', 'gmail', 'kim@gmail.example', 'Kim at Google', { calendarStatus: 'not_granted' })]
+    const wrapper = await page()
+    expect(card(wrapper, 'Google Meet').get('.row .status').text()).toBe('Not connected. Needs calendar access.')
+    expect(card(wrapper, 'Google Meet').get('.row button').text()).toBe('Connect')
+    expect(wrapper.findAll('#default-gmail option').map((option) => option.text())).toContain('Google Meet (connect first)')
+  })
+
+  it('says when the sign-in cannot start', async () => {
+    accounts = [account('gmail', 'gmail', 'kim@gmail.example', 'Kim', { status: 'auth_failed' })]
+    const wrapper = await page()
+    vi.spyOn(useAccountsStore(), 'openProviderSignIn').mockRejectedValue(new Error('Google sign-in is not available on this server.'))
+    await card(wrapper, 'Google Meet').get('.row button').trigger('click')
+    await settle()
+    expect(card(wrapper, 'Google Meet').get('.error').text()).toBe('Google sign-in is not available on this server.')
   })
 })
