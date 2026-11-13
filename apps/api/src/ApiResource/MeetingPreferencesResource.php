@@ -22,9 +22,11 @@ use Symfony\Component\Serializer\Normalizer\AbstractObjectNormalizer;
  * in Tresso for one account (`meet` for a Google account, `teams` for a Microsoft account). `apps` (read only) are the
  * apps this server can offer.
  *
- * PATCH changes only the fields sent: `ownLink: null` (or leaving it out) keeps the link and `ownLink: ""` clears it;
+ * PATCH changes only the fields sent: `ownLink: null` (or leaving it out) keeps the link and `ownLink: ""` clears it.
+ * Only Tresso's own apps may change the own link (403 for third-party apps and personal access tokens; every event
+ * that uses it would lead guests to the room it names); they may change the other fields.
  * `defaults` and `disabled` replace the whole map or list. Entries for mail accounts that no longer exist are dropped
- * when the preferences are saved. The own link must be a plain https web address (`App\Calendar\MeetingLinkAddress`,
+ * when the preferences are saved, and are not shown before. The own link must be a plain https web address (`App\Calendar\MeetingLinkAddress`,
  * the rule of packages/core); a refused one is named by field, never repeated.
  *
  * App names are plain strings: a client ignores one it does not know (a later server may offer more apps, and a
@@ -71,16 +73,19 @@ final readonly class MeetingPreferencesResource
     }
 
     /**
-     * @param list<string> $apps what {@see \App\Calendar\MeetingApps::offered()} answers
+     * @param list<string> $apps       what {@see \App\Calendar\MeetingApps::offered()} answers
+     * @param list<string> $accountIds the user's mail accounts: entries of others (deleted since) are left out
      */
-    public static function fromEntity(MeetingPreferences $preferences, array $apps): self
+    public static function fromEntity(MeetingPreferences $preferences, array $apps, array $accountIds): self
     {
+        $accounts = array_flip($accountIds);
+
         return new self(
             $preferences->getOwnLink(),
             $preferences->addsWithGuests(),
-            (object) $preferences->getDefaults(),
+            (object) array_intersect_key($preferences->getDefaults(), $accounts),
             $preferences->getDefaultOther(),
-            $preferences->getDisabled(),
+            array_values(array_filter($preferences->getDisabled(), static fn (array $entry): bool => isset($accounts[$entry['mailAccountId']]))),
             $apps,
         );
     }

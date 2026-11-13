@@ -17,14 +17,17 @@ use App\Enum\MailProvider;
 use App\Repository\MailAccountRepository;
 use App\Repository\MeetingPreferencesRepository;
 use App\Security\CurrentUser;
+use App\Security\FirstPartyClients;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\Uid\Uuid;
 use Symfony\Component\Validator\ConstraintViolation;
 use Symfony\Component\Validator\ConstraintViolationList;
 
 /**
  * Changes the user's meeting preferences, creating them on the first change (also when two first changes come at
- * once). Every mail account named in `defaults` and `disabled` must be the user's; entries of accounts that are gone
+ * once). Only Tresso's own apps may change the own link. Every mail account named in `defaults` and `disabled` must be the user's; entries of accounts that are gone
  * are dropped on every save. A violation names the field and never repeats a link.
  *
  * @implements ProcessorInterface<UpdateMeetingPreferences, MeetingPreferencesResource>
@@ -35,6 +38,7 @@ final readonly class MeetingPreferencesProcessor implements ProcessorInterface
     private const string NOT_A_DEFAULT = 'Use meet, teams, zoom, own or none.';
     private const string NOT_AN_ENTRY = 'Each entry has an app (meet or teams) and a mailAccountId.';
     private const string MEET_NEEDS_GOOGLE = 'Google Meet can only be switched off for a Google account.';
+    private const string OWN_APPS_ONLY = 'Only Tresso\'s own apps can change your own meeting link. Change it in Settings, Meeting apps.';
     private const string TEAMS_NEEDS_MICROSOFT = 'Microsoft Teams can only be switched off for a Microsoft account.';
 
     public function __construct(
@@ -43,6 +47,7 @@ final readonly class MeetingPreferencesProcessor implements ProcessorInterface
         private MeetingApps $apps,
         private CurrentUser $currentUser,
         private EntityManagerInterface $entityManager,
+        private Security $security,
     ) {
     }
 
@@ -64,6 +69,10 @@ final readonly class MeetingPreferencesProcessor implements ProcessorInterface
             }
 
             $preferences = $this->preferences->lockForUser($user);
+            if (null !== $ownLink && ('' === $ownLink ? null : $ownLink) !== $preferences->getOwnLink() && !$this->security->isGranted(FirstPartyClients::ATTRIBUTE)) {
+                // Every event that uses the own link leads its guests to that room: only the user, in Tresso, sets it.
+                throw new AccessDeniedHttpException(self::OWN_APPS_ONLY);
+            }
             if (null !== $ownLink) {
                 $preferences->setOwnLink('' === $ownLink ? null : $ownLink);
             }
@@ -76,7 +85,7 @@ final readonly class MeetingPreferencesProcessor implements ProcessorInterface
             self::keepAccounts($preferences, $defaults ?? $preferences->getDefaults(), $disabled ?? $preferences->getDisabled(), $accounts);
             $this->entityManager->flush();
 
-            return MeetingPreferencesResource::fromEntity($preferences, $this->apps->offered());
+            return MeetingPreferencesResource::fromEntity($preferences, $this->apps->offered(), array_keys($accounts));
         });
     }
 

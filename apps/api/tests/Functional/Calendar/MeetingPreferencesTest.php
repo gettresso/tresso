@@ -9,6 +9,7 @@ use App\Entity\User;
 use App\Enum\MailProvider;
 use App\Repository\UserRepository;
 use App\Tests\Functional\AuthenticatesUsers;
+use App\Tests\Functional\ConnectsThirdPartyApps;
 use App\Tests\Functional\DatabaseTestCase;
 use App\Tests\Support\QueryLog;
 use Doctrine\ORM\EntityManagerInterface;
@@ -20,6 +21,7 @@ use Doctrine\ORM\EntityManagerInterface;
 final class MeetingPreferencesTest extends DatabaseTestCase
 {
     use AuthenticatesUsers;
+    use ConnectsThirdPartyApps;
 
     private const string URI = '/api/v1/calendar/meeting-preferences';
     private const string ROOM = 'https://meet.company.example/kim';
@@ -208,6 +210,47 @@ final class MeetingPreferencesTest extends DatabaseTestCase
         $stored = $this->connection()->fetchOne('SELECT defaults FROM meeting_preferences WHERE user_id = ?', [$this->userId('kim@example.test')]);
         self::assertIsString($stored);
         self::assertStringNotContainsString(self::UNKNOWN_ACCOUNT, $stored);
+    }
+
+    public function testOnlyTressosOwnAppsChangeTheOwnLink(): void
+    {
+        $this->patch(['ownLink' => self::ROOM]);
+
+        foreach (['third-party app' => $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'settings:write']), 'personal access token' => $this->personalAccessTokenHeaders('kim@example.test', ['settings:read', 'settings:write'])] as $who => $headers) {
+            foreach (['https://attacker.example/room', ''] as $link) {
+                $this->client->request('PATCH', self::URI, server: [...$headers, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['ownLink' => $link, 'addWithGuests' => false], \JSON_THROW_ON_ERROR));
+                self::assertResponseStatusCodeSame(403, $who);
+                self::assertStringNotContainsString('attacker', (string) $this->client->getResponse()->getContent());
+            }
+            $this->client->request('PATCH', self::URI, server: [...$headers, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['ownLink' => self::ROOM, 'defaultOther' => 'own'], \JSON_THROW_ON_ERROR));
+            self::assertResponseIsSuccessful($who.' may send the link as it is.');
+            $this->client->request('PATCH', self::URI, server: [...$headers, 'CONTENT_TYPE' => 'application/merge-patch+json'], content: json_encode(['addWithGuests' => false], \JSON_THROW_ON_ERROR));
+            self::assertResponseIsSuccessful($who.' may change the other fields.');
+            $this->patch(['addWithGuests' => true]);
+        }
+
+        $preferences = $this->get();
+        self::assertSame(self::ROOM, $preferences['ownLink']);
+        self::assertSame('own', $preferences['defaultOther']);
+    }
+
+    public function testEntriesOfAccountsThatAreGoneAreNotShown(): void
+    {
+        $this->patch(['defaults' => [$this->gmail => 'meet'], 'disabled' => [['app' => 'meet', 'mailAccountId' => $this->gmail]]]);
+        $this->connection()->executeStatement(
+            'UPDATE meeting_preferences SET defaults = :defaults, disabled = :disabled WHERE user_id = :user',
+            [
+                'defaults' => json_encode([$this->gmail => 'meet', self::UNKNOWN_ACCOUNT => 'teams'], \JSON_THROW_ON_ERROR),
+                'disabled' => json_encode([['app' => 'meet', 'mailAccountId' => $this->gmail], ['app' => 'teams', 'mailAccountId' => self::UNKNOWN_ACCOUNT]], \JSON_THROW_ON_ERROR),
+                'user' => $this->userId('kim@example.test'),
+            ],
+        );
+        static::getContainer()->get(EntityManagerInterface::class)->clear();
+
+        $preferences = $this->get();
+
+        self::assertSame([$this->gmail => 'meet'], $preferences['defaults']);
+        self::assertSame([['app' => 'meet', 'mailAccountId' => $this->gmail]], $preferences['disabled']);
     }
 
     public function testAnotherUserNeverSeesOrChangesThePreferences(): void
