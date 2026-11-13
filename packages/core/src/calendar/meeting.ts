@@ -4,7 +4,7 @@
  * the calendar, its mail account, the user's meeting preferences and the time.
  */
 
-import type { Conference, ConferenceRequest, SyncedCalendar, SyncedCalendarEvent } from './types'
+import type { CalendarSource, Conference, ConferenceRequest, SyncedCalendar, SyncedCalendarEvent } from './types'
 
 export type MeetingApp = 'meet' | 'teams' | 'zoom' | 'own'
 export type MeetingDefault = MeetingApp | 'none'
@@ -22,6 +22,9 @@ export interface MeetingPreferences {
   /** Apps this server can offer. */
   apps: MeetingApp[]
 }
+/**
+ * A PATCH of the preferences. `ownLink: ""` clears the own link; `ownLink: null`, like leaving it out, keeps it.
+ */
 export type MeetingPreferencesUpdate = Partial<Omit<MeetingPreferences, 'apps'>>
 
 /** What the rules need of a mail account (MailAccount and SyncedMailAccount both fit). */
@@ -72,9 +75,24 @@ const NAMES: Record<MeetingApp, { label: string; short: string; company: string 
   own: { label: 'My own link', short: 'My own link', company: '' },
 }
 
-/** "Google Meet", "Microsoft Teams", "Zoom", "My own link". */
+/**
+ * Neutral words for an app this client does not know (a newer server can name more), so a row never breaks on one:
+ * "Making the meeting link", "The meeting app did not answer in time."
+ */
+const UNKNOWN = { label: 'Meeting link', short: 'meeting', company: 'The meeting app', app: 'The meeting app' }
+
+/** The names of an app, or the neutral ones for an app this client does not know. */
+function namesOf(app: string): { label: string; short: string; company: string; app: string } {
+  if (!Object.prototype.hasOwnProperty.call(NAMES, app)) {
+    return UNKNOWN
+  }
+  const names = NAMES[app as MeetingApp]
+  return { ...names, app: names.label }
+}
+
+/** "Google Meet", "Microsoft Teams", "Zoom", "My own link"; "Meeting link" for an app this client does not know. */
 export function appLabel(app: MeetingApp): string {
-  return NAMES[app].label
+  return namesOf(app).label
 }
 
 /** The name of the app an event's link belongs to: the saved own link is "My own link", an unknown one "Meeting link". */
@@ -113,11 +131,11 @@ export function joinLabel(provider: Conference['provider']): string {
 }
 
 /**
- * A link as one short line: without its scheme, cut in the middle with an ellipsis when longer than `max` characters
+ * A link as one short line: without a leading `https://`, cut in the middle with an ellipsis when longer than `max` characters
  * (real Teams links are about 250). Show the full link in a title; Copy always copies the full link.
  */
 export function linkText(url: string, max = 44): string {
-  const bare = Array.from(url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''))
+  const bare = Array.from(url.startsWith('https://') ? url.slice('https://'.length) : url)
   const limit = Math.max(3, Math.floor(max))
   if (bare.length <= limit) {
     return bare.join('')
@@ -142,8 +160,9 @@ export function linkText(url: string, max = 44): string {
 export type MeetingLinkProblem = 'empty' | 'too_long' | 'whitespace' | 'control' | 'not_https' | 'credentials' | 'no_host' | 'invalid'
 
 // C0 and C1 controls, DEL, soft hyphen, zero width characters, direction marks, embeddings, overrides and isolates,
-// the byte order mark, and the interlinear annotation and object replacement characters.
-const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffc]/
+// the byte order mark, the interlinear annotation and object replacement characters, and the Hangul fillers: letters
+// that show nothing and that a browser drops from a host, so "exa<filler>mple.com" would open example.com.
+const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\u3164\ufeff\uffa0\ufff9-\ufffc]/
 const LABEL = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
 
 /**
@@ -152,47 +171,59 @@ const LABEL = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
  * `URL`, so every platform (React Native's `URL` lacks parts) gives the same answer.
  */
 export function meetingLinkProblem(value: string): MeetingLinkProblem | null {
+  return checkLink(value).problem
+}
+
+/** The problem of a link, or its host when it has none. */
+function checkLink(value: string): { problem: MeetingLinkProblem; host: null } | { problem: null; host: string } {
+  const problem = (code: MeetingLinkProblem): { problem: MeetingLinkProblem; host: null } => ({ problem: code, host: null })
   if (value === '') {
-    return 'empty'
+    return problem('empty')
   }
   if (value.length > OWN_LINK_MAX_LENGTH) {
-    return 'too_long'
+    return problem('too_long')
   }
   if (/\s/u.test(value)) {
-    return 'whitespace'
+    return problem('whitespace')
   }
   if (HIDDEN.test(value)) {
-    return 'control'
+    return problem('control')
   }
   if (!value.startsWith('https://')) {
-    return 'not_https'
+    return problem('not_https')
   }
   if (value.includes('\\')) {
-    return 'invalid'
+    return problem('invalid')
   }
   const rest = value.slice('https://'.length)
   const end = rest.search(/[/?#]/)
   const authority = end === -1 ? rest : rest.slice(0, end)
   if (authority.includes('@')) {
-    return 'credentials'
+    return problem('credentials')
   }
   const match = /^([^:]*)(?::(\d*))?$/.exec(authority)
   if (match === null) {
-    return authority.startsWith('[') ? 'no_host' : 'invalid'
+    return problem(authority.startsWith('[') ? 'no_host' : 'invalid')
   }
   const host = match[1] ?? ''
   const port = match[2]
   if (port !== undefined && (port === '' || port.length > 5 || Number(port) < 1 || Number(port) > 65535)) {
-    return 'invalid'
+    return problem('invalid')
   }
   const labels = host.replace(/\.$/, '').split('.')
   if (host === '' || labels.length < 2) {
-    return 'no_host'
+    return problem('no_host')
+  }
+  // A last label of digits or a hex number makes a browser read the host as an IP address (127.1, 0x7f.1), or
+  // refuse it (example.123): one rule, a named host with a dot.
+  const last = labels[labels.length - 1] ?? ''
+  if (/^\d+$/.test(last) || /^0x[0-9a-f]*$/i.test(last)) {
+    return problem('no_host')
   }
   if (!labels.every((label) => label.length <= 63 && LABEL.test(label))) {
-    return 'invalid'
+    return problem('invalid')
   }
-  return null
+  return { problem: null, host }
 }
 
 /** What the own link field says about a problem; never the value itself. */
@@ -209,15 +240,35 @@ export function meetingLinkError(problem: MeetingLinkProblem): string {
       return 'Use a link without a user name or password in it.'
     case 'no_host':
       return 'Use a link with a full web address, such as https://meet.example.com/room.'
+    case 'invalid':
+      return 'This link does not look right. Check it and paste it again.'
     default:
       return 'Use a link that starts with https://.'
   }
 }
 
-/** A conference link that a Join button may open: a plain https web address (an invitation can carry anything). */
+/**
+ * A conference link that a Join button may open: a plain https web address (an invitation can carry anything) whose
+ * host is plain ASCII. A link from someone else with letters outside ASCII in its host may imitate another host (a
+ * Cyrillic letter in "teams.microsoft.com"), so Join is not offered for it unless the host is given in punycode
+ * (xn--); the clients still show the link with Copy. The user's own pasted link is not held to this: it may use an
+ * international host name, see {@link meetingLinkProblem}.
+ */
 export function canJoin(conference: Pick<Conference, 'url'>): boolean {
-  return meetingLinkProblem(conference.url) === null
+  const checked = checkLink(conference.url)
+  return checked.problem === null && /^[a-z0-9.-]+$/i.test(checked.host)
 }
+
+/**
+ * Microsoft keeps a Teams meeting on its event: once a Microsoft 365 event has one, the API refuses to remove it (or
+ * to swap it for another app). The editor, the popover and the phone neither offer nor confirm that removal.
+ */
+export function cannotRemoveMeeting(source: CalendarSource | undefined, conference: Pick<Conference, 'provider'> | null): boolean {
+  return source === 'microsoft' && conference !== null && conference.provider === 'teams'
+}
+
+/** What the editor's app menu says on such an event, under its heading. */
+export const TEAMS_MEETING_KEPT = 'Microsoft keeps a Teams meeting on its event. To meet elsewhere, delete this event and make a new one.'
 
 /** The account needs to be signed in again, or to allow calendar access, before Meet or Teams can make a link. */
 export function needsReconnect(account: MeetingAccount | null): boolean {
@@ -382,7 +433,7 @@ export function requestState(event: Pick<SyncedCalendarEvent, 'conference' | 'co
 
 /** "Making the Teams link" while it is made, "Could not make the Teams link" once it failed. */
 export function requestTitle(request: ConferenceRequest, now: number): string {
-  const short = NAMES[request.provider].short
+  const short = namesOf(request.provider).short
   return request.status === 'failed' || pendingTooLong(request, now) ? `Could not make the ${short} link` : `Making the ${short} link`
 }
 
@@ -391,7 +442,7 @@ export const CREATING_HINT = 'The event is saved. This usually takes a few secon
 
 /** Why a requested link is not there, under "Could not make the ... link". */
 export function failureHint(request: ConferenceRequest, now: number): string {
-  const names = NAMES[request.provider]
+  const names = namesOf(request.provider)
   if (request.status === 'pending') {
     return pendingTooLong(request, now) ? `The event is saved without a link. ${names.company} did not answer in time.` : CREATING_HINT
   }
@@ -399,7 +450,7 @@ export function failureHint(request: ConferenceRequest, now: number): string {
     case 'unreachable':
       return `The event is saved without a link. ${names.company} did not answer in time.`
     case 'not_supported':
-      return `The event is saved without a link. ${names.label} is not available for this calendar.`
+      return `The event is saved without a link. ${names.app} is not available for this calendar.`
     default:
       // The server reports a failure without a reason as refused.
       return `The event is saved without a link. ${names.company} refused to make it.`
@@ -503,6 +554,11 @@ function problemRow(problem: MeetingChoice, input: MeetingRowInput): MeetingRow 
 export function meetingRow(input: MeetingRowInput): MeetingRow {
   const { event, preferences, guests } = input
 
+  // A Teams meeting on a Microsoft 365 event stays whatever the row was told: never "Removed", never another app.
+  if (event !== null && event.conference !== null && cannotRemoveMeeting(input.calendar?.source, event.conference)) {
+    return row('created', TITLE, createdHint(event.conference, input))
+  }
+
   if (input.removed) {
     return row('removed', TITLE, guests > 0 ? 'Removed. When you save, guests get an update without the link.' : 'Removed. The link goes when you save.')
   }
@@ -523,7 +579,9 @@ export function meetingRow(input: MeetingRowInput): MeetingRow {
   }
 
   if (!input.on) {
-    const promised = preferences.addWithGuests && guests === 0 && defaultMeetingApp(input.calendar, input.account, preferences) !== 'none'
+    // Only when a first guest would switch it on: the guests switch, a default that is not "none", an app that can.
+    const promised =
+      preferences.addWithGuests && guests === 0 && defaultMeetingApp(input.calendar, input.account, preferences) !== 'none' && input.choices.some((item) => item.ok)
     return row('off', TITLE, promised ? 'No meeting link. Tresso switches this on when you add a guest.' : 'No meeting link. People meet at the location.')
   }
 
@@ -558,9 +616,12 @@ function createdHint(conference: Conference, input: MeetingRowInput): string {
   if (ownLink !== null && ownLink !== '' && conference.url === ownLink) {
     return ownHint(input.guests)
   }
+  // Only Meet on a Google calendar and Teams on a Microsoft one are made by the calendar's account.
+  const source = input.calendar?.source
+  const madeByAccount = (conference.provider === 'meet' && source === 'google') || (conference.provider === 'teams' && source === 'microsoft')
   const address = input.account?.emailAddress ?? null
-  if (address === null) {
-    // A link on a calendar without a mail account (a Tresso calendar): pasted, not made by an account.
+  if (!madeByAccount || address === null) {
+    // A pasted link, or one from elsewhere: the calendar's account did not make it.
     return input.guests > 0 ? 'It is in the invitation.' : 'It is saved with the event.'
   }
   return input.guests > 0 ? `Made with ${address}. It is in the invitation.` : `Made with ${address}.`
