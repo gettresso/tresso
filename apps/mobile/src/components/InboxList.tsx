@@ -1,15 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import type { ConversationSummary } from '@tresso/core'
+import { mergeInbox, type ChatSummary, type ConversationSummary } from '@tresso/core'
+import { useChats } from '@/chat/ChatProvider'
+import { ChatRow } from '@/components/ChatRow'
 import { useMail } from '@/mail/MailProvider'
 import { dayLabel, senderName, shortTime } from '@/mail/format'
 import { useTheme, type Theme } from '@/theme'
 import { LoadingLine } from '@/components/LogoLoader'
 
-/** The Unified Inbox: conversations newest first, grouped by day, read from the copy on the device. */
+/** The most rows the list shows: as many as the copy lists of mail (MailProvider's LIST_LIMIT). */
+const ROWS = 200
+
+type Row = { kind: 'mail'; lastMessageAt: number; conversation: ConversationSummary } | { kind: 'chat'; lastMessageAt: number; summary: ChatSummary }
+
+/**
+ * The Unified Inbox: conversations newest first, grouped by day, read from the copy on the device; with WhatsApp on the
+ * server ("All my devices"), its chats among them by the time of their last message.
+ */
 export function InboxList({ header }: { header: React.ReactElement }) {
   const mail = useMail()
+  const chats = useChats()
   const theme = useTheme()
   const styles = useMemo(() => makeStyles(theme), [theme])
   const router = useRouter()
@@ -25,23 +36,28 @@ export function InboxList({ header }: { header: React.ReactElement }) {
   }, [inbox, version])
 
   const sections = useMemo(() => {
-    const groups: { title: string; data: ConversationSummary[] }[] = []
-    for (const conversation of conversations) {
-      const title = dayLabel(conversation.lastMessageAt)
+    const rows = mergeInbox<Row, Row>(
+      conversations.map((conversation) => ({ kind: 'mail', lastMessageAt: conversation.lastMessageAt, conversation })),
+      chats.inbox.map((summary) => ({ kind: 'chat', lastMessageAt: summary.lastMessageAt, summary })),
+      ROWS,
+    )
+    const groups: { title: string; data: Row[] }[] = []
+    for (const row of rows) {
+      const title = dayLabel(row.lastMessageAt)
       const last = groups[groups.length - 1]
       if (last?.title === title) {
-        last.data.push(conversation)
+        last.data.push(row)
       } else {
-        groups.push({ title, data: [conversation] })
+        groups.push({ title, data: [row] })
       }
     }
     return groups
-  }, [conversations])
+  }, [conversations, chats.inbox])
 
   return (
     <SectionList
       sections={sections}
-      keyExtractor={(item) => item.threadId}
+      keyExtractor={(row) => (row.kind === 'mail' ? `thread:${row.conversation.threadId}` : `chat:${row.summary.chat.id}`)}
       ListHeaderComponent={header}
       refreshControl={<RefreshControl refreshing={mail.syncState === 'syncing'} onRefresh={() => void mail.syncNow()} />}
       renderSectionHeader={({ section }) => (
@@ -57,7 +73,11 @@ export function InboxList({ header }: { header: React.ReactElement }) {
           <LoadingLine text="Loading your mail…" style={styles.loading} textStyle={styles.loadingText} />
         )
       }
-      renderItem={({ item }) => {
+      renderItem={({ item: row }) => {
+        if (row.kind === 'chat') {
+          return <ChatRow summary={row.summary} onPress={() => router.push({ pathname: '/chats/[id]', params: { id: row.summary.chat.id } })} />
+        }
+        const item = row.conversation
         const unread = item.unreadCount > 0
         return (
           <Pressable

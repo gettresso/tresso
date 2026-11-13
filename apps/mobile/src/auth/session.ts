@@ -100,6 +100,8 @@ export class ApiError extends Error {
     readonly violations: Record<string, string> = {},
     /** How long the server asked to wait before trying again (Retry-After), in ms; null when it did not say. */
     readonly retryAfterMs: number | null = null,
+    /** The problem's `code`, which a client acts on (the chat endpoints' `already_going_out`, say); null when it named none. */
+    readonly code: string | null = null,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -309,7 +311,7 @@ export class Session {
       const response = await this.send(path, { ...init, signal }, accessToken)
       if (!response.ok) {
         const problem = await problemOf(response)
-        throw new ApiError(response.status, problem.detail, problem.violations, retryAfterMs(response.headers.get('Retry-After')))
+        throw new ApiError(response.status, problem.detail, problem.violations, retryAfterMs(response.headers.get('Retry-After')), problem.code)
       }
       return (response.status === 204 ? undefined : await response.json()) as T
     }
@@ -370,7 +372,7 @@ export class Session {
     }
     if (!response.ok) {
       const problem = await problemOf(response)
-      throw new ApiError(response.status, problem.detail, problem.violations, retryAfterMs(response.headers.get('Retry-After')))
+      throw new ApiError(response.status, problem.detail, problem.violations, retryAfterMs(response.headers.get('Retry-After')), problem.code)
     }
     return (response.status === 204 ? undefined : await response.json()) as T
   }
@@ -618,10 +620,11 @@ function message(error: unknown): string {
 }
 
 /** What the API said went wrong (RFC 9457 problem details), with its validation violations per field. */
-async function problemOf(response: Response): Promise<{ detail: string; violations: Record<string, string> }> {
+async function problemOf(response: Response): Promise<{ detail: string; violations: Record<string, string>; code: string | null }> {
   const violations: Record<string, string> = {}
+  let code: string | null = null
   try {
-    const body = (await response.json()) as { detail?: unknown; title?: unknown; violations?: unknown }
+    const body = (await response.json()) as { detail?: unknown; title?: unknown; violations?: unknown; code?: unknown }
     if (Array.isArray(body.violations)) {
       for (const violation of body.violations as { propertyPath?: unknown; message?: unknown }[]) {
         if (typeof violation.propertyPath === 'string' && typeof violation.message === 'string' && !(violation.propertyPath in violations)) {
@@ -629,14 +632,15 @@ async function problemOf(response: Response): Promise<{ detail: string; violatio
         }
       }
     }
+    code = typeof body.code === 'string' && body.code !== '' ? body.code : null
     if (typeof body.detail === 'string' && body.detail !== '') {
-      return { detail: body.detail, violations }
+      return { detail: body.detail, violations, code }
     }
     if (typeof body.title === 'string' && body.title !== '') {
-      return { detail: body.title, violations }
+      return { detail: body.title, violations, code }
     }
   } catch {
     // Not a problem document; fall through to the status.
   }
-  return { detail: `The request failed (${response.status}).`, violations }
+  return { detail: `The request failed (${response.status}).`, violations, code }
 }

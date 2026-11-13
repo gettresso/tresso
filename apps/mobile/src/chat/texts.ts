@@ -1,0 +1,183 @@
+import {
+  CHAT_REPLY_MAX,
+  chatApiFailure,
+  chatSubtitle,
+  fileSize,
+  nameText,
+  replyErrorText,
+  replyLabel,
+  SENDER_COLORS,
+  senderColor,
+  type ChatMediaKind,
+  type ReplyTextProblem,
+  type SyncedChat,
+  type SyncedChatAccount,
+  type SyncedChatMessage,
+  type SyncedChatOutgoing,
+} from '@tresso/core'
+
+/*
+ * What the phone's chat screens say: the MobileWhatsAppChat board, the desktop's chat texts
+ * (apps/web/src/components/chat/chatTexts.ts) for what that board does not show, and the corrections of the WhatsApp
+ * plan, section 6. Every name and text from WhatsApp goes through core's nameText or labelText where it is one line.
+ * Pure, so every state is tested without a screen.
+ */
+
+/** A chat's name: its WhatsApp name, else its number, else what it is (as the desktop's chatName). */
+export function chatName(chat: Pick<SyncedChat, 'name' | 'jid' | 'kind'>): string {
+  return nameText(chat.name) || chatSubtitle(chat) || (chat.kind === 'group' ? 'Group' : 'WhatsApp chat')
+}
+
+/** Up to two letters for a chat's avatar: the first of its first and last word (a number's first two digits). */
+export function chatInitials(name: string): string {
+  const words = name.replace(/^\+/, '').split(/\s+/).filter((word) => /^[\p{L}\p{N}]/u.test(word))
+  const first = [...(words[0] ?? '?')][0] ?? '?'
+  if (/^\p{N}/u.test(first)) {
+    return [...(words[0] ?? '')].slice(0, 2).join('')
+  }
+  const last = words.length > 1 ? ([...words[words.length - 1]!][0] ?? '') : ''
+  return (first + last).toUpperCase()
+}
+
+/** A group sender's name as known, else `Unknown sender` (plan 5.1). */
+export function senderLabel(message: Pick<SyncedChatMessage, 'sender'>): string {
+  return nameText(message.sender?.name ?? null) || 'Unknown sender'
+}
+
+/** Which of the theme's six sender colours a sender's name is drawn in (core's senderColor, as an index). */
+export function senderTone(id: string): number {
+  return SENDER_COLORS.indexOf(senderColor(id))
+}
+
+/** `10:02`, the time of day of a message. */
+export function clockTime(at: number): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+const KIND_LABELS: Record<ChatMediaKind, string> = { image: 'Photo', video: 'Video', audio: 'Voice message', document: 'File' }
+
+/** `Photo`, `Video`, `Voice message`, `File`. */
+export function mediaKindLabel(kind: ChatMediaKind): string {
+  return KIND_LABELS[kind] ?? 'File'
+}
+
+/**
+ * The first line of a file row (plan 6.7): the kind and the size (`Photo, 180 KB`); a document keeps its name instead of
+ * the kind (`plan.pdf, 180 KB`), since the bridge invents the names of the other kinds.
+ */
+export function mediaTitle(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaName' | 'mediaSize'>): string {
+  const kind = message.mediaKind ?? 'document'
+  const label = kind === 'document' ? nameText(message.mediaName) || 'File' : mediaKindLabel(kind)
+  return message.mediaSize === null ? label : `${label}, ${fileSize(message.mediaSize)}`
+}
+
+/** The second line of a file row: the phone does not download files; the Mac that relays has them. */
+export const MEDIA_ON_MAC = 'Open this file on your Mac.'
+
+/** What the banner above a chat says about the relaying Mac, or null when it relays and WhatsApp works. */
+export function relayBanner(account: Pick<SyncedChatAccount, 'relayOnline' | 'bridge' | 'link'> | null): string | null {
+  if (account === null) {
+    return null
+  }
+  if (!account.relayOnline) {
+    // The MobileWhatsAppChat board.
+    return 'Your Mac is offline. Replies go out once it is back.'
+  }
+  if (account.link === 'unlinked') {
+    return 'WhatsApp is not linked on your Mac. Nothing comes in or goes out until it is linked again.'
+  }
+  if (account.bridge === 'stopped') {
+    return 'The bridge on your Mac is not running. Replies go out once it runs again.'
+  }
+  return null
+}
+
+/** A reply as its bubble shows it. */
+export interface ReplyView {
+  /** Under the text: `10:31, waiting for your Mac`, `10:02, sent`, `Not sent, tap to retry`, `10:31, not confirmed`. */
+  meta: string
+  state: 'waiting' | 'sending' | 'sent' | 'failed' | 'unconfirmed'
+  /** Why it was not sent, under the bubble; null otherwise. */
+  reason: string | null
+  /** What a screen reader says after `You, <time>`. */
+  spoken: string
+}
+
+/**
+ * A reply's state on the phone (the MobileWhatsAppChat and WhatsAppStates boards, core's replyLabel): `waiting for your
+ * Mac` while the relaying Mac is offline, `sending` while it is online or has claimed it, `sent`, `Not sent, tap to
+ * retry` with the reason under it, and for a send the Mac could not confirm `not confirmed` with the warning that it may
+ * have gone out: that one is never sent again by a tap on the bubble, only by its own Try again. Null for a cancelled
+ * reply, which is not shown.
+ */
+export function replyView(reply: Pick<SyncedChatOutgoing, 'status' | 'error'>, time: string, relayOnline: boolean): ReplyView | null {
+  if (reply.status === 'failed' && reply.error === 'unconfirmed') {
+    return { meta: time === '' ? 'Not confirmed' : `${time}, not confirmed`, state: 'unconfirmed', reason: replyErrorText('unconfirmed'), spoken: 'not confirmed' }
+  }
+  const label = replyLabel(reply, relayOnline)
+  if (label === null) {
+    return null
+  }
+  if (label === 'Not sent, tap to retry') {
+    return { meta: label, state: 'failed', reason: reply.error === null ? null : replyErrorText(reply.error), spoken: 'not sent' }
+  }
+  const lower = `${label.charAt(0).toLowerCase()}${label.slice(1)}`
+  const state = label === 'Waiting for your Mac' ? 'waiting' : label === 'Sent' ? 'sent' : 'sending'
+  return { meta: time === '' ? label : `${time}, ${lower}`, state, reason: null, spoken: lower }
+}
+
+/** From which length the reply box says how many characters are used (as on the desktop). */
+export const COUNTER_FROM = 3_900
+
+/** `3,950 of 4,096 characters`. */
+export function counterText(length: number): string {
+  return `${length.toLocaleString('en')} of ${CHAT_REPLY_MAX.toLocaleString('en')} characters`
+}
+
+/** Why the text in the reply box cannot be sent; null for an empty box, which only keeps Send off. */
+export function replyProblemText(problem: ReplyTextProblem): string | null {
+  switch (problem) {
+    case 'too_long':
+      return `A reply can have at most ${CHAT_REPLY_MAX.toLocaleString('en')} characters.`
+    case 'control':
+      return 'The reply cannot contain control characters.'
+    default:
+      return null
+  }
+}
+
+/** What a failed request says: the server's own words (they never quote a chat), or that it could not be reached. */
+function requestFailure(error: unknown): string {
+  const failure = chatApiFailure(error)
+  if (failure === null) {
+    return 'The server could not be reached. Check your connection.'
+  }
+  const detail = error instanceof Error ? error.message.trim() : ''
+  return detail === '' ? `The server answered ${failure.status}.` : detail
+}
+
+/** The line under the reply box after a reply could not be queued; the text stays in the box. */
+export function sendFailureText(error: unknown): string {
+  return `Not sent. ${requestFailure(error)}`
+}
+
+/** After Cancel or Delete failed. */
+export function cancelFailureText(error: unknown): string {
+  const failure = chatApiFailure(error)
+  if (failure?.status === 409 && failure.code === 'already_going_out') {
+    return 'This reply is being sent already and can no longer be cancelled.'
+  }
+  return `Not cancelled. ${requestFailure(error)}`
+}
+
+/** After Try again failed. */
+export function retryFailureText(error: unknown): string {
+  const failure = chatApiFailure(error)
+  if (failure?.status === 409 && failure.code === 'not_failed') {
+    return 'This reply is on its way again already.'
+  }
+  return `Not sent again. ${requestFailure(error)}`
+}
+
+/** A chat that is not on the phone (removed, left out on the Mac, or WhatsApp is not passed to the server). */
+export const CHAT_MISSING = 'This chat is not on this phone. WhatsApp shows here only while your Mac passes your chats to your Tresso server.'
