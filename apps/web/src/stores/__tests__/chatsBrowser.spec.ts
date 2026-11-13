@@ -250,14 +250,30 @@ describe('the chats store in the browser', () => {
       expect(await chats.serverChats()).toBe('none')
     })
 
+    it('takes the chats off this device at once, also when the pull after the removal fails', async () => {
+      // The pull fails (the mail store notes the failure and resolves): nothing comes through the delta.
+      const syncNow = vi.spyOn(mail, 'syncNow').mockResolvedValue(undefined)
+      const chats = await ready()
+      await chats.removeFromServer()
+      expect(syncNow).toHaveBeenCalled()
+      expect(chats.enabled).toBe(false)
+      expect(chats.summaries).toEqual([])
+      expect(await store.chatAccounts()).toEqual([])
+      expect(await store.chats()).toEqual([])
+      expect(await chats.serverChats()).toBe('none')
+    })
+
     it('counts an account already gone as removed, and says a refusal in plain words', async () => {
       const chats = await ready()
-      server.fail('removeAccount', new ChatApiError(404, 'Not found.'))
-      await expect(chats.removeFromServer()).resolves.toBeUndefined()
       server.fail('removeAccount', new ChatApiError(403, 'Forbidden.'))
       await expect(chats.removeFromServer()).rejects.toThrow('This session of Tresso may not change WhatsApp chats. Sign out and in again.')
       server.fail('removeAccount', new TypeError('Failed to fetch'))
       await expect(chats.removeFromServer()).rejects.toThrow('Tresso could not reach your Tresso server. Try again.')
+      // Refused: the chats stay here as they are.
+      expect(chats.enabled).toBe(true)
+      server.fail('removeAccount', new ChatApiError(404, 'Not found.'))
+      await expect(chats.removeFromServer()).resolves.toBeUndefined()
+      expect(chats.enabled).toBe(false)
     })
   })
 

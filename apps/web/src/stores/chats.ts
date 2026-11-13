@@ -731,7 +731,9 @@ export const useChatsStore = defineStore('chats', () => {
    * The browser's "Remove WhatsApp from your Tresso server": deletes the server's chat account with every chat, message
    * and reply under it (waiting replies are never sent), for every device. The relaying Mac finds the account gone at
    * its next call or pull and disconnects WhatsApp in Tresso; WhatsApp itself and the bridge's store stay. An account
-   * already gone (404) counts as removed. The pull after it brings the tombstone, which turns the chat screens off.
+   * already gone (404) counts as removed. Once the server confirmed it, the account goes from this copy at once (with
+   * everything under it), so the chat screens turn off also when the pull after it fails; the pull's tombstone then
+   * removes nothing more.
    *
    * @throws ChatActionError when the server did not remove it
    */
@@ -748,7 +750,13 @@ export const useChatsStore = defineStore('chats', () => {
         throw chatActionError(cause, 'change')
       }
     }
-    await mail.syncNow()
+    const copy = mail.currentStore()
+    if (copy !== null) {
+      await copy.removeChatAccount(shown.id)
+    }
+    await readServerAccount()
+    await refresh()
+    void mail.syncNow()
   }
 
   function mediaOf(messageId: string): MediaState {

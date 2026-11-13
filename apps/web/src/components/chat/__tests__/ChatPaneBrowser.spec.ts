@@ -191,10 +191,13 @@ describe('ChatPane in the browser', () => {
     const view = await open(SERVER_CHAT)
     expect(view.get('h2').text()).toBe('Bram Visser')
     expect(view.get('textarea').attributes('disabled')).toBeDefined()
+    expect(view.get('#chat-composer-note').text()).toBe('Tresso is still checking who is signed in. Replies can be written once it is connected.')
+    expect(view.get('textarea').attributes('aria-describedby')).toContain('chat-composer-note')
     expect(server.calls).toEqual([])
     mail.confirmed = true
     await flushPromises()
     expect(view.get('textarea').attributes('disabled')).toBeUndefined()
+    expect(view.get('#chat-composer-note').text()).toBe('Sent on WhatsApp by Office iMac. No signature, no subject.')
   })
 
   it('follows the account the delta brings: the notice comes and goes', async () => {
