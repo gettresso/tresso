@@ -9,7 +9,25 @@ export type BridgeState = 'running' | 'stopped'
 export type LinkState = 'linked' | 'unlinked' | 'unknown'
 export type ChatMediaKind = 'image' | 'video' | 'audio' | 'document'
 export type ChatOutgoingStatus = 'waiting' | 'sending' | 'sent' | 'failed' | 'cancelled'
-export type ChatOutgoingError = 'bridge_stopped' | 'not_linked' | 'refused' | 'unconfirmed'
+/** `file_unavailable`: the relaying Mac could not fetch the file the reply carries from the server; nothing went out. */
+export type ChatOutgoingError = 'bridge_stopped' | 'not_linked' | 'refused' | 'unconfirmed' | 'file_unavailable'
+/**
+ * Where the file of a message is ("All my devices"): on the Mac only (`remote`), asked for and waiting for the Mac
+ * (`requested`), on the server (`stored`), or the Mac could not bring it (`failed`, with a ChatMediaError).
+ */
+export type ChatMediaState = 'remote' | 'requested' | 'stored' | 'failed'
+/**
+ * Why the Mac could not bring a file: the bridge does not know it (`not_found`), the file differs from the one its store
+ * names (`mismatch`), the store names no hash to check it by (`unverified`), it is larger than the server takes
+ * (`too_large`), or the bridge was stopped, not linked or its download failed (`unavailable`, often a file WhatsApp no
+ * longer keeps).
+ */
+export type ChatMediaError = 'not_found' | 'mismatch' | 'unverified' | 'too_large' | 'unavailable'
+/**
+ * What a client may do with a stored file, from its malware scan: download it (`allowed`), wait (`scanning`), download it
+ * only after the user accepts that it could not be scanned (`confirm`), never (`blocked`).
+ */
+export type ChatMediaAccess = 'allowed' | 'scanning' | 'confirm' | 'blocked'
 
 export interface SyncedChatAccount {
   id: string
@@ -83,6 +101,15 @@ export interface SyncedChatMessage {
   mediaKind: ChatMediaKind | null
   mediaName: string | null
   mediaSize: number | null
+  /**
+   * Where the file is, on the server's chats ("All my devices"); absent or null for a message without a file and for
+   * rows this device made itself ("Only this Mac", where the file is on this Mac).
+   */
+  mediaState?: ChatMediaState | null
+  /** Why the Mac could not bring the file; null unless `mediaState` is `failed`. */
+  mediaError?: ChatMediaError | null
+  /** What may be done with a stored file, from its scan; null while it is not stored. */
+  mediaAccess?: ChatMediaAccess | null
 }
 
 export interface SyncedChatOutgoing {
@@ -98,8 +125,9 @@ export interface SyncedChatOutgoing {
   claimedAt: string | null
   sentAt: string | null
   /**
-   * The file the desktop sent at once ("Only this Mac", recordLocalAttachment); absent or null for a text reply and in the
-   * delta. Kept in the row as both stores keep it (JSON), so no column is needed.
+   * The file the reply carries: one the desktop sent at once ("Only this Mac", recordLocalAttachment), or one attached
+   * in the browser or on the phone that waits on the server for the relaying Mac ("All my devices", the delta's `file`).
+   * Absent or null for a text reply. Kept in the row as both stores keep it (JSON), so no column is needed.
    */
   file?: SentFile | null
 }

@@ -123,7 +123,7 @@ describe('LocalChatBackend', () => {
 
       const claimed = await backend.claimNext()
 
-      expect(claimed).toEqual({ id: '0193a000-0000-7000-8000-000000000001', chatId: localChatId(DIRECT), chatJid: DIRECT, text: 'first', token: new Date(NOW).toISOString() })
+      expect(claimed).toEqual({ id: '0193a000-0000-7000-8000-000000000001', chatId: localChatId(DIRECT), chatJid: DIRECT, text: 'first', token: new Date(NOW).toISOString(), file: null })
       const row = (await store.chat(localChatId(DIRECT)))!.outgoing[0]!
       expect(row).toMatchObject({ status: 'sending', claimedAt: new Date(NOW).toISOString() })
       // One at a time: nothing more until that one is reported.

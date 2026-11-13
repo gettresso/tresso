@@ -13,11 +13,13 @@ import {
   NAME_RETRY,
   RELAY_ERROR_DELAY,
   RELAY_INTERVAL,
+  RELAY_MEDIA_PER_ROUND,
   RELAY_PAGE,
   RELAY_RETRY_MAX,
   RELAY_RETRY_MIN,
   retryDelay,
   senderAddress,
+  type BridgeDownload,
   type BridgePage,
   type BridgeSendResult,
   type ChatBackend,
@@ -25,6 +27,7 @@ import {
   type ClaimedReply,
   type IncomingChat,
   type IncomingMessage,
+  type MediaRequest,
   type RelayCursor,
   type RelayProgress,
   type RelayStep,
@@ -49,9 +52,17 @@ class FakeBridge implements ChatBridge {
   private nextRowid = 1
   readonly reads: number[] = []
   readonly nameCalls: string[][] = []
-  readonly sent: { recipient: string; text: string }[] = []
+  readonly sent: { recipient: string; text: string; file?: string }[] = []
   known: Record<string, SenderLookup> = {}
   answer: (recipient: string, text: string) => Promise<BridgeSendResult> = async () => ({ ok: true })
+  /** What `download` gives per WhatsApp id; a file is read back by its path through `files`. */
+  downloads: Record<string, BridgeDownload> = {}
+  readonly downloaded: string[] = []
+  readonly files = new Map<string, Blob>()
+  /** Files handed to the shell to send, by path; removed on `discard`. */
+  readonly staged = new Map<string, { content: Blob; name: string }>()
+  readonly discarded: string[] = []
+  failStage: unknown = null
 
   add(id: string, chatJid: string, extra: Partial<BridgeRow> = {}): BridgeRow {
     const row: BridgeRow = {
@@ -101,9 +112,43 @@ class FakeBridge implements ChatBridge {
     return Object.fromEntries(ids.map((id) => [id, this.known[id] ?? { number: id.length <= 13 ? id : null, name: null }]))
   }
 
-  async send(recipient: string, text: string): Promise<BridgeSendResult> {
-    this.sent.push({ recipient, text })
+  async send(recipient: string, text: string, file?: string): Promise<BridgeSendResult> {
+    this.sent.push(file === undefined ? { recipient, text } : { recipient, text, file })
     return this.answer(recipient, text)
+  }
+
+  async download(_chatJid: string, waId: string): Promise<BridgeDownload> {
+    this.downloaded.push(waId)
+    return this.downloads[waId] ?? { ok: false, error: 'not_found' }
+  }
+
+  async file(path: string): Promise<Blob> {
+    const content = this.files.get(path)
+    if (content === undefined) {
+      throw new Error('not_found')
+    }
+    return content
+  }
+
+  async stage(content: Blob, name: string): Promise<string> {
+    if (this.failStage !== null) {
+      throw this.failStage
+    }
+    const path = `/outbox/${this.staged.size + this.discarded.length + 1}/${name}`
+    this.staged.set(path, { content, name })
+    return path
+  }
+
+  async discard(path: string): Promise<void> {
+    this.staged.delete(path)
+    this.discarded.push(path)
+  }
+
+  /** A file the bridge downloads for this WhatsApp id. */
+  offer(waId: string, content: string, extra: { verified?: boolean; sha256?: string } = {}): void {
+    const path = `/media/${waId}.bin`
+    this.files.set(path, new Blob([content]))
+    this.downloads[waId] = { ok: true, file: { path, sha256: extra.sha256 ?? `sha-of-${waId}`, size: new Blob([content]).size, verified: extra.verified ?? true } }
   }
 }
 
@@ -190,6 +235,18 @@ class Wrapped implements ChatBackend {
       throw error
     }
     await this.inner.report(reply, result)
+  }
+  replyFile(reply: ClaimedReply) {
+    return this.inner.replyFile(reply)
+  }
+  claimMedia() {
+    return this.inner.claimMedia()
+  }
+  deliverMedia(request: MediaRequest, content: Blob, sha256: string) {
+    return this.inner.deliverMedia(request, content, sha256)
+  }
+  failMedia(request: MediaRequest, error: Parameters<ChatBackend['failMedia']>[1]) {
+    return this.inner.failMedia(request, error)
   }
 }
 
@@ -924,6 +981,10 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
       setCursor: async () => {},
       claimNext: async () => null,
       report: async () => {},
+      replyFile: async () => Promise.reject(new Error('No file.')),
+      claimMedia: async () => null,
+      deliverMedia: async () => {},
+      failMedia: async () => {},
       ...overrides,
     }
   }
@@ -991,7 +1052,7 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
           return null
         }
         claimed = true
-        return { id: 'r1', chatId: 'c1', chatJid: DIRECT, text: 'hi', token: 'claim-1' }
+        return { id: 'r1', chatId: 'c1', chatJid: DIRECT, text: 'hi', token: 'claim-1', file: null }
       },
       report: async (reply, result) => {
         expect(reply.token).toBe('claim-1')
@@ -1036,5 +1097,190 @@ describe('ChatRelay with a backend that asks to wait or stop', () => {
     await relay.pollNow()
     expect(tries).toBe(2)
     expect(reads).toEqual([0, 0])
+  })
+})
+
+describe('ChatRelay with files', () => {
+  function backendWith(overrides: Partial<ChatBackend>): ChatBackend {
+    return {
+      prepare: async () => {},
+      settings: async () => ({ includeGroups: true, leftOut: new Set<string>(), importSince: 0 }),
+      ingest: async () => ({ stored: 0, known: 0, leftOut: 0, refused: 0 }),
+      cursor: async () => null,
+      setCursor: async () => {},
+      claimNext: async () => null,
+      report: async () => {},
+      replyFile: async () => new Blob(['%PDF-1.4 manual']),
+      claimMedia: async () => null,
+      deliverMedia: async () => {},
+      failMedia: async () => {},
+      ...overrides,
+    }
+  }
+
+  /** Hands out these requests one by one, then nothing. */
+  function requests(...list: MediaRequest[]): () => Promise<MediaRequest | null> {
+    const queue = [...list]
+    return async () => queue.shift() ?? null
+  }
+
+  const request = (waId: string, extra: Partial<MediaRequest> = {}): MediaRequest => ({ messageId: `m-${waId}`, chatJid: DIRECT, waId, size: 20, maxBytes: 1024, ...extra })
+
+  it('brings a file that was asked for, checked by the shell, with its SHA-256', async () => {
+    const bridge = new FakeBridge()
+    bridge.offer('P1', 'a photo of the drill', { sha256: 'abc123' })
+    const delivered: { messageId: string; content: string; sha256: string }[] = []
+    const backend = backendWith({
+      claimMedia: requests(request('P1')),
+      deliverMedia: async (asked, content, sha256) => {
+        delivered.push({ messageId: asked.messageId, content: await content.text(), sha256 })
+      },
+    })
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: fakeScheduler().schedule })
+
+    await relay.pollNow()
+
+    expect(bridge.downloaded).toEqual(['P1'])
+    expect(delivered).toEqual([{ messageId: 'm-P1', content: 'a photo of the drill', sha256: 'abc123' }])
+  })
+
+  it('reports why a file could not be brought, and downloads nothing too large', async () => {
+    const bridge = new FakeBridge()
+    bridge.offer('UNCHECKED', 'no hash in the store', { verified: false })
+    bridge.offer('BIG', 'x'.repeat(40))
+    bridge.downloads.GONE = { ok: false, error: 'unavailable' }
+    const failed: [string, string][] = []
+    const delivered: string[] = []
+    const asked = [request('TOO_BIG', { size: 4096 }), request('UNCHECKED'), request('BIG', { size: null, maxBytes: 30 }), request('GONE'), request('MISSING')]
+    const backend = backendWith({
+      claimMedia: requests(...asked),
+      failMedia: async (media, error) => {
+        failed.push([media.waId, error])
+      },
+      deliverMedia: async (media) => {
+        delivered.push(media.waId)
+      },
+    })
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: fakeScheduler().schedule })
+
+    for (let round = 0; round < Math.ceil(asked.length / RELAY_MEDIA_PER_ROUND); round += 1) {
+      await relay.pollNow()
+    }
+
+    expect(failed).toEqual([
+      ['TOO_BIG', 'too_large'],
+      ['UNCHECKED', 'unverified'],
+      ['BIG', 'too_large'],
+      ['GONE', 'unavailable'],
+      ['MISSING', 'not_found'],
+    ])
+    expect(bridge.downloaded).not.toContain('TOO_BIG')
+    expect(delivered).toEqual([])
+  })
+
+  it('brings at most a few files a round and none that nobody asked for', async () => {
+    const bridge = new FakeBridge()
+    for (const id of ['A', 'B', 'C']) {
+      bridge.offer(id, `file ${id}`)
+    }
+    let claims = 0
+    const delivered: string[] = []
+    const queue = requests(request('A'), request('B'), request('C'))
+    const backend = backendWith({
+      claimMedia: async () => (claims++, queue()),
+      deliverMedia: async (media) => {
+        delivered.push(media.waId)
+      },
+    })
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: fakeScheduler().schedule })
+
+    await relay.pollNow()
+    expect(delivered).toEqual(['A', 'B'].slice(0, RELAY_MEDIA_PER_ROUND))
+    await relay.pollNow()
+    expect(delivered).toEqual(['A', 'B', 'C'])
+    expect(bridge.downloaded).toEqual(['A', 'B', 'C'])
+    expect(claims).toBe(4)
+  })
+
+  it('goes on with the next round when bringing a file fails, without stopping', async () => {
+    const bridge = new FakeBridge()
+    bridge.offer('A', 'file A')
+    const steps: RelayStep[] = []
+    const backend = backendWith({ claimMedia: requests(request('A')), deliverMedia: async () => Promise.reject(new Error('offline')) })
+    const scheduler = fakeScheduler()
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: scheduler.schedule, onError: (_error, step) => steps.push(step) })
+    relay.start()
+    scheduler.fire()
+    await vi.waitFor(() => expect(scheduler.active()).toHaveLength(1))
+
+    expect(steps).toEqual(['media'])
+    expect(scheduler.active()[0]!.ms).toBe(RELAY_ERROR_DELAY)
+    expect(relay.running).toBe(true)
+    await relay.stop()
+  })
+
+  it('sends a reply with its file through the shell, and removes the shell\'s copy after', async () => {
+    const bridge = new FakeBridge()
+    const reported: ReplyResult[] = []
+    let handed = false
+    const backend = backendWith({
+      claimNext: async () => (handed ? null : ((handed = true), { id: 'r1', chatId: 'c1', chatJid: DIRECT, text: 'The manual', token: 't1', file: { name: 'Drill manual.pdf', size: 15, url: 'https://api.example/content/chat-files/r1' } })),
+      report: async (_reply, result) => {
+        reported.push(result)
+      },
+    })
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: fakeScheduler().schedule })
+
+    await relay.pollNow()
+
+    expect(bridge.sent).toEqual([{ recipient: DIRECT, text: 'The manual', file: '/outbox/1/Drill manual.pdf' }])
+    expect(reported).toEqual([{ sent: true }])
+    expect(bridge.staged.size).toBe(0)
+    expect(bridge.discarded).toEqual(['/outbox/1/Drill manual.pdf'])
+  })
+
+  it('removes the shell\'s copy also when the send fails or is unconfirmed, and never sends again', async () => {
+    const bridge = new FakeBridge()
+    bridge.answer = async () => ({ ok: false, error: 'unconfirmed' })
+    const reported: ReplyResult[] = []
+    let handed = false
+    const backend = backendWith({
+      claimNext: async () => (handed ? null : ((handed = true), { id: 'r1', chatId: 'c1', chatJid: DIRECT, text: '', token: 't1', file: { name: 'a.pdf', size: 15, url: 'u' } })),
+      report: async (_reply, result) => {
+        reported.push(result)
+      },
+    })
+    const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: fakeScheduler().schedule })
+
+    await relay.pollNow()
+    await relay.pollNow()
+
+    expect(bridge.sent).toHaveLength(1)
+    expect(reported).toEqual([{ sent: false, error: 'unconfirmed' }])
+    expect(bridge.staged.size).toBe(0)
+  })
+
+  it('fails a reply whose file cannot be fetched or handed to the shell, without sending it', async () => {
+    for (const failure of ['fetch', 'stage'] as const) {
+      const bridge = new FakeBridge()
+      if (failure === 'stage') {
+        bridge.failStage = 'too_large'
+      }
+      const reported: ReplyResult[] = []
+      let handed = false
+      const backend = backendWith({
+        claimNext: async () => (handed ? null : ((handed = true), { id: 'r1', chatId: 'c1', chatJid: DIRECT, text: 'x', token: 't1', file: { name: 'a.pdf', size: 15, url: 'u' } })),
+        replyFile: failure === 'fetch' ? async () => Promise.reject(new Error('offline')) : async () => new Blob(['x']),
+        report: async (_reply, result) => {
+          reported.push(result)
+        },
+      })
+      const relay = new ChatRelay({ now: () => NOW, bridge, backend, schedule: fakeScheduler().schedule })
+
+      await relay.pollNow()
+
+      expect(bridge.sent, failure).toEqual([])
+      expect(reported, failure).toEqual([{ sent: false, error: 'file_unavailable' }])
+    }
   })
 })

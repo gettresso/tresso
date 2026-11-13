@@ -1,4 +1,4 @@
-import type { BridgeState, ChatKind, ChatMediaKind, ChatOutgoingError, LinkState, SyncedChat, SyncedChatAccount, SyncedChatOutgoing } from './types'
+import type { BridgeState, ChatKind, ChatMediaAccess, ChatMediaError, ChatMediaKind, ChatMediaState, ChatOutgoingError, LinkState, SyncedChat, SyncedChatAccount, SyncedChatOutgoing } from './types'
 
 /*
  * The chat endpoints of the API ("All my devices"), as apps/api builds them: the account (ChatAccountResource), the
@@ -16,9 +16,14 @@ export const RELAY_MAX_BYTES = 8 * 1024 * 1024
 export const RELAY_MAX_FIELD = 65_536
 /** QueueReply::MAX_TEXT: characters of a reply, trimmed. */
 export const QUEUE_REPLY_MAX_TEXT = 4096
+/**
+ * CHAT_MAX_FILE_BYTES as the API sets it by default: the largest WhatsApp file a browser or phone attaches, and the
+ * largest the relaying Mac brings (the relay takes the server's own limit from each media claim, `maxBytes`).
+ */
+export const CHAT_MAX_FILE_BYTES = 100 * 1024 * 1024
 
 /** The `code` of a refusal of the chat endpoints (ChatProblem in the API). All are 409 but `too_large` (413). */
-export type ChatProblemCode = 'not_the_relay' | 'already_going_out' | 'id_taken' | 'result_final' | 'not_failed' | 'cancelled' | 'too_large' | 'other_number'
+export type ChatProblemCode = 'not_the_relay' | 'already_going_out' | 'id_taken' | 'result_final' | 'not_failed' | 'cancelled' | 'too_large' | 'other_number' | 'not_requested' | 'not_stored'
 
 /**
  * A failed chat request as a ChatApi implementation rejects with it: the HTTP status, the problem's `code` when the
@@ -194,26 +199,110 @@ export interface RelayImportResponse {
 /** POST /api/v1/chat-accounts/{id}/relay/outgoing/claim (RelayClaim). */
 export type RelayClaimRequest = RelayRequest
 
+/** The file a claimed reply carries (RelayClaimOutput `file`). */
+export interface RelayClaimFile {
+  /** The name it goes out under: one plain name, no folder. */
+  name: string
+  /** Bytes. */
+  size: number
+  /** A signed link to its content, valid for an hour and only while the reply is being sent; no token needed. */
+  url: string
+}
+
 /** The reply the relay sends now (RelayClaimOutput). */
 export interface RelayClaimResponse {
   id: string
   chatId: string
   /** Canonical. */
   chatJid: string
+  /** Empty for a file without a caption. */
   text: string
   /** This claim's secret; the result carries it back. No other answer and no delta carries it. */
   claimToken: string
+  /** The file it carries; null for a text reply. */
+  file: RelayClaimFile | null
+}
+
+/** POST /api/v1/chat-accounts/{id}/relay/media/claim (RelayMediaClaim). */
+export type RelayMediaClaimRequest = RelayRequest
+
+/** A file the user asked for on another device (RelayMediaClaimOutput). */
+export interface RelayMediaClaimResponse {
+  /** The message; the upload and the failure name it. */
+  messageId: string
+  /** Canonical. */
+  chatJid: string
+  waId: string
+  kind: ChatMediaKind
+  /** What the bridge's store said, in bytes; null when unknown. */
+  size: number | null
+  /** The largest file the server takes (CHAT_MAX_FILE_BYTES); a larger one is reported `too_large` without a download. */
+  maxBytes: number
+}
+
+/**
+ * PUT /api/v1/chat-accounts/{id}/relay/media/{messageId}: the file as the body (`application/octet-stream`), the device
+ * in `X-Device-Id`, the SHA-256 the bridge's store holds in `X-Content-SHA256`.
+ */
+export interface RelayMediaUploadRequest extends RelayRequest {
+  /** Hex. */
+  sha256: string
+  body: Blob
+}
+
+/** POST /api/v1/chat-accounts/{id}/relay/media/{messageId}/failed (RelayMediaFailed). */
+export interface RelayMediaFailedRequest extends RelayRequest {
+  error: ChatMediaError
+}
+
+/** Where a file the relay was asked for stands (RelayMediaOutput). */
+export interface RelayMediaResponse {
+  messageId: string
+  state: ChatMediaState
+  error: ChatMediaError | null
+}
+
+/** A message's file as GET /api/v1/chat-messages/{id}/media and its request answer it (ChatMediaResource). */
+export interface ChatMediaResponse {
+  messageId: string
+  kind: ChatMediaKind
+  /** WhatsApp's name; display it only (the download's name is made safe by the server). */
+  name: string | null
+  size: number | null
+  state: ChatMediaState
+  error: ChatMediaError | null
+  access: ChatMediaAccess | null
+  /** A signed link, valid for an hour; null until the file may be downloaded. */
+  url: string | null
+}
+
+/** PUT /api/v1/chats/{chatId}/uploads/{id}: the answer (ChatUploadResource). */
+export interface ChatUploadResponse {
+  id: string
+  chatId: string
+  size: number
 }
 
 /** POST /api/v1/chat-accounts/{id}/relay/outgoing/{outgoingId}/result (RelayResult). */
 export type RelayResultRequest = RelayRequest & { claimToken: string } & ({ sent: true; error: null } | { sent: false; error: ChatOutgoingError })
 
+/** The file a queued reply carries (QueueReplyFile): one uploaded to the chat before, and its name. Our own apps only. */
+export interface QueueReplyFile {
+  uploadId: string
+  /** 1 to 255 characters, no control characters; anything up to the last slash or backslash is dropped. */
+  name: string
+}
+
 /** POST /api/v1/chats/{chatId}/outgoing (QueueReply). */
 export interface QueueReplyRequest {
   /** A UUIDv7 the client made when the user pressed Send, at most 10 minutes before the server first sees it. */
   id: string
-  /** Trimmed by the server; 1 to QUEUE_REPLY_MAX_TEXT characters, no control characters but line breaks and tabs. */
+  /**
+   * Trimmed by the server; up to QUEUE_REPLY_MAX_TEXT characters, no control characters but line breaks and tabs. Empty
+   * only with a file (then it is the caption).
+   */
   text: string
+  file?: QueueReplyFile
 }
 
 /** PATCH /api/v1/chats/{id} (UpdateChat): a field left out stays as it is. Read and archive only move forward. */
@@ -257,4 +346,20 @@ export interface ChatApi {
   retryReply(id: string): Promise<SyncedChatOutgoing>
   /** PATCH /api/v1/chats/{id}. */
   updateChat(id: string, request: UpdateChatRequest): Promise<SyncedChat>
+  /** POST /api/v1/chat-accounts/{id}/relay/media/claim (desktop only); null when nobody asked for a file (204). */
+  claimMedia(accountId: string, request: RelayMediaClaimRequest): Promise<RelayMediaClaimResponse | null>
+  /** PUT /api/v1/chat-accounts/{id}/relay/media/{messageId} (desktop only); safe to send again. */
+  uploadMedia(accountId: string, messageId: string, request: RelayMediaUploadRequest): Promise<RelayMediaResponse>
+  /** POST /api/v1/chat-accounts/{id}/relay/media/{messageId}/failed (desktop only). */
+  failMedia(accountId: string, messageId: string, request: RelayMediaFailedRequest): Promise<RelayMediaResponse>
+  /** The content behind a claimed reply's signed `file.url` (no token: the link is signed). */
+  replyFile(url: string): Promise<Blob>
+  /** POST /api/v1/chat-messages/{id}/media/request: asks the relaying Mac for the file (our own apps). */
+  requestMedia(messageId: string): Promise<ChatMediaResponse>
+  /** GET /api/v1/chat-messages/{id}/media: where the file stands, with a link once it may be downloaded. */
+  media(messageId: string): Promise<ChatMediaResponse>
+  /** POST /api/v1/chat-messages/{id}/media/unscanned-link: the link for a file that could not be scanned (our own apps). */
+  unscannedMediaLink(messageId: string): Promise<ChatMediaResponse>
+  /** PUT /api/v1/chats/{chatId}/uploads/{uploadId}: a file for a reply, before it is queued (our own apps). */
+  uploadFile(chatId: string, uploadId: string, body: Blob): Promise<ChatUploadResponse>
 }

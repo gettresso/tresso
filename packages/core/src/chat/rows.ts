@@ -4,10 +4,14 @@ import {
   type BridgeState,
   type ChatKind,
   type ChatMessageKey,
+  type ChatMediaAccess,
+  type ChatMediaError,
   type ChatMediaKind,
+  type ChatMediaState,
   type ChatOutgoingError,
   type ChatOutgoingStatus,
   type LinkState,
+  type SentFile,
   type SyncedChat,
   type SyncedChatAccount,
   type SyncedChatMessage,
@@ -88,7 +92,10 @@ const BRIDGE_STATES: readonly string[] = ['running', 'stopped'] satisfies Bridge
 const LINK_STATES: readonly string[] = ['linked', 'unlinked', 'unknown'] satisfies LinkState[]
 const MEDIA_KINDS: readonly string[] = ['image', 'video', 'audio', 'document'] satisfies ChatMediaKind[]
 const OUTGOING_STATUSES: readonly string[] = ['waiting', 'sending', 'sent', 'failed', 'cancelled'] satisfies ChatOutgoingStatus[]
-const OUTGOING_ERRORS: readonly string[] = ['bridge_stopped', 'not_linked', 'refused', 'unconfirmed'] satisfies ChatOutgoingError[]
+const OUTGOING_ERRORS: readonly string[] = ['bridge_stopped', 'not_linked', 'refused', 'unconfirmed', 'file_unavailable'] satisfies ChatOutgoingError[]
+const MEDIA_STATES: readonly string[] = ['remote', 'requested', 'stored', 'failed'] satisfies ChatMediaState[]
+const MEDIA_ERRORS: readonly string[] = ['not_found', 'mismatch', 'unverified', 'too_large', 'unavailable'] satisfies ChatMediaError[]
+const MEDIA_ACCESS: readonly string[] = ['allowed', 'scanning', 'confirm', 'blocked'] satisfies ChatMediaAccess[]
 
 type Raw<T> = { [K in keyof T]?: unknown }
 
@@ -116,7 +123,9 @@ function oneOf<T extends string>(value: unknown, known: readonly string[], other
  * - an unknown enum value becomes a safe known one, chosen so nothing acts on it wrongly: a chat kind follows its
  *   JID, a bridge is `stopped`, a link `unknown`, a file kind `document` (shown as a file with its name), a reply status
  *   `sending` (neither sent again nor offered to retry) and a reply error `refused`; an unknown channel is kept as it
- *   came, since mapping it to WhatsApp would be wrong.
+ *   came, since mapping it to WhatsApp would be wrong;
+ * - of a message's file, an unknown state is `remote` (Download asks the server, which decides), an unknown error
+ *   `unavailable`, and an unknown access `blocked` (nothing downloads that a newer server has not cleared).
  */
 
 export function chatAccountFromDelta(raw: Raw<SyncedChatAccount>): SyncedChatAccount | null {
@@ -185,7 +194,34 @@ export function chatMessageFromDelta(raw: Raw<SyncedChatMessage>): SyncedChatMes
     mediaKind: raw.mediaKind === null || raw.mediaKind === undefined ? null : oneOf<ChatMediaKind>(raw.mediaKind, MEDIA_KINDS, 'document'),
     mediaName: text(raw.mediaName),
     mediaSize: size(raw.mediaSize),
+    ...mediaStateFromDelta(raw),
   }
+}
+
+/**
+ * A message's file on the server: its state, error and access. Left out for a message without a file, and for one from
+ * a server that does not say (an older one: the file is then on the Mac only, as `remote`).
+ */
+function mediaStateFromDelta(raw: Raw<SyncedChatMessage>): Pick<SyncedChatMessage, 'mediaState' | 'mediaError' | 'mediaAccess'> {
+  if (raw.mediaKind === null || raw.mediaKind === undefined || raw.mediaState === undefined) {
+    return {}
+  }
+  const state = oneOf<ChatMediaState>(raw.mediaState, MEDIA_STATES, 'remote')
+  return {
+    mediaState: state,
+    mediaError: state === 'failed' ? oneOf<ChatMediaError>(raw.mediaError, MEDIA_ERRORS, 'unavailable') : null,
+    mediaAccess: state === 'stored' ? oneOf<ChatMediaAccess>(raw.mediaAccess, MEDIA_ACCESS, 'blocked') : null,
+  }
+}
+
+/** The file a reply carries as the delta names it; null for none or one without a name. */
+function sentFileFromDelta(raw: unknown): SentFile | null {
+  if (typeof raw !== 'object' || raw === null) {
+    return null
+  }
+  const file = raw as { name?: unknown; size?: unknown }
+  const name = text(file.name)
+  return name === null ? null : { name, size: size(file.size) }
 }
 
 export function chatOutgoingFromDelta(raw: Raw<SyncedChatOutgoing>): SyncedChatOutgoing | null {
@@ -205,5 +241,11 @@ export function chatOutgoingFromDelta(raw: Raw<SyncedChatOutgoing>): SyncedChatO
     createdAt: text(raw.createdAt) ?? '',
     claimedAt: text(raw.claimedAt),
     sentAt: text(raw.sentAt),
+    ...fileOf(sentFileFromDelta(raw.file)),
   }
+}
+
+/** The `file` of a reply row, left out for a text reply as the stores keep it. */
+function fileOf(file: SentFile | null): Pick<SyncedChatOutgoing, 'file'> {
+  return file === null ? {} : { file }
 }

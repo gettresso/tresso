@@ -1,6 +1,6 @@
 import { CopyClosingError } from '../store/mailStore'
 import { canonicalChatJid, chatKindOf, importable, importableChat, phoneLabel } from './format'
-import type { BridgeRow, ChatKind, ChatMedia, ChatMediaKind, ChatOutgoingError, ChatSender } from './types'
+import type { BridgeRow, ChatKind, ChatMedia, ChatMediaError, ChatMediaKind, ChatOutgoingError, ChatSender } from './types'
 
 /** Rows read from the bridge's store per round (the shell's maximum). */
 export const RELAY_PAGE = 500
@@ -24,6 +24,8 @@ export const FIRST_IMPORT_MAX = 30 * 60_000
  * as nothing.
  */
 export const FIRST_IMPORT_STEP_MAX = 10 * RELAY_INTERVAL
+/** Files the user asked for on other devices that one round brings at most; the rest come in the next rounds. */
+export const RELAY_MEDIA_PER_ROUND = 2
 /** How long a sender without a known name waits before it is looked up again (contacts arrive after messages). */
 export const NAME_RETRY = 5 * 60_000
 /** Sender ids per name lookup (the shell's maximum). */
@@ -55,6 +57,20 @@ export interface SenderLookup {
 
 export type BridgeSendResult = { ok: true } | { ok: false; error: ChatOutgoingError }
 
+/** A file the bridge downloaded, as the shell copied and checked it (`whatsapp_download`). */
+export interface BridgeFile {
+  /** In the shell's own download folder; only the shell reads it (`file`). */
+  path: string
+  /** Hex SHA-256 of the copy. */
+  sha256: string
+  size: number
+  /** Its SHA-256 is the one the bridge's store holds; false when the store holds none. */
+  verified: boolean
+}
+
+/** What a download came to: the file, or why there is none (ChatMediaError). */
+export type BridgeDownload = { ok: true; file: BridgeFile } | { ok: false; error: ChatMediaError }
+
 /** The desktop shell's bridge commands the relay needs (apps/web/src/platform/whatsapp.ts adapts them). */
 export interface ChatBridge {
   /** At most `limit` rows after `afterRowid`; null while the bridge writes to its store (the shell's `busy`). */
@@ -62,11 +78,26 @@ export interface ChatBridge {
   /** Names and numbers of sender ids (digits only, at most 500 a call); an id with nothing known may be left out. */
   names(ids: string[]): Promise<Record<string, SenderLookup>>
   /**
-   * Sends a text. Resolves with what happened, `unconfirmed` when the bridge took the request but its answer was lost.
-   * Rejects only when nothing went out (the shell refused the request before calling the bridge); no timeout of its
-   * own may reject it.
+   * Sends a text, with a file the shell holds when `file` names one (`stage`). Resolves with what happened,
+   * `unconfirmed` when the bridge took the request but its answer was lost. Rejects only when nothing went out (the
+   * shell refused the request before calling the bridge); no timeout of its own may reject it.
    */
-  send(recipient: string, text: string): Promise<BridgeSendResult>
+  send(recipient: string, text: string, file?: string): Promise<BridgeSendResult>
+  /**
+   * Downloads a message's file through the bridge into the shell's own folder and checks it against the SHA-256 the
+   * bridge's store holds. Resolves with the file or the reason there is none; rejects only for an error of the shell
+   * itself (the relay tries again later).
+   */
+  download(chatJid: string, waId: string): Promise<BridgeDownload>
+  /** The content of a file `download` gave. */
+  file(path: string): Promise<Blob>
+  /**
+   * Hands content to the shell to send (a file a reply carries): the shell keeps it in a folder of its own under `name`
+   * (one plain name) and returns the path `send` takes. `discard` removes it again.
+   */
+  stage(content: Blob, name: string): Promise<string>
+  /** Removes a staged file; one that is gone already is fine. */
+  discard(path: string): Promise<void>
 }
 
 /**
@@ -126,6 +157,14 @@ export interface IngestCounts {
   refused: number
 }
 
+/** The file a claimed reply carries: its name, and what `replyFile` needs to fetch it. */
+export interface ClaimedFile {
+  name: string
+  size: number
+  /** Where the backend fetches it (the server's signed link). */
+  url: string
+}
+
 /** A reply the backend handed out to send; it is `sending` until its result is reported. */
 export interface ClaimedReply {
   id: string
@@ -134,6 +173,19 @@ export interface ClaimedReply {
   text: string
   /** Names this claim; the backend needs it back with the result (the server's claim token). */
   token: string
+  /** The file it carries ("All my devices", attached in the browser or on the phone); null for a text reply. */
+  file: ClaimedFile | null
+}
+
+/** A file the user asked for on another device, handed out to the relay. */
+export interface MediaRequest {
+  messageId: string
+  chatJid: string
+  waId: string
+  /** What the bridge's store said, in bytes; null when unknown. */
+  size: number | null
+  /** The largest file the backend takes. */
+  maxBytes: number
 }
 
 export type ReplyResult = { sent: true } | { sent: false; error: ChatOutgoingError }
@@ -168,6 +220,14 @@ export interface ChatBackend {
   claimNext(): Promise<ClaimedReply | null>
   /** The outcome of sending a claimed reply. Reporting the same result again changes nothing. */
   report(reply: ClaimedReply, result: ReplyResult): Promise<void>
+  /** The content of the file a claimed reply carries; rejects when it cannot be fetched (nothing is sent then). */
+  replyFile(reply: ClaimedReply): Promise<Blob>
+  /** The oldest file the user asked for on another device, now held by this relay; null when none waits. */
+  claimMedia(): Promise<MediaRequest | null>
+  /** Hands over a file that was asked for, with its SHA-256 (hex). Handing over the same file again changes nothing. */
+  deliverMedia(request: MediaRequest, content: Blob, sha256: string): Promise<void>
+  /** Says why a file that was asked for could not be brought. */
+  failMedia(request: MediaRequest, error: ChatMediaError): Promise<void>
 }
 
 /** The relay must stop: another device relays now, or the chats were removed. */
@@ -187,7 +247,7 @@ export class ChatRelayRetryLater extends Error {
 }
 
 /** The step of a round an error came from. */
-export type RelayStep = 'prepare' | 'read' | 'names' | 'store' | 'claim' | 'report'
+export type RelayStep = 'prepare' | 'read' | 'names' | 'store' | 'claim' | 'report' | 'media'
 
 /** Why a row of the bridge's store was not brought in. */
 export type SkipReason = 'not_a_chat' | 'groups_off' | 'left_out' | 'before_import' | 'no_time' | 'bad_time' | 'bad_id' | 'nothing_to_show'
@@ -279,6 +339,15 @@ function noSkips(): Record<SkipReason, number> {
  * Sending: after each import, the waiting replies one at a time, oldest first: claim, send, report. A send is never
  * repeated by the relay: a result that could not be reported is kept and reported again first in the next round, and
  * a reply whose send was interrupted by a crash is the backend's to settle at the next start (`prepare`), as not sent.
+ * A reply that carries a file is fetched from the backend and handed to the shell before it is sent; when that fails,
+ * nothing went out and the reply fails as `file_unavailable` (the user's Try again sends it). The shell's copy is
+ * removed once the send is done, whatever came of it.
+ *
+ * Files the user asked for on other devices: after the replies, at most RELAY_MEDIA_PER_ROUND a round, oldest first.
+ * The bridge downloads the file into the shell's own folder, the shell checks it against the SHA-256 the bridge's store
+ * holds, and the backend takes it. A file that differs, that the store names no hash for, that is larger than the
+ * backend takes or that the bridge cannot give is reported with its reason, and the user may ask again. Nothing is
+ * downloaded that nobody asked for.
  */
 export class ChatRelay {
   private state: RelayState = 'idle'
@@ -433,6 +502,16 @@ export class ChatRelay {
     }
     try {
       await this.sendWaiting()
+    } catch (error) {
+      if (failed(error)) {
+        return delay
+      }
+    }
+    if (this.state === 'stopped') {
+      return delay
+    }
+    try {
+      await this.bringMedia()
     } catch (error) {
       failed(error)
     }
@@ -638,16 +717,66 @@ export class ChatRelay {
       }
       // Claimed means `sending`: from here the reply is sent and its result kept until reported, also when the relay
       // is asked to stop meanwhile, so it never stays `sending` for a reply that was not sent.
-      let result: ReplyResult
-      try {
-        const sent = await bridge.send(reply.chatJid, reply.text)
-        result = sent.ok ? { sent: true } : { sent: false, error: sent.error }
-      } catch {
-        // The shell refused the request before the bridge was called (whatsapp_send in whatsapp.rs).
-        result = { sent: false, error: 'refused' }
-      }
-      this.unreported.set(reply.id, { reply, result })
+      this.unreported.set(reply.id, { reply, result: await this.sendOne(reply) })
       await this.reportUnreported()
+    }
+  }
+
+  /** Sends one claimed reply, with its file when it carries one. Never rejects: every way it ends is a result. */
+  private async sendOne(reply: ClaimedReply): Promise<ReplyResult> {
+    const { backend, bridge } = this.options
+    let staged: string | null = null
+    if (reply.file !== null) {
+      try {
+        staged = await bridge.stage(await backend.replyFile(reply), reply.file.name)
+      } catch (error) {
+        // Nothing went out: the file could not be fetched or handed to the shell.
+        this.options.onError?.(error, 'claim')
+        return { sent: false, error: 'file_unavailable' }
+      }
+    }
+    try {
+      const sent = await (staged === null ? bridge.send(reply.chatJid, reply.text) : bridge.send(reply.chatJid, reply.text, staged))
+      return sent.ok ? { sent: true } : { sent: false, error: sent.error }
+    } catch {
+      // The shell refused the request before the bridge was called (whatsapp_send in whatsapp.rs).
+      return { sent: false, error: 'refused' }
+    } finally {
+      if (staged !== null) {
+        await bridge.discard(staged).catch((error: unknown) => this.options.onError?.(error, 'claim'))
+      }
+    }
+  }
+
+  /** Brings files the user asked for on other devices, at most RELAY_MEDIA_PER_ROUND. */
+  private async bringMedia(): Promise<void> {
+    const { backend, bridge } = this.options
+    for (let brought = 0; brought < RELAY_MEDIA_PER_ROUND && this.state !== 'stopped'; brought += 1) {
+      this.step = 'media'
+      const request = await backend.claimMedia()
+      if (request === null) {
+        return
+      }
+      if (request.size !== null && request.size > request.maxBytes) {
+        await backend.failMedia(request, 'too_large')
+        continue
+      }
+      const download = await bridge.download(request.chatJid, request.waId)
+      if (!download.ok) {
+        await backend.failMedia(request, download.error)
+        continue
+      }
+      const { file } = download
+      if (!file.verified) {
+        // Nothing to check the bridge's file by: it is not passed on as the sender's file.
+        await backend.failMedia(request, 'unverified')
+        continue
+      }
+      if (file.size > request.maxBytes) {
+        await backend.failMedia(request, 'too_large')
+        continue
+      }
+      await backend.deliverMedia(request, await bridge.file(file.path), file.sha256)
     }
   }
 

@@ -24,13 +24,14 @@ import {
   type ChatBackend,
   type ClaimedReply,
   type IncomingChat,
+  type MediaRequest,
   type IncomingMessage,
   type IngestCounts,
   type RelayCursor,
   type RelaySettings,
   type ReplyResult,
 } from './relay'
-import type { ChatOutgoingError } from './types'
+import type { ChatMediaError, ChatOutgoingError } from './types'
 
 /** Before the account id in the chat value (MailStore.chatMeta) that holds this backend's cursor; see serverCursorKey. */
 export const SERVER_CURSOR_PREFIX = 'server-cursor:'
@@ -312,7 +313,69 @@ export class ServerChatBackend implements ChatBackend {
       return null
     }
     await this.keepClaim({ id: claimed.id, token: claimed.claimToken, result: null })
-    return { id: claimed.id, chatId: claimed.chatId, chatJid: claimed.chatJid, text: claimed.text, token: claimed.claimToken }
+    const file = claimed.file === null ? null : { name: claimed.file.name, size: claimed.file.size, url: claimed.file.url }
+    return { id: claimed.id, chatId: claimed.chatId, chatJid: claimed.chatJid, text: claimed.text, token: claimed.claimToken, file }
+  }
+
+  /**
+   * The content of the file a claimed reply carries, through the claim's signed link. Rejects when it cannot be fetched;
+   * the relay then reports the reply as `file_unavailable` without sending it.
+   */
+  replyFile(reply: ClaimedReply): Promise<Blob> {
+    if (reply.file === null) {
+      return Promise.reject(new Error('This reply carries no file.'))
+    }
+    return this.api.replyFile(reply.file.url)
+  }
+
+  /**
+   * The oldest file the user asked for on another device (`relay/media/claim`), now held by this device; the server
+   * hands it out again only after a while without an answer. Errors as the relay's other calls.
+   */
+  async claimMedia(): Promise<MediaRequest | null> {
+    let claimed
+    try {
+      claimed = await this.api.claimMedia(this.accountId, { deviceId: this.deviceId })
+    } catch (error) {
+      throw relayError(error)
+    }
+    return claimed === null ? null : { messageId: claimed.messageId, chatJid: claimed.chatJid, waId: claimed.waId, size: claimed.size, maxBytes: claimed.maxBytes }
+  }
+
+  /**
+   * Uploads a file that was asked for. The server refusing it ends the request, so the user sees why: 413 as
+   * `too_large`, 422 (what arrived is not what was sent) as `mismatch`. A message that is gone (404) or a file nobody
+   * asks for any more (409 `not_requested`) is passed over. Anything else rejects as the relay's other calls do; the
+   * request is handed out again later.
+   */
+  async deliverMedia(request: MediaRequest, content: Blob, sha256: string): Promise<void> {
+    try {
+      await this.api.uploadMedia(this.accountId, request.messageId, { deviceId: this.deviceId, sha256, body: content })
+    } catch (error) {
+      const failure = chatApiFailure(error)
+      if (failure?.status === 413) {
+        return this.failMedia(request, 'too_large')
+      }
+      if (failure?.status === 422) {
+        return this.failMedia(request, 'mismatch')
+      }
+      if (mediaGone(failure)) {
+        return
+      }
+      throw relayError(error)
+    }
+  }
+
+  /** Says why a file could not be brought; a message that is gone or a request that ended is passed over. */
+  async failMedia(request: MediaRequest, error: ChatMediaError): Promise<void> {
+    try {
+      await this.api.failMedia(this.accountId, request.messageId, { deviceId: this.deviceId, error })
+    } catch (cause) {
+      if (mediaGone(chatApiFailure(cause))) {
+        return
+      }
+      throw relayError(cause)
+    }
   }
 
   /**
@@ -662,6 +725,14 @@ export function cutRelayField<T extends string | null>(value: T): T {
 }
 
 /** What the relay must do on a failed relay call; the error as it came when it is nothing the relay acts on. */
+/**
+ * A media call about a message that is gone (its chat was left out: 404) or a request that ended meanwhile (409
+ * `not_requested`): nothing to do. A 404 here never means that the account is gone; the next claim says so.
+ */
+function mediaGone(failure: ChatApiFailure | null): boolean {
+  return failure !== null && (failure.status === 404 || (failure.status === 409 && failure.code === 'not_requested'))
+}
+
 function relayError(error: unknown): unknown {
   const failure = chatApiFailure(error)
   if (failure === null) {
