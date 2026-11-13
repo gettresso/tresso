@@ -342,12 +342,19 @@ func (w *writer) create(ctx context.Context) (string, error) {
 			body["isOnlineMeeting"], body["onlineMeetingProvider"] = true, provider
 		}
 	}
-	if joinLineAt(d.Body.Content) >= 0 {
-		// A link Tresso knows travels as the description's last line: written as escaped text in an HTML body.
-		body["body"] = textAsHTML(d.Body.Content, "")
+	if _, line := joinLine(lines(d.Body.Content)); line >= 0 {
+		// A link Tresso knows travels as the description's join line: written as escaped text in an HTML body.
+		body["body"] = textAsHTML(lines(d.Body.Content), "")
 	}
 	var created event
-	if err := w.session.request(ctx, http.MethodPost, eventsPath(w.calendar.RemoteID), body, &created); err != nil {
+	err = w.session.request(ctx, http.MethodPost, eventsPath(w.calendar.RemoteID), body, &created)
+	if withoutTeams(body, err) {
+		// Graph refuses the meeting (the calendar's Teams setting changed since it was listed): the event is saved
+		// without it, never refused over it.
+		w.teamsNotSupported = true
+		err = w.session.request(ctx, http.MethodPost, eventsPath(w.calendar.RemoteID), body, &created)
+	}
+	if err != nil {
 		return "", err
 	}
 	if created.ID == "" {
@@ -432,14 +439,27 @@ func (w *writer) patch(ctx context.Context, v *ical.Component, current event, re
 		body["body"] = html
 	}
 	if len(body) > 0 {
-		req := providerhttp.Request{Method: http.MethodPatch, URL: s.base + eventPath(w.calendar.RemoteID, current.ID), Header: http.Header{}, ContentType: "application/json"}
-		if req.Body, err = json.Marshal(body); err != nil {
-			return err
+		send := func() error {
+			req := providerhttp.Request{Method: http.MethodPatch, URL: s.base + eventPath(w.calendar.RemoteID, current.ID), Header: http.Header{}, ContentType: "application/json"}
+			var err error
+			if req.Body, err = json.Marshal(body); err != nil {
+				return err
+			}
+			if current.ODataETag != "" {
+				req.Header.Set("If-Match", current.ODataETag)
+			}
+			return s.http.JSON(ctx, req, nil)
 		}
-		if current.ODataETag != "" {
-			req.Header.Set("If-Match", current.ODataETag)
+		err := send()
+		if withoutTeams(body, err) {
+			// Graph refuses the meeting: the rest of the change is saved all the same, once, without it.
+			w.teamsNotSupported = true
+			err = nil
+			if len(body) > 0 {
+				err = send()
+			}
 		}
-		if err := w.settle(ctx, s.http.JSON(ctx, req, nil)); err != nil {
+		if err := w.settle(ctx, err); err != nil {
 			return err
 		}
 	}
@@ -464,26 +484,40 @@ func (w *writer) htmlBody(ctx context.Context, id, text string) (itemBody, error
 	}
 	block := ""
 	if strings.EqualFold(current.Body.ContentType, "html") {
-		block = meetingBlock(current.Body.Content)
+		// The join line Tresso wrote after the block last time is no part of it: the description says what goes there.
+		block = withoutJoinLines(meetingBlock(current.Body.Content))
 	}
+	normal := lines(text)
+	_, line := joinLine(normal)
 	if block == "" {
-		if joinLineAt(text) >= 0 {
-			return textAsHTML(text, ""), nil
+		if line >= 0 {
+			return textAsHTML(normal, ""), nil
 		}
 		return itemBody{ContentType: "text", Content: text}, nil
 	}
-	i := strings.Index(text, meetingSeparator)
+	i := strings.Index(normal, meetingSeparator)
 	if i < 0 {
 		// The user removed the join block from the description: the meeting stays, its text goes.
-		return textAsHTML(text, ""), nil
+		return textAsHTML(normal, ""), nil
 	}
-	// Tresso's join line stands after the block's text (it is the description's last line): it stays the last line,
-	// after the block.
+	// The block's text is replaced by the block itself. Tresso's join line after it stays after it, and so does what
+	// the user wrote below that line.
 	tail := ""
-	if line := joinLineAt(text); line > i {
-		tail = text[line:]
+	if line > i {
+		tail = normal[line:]
 	}
-	return textAsHTML(text[:i], block, tail), nil
+	return textAsHTML(normal[:i], block, tail), nil
+}
+
+// withoutTeams: Graph refused a write that asked for a Teams meeting with 400. The two meeting fields are taken out
+// of body, so the write can be sent once more without them.
+func withoutTeams(body map[string]any, err error) bool {
+	if _, asked := body["isOnlineMeeting"]; !asked || !providerhttp.IsStatus(err, http.StatusBadRequest) {
+		return false
+	}
+	delete(body, "isOnlineMeeting")
+	delete(body, "onlineMeetingProvider")
+	return true
 }
 
 // textAsHTML is plain text as an HTML body: escaped, its line breaks as <br>, then the HTML of block (a meeting's join
@@ -502,18 +536,59 @@ func escapedLines(text string) string {
 	return strings.ReplaceAll(html.EscapeString(strings.TrimRight(text, "\n")), "\n", "<br>")
 }
 
-// joinLinePattern is the line Tresso keeps at the end of a description for a meeting link it knows ("Join the
-// meeting: <url>", "Join with <App>: <url>"), as the API's MeetingJoinLine writes and reads it.
-var joinLinePattern = regexp.MustCompile(`^Join (?:the meeting|with [^:\r\n]{1,40}): https://[^\s\x{0B}\x{85}\x{A0}\x{1680}\x{2000}-\x{200B}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]+[ \t\x{A0}]*$`)
+// joinLinePattern is the line Tresso keeps in a description for a meeting link it knows ("Join the meeting: <url>",
+// "Join with <App>: <url>"). It is the rule of the API's MeetingJoinLine::PATTERN, and both are checked against the
+// same fixture (apps/api/tests/Fixtures/meeting-join-lines.json): a line of its own, an https link up to the first
+// space (Unicode spaces too) or angle bracket, and, as Exchange gives a linked address back in a text body, the link
+// again in angle brackets after it.
+var joinLinePattern = regexp.MustCompile(`(?m)^Join (?:the meeting|with [^:\r\n]{1,40}):[ \t\x{A0}]+(https://` + linkChars + `+)(?:[ \t\x{A0}]*<https://` + linkChars + `+>)?[ \t\x{A0}]*$`)
 
-// joinLineAt is where the description's join line starts when it is the last line with text, else -1.
-func joinLineAt(text string) int {
-	trimmed := strings.TrimRight(text, " \t\r\n")
-	start := strings.LastIndex(trimmed, "\n") + 1
-	if !joinLinePattern.MatchString(trimmed[start:]) {
-		return -1
+const linkChars = `[^\s<>\x{0B}\x{85}\x{A0}\x{1680}\x{2000}-\x{200B}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]`
+
+// lines is text with its line ends as "\n" only, so the pattern's line anchors find every line.
+func lines(text string) string {
+	return strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text)
+}
+
+// joinLine is the description's join line as the API reads it: the last one anywhere. It gives the line's link and
+// where the line starts in text (whose line ends must be "\n"), or "" and -1 when there is none.
+func joinLine(text string) (string, int) {
+	matches := joinLinePattern.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return "", -1
 	}
-	return start
+	last := matches[len(matches)-1]
+	return text[last[2]:last[3]], last[0]
+}
+
+// isJoinLine: text is one join line and nothing else.
+func isJoinLine(text string) bool {
+	where := joinLinePattern.FindStringIndex(text)
+	return where != nil && where[0] == 0 && where[1] == len(text)
+}
+
+var htmlTag = regexp.MustCompile(`<[^>]*>`)
+
+// withoutJoinLines is a join block without the join lines Tresso put after it on an earlier write: each element at its
+// end that is a div of its own (with any attributes, around a link or other inline markup, as Exchange may rewrite
+// it) whose text is a join line. The block's own first element is never taken.
+func withoutJoinLines(block string) string {
+	for {
+		trimmed := strings.TrimRight(block, " \t\r\n")
+		lower := strings.ToLower(trimmed)
+		if !strings.HasSuffix(lower, "</div>") {
+			return block
+		}
+		start := strings.LastIndex(lower[:len(lower)-len("</div>")], "<div")
+		if start <= 0 || strings.Contains(lower[start:len(lower)-len("</div>")], "</div") {
+			return block
+		}
+		text := strings.TrimSpace(html.UnescapeString(htmlTag.ReplaceAllString(trimmed[start:], "")))
+		if !isJoinLine(text) {
+			return block
+		}
+		block = trimmed[:start]
+	}
 }
 
 // meetingBlock is the HTML of an online meeting's join block in a body: from the element the separator line is in to

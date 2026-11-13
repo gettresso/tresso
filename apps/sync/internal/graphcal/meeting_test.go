@@ -2,8 +2,11 @@ package graphcal
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -283,26 +286,236 @@ func TestTheJoinLineStaysLastAfterATeamsBlock(t *testing.T) {
 	}
 }
 
-func TestJoinLineAtFindsOnlyTheLastLine(t *testing.T) {
-	cases := []struct {
-		name, text string
-		want       int
-	}{
-		{"alone", "Join the meeting: https://rooms.example.com/kim", 0},
-		{"after the text", "Agenda\n\nJoin the meeting: https://rooms.example.com/kim", 8},
-		{"with an app", "Agenda\nJoin with Zoom: https://zoom.us/j/1?pwd=x", 7},
-		{"trailing spaces and lines", "Agenda\nJoin the meeting: https://rooms.example.com/kim  \n\n", 7},
-		{"crlf", "Agenda\r\nJoin the meeting: https://rooms.example.com/kim\r\n", 8},
-		{"not last", "Join the meeting: https://rooms.example.com/kim\nSee you", -1},
-		{"not https", "Join the meeting: http://rooms.example.com/kim", -1},
-		{"text after the link", "Join the meeting: https://rooms.example.com/kim and more", -1},
-		{"an app name too long", "Join with " + strings.Repeat("x", 41) + ": https://rooms.example.com/kim", -1},
-		{"empty", "", -1},
+// joinLineFixture is shared with the API's MeetingJoinLineTest: both read the join line by the same rule.
+const joinLineFixture = "../../../api/tests/Fixtures/meeting-join-lines.json"
+
+func TestTheJoinLineIsReadByTheRuleTheAPIShares(t *testing.T) {
+	data, err := os.ReadFile(joinLineFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name        string  `json:"name"`
+		Description string  `json:"description"`
+		Link        *string `json:"link"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) < 20 {
+		t.Fatalf("only %d cases", len(cases))
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			want := ""
+			if c.Link != nil {
+				want = *c.Link
+			}
+			link, start := joinLine(lines(c.Description))
+			if link != want || (start >= 0) != (want != "") {
+				t.Errorf("joinLine(%q) = %q at %d; want %q", c.Description, link, start, want)
+			}
+		})
+	}
+}
+
+// description sets the event's description at Graph by a write from Tresso, as the API would after edit, and gives
+// the description Graph's version then has.
+func setDescription(t *testing.T, graph *fakeGraph, id string, edit func(string) string) (string, int) {
+	t.Helper()
+	remoteID := id
+	text := graphIcal(t, graph, id, func(m *ical.Component) {
+		description := edit(m.Text("DESCRIPTION"))
+		m.Remove("DESCRIPTION")
+		m.AddText("DESCRIPTION", description)
+	})
+	before := len(graph.writes())
+	result := write(t, graph, calendarWith(true), "uid-"+id, &remoteID, text)
+	if result.Outcome != api.OperationDone || result.Current == nil {
+		t.Fatalf("result = %+v", result)
+	}
+	return parse(t, *result.Current.Ical).Master().Text("DESCRIPTION"), len(graph.writes()) - before
+}
+
+// withLine is the description with every join line taken out and line (when not empty) put at its end, as the API's
+// MeetingJoinLine::with does.
+func withLine(description, line string) string {
+	var kept []string
+	for _, l := range strings.Split(description, "\n") {
+		if !isJoinLine(strings.TrimRight(l, " \t")) {
+			kept = append(kept, l)
+		}
+	}
+	out := strings.TrimRight(strings.Join(kept, "\n"), " \t\n")
+	if line == "" {
+		return out
+	}
+	return out + "\n\n" + line
+}
+
+func TestTheJoinLineAfterATeamsBlockIsKeptOnceThroughEveryChange(t *testing.T) {
+	graph := newFakeGraph(t)
+	pasted := single("ev-pasted", "Planning")
+	pasted.Body = &itemBody{ContentType: "html", Content: `<html><body><div>Agenda</div><div>________________<br>Microsoft Teams meeting<br><a href="https://teams.microsoft.com/l/meetup-join/abc">Join the meeting now</a></div></body></html>`}
+	graph.put(pasted)
+	first := "Join the meeting: https://rooms.example.com/kim?x=1&y=2"
+	second := "Join the meeting: https://rooms.example.com/other"
+	count := func(description, line string) int { return strings.Count(description, line) }
+
+	// Added.
+	description, _ := setDescription(t, graph, "ev-pasted", func(d string) string { return withLine(d, first) })
+	if count(description, first) != 1 || !strings.HasSuffix(description, first) {
+		t.Fatalf("added: %q", description)
+	}
+	// The text edited, the line as it was.
+	description, _ = setDescription(t, graph, "ev-pasted", func(d string) string { return strings.Replace(d, "Agenda", "Agenda, v2", 1) })
+	if count(description, first) != 1 || !strings.HasSuffix(description, first) || !strings.HasPrefix(description, "Agenda, v2") {
+		t.Fatalf("edited: %q", description)
+	}
+	// Another link.
+	description, _ = setDescription(t, graph, "ev-pasted", func(d string) string { return withLine(d, second) })
+	if count(description, first) != 0 || count(description, second) != 1 || !strings.HasSuffix(description, second) {
+		t.Fatalf("changed: %q", description)
+	}
+	// Removed: no line is left, so the removed link is not read back.
+	description, _ = setDescription(t, graph, "ev-pasted", func(d string) string { return withLine(d, "") })
+	if link, _ := joinLine(description); link != "" || strings.Contains(description, "rooms.example.com") {
+		t.Fatalf("removed: %q", description)
+	}
+	if !strings.Contains(description, "Microsoft Teams meeting") {
+		t.Errorf("the Teams block stays: %q", description)
+	}
+	// Unchanged: nothing is sent.
+	if _, writes := setDescription(t, graph, "ev-pasted", func(d string) string { return d }); writes != 0 {
+		t.Errorf("an unchanged event is written again (%d writes)", writes)
+	}
+	e, _ := graph.get("ev-pasted")
+	if strings.Count(e.Body.Content, "teams.microsoft.com/l/meetup-join/abc") != 1 {
+		t.Errorf("body = %s", e.Body.Content)
+	}
+}
+
+func TestAJoinLineExchangeRewroteIsTakenOffTheBlockToo(t *testing.T) {
+	block := `<div>________________<br>Microsoft Teams meeting<br><a href="https://teams.microsoft.com/l/meetup-join/abc">Join the meeting now</a></div>`
+	cases := []struct{ name, tail string }{
+		{"as Tresso wrote it", `<div>Join the meeting: https://rooms.example.com/kim?x=1&amp;y=2</div>`},
+		{"with attributes", `<div class="x" style="font-family:Calibri">Join the meeting: https://rooms.example.com/kim</div>`},
+		{"with the link made an anchor", `<div><span>Join the meeting: <a href="https://rooms.example.com/kim">https://rooms.example.com/kim</a></span></div>`},
+		{"twice, from the bug this fixes", `<div>Join the meeting: https://rooms.example.com/kim</div>` + "\r\n" + `<div>Join the meeting: https://rooms.example.com/old</div>`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := joinLineAt(c.text); got != c.want {
-				t.Errorf("joinLineAt(%q) = %d; want %d", c.text, got, c.want)
+			if got := withoutJoinLines(block + c.tail); got != block {
+				t.Errorf("withoutJoinLines = %s", got)
+			}
+		})
+	}
+	kept := block + `<div>See you there</div>`
+	if got := withoutJoinLines(kept); got != kept {
+		t.Errorf("other text after the block stays: %s", got)
+	}
+	if got := withoutJoinLines(`<div>Join the meeting: https://rooms.example.com/kim</div>`); got == "" {
+		t.Error("the block's own first element is never taken")
+	}
+}
+
+func TestTextTypedBelowTheJoinLineStaysWithIt(t *testing.T) {
+	graph := newFakeGraph(t)
+	pasted := single("ev-pasted", "Planning")
+	pasted.Body = &itemBody{ContentType: "html", Content: `<html><body><div>Agenda</div><div>________________<br>Microsoft Teams meeting<br><a href="https://teams.microsoft.com/l/meetup-join/abc">Join the meeting now</a></div></body></html>`}
+	graph.put(pasted)
+	line := "Join the meeting: https://rooms.example.com/kim"
+	description, _ := setDescription(t, graph, "ev-pasted", func(d string) string { return d + "\n\n" + line + "\nBring the slides" })
+	if !strings.HasSuffix(description, line+"\nBring the slides") {
+		t.Fatalf("description = %q", description)
+	}
+	if link, _ := joinLine(description); link != "https://rooms.example.com/kim" {
+		t.Errorf("link = %q", link)
+	}
+}
+
+func TestAnOwnLinkStaysStableThroughExchangesTextRoundTrips(t *testing.T) {
+	graph := newFakeGraph(t)
+	room := "https://rooms.example.com/kim?x=1&y=2"
+	// As Outlook may leave it: the address made a link, the text with runs of spaces.
+	linked := single("ev-linked", "Planning")
+	linked.Body = &itemBody{ContentType: "html", Content: `<html><body><div>Agenda:   budget	and hiring</div><div>Join the meeting: <a href="https://rooms.example.com/kim?x=1&amp;y=2">https://rooms.example.com/kim?x=1&amp;y=2</a></div></body></html>`}
+	graph.put(linked)
+
+	read := graphIcal(t, graph, "ev-linked", nil)
+	description := parse(t, read).Master().Text("DESCRIPTION")
+	if link, _ := joinLine(description); link != room {
+		t.Fatalf("the link is read from %q: %q", description, link)
+	}
+	if !strings.HasPrefix(description, "Agenda: budget and hiring") {
+		t.Errorf("description = %q", description)
+	}
+	for round := 1; round <= 3; round++ {
+		// Tresso's own change of another field: the body as Exchange gave it back is no change.
+		remoteID := "ev-linked"
+		text := graphIcal(t, graph, "ev-linked", func(m *ical.Component) {
+			m.Remove("SUMMARY")
+			m.AddText("SUMMARY", fmt.Sprintf("Planning %d", round))
+		})
+		before := len(graph.writes())
+		result := write(t, graph, calendarWith(true), "uid-ev-linked", &remoteID, text)
+		writes := graph.writes()[before:]
+		if result.Outcome != api.OperationDone || len(writes) != 1 || writes[0].Body["body"] != nil {
+			t.Fatalf("round %d: %+v", round, writes)
+		}
+		if link, _ := joinLine(parse(t, *result.Current.Ical).Master().Text("DESCRIPTION")); link != room {
+			t.Fatalf("round %d: link %q", round, link)
+		}
+	}
+	// The API puts the line right (one clean line): written once, then stable.
+	description, writes := setDescription(t, graph, "ev-linked", func(d string) string { return withLine(d, "Join the meeting: "+room) })
+	if writes != 1 || strings.Count(description, "rooms.example.com") != 1 {
+		t.Fatalf("put right: %q (%d writes)", description, writes)
+	}
+	for round := 1; round <= 3; round++ {
+		if again, writes := setDescription(t, graph, "ev-linked", func(d string) string { return d }); writes != 0 || again != description {
+			t.Fatalf("round %d: %q (%d writes)", round, again, writes)
+		}
+	}
+}
+
+func TestATeamsMeetingGraphRefusesStillSavesTheEvent(t *testing.T) {
+	cases := []struct {
+		name   string
+		create bool
+	}{{"create", true}, {"change", false}}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			graph := newFakeGraph(t)
+			// The worker's calendar list still says Teams; Graph no longer allows it.
+			graph.calendars[0].AllowedOnlineMeetingProviders = nil
+			var result api.OperationResult
+			if c.create {
+				result = write(t, graph, calendarWith(true), "review@tresso", nil, teamsEvent)
+			} else {
+				graph.put(single("ev1", "Lunch"))
+				remoteID := "ev1"
+				result = write(t, graph, calendarWith(true), "uid-ev1", &remoteID, graphIcal(t, graph, "ev1", func(m *ical.Component) {
+					m.Remove("SUMMARY")
+					m.AddText("SUMMARY", "Lunch at noon")
+					m.Add(ConferenceRequest, "teams")
+				}))
+			}
+			if result.Outcome != api.OperationDone {
+				t.Fatalf("result = %+v", result)
+			}
+			if status, reason := conferenceOf(result); status != api.ConferenceFailed || reason != api.ConferenceNotSupported {
+				t.Errorf("conference = %q %q", status, reason)
+			}
+			writes := graph.writes()
+			if len(writes) != 2 || writes[0].Body["isOnlineMeeting"] != true {
+				t.Fatalf("writes = %+v", writes)
+			}
+			if _, sent := writes[1].Body["isOnlineMeeting"]; sent || writes[1].Body["onlineMeetingProvider"] != nil {
+				t.Errorf("the second write leaves the meeting out: %+v", writes[1].Body)
+			}
+			if !c.create && writes[1].Body["subject"] != "Lunch at noon" {
+				t.Errorf("the change is saved: %+v", writes[1].Body)
 			}
 		})
 	}
