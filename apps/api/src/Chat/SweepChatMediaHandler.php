@@ -10,7 +10,8 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 /**
  * Runs every ten minutes on the `scheduler_default` transport (the `maintenance` worker): uploads no reply took within
  * {@see ChatUploads::KEEP_UNQUEUED} go, with their files once nothing else refers to them, and so do temporary files of
- * uploads ({@see ChatFileBody}) older than {@see TEMPORARY_FOR} that a killed worker left behind.
+ * uploads ({@see ChatFileBody}) older than {@see TEMPORARY_FOR} that a killed worker left behind, and replies cancelled
+ * while their sending was unconfirmed, after {@see ChatQueue::KEEP_CANCELLED}.
  */
 #[AsMessageHandler]
 final readonly class SweepChatMediaHandler
@@ -20,6 +21,7 @@ final readonly class SweepChatMediaHandler
 
     public function __construct(
         private ChatUploads $uploads,
+        private ChatQueue $queue,
         private ClockInterface $clock,
     ) {
     }
@@ -29,6 +31,7 @@ final readonly class SweepChatMediaHandler
         $now = $this->clock->now()->setTimezone(new \DateTimeZone(date_default_timezone_get()));
         // A batch at a time; what is left comes on the next run.
         $this->uploads->sweep($now);
+        $this->queue->purgeCancelled($now);
         self::sweepTemporary(sys_get_temp_dir(), $now->getTimestamp() - self::TEMPORARY_FOR);
     }
 

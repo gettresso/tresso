@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
+use App\Chat\SweepChatMedia;
+use App\Chat\SweepChatMediaHandler;
 use App\Entity\Chat;
 use App\Security\Scope;
 use Doctrine\ORM\EntityManagerInterface;
@@ -429,7 +431,7 @@ final class ChatQueueTest extends DatabaseTestCase
 
     public function testCancelsOfUnseenRepliesAreLimited(): void
     {
-        for ($i = 0; $i < 4; ++$i) {
+        for ($i = 0; $i < 12; ++$i) {
             $this->client->request('DELETE', '/api/v1/chat-outgoing/'.self::newReplyId(), server: $this->web);
             self::assertResponseStatusCodeSame(204);
         }
@@ -482,6 +484,32 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame('cancelled', $this->decodedResponse()['status'] ?? null);
         self::assertSame([], $this->delta($cursor)['chatOutgoing']);
         self::assertSame(['cancelled', 'cancelled'], $this->connection()->fetchFirstColumn('SELECT status FROM chat_outgoing ORDER BY id'));
+    }
+
+    public function testACancelledReplyGoesAfterThirtyDaysAndItsIdStaysRefused(): void
+    {
+        $old = $this->unconfirmedReply('Long ago');
+        $recent = $this->unconfirmedReply('Lately');
+        foreach ([$old, $recent] as $id) {
+            $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$id, server: $this->web);
+            self::assertResponseStatusCodeSame(204);
+        }
+        $token = $this->tokenOf($old);
+        self::assertNotNull($token);
+        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '31 days' WHERE id = :id", ['id' => $old]);
+        $tombstones = $this->countRows("SELECT COUNT(*) FROM sync_tombstone WHERE entity_type = 'chatOutgoing'");
+
+        static::getContainer()->get(SweepChatMediaHandler::class)(new SweepChatMedia());
+
+        self::assertSame([$recent], $this->connection()->fetchFirstColumn('SELECT id FROM chat_outgoing'), 'Its text and claim are gone; the recent one stays.');
+        self::assertSame($tombstones, $this->countRows("SELECT COUNT(*) FROM sync_tombstone WHERE entity_type = 'chatOutgoing'"), 'Its removal stays.');
+        $this->queueReply($this->chatId, 'Long ago', $old);
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('cancelled', $this->decodedResponse()['code'] ?? null);
+        // A relay's answer after that finds nothing to record: not found, which the relay takes as final.
+        $this->report($old, ['sent' => true, 'claimToken' => $token]);
+        self::assertResponseStatusCodeSame(404);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_outgoing WHERE id = '."'".$old."'"));
     }
 
     /** A reply its relay claimed and said `unconfirmed` for: its claim is still on it. */

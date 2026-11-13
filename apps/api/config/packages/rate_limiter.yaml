@@ -137,9 +137,10 @@ when@test:
                 limit: 12
                 interval: '10 minutes'
                 cache_pool: cache.rate_limiter_shared
+            # Above the ten cancelled attaches ChatMediaTest makes in a row.
             chat_reply_cancel:
                 policy: sliding_window
-                limit: 4
+                limit: 12
                 interval: '10 minutes'
                 cache_pool: cache.rate_limiter_shared
             # Above the 20 waiting uploads a chat holds, so that cap is reached first.
