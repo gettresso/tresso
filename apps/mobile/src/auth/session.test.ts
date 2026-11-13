@@ -606,6 +606,19 @@ describe('Session', () => {
     await expect(session.me()).rejects.toEqual(new ApiError(409, 'The account is paused.'))
   })
 
+  it('keeps the code a problem names, which a client acts on', async () => {
+    const problem = { title: 'An error occurred', detail: 'This reply is being sent or was sent; it can no longer be cancelled.', code: 'already_going_out' }
+    const fetchImpl = vi.fn<Fetch>(async () => new Response(JSON.stringify(problem), { status: 409 }))
+    const session = await restored(memoryStore(fresh()), fetchImpl)
+
+    const error = await session.api('/api/v1/chat-outgoing/r1', { method: 'DELETE' }).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).status).toBe(409)
+    expect((error as ApiError).code).toBe('already_going_out')
+    expect((error as ApiError).message).toBe(problem.detail)
+  })
+
   it('says so when the tokens cannot be kept or removed', async () => {
     const store = memoryStore()
     const session = await restored(store, vi.fn<Fetch>(async () => tokenResponse('access-2', 'refresh-2')))

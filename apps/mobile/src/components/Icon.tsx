@@ -45,6 +45,13 @@ const ICONS = {
     </>
   ),
   pen: <Path d="M4 20h4L19 9l-4-4L4 16z" />,
+  back: <Path d="M15 6l-6 6 6 6" />,
+  todo: (
+    <>
+      <Path d="M9 11l3 3 8-8" />
+      <Path d="M20 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+    </>
+  ),
 } as const
 
 export type IconName = keyof typeof ICONS
