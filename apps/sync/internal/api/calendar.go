@@ -93,6 +93,13 @@ type OperationResult struct {
 	ETag     *string       `json:"etag,omitempty"`
 	Error    *string       `json:"error,omitempty"`
 	Current  *RemoteObject `json:"current,omitempty"`
+	// ConferenceStatus is set on a done write whose master asked for a meeting the provider's version does not have:
+	// ConferencePending while the provider is still making it, ConferenceFailed when it made none. Nil when the
+	// meeting is there or none was asked for. An API that does not know the field ignores it.
+	ConferenceStatus *string `json:"conferenceStatus,omitempty"`
+	// ConferenceError says why no meeting was made (with ConferenceFailed): a fixed code, never provider text or a
+	// link.
+	ConferenceError *string `json:"conferenceError,omitempty"`
 }
 
 const (
@@ -101,6 +108,38 @@ const (
 	OperationFailed   = "failed"
 	OperationRetry    = "retry"
 )
+
+// What became of a meeting a write asked for (OperationResult.ConferenceStatus and ConferenceError).
+const (
+	ConferencePending = "pending"
+	ConferenceFailed  = "failed"
+	// ConferenceRefused: the provider took the event and made no meeting.
+	ConferenceRefused = "refused"
+	// ConferenceNotSupported: the calendar cannot have that meeting; the event was saved without it.
+	ConferenceNotSupported = "not_supported"
+)
+
+// ConferenceOutcome fills in the result of a done write whose master asked for a meeting the provider's version does
+// not show. made: the version has the meeting. known: the version was read back after the write (when not, the
+// provider may still have made it, and the next sync tells). pending: the provider says it is still making it.
+// notSupported: the meeting could not be asked for on this calendar.
+func ConferenceOutcome(result *OperationResult, made, known, pending, notSupported bool) {
+	status, reason := "", ""
+	switch {
+	case made:
+		return
+	case notSupported:
+		status, reason = ConferenceFailed, ConferenceNotSupported
+	case !known, pending:
+		status = ConferencePending
+	default:
+		status, reason = ConferenceFailed, ConferenceRefused
+	}
+	result.ConferenceStatus = &status
+	if reason != "" {
+		result.ConferenceError = &reason
+	}
+}
 
 func (c *Client) Calendars(ctx context.Context, accountID string, list CalendarList) (CalendarListAnswer, error) {
 	list.Calendars = nonNil(list.Calendars)

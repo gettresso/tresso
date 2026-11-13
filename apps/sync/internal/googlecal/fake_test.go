@@ -42,6 +42,12 @@ type fakeGoogle struct {
 	beforeGet func(path string)
 	// beforeWrite does the same before every other request.
 	beforeWrite func(method, path string)
+	// meet is how Google answers a Meet create request: "" makes the meeting right away, "pending" is still making
+	// it, "failure" makes none, "refuse" answers the whole write with 400 (a removal too).
+	meet string
+	// meetRequests are the create request ids Google has seen: a request with one of them makes no new meeting.
+	meetRequests map[string]bool
+	meetings     int
 }
 
 type fakeEvent struct {
@@ -57,7 +63,7 @@ type fakeRequest struct {
 }
 
 func newFakeGoogle(t *testing.T) *fakeGoogle {
-	f := &fakeGoogle{t: t, events: map[string]map[string]*fakeEvent{}, pageSize: 250, refusedCalendars: map[string]bool{}, failures: map[string]int{}}
+	f := &fakeGoogle{t: t, events: map[string]map[string]*fakeEvent{}, pageSize: 250, refusedCalendars: map[string]bool{}, failures: map[string]int{}, meetRequests: map[string]bool{}}
 	f.addCalendar(calendarListEntry{ID: "kim@example.com", Summary: "Kim", BackgroundColor: "#9FC6E7", TimeZone: "Europe/Amsterdam", AccessRole: "owner", Primary: true,
 		DefaultReminders: []reminder{{Method: "popup", Minutes: 10}},
 		ConferenceProperties: &struct {
@@ -212,7 +218,7 @@ func (f *fakeGoogle) handle(w http.ResponseWriter, r *http.Request) {
 	case id == "" && r.Method == http.MethodGet:
 		f.list(w, r, events)
 	case id == "" && r.Method == http.MethodPost:
-		f.insert(w, calendarID, body)
+		f.insert(w, r, calendarID, body)
 	case strings.HasSuffix(id, "/move") && r.Method == http.MethodPost:
 		f.move(w, calendarID, strings.TrimSuffix(id, "/move"), r.URL.Query().Get("destination"))
 	case r.Method == http.MethodGet:
@@ -286,9 +292,13 @@ func (f *fakeGoogle) list(w http.ResponseWriter, r *http.Request, events map[str
 	f.reply(w, page)
 }
 
-func (f *fakeGoogle) insert(w http.ResponseWriter, calendarID string, body []byte) {
+func (f *fakeGoogle) insert(w http.ResponseWriter, r *http.Request, calendarID string, body []byte) {
 	var e event
 	if err := json.Unmarshal(body, &e); err != nil {
+		f.fail(w, http.StatusBadRequest, "invalid")
+		return
+	}
+	if f.refusesMeet(r, e.ConferenceData) {
 		f.fail(w, http.StatusBadRequest, "invalid")
 		return
 	}
@@ -296,7 +306,11 @@ func (f *fakeGoogle) insert(w http.ResponseWriter, calendarID string, body []byt
 		f.fail(w, http.StatusConflict, "duplicate")
 		return
 	}
-	f.conference(&e)
+	if r.URL.Query().Get("conferenceDataVersion") != "1" {
+		// Without the version Google ignores conference data.
+		e.ConferenceData = nil
+	}
+	f.conference(&e, nil)
 	if e.Organizer == nil {
 		e.Organizer = &person{Email: calendarID, Self: true}
 	}
@@ -318,20 +332,50 @@ func (f *fakeGoogle) move(w http.ResponseWriter, from, id, to string) {
 	_ = target
 }
 
-// conference answers a Meet create request the way Google does: the meeting is there right away.
-func (f *fakeGoogle) conference(e *event) {
+// refusesMeet: the write carries a Meet create request, or the removal of the meeting, and Google refuses it (with the
+// whole write).
+func (f *fakeGoogle) refusesMeet(r *http.Request, data *conferenceData) bool {
+	return f.meet == "refuse" && (data == nil || data.CreateRequest != nil) && r.URL.Query().Get("conferenceDataVersion") == "1"
+}
+
+// conference answers a Meet create request the way Google does: by default the meeting is there right away, a new one
+// per request id; a request id Google has seen before keeps what the event had (before: nil for a new event).
+func (f *fakeGoogle) conference(e *event, before *conferenceData) {
 	if e.ConferenceData == nil || e.ConferenceData.CreateRequest == nil {
 		return
 	}
+	request := *e.ConferenceData.CreateRequest
+	if f.meetRequests[request.RequestID] {
+		e.ConferenceData = before
+		return
+	}
+	f.meetRequests[request.RequestID] = true
+	switch f.meet {
+	case "pending", "failure":
+		request.Status = &struct {
+			StatusCode string `json:"statusCode"`
+		}{StatusCode: f.meet}
+		e.ConferenceData = &conferenceData{CreateRequest: &request}
+		return
+	}
 	code := "abc-defg-hij"
-	e.ConferenceData = &conferenceData{EntryPoints: []entryPoint{{EntryPointType: "video", URI: "https://meet.google.com/" + code}, {EntryPointType: "phone", URI: "tel:+31-20-123-4567"}}, ConferenceID: code}
-	e.ConferenceData.ConferenceSolution = &struct {
+	if f.meetings > 0 {
+		code = fmt.Sprintf("abc-defg-%03d", f.meetings)
+	}
+	f.meetings++
+	e.ConferenceData = solution(&conferenceData{EntryPoints: []entryPoint{{EntryPointType: "video", URI: "https://meet.google.com/" + code}, {EntryPointType: "phone", URI: "tel:+31-20-123-4567"}}, ConferenceID: code}, "hangoutsMeet", "Google Meet")
+}
+
+// solution names the conference solution of data, as Google gives it.
+func solution(data *conferenceData, kind, name string) *conferenceData {
+	data.ConferenceSolution = &struct {
 		Key struct {
 			Type string `json:"type"`
 		} `json:"key"`
 		Name string `json:"name,omitempty"`
-	}{Name: "Google Meet"}
-	e.ConferenceData.ConferenceSolution.Key.Type = "hangoutsMeet"
+	}{Name: name}
+	data.ConferenceSolution.Key.Type = kind
+	return data
 }
 
 func (f *fakeGoogle) patch(w http.ResponseWriter, r *http.Request, calendarID, id string, body []byte) {
@@ -363,11 +407,16 @@ func (f *fakeGoogle) patch(w http.ResponseWriter, r *http.Request, calendarID, i
 	_ = json.Unmarshal(data, &updated)
 	updated.ID, updated.RecurringEventID, updated.OriginalStartTime = current.ID, current.RecurringEventID, current.OriginalStartTime
 	updated.ConferenceData = current.ConferenceData
-	if _, asked := changes["conferenceData"]; asked {
+	if _, asked := changes["conferenceData"]; asked && r.URL.Query().Get("conferenceDataVersion") == "1" {
 		var request event
 		_ = json.Unmarshal(body, &request)
+		if f.refusesMeet(r, request.ConferenceData) {
+			f.fail(w, http.StatusBadRequest, "invalid")
+			return
+		}
+		// conferenceData null takes the meeting off; a create request makes one.
 		updated.ConferenceData = request.ConferenceData
-		f.conference(&updated)
+		f.conference(&updated, current.ConferenceData)
 	}
 	f.reply(w, f.store(calendarID, updated).event)
 }

@@ -19,8 +19,33 @@ import (
 	"tresso/sync/internal/providerhttp"
 )
 
-// ConferenceRequest is the property the API puts on an event to ask the provider for an online meeting.
-const ConferenceRequest = "X-TRESSO-CONFERENCE-REQUEST"
+// The properties the API puts on an event's master about its meeting. They are read on the master only: on an
+// occurrence they mean nothing (Google keeps one meeting for the whole series).
+const (
+	// ConferenceRequest asks the provider for an online meeting ("meet").
+	ConferenceRequest = "X-TRESSO-CONFERENCE-REQUEST"
+	// ConferenceNonce is the request's own id: a new request has a new one, and so a new Google request id.
+	ConferenceNonce = "X-TRESSO-CONFERENCE-NONCE"
+	// ConferenceRemove ("meet") asks to take Google's Meet meeting off the event. Only this word removes it: a master
+	// that merely lacks X-GOOGLE-CONFERENCE never does.
+	ConferenceRemove = "X-TRESSO-CONFERENCE-REMOVE"
+)
+
+// asksForMeet: the master asks Google for a Meet meeting.
+func asksForMeet(master *ical.Component) bool {
+	return master != nil && strings.EqualFold(strings.TrimSpace(master.Text(ConferenceRequest)), "meet")
+}
+
+// meetRequestID is the createRequest's requestId: derived from the UID and the request's nonce, so a write that is
+// retried asks for the same meeting (Google makes one per request id) and a new request makes a new one. A master
+// without a nonce (written by an API that did not have one yet) keeps the id derived from the UID alone.
+func meetRequestID(uid, nonce string) string {
+	nonce = strings.TrimSpace(nonce)
+	if nonce == "" {
+		return eventID(uid + "/meet")
+	}
+	return eventID(uid + "/meet/" + nonce)
+}
 
 // fields is the part of an event Tresso writes. Pointers and slices are always sent, so a cleared value is cleared
 // at Google too; the JSON of two values compares their content.
@@ -294,7 +319,7 @@ func (s *session) Write(ctx context.Context, calendar calsync.Calendar, operatio
 	if operation.Notify {
 		notify = "all"
 	}
-	w := &writer{session: s, calendar: calendar, info: info, operation: operation, notify: notify, self: s.self}
+	w := &writer{session: s, calendar: calendar, info: info, operation: operation, notify: notify, self: s.self, meetAsked: asksForMeet(doc.Master())}
 	w.begin(current)
 	var masterID string
 	if !exists {
@@ -309,7 +334,7 @@ func (s *session) Write(ctx context.Context, calendar calsync.Calendar, operatio
 			return s.refused(ctx, calendar, operation, refused.message)
 		}
 		if providerhttp.IsStatus(err, http.StatusPreconditionFailed) && masterID != "" {
-			return s.reread(ctx, calendar, operation, masterID, true)
+			return s.reread(ctx, calendar, operation, masterID, true, nil)
 		}
 		result, accessErr := s.failure(ctx, calendar, operation, err)
 		if result.Outcome == api.OperationRetry && masterID != "" {
@@ -320,7 +345,7 @@ func (s *session) Write(ctx context.Context, calendar calsync.Calendar, operatio
 		}
 		return result, accessErr
 	}
-	return s.reread(ctx, calendar, operation, masterID, false)
+	return s.reread(ctx, calendar, operation, masterID, false, w)
 }
 
 // refusal is a change Google cannot take; it is reported to the user, not retried.
@@ -340,6 +365,10 @@ type writer struct {
 	// known holds the ETag each event of the resource had when this attempt read it, or got from this attempt's own
 	// write of it: any other ETag is someone else's change.
 	known map[string]string
+	// meetAsked: the master asks for a Meet meeting, so the result says what became of it.
+	meetAsked bool
+	// meetNotSupported: Google refused the write with the meeting request (400), and the event was written without it.
+	meetNotSupported bool
 }
 
 // begin records the resource as this attempt found it.
@@ -408,6 +437,13 @@ func (w *writer) create(ctx context.Context, doc *ical.Component) (string, error
 	}{fields: f, ID: id, ICalUID: w.operation.UID, ConferenceData: w.conferenceRequest(master, nil)}
 	var created event
 	err = w.send(ctx, http.MethodPost, w.session.calendarURL(w.calendar.RemoteID), w.query(body.ConferenceData != nil), "", body, &created)
+	if body.ConferenceData != nil && providerhttp.IsStatus(err, http.StatusBadRequest) {
+		// Google refuses the meeting request (a calendar that cannot have Meet after all): the event is saved
+		// without the meeting, never refused over it.
+		w.meetNotSupported = true
+		body.ConferenceData = nil
+		err = w.send(ctx, http.MethodPost, w.session.calendarURL(w.calendar.RemoteID), w.query(false), "", body, &created)
+	}
 	if providerhttp.IsStatus(err, http.StatusConflict) {
 		// A retried create: the event exists, and the rest of the write is an update of it.
 		current, found, getErr := w.session.series(ctx, w.calendar.RemoteID, id, w.operation.UID)
@@ -431,17 +467,37 @@ func (w *writer) create(ctx context.Context, doc *ical.Component) (string, error
 	return id, w.overrides(ctx, doc, id, current)
 }
 
-// conferenceRequest asks Google for a Meet meeting when the event asks for one and has none yet.
-func (w *writer) conferenceRequest(v *ical.Component, current *event) *conferenceData {
-	if !strings.EqualFold(v.Text(ConferenceRequest), "meet") {
+// conferenceRequest asks Google for a Meet meeting when the master asks for one and Google's event has no meeting
+// yet (a Meet meeting, or any other Google keeps: a request would replace it). Call it for the master only.
+func (w *writer) conferenceRequest(master *ical.Component, current *event) *conferenceData {
+	if !asksForMeet(master) {
 		return nil
 	}
 	if current != nil && current.ConferenceData != nil && len(current.ConferenceData.EntryPoints) > 0 {
 		return nil
 	}
-	request := &createRequest{RequestID: eventID(w.operation.UID + "/meet")}
-	request.ConferenceSolutionKey.Type = "hangoutsMeet"
+	request := &createRequest{RequestID: meetRequestID(w.operation.UID, master.Text(ConferenceNonce))}
+	request.ConferenceSolutionKey.Type = meetSolution
 	return &conferenceData{CreateRequest: request}
+}
+
+// removesMeet: the write takes Google's Meet meeting off the event. Only on the explicit word on the master
+// (X-TRESSO-CONFERENCE-REMOVE:meet), of an event the user organizes, that asks for no new Meet meeting, and only
+// when Google's event has a Meet meeting. Call it for the master only.
+func removesMeet(master *ical.Component, current event, organizes bool) bool {
+	return organizes && strings.EqualFold(strings.TrimSpace(master.Text(ConferenceRemove)), "meet") && !asksForMeet(master) && current.ConferenceData.hasMeet()
+}
+
+// withoutMeet is the patch body that takes Google's Meet meeting off the event: "conferenceData": null, sent with
+// conferenceDataVersion=1 (without it Google ignores conference changes). The body struct leaves an empty
+// conferenceData out, so the explicit null needs a map. Google documents no other way to remove a meeting through
+// the API; that null removes it is checked by hand with a real account.
+func withoutMeet(body any) map[string]any {
+	data, _ := json.Marshal(body)
+	m := map[string]any{}
+	_ = json.Unmarshal(data, &m)
+	m["conferenceData"] = nil
+	return m
 }
 
 func (w *writer) organizes(current series) bool {
@@ -529,11 +585,18 @@ func (w *writer) patch(ctx context.Context, v *ical.Component, current event, or
 	if err != nil {
 		return err
 	}
-	conference := w.conferenceRequest(v, &current)
 	if !organizes {
+		// A guest's copy: only the answer and the reminders, never the meeting.
 		return w.answer(ctx, desired, have, current)
 	}
-	if same(desired, have) && conference == nil {
+	// The meeting is the series': an occurrence's own request or removal word means nothing.
+	var conference *conferenceData
+	remove := false
+	if original == nil {
+		conference = w.conferenceRequest(v, &current)
+		remove = removesMeet(v, current, organizes)
+	}
+	if same(desired, have) && conference == nil && !remove {
 		return nil
 	}
 	if current.ID == "" {
@@ -547,7 +610,24 @@ func (w *writer) patch(ctx context.Context, v *ical.Component, current event, or
 		// An occurrence keeps the series' recurrence.
 		body.Recurrence = nil
 	}
-	return w.send(ctx, http.MethodPatch, w.session.calendarURL(w.calendar.RemoteID, current.ID), w.query(conference != nil), current.ETag, patchBody(body, original != nil), nil)
+	rawURL := w.session.calendarURL(w.calendar.RemoteID, current.ID)
+	var payload any = patchBody(body, original != nil)
+	if remove {
+		payload = withoutMeet(body)
+	}
+	err = w.send(ctx, http.MethodPatch, rawURL, w.query(conference != nil || remove), current.ETag, payload, nil)
+	if (conference != nil || remove) && providerhttp.IsStatus(err, http.StatusBadRequest) {
+		// Google refuses the meeting part of the write: the rest of the event is saved all the same, never refused
+		// over its meeting. A refused request is reported as not supported; a refused removal leaves Google's meeting,
+		// which its version shows.
+		w.meetNotSupported = w.meetNotSupported || conference != nil
+		body.ConferenceData = nil
+		if same(desired, have) {
+			return nil
+		}
+		err = w.send(ctx, http.MethodPatch, rawURL, w.query(false), current.ETag, patchBody(body, original != nil), nil)
+	}
+	return err
 }
 
 // patchBody leaves the recurrence out of an occurrence's patch.
@@ -629,21 +709,25 @@ func (s *session) delete(ctx context.Context, calendar calsync.Calendar, operati
 	case err == nil, providerhttp.IsStatus(err, http.StatusNotFound), providerhttp.IsStatus(err, http.StatusGone):
 		return api.OperationResult{Outcome: api.OperationDone}, nil
 	case providerhttp.IsStatus(err, http.StatusPreconditionFailed):
-		return s.reread(ctx, calendar, operation, *operation.RemoteID, true)
+		return s.reread(ctx, calendar, operation, *operation.RemoteID, true, nil)
 	default:
 		return s.failure(ctx, calendar, operation, err)
 	}
 }
 
 // reread reports the event as Google has it after the write (with a Meet link Google added), or after a conflict.
-func (s *session) reread(ctx context.Context, calendar calsync.Calendar, operation api.CalendarOperation, masterID string, conflict bool) (api.OperationResult, error) {
+// w is the write that was done (nil after a conflict or a delete): its result also says what became of the Meet
+// meeting the master asked for.
+func (s *session) reread(ctx context.Context, calendar calsync.Calendar, operation api.CalendarOperation, masterID string, conflict bool, w *writer) (api.OperationResult, error) {
 	current, found, err := s.series(ctx, calendar.RemoteID, masterID, operation.UID)
 	if err != nil {
 		if conflict {
 			return s.failure(ctx, calendar, operation, err)
 		}
 		// Written, but not read back: the next sync brings Google's version.
-		return api.OperationResult{Outcome: api.OperationDone, RemoteID: &masterID}, nil
+		result := api.OperationResult{Outcome: api.OperationDone, RemoteID: &masterID}
+		w.meetOutcome(&result, nil)
+		return result, nil
 	}
 	if conflict {
 		if !found {
@@ -652,14 +736,30 @@ func (s *session) reread(ctx context.Context, calendar calsync.Calendar, operati
 		return s.conflict(calendar, masterID, current), nil
 	}
 	if !found {
-		return api.OperationResult{Outcome: api.OperationDone, RemoteID: &masterID}, nil
+		result := api.OperationResult{Outcome: api.OperationDone, RemoteID: &masterID}
+		w.meetOutcome(&result, nil)
+		return result, nil
 	}
 	etag := current.etag()
 	result := api.OperationResult{Outcome: api.OperationDone, RemoteID: &masterID, ETag: &etag}
 	if text, err := current.toICalendar(info(calendar)); err == nil {
 		result.Current = &api.RemoteObject{RemoteID: masterID, ETag: &etag, Ical: &text}
 	}
+	w.meetOutcome(&result, current.master)
 	return result, nil
+}
+
+// meetOutcome says in a done write's result what became of the Meet meeting the master asked for, when Google's
+// master (nil: not read back) shows no meeting. Nothing when none was asked for or the meeting is there.
+func (w *writer) meetOutcome(result *api.OperationResult, master *event) {
+	if w == nil || !w.meetAsked {
+		return
+	}
+	made, pending := false, false
+	if master != nil {
+		made, pending = master.ConferenceData.joinLink() != "", master.ConferenceData.pending()
+	}
+	api.ConferenceOutcome(result, made, master != nil, pending, w.meetNotSupported)
 }
 
 // progress puts Google's id, ETag and version of a partly written event into a retry, so the API bases the next
