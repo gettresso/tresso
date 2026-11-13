@@ -193,6 +193,59 @@ final class NotificationPlanningTest extends DatabaseTestCase
         $this->assertNoLinks();
     }
 
+    public function testLinksWithoutASchemeGoAndPlaceNamesWithADotAndASlashStay(): void
+    {
+        $this->store('ip@test', self::meeting('ip@test', '20261022T100000', ['LOCATION:192.168.1.5/room?pwd=1']));
+        $this->store('query@test', self::meeting('query@test', '20261022T120000', ['LOCATION:Room 6 zoom.us?pwd=abc']));
+        $this->store('pauli@test', self::meeting('pauli@test', '20261022T140000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:St.Pauli/Hamburg']));
+        $this->store('district@test', self::meeting('district@test', '20261022T160000', ['LOCATION:Kantoor Amsterdam.Zuid/WTC']));
+
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'ip@test: Thursday 22 October, 10:00 to 11:00',
+            'query@test: Thursday 22 October, 12:00 to 13:00, Room 6',
+            'pauli@test: Thursday 22 October, 14:00 to 15:00, on Microsoft Teams. Or in St.Pauli/Hamburg.',
+            'district@test: Thursday 22 October, 16:00 to 17:00, Kantoor Amsterdam.Zuid/WTC',
+        ], $this->bodies());
+        $this->assertNoLinks();
+    }
+
+    public function testWhatALinkStoodInGoesWithItAndAPlaceKeepsItsOwnPunctuation(): void
+    {
+        $this->store('comma@test', self::meeting('comma@test', '20261022T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:https://a.example/x\,Room 1']));
+        $this->store('see@test', self::meeting('see@test', '20261022T120000', ['LOCATION:Room 2 (see https://a.example/x)']));
+        $this->store('label@test', self::meeting('label@test', '20261022T140000', ['LOCATION:Room 3 [link: https://a.example/x ]']));
+        $this->store('colon@test', self::meeting('colon@test', '20261022T160000', ['LOCATION:Room 4: https://a.example/x']));
+        $this->store('bang@test', self::meeting('bang@test', '20261023T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Room 5!']));
+
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'comma@test: Thursday 22 October, 10:00 to 11:00, on Microsoft Teams. Or in Room 1.',
+            'see@test: Thursday 22 October, 12:00 to 13:00, Room 2',
+            'label@test: Thursday 22 October, 14:00 to 15:00, Room 3',
+            'colon@test: Thursday 22 October, 16:00 to 17:00, Room 4',
+            'bang@test: Friday 23 October, 10:00 to 11:00, on Microsoft Teams. Or in Room 5!',
+        ], $this->bodies());
+        $this->assertNoLinks();
+    }
+
+    public function testARoomNamedAfterTheAppIsAPlace(): void
+    {
+        $this->store('zoomroom@test', self::meeting('zoomroom@test', '20261022T100000', ['CONFERENCE;VALUE=URI:https://zoom.us/j/123', 'LOCATION:Zoom Room']));
+        $this->store('teamsroom@test', self::meeting('teamsroom@test', '20261022T120000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Teams-kamer']));
+        $this->store('meetkim@test', self::meeting('meetkim@test', '20261022T140000', ['X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'LOCATION:Meet Kim']));
+
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'zoomroom@test: Thursday 22 October, 10:00 to 11:00, on Zoom. Or in Zoom Room.',
+            'teamsroom@test: Thursday 22 October, 12:00 to 13:00, on Microsoft Teams. Or in Teams-kamer.',
+            'meetkim@test: Thursday 22 October, 14:00 to 15:00, on Google Meet. Or in Meet Kim.',
+        ], $this->bodies());
+    }
+
     public function testNonLatinAndLongPlacesAreShownWhole(): void
     {
         $long = trim(str_repeat('Long place ', 60));

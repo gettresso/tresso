@@ -51,8 +51,6 @@ final readonly class NotificationPlanner
     private const string TOO_LATE = '-2 minutes';
     /** Occurrences one series is planned for within the horizon: an hourly series has under 250. */
     private const int MAX_PER_SERIES = 500;
-    /** A word of a place that holds a link, see {@see self::placeWithoutLinks()}. */
-    private const string LINK_WORD = '~://|(?:^|[^\p{L}\p{N}])www\.|[\p{L}\p{N}-]\.[a-z]{2,}(?::\d+)?/~iu';
 
     public function __construct(
         private EntityManagerInterface $entityManager,
@@ -177,7 +175,7 @@ final readonly class NotificationPlanner
                 $estimate = $notification->getEstimatedMinutes();
                 if (self::LEAVE_ESTIMATED_SLOT === $plan->slot && null !== $estimate) {
                     // The phone's estimate stays until it sends another.
-                    $plan = new Plan($plan->occurrenceKey, $plan->kind, $plan->slot, self::leaveAt($plan->startsAt, $estimate, $context), $plan->startsAt, $plan->title, self::leaveBody($estimate, self::placeWithoutLinks($row->getLocation())), $plan->channels, $plan->occurrenceStart);
+                    $plan = new Plan($plan->occurrenceKey, $plan->kind, $plan->slot, self::leaveAt($plan->startsAt, $estimate, $context), $plan->startsAt, $plan->title, self::leaveBody($estimate, EventPlace::toTravelTo($row->getLocation())), $plan->channels, $plan->occurrenceStart);
                 }
                 if ($notification->isDelivered()) {
                     // The occurrence moved after its notification came: a new round for the new time, if still ahead.
@@ -241,20 +239,23 @@ final readonly class NotificationPlanner
             : $endOf->setTimezone(new \DateTimeZone('UTC'));
 
         $occurrenceStart = Props::start($instance);
-        $rule = ReminderRules::match($context->rules, $row, $context->self);
+        // The place once per occurrence: it is free text of any length. A place that is only a link, or only says
+        // "online", is nowhere to travel to and selects no place rule.
+        $place = EventPlace::withoutLinks($row->getLocation());
+        $location = EventPlace::namesOnlyAMeeting($place) ? '' : $place;
+        $rule = ReminderRules::match($context->rules, $row, $context->self, $location);
         $title = '' === $row->getSummary() ? '(no title)' : $row->getSummary();
         $plans = [];
 
+        $body = self::reminderBody($row, $place, $start, $end, $context->zone);
         $shiftEarly = $context->preferences->isShiftEarlyReminders() && $row->getCalendar()->isWork() && !$row->isAllDay();
         foreach ($this->reminders($row, $rule, $start, $end, $context) as $slot => [$fireAt, $channels]) {
             if ($shiftEarly) {
                 $fireAt = WorkingHours::shiftEarly($context->preferences, $fireAt, $start) ?? $fireAt;
             }
-            $plans[] = new Plan($key, NotificationKind::Reminder, $slot, $fireAt, $start, $title, self::reminderBody($row, $start, $end, $context->zone), $channels, $occurrenceStart);
+            $plans[] = new Plan($key, NotificationKind::Reminder, $slot, $fireAt, $start, $title, $body, $channels, $occurrenceStart);
         }
 
-        // A place that is only a link is nowhere to travel to.
-        $location = self::placeWithoutLinks($row->getLocation());
         $others = ReminderRules::hasOthers($row, $context->self);
         if ($context->preferences->isLeaveNow() && !$row->isAllDay() && '' !== $location && (null !== $row->getTravelMinutes() || true === $rule?->isLeaveNow())) {
             $travel = $row->getTravelMinutes();
@@ -334,16 +335,15 @@ final readonly class NotificationPlanner
      * "Thursday 22 October, 10:00 to 11:00", then where: the place after a comma, or for an event with an online
      * meeting "on Microsoft Teams." (or "online." for a link of no known app) and "Or in <place>." when it has one too.
      * The app is named by the link's host alone, and no link ever goes into the text (anyone with a meeting link may
-     * join): the place is read without links, also for an event without a meeting. A link that is not a plain https
-     * address (a user name in it, no real host) is not offered as a meeting, so the text then reads as for an event
-     * without one.
+     * join): $place is the place without links ({@see EventPlace::withoutLinks()}), also for an event without a
+     * meeting. A link that is not a plain https address (a user name in it, no real host) is not offered as a meeting,
+     * so the text then reads as for an event without one.
      */
-    private static function reminderBody(CalendarEvent $row, \DateTimeImmutable $start, \DateTimeImmutable $end, \DateTimeZone $zone): string
+    private static function reminderBody(CalendarEvent $row, string $place, \DateTimeImmutable $start, \DateTimeImmutable $end, \DateTimeZone $zone): string
     {
         $when = $row->isAllDay()
             ? $start->setTimezone($zone)->format('l j F').' (all day)'
             : $start->setTimezone($zone)->format('l j F, H:i').' to '.$end->setTimezone($zone)->format('H:i');
-        $place = self::placeWithoutLinks($row->getLocation());
         $conference = $row->getConference();
         if (null === $conference || null !== MeetingLinkAddress::problem($conference['url'])) {
             return '' === $place ? $when : $when.', '.$place;
@@ -351,53 +351,12 @@ final readonly class NotificationPlanner
 
         $app = MeetingJoinLine::appName(ConferenceDetector::providerOf($conference['url']));
         $body = null === $app ? $when.', online.' : $when.', on '.$app.'.';
-        $place = rtrim($place, '.');
-        if ('' === $place || self::namesOnlyTheMeeting($place, $app)) {
+        if ('' === $place || EventPlace::namesOnlyAMeeting($place)) {
             return $body;
         }
 
-        return $body.' Or in '.$place.'.';
-    }
-
-    /**
-     * Whether a place only says the event is online: the app's name or the last word of it ("Teams"), or "online",
-     * with at most one more word after a space or hyphen ("Microsoft Teams Meeting" as Outlook writes it, "Microsoft
-     * Teams-vergadering", "Zoom Meeting", "Online meeting").
-     */
-    private static function namesOnlyTheMeeting(string $place, ?string $app): bool
-    {
-        $names = ['online'];
-        if (null !== $app) {
-            $words = explode(' ', $app);
-            $names[] = $app;
-            $names[] = $words[\count($words) - 1];
-        }
-        $pattern = '/^(?:'.implode('|', array_map(static fn (string $name): string => preg_quote($name, '/'), $names)).')(?:[ -][\p{L}\p{N}]+)?$/iu';
-
-        return 1 === preg_match($pattern, $place);
-    }
-
-    /**
-     * An event's place as notifications show it and travel is estimated to: without any link, since a meeting link is
-     * often written there and is a capability (anyone with it may join). Every whitespace separated word that holds a
-     * link goes as a whole: one with "://" in it (also msteams:// and other app schemes, and a link glued to a word),
-     * one starting with "www.", and one with a host name followed by a slash (a link written without its scheme).
-     * What the links stood in goes too: brackets left empty, separators left doubled or at either end, and a bracket
-     * left open at the end or closed at the start. A place without any letter or digit left is no place: "".
-     */
-    public static function placeWithoutLinks(string $location): string
-    {
-        $words = preg_split('/\s+/u', mb_scrub($location, 'UTF-8'), -1, \PREG_SPLIT_NO_EMPTY);
-        $kept = array_filter(\is_array($words) ? $words : [], static fn (string $word): bool => 1 !== preg_match(self::LINK_WORD, $word));
-        $place = implode(' ', $kept);
-        $place = (string) preg_replace(['/\(\s*\)|\[\s*\]|<\s*>|（\s*）/u', '/\s*([,;|])(?:\s*[,;|])+/u'], ['', '$1'], $place);
-        do {
-            $before = $place;
-            $place = trim($place, " \t,;|-");
-            $place = (string) preg_replace(['/[(\[<（]$/u', '/^[)\]>）]/u'], '', $place);
-        } while ($place !== $before);
-
-        return 1 === preg_match('/[\p{L}\p{N}]/u', $place) ? $place : '';
+        // A place that ends a sentence of its own ("Room 1!", "St.") gets no second period.
+        return $body.' Or in '.$place.(1 === preg_match('/[.!?…。！？]$/u', $place) ? '' : '.');
     }
 
     /** When to leave: the travel time and the user's extra time before the start. */

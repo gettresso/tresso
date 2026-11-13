@@ -42,12 +42,14 @@ final readonly class ReminderRules
     /**
      * @param list<ReminderRule> $rules
      * @param list<string>       $self
+     * @param string             $place the event's place to travel to ({@see EventPlace::toTravelTo()}): a place that is
+     *                                  only a meeting link, or only says "online", is no place
      */
-    public static function match(array $rules, CalendarEvent $event, array $self): ?ReminderRule
+    public static function match(array $rules, CalendarEvent $event, array $self, string $place): ?ReminderRule
     {
         $best = null;
         foreach ($rules as $rule) {
-            if (!self::applies($rule, $event, $self)) {
+            if (!self::applies($rule, $event, $self, $place)) {
                 continue;
             }
             if (null === $best || $rule->specificity() > $best->specificity()) {
@@ -67,7 +69,7 @@ final readonly class ReminderRules
     /**
      * @param list<string> $self
      */
-    private static function applies(ReminderRule $rule, CalendarEvent $event, array $self): bool
+    private static function applies(ReminderRule $rule, CalendarEvent $event, array $self, string $place): bool
     {
         if (null !== $rule->getCalendar() && !$rule->getCalendar()->getId()->equals($event->getCalendar()->getId())) {
             return false;
@@ -82,7 +84,7 @@ final readonly class ReminderRules
         if (null !== $rule->getWithConference() && $rule->getWithConference() !== (null !== $event->getConference())) {
             return false;
         }
-        if (null !== $rule->getWithLocation() && $rule->getWithLocation() !== ('' !== trim($event->getLocation()))) {
+        if (null !== $rule->getWithLocation() && $rule->getWithLocation() !== ('' !== $place)) {
             return false;
         }
 

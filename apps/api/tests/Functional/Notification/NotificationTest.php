@@ -17,6 +17,7 @@ use App\Tests\Functional\Calendar\CalendarTestHelpers;
 use App\Tests\Functional\DatabaseTestCase;
 use App\Tests\Support\MockHttpRouter;
 use Doctrine\ORM\EntityManagerInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\Mime\Email;
@@ -445,7 +446,17 @@ final class NotificationTest extends DatabaseTestCase
         self::assertSame('Leave now: about 20 minutes to Keizersgracht 9, Amsterdam.', $leave[0]['body']);
     }
 
-    public function testNoEstimateForAPlaceThatIsOnlyALink(): void
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function noPlaces(): iterable
+    {
+        yield 'only a link' => ['https://teams.microsoft.com/l/meetup-join/19%3asecret'];
+        yield 'only the app' => ['Microsoft Teams Meeting'];
+    }
+
+    #[DataProvider('noPlaces')]
+    public function testNoEstimateForAPlaceThatIsNoPlace(string $location): void
     {
         $this->client->jsonRequest('POST', '/api/v1/reminder-rules', ['name' => 'Places', 'allDay' => false, 'withLocation' => true, 'reminders' => [], 'leaveNow' => true], $this->kim);
         self::assertResponseStatusCodeSame(201);
@@ -454,19 +465,33 @@ final class NotificationTest extends DatabaseTestCase
         $eventId = $this->createEvent($start, ['location' => 'Herengracht 1, Amsterdam']);
         self::assertCount(1, array_filter($this->notifications(), static fn (array $n): bool => 'leave_now' === $n['kind']));
 
-        // The place became a link after the plan: the phone may still ask, and the geocoder is not.
+        // The place changed after the plan: the phone may still ask, and the geocoder is not.
         $local = $start->setTimezone(new \DateTimeZone('Europe/Amsterdam'));
         $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($this->calendarId, [
             'summary' => 'Standup',
             'start' => ['dateTime' => $local->format('Y-m-d\TH:i:s'), 'timeZone' => 'Europe/Amsterdam'],
             'end' => ['dateTime' => $local->modify('+30 minutes')->format('Y-m-d\TH:i:s'), 'timeZone' => 'Europe/Amsterdam'],
-            'location' => 'https://teams.microsoft.com/l/meetup-join/19%3asecret',
+            'location' => $location,
         ]), $this->kim);
         self::assertResponseIsSuccessful();
         $this->client->jsonRequest('POST', '/api/v1/calendar-events/'.$eventId.'/leave-estimate', ['latitude' => 52.37, 'longitude' => 4.89], $this->kim);
         self::assertResponseIsSuccessful();
         self::assertNull($this->decodedResponse()['minutes']);
         self::assertCount(0, array_filter($this->http()->calls(), static fn (array $call): bool => str_starts_with($call['url'], 'https://nominatim.example.test/')));
+    }
+
+    #[DataProvider('noPlaces')]
+    public function testAPlaceThatIsNoPlaceGetsNoLeaveNowAndNoPlaceRule(string $location): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/reminder-rules', ['name' => 'Places', 'allDay' => false, 'withLocation' => true, 'reminders' => [['minutesBefore' => 45, 'channels' => ['phone']]]], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $this->runQueuedPlanning();
+        $start = $this->inMinutes(3 * 60);
+        $this->createEvent($start, ['location' => $location, 'travelMinutes' => 20]);
+
+        $notifications = $this->notifications();
+        self::assertSame(['reminder'], array_column($notifications, 'kind'), 'No leave-now.');
+        self::assertSame($start->modify('-10 minutes')->format(\DATE_ATOM), $this->atom($notifications[0]['fireAt']), 'The default rule, not the one for places.');
     }
 
     public function testSnoozesUntilTheStartButNotIntoThePast(): void
