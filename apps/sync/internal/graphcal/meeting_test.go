@@ -402,20 +402,39 @@ func TestAJoinLineExchangeRewroteIsTakenOffTheBlockToo(t *testing.T) {
 		{"with attributes", `<div class="x" style="font-family:Calibri">Join the meeting: https://rooms.example.com/kim</div>`},
 		{"with the link made an anchor", `<div><span>Join the meeting: <a href="https://rooms.example.com/kim">https://rooms.example.com/kim</a></span></div>`},
 		{"twice, from the bug this fixes", `<div>Join the meeting: https://rooms.example.com/kim</div>` + "\r\n" + `<div>Join the meeting: https://rooms.example.com/old</div>`},
+		{"with the text typed below it", `<div>Join the meeting: https://rooms.example.com/kim<br>See you there<br>Bring the slides</div>`},
+		{"with a line break at its end", `<div>Join the meeting: https://rooms.example.com/kim<BR/></div>`},
+		{"as a paragraph", `<p class="MsoNormal">Join the meeting: https://rooms.example.com/kim</p>`},
+		{"inside another div", `<div><div>Join the meeting: https://rooms.example.com/kim</div></div>`},
+		{"a paragraph inside divs", `<div class="a"><div><p>Join the meeting: <a href="https://rooms.example.com/kim">https://rooms.example.com/kim</a></p></div></div>`},
+		{"with entities", `<div>Join the meeting:&nbsp;https&#58;//rooms.example.com/kim</div>`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := withoutJoinLines(block + c.tail); got != block {
+			if got, _ := withoutJoinLines(block + c.tail); got != block {
 				t.Errorf("withoutJoinLines = %s", got)
 			}
 		})
 	}
-	kept := block + `<div>See you there</div>`
-	if got := withoutJoinLines(kept); got != kept {
-		t.Errorf("other text after the block stays: %s", got)
+	if _, below := withoutJoinLines(block + `<div>Join the meeting: https://rooms.example.com/kim<br>See you there<br>Bring  the slides</div>`); below != "See you there\nBring  the slides" {
+		t.Errorf("below = %q", below)
 	}
-	if got := withoutJoinLines(`<div>Join the meeting: https://rooms.example.com/kim</div>`); got == "" {
-		t.Error("the block's own first element is never taken")
+	if got := endingWith("________________\nMicrosoft Teams meeting\nSee you there\nBring the slides", "See you there\nBring  the slides"); got != "See you there\nBring the slides" {
+		t.Errorf("endingWith = %q", got)
+	}
+	if got := endingWith("________________\nMicrosoft Teams meeting", "See you there"); got != "" {
+		t.Errorf("text the user took out is not put back: %q", got)
+	}
+	for _, kept := range []string{
+		block + `<div>See you there</div>`,
+		block + `<div>See you there<br>Join the meeting: https://rooms.example.com/kim</div>`,
+		block + `<div><div>Join the meeting: https://rooms.example.com/kim</div><div>See you there</div></div>`,
+		`<div>Join the meeting: https://rooms.example.com/kim</div>`,
+		`<div><div>Join the meeting: https://rooms.example.com/kim</div></div>`,
+	} {
+		if got, _ := withoutJoinLines(kept); got != kept {
+			t.Errorf("withoutJoinLines(%s) = %s; other text, and the block's own first element, stay", kept, got)
+		}
 	}
 }
 
@@ -425,12 +444,64 @@ func TestTextTypedBelowTheJoinLineStaysWithIt(t *testing.T) {
 	pasted.Body = &itemBody{ContentType: "html", Content: `<html><body><div>Agenda</div><div>________________<br>Microsoft Teams meeting<br><a href="https://teams.microsoft.com/l/meetup-join/abc">Join the meeting now</a></div></body></html>`}
 	graph.put(pasted)
 	line := "Join the meeting: https://rooms.example.com/kim"
-	description, _ := setDescription(t, graph, "ev-pasted", func(d string) string { return d + "\n\n" + line + "\nBring the slides" })
-	if !strings.HasSuffix(description, line+"\nBring the slides") {
+	other := "Join the meeting: https://rooms.example.com/other"
+	below := "Bring the slides"
+	check := func(step, description, line string, lines int) {
+		t.Helper()
+		if got := strings.Count(description, "Join the meeting: https://rooms.example.com/"); got != lines {
+			t.Fatalf("%s: %d join lines in %q", step, got, description)
+		}
+		if got := strings.Count(description, below); got != 1 {
+			t.Fatalf("%s: the text below appears %d times in %q", step, got, description)
+		}
+		if got := strings.Count(description, "Microsoft Teams meeting"); got != 1 {
+			t.Fatalf("%s: the block appears %d times in %q", step, got, description)
+		}
+		link, _ := joinLine(description)
+		if want := strings.TrimPrefix(line, "Join the meeting: "); link != want {
+			t.Fatalf("%s: link %q; want %q", step, link, want)
+		}
+	}
+
+	description, _ := setDescription(t, graph, "ev-pasted", func(d string) string { return d + "\n\n" + line + "\n" + below })
+	if !strings.HasSuffix(description, line+"\n"+below) {
 		t.Fatalf("description = %q", description)
 	}
-	if link, _ := joinLine(description); link != "https://rooms.example.com/kim" {
-		t.Errorf("link = %q", link)
+	check("added", description, line, 1)
+	description, _ = setDescription(t, graph, "ev-pasted", func(d string) string { return strings.Replace(d, "Agenda", "Agenda v2", 1) })
+	check("edited", description, line, 1)
+	description, _ = setDescription(t, graph, "ev-pasted", func(d string) string { return strings.Replace(d, "Agenda v2", "Agenda v3", 1) })
+	check("edited again", description, line, 1)
+	description, _ = setDescription(t, graph, "ev-pasted", func(d string) string { return strings.Replace(d, line, other, 1) })
+	check("changed", description, other, 1)
+	description, _ = setDescription(t, graph, "ev-pasted", func(d string) string { return strings.Replace(d, other+"\n", "", 1) })
+	if strings.Contains(description, "rooms.example.com") || strings.Count(description, below) != 1 || strings.Count(description, "Microsoft Teams meeting") != 1 {
+		t.Fatalf("removed: %q", description)
+	}
+	if _, writes := setDescription(t, graph, "ev-pasted", func(d string) string { return d }); writes != 0 {
+		t.Errorf("an unchanged event is written again (%d writes)", writes)
+	}
+}
+
+func TestAJoinLineExchangeWrappedIsReplacedNotKept(t *testing.T) {
+	for _, wrapped := range []string{
+		`<p>Join the meeting: https://rooms.example.com/kim</p>`,
+		`<div><div>Join the meeting: https://rooms.example.com/kim</div></div>`,
+	} {
+		t.Run(wrapped, func(t *testing.T) {
+			graph := newFakeGraph(t)
+			pasted := single("ev-pasted", "Planning")
+			pasted.Body = &itemBody{ContentType: "html", Content: `<html><body><div>Agenda</div><div>________________<br>Microsoft Teams meeting<br><a href="https://teams.microsoft.com/l/meetup-join/abc">Join the meeting now</a></div>` + wrapped + `</body></html>`}
+			graph.put(pasted)
+			description, _ := setDescription(t, graph, "ev-pasted", func(d string) string { return withLine(d, "Join the meeting: https://rooms.example.com/other") })
+			if strings.Contains(description, "rooms.example.com/kim") || strings.Count(description, "rooms.example.com/other") != 1 {
+				t.Fatalf("changed: %q", description)
+			}
+			description, _ = setDescription(t, graph, "ev-pasted", func(d string) string { return withLine(d, "") })
+			if strings.Contains(description, "rooms.example.com") || !strings.Contains(description, "Microsoft Teams meeting") {
+				t.Fatalf("removed: %q", description)
+			}
+		})
 	}
 }
 
