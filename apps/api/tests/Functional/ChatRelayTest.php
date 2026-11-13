@@ -204,7 +204,8 @@ final class ChatRelayTest extends DatabaseTestCase
         self::assertIsArray($row);
         self::assertTrue((bool) $row['left_out']);
         self::assertNull($row['sealed_name'], 'No name is kept.');
-        self::assertStringNotContainsString(self::OTHER_JID, (string) $row['sealed_jid']);
+        self::assertIsString($row['sealed_jid']);
+        self::assertStringNotContainsString(self::OTHER_JID, $row['sealed_jid']);
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_message'));
         $chats = $this->delta(0)['chats'];
         self::assertCount(1, $chats);
