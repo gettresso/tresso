@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Calendar\ICalendar;
 
+use App\Calendar\MeetingJoinLine;
 use Sabre\VObject\Component\VEvent;
 
 /**
  * Finds the online meeting of an event: first in the properties providers write for it (RFC 7986 CONFERENCE, Google's
- * X-GOOGLE-CONFERENCE, Microsoft's Teams properties), then in links in the location, URL and description.
+ * X-GOOGLE-CONFERENCE, Microsoft's Teams properties), then in Tresso's join line at the end of the description
+ * ({@see MeetingJoinLine}), then in links in the location, URL and description.
  *
  * @phpstan-import-type Conference from EventData
  */
@@ -39,6 +41,13 @@ final class ConferenceDetector
             if (str_starts_with(strtolower($url), 'https://')) {
                 return ['provider' => self::providerOf($url), 'url' => $url, 'id' => null, 'dialIn' => self::dialIn($event)];
             }
+        }
+
+        // The line Tresso keeps in the description for a link it knows: what carries that link through Google's and
+        // Microsoft's version of the event. It wins over other meeting links in the text.
+        $url = MeetingJoinLine::find(self::text($event, 'DESCRIPTION') ?? '');
+        if (null !== $url) {
+            return ['provider' => self::providerOf($url), 'url' => $url, 'id' => null, 'dialIn' => null];
         }
 
         $text = implode("\n", array_filter([self::text($event, 'LOCATION'), self::text($event, 'URL'), self::text($event, 'DESCRIPTION'), self::text($event, 'X-ALT-DESC')]));
