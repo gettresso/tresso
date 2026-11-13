@@ -524,6 +524,38 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(statuses()).toHaveLength(beats)
   })
 
+  it('brings a file asked for on another device, and sends a reply file through a staged copy it removes after', async () => {
+    await relayedHere()
+    shell.add('A1', DIRECT, 10, { mediaType: 'image', filename: 'photo.jpg', fileLength: 3, text: '' })
+    shell.emit(LINKED)
+    await pass(3_000)
+    const photo = [...server.messages.values()].find((message) => message.waId === 'A1')!
+    await server.requestMedia(photo.id)
+    server.outgoing.set('reply-file', {
+      id: 'reply-file',
+      chatId: `chat-${DIRECT}`,
+      chatAccountId: ACCOUNT_ID,
+      text: '',
+      status: 'waiting',
+      error: null,
+      createdAt: new Date().toISOString(),
+      claimedAt: null,
+      sentAt: null,
+      file: { name: 'plan.pdf', size: 4 },
+    })
+
+    await pass(3_000)
+
+    const [[, messageId, upload]] = server.callsOf('uploadMedia') as [[string, string, { deviceId: string; sha256: string; body: Blob }]]
+    expect(messageId).toBe(photo.id)
+    expect(upload.sha256).toBe('a'.repeat(64))
+    expect(server.files.get(photo.id)).toBe('bytes of /tmp/x')
+    expect(shell.sent).toContainEqual({ recipient: DIRECT, text: '', file: '/outbox/1/plan.pdf' })
+    expect(server.outgoing.get('reply-file')?.status).toBe('sent')
+    expect(shell.staged.size).toBe(0)
+    expect(shell.discarded).toEqual(['/outbox/1/plan.pdf'])
+  })
+
   it('stops when a relay call says another device relays, and stays off until the copy says who', async () => {
     const wa = await relayedHere()
     shell.add('A1', DIRECT, 10)

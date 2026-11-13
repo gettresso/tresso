@@ -32,6 +32,7 @@ import {
   uuidV7,
   type ChatBackend,
   type ChatBridge,
+  type ChatMediaError,
   type MailStore,
   type RelayProgress,
   type RelayStatusRequest,
@@ -904,6 +905,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       setCursor: (cursor) => made.setCursor(cursor),
       claimNext: () => made.claimNext(),
       report: (reply, result) => made.report(reply, result),
+      replyFile: (reply) => made.replyFile(reply),
+      claimMedia: () => made.claimMedia(),
+      deliverMedia: (request, content, sha256) => made.deliverMedia(request, content, sha256),
+      failMedia: (request, error) => made.failMedia(request, error),
     }
   }
 
@@ -929,6 +934,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
           revision.value++
         }
       },
+      replyFile: (reply) => made.replyFile(reply),
+      claimMedia: () => made.claimMedia(),
+      deliverMedia: (request, content, sha256) => made.deliverMedia(request, content, sha256),
+      failMedia: (request, error) => made.failMedia(request, error),
     }
   }
 
@@ -992,10 +1001,26 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         return found
       },
       // Rejects only when the shell refused the request before the bridge saw it; no timeout here may reject.
-      async send(recipient, text) {
-        const result = await commands.send(recipient, text)
+      async send(recipient, text, file) {
+        const result = await commands.send(recipient, text, file ?? null)
         return result.ok ? { ok: true } : { ok: false, error: result.message }
       },
+      // A file the user asked for on another device: the shell's refusals become the reason the server records.
+      async download(chatJid, waId) {
+        try {
+          const file = await commands.download(from, waId, chatJid)
+          return { ok: true, file: { path: file.path, sha256: file.sha256, size: file.size, verified: file.verified } }
+        } catch (cause) {
+          const error = mediaRefusal(cause)
+          if (error === null) {
+            throw cause
+          }
+          return { ok: false, error }
+        }
+      },
+      file: (path) => commands.file(path),
+      stage: (content, name) => commands.stageFile(content, name),
+      discard: (path) => commands.discardFile(path),
     }
   }
 
@@ -2702,3 +2727,26 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     dispose,
   }
 })
+
+/**
+ * What the server is told when the shell could not download a file (`whatsapp_download`): its own codes as the server's
+ * reasons; null for an error of the shell itself (the relay tries again later).
+ */
+export function mediaRefusal(cause: unknown): ChatMediaError | null {
+  switch (cause) {
+    case 'not_found':
+    case 'not_media':
+      return 'not_found'
+    case 'mismatch':
+      return 'mismatch'
+    case 'too_large':
+      return 'too_large'
+    case 'refused':
+    case 'failed':
+    case 'bridge_stopped':
+    case 'no_store':
+      return 'unavailable'
+    default:
+      return null
+  }
+}

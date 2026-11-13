@@ -40,6 +40,8 @@ function transport(answer: unknown, fails: unknown = null): { api: ChatApi; call
   const fake: ChatTransport = {
     get: (path) => handle('GET', path),
     send: (method, path, body, options) => handle(method, path, body, options),
+    putFile: (path, body, headers) => handle('PUT', path, body, { headers } as unknown as RequestOptions),
+    fetchFile: (url) => handle<Blob>('FETCH', url),
   }
   return { api: createChatApi(fake), calls }
 }
@@ -106,7 +108,7 @@ describe('the chat endpoints', () => {
   it('never lets the client send a claim twice, and reads a claim or none', async () => {
     const claimed = { id: REPLY.id, chatId: 'chat-1', chatJid: CHAT.jid, text: 'On my way', claimToken: 'abc' }
     const { api, calls } = transport(claimed)
-    await expect(api.claimReply('a', { deviceId: 'd' })).resolves.toEqual(claimed)
+    await expect(api.claimReply('a', { deviceId: 'd' })).resolves.toEqual({ ...claimed, file: null })
     expect(calls[0]!.options).toEqual({ retry: false })
     // Every other request may be retried by the client as usual.
     await api.relayStatus('a', { deviceId: 'd', bridge: 'running', link: 'linked', linkedAt: null, loopbackOnly: true })
@@ -144,5 +146,34 @@ describe('the chat endpoints', () => {
     const offline = new TypeError('Failed to fetch')
     expect(chatApiError(offline)).toBe(offline)
     expect(chatApiFailure(chatApiError(new ApiError(429, 'Slow down', {}, 5000)))).toEqual({ status: 429, code: null, retryAfterMs: 5000, violationPaths: [] })
+  })
+
+  it('sends a file as the raw body with the device and its SHA-256, and reads a file claim or none', async () => {
+    const body = new Blob(['a photo'])
+    const upload = transport({ messageId: 'm1', state: 'stored', error: null })
+    await expect(upload.api.uploadMedia('a', 'm1', { deviceId: 'd', sha256: 'abc', body })).resolves.toEqual({ messageId: 'm1', state: 'stored', error: null })
+    expect(upload.calls[0]).toMatchObject({ method: 'PUT', path: '/api/v1/chat-accounts/a/relay/media/m1', body, options: { headers: { 'X-Device-Id': 'd', 'X-Content-SHA256': 'abc' } } })
+
+    const asked = { messageId: 'm1', chatJid: CHAT.jid, waId: 'W1', kind: 'image', size: null, maxBytes: 100 }
+    await expect(transport(asked).api.claimMedia('a', { deviceId: 'd' })).resolves.toEqual(asked)
+    await expect(transport(undefined).api.claimMedia('a', { deviceId: 'd' })).resolves.toBeNull()
+    await expect(transport({ ...asked, kind: 'sticker' }).api.claimMedia('a', { deviceId: 'd' })).rejects.toThrow('cannot read')
+
+    const claimWithFile = transport({ id: REPLY.id, chatId: 'chat-1', chatJid: CHAT.jid, text: '', claimToken: 't', file: { name: 'plan.pdf', size: 3, url: 'https://api.test/content/chat-files/x' } })
+    await expect(claimWithFile.api.claimReply('a', { deviceId: 'd' })).resolves.toMatchObject({ file: { name: 'plan.pdf', size: 3, url: 'https://api.test/content/chat-files/x' } })
+  })
+
+  it('asks for a file, reads where it stands, and uploads a file for a reply', async () => {
+    const answer = { messageId: 'm1', kind: 'image', name: 'x.jpg', size: 3, state: 'requested', error: null, access: null, url: null }
+    const asked = transport(answer)
+    await expect(asked.api.requestMedia('m1')).resolves.toEqual(answer)
+    expect(asked.calls[0]).toMatchObject({ method: 'POST', path: '/api/v1/chat-messages/m1/media/request' })
+    const confirmed = transport({ ...answer, state: 'stored', access: 'confirm', url: 'https://api.test/content/chat-media/m1?unscanned=1' })
+    await confirmed.api.unscannedMediaLink('m1')
+    expect(confirmed.calls[0]).toMatchObject({ method: 'POST', path: '/api/v1/chat-messages/m1/media/unscanned-link', body: { confirmed: true } })
+    const body = new Blob(['%PDF'])
+    const uploaded = transport({ id: 'u1', chatId: 'chat-1', size: 4 })
+    await uploaded.api.uploadFile('chat-1', 'u1', body)
+    expect(uploaded.calls[0]).toMatchObject({ method: 'PUT', path: '/api/v1/chats/chat-1/uploads/u1', body })
   })
 })

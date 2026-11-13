@@ -687,3 +687,21 @@ describe('the WhatsApp relay store', () => {
     expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(wa.liveFrom))
   })
 })
+
+describe('mediaRefusal', () => {
+  it('tells the server why the shell could not download a file, and leaves its own errors to a later round', async () => {
+    const { mediaRefusal } = await import('@/stores/whatsappRelay')
+    expect(['not_found', 'not_media', 'mismatch', 'too_large', 'refused', 'failed', 'bridge_stopped', 'no_store'].map(mediaRefusal)).toEqual([
+      'not_found',
+      'not_found',
+      'mismatch',
+      'too_large',
+      'unavailable',
+      'unavailable',
+      'unavailable',
+      'unavailable',
+    ])
+    expect(mediaRefusal('unsupported')).toBeNull()
+    expect(mediaRefusal(new Error('io'))).toBeNull()
+  })
+})

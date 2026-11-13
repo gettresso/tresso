@@ -22,7 +22,7 @@ export const chatsFromServer = !isDesktop
  * (stores/whatsappRelay.ts).
  *
  * Errors are rejections with a string: a code the caller can act on (`busy`, `no_store`, `not_chosen`, `no_folder`,
- * `bridge_stopped`, `not_found`, `not_media`, `failed`, `refused`, `mismatch`, `too_large`, `unsupported`) or a
+ * `bridge_stopped`, `not_found`, `not_media`, `failed`, `refused`, `mismatch`, `too_large`, `unsupported`, `no_store`) or a
  * sentence for anything else.
  */
 
@@ -106,11 +106,16 @@ export interface DownloadedFile {
   path: string
   /** Its SHA-256 matches the store's; false only when the store holds no hash. */
   verified: boolean
+  /** Hex SHA-256 of Tresso's copy. */
+  sha256: string
+  /** Bytes. */
+  size: number
 }
 
 /** What the wrappers call; the Tauri API in the app, a fake in tests. */
 export interface WhatsAppShell {
-  invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>
+  /** `args` is the command's arguments, or raw bytes for a command that reads its request's body (with `options.headers`). */
+  invoke<T>(command: string, args?: Record<string, unknown> | Uint8Array, options?: { headers: Record<string, string> }): Promise<T>
   listen(event: string, handler: (event: { payload: unknown }) => void): Promise<() => void>
 }
 
@@ -150,6 +155,15 @@ export function whatsAppShell(shell: WhatsAppShell = tauriShell) {
     openFile: (path: string) => shell.invoke<void>('whatsapp_open_file', { path }),
     /** The file dialog for Attach: the file's path and size in bytes; null when cancelled. */
     chooseFile: () => shell.invoke<ChosenFile | null>('whatsapp_choose_file'),
+    /** The content of a file `download` returned, of at most 100 MB (else `too_large`), for the relay to hand on. */
+    file: async (path: string) => new Blob([await shell.invoke<ArrayBuffer>('whatsapp_file', { path })]),
+    /**
+     * Hands a reply's file to the shell to send (raw bytes, its name in a header): the path `send` takes. At most 100 MB
+     * (else `too_large`). `discardFile` removes it again.
+     */
+    stageFile: async (content: Blob, name: string) =>
+      shell.invoke<string>('whatsapp_stage_file', new Uint8Array(await content.arrayBuffer()), { headers: { 'x-file-name': encodeURIComponent(name) } }),
+    discardFile: (path: string) => shell.invoke<void>('whatsapp_discard_file', { path }),
     /** Calls `handle` with the bridge's state on every change; returns the function that stops listening. */
     onState: (handle: (state: BridgeState) => void) => shell.listen(WHATSAPP_EVENT, ({ payload }) => handle(payload as BridgeState)),
   }

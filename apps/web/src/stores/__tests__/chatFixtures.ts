@@ -75,7 +75,7 @@ export function fakeMail() {
 /** The desktop shell's commands the chat screens call. */
 export function fakeShell() {
   return {
-    downloadAnswer: (): Promise<DownloadedFile> => Promise.resolve({ path: '/Users/kim/Library/Application Support/app.tresso.desktop/whatsapp-media/abc.jpg', verified: true }),
+    downloadAnswer: (): Promise<DownloadedFile> => Promise.resolve({ path: '/Users/kim/Library/Application Support/app.tresso.desktop/whatsapp-media/abc.jpg', verified: true, sha256: 'a'.repeat(64), size: 3 }),
     sendAnswer: (): Promise<SendResult> => Promise.resolve({ ok: true, message: 'sent' }),
     chosen: { path: '/Users/kim/Documents/plan.pdf', size: 4096 } as { path: string; size: number } | null,
     calls: [] as string[],
