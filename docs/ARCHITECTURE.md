@@ -2951,23 +2951,25 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
 
 The web and desktop clients show an event's link in the popover as the app's name (from `conference.provider`, which
 the server sets only for a link on that app's own host; anything else reads "Meeting link"), the link on one line
-(core's `linkText`: the scheme and host stay whole, so a lookalike such as `teams.microsoft.com.evil.example` shows
-where it leads; only the path is cut in the middle, and a host longer than the line loses its left end), Join (Shift
-J) and Copy link, and the dial-in number. Wherever a link is shown as text it goes through core's `displayLink`
-(characters that show nothing or turn text around become a visible U+FFFD, at most 300 characters), left to right and
-isolated from the text around it. The agenda, the mini agenda and the invitation card have a Join button labelled by
-core's `joinLabel` ("Join with Microsoft Teams"); the week and day grid mark such an event with a small camera. Every
-Join, button or key, goes through core's `canJoin`: a link it refuses (no https, a host whose letters may imitate
-another, a host without a dot, a user name before the host) gets no Join and is shown as text with Copy link. Join
-opens a new tab without opener or referrer in the browser, and the user's browser through the shell's opener on the
-desktop, never the app's own window. Copy writes the whole link to the clipboard on a click only and says "Copied" for
-2 seconds; when the clipboard refuses, the whole link is shown to copy by hand. A link that was asked for (the series'
-`conferenceRequest`, also for a moved occurrence) shows "Making the Teams link" while it is pending and younger than
-120 seconds (on the server's clock), and, to the organizer, "Could not make the Teams link" with core's reason once it
-failed or took longer. A link is never written to a log, an error message or analytics; the desktop shell logs a
-failed open with the link's scheme only. `conference.removable` says whether the API takes a link off (false for a
-Teams meeting Microsoft made); core's `meetingRemovable` falls back to its own rule for rows stored before the server
-sent it.
+(core's `linkText`: whatever comes before the host and the host itself stay whole, so a lookalike such as
+`teams.microsoft.com.evil.example` shows where it leads also without a scheme or with odd slashes; a user name before
+an `@` is left out; only the path is cut in the middle, and a host longer than the line loses its left end), Join
+(Shift J) and Copy link, and the dial-in number. Wherever a link is shown in full (a title, a link without Join) it
+goes through core's `displayLink` (characters that show nothing or turn text around become a visible U+FFFD, at most
+300 characters), left to right and isolated from the text around it; only the link to copy by hand after a refused
+copy is shown whole when it passes `canJoin`, in a box that scrolls. The agenda, the mini agenda and the invitation
+card have a Join button labelled by core's `joinLabel` ("Join with Microsoft Teams"); the week and day grid mark such
+an event with a small camera. Every Join, button or key, goes through core's `canJoin`: a link it refuses (no https, a
+host whose letters may imitate another, a host without a dot, a user name before the host) gets no Join and is shown
+as text with Copy link. Join opens a new tab without opener or referrer in the browser, and the user's browser through
+the shell's opener on the desktop, never the app's own window. Copy writes the whole link to the clipboard on a click
+only and says "Copied" for 2 seconds; when the clipboard refuses, the whole link is shown to copy by hand. A link that
+was asked for (the series' `conferenceRequest`, also for a moved occurrence) shows "Making the Teams link" while it is
+pending and younger than 120 seconds (on the server's clock), and, to the organizer, "Could not make the Teams link"
+with core's reason once it failed or took longer. A link is never written to a log, an error message or analytics; the
+desktop shell logs a failed open with the link's scheme only. `conference.removable` says whether the API takes a link
+off (false for a Teams meeting Microsoft made); core's `meetingRemovable` falls back to its own rule for rows stored
+before the server sent it.
 
 #### AI features (interfaces with built-in and planned AI implementations)
 
