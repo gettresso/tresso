@@ -1131,6 +1131,41 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         expect(await db.cursor()).toBe(40)
       })
 
+      it('reads a chat in windows, newest first, with every reply and whether older messages exist', async () => {
+        const key = (id: string, minute: number) => ({ sentAt: Date.parse(at(minute)), id })
+        // Two messages in the same minute as a2, ordered by id around it.
+        await db.apply(page({ cursor: 41, chatMessages: [chatMessage('a0', 'anna', 'acct', at(2)), chatMessage('a9', 'anna', 'acct', at(2))] }))
+
+        const newest = await db.chatPage('anna', { limit: 2 })
+        expect(ids(newest!.messages)).toEqual(['a9', 'a3'])
+        expect(newest!.hasOlder).toBe(true)
+        expect(ids(newest!.outgoing)).toEqual(['r1', 'r2'])
+        expect(newest!.chat).toEqual(chatPage.chats![0])
+
+        const older = await db.chatPage('anna', { limit: 2, before: key('a9', 2) })
+        expect(ids(older!.messages)).toEqual(['a0', 'a2'])
+        expect(older!.hasOlder).toBe(true)
+
+        const oldest = await db.chatPage('anna', { limit: 2, before: key('a0', 2) })
+        expect(ids(oldest!.messages)).toEqual(['a1'])
+        expect(oldest!.hasOlder).toBe(false)
+
+        // From a message on: all of them up to the newest, within the limit, and older ones are said to exist.
+        const since = await db.chatPage('anna', { limit: 10, from: key('a2', 2) })
+        expect(ids(since!.messages)).toEqual(['a2', 'a9', 'a3'])
+        expect(since!.hasOlder).toBe(true)
+        expect((await db.chatPage('anna', { limit: 10, from: key('a1', 1) }))!.hasOlder).toBe(false)
+        expect(ids((await db.chatPage('anna', { limit: 2, from: key('a1', 1) }))!.messages)).toEqual(['a9', 'a3'])
+
+        // Nothing before the oldest; a limit below one reads one.
+        const none = await db.chatPage('anna', { limit: 5, before: key('a1', 1) })
+        expect(none!.messages).toEqual([])
+        expect(none!.hasOlder).toBe(false)
+        expect(ids((await db.chatPage('anna', { limit: 0 }))!.messages)).toEqual(['a3'])
+        expect(await db.chatPage('nobody', { limit: 5 })).toBeNull()
+        expect((await db.chatPage('group', { limit: 5 }))!.messages[0]).toEqual(chatPage.chatMessages![4])
+      })
+
       it('stores a page given twice once', async () => {
         await db.apply({ ...chatPage, cursor: 41 })
 
