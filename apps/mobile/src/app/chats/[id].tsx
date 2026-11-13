@@ -3,8 +3,8 @@ import { AccessibilityInfo, Alert, AppState, FlatList, KeyboardAvoidingView, Lin
 import * as DocumentPicker from 'expo-document-picker'
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { CHAT_MAX_FILE_BYTES, replyText, TODO_TITLE_MAX_LENGTH, type ChatPage, type SyncedChatMessage, type SyncedChatOutgoing } from '@tresso/core'
-import { ATTACH_HELD, FileNotSent, outcomeUnknown, ReplyCancelled, type FileUpload } from '@/chat/chatActions'
+import { attachHeldText, CHAT_MAX_FILE_BYTES, replyText, TODO_TITLE_MAX_LENGTH, type ChatPage, type SyncedChatMessage, type SyncedChatOutgoing } from '@tresso/core'
+import { FileNotSent, outcomeUnknown, ReplyCancelled, type FileUpload } from '@/chat/chatActions'
 import { fileSizeOf, removeCachedCopy } from '@/chat/fileUpload'
 import { useChats } from '@/chat/ChatProvider'
 import { CHAT_MISSING, cancelFailureText, chatInitials, chatName, COUNTER_FROM, counterText, relayBanner, replyProblemText, retryFailureText, sendFailureText, FILE_NOT_OPENED, fileFailureText, mediaTitle, mediaView, UNSCANNED_WARNING } from '@/chat/texts'
@@ -542,7 +542,7 @@ export default function ChatScreen() {
           <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
             {length >= COUNTER_FROM && <Text style={[styles.note, !checked.ok && checked.problem === 'too_long' && styles.problem]}>{counterText(length)}</Text>}
             {problem !== null && <Text style={[styles.note, styles.problem]}>{problem}</Text>}
-            {attachHeld && <Text style={styles.note}>{ATTACH_HELD}</Text>}
+            {heldFor !== null && <Text style={styles.note}>{attachHeldText(heldFor)}</Text>}
             {sendError !== null && (
               <Text style={[styles.note, styles.problem]} accessibilityRole="alert" accessibilityLiveRegion="assertive">
                 {sendError}
@@ -555,7 +555,7 @@ export default function ChatScreen() {
                 disabled={attachingFile || attachHeld}
                 accessibilityRole="button"
                 accessibilityLabel="Attach a file"
-                accessibilityHint={attachHeld ? ATTACH_HELD : undefined}
+                accessibilityHint={heldFor !== null ? attachHeldText(heldFor) : undefined}
                 accessibilityState={{ disabled: attachingFile || attachHeld, busy: attachingFile }}
               >
                 <Icon name="attach" size={20} color={theme.ink} />

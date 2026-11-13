@@ -1,4 +1,4 @@
-import { CHAT_MAX_FILE_BYTES, chatApiFailure, fileFingerprint, replyText, type MailStore, type SyncedChat, type SyncedChatOutgoing } from '@tresso/core'
+import { attachHeldText, CHAT_MAX_FILE_BYTES, chatApiFailure, fileFingerprint, replyText, UNSURE_FILE_MS, type MailStore, type SyncedChat, type SyncedChatOutgoing } from '@tresso/core'
 import type { PhoneChatApi } from '@/chat/chatApi'
 import { replyProblemText } from '@/chat/texts'
 
@@ -75,32 +75,48 @@ function refusedAsCancelled(error: unknown): boolean {
 const ATTACH_HOLD_MS = 60_000
 
 /**
- * Before the chat id and the file's fingerprint (`<prefix><chat id>:<fingerprint>`) in the chat value that holds an
- * unsure file (see UnsureFile): one per file, so another file sent in the chat meanwhile leaves it alone.
+ * The chat value that holds the unsure files (see UnsureFile), by chat and file (`<chat id>:<fingerprint>`), so another
+ * file sent in the chat meanwhile leaves one alone. One value, so the stale ones (older than UNSURE_FILE_MS, or whose
+ * reply the copy has) are all found and removed (pruneUnsureFiles).
  */
-export const UNSURE_FILE_PREFIX = 'phone-unsure-file:'
+export const UNSURE_FILES = 'phone-unsure-files'
 
-/** The chat value of an unsure file. */
+/** Where a file's entry is in UNSURE_FILES. */
 export function unsureFileKey(chatId: string, fingerprint: string): string {
-  return `${UNSURE_FILE_PREFIX}${chatId}:${fingerprint}`
+  return `${chatId}:${fingerprint}`
 }
-
-/**
- * A file whose sending ended without an answer: the ids it went under, the fingerprint of the file (core's
- * fileFingerprint, never its name) and when the first try was made (the server's time), so the same file again in the
- * same chat goes as the same upload and reply, also after the app was closed.
- */
-/** What Attach says while the server asked to wait (a 429 on an upload, until its Retry-After). */
-export const ATTACH_HELD = 'Too many files sent at once. Wait a few minutes, then attach it again.'
 
 /** A file on its way, with how to stop it and the cancel sent while its reply was being queued. */
 type Upload = FileUpload & { controller: AbortController; abandoned: boolean; cancelling: Promise<boolean> | null }
 
+/**
+ * A file whose sending ended without an answer: its chat, the ids it went under and when the first try was made (the
+ * server's time), so the same file again in the same chat goes as the same upload and reply within UNSURE_FILE_MS, also
+ * after the app was closed. Its key holds the file's fingerprint (core's fileFingerprint), never its name.
+ */
 interface UnsureFile {
-  fingerprint: string
+  chatId: string
   uploadId: string
   replyId: string
   at: number
+}
+
+function readUnsureFiles(value: string | null): Map<string, UnsureFile> {
+  const files = new Map<string, UnsureFile>()
+  if (value === null) {
+    return files
+  }
+  try {
+    const parsed = JSON.parse(value) as Record<string, Partial<UnsureFile>>
+    for (const [key, entry] of Object.entries(parsed)) {
+      if (typeof entry.chatId === 'string' && typeof entry.uploadId === 'string' && typeof entry.replyId === 'string' && typeof entry.at === 'number') {
+        files.set(key, { chatId: entry.chatId, uploadId: entry.uploadId, replyId: entry.replyId, at: entry.at })
+      }
+    }
+  } catch {
+    // An unreadable value holds nothing to reuse.
+  }
+  return files
 }
 
 /**
@@ -210,6 +226,8 @@ export class ChatActions {
 
   /** Files on their way, by reply id. */
   private readonly uploads = new Map<string, Upload>()
+  /** The last change of the unsure files (changeUnsureFiles), which the next waits for. */
+  private unsureFileWrites: Promise<void> = Promise.resolve()
   /** Until when (the server's time) Attach waits after the server said too many files; null when it does not. */
   private attachHeldUntil: number | null = null
 
@@ -267,6 +285,11 @@ export class ChatActions {
         this.hiddenIn.delete(id)
         changed = true
       }
+    }
+    // Unsure files whose reply the copy has now, or whose time passed, go too.
+    const store = this.deps.store()
+    if (store !== null) {
+      void this.pruneUnsureFiles(store, chatId, this.deps.now(), new Set(byId.keys()))
     }
     const unsure = this.unsure.get(chatId)
     if (unsure !== undefined && byId.has(unsure.id)) {
@@ -380,8 +403,8 @@ export class ChatActions {
    * on the server at once (the server keeps that also before it saw the reply, and then refuses the queueing) and again
    * once the queueing answered; when no cancel was confirmed, it may still be sent (FileNotSent `maybeSent`), and the
    * queued reply stays in the chat. When the outcome is not known, the same file in the same chat goes again under the
-   * same upload and reply ids within REUSE_ID_MS (kept in the copy by chat and fingerprint, dropped once the copy has
-   * that reply), so it is queued once. At most CHAT_MAX_FILE_BYTES; nothing while the server asked to wait (attachHeld).
+   * same upload and reply ids within UNSURE_FILE_MS (kept in the copy by chat and fingerprint, dropped once the copy has
+   * that reply or the time passed), so it is queued once. At most CHAT_MAX_FILE_BYTES; nothing while the server asked to wait (attachHeld).
    *
    * @throws FileNotSent with how far it got
    */
@@ -394,11 +417,11 @@ export class ChatActions {
       throw new FileNotSent('upload', new Error(`${file.name} is larger than 100 MB, the most Tresso sends.`))
     }
     const now = this.deps.now()
-    if (this.attachHeld() !== null) {
-      throw new FileNotSent('upload', new Error(ATTACH_HELD))
+    const held = this.attachHeld()
+    if (held !== null) {
+      throw new FileNotSent('upload', new Error(attachHeldText(held)))
     }
-    const fingerprint = fileFingerprint(file.name, file.size, file.lastModified)
-    const key = unsureFileKey(chat.id, fingerprint)
+    const key = unsureFileKey(chat.id, fileFingerprint(file.name, file.size, file.lastModified))
     const earlier = await this.unsureFileOf(store, chat.id, key, now)
     const uploadId = earlier?.uploadId ?? this.deps.newId(now)
     const id = earlier?.replyId ?? this.deps.newId(now)
@@ -462,7 +485,7 @@ export class ChatActions {
           throw new FileNotSent('queue', error, false, true, !confirmed)
         }
         if (unsure) {
-          await this.keepUnsureFile(store, key, { fingerprint, uploadId, replyId: id, at })
+          await this.keepUnsureFile(store, key, { chatId: chat.id, uploadId, replyId: id, at })
         } else {
           await this.forgetUnsureFile(key)
         }
@@ -557,40 +580,62 @@ export class ChatActions {
     }
   }
 
-  /** The unsure file under `key` (this file in this chat) when recent enough and not in the copy yet; else it is forgotten. */
+  /** The unsure file under `key` (this file in this chat), after the stale ones went (pruneUnsureFiles). */
   private async unsureFileOf(store: MailStore, chatId: string, key: string, now: number): Promise<UnsureFile | null> {
-    let kept: UnsureFile | null = null
-    try {
-      const raw = await store.chatMeta(key)
-      const parsed = raw === null ? null : (JSON.parse(raw) as Partial<UnsureFile>)
-      if (parsed !== null && typeof parsed.fingerprint === 'string' && typeof parsed.uploadId === 'string' && typeof parsed.replyId === 'string' && typeof parsed.at === 'number') {
-        kept = { fingerprint: parsed.fingerprint, uploadId: parsed.uploadId, replyId: parsed.replyId, at: parsed.at }
-      }
-    } catch (error) {
-      this.deps.onError?.('Reading an unsure file failed', error)
-    }
-    if (kept === null) {
-      return null
-    }
-    if (!(now - kept.at < REUSE_ID_MS && now >= kept.at) || (await this.copyHasReply(store, chatId, kept.replyId))) {
-      await this.forgetUnsureFile(key)
-      return null
-    }
-    return kept
+    await this.pruneUnsureFiles(store, chatId, now)
+    return (await this.unsureFilesOf(store)).get(key) ?? null
   }
 
-  private async keepUnsureFile(store: MailStore, key: string, unsure: UnsureFile): Promise<void> {
+  private async unsureFilesOf(store: MailStore): Promise<Map<string, UnsureFile>> {
     try {
-      await store.setChatMeta(key, JSON.stringify(unsure))
+      return readUnsureFiles(await store.chatMeta(UNSURE_FILES))
     } catch (error) {
-      this.deps.onError?.('Keeping an unsure file failed', error)
+      this.deps.onError?.('Reading the unsure files failed', error)
+      return new Map()
     }
+  }
+
+  /** Changes the unsure files, one change at a time, so two that run together never write over each other. */
+  private changeUnsureFiles(store: MailStore, change: (files: Map<string, UnsureFile>) => boolean | Promise<boolean>): Promise<void> {
+    const next = this.unsureFileWrites.then(async () => {
+      const files = await this.unsureFilesOf(store)
+      if (await change(files)) {
+        await store.setChatMeta(UNSURE_FILES, files.size === 0 ? null : JSON.stringify(Object.fromEntries(files)))
+      }
+    })
+    this.unsureFileWrites = next.catch((error: unknown) => this.deps.onError?.('Keeping the unsure files failed', error))
+    return this.unsureFileWrites
+  }
+
+  /**
+   * Removes the unsure files that can no longer be reused: older than UNSURE_FILE_MS (or made after now), or, for
+   * `chatId` (whose replies the copy is read for), whose reply the copy has now (it was queued after all).
+   */
+  private pruneUnsureFiles(store: MailStore, chatId: string | null, now: number, inCopy?: ReadonlySet<string>): Promise<void> {
+    return this.changeUnsureFiles(store, async (files) => {
+      let changed = false
+      for (const [key, file] of files) {
+        const stale = !(now - file.at < UNSURE_FILE_MS && now >= file.at)
+        if (stale || (file.chatId === chatId && (inCopy !== undefined ? inCopy.has(file.replyId) : await this.copyHasReply(store, chatId, file.replyId)))) {
+          files.delete(key)
+          changed = true
+        }
+      }
+      return changed
+    })
+  }
+
+  private keepUnsureFile(store: MailStore, key: string, unsure: UnsureFile): Promise<void> {
+    return this.changeUnsureFiles(store, (files) => {
+      files.set(key, unsure)
+      return true
+    })
   }
 
   private async forgetUnsureFile(key: string): Promise<void> {
     const store = this.deps.store()
     if (store !== null) {
-      await store.setChatMeta(key, null).catch((error: unknown) => this.deps.onError?.('Forgetting an unsure file failed', error))
+      await this.changeUnsureFiles(store, (files) => files.delete(key))
     }
   }
 
