@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional\Calendar;
 
+use App\Sync\Calendar\SweepMeetingRequestsHandler;
 use App\Tests\Functional\AuthenticatesUsers;
 use App\Tests\Functional\ConnectsProviderAccounts;
 use App\Tests\Functional\DatabaseTestCase;
@@ -436,6 +437,40 @@ final class ProviderCalendarTest extends DatabaseTestCase
 
         $request = $this->conferenceRequest($eventId);
         self::assertSame(['failed', 'refused'], [$request['status'] ?? null, $request['reason'] ?? null]);
+    }
+
+    public function testAMeetingStillPendingAfterFiveMinutesFailsWithoutASync(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $pendingId = $this->createWithMeet($primary);
+        $operations = $this->claim();
+        self::assertCount(1, $operations);
+        $ical = self::string($operations[0]['ical']);
+        $this->report($operations[0]['id'], ['outcome' => 'done', 'remoteId' => 'trabc', 'etag' => 'e1', 'conferenceStatus' => 'pending', 'current' => ['remoteId' => 'trabc', 'etag' => 'e1', 'ical' => self::providerVersion($ical)]]);
+        // Another event whose write is still out: its result settles its request, not the sweep.
+        $otherId = $this->createWithMeet($primary);
+        $sweep = static::getContainer()->get(SweepMeetingRequestsHandler::class);
+        self::assertInstanceOf(SweepMeetingRequestsHandler::class, $sweep);
+
+        self::assertSame(0, $sweep->sweep(), 'A young request waits.');
+        self::assertSame('pending', $this->conferenceRequest($pendingId)['status'] ?? null);
+        $cursor = $this->getJson('/api/v1/sync/changes?since=0', $this->user)['cursor'] ?? null;
+        self::assertIsInt($cursor);
+
+        self::mockTime(new \DateTimeImmutable('+6 minutes'));
+
+        self::assertSame(1, $sweep->sweep());
+        $request = $this->conferenceRequest($pendingId);
+        self::assertSame(['failed', 'refused'], [$request['status'] ?? null, $request['reason'] ?? null]);
+        self::assertSame('pending', $this->conferenceRequest($otherId)['status'] ?? null, 'A request whose write waits is left to that write.');
+        $delta = $this->getJson('/api/v1/sync/changes?since='.$cursor, $this->user)['calendarEvents'] ?? null;
+        self::assertIsArray($delta);
+        self::assertSame([$pendingId], array_column($delta, 'id'), 'Clients learn it through the delta.');
+        self::assertSame(0, $sweep->sweep(), 'Once.');
+
+        // The meeting may still come: a synced version that has it clears the request.
+        $this->storeObject($primary, 'trabc', 'e2', str_replace("END:VEVENT\r\n", "CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://meet.google.com/abc-defg-hij\r\nX-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij\r\nEND:VEVENT\r\n", self::providerVersion($ical)));
+        self::assertNull($this->conferenceRequest($pendingId));
     }
 
     public function testAResultWhileANewerWriteWaitsLeavesTheRequestToThatWrite(): void

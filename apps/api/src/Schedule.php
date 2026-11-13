@@ -12,6 +12,7 @@ use App\Security\OAuth\PurgeExpiredOAuthTokens;
 use App\Security\OAuth\PurgeUnusedRegisteredClients;
 use App\Security\PersonalAccessToken\PurgeOldPersonalAccessTokens;
 use App\Storage\SweepReencryption;
+use App\Sync\Calendar\SweepMeetingRequests;
 use App\Sync\Ingest\SweepOrphanedMessages;
 use Symfony\Component\Scheduler\Attribute\AsSchedule;
 use Symfony\Component\Scheduler\RecurringMessage;
@@ -39,6 +40,7 @@ final readonly class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::every('5 minutes', new SweepOrphanedMessages()))
             ->add(RecurringMessage::every('5 minutes', new SweepBulkActions()))
             ->add(RecurringMessage::every('1 minute', new SweepChatRelays()))
+            ->add(RecurringMessage::every('1 minute', new SweepMeetingRequests()))
             ->add(RecurringMessage::every('1 hour', new SweepReencryption()))
             ->add(RecurringMessage::cron('17 3 * * *', new ReconcileSubscriptions()))
             ->add(RecurringMessage::cron('41 3 * * *', new PurgeOldPersonalAccessTokens()))
