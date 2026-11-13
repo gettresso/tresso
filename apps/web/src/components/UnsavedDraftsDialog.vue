@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref } from 'vue'
 import { backdropClose } from '@/components/backdropClose'
+import { recheckEditing } from '@/platform/editing'
 import LogoLoader from '@/components/LogoLoader.vue'
 
 /**
@@ -18,6 +19,8 @@ onMounted(() => dialog.value?.showModal?.())
 onBeforeUnmount(() => {
   unmounted = true
 })
+// Gone without a focus event, perhaps: the menu bar reads the page again (its Message items wait while this is open).
+onUnmounted(recheckEditing)
 
 /**
  * The browser closed the dialog itself: Chromium lets a page refuse Escape (cancel) only once without a click or key
