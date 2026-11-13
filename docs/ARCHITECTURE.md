@@ -2804,18 +2804,24 @@ after. Everything lives in `apps/api/src/Notification`.
   - No notification holds a link, and the geocoder never gets one (`App\Notification\EventPlace`): every text that
     shows the place (reminders with or without a meeting, leave-now) uses the place without links, and the travel
     estimate, leave-now and the "with a place" condition of rules use it too, without a place that only says the
-    event is online. Words are split at whitespace, commas and semicolons, and a word goes as a whole when it holds
-    `://` (also app schemes such as `msteams://` and a link glued to a word), starts with `www.`, or is a host in
-    lower case followed by a path, query, fragment or port (also an IP address); a place name with a dot and a slash
-    in capitals ("St.Pauli/Hamburg", "U.S./Canada") stays. A bracket group left with only a label ("(see <link>)"),
-    empty brackets, left over separators and a colon at the end go with it. A place that is only a link, or only says
+    event is online. Words are split at whitespace, and a word goes as a whole when it holds `://` (also app schemes
+    such as `msteams://` and a link glued to a word) or starts with `www.`: commas and semicolons belong to links (a
+    query, a map position, a Teams context). Any other word is split at commas and semicolons, and a part goes when it
+    is a host in lower case followed by a path, query, fragment or port (also an IP address), or a host of a known
+    meeting app (`ConferenceDetector::HOSTS`, and names under them) in any case, since phones capitalise a typed
+    "Zoom.us/j/...". A place name with a dot and a slash in capitals ("St.Pauli/Hamburg", "U.S./Canada") stays; a
+    lower case place written like a host, such as "kamer 2.og/3", loses that word. A bracket group left with only a
+    label ("(see <link>)"), empty brackets, left over separators and a colon at the end go with it, whitespace inside
+    is collapsed to one space and separators at either end are trimmed. A place that is only a link, or only says
     "online", gets no leave-now and no estimate. Every step is linear in the length of the place, since a place can
     be any length and is read for every occurrence. Known limits, decided:
     - A meeting id or passcode typed as plain text in the place ("Zoom ID 123 456 7890 Passcode 4321") cannot be
       told from a place and is shown.
-    - A bare host without a path, query, fragment or port ("zoom.us") is shown, as is a host typed with capitals.
+    - A bare host without a path, query, fragment or port ("zoom.us") is shown, as is a host of an unknown app typed
+      with capitals ("Jitsi.example.org/room").
     - `localhost` and other hosts without a dot are not recognised as links and are shown.
-    - The tail of a link broken by a space, comma or semicolon is a word of its own and is shown.
+    - The tail of a link broken by a space is a word of its own and is shown; a word glued to a link after a comma
+      without a space ("<link>,Room 1") goes with the link.
     - E-mail addresses and `tel:` numbers are not links and are shown.
     - The title is the user's own subject and is shown as it is.
   - **Leave now** (switched off as a whole with `leaveNow` in the settings): for timed events with a place. With a
