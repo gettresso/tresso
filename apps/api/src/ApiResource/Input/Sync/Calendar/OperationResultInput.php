@@ -36,4 +36,15 @@ final class OperationResultInput extends WorkerRequest
      */
     #[Assert\Valid]
     public ?RemoteObjectInput $current = null;
+
+    /**
+     * For a write that asked for a meeting the provider's version does not have: `pending` (the provider is still
+     * making it) or `failed`. Absent when the meeting is there or none was asked for.
+     */
+    #[Assert\Choice(choices: ['pending', 'failed'])]
+    public ?string $conferenceStatus = null;
+
+    /** Why no meeting was made: `refused` (the provider made none) or `not_supported` (the calendar cannot have it). */
+    #[Assert\Choice(choices: ['refused', 'not_supported'])]
+    public ?string $conferenceError = null;
 }

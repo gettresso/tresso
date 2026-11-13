@@ -14,6 +14,8 @@ use Symfony\Component\Uid\Uuid;
  * One iCalendar object: every VEVENT with one UID (a series with its overrides, or a single event), as the provider
  * stores it in one resource. The iCalendar text is the truth; {@see CalendarEvent} rows are its projection for queries
  * and clients. Keeping the full text means properties Tresso does not model survive an edit.
+ *
+ * @phpstan-type ConferenceRequest array{provider: string, status: string, reason: ?string, requestedAt: string, nonce: string}
  */
 #[ORM\Entity(repositoryClass: CalendarObjectRepository::class)]
 #[ORM\UniqueConstraint(columns: ['calendar_id', 'uid'])]
@@ -40,6 +42,17 @@ class CalendarObject
 
     #[ORM\Column(type: Types::TEXT)]
     private string $ical;
+
+    /**
+     * A meeting link asked of the calendar's provider that is not on the event (yet): {provider, status (pending or
+     * failed), reason (refused, not_supported or unreachable; null while pending), requestedAt (ISO 8601), nonce (the
+     * request's own id, which the worker turns into the provider's request id)}. Kept here, not in the iCalendar text,
+     * because the provider's version replaces that text. The master row carries it without the nonce.
+     *
+     * @var ConferenceRequest|null
+     */
+    #[ORM\Column(type: Types::JSON, nullable: true)]
+    private ?array $conferenceRequest = null;
 
     #[ORM\Column]
     private \DateTimeImmutable $updatedAt;
@@ -99,5 +112,17 @@ class CalendarObject
     public function getUpdatedAt(): \DateTimeImmutable
     {
         return $this->updatedAt;
+    }
+
+    /** @return ConferenceRequest|null */
+    public function getConferenceRequest(): ?array
+    {
+        return $this->conferenceRequest;
+    }
+
+    /** @param ConferenceRequest|null $request */
+    public function setConferenceRequest(?array $request): void
+    {
+        $this->conferenceRequest = $request;
     }
 }

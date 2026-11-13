@@ -124,6 +124,8 @@ final readonly class OccurrenceExpander
             \count($row->getAttendees()),
             $row->getSelfPartstat()?->value,
             $row->getConference(),
+            // The series' request on its occurrences (the master row's), none on a changed occurrence.
+            $row->getConferenceRequest(),
         );
     }
 

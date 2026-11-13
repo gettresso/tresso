@@ -60,6 +60,10 @@ final readonly class EventProjector
             }
             $rows[$data->recurrenceKey] = $event;
         }
+        // The meeting link asked for is the series' (or the single event's): only the master row shows it.
+        foreach ($rows as $key => $event) {
+            $event->setConferenceRequest('' === $key ? self::publicRequest($object) : null);
+        }
 
         $this->followOccurrences(array_values($existing), $rows);
 
@@ -142,6 +146,23 @@ final readonly class EventProjector
                 $this->entityManager->remove($other);
             }
         }
+    }
+
+    /**
+     * The object's meeting link request as clients see it: without the nonce, which is the worker's business.
+     *
+     * @return array{provider: string, status: string, reason: ?string, requestedAt: string}|null
+     */
+    public static function publicRequest(CalendarObject $object): ?array
+    {
+        $request = $object->getConferenceRequest();
+
+        return null === $request ? null : [
+            'provider' => $request['provider'],
+            'status' => $request['status'],
+            'reason' => $request['reason'],
+            'requestedAt' => $request['requestedAt'],
+        ];
     }
 
     private function objectIsNew(CalendarObject $object): bool

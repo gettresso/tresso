@@ -121,6 +121,20 @@ final readonly class CalendarStore
         $this->entityManager->flush();
     }
 
+    /**
+     * Sets the meeting link request of a resource (null clears it) on the resource and on its master row, without
+     * writing anything to the provider.
+     *
+     * @param array{provider: string, status: string, reason: ?string, requestedAt: string, nonce: string}|null $request
+     */
+    public function setConferenceRequest(CalendarObject $object, ?array $request): void
+    {
+        $object->setConferenceRequest($request);
+        $master = $this->entityManager->getRepository(CalendarEvent::class)->findOneBy(['object' => $object, 'recurrenceKey' => '']);
+        $master?->setConferenceRequest(EventProjector::publicRequest($object));
+        $this->entityManager->flush();
+    }
+
     private function queuePut(CalendarObject $object, bool $notify, ?string $comment): void
     {
         $pending = $this->operations->findUnclaimedFor($object);

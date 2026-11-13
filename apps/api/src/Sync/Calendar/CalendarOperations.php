@@ -6,6 +6,7 @@ namespace App\Sync\Calendar;
 
 use App\ApiResource\Input\Sync\Calendar\OperationResultInput;
 use App\Calendar\CalendarStore;
+use App\Entity\CalendarEvent;
 use App\Entity\CalendarObject;
 use App\Entity\CalendarOperation;
 use App\Entity\MailAccount;
@@ -105,6 +106,7 @@ final readonly class CalendarOperations
                 // their own UID spelling): its version replaces Tresso's, unless a newer change of the user's waits.
                 $this->synchronizer->upsert($calendar, $object, $result->current);
             }
+            $this->settleConference($object, $result, $remoteId);
 
             return 'done';
         }
@@ -122,6 +124,7 @@ final readonly class CalendarOperations
             if (null !== $object) {
                 $this->store->reportSyncError($object, $message);
             }
+            $this->settleConference($object, $result, $result->current->remoteId);
 
             return 'failed';
         }
@@ -134,7 +137,53 @@ final readonly class CalendarOperations
         if (null !== $object) {
             $this->store->reportSyncError($object, $message);
         }
+        $this->settleConference($object, $result, null);
 
         return 'failed';
+    }
+
+    /**
+     * What became of a meeting link the write asked for, once the write is settled (done, refused, conflicting, or out
+     * of attempts): the meeting is there (nothing pending any more), the provider is still making it (stays pending), or
+     * it was not made (failed, with a reason code). A request the user dropped or that already failed is left alone,
+     * and so is one a newer write of the user's still carries.
+     *
+     * @param string|null $remoteId the resource at the provider, to find it again when the provider's version came
+     *                              under another UID and replaced the object
+     */
+    private function settleConference(?CalendarObject $object, OperationResultInput $result, ?string $remoteId): void
+    {
+        if (null === $object) {
+            return;
+        }
+        $request = $object->getConferenceRequest();
+        if (!$this->entityManager->contains($object)) {
+            // Replaced by the provider's version under another UID: the request goes over to it.
+            $object = null === $remoteId ? null : $this->entityManager->getRepository(CalendarObject::class)->findOneBy(['calendar' => $object->getCalendar(), 'remoteId' => $remoteId]);
+            if (null === $object) {
+                return;
+            }
+            $request ??= $object->getConferenceRequest();
+        }
+        $master = $this->entityManager->getRepository(CalendarEvent::class)->findOneBy(['object' => $object, 'recurrenceKey' => '']);
+        if (null !== $master?->getConference()) {
+            if (null !== $object->getConferenceRequest()) {
+                $this->store->setConferenceRequest($object, null);
+            }
+
+            return;
+        }
+        if (null === $request || 'pending' !== $request['status'] || null !== $this->operations->findOneBy(['object' => $object])) {
+            return;
+        }
+        if (OperationResultInput::DONE === $result->outcome) {
+            if ('pending' === $result->conferenceStatus) {
+                return;
+            }
+            $reason = $result->conferenceError ?? 'refused';
+        } else {
+            $reason = OperationResultInput::RETRY === $result->outcome ? 'unreachable' : 'refused';
+        }
+        $this->store->setConferenceRequest($object, ['status' => 'failed', 'reason' => $reason] + $request);
     }
 }

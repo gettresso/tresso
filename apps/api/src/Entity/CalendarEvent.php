@@ -25,6 +25,8 @@ use Symfony\Component\Uid\Uuid;
  * @phpstan-import-type Attendee from EventData
  * @phpstan-import-type Reminder from EventData
  * @phpstan-import-type Conference from EventData
+ *
+ * @phpstan-type PublicConferenceRequest array{provider: string, status: string, reason: ?string, requestedAt: string}
  */
 #[ORM\Entity(repositoryClass: CalendarEventRepository::class)]
 #[ORM\UniqueConstraint(columns: ['calendar_id', 'uid', 'recurrence_key'])]
@@ -136,6 +138,15 @@ class CalendarEvent implements TracksChanges
     /** @var Conference|null */
     #[ORM\Column(type: Types::JSON, nullable: true)]
     private ?array $conference = null;
+
+    /**
+     * The meeting link asked for and not on the event (yet), on the master row only; null on overrides, when nothing
+     * was asked for, and once the event has a conference. The object's request without its nonce.
+     *
+     * @var PublicConferenceRequest|null
+     */
+    #[ORM\Column(type: Types::JSON, nullable: true)]
+    private ?array $conferenceRequest = null;
 
     #[ORM\Column(nullable: true)]
     private ?int $travelMinutes = null;
@@ -378,6 +389,24 @@ class CalendarEvent implements TracksChanges
         return $this->conference;
     }
 
+    /** @return PublicConferenceRequest|null */
+    public function getConferenceRequest(): ?array
+    {
+        return $this->conferenceRequest;
+    }
+
+    /**
+     * Assigned only when it differs, so a projection that changes nothing is no change for clients.
+     *
+     * @param PublicConferenceRequest|null $request
+     */
+    public function setConferenceRequest(?array $request): void
+    {
+        if ($request !== $this->conferenceRequest) {
+            $this->conferenceRequest = $request;
+        }
+    }
+
     public function isImportant(): bool
     {
         return $this->important;
@@ -438,7 +467,7 @@ class CalendarEvent implements TracksChanges
         return [
             'sequence', 'status', 'summary', 'description', 'location', 'url', 'transparency', 'visibility', 'allDay',
             'startValue', 'startTimeZone', 'endValue', 'endTimeZone', 'rrule', 'rdates', 'exdates', 'organizer',
-            'attendees', 'selfPartstat', 'reminders', 'conference', 'message', 'syncError', 'travelMinutes', 'defaultReminders', 'important', 'thisAndFuture',
+            'attendees', 'selfPartstat', 'reminders', 'conference', 'conferenceRequest', 'message', 'syncError', 'travelMinutes', 'defaultReminders', 'important', 'thisAndFuture',
         ];
     }
 

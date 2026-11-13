@@ -13,11 +13,13 @@ use ApiPlatform\Metadata\Put;
 use ApiPlatform\Metadata\QueryParameter;
 use App\ApiResource\Input\Calendar\EventInput;
 use App\ApiResource\Input\Calendar\EventResponseInput;
+use App\ApiResource\Input\Calendar\MeetingLinkInput;
 use App\Calendar\ICalendar\EventData;
 use App\Entity\CalendarEvent;
 use App\Security\Scope;
 use App\State\CalendarEventProcessor;
 use App\State\CalendarEventProvider;
+use App\State\MeetingLinkProcessor;
 use Symfony\Component\Validator\Constraints as Assert;
 
 /**
@@ -28,10 +30,19 @@ use Symfony\Component\Validator\Constraints as Assert;
  * Changes to recurring events take `scope` (this, following or all) and the `recurrenceId` of the occurrence the
  * user acted on. `notify=false` keeps invitations, updates and cancellations from being sent.
  *
+ * `conferenceRequest` is a meeting link asked of the calendar's provider (`conferenceProvider` on a save, or
+ * `POST /calendar-events/{id}/meeting-link`) that is not on the event yet: `pending`, or `failed` with a reason
+ * (`refused`, `not_supported`, `unreachable`). `DELETE /calendar-events/{id}/meeting-link` takes the link off the
+ * series or drops the request. Both act on the whole series and only for events the user organizes. A save that
+ * sends the provider of a request that is still pending changes nothing about it; one that sends the provider of a
+ * failed request asks again. `conference.provider` and `conferenceRequest.provider` are plain strings (`other` for a
+ * link of no known app): a client shows a name it does not know as a meeting link.
+ *
  * @phpstan-import-type Address from EventData
  * @phpstan-import-type Attendee from EventData
  * @phpstan-import-type Reminder from EventData
  * @phpstan-import-type Conference from EventData
+ * @phpstan-import-type PublicConferenceRequest from CalendarEvent
  */
 #[ApiResource(
     shortName: 'CalendarEvent',
@@ -108,6 +119,26 @@ use Symfony\Component\Validator\Constraints as Assert;
             processor: CalendarEventProcessor::class,
             name: 'calendar_event_response',
         ),
+        new Post(
+            uriTemplate: '/calendar-events/{id}/meeting-link',
+            status: 200,
+            security: "is_granted('".Scope::ROLE_CALENDAR_WRITE."')",
+            input: MeetingLinkInput::class,
+            provider: CalendarEventProvider::class,
+            processor: MeetingLinkProcessor::class,
+            name: 'calendar_event_meeting_link',
+            parameters: ['notify' => new QueryParameter(schema: ['type' => 'boolean', 'default' => true], description: 'Send updates to attendees.', constraints: [new Assert\Regex('/^(true|false|1|0)?$/')])],
+        ),
+        new Delete(
+            uriTemplate: '/calendar-events/{id}/meeting-link',
+            status: 200,
+            security: "is_granted('".Scope::ROLE_CALENDAR_WRITE."')",
+            output: CalendarEventResource::class,
+            provider: CalendarEventProvider::class,
+            processor: MeetingLinkProcessor::class,
+            name: 'calendar_event_meeting_link_remove',
+            parameters: ['notify' => new QueryParameter(schema: ['type' => 'boolean', 'default' => true], description: 'Send updates to attendees.', constraints: [new Assert\Regex('/^(true|false|1|0)?$/')])],
+        ),
     ],
 )]
 final readonly class CalendarEventResource
@@ -121,6 +152,10 @@ final readonly class CalendarEventResource
      * @param list<Attendee>                                                 $attendees
      * @param list<Reminder>                                                 $reminders
      * @param Conference|null                                                $conference
+     * @param PublicConferenceRequest|null                                   $conferenceRequest a meeting link asked of
+     *                                                                                          the provider and not on
+     *                                                                                          the event (yet); master
+     *                                                                                          rows only
      */
     public function __construct(
         #[ApiProperty(identifier: true)]
@@ -147,6 +182,7 @@ final readonly class CalendarEventResource
         public ?string $selfResponse,
         public array $reminders,
         public ?array $conference,
+        public ?array $conferenceRequest,
         public ?string $messageId,
         public ?string $syncError,
         public ?int $travelMinutes,
@@ -183,6 +219,7 @@ final readonly class CalendarEventResource
             $event->getSelfPartstat()?->value,
             $event->getReminders(),
             $event->getConference(),
+            $event->getConferenceRequest(),
             $event->getMessage()?->getId()->toRfc4122(),
             $event->getSyncError(),
             $event->getTravelMinutes(),
