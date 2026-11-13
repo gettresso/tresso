@@ -6,6 +6,7 @@ namespace App\Tests\Functional;
 
 use App\Account\PurgeDeletedUser;
 use App\Account\PurgeDeletedUserHandler;
+use App\Chat\ChatFileBody;
 use App\Chat\ChatMediaUrls;
 use App\Chat\ChatUploads;
 use App\Chat\CollectChatMedia;
@@ -673,6 +674,7 @@ final class ChatMediaTest extends DatabaseTestCase
 
         self::assertResponseStatusCodeSame(429);
         self::assertSame(ChatUploads::MAX_UNQUEUED, $this->countRows('SELECT COUNT(*) FROM chat_upload'));
+        self::assertCount(ChatUploads::MAX_UNQUEUED, $this->chatObjects(), 'Refused before it was stored.');
     }
 
     public function testWaitingFilesAreBoundPerUser(): void
@@ -711,6 +713,18 @@ final class ChatMediaTest extends DatabaseTestCase
 
         self::assertResponseStatusCodeSame(429);
         self::assertNotNull($this->client->getResponse()->headers->get('Retry-After'));
+    }
+
+    public function testTheApiSweepsTemporaryFilesAKilledWorkerLeft(): void
+    {
+        $left = sys_get_temp_dir().'/'.ChatFileBody::TEMPORARY_PREFIX.'left-by-a-killed-worker';
+        touch($left, time() - 7200);
+        new \ReflectionProperty(ChatFileBody::class, 'sweptAt')->setValue(null, 0);
+
+        $this->uploadForReply(Uuid::v7()->toRfc4122(), 'a file');
+
+        self::assertResponseStatusCodeSame(201);
+        self::assertFileDoesNotExist($left);
     }
 
     public function testAPersonalAccessTokenCannotUpload(): void

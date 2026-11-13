@@ -44,11 +44,13 @@ use App\State\ChatOutgoingProvider;
             processor: ChatOutgoingProcessor::class,
             name: 'chat_outgoing_queue',
         ),
-        // A reply that waits or failed; one that is being sent or was sent is 409 `already_going_out`.
+        // A reply that waits or failed; one that is being sent or was sent is 409 `already_going_out`. Also an id the
+        // server has not seen yet, while a new reply could have it: its queueing, arriving later, is refused
+        // (ChatQueue::cancel()). Not read first: the processor loads the reply through the user.
         new Delete(
             uriTemplate: '/chat-outgoing/{id}',
             security: "is_granted('".ChatAccessVoter::SEND."')",
-            provider: ChatOutgoingProvider::class,
+            read: false,
             processor: ChatOutgoingProcessor::class,
         ),
         // Try again: a reply that failed waits again; any other is 409 `not_failed`. Only in our own apps, where the user

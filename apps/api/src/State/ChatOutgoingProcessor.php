@@ -54,7 +54,7 @@ final readonly class ChatOutgoingProcessor implements ProcessorInterface
             }
             $resource = ChatOutgoingResource::fromView($this->views->outgoing($outgoing));
         } elseif ($operation instanceof DeleteOperationInterface) {
-            $this->queue->cancel($user, $uriVariables['id'] ?? null);
+            $this->queue->cancel($user, $uriVariables['id'] ?? null, new \DateTimeImmutable());
             $resource = null;
         } elseif ('chat_outgoing_retry' === $operation->getName()) {
             $resource = ChatOutgoingResource::fromView($this->views->outgoing($this->queue->retry($user, $uriVariables['id'] ?? null, new \DateTimeImmutable())));

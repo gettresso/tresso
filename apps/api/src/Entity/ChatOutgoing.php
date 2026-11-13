@@ -7,6 +7,7 @@ namespace App\Entity;
 use App\Enum\ChatOutgoingError;
 use App\Enum\ChatOutgoingStatus;
 use App\Repository\ChatOutgoingRepository;
+use App\Sync\Change\HidesFromClients;
 use App\Sync\Change\TracksChanges;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
@@ -27,7 +28,7 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Index(columns: ['chat_account_id', 'change_seq'])]
 #[ORM\Index(columns: ['chat_account_id', 'status', 'id'])]
 #[ORM\Index(name: 'chat_outgoing_file_sha', columns: ['file_sha256'])]
-class ChatOutgoing implements TracksChanges
+class ChatOutgoing implements TracksChanges, HidesFromClients
 {
     #[ORM\Id]
     #[ORM\Column(type: UuidType::NAME)]
@@ -245,6 +246,30 @@ class ChatOutgoing implements TracksChanges
         if (ChatOutgoingError::Unconfirmed !== $error) {
             $this->endClaim();
         }
+    }
+
+    /**
+     * Cancelled while it may have gone out (`unconfirmed`, its claim still on it): kept, out of every list and the queue,
+     * so that its relay's late answer can still say what became of it ({@see \App\Chat\ChatQueue::cancel()}). The
+     * file goes now; nothing sends it again.
+     *
+     * @return string|null the key of the file that is no longer needed here
+     */
+    public function markCancelled(): ?string
+    {
+        $this->status = ChatOutgoingStatus::Cancelled;
+        $key = $this->fileObjectKey;
+        $this->fileObjectKey = null;
+        $this->fileKeyVersion = null;
+        $this->fileSha256 = null;
+
+        return $key;
+    }
+
+    /** A cancelled reply is out of every list; it comes back only when its relay says that it did go out. */
+    public function isHiddenFromClients(): bool
+    {
+        return ChatOutgoingStatus::Cancelled === $this->status;
     }
 
     /** The user pressed Try again: it waits for the relay as a new reply would. */

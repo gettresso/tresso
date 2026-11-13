@@ -60,6 +60,12 @@ final class QueueReply
      * The id was made within the last 10 minutes (5 minutes of clock skew ahead are fine). Checked only for a reply that
      * is not queued yet, so a late repeat of a request still gets its reply back.
      */
+    /** Whether $id is a UUIDv7 made inside the window a new reply's id must be in (see {@see idViolations()}). */
+    public static function freshId(Uuid $id, \DateTimeImmutable $now): bool
+    {
+        return $id instanceof UuidV7 && $id->getDateTime() <= $now->modify(self::ID_AHEAD) && $id->getDateTime() >= $now->modify(self::ID_BEHIND);
+    }
+
     public function idViolations(\DateTimeImmutable $now): ConstraintViolationList
     {
         $violations = new ConstraintViolationList();
