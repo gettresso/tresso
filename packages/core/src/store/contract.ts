@@ -1213,6 +1213,25 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         expect(await db.unreadChatCount()).toBe(1)
       })
 
+      it("lists an account's chats left out, newest first, and no other", async () => {
+        expect(await db.leftOutChats('acct')).toEqual([])
+
+        await db.apply(
+          page({
+            cursor: 41,
+            chats: [
+              chat('anna', 'acct', { jid: '31611111111@s.whatsapp.net', lastMessageAt: at(3), leftOut: true }),
+              chat('bram', 'acct', { jid: '31622222222@s.whatsapp.net', lastMessageAt: at(5), leftOut: true }),
+              chat('other', 'acct-2', { jid: '31633333333@s.whatsapp.net', lastMessageAt: at(4), leftOut: true }),
+            ],
+          }),
+        )
+
+        expect((await db.leftOutChats('acct')).map((left) => left.id)).toEqual(['bram', 'anna'])
+        expect((await db.leftOutChats('acct-2')).map((left) => left.id)).toEqual(['other'])
+        expect(await db.leftOutChats('none')).toEqual([])
+      })
+
       it('orders chats of the same time by id, newest id first', async () => {
         await db.apply(page({ cursor: 41, chats: [chat('anna', 'acct', { jid: '31611111111@s.whatsapp.net', lastMessageAt: at(5) })] }))
 

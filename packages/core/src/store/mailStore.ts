@@ -232,6 +232,8 @@ export interface MailStore extends SyncStore {
   chatPage(id: string, options: { limit: number; before?: ChatMessageKey | null; from?: ChatMessageKey | null }): Promise<ChatPage | null>
   /** The chat of an account with this JID, also one left out; null when there is none. */
   chatByJid(chatAccountId: string, jid: string): Promise<SyncedChat | null>
+  /** The chats of an account the user left out, newest first (by `lastMessageAt`, then id): for taking one back in. */
+  leftOutChats(chatAccountId: string): Promise<SyncedChat[]>
   /** Chats in the Unified Inbox (see inInbox) with at least one unread incoming message. */
   unreadChatCount(): Promise<number>
   /** Replies waiting to be sent, oldest first (see compareChatOutgoing). */
