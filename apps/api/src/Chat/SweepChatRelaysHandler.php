@@ -19,7 +19,8 @@ use Symfony\Component\Uid\Uuid;
  * - A relay not heard from for {@see OFFLINE_AFTER} is offline from the time it was last heard from. Clients then show
  *   "Waiting for your Mac" for replies that wait; the next call of the relay puts it online again
  *   ({@see ChatRelayGuard}). Heartbeats themselves are no change for clients, so only these flips reach the delta.
- * - A reply still `sending` {@see ChatQueue::CLAIM_LEASE} after the relay claimed it is `failed` with `unconfirmed`:
+ * - A reply still `sending` {@see ChatQueue::CLAIM_LEASE} after the relay claimed it ({@see ChatQueue::FILE_CLAIM_LEASE}
+ *   for one that carries a file) is `failed` with `unconfirmed`:
  *   the bridge may have sent it, so it is never handed out again until the user presses Try again.
  *
  * Each owner is handled in a transaction of its own, which takes the owner's row first as every chat write does
@@ -30,6 +31,9 @@ use Symfony\Component\Uid\Uuid;
 final readonly class SweepChatRelaysHandler
 {
     public const string OFFLINE_AFTER = 'PT3M';
+
+    /** When a claim's lease ended, as `o`: later for a reply that carries a file ({@see ChatQueue::leaseOf()}). */
+    private const string LEASE_END = 'CASE WHEN o.file_object_key IS NULL THEN CAST(:claimed AS TIMESTAMP) ELSE CAST(:fileClaimed AS TIMESTAMP) END';
 
     /** Owners per run; the rest come on the next. */
     private const int LIMIT = 500;
@@ -55,15 +59,16 @@ final readonly class SweepChatRelaysHandler
         $now = $this->clock->now()->setTimezone(new \DateTimeZone(date_default_timezone_get()));
         $silentSince = $now->sub(new \DateInterval(self::OFFLINE_AFTER))->format('Y-m-d H:i:s');
         $claimedBefore = $now->sub(new \DateInterval(ChatQueue::CLAIM_LEASE))->format('Y-m-d H:i:s');
+        $fileClaimedBefore = $now->sub(new \DateInterval(ChatQueue::FILE_CLAIM_LEASE))->format('Y-m-d H:i:s');
 
         $owners = $this->connection->fetchFirstColumn(
             'SELECT owner_id FROM (
                 SELECT a.owner_id FROM chat_account a WHERE a.relay_online AND a.relay_seen_at < :silent
                 UNION
                 SELECT a.owner_id FROM chat_account a
-                 WHERE EXISTS (SELECT 1 FROM chat_outgoing o WHERE o.chat_account_id = a.id AND o.status = :sending AND o.claimed_at < :claimed)
+                 WHERE EXISTS (SELECT 1 FROM chat_outgoing o WHERE o.chat_account_id = a.id AND o.status = :sending AND o.claimed_at < '.self::LEASE_END.')
              ) owners LIMIT :limit',
-            ['silent' => $silentSince, 'claimed' => $claimedBefore, 'sending' => ChatOutgoingStatus::Sending->value, 'limit' => self::LIMIT],
+            ['silent' => $silentSince, 'claimed' => $claimedBefore, 'fileClaimed' => $fileClaimedBefore, 'sending' => ChatOutgoingStatus::Sending->value, 'limit' => self::LIMIT],
         );
 
         $offline = 0;
@@ -72,7 +77,7 @@ final readonly class SweepChatRelaysHandler
             if (!\is_string($owner)) {
                 throw new \UnexpectedValueException('Expected an owner id.');
             }
-            [$accounts, $replies] = $this->connection->transactional(fn (): array => $this->sweepOwner(Uuid::fromString($owner), $silentSince, $claimedBefore));
+            [$accounts, $replies] = $this->connection->transactional(fn (): array => $this->sweepOwner(Uuid::fromString($owner), $silentSince, $claimedBefore, $fileClaimedBefore));
             $offline += $accounts;
             $unconfirmed += $replies;
         }
@@ -83,7 +88,7 @@ final readonly class SweepChatRelaysHandler
     /**
      * @return array{int, int}
      */
-    private function sweepOwner(Uuid $owner, string $silentSince, string $claimedBefore): array
+    private function sweepOwner(Uuid $owner, string $silentSince, string $claimedBefore, string $fileClaimedBefore): array
     {
         if (!$this->ownerLock->tryLock($owner)) {
             return [0, 0];
@@ -96,10 +101,11 @@ final readonly class SweepChatRelaysHandler
         );
         $replies = $this->connection->fetchFirstColumn(
             'UPDATE chat_outgoing o SET status = :failed, error = :unconfirmed FROM chat_account a
-              WHERE a.id = o.chat_account_id AND a.owner_id = :owner AND o.status = :sending AND o.claimed_at < :claimed RETURNING o.id',
+              WHERE a.id = o.chat_account_id AND a.owner_id = :owner AND o.status = :sending AND o.claimed_at < '.self::LEASE_END.' RETURNING o.id',
             [
                 'owner' => $owner->toRfc4122(),
                 'claimed' => $claimedBefore,
+                'fileClaimed' => $fileClaimedBefore,
                 'failed' => ChatOutgoingStatus::Failed->value,
                 'unconfirmed' => ChatOutgoingError::Unconfirmed->value,
                 'sending' => ChatOutgoingStatus::Sending->value,

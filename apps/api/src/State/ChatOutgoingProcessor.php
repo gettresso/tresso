@@ -57,7 +57,7 @@ final readonly class ChatOutgoingProcessor implements ProcessorInterface
             $this->queue->cancel($user, $uriVariables['id'] ?? null);
             $resource = null;
         } elseif ('chat_outgoing_retry' === $operation->getName()) {
-            $resource = ChatOutgoingResource::fromView($this->views->outgoing($this->queue->retry($user, $uriVariables['id'] ?? null)));
+            $resource = ChatOutgoingResource::fromView($this->views->outgoing($this->queue->retry($user, $uriVariables['id'] ?? null, new \DateTimeImmutable())));
         } else {
             throw new \LogicException(\sprintf('Unexpected input %s for %s.', get_debug_type($data), $operation->getName()));
         }

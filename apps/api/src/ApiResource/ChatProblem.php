@@ -28,11 +28,15 @@ use Symfony\Component\WebLink\Link;
  *   chats; its chats would land in the wrong account and the waiting replies would go out from the wrong number.
  * - `not_requested`: the relay sent a file nobody asked for (any more), or reported on one that is stored already.
  * - `not_stored`: the file of this message is not on the server; ask for it first.
+ * - `still_sending`: Try again on a reply that may have gone out while its relay's claim still runs; it may still be
+ *   on its way, so it is not handed out again yet.
  *
  * 413:
  *
  * - `too_large`: the relay's batch is larger than {@see \App\ApiResource\Input\Chat\RelayMessages::MAX_BYTES}; send fewer messages at once.
  *   For a file: it is larger than {@see \App\Chat\ChatMediaLimits}.
+ * - `too_much_waiting`: files uploaded for replies that have not gone out yet take up more than the user may keep
+ *   waiting ({@see \App\Chat\ChatUploads}).
  */
 #[ErrorResource(
     uriTemplate: '/chat_problems/{id}',
@@ -84,6 +88,8 @@ final class ChatProblem extends \RuntimeException implements ProblemExceptionInt
     public const string OTHER_NUMBER = 'other_number';
     public const string NOT_REQUESTED = 'not_requested';
     public const string NOT_STORED = 'not_stored';
+    public const string STILL_SENDING = 'still_sending';
+    public const string TOO_MUCH_WAITING = 'too_much_waiting';
 
     private function __construct(private readonly string $reason, string $detail, private readonly int $status = 409)
     {
@@ -113,6 +119,16 @@ final class ChatProblem extends \RuntimeException implements ProblemExceptionInt
     public static function notStored(): self
     {
         return new self(self::NOT_STORED, 'This file is not on the server. Ask for it first.');
+    }
+
+    public static function stillSending(): self
+    {
+        return new self(self::STILL_SENDING, 'Your Mac may still be sending this reply. Check WhatsApp on your phone, and try again in a few minutes if it did not arrive.');
+    }
+
+    public static function tooMuchWaiting(int $maxBytes): self
+    {
+        return new self(self::TOO_MUCH_WAITING, \sprintf('Files waiting for your Mac take up more than %s. Wait until they are sent, or cancel some, then attach this one again.', AttachmentLimits::describe($maxBytes)), 413);
     }
 
     public static function otherNumber(): self
