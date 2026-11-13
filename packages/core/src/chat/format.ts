@@ -226,6 +226,7 @@ const ERROR_TEXTS: Record<ChatOutgoingError, string> = {
   not_linked: 'WhatsApp is not linked.',
   refused: 'WhatsApp refused the message.',
   unconfirmed: 'Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.',
+  file_unavailable: 'Your Mac could not fetch the file from your Tresso server. Nothing was sent.',
 }
 
 /** The longest reply in characters after trimming (the server's `QueueReply::MAX_TEXT`). */

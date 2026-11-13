@@ -507,7 +507,8 @@ export class ChatRelay {
         return delay
       }
     }
-    if (this.state === 'stopped') {
+    // Read again: sending may have taken a while, and the relay may have been asked to stop meanwhile.
+    if (this.stopped()) {
       return delay
     }
     try {
@@ -748,10 +749,14 @@ export class ChatRelay {
     }
   }
 
+  private stopped(): boolean {
+    return this.state === 'stopped'
+  }
+
   /** Brings files the user asked for on other devices, at most RELAY_MEDIA_PER_ROUND. */
   private async bringMedia(): Promise<void> {
     const { backend, bridge } = this.options
-    for (let brought = 0; brought < RELAY_MEDIA_PER_ROUND && this.state !== 'stopped'; brought += 1) {
+    for (let brought = 0; brought < RELAY_MEDIA_PER_ROUND && !this.stopped(); brought += 1) {
       this.step = 'media'
       const request = await backend.claimMedia()
       if (request === null) {
