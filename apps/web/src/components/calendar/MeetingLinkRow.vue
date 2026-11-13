@@ -176,23 +176,23 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
         <span :id="titleId" class="title">{{ row.title }}</span>{{ ' ' }}<span :id="hintId" class="hint">{{ row.hint }}</span>
       </span>
       <button
-        v-if="showsApp && chosen"
+        v-if="showsApp"
         type="button"
         class="button app"
         aria-haspopup="menu"
         :aria-expanded="open"
-        :aria-label="`Meeting app: ${chosen.label}`"
+        :aria-label="`Meeting app: ${chosen?.label ?? 'Meeting link'}`"
         :disabled="busy"
         @click="open ? closeMenu() : openMenu($event)"
       >
-        {{ chosen.label }} <AppIcon name="chevron" :size="14" />
+        {{ chosen?.label ?? 'Meeting link' }} <AppIcon name="chevron" :size="14" />
       </button>
       <button
         v-if="showsSwitch"
         type="button"
         role="switch"
         class="switch"
-        :aria-checked="on"
+        :aria-checked="on && row.kind !== 'no_app'"
         :aria-labelledby="titleId"
         :aria-describedby="hintId"
         :disabled="busy || locked"

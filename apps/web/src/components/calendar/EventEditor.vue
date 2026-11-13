@@ -229,6 +229,16 @@ const saved = ref<SyncedCalendarEvent | null>(
   props.target.kind === 'edit' ? { ...props.target.occurrence.event, conferenceRequest: (props.target.occurrence.series ?? props.target.occurrence.event).conferenceRequest ?? null } : null,
 )
 const hadLink = computed(() => saved.value !== null && saved.value.conference !== null)
+/**
+ * The link the editor knows of per row (the event, and its series): a save that would make a link compares the
+ * server's link of the row it saves against this, so only a link the user has not seen stops it.
+ */
+const knownLinks = new Map<string, string | null>()
+if (props.target.kind === 'edit') {
+  const occurrence = props.target.occurrence
+  knownLinks.set(occurrence.event.id, occurrence.event.conference?.url ?? null)
+  if (occurrence.series !== null) knownLinks.set(occurrence.series.id, occurrence.series.conference?.url ?? null)
+}
 /** Only the organizer changes the link; an invited event shows who added it and nothing to change. */
 const organizes = computed(() => saved.value === null || saved.value.selfResponse === null)
 
@@ -322,12 +332,24 @@ onMounted(() => {
  * Takes the link and request the server has into the row: a link that arrived shows by itself (state 6), and the
  * switch follows it unless the user already changed the row.
  */
-function adopt(conference: SyncedCalendarEvent['conference'], request: SyncedCalendarEvent['conferenceRequest']): void {
+function adopt(own: SyncedCalendarEvent, series: SyncedCalendarEvent | null): void {
   if (saved.value === null) return
+  knownLinks.set(own.id, own.conference?.url ?? null)
+  if (series !== null) knownLinks.set(series.id, series.conference?.url ?? null)
+  const conference = own.conference
   const arrived = saved.value.conference === null && conference !== null
-  saved.value = { ...saved.value, conference, conferenceRequest: request ?? null }
-  if (arrived && !touched.value && explicitApp.value === null && !removed.value) {
+  const gone = saved.value.conference !== null && conference === null
+  saved.value = { ...saved.value, conference, conferenceRequest: (series ?? own).conferenceRequest ?? null }
+  if (arrived) {
+    // The link now on the event wins over anything chosen before it came: a pick after this replaces it knowingly.
+    const acted = touched.value || explicitApp.value !== null || removed.value || !linkOn.value
+    explicitApp.value = null
+    removed.value = false
     linkOn.value = true
+    if (acted) meetingNotice.value = 'A meeting link was added meanwhile. It is shown now; save again to keep it.'
+  } else if (gone && !touched.value && explicitApp.value === null && !removed.value) {
+    // Taken off elsewhere: an untouched row does not make a new one when the event is saved.
+    linkOn.value = false
   }
 }
 
@@ -340,7 +362,7 @@ watch(
     const occurrence = props.target.occurrence
     const [own, series] = await Promise.all([database.calendarEvent(occurrence.event.id), database.calendarEvent(occurrence.seriesId)])
     if (own === null) return
-    adopt(own.conference, (series ?? own).conferenceRequest ?? null)
+    adopt(own, series)
   },
 )
 
@@ -370,8 +392,12 @@ function toggleLink(): void {
 }
 
 function pickApp(app: MeetingApp): void {
-  // The app of the link the event keeps: picking it again keeps that link, it does not make a new one.
-  if (keepsLink.value && app === linkApp.value) return
+  // The app of the link the event has: picking it (again) keeps that link, it does not make a new one.
+  if (hadLink.value && !removed.value && app === linkApp.value) {
+    explicitApp.value = null
+    linkOn.value = true
+    return
+  }
   explicitApp.value = app
   removed.value = false
   linkOn.value = true
@@ -477,11 +503,11 @@ async function refreshFromServer(): Promise<void> {
   const occurrence = props.target.occurrence
   const own = await calendar.event(occurrence.event.id)
   const series = occurrence.seriesId === occurrence.event.id ? own : await calendar.event(occurrence.seriesId)
-  adopt(own.conference, series.conferenceRequest ?? null)
+  adopt(own, series)
 }
 
-/** The server had a link the editor's copy lacked: the save stops, and the row shows that link instead. */
-class LinkArrived extends Error {}
+/** The save stops with a plain sentence: the server has something the editor did not know of. */
+class Stale extends Error {}
 
 /**
  * The link fields of the save, from what the user did with the row and what the server has at the save (read then, so
@@ -497,11 +523,16 @@ async function meetingFields(target: { occurrence: Occurrence; scope: EditScope 
     return { conferenceUrl: null, conferenceProvider: null }
   }
   const fresh = target === null ? null : await calendar.event(linkRowId(target))
+  // Moved to another calendar elsewhere, while the user left the calendar as it was: the meeting choices were made
+  // for the old one.
+  if (fresh !== null && fresh.calendarId !== before.calendarId && values.calendarId === before.calendarId) {
+    throw new Stale('This event was moved to another calendar meanwhile. Close it and open it again to change it.')
+  }
   const app = chosen.value
   if (linkOn.value && app !== null && app.ok && (explicitApp.value !== null || !hadLink.value)) {
-    if (fresh !== null && fresh.conference !== null && !hadLink.value) {
+    if (target !== null && fresh !== null && fresh.conference !== null && fresh.conference.url !== (knownLinks.get(fresh.id) ?? null)) {
       await refreshFromServer()
-      throw new LinkArrived('A meeting link was added meanwhile. It is shown now; save again to keep it.')
+      throw new Stale('A meeting link was added meanwhile. It is shown now; save again to keep it.')
     }
     if (app.app === 'meet' || app.app === 'teams') {
       return { conferenceUrl: null, conferenceProvider: app.app }
@@ -519,6 +550,9 @@ async function meetingFields(target: { occurrence: Occurrence; scope: EditScope 
   const asks = provider !== null && !oneOccurrence && !(touched.value && !linkOn.value) && selectedCalendar.value?.conferenceProviders.includes(provider) === true
   return { conferenceUrl: kept.conferenceUrl, conferenceProvider: asks ? provider : null }
 }
+
+/** Another app picked on an event with a link: saving replaces that link. */
+const replacing = computed(() => hadLink.value && !removed.value && explicitApp.value !== null && explicitApp.value !== linkApp.value && linkOn.value)
 
 const meetingChanged = computed(() => touched.value || explicitApp.value !== null || removed.value)
 
@@ -606,6 +640,7 @@ function formErrors(violations: Record<string, string>): Record<string, string> 
 const save = handleSubmit(async (current) => {
   saving.value = true
   error.value = null
+  meetingNotice.value = null
   try {
     const edited = inputFromValues(current, { status: before.status, url: before.url })
     const target = occurrence.value === null ? null : { occurrence: occurrence.value, scope: occurrence.value.recurring ? scope.value : 'all' }
@@ -622,7 +657,7 @@ const save = handleSubmit(async (current) => {
     calendar.takeKeptEditor()
     emit('saved', landingAt !== null)
   } catch (e) {
-    if (e instanceof LinkArrived) {
+    if (e instanceof Stale) {
       meetingNotice.value = e.message
       return
     }
@@ -814,6 +849,7 @@ const repeatSummary = computed(() => {
           />
           <p v-else-if="addedBy" class="hint">{{ addedBy }}</p>
           <p v-else class="hint">No meeting link. Only the organizer can add one.</p>
+          <small v-if="replacing" class="hint">It replaces the current link.</small>
           <small v-if="meetingNotice" class="hint" role="status">{{ meetingNotice }}</small>
         </div>
 
