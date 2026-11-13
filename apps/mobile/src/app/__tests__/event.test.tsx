@@ -126,7 +126,7 @@ describe('the meeting link on the event screen', () => {
     expect(openURL).toHaveBeenCalledExactlyOnceWith(teams.url)
     expect(screen.queryByText(NOT_OPENED)).toBeNull()
 
-    expect(screen.getByText('teams.microsoft.com/l/…22Tid%22%3a%22x%22%7d')).toBeTruthy()
+    expect(screen.getByText('teams.microsoft.com/l/meetup-jo\u20263a%22x%22%7d')).toBeTruthy()
     expect(clipboard.setStringAsync).not.toHaveBeenCalled()
 
     await act(async () => {
@@ -209,6 +209,33 @@ describe('the meeting link on the event screen', () => {
     expect(screen.getByText(teams.url)).toBeTruthy()
     expect(screen.queryByText('Copied')).toBeNull()
     expect(announce).toHaveBeenCalledWith('Could not copy the meeting link.')
+  })
+
+  it('shows a link that cannot be joined, after a failed copy, with its hidden characters made visible', async () => {
+    clipboard.setStringAsync.mockResolvedValue(false)
+    const url = 'https://evil.example/\u202emoc.smaet'
+    show(event({ conference: { provider: 'teams', url, id: null, dialIn: null } }))
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
+    })
+
+    expect(screen.getByText('Could not copy the link. Press and hold it here to copy it.')).toBeTruthy()
+    expect(screen.getByText('https://evil.example/\ufffdmoc.smaet')).toBeTruthy()
+    expect(screen.queryByText(url)).toBeNull()
+  })
+
+  it('shows the whole host of a lookalike link', () => {
+    const longer = 'https://teams.microsoft.com.evil.example/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=x'
+    const view = show(event({ conference: { provider: 'teams', url: longer, id: null, dialIn: null } }))
+    expect(screen.getByText(/^teams\.microsoft\.com\.evil\.example\//)).toBeTruthy()
+    view.unmount()
+
+    show(event({ conference: { provider: 'teams', url: 'https://teams.microsoft.com@evil.example/l/meetup-join/1', id: null, dialIn: null } }))
+    expect(screen.getByText('evil.example/l/meetup-join/1')).toBeTruthy()
+    expect(screen.queryByText(/teams\.microsoft\.com/)).toBeNull()
+    expect(screen.queryByLabelText('Join with Microsoft Teams')).toBeNull()
+    expect(screen.getByText(NOT_OPENED)).toBeTruthy()
   })
 
   it('says when the meeting could not be opened, without the link', async () => {
