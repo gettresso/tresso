@@ -2770,7 +2770,11 @@ reads the address from `calendarStatusDetail`.
   events and "+N more", Escape back). The day and week grid is a group per day with one event in the tab order (an
   event crossing midnight has one stop) and the arrow keys moving between events. Every event reads out title,
   time, calendar, place and answer. Mobile: an agenda of the next 30 days, a day view with the week
-  strip, and the event detail with RSVP.
+  strip, and the event detail with RSVP and the meeting link: a Join button named after the app (only for a link
+  core's `canJoin` passes; the system opens it with `Linking.openURL`), the link on one line with "Copy link"
+  (expo-clipboard, so the app needs a development and store build that has it), who the link is from and the place
+  as the other way to meet, and a link that is being made or could not be made in core's words. The phone has no
+  Retry or removal for a link.
 - Reminders are scheduled and sent by the server (next section), so they reach every device, also when no app is
   open.
 
