@@ -41,6 +41,9 @@ getrandom = "0.3.4"
 [dev-dependencies]
 # The mock runtime and IPC helpers, for the menu_state test (menu.rs); tests only.
 tauri = { version = "2.12.4", features = ["macos-private-api", "test"] }
+# Reads the menu's shortcuts as Tauri does (which drops one it cannot read without a word), for the menu tests; Tauri's
+# own menu crate, already in the build.
+muda = { version = "0.20.0", default-features = false }
 
 # Reads the "Reduce transparency" setting, so the web glass turns solid with the window's vibrancy, and the selection
 # colour that follows the user's accent colour (accessibility.rs); paints the window colour behind the glass
