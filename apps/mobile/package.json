@@ -8,6 +8,7 @@
     "@tresso/core": "*",
     "expo": "~58.0.14",
     "expo-auth-session": "~58.0.13",
+    "expo-clipboard": "~58.0.3",
     "expo-constants": "~58.0.12",
     "expo-crypto": "~58.0.7",
     "expo-document-picker": "~58.0.4",

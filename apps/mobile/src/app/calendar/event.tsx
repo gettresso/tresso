@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react'
-import { Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native'
+import { useCallback, useMemo, useState } from 'react'
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native'
 import { Stack, useLocalSearchParams } from 'expo-router'
 import { attendeeSummary, canWrite, DAY, describeRule, occurrenceTimes, occurrenceWhen, RESPONSE_WORDS, toWall, zoneLabel, type ParticipationStatus } from '@tresso/core'
 import { tint } from '@/calendar/colors'
+import { MeetingLink } from '@/calendar/MeetingLink'
+import { meetingLine } from '@/calendar/meetingLine'
 import { useOccurrences, useReaderZone } from '@/calendar/useOccurrences'
 import { useMail } from '@/mail/MailProvider'
 import { useTheme, type Theme } from '@/theme'
@@ -13,10 +15,6 @@ const ANSWERS: { value: 'accepted' | 'tentative' | 'declined'; label: string }[]
   { value: 'tentative', label: 'Maybe' },
   { value: 'declined', label: 'Decline' },
 ]
-
-function joinLabel(provider: string): string {
-  return provider === 'teams' ? 'Join Teams meeting' : provider === 'meet' ? 'Join Google Meet' : provider === 'zoom' ? 'Join Zoom meeting' : provider === 'webex' ? 'Join Webex meeting' : 'Join meeting'
-}
 
 /** One occurrence: when, where, who, and the user's answer when invited. */
 export default function EventScreen() {
@@ -35,6 +33,8 @@ export default function EventScreen() {
   // Shown at once; the delta brings the server's version right after.
   const [answered, setAnswered] = useState<ParticipationStatus | null>(null)
   const [now] = useState(() => Date.now())
+  const serverNow = mail.serverNow
+  const clock = useCallback(() => serverNow?.() ?? Date.now(), [serverNow])
 
   if (occurrence === null) {
     return (
@@ -77,12 +77,16 @@ export default function EventScreen() {
         {rule !== null && <Text style={styles.muted}>{describeRule(rule, occurrence.timeZone)}</Text>}
       </View>
 
-      {event.conference !== null && (
-        <Pressable style={styles.primary} onPress={() => void Linking.openURL(event.conference!.url)} accessibilityRole="link">
-          <Text style={styles.primaryLabel}>{joinLabel(event.conference.provider)}</Text>
-        </Pressable>
-      )}
-      {event.location !== '' && <Text style={styles.line}>{event.location}</Text>}
+      <MeetingLink
+        key={event.conference?.url ?? ''}
+        conference={event.conference}
+        request={(occurrence.series ?? event).conferenceRequest ?? null}
+        organizes={event.selfResponse === null}
+        line={event.conference !== null ? meetingLine(event, event.organizer?.name || event.organizer?.address || null, event.location) : null}
+        clock={clock}
+      />
+      {/* With a meeting link the place is in the line under it. */}
+      {event.conference === null && event.location !== '' && <Text style={styles.line}>{event.location}</Text>}
       {event.syncError !== null && <Text style={styles.error}>Not saved at the provider: {event.syncError}</Text>}
 
       {event.attendees.length > 0 && (
@@ -148,8 +152,6 @@ function makeStyles(theme: Theme) {
     muted: { fontSize: 13, color: theme.ink2 },
     line: { fontSize: 15, color: theme.ink },
     error: { fontSize: 13, color: theme.danger },
-    primary: { alignSelf: 'flex-start', height: 44, justifyContent: 'center', paddingHorizontal: 18, borderRadius: 8, backgroundColor: theme.ink },
-    primaryLabel: { fontSize: 15, fontWeight: '600', color: theme.surface },
     section: { gap: 8, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.line },
     sectionTitle: { fontSize: 15, fontWeight: '600', color: theme.ink },
     person: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 32 },

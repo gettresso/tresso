@@ -52,6 +52,19 @@ const ICONS = {
       <Path d="M20 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
     </>
   ),
+  video: (
+    <>
+      <Rect x="3" y="6" width="13" height="12" rx="2" />
+      <Path d="M16 10l5-3v10l-5-3" />
+    </>
+  ),
+  copy: (
+    <>
+      <Rect x="9" y="9" width="11" height="11" rx="2" />
+      <Path d="M5 15V6a1 1 0 011-1h9" />
+    </>
+  ),
+  check: <Path d="M5 12l5 5L20 7" />,
 } as const
 
 export type IconName = keyof typeof ICONS

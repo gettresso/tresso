@@ -45,3 +45,22 @@ describe('the chat colours', () => {
     })
   }
 })
+
+/** Text and its background in an event's meeting link (src/calendar/MeetingLink.tsx). */
+const MEETING_PAIRS: [Token, Token, string][] = [
+  ['surface', 'ink', 'the Join button'],
+  ['ink', 'ground', 'the link and Copy link'],
+  ['ink', 'surface', 'the app name, Making the link'],
+  ['ink2', 'surface', 'the line under the link, the hints'],
+  ['danger', 'surface', 'Could not make the link, could not copy'],
+]
+
+describe('the meeting link colours', () => {
+  for (const [name, theme] of Object.entries(themes)) {
+    it(`keep text readable (4.5:1 or more) and the Copied check visible (3:1) in the ${name} theme`, () => {
+      const low = MEETING_PAIRS.map(([text, ground, where]) => ({ where, ratio: contrast(theme[text], theme[ground]) })).filter(({ ratio }) => ratio < 4.5)
+      expect(low).toEqual([])
+      expect(contrast(theme.know, theme.ground)).toBeGreaterThanOrEqual(3)
+    })
+  }
+})
