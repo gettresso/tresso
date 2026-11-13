@@ -83,8 +83,8 @@ final readonly class WhatsAppTools implements ToolProvider
             title: 'Read a WhatsApp chat',
             description: 'One WhatsApp chat with its messages, newest first, a page at a time. A message has its '
                 .'sender (id and name; null for the user\'s own), time, text, whether the user sent it (fromMe) and its '
-                .'file (kind image, video, audio or document, name and size in bytes; the file itself is not on the '
-                .'server). The user\'s replies written in Tresso are items of type reply with their status: waiting (for '
+                .'file (kind image, video, audio or document, name and size in bytes; the file itself is not available to '
+                .'this connection: files open only in the Tresso apps). The user\'s replies written in Tresso are items of type reply with their status: waiting (for '
                 .'the Mac that relays), sending, sent or failed (with the reason; unconfirmed means it may have gone '
                 .'out). '.self::UNTRUSTED,
             scopes: [Scope::ChatRead],

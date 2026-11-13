@@ -20,8 +20,10 @@ use App\State\ChatMediaProvider;
  *
  * - `POST .../media/request` asks the Mac for it (our own apps, {@see ChatAccessVoter::MANAGE}): `remote` or `failed`
  *   to `requested`; one asked for already or stored stays as it is.
- * - `GET .../media` says where it stands and, once it is stored and scanned clean, gives a signed link valid for an hour
- *   ({@see ChatAccessVoter::READ}). The content is served as a download, never sniffed and sandboxed, as attachments are.
+ * - `GET .../media` says where it stands ({@see ChatAccessVoter::READ}) and, for our own apps only, once it is stored
+ *   and scanned clean, gives a signed link valid for an hour. Files are for our own apps: a caller with `chat:read` that
+ *   is not one of them never gets a link. The content is served as a download, never sniffed and sandboxed, as
+ *   attachments are.
  * - `POST .../media/unscanned-link` gives the link for a file that could not be scanned, to a user who confirmed they
  *   accept that (our own apps); never on a server that requires scans.
  *
@@ -79,7 +81,7 @@ final readonly class ChatMediaResource
         public ?string $error,
         /** For a stored file, from its scan: `allowed`, `scanning`, `confirm` or `blocked`; null while it is not stored. */
         public ?string $access,
-        /** A signed link to the content, valid for an hour; null until it may be downloaded. */
+        /** A signed link to the content, valid for an hour; null until it may be downloaded, and always for a caller that is not one of our own apps. */
         public ?string $url,
     ) {
     }
