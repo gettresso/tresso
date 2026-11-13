@@ -67,6 +67,9 @@ const dark: typeof light = {
 
 export type Theme = typeof light
 
+/** Both themes, for tests that check them. */
+export const themes = { light, dark }
+
 export function useTheme(): Theme {
   return useColorScheme() === 'dark' ? dark : light
 }
