@@ -57,8 +57,15 @@ final readonly class EventEditor
     public const string CONFERENCE_NONCE = 'X-TRESSO-CONFERENCE-NONCE';
     /** A request younger than this is still on its way: asking again changes nothing. */
     public const int CONFERENCE_PENDING_SECONDS = 120;
+    /**
+     * Written on the master when Tresso took a Google Meet meeting off the event: the worker then sends
+     * `conferenceData: null`, and only then (a master that merely lacks X-GOOGLE-CONFERENCE is no reason to remove
+     * Google's meeting). Google's version drops it, as it drops the request; a new request clears it.
+     */
+    public const string CONFERENCE_REMOVE = 'X-TRESSO-CONFERENCE-REMOVE';
     private const string TEAMS_STAYS = 'Microsoft keeps a Teams meeting on its event. Delete the event to cancel the meeting.';
     private const string ORGANIZER_ONLY = 'Only the organizer can change the meeting link.';
+    private const string TEXT_LINK = 'This link is part of the event\'s text. Remove it there.';
 
     public function __construct(
         private CalendarStore $store,
@@ -141,7 +148,11 @@ final readonly class EventEditor
         }
 
         self::withOrganizer($vcalendar, $calendar, $organizer);
-        $this->requestConference($object, $vcalendar, $calendar, $changes->conferenceProvider);
+        // An edit of one occurrence is not about the series' meeting: it neither asks for one nor drops the request
+        // (an override row carries none, so its client sends none).
+        if ('' === $editedKey || null !== $changes->conferenceProvider) {
+            $this->requestConference($object, $vcalendar, $calendar, $changes->conferenceProvider);
+        }
         // The occurrences moved: their notes go along to the new keys.
         $notes = null === $moved ? [] : $this->notes->lift($object, static fn (string $noteKey): ?string => '' === $noteKey ? null : $moved($noteKey));
         $rows = $this->store->save($object, $vcalendar, notify: $notify);
@@ -308,7 +319,7 @@ final readonly class EventEditor
         self::writeTravel($event, $changes->travelMinutes);
         self::writeImportance($event, $changes->important);
         // After the description: the join line of a link Tresso knows is managed there.
-        self::writeConference($event, $changes->conferenceUrl, $calendar);
+        self::writeConference($event, $changes->conferenceUrl, $calendar, self::organizes($event, $self));
 
         self::touch($event, self::significantState($event) !== $before);
     }
@@ -351,7 +362,7 @@ final readonly class EventEditor
             self::writeImportance($override, $changes->important);
         }
         if ($changed(static fn (VEvent $event): ?string => ConferenceDetector::detect($event)['url'] ?? null)) {
-            self::writeConference($override, $changes->conferenceUrl, $calendar);
+            self::writeConference($override, $changes->conferenceUrl, $calendar, self::organizes($override, $self));
         }
         if (!$keepTime) {
             $override->remove('DURATION');
@@ -596,6 +607,7 @@ final readonly class EventEditor
                 Props::set($master, self::CONFERENCE_REQUEST, $provider);
                 Props::set($master, self::CONFERENCE_NONCE, $request['nonce']);
             }
+            $master->remove(self::CONFERENCE_REMOVE);
 
             return;
         }
@@ -609,6 +621,7 @@ final readonly class EventEditor
         ]);
         Props::set($master, self::CONFERENCE_REQUEST, $provider);
         Props::set($master, self::CONFERENCE_NONCE, $nonce);
+        $master->remove(self::CONFERENCE_REMOVE);
     }
 
     private static function dropConferenceRequest(VEvent $master): void
@@ -626,19 +639,25 @@ final readonly class EventEditor
      * @throws EditRejected for a Teams meeting Microsoft made (Graph cannot take it off its event), or a link that is
      *                      not of the form a meeting link must have
      */
-    private static function writeConference(VEvent $event, #[\SensitiveParameter] ?string $url, Calendar $calendar): void
+    private static function writeConference(VEvent $event, #[\SensitiveParameter] ?string $url, Calendar $calendar, bool $organizes): void
     {
         $description = self::rawText($event, 'DESCRIPTION');
         if ($url === (ConferenceDetector::detect($event)['url'] ?? null)) {
-            // Kept: a join line the user edited or doubled is put right; an event without one is left as it is.
-            if (null !== $url && null !== MeetingJoinLine::find($description)) {
+            // Kept: a join line the user edited or doubled is put right, on an event the user organizes whose link is
+            // Tresso's (not one Google or Microsoft made, whose descriptions are theirs). Anything else is left as it is:
+            // a guest's copy may not change the description at all (Google refuses the whole write).
+            if (null !== $url && $organizes && !self::hasProviderMeeting($event) && null === MeetingLinkAddress::problem($url) && null !== MeetingJoinLine::find($description)) {
                 self::setText($event, 'DESCRIPTION', MeetingJoinLine::with($description, $url, ConferenceDetector::providerOf($url)));
             }
 
             return;
         }
-        if (CalendarSource::Microsoft === $calendar->getSource() && null !== Props::text($event, 'X-MICROSOFT-SKYPETEAMSMEETINGURL')) {
+        if (!ConferenceDetector::removable($event, $calendar->getSource())) {
             throw new EditRejected(self::TEAMS_STAYS);
+        }
+        if (CalendarSource::Google === $calendar->getSource() && null !== Props::get($event, 'X-GOOGLE-CONFERENCE')) {
+            // Google's meeting goes: the worker removes it only on this explicit word.
+            Props::set($event, self::CONFERENCE_REMOVE, 'meet');
         }
         if (null !== $url) {
             $violation = MeetingLinkAddress::violation($url);
@@ -653,6 +672,18 @@ final readonly class EventEditor
         if (null !== $url) {
             $event->add('CONFERENCE', $url, ['VALUE' => 'URI', 'FEATURE' => 'VIDEO']);
         }
+    }
+
+    /** A meeting Google or Microsoft made: their properties name it. */
+    private static function hasProviderMeeting(VEvent $event): bool
+    {
+        foreach (['X-GOOGLE-CONFERENCE', 'X-MICROSOFT-SKYPETEAMSMEETINGURL', 'X-MICROSOFT-ONLINEMEETINGCONFLINK'] as $name) {
+            if (null !== Props::get($event, $name)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -704,10 +735,15 @@ final readonly class EventEditor
                 continue;
             }
             $before = self::significantState($event);
-            self::writeConference($event, null, $calendar);
+            self::writeConference($event, null, $calendar, true);
             if (self::significantState($event) !== $before || $event === $master) {
                 self::touch($event, self::significantState($event) !== $before);
             }
+        }
+        $left = ConferenceDetector::detect($master);
+        if (null !== $url && null !== $left && $left['url'] === $url) {
+            // Found in the event's own text (its place, link or description): only the user can take it out there.
+            throw new EditRejected(self::TEXT_LINK);
         }
         $hadRequest = null !== Props::get($master, self::CONFERENCE_REQUEST) || null !== Props::get($master, self::CONFERENCE_NONCE);
         self::dropConferenceRequest($master);
@@ -728,6 +764,18 @@ final readonly class EventEditor
         $this->schedule($calendar, $old, $vcalendar, $notify);
 
         return $rows[''] ?? $row;
+    }
+
+    /**
+     * Whether the user organizes the event: it names no organizer, or one of the user's addresses.
+     *
+     * @param list<string> $self
+     */
+    private static function organizes(VEvent $event, array $self): bool
+    {
+        $organizer = Props::get($event, 'ORGANIZER');
+
+        return null === $organizer || \in_array(Props::address(Props::value($organizer)), $self, true);
     }
 
     /** Invited events are the organizer's: their meeting link is not the user's to change. */

@@ -51,7 +51,7 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertSame([['action' => 'display', 'trigger' => '-PT10M', 'relatedTo' => 'start', 'at' => null, 'channels' => ['phone', 'email']]], $event['reminders'] ?? null);
         self::assertFalse($event['defaultReminders'] ?? null);
         self::assertSame(20, $event['travelMinutes'] ?? null);
-        self::assertSame(['provider' => 'meet', 'url' => 'https://meet.google.com/abc-defg-hij', 'id' => null, 'dialIn' => null], $event['conference'] ?? null);
+        self::assertSame(['provider' => 'meet', 'url' => 'https://meet.google.com/abc-defg-hij', 'id' => null, 'dialIn' => null, 'removable' => true], $event['conference'] ?? null);
 
         $occurrences = $this->occurrences($this->kim, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00');
         self::assertCount(1, $occurrences);
@@ -610,7 +610,7 @@ final class CalendarEventApiTest extends DatabaseTestCase
         $event = $this->create(['description' => 'Agenda', 'conferenceUrl' => $room]);
 
         self::assertSame("Agenda\n\nJoin the meeting: ".$room, $event['description'] ?? null);
-        self::assertSame(['provider' => 'other', 'url' => $room, 'id' => null, 'dialIn' => null], $event['conference'] ?? null);
+        self::assertSame(['provider' => 'other', 'url' => $room, 'id' => null, 'dialIn' => null, 'removable' => true], $event['conference'] ?? null);
         self::assertTrue(\array_key_exists('conferenceRequest', $event) && null === $event['conferenceRequest'], 'Nothing is asked of a provider for a link of the user\'s own.');
         $ical = $this->storedIcal($event['uid']);
         self::assertStringContainsString('CONFERENCE;VALUE=URI;FEATURE=VIDEO:'.$room, $ical);
@@ -636,7 +636,7 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertResponseIsSuccessful();
         $saved = $this->decodedResponse();
         self::assertSame("Agenda\n\nJoin with Zoom: https://zoom.us/j/1234567890", $saved['description']);
-        self::assertSame(['provider' => 'zoom', 'url' => 'https://zoom.us/j/1234567890', 'id' => null, 'dialIn' => null], $saved['conference']);
+        self::assertSame(['provider' => 'zoom', 'url' => 'https://zoom.us/j/1234567890', 'id' => null, 'dialIn' => null, 'removable' => true], $saved['conference']);
         self::assertSame(1, substr_count($this->storedIcal($event['uid']), "\r\nCONFERENCE"));
     }
 
@@ -650,6 +650,18 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertStringNotContainsString('hunter2', $content);
         self::assertStringNotContainsString('secret-room', $content);
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM calendar_object'));
+    }
+
+    public function testALinkInTheEventsOwnTextIsNotRemovedFromOutside(): void
+    {
+        $event = $this->create(['description' => 'Call in: https://company.zoom.us/j/1234567890']);
+        self::assertSame('zoom', \is_array($event['conference'] ?? null) ? $event['conference']['provider'] : null);
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$event['id'].'/meeting-link', server: $this->kim);
+
+        self::assertResponseStatusCodeSame(422);
+        self::assertStringContainsString('This link is part of the event\'s text. Remove it there.', (string) $this->client->getResponse()->getContent());
+        self::assertStringContainsString('zoom.us', $this->storedIcal($event['uid']));
     }
 
     public function testTheDeltaCarriesTheMeetingLinkRequest(): void

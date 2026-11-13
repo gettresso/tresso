@@ -389,6 +389,17 @@ class CalendarEvent implements TracksChanges
         return $this->conference;
     }
 
+    /**
+     * Whether Tresso can take the meeting off the event (false for a Teams meeting Microsoft made on its calendar's
+     * event), as `removable` in the conference clients get. Set by the projection after the event's data.
+     */
+    public function markConferenceRemovable(bool $removable): void
+    {
+        if (null !== $this->conference) {
+            $this->conference = [...$this->conference, 'removable' => $removable];
+        }
+    }
+
     /** @return PublicConferenceRequest|null */
     public function getConferenceRequest(): ?array
     {
