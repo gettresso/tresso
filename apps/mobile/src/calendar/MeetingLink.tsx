@@ -18,6 +18,7 @@ import {
   type Conference,
   type ConferenceRequest,
 } from '@tresso/core'
+import { canRetry, meetingActionError, type RetryProvider } from '@/calendar/meetingActions'
 import { Icon } from '@/components/Icon'
 import { LoadingLine } from '@/components/LogoLoader'
 import { useTheme, type Theme } from '@/theme'
@@ -26,44 +27,58 @@ import { useTheme, type Theme } from '@/theme'
 const COPIED_MS = 2000
 
 /**
- * The link's text: at most {@link LINK_MAX} characters (core's linkText), on its own line above the buttons and
- * allowed {@link LINK_LINES} lines, so a narrow phone wraps it rather than cutting it a second time (and so loses no
- * part of the host). Exported for the test that checks it fits a 320 pt wide screen.
+ * The link's text: at most {@link LINK_MAX} characters (core's linkText, which never cuts the host), on its own lines
+ * above the buttons and never cut again on screen: at a large text size it wraps onto more lines, so no part of the
+ * host is lost.
  */
 export const LINK_MAX = 44
-export const LINK_LINES = 2
-export const LINK_FONT_SIZE = 12
-/** Inner padding of the link box, left and right. */
-export const LINK_PADDING = 12
 
 /** Said under a link the phone does not open (core's canJoin refused it), as on the web. */
 export const NOT_OPENED = 'Tresso does not open this link. Check where it leads before you use it.'
+
+/**
+ * A left to right mark before a link shown as text: Android does not take `writingDirection`, and a host in Hebrew or
+ * Arabic letters would otherwise set the whole line right to left. Only on screen, never in what is copied or opened.
+ */
+export const LTR_MARK = '‎'
 
 interface Props {
   conference: Conference | null
   /** The series' request for a link, from its master row; null when nothing was asked for. */
   request: ConferenceRequest | null
-  /** The user organizes the event: only they see that a link they asked for could not be made. */
+  /** The user organizes the event: only they see that a link they asked for could not be made, and act on it. */
   organizes: boolean
   /** The line under the link (see meetingLine); null for none. */
   line: string | null
   /** The server's time as the phone knows it (ServerClock), so a device clock that is off does not end the wait early. */
   clock: () => number
+  /** Retry: asks the calendar's provider for the link again (POST .../meeting-link). Null when the user cannot. */
+  onRetry: ((provider: RetryProvider) => Promise<void>) | null
+  /** Leave without a link: drops the request (DELETE .../meeting-link). Null when the user cannot. */
+  onLeave: (() => Promise<void>) | null
 }
 
 /**
- * An event's meeting link on the phone: Join (only for a link core's canJoin passes), the link on one line with Copy
- * link, and the line under it; or the link that is being made, or that could not be made. Nothing when the event has
- * no link and none was asked for. The link itself is never logged or put into an error. Give it the link as its
- * `key`, so a new link (the sync brought one) starts without the old one's messages.
+ * An event's meeting link on the phone: Join (only for a link core's canJoin passes), the link as text with Copy link,
+ * and the line under it; or the link that is being made, or that could not be made, with Retry and "Leave without a
+ * link" for the organizer. Nothing when the event has no link and none was asked for. The link itself is never logged
+ * or put into an error. Give it the link as its `key`, so a new link (the sync brought one) starts without the old
+ * one's messages.
  */
-export function MeetingLink({ conference, request, organizes, line, clock }: Props) {
+export function MeetingLink({ conference, request, organizes, line, clock, onRetry, onLeave }: Props) {
   const theme = useTheme()
   const styles = useMemo(() => makeStyles(theme), [theme])
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
   const [openFailed, setOpenFailed] = useState(false)
+  const [acting, setActing] = useState<'retry' | 'leave' | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Answers that come after the screen closed (or the link changed) set nothing, as on the web's CopyLinkButton.
+  const alive = useRef(true)
+  // A second tap before the first one's answer does nothing: one openURL, one request.
+  const opening = useRef(false)
+  const busy = useRef(false)
   // Renders again when a link that is being made has waited too long, so it then reads as failed.
   const [tick, setTick] = useState(0)
 
@@ -92,23 +107,33 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
     }
   }, [state, organizes, request, clock])
 
-  useEffect(
-    () => () => {
-      if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
-    },
-    [],
-  )
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+      if (copiedTimer.current !== null) {
+        clearTimeout(copiedTimer.current)
+        copiedTimer.current = null
+      }
+    }
+  }, [])
 
   async function join(target: Conference) {
     // The button only exists for a link canJoin passes; checked again so nothing else can open another kind of link.
-    if (!canJoin(target)) {
+    if (!canJoin(target) || opening.current) {
       return
     }
+    opening.current = true
     setOpenFailed(false)
     try {
       await Linking.openURL(target.url)
     } catch {
-      setOpenFailed(true)
+      if (alive.current) {
+        setOpenFailed(true)
+        AccessibilityInfo.announceForAccessibility(OPEN_FAILED)
+      }
+    } finally {
+      opening.current = false
     }
   }
 
@@ -118,6 +143,9 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
       done = await Clipboard.setStringAsync(target.url)
     } catch {
       done = false
+    }
+    if (!alive.current) {
+      return
     }
     if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
     if (!done) {
@@ -135,6 +163,32 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
     }, COPIED_MS)
   }
 
+  async function act(kind: 'retry' | 'leave', run: () => Promise<void>, done: string) {
+    if (busy.current) {
+      return
+    }
+    busy.current = true
+    setActing(kind)
+    setActionError(null)
+    try {
+      await run()
+      if (alive.current) {
+        AccessibilityInfo.announceForAccessibility(done)
+      }
+    } catch (error) {
+      if (alive.current) {
+        const text = meetingActionError(error)
+        setActionError(text)
+        AccessibilityInfo.announceForAccessibility(text)
+      }
+    } finally {
+      busy.current = false
+      if (alive.current) {
+        setActing(null)
+      }
+    }
+  }
+
   if (conference !== null) {
     const joinable = canJoin(conference)
     const label = joinLabel(conference.provider)
@@ -149,9 +203,7 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
           <Text style={styles.app}>{conferenceLabel(conference, null)}</Text>
         )}
         <View style={styles.linkBox}>
-          <Text style={styles.link} numberOfLines={LINK_LINES}>
-            {linkText(conference.url, LINK_MAX)}
-          </Text>
+          <Text style={styles.link}>{LTR_MARK + linkText(conference.url, LINK_MAX)}</Text>
           {/* The visible words are the button's accessible name, so voice control finds it by what it says. */}
           <Pressable style={styles.copy} onPress={() => void copy(conference)} accessibilityRole="button">
             <Icon name={copied ? 'check' : 'copy'} size={16} color={copied ? theme.know : theme.ink} strokeWidth={copied ? 2.4 : 2} />
@@ -162,12 +214,13 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
         {copyFailed && (
           <View style={styles.fallback}>
             <Text style={styles.error}>Could not copy the link. Press and hold it here to copy it.</Text>
+            {/* Selected and copied by hand, so without the left to right mark; iOS still sets it left to right. */}
             <Text style={styles.fullLink} selectable>
               {byHand(conference)}
             </Text>
           </View>
         )}
-        {openFailed && <Text style={styles.error}>The meeting could not be opened on this phone. Copy the link instead.</Text>}
+        {openFailed && <Text style={styles.error}>{OPEN_FAILED}</Text>}
         {line !== null && <Text style={styles.line}>{line}</Text>}
       </View>
     )
@@ -185,15 +238,48 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
     )
   }
   if (state === 'failed' && organizes) {
+    const provider = request.provider
+    const retry = onRetry !== null && canRetry(provider) ? onRetry : null
     return (
-      <View style={styles.status} accessibilityLiveRegion="polite">
-        <Text style={styles.failedTitle}>{requestTitle(request, now)}</Text>
-        <Text style={styles.hint}>{failureHint(request, now)}</Text>
+      <View style={styles.status}>
+        <View accessibilityLiveRegion="polite" style={styles.status}>
+          <Text style={styles.failedTitle}>{requestTitle(request, now)}</Text>
+          <Text style={styles.hint}>{failureHint(request, now)}</Text>
+        </View>
+        {(retry !== null || onLeave !== null) && (
+          <View style={styles.actions}>
+            {retry !== null && canRetry(provider) && (
+              <Pressable
+                style={styles.action}
+                onPress={() => void act('retry', () => retry(provider), 'Asked for the link again.')}
+                disabled={acting !== null}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: acting !== null, busy: acting === 'retry' }}
+              >
+                <Text style={styles.actionLabel}>{acting === 'retry' ? 'Retrying' : 'Retry'}</Text>
+              </Pressable>
+            )}
+            {onLeave !== null && (
+              <Pressable
+                style={styles.action}
+                onPress={() => void act('leave', onLeave, 'The event stays without a link.')}
+                disabled={acting !== null}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: acting !== null, busy: acting === 'leave' }}
+              >
+                <Text style={styles.actionLabel}>Leave without a link</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+        {actionError !== null && <Text style={styles.error}>{actionError}</Text>}
       </View>
     )
   }
   return null
 }
+
+const OPEN_FAILED = 'The meeting could not be opened on this phone. Copy the link instead.'
 
 /**
  * The link to copy by hand when Copy failed, as on the web: a link canJoin passes is shown whole (it has nothing hidden
@@ -205,17 +291,18 @@ function byHand(conference: Conference): string {
 
 const MONO = Platform.select({ ios: 'Menlo', default: 'monospace' })
 
+// Heights are minimums: at the largest text sizes labels and the link wrap and the controls grow with them.
 function makeStyles(theme: Theme) {
   return StyleSheet.create({
     block: { gap: 8 },
-    join: { height: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, borderRadius: 12, backgroundColor: theme.ink },
-    joinLabel: { fontSize: 16, fontWeight: '600', color: theme.surface },
+    join: { minHeight: 52, paddingVertical: 12, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, borderRadius: 12, backgroundColor: theme.ink },
+    joinLabel: { flexShrink: 1, fontSize: 16, fontWeight: '600', color: theme.surface, textAlign: 'center' },
     app: { fontSize: 13, fontWeight: '600', color: theme.ink },
-    linkBox: { paddingTop: 10, paddingHorizontal: LINK_PADDING, borderRadius: 12, backgroundColor: theme.ground },
-    // Left to right whatever the phone's language, so a host never reads turned around.
-    link: { fontFamily: MONO, fontSize: LINK_FONT_SIZE, lineHeight: 16, color: theme.ink, writingDirection: 'ltr', textAlign: 'left' },
-    copy: { alignSelf: 'flex-end', height: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2 },
-    copyLabel: { fontSize: 14, fontWeight: '600', color: theme.ink },
+    linkBox: { paddingTop: 10, paddingHorizontal: 12, borderRadius: 12, backgroundColor: theme.ground },
+    // Left to right whatever the phone's language (iOS; Android through LTR_MARK), so a host never reads turned around.
+    link: { fontFamily: MONO, fontSize: 12, color: theme.ink, writingDirection: 'ltr', textAlign: 'left' },
+    copy: { alignSelf: 'flex-end', minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2 },
+    copyLabel: { flexShrink: 1, fontSize: 14, fontWeight: '600', color: theme.ink },
     fallback: { gap: 4 },
     fullLink: { fontFamily: MONO, fontSize: 12, color: theme.ink, writingDirection: 'ltr', textAlign: 'left' },
     line: { fontSize: 12, color: theme.ink2, textAlign: 'center' },
@@ -224,5 +311,8 @@ function makeStyles(theme: Theme) {
     statusTitle: { fontSize: 15, fontWeight: '600', color: theme.ink },
     failedTitle: { fontSize: 15, fontWeight: '600', color: theme.danger },
     hint: { fontSize: 13, color: theme.ink2 },
+    actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingTop: 4 },
+    action: { minHeight: 44, paddingVertical: 10, paddingHorizontal: 14, justifyContent: 'center', borderRadius: 8, borderWidth: 1, borderColor: theme.lineStrong },
+    actionLabel: { fontSize: 15, fontWeight: '600', color: theme.ink },
   })
 }

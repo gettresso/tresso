@@ -50,6 +50,8 @@ export default function EventScreen() {
   const color = calendar?.color ?? '#6E56CF'
   const response = answered ?? event.selfResponse
   const rule = occurrence.series?.recurrence ?? null
+  // Retry and "Leave without a link" act on the series and only for its organizer, on a calendar the user can write.
+  const organizerActs = event.selfResponse === null && canWrite(calendar) && !occurrence.fromServer
   const ownZone = occurrence.timeZone !== null && occurrence.timeZone !== zone && !occurrence.allDay ? `${occurrenceTimes(occurrence, occurrence.timeZone)} in ${zoneLabel(occurrence.timeZone, occurrence.start)}.` : null
 
   async function respond(value: 'accepted' | 'tentative' | 'declined') {
@@ -84,6 +86,8 @@ export default function EventScreen() {
         organizes={event.selfResponse === null}
         line={event.conference !== null ? meetingLine(event, event.organizer?.name || event.organizer?.address || null, event.location) : null}
         clock={clock}
+        onRetry={organizerActs ? (provider) => mail.requestMeetingLink(occurrence.seriesId, provider) : null}
+        onLeave={organizerActs ? () => mail.removeMeetingLink(occurrence.seriesId) : null}
       />
       {/* With a meeting link the place is in the line under it. */}
       {event.conference === null && event.location !== '' && <Text style={styles.line}>{event.location}</Text>}
