@@ -14,8 +14,8 @@ import {
   type SyncedCalendarEvent,
 } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
-import { joinLabel } from '@/calendar/look'
 import AppIcon from '@/components/AppIcon.vue'
+import JoinLink from '@/components/calendar/JoinLink.vue'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import { useCalendarStore, type InvitationConflict, type MessageInvitation, type Response } from '@/stores/calendar'
 import LogoLoader from '@/components/LogoLoader.vue'
@@ -170,9 +170,7 @@ function onKeydown(event: KeyboardEvent): void {
       <p v-if="repeats" class="line"><AppIcon name="repeat" :size="14" /> {{ repeats }}</p>
       <p v-if="invitation.organizer" class="line"><AppIcon name="people" :size="14" /> Organizer {{ invitation.organizer.name || invitation.organizer.address }}<template v-if="people">. {{ people }}</template></p>
       <p v-if="invitation.location" class="line"><AppIcon name="place" :size="14" /> {{ invitation.location }}</p>
-      <a v-if="invitation.conference" class="button button-quiet join" :href="invitation.conference.url" target="_blank" rel="noopener noreferrer">
-        <AppIcon name="video" :size="15" /> {{ joinLabel(invitation.conference.provider) }}
-      </a>
+      <JoinLink v-if="invitation.conference" class="join" :conference="invitation.conference" />
 
       <div v-if="invitation.conflicts.length > 0" class="conflicts">
         <p class="label">Your {{ shown.allDay ? 'day' : 'time' }}</p>

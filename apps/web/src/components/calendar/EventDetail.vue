@@ -13,20 +13,26 @@ import {
   type Occurrence,
   type SyncedCalendar,
 } from '@tresso/core'
-import { calendarColor, joinLabel } from '@/calendar/look'
+import { calendarColor } from '@/calendar/look'
 import AppIcon from '@/components/AppIcon.vue'
+import MeetingLink from '@/components/calendar/MeetingLink.vue'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import type { Response } from '@/stores/calendar'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 
-const props = defineProps<{
-  occurrence: Occurrence
-  calendar: SyncedCalendar | undefined
-  zone: string
-  now: number
-  busy: boolean
-  error: string | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    occurrence: Occurrence
+    calendar: SyncedCalendar | undefined
+    zone: string
+    now: number
+    busy: boolean
+    error: string | null
+    /** The server's time as the client knows it, for how long a meeting link has been asked for. */
+    clock?: () => number
+  }>(),
+  { clock: () => Date.now() },
+)
 const emit = defineEmits<{ close: []; edit: []; delete: []; respond: [response: Response, onlyThis: boolean] }>()
 
 const event = computed(() => props.occurrence.event)
@@ -73,10 +79,8 @@ function initials(name: string | null, address: string): string {
     <p v-if="event.status === 'cancelled'" class="cancelled" role="status">This event was cancelled.</p>
     <p v-if="event.syncError" class="error" role="alert">Not saved at the provider: {{ event.syncError }}</p>
 
-    <a v-if="event.conference" class="button button-primary join" :href="event.conference.url" target="_blank" rel="noopener noreferrer">
-      <AppIcon name="video" :size="16" /> {{ joinLabel(event.conference.provider) }}
-    </a>
-    <p v-if="event.conference?.dialIn" class="hint">Dial in: {{ event.conference.dialIn }}</p>
+    <!-- Until the settings for meeting apps keep the own link, it reads as "Meeting link". -->
+    <MeetingLink :event="event" :own-link="null" :clock="clock" />
     <p v-if="event.location" class="line"><AppIcon name="place" :size="15" /> {{ event.location }}</p>
     <p v-if="calendar" class="line"><AppIcon name="calendar" :size="15" /> {{ calendar.name }}</p>
 
@@ -173,9 +177,6 @@ p {
   /* A location that is a meeting link wraps instead of widening the panel. */
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.join {
-  align-self: flex-start;
 }
 .cancelled,
 .error {

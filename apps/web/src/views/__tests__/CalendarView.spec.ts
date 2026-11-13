@@ -4,6 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { ChangePage } from '@tresso/core'
+import { calendar as calendarRow, calendarEvent } from '@tresso/core/testing'
 import { deleteMailDatabase } from '@/mail/db'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
@@ -79,5 +80,69 @@ describe('the calendar shortcuts', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', repeat: true, bubbles: true }))
     await flushPromises()
     expect(wrapper.text()).not.toContain(NO_CALENDAR)
+  })
+})
+
+describe('Shift J', () => {
+  const TEAMS = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_1%40thread.v2/0'
+
+  async function screenWith(url: string) {
+    sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
+    setActivePinia(createPinia())
+    const changes = page(1)
+    changes.calendars = [calendarRow('work', null, { name: 'Work', isDefault: true })]
+    changes.calendarEvents = [calendarEvent('review', 'work', { summary: 'Product review', conference: { provider: 'teams', url, id: null, dialIn: null } })]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const address = new URL(String(input))
+        if (address.pathname === '/api/v1/sync/changes') {
+          return new Response(JSON.stringify(Number(address.searchParams.get('since')) === 0 ? changes : page(Number(address.searchParams.get('since')) + 1)))
+        }
+        return new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503 })
+      }),
+    )
+    await useMailStore().start('calendar-join-user')
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/calendar/:view(day|week|month|agenda)?/:date(\\d{4}-\\d{2}-\\d{2})?', name: 'calendar', component: CalendarView }] })
+    await router.push('/calendar/day/2026-10-20')
+    await router.isReady()
+    const wrapper = mount(CalendarView, { global: { plugins: [router] }, attachTo: document.body })
+    await flushPromises()
+    // The day's events are read from the copy on this device after the first sync.
+    await vi.waitFor(() => wrapper.get('.block'))
+    await wrapper.get('.block').trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  afterEach(async () => {
+    await useMailStore().stop()
+    await deleteMailDatabase('calendar-join-user')
+    vi.unstubAllGlobals()
+    sessionStorage.clear()
+    document.body.innerHTML = ''
+  })
+
+  it('joins the selected event in a new tab without opener or referrer', async () => {
+    const open = vi.fn<typeof window.open>()
+    vi.stubGlobal('open', open)
+    const wrapper = await screenWith(TEAMS)
+    expect(wrapper.text()).toContain('Microsoft Teams')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'J', shiftKey: true, bubbles: true }))
+    await flushPromises()
+    expect(open).toHaveBeenCalledWith(TEAMS, '_blank', 'noopener,noreferrer')
+    wrapper.unmount()
+  })
+
+  it('does not open a link without a Join button', async () => {
+    const open = vi.fn<typeof window.open>()
+    vi.stubGlobal('open', open)
+    const wrapper = await screenWith('javascript:alert(1)')
+    expect(wrapper.text()).toContain('Tresso does not open this link.')
+    expect(wrapper.find('.detail-panel a[href^="javascript"]').exists()).toBe(false)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'J', shiftKey: true, bubbles: true }))
+    await flushPromises()
+    expect(open).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })
