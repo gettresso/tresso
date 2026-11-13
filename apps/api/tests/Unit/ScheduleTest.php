@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace App\Tests\Unit;
 
+use App\Chat\PurgeCancelledReplies;
+use App\Schedule;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\Finder\Finder;
 use Symfony\Component\Scheduler\Attribute\AsSchedule;
+use Symfony\Component\Scheduler\Generator\MessageContext;
 use Symfony\Component\Scheduler\ScheduleProviderInterface;
 use Symfony\Contracts\Cache\CacheInterface;
 
@@ -59,6 +62,26 @@ final class ScheduleTest extends TestCase
             self::assertNotNull($next, \sprintf('%s in %s never runs.', $message->getTrigger(), $class));
             self::assertGreaterThan($now, $next);
         }
+    }
+
+    public function testCancelledRepliesArePurgedOnceADay(): void
+    {
+        $now = new \DateTimeImmutable('2026-07-01T12:00:00Z');
+        $runs = [];
+        foreach ($this->provider(Schedule::class)->getSchedule()->getRecurringMessages() as $message) {
+            foreach ($message->getMessages(new MessageContext('default', $message->getId(), $message->getTrigger(), $now)) as $sent) {
+                if ($sent instanceof PurgeCancelledReplies) {
+                    $first = $message->getTrigger()->getNextRunDate($now);
+                    self::assertNotNull($first);
+                    $runs[] = [$first, $message->getTrigger()->getNextRunDate($first)];
+                }
+            }
+        }
+
+        self::assertCount(1, $runs, 'One entry purges the cancelled replies.');
+        [$first, $second] = $runs[0];
+        self::assertNotNull($second);
+        self::assertSame(86_400, $second->getTimestamp() - $first->getTimestamp(), 'Once a day.');
     }
 
     /**
