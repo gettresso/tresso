@@ -66,7 +66,10 @@ final class McpWhatsAppToolsTest extends DatabaseTestCase
                 self::assertStringContainsString('chat:read', $error, $caller.': '.$tool);
                 self::assertStringNotContainsString('Anna', $error);
             }
-            self::assertStringContainsString('chat:send', $this->mcpCallError($headers, $session, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'Hi']));
+            $error = $this->mcpCallError($headers, $session, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'Hi']);
+            self::assertStringContainsString('chat:send', $error);
+            self::assertStringContainsString('WhatsApp is a permission of its own: the app has to register again naming chat:send', $error, 'Connecting again alone would not give it.');
+            self::assertStringContainsString('personal access token with chat:send ticked', $error);
         }
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_outgoing WHERE status = \'waiting\' AND id <> :id', ['id' => $this->ids['waiting']]));
     }
@@ -87,6 +90,7 @@ final class McpWhatsAppToolsTest extends DatabaseTestCase
                 self::assertStringContainsString('no tool to cancel or retry', $description);
                 self::assertStringContainsString('100 messages per 10 minutes', $description);
                 self::assertTrue(self::asArray($tool['annotations'] ?? null)['openWorldHint'] ?? null);
+                self::assertTrue(self::asArray($tool['annotations'] ?? null)['destructiveHint'] ?? null, 'It cannot be taken back, so clients ask first.');
                 self::assertSame(['chatId', 'text'], self::asArray($tool['inputSchema'] ?? null)['required'] ?? null);
                 self::assertArrayNotHasKey('phone', self::asArray(self::asArray($tool['inputSchema'] ?? null)['properties'] ?? null));
             }
@@ -213,7 +217,7 @@ final class McpWhatsAppToolsTest extends DatabaseTestCase
         }
 
         foreach ($answers as $answer) {
-            foreach (['Anna', self::ANNA_JID, '31612345678', 'Friday', 'Project team', 'Bram', 'Agenda', 'On my way', 'slides', 'Running ten minutes late', 'Lisa', '31698765432', 'Kim Visser'] as $private) {
+            foreach (['Anna', self::ANNA_JID, '31612345678', 'Friday', 'Project team', 'Bram', 'Agenda', 'On my way', 'slides', 'Running ten minutes late', 'Lisa', '31698765432', 'Kim Visser', 'MacBook'] as $private) {
                 self::assertStringNotContainsString($private, $answer, 'A token that may only send learns no names, numbers or texts.');
             }
         }
@@ -233,7 +237,7 @@ final class McpWhatsAppToolsTest extends DatabaseTestCase
 
         self::assertNull($queued['sentAt']);
         $note = self::asString($queued['note'] ?? null);
-        self::assertStringStartsWith('Queued, not sent: the Mac that relays WhatsApp ("Kim\'s MacBook Pro") is offline since '.$this->at(60)->format(\DATE_ATOM), $note);
+        self::assertStringStartsWith('Queued, not sent: the Mac that relays WhatsApp is offline since '.$this->at(60)->format(\DATE_ATOM), $note, 'Without the Mac\'s name, which a caller that may only send does not get.');
         self::assertStringContainsString('goes out when that Mac is running Tresso again', $note);
         self::assertStringNotContainsString('was sent', $note);
     }
@@ -272,5 +276,41 @@ final class McpWhatsAppToolsTest extends DatabaseTestCase
         $error = $this->mcpCallError($headers, $session, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'The ninth']);
 
         self::assertStringContainsString('Too many WhatsApp replies at once', $error);
+    }
+
+    /**
+     * An app or a token that is not one of our own apps may queue 4 replies in 10 minutes and 6 a day in the tests (20
+     * and 100 in production), on top of the user's limit; another token has its own.
+     */
+    public function testAToolHasALimitOfItsOwn(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['chat:send']);
+        $session = $this->mcpInitialize($headers);
+        for ($i = 0; $i < 4; ++$i) {
+            $this->mcpCallOk($headers, $session, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'Message '.$i]);
+        }
+
+        $error = $this->mcpCallError($headers, $session, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'One more']);
+        self::assertStringStartsWith('Not done, too many at once: This app or token queued too many WhatsApp messages in the last 10 minutes.', $error);
+
+        $other = $this->personalAccessTokenHeaders('kim@example.test', ['chat:send']);
+        $otherSession = $this->mcpInitialize($other);
+        $this->mcpCallOk($other, $otherSession, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'From another token']);
+
+        // Ten minutes later for the first token: its day still counts.
+        $secret = substr($headers['HTTP_AUTHORIZATION'], \strlen('Bearer '));
+        $tokenId = $this->connection()->fetchOne('SELECT id FROM personal_access_token WHERE token_hash = :hash', ['hash' => hash('sha256', $secret)]);
+        self::assertIsString($tokenId);
+        static::getContainer()->get('limiter.chat_reply_caller')->create($this->kim->getId()->toRfc4122().'|pat:'.$tokenId)->reset();
+        for ($i = 4; $i < 6; ++$i) {
+            $this->mcpCallOk($headers, $session, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'Message '.$i]);
+        }
+        $error = $this->mcpCallError($headers, $session, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'One more']);
+        self::assertStringStartsWith('Not done, too many at once: This app or token queued too many WhatsApp messages in the last day.', $error);
+
+        $this->client->jsonRequest('POST', '/api/v1/chats/'.$this->annaChat.'/outgoing', ['id' => Uuid::v7()->toRfc4122(), 'text' => 'Over REST'], $headers);
+        self::assertResponseStatusCodeSame(429);
+        self::assertGreaterThan(0, (int) $this->client->getResponse()->headers->get('Retry-After'));
+        self::assertSame(7, $this->countRows('SELECT COUNT(*) FROM chat_outgoing WHERE id <> :waiting AND status = \'waiting\'', ['waiting' => $this->ids['waiting']]));
     }
 }

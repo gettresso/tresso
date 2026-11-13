@@ -12,8 +12,10 @@ use App\ApiResource\Input\Chat\QueueReply;
 use App\Chat\ChatQueue;
 use App\Chat\ChatRequestBody;
 use App\Chat\ChatViews;
+use App\Security\CallerKey;
 use App\Security\CurrentUser;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -32,6 +34,7 @@ final readonly class ChatOutgoingProcessor implements ProcessorInterface
         private CurrentUser $currentUser,
         private EntityManagerInterface $entityManager,
         private ChatRequestBody $body,
+        private Security $security,
     ) {
     }
 
@@ -44,7 +47,7 @@ final readonly class ChatOutgoingProcessor implements ProcessorInterface
             if (!$request instanceof Request) {
                 throw new \LogicException('Queueing a reply needs the request.');
             }
-            [$outgoing, $queued] = $this->queue->queue($user, $uriVariables['chatId'] ?? null, $this->body->read($request, QueueReply::class, QueueReply::MAX_BYTES), new \DateTimeImmutable());
+            [$outgoing, $queued] = $this->queue->queue($user, $uriVariables['chatId'] ?? null, $this->body->read($request, QueueReply::class, QueueReply::MAX_BYTES), new \DateTimeImmutable(), CallerKey::of($this->security->getToken()));
             if (!$queued) {
                 // The same request again: the reply it queued the first time, as it is now.
                 $request->attributes->set('_api_response_status', Response::HTTP_OK);

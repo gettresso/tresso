@@ -591,6 +591,36 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'));
     }
 
+    /**
+     * Cancelling its own waiting reply is harmless, so chat:send may; trying again is not (a reply that failed as
+     * unconfirmed may have gone out), so it stays with the user in our own apps.
+     */
+    public function testChatSendCancelsButOnlyOurAppsTryAgain(): void
+    {
+        $headers = $this->seededThirdPartyHeaders('kim@example.test', ['chat:send']);
+        $waiting = $this->queueReply($this->chatId, 'From a tool', headers: $headers)['id'] ?? null;
+        self::assertIsString($waiting);
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$waiting, server: $headers);
+        self::assertResponseStatusCodeSame(204);
+
+        $failed = $this->queueReply($this->chatId, 'From a tool too', headers: $headers)['id'] ?? null;
+        self::assertIsString($failed);
+        $this->relay('outgoing/claim');
+        self::assertSame($failed, $this->decodedResponse()['id'] ?? null);
+        $this->report($failed, ['sent' => false, 'error' => 'unconfirmed']);
+        self::assertResponseStatusCodeSame(200);
+
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$failed.'/retry', [], $headers);
+        self::assertResponseStatusCodeSame(403, 'A tool never sends an unconfirmed reply again.');
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$failed.'/retry', [], $this->personalAccessTokenHeaders('kim@example.test', ['chat:send']));
+        self::assertResponseStatusCodeSame(403, 'Nor a script.');
+        self::assertSame('failed', $this->connection()->fetchOne('SELECT status FROM chat_outgoing WHERE id = :id', ['id' => $failed]));
+
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$failed.'/retry', [], $this->web);
+        self::assertResponseStatusCodeSame(200, 'The user does, in our app.');
+        self::assertSame('waiting', $this->decodedResponse()['status'] ?? null);
+    }
+
     public function testChatSendQueuesAReply(): void
     {
         $this->queueReply($this->chatId, 'From a tool', headers: $this->seededThirdPartyHeaders('kim@example.test', ['chat:send']));
