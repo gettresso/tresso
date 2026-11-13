@@ -78,6 +78,14 @@ Built next to phase 1, each step its own pull request. See "3.13 Calendar" in th
   updates and replies sent by the providers (`notify` and the reply comment on each write); Teams meetings through
   Graph, Google Meet through `conferenceData`, asked for with `conferenceProvider` per calendar; a join link for
   every recognized meeting (`conference.url`; the join buttons themselves come with the calendar views of C4)
+  - Done: meeting links in the clients. The state of a requested link (pending, failed with a reason) and its removal
+    and retry in the API and the workers, the own room link that survives a round trip through Google and Microsoft,
+    the meeting preferences (default app per account, the own link, a link when guests are invited), Settings, Meeting
+    apps and the "Meeting link" row of the editor on web and desktop, Join and Copy link in the popover, the lists and
+    on the phone, and the app named in reminders.
+  - Still to do, each waiting on the server's owner (OPERATIONS.md, "Meeting links"): Zoom (a Marketplace app and
+    `ZOOM_OAUTH_CLIENT_ID` and `ZOOM_OAUTH_CLIENT_SECRET`), and Teams links for events on calendars that are not
+    Microsoft 365 (`OnlineMeetings.ReadWrite` on the Entra app). "Leave without a link" on the phone.
 - [x] C6 Calendar assistant interfaces with the deterministic meeting time finder: the
   `EventDraftInterpreter`, `MeetingTimeFinder`, `EventExtractor` and `MeetingBriefWriter` interfaces with their
   capabilities; meeting times from the user's calendars within their working hours, focus blocks, buffer, travel time
