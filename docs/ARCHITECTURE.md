@@ -1836,10 +1836,10 @@ goes folder, risk, bridge, link: nothing starts the bridge before the user confi
 web protocol, a possible limit or ban, messages stored on the Mac in the bridge's folder), the QR code is drawn from
 the shell's rows as an SVG that stays dark on white in both themes, and Connect saves the config with a new device id
 and `importSince` (the connect moment less 30 days), which nothing changes afterwards. The dialog then shows the first
-import in counts (messages and chats so far, chats when done, a stuck import with what could not be stored), and that
-the chats will show in a later version (said until the chat screens exist). Closing it while the bridge starts waits
+import in counts (messages and chats so far, chats when done, a stuck import with what could not be stored); Done leads
+to the WhatsApp list. Closing it while the bridge starts waits
 for the start and then stops the bridge. "Only this Mac" is the only mode; "All my devices" shows as coming later.
-Notify me stays off and is not shown until the chat screens send notifications; WhatsApp gets no classification, no
+Notify me is off by default; WhatsApp gets no classification, no
 search index and no smart inbox. Settings, WhatsApp shows the relaying Mac, the
 folder (Change folder: picked and checked first, the chats stay, a new store is read from the start), the bridge (each
 failure in plain words with what to do: not built, quit three times, port in use, not protected, not safe to start),
@@ -1849,8 +1849,31 @@ first import), and Disconnect, which says it is waiting while a reply being sent
 cursor, and the config goes; Tresso deletes nothing in the user's whatsapp-mcp folder, so the bridge's own store stays
 and the phone keeps the Mac under Linked devices until the user removes it there. A sign-out stops the relay without
 waiting for it and removes the config (an expired session keeps it); the shell stops the bridge. The store keeps the
-bridge's state and Notify me on the `wa:account` row (`setLocalChatAccount`), and offers `pollNow` and `leaveOut` for
-the chat screens.
+bridge's state and Notify me on the `wa:account` row (`setLocalChatAccount`), and offers the chat screens `pollNow`,
+`leaveOut`, `takeBackIn` (Settings lists the chats left out: the config first, then with the relay stopped the row is
+marked in again and the cursor reset, so the chat's messages come back read, as a first import), a `revision` raised
+whenever the relay stored something or the chats changed through it, and `senderNames`: the names its lookups found by
+sender id, in memory only, with `lookUpNames` for the senders of messages stored before their name was known (they show
+the name once it is; the stored rows are not rewritten).
+
+The chat screens (`apps/web/src/stores/chats.ts`, `apps/web/src/components/chat/`) show the chats of the "Only this
+Mac" account only where WhatsApp is on and connected; in the browser and with the switch off nothing of them renders.
+The sidebar has a WhatsApp row (unread chats in the Unified Inbox, which its count includes) and says `N mail accounts,
+WhatsApp`; the Unified Inbox places chats among the mail by time (`mergeInbox`, no checkbox, never in a bulk selection,
+and while older mail is still to be shown only chats newer than the last conversation on screen) with `Channels` tabs
+(All, Mail, WhatsApp); `/whatsapp` lists every chat that is not left out, archived ones too. A chat is read in windows
+(`MailStore.chatPage`: the newest 50 messages, older ones on scrolling up with the scroll position kept, never the whole
+chat), with all its replies; replies older than the window's first message wait until it is shown. Opening a chat
+sets `readThrough`; Noted sets both times, Archive `archivedThrough`; none of it reaches WhatsApp. Do opens a small
+todo field titled `Reply to <chat>` that the user confirms or changes; nothing else of the chat goes into the todo.
+Replies go through `queueLocalReply` and a relay round (`pollNow`); a waiting reply or a failed one can be cancelled,
+one being sent cannot, and one whose sending is unconfirmed says it may have gone out and goes again only through Try
+again. Files: Download asks the shell for Tresso's own checked copy (a mismatch, a missing hash, an untrusted name or a
+file too large are said and nothing opens), Open opens only that copy, Attach takes a file from the native picker and
+sends it at once; only a file that went out is recorded (`recordLocalAttachment`, a sent reply `File: <name>`), so Try
+again never sends a file as text. Desktop notifications (`apps/web/src/mail/chatNotifications.ts`) come only with
+Notify me on: one per chat per read, the chat's name and the start of its newest message (D5: local only), never during
+the first import, never for the chat open in a focused window; a click opens `/chats/<id>`.
 
 `ServerChatBackend` (`packages/core/src/chat/serverBackend.ts`) is the backend for "All my devices", over `ChatApi`
 (`packages/core/src/chat/api.ts`: the request and answer types of the chat endpoints of 3.17, one method per endpoint;
