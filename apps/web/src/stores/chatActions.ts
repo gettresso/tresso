@@ -58,6 +58,7 @@ export type ChatActionErrorCode =
   | 'maybe_queued'
   | 'wait'
   | 'other_number'
+  | 'checking'
 
 const TEXTS: Record<ChatActionErrorCode, string> = {
   empty: 'The reply is empty.',
@@ -79,6 +80,8 @@ const TEXTS: Record<ChatActionErrorCode, string> = {
   wait: 'Your Tresso server asked Tresso to wait. Try again in a few minutes.',
   other_number:
     'This Mac is linked to another WhatsApp number than your Tresso server holds. Disconnect WhatsApp on the server first, or link this Mac to the same number.',
+  // The mail store's STILL_CHECKING: the server has not confirmed who is signed in yet in this page load.
+  checking: 'Tresso is still checking who is signed in. Try again once it is connected.',
 }
 
 /**

@@ -224,6 +224,14 @@ describe('ChatPane', () => {
     expect(view.get('#chat-attach-note').text()).toBe('Files are sent in Only this Mac for now.')
     expect(view.get('button.attach').attributes('aria-describedby')).toBe('chat-attach-note')
     expect(view.get('textarea').attributes('disabled')).toBeUndefined()
+    // Leaving a chat out reaches the server and every device here.
+    await view.get('[aria-haspopup="menu"]').trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click()
+    await flushPromises()
+    expect(view.get('#chat-leave-body').text()).toContain(
+      "Tresso removes this chat's messages from your Tresso server and from every device, and stops reading it. The chat stays in WhatsApp.",
+    )
   })
 
   it('empties the field and takes back the error once an unsure reply turns out queued', async () => {

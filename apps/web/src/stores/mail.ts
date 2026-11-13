@@ -219,6 +219,11 @@ export const useMailStore = defineStore('mail', () => {
   /** The open copy is kept current (its user was confirmed): pulls, uploads and the realtime stream run. */
   let syncing = false
   /**
+   * `syncing`, for screens: the server confirmed the open copy's user in this page load, so writes for that user may go
+   * out (confirmedOnly). The chat screens hold their writes back until then.
+   */
+  const confirmed = ref(false)
+  /**
    * The mail of a user who signed out could not be removed from this device (the desktop refuses while a read still
    * uses the copy, the browser's storage failed). The sign-in screen says so; the copy is marked and removed at the
    * next start. Null when nothing was left behind.
@@ -345,6 +350,7 @@ export const useMailStore = defineStore('mail', () => {
    */
   async function beginSync(mine: number, database: MailStore): Promise<void> {
     syncing = true
+    confirmed.value = true
     status.confirmed()
     const current = new SyncEngine({
       store: database,
@@ -594,6 +600,7 @@ export const useMailStore = defineStore('mail', () => {
     ready.value = false
     synced.value = false
     syncing = false
+    confirmed.value = false
     accounts.value = []
     allFolders.value = []
     signatures.value = []
@@ -1211,6 +1218,7 @@ export const useMailStore = defineStore('mail', () => {
     syncStatus,
     ready,
     synced,
+    confirmed,
     chatChanges,
     start,
     stop,

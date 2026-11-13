@@ -63,6 +63,8 @@ export function fakeMail() {
   return shallowReactive({
     synced: true,
     ready: true,
+    /** The server confirmed the copy's user (writes may go out). */
+    confirmed: true,
     chatChanges: 0,
     store: null as SqliteMailStore | null,
     currentStore: () => null as SqliteMailStore | null,

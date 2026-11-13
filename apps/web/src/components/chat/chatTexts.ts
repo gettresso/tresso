@@ -77,6 +77,8 @@ export function composerNote(relaysHere: boolean, relayName: string | null): str
 /** The confirmation of "Leave this chat out". */
 export const LEAVE_OUT_TITLE = 'Leave this chat out?'
 export const LEAVE_OUT_BODY = 'Tresso removes its copy and stops reading it. The chat stays in WhatsApp.'
+/** The same where the chats are on the server ("All my devices", and the browser): the removal reaches every device. */
+export const LEAVE_OUT_BODY_SERVER = "Tresso removes this chat's messages from your Tresso server and from every device, and stops reading it. The chat stays in WhatsApp."
 /** Next to "Leave this chat out": WhatsApp may keep one contact as two chats. */
 export const LEAVE_OUT_TWO_CHATS = 'A contact can appear as two chats in WhatsApp (by number and by hidden number). Leave both out to keep the contact out.'
 /** From which length the composer shows how many characters are left. */

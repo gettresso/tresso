@@ -173,6 +173,30 @@ describe('ChatPane in the browser', () => {
     expect(notice(view).text()).toBe('The bridge on your Mac is not running. New messages are not picked up, and replies wait until it runs again.')
   })
 
+  it('reads the time again every minute, so a notice from before midnight shows the date after it', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    const evening = new Date(2026, 10, 12, 23, 50).getTime()
+    vi.setSystemTime(evening + 60_000)
+    const view = await open(SERVER_CHAT, { relayOnline: false, relayOfflineSince: new Date(evening).toISOString() })
+    const before = notice(view).text()
+    expect(before).toMatch(new RegExp(`^Your Mac is offline since ${TIME.source}\\.`))
+    vi.setSystemTime(new Date(2026, 10, 13, 0, 5).getTime())
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(notice(view).text()).not.toBe(before)
+    expect(notice(view).text()).not.toMatch(new RegExp(`since ${TIME.source}\\.`))
+  })
+
+  it('holds every write until the server confirmed who is signed in', async () => {
+    mail.confirmed = false
+    const view = await open(SERVER_CHAT)
+    expect(view.get('h2').text()).toBe('Bram Visser')
+    expect(view.get('textarea').attributes('disabled')).toBeDefined()
+    expect(server.calls).toEqual([])
+    mail.confirmed = true
+    await flushPromises()
+    expect(view.get('textarea').attributes('disabled')).toBeUndefined()
+  })
+
   it('follows the account the delta brings: the notice comes and goes', async () => {
     const view = await open(SERVER_CHAT)
     server.account = { ...server.account!, relayOnline: false, relayOfflineSince: at(0) }
@@ -300,7 +324,9 @@ describe('ChatPane in the browser', () => {
     await flushPromises()
     document.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click()
     await flushPromises()
-    expect(view.get('#chat-leave-body').text()).toContain('Only the Mac that relays WhatsApp can take it back in.')
+    expect(view.get('#chat-leave-body').text().replace(/\s+/g, ' ')).toBe(
+      "Tresso removes this chat's messages from your Tresso server and from every device, and stops reading it. The chat stays in WhatsApp. A contact can appear as two chats in WhatsApp (by number and by hidden number). Leave both out to keep the contact out. Only the Mac that relays WhatsApp can take it back in.",
+    )
     await view.findAll('.confirm button').find((button) => button.text() === 'Leave out')!.trigger('click')
     await flushPromises()
     expect(server.lastCall('updateChat')).toEqual([SERVER_CHAT, { leftOut: true }])

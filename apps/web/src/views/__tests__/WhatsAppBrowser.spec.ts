@@ -48,6 +48,7 @@ describe('WhatsApp in the browser', () => {
     vi.spyOn(mail, 'syncNow').mockResolvedValue()
     mail.ready = true
     mail.synced = true
+    mail.confirmed = true
   })
 
   afterEach(() => {
@@ -173,6 +174,17 @@ describe('WhatsApp in the browser', () => {
       expect(view.find('.relay-notice').exists()).toBe(true)
     })
 
+    it('says the notice once while a chat is open: the list keeps it without a live region', async () => {
+      await relayed({ relayOnline: false, relayOfflineSince: at(-60) })
+      const view = await show(`/whatsapp/chat-${DIRECT}`)
+      await vi.waitFor(() => expect(view.findAll('.relay-notice')).toHaveLength(2))
+      const [list, pane] = view.findAll('.relay-notice')
+      expect(list!.text()).toBe(pane!.text())
+      expect(view.findAll('[role="status"].relay-notice')).toHaveLength(1)
+      expect(view.get('.chat-pane .relay-notice').attributes('role')).toBe('status')
+      expect(view.get('.list-notice').attributes('role')).toBeUndefined()
+    })
+
     it('leads back to the Unified Inbox once the account goes', async () => {
       await relayed()
       const view = await show(`/whatsapp/chat-${DIRECT}`)
@@ -189,7 +201,7 @@ describe('WhatsApp in the browser', () => {
 
     async function show(path: string, component: typeof SettingsAccountsView | typeof SettingsWhatsAppBrowserView): Promise<VueWrapper> {
       await router.push(path)
-      wrapper = mount(component, { global: { plugins: [router] } })
+      wrapper = mount(component, { global: { plugins: [router] }, attachTo: document.body })
       await flushPromises()
       return wrapper
     }
@@ -223,8 +235,8 @@ describe('WhatsApp in the browser', () => {
         ['Linked to phone', 'Linked 3 days ago. WhatsApp can ask you to link again.'],
       ])
       expect(view.text()).toContain('Chats to bring inChange this on the Mac that relays WhatsApp.Direct chats and groups')
-      // The only control is Notify me.
-      expect(view.findAll('button')).toEqual([])
+      // The controls are Notify me and removing the chats from the server.
+      expect(view.findAll('button').map((button) => button.text())).toEqual(['Remove WhatsApp from your Tresso server'])
       expect(view.findAll('select')).toEqual([])
       expect(view.findAll('input').map((input) => input.attributes('id'))).toEqual(['wa-notify'])
       for (const word of ['Use this Mac instead', 'Change folder', 'Disconnect', 'Connect WhatsApp', 'Where messages live', 'Show how to link', 'Take back in']) {
@@ -273,6 +285,51 @@ describe('WhatsApp in the browser', () => {
       expect(view.get('.left-out').text()).toContain('Take chats back in on the Mac that relays WhatsApp: only it can read its bridge again.')
       expect(view.get('.left-out').findAll('button')).toEqual([])
     })
+
+    it('removes WhatsApp from the server after a confirmation, then leaves for Accounts', async () => {
+      await relayed()
+      const view = await show('/settings/whatsapp', SettingsWhatsAppBrowserView)
+      await vi.waitFor(() => expect(view.find('.remove').exists()).toBe(true))
+      const button = view.get<HTMLButtonElement>('.remove > button')
+      button.element.focus()
+      await button.trigger('click')
+      await flushPromises()
+      const dialog = view.get('[role="alertdialog"]')
+      expect(dialog.attributes('aria-labelledby')).toBe('wa-remove-title')
+      expect(dialog.get('#wa-remove-title').text()).toBe('Remove WhatsApp from your Tresso server?')
+      expect(dialog.get('#wa-remove-body').text()).toBe(
+        "Your chats, messages and waiting replies are removed from your Tresso server and from every device; waiting replies are not sent. Your Mac disconnects WhatsApp in Tresso when it is next online. WhatsApp itself and the bridge's own store on your Mac are not touched.",
+      )
+      expect(dialog.findAll('button').map((item) => item.text())).toEqual(['Remove', 'Cancel'])
+      expect(document.activeElement?.textContent).toBe('Cancel')
+      // Cancel removes nothing and gives the focus back.
+      await dialog.findAll('button')[1]!.trigger('click')
+      await flushPromises()
+      expect(view.find('[role="alertdialog"]').exists()).toBe(false)
+      expect(document.activeElement).toBe(view.get('.remove > button').element)
+      expect(server.callsOf('removeAccount')).toEqual([])
+
+      // Refused: said, and nothing goes.
+      await view.get('.remove > button').trigger('click')
+      await flushPromises()
+      server.fail('removeAccount', new ChatApiError(503, 'Unavailable.'))
+      await view.get('[role="alertdialog"] .button-danger').trigger('click')
+      await flushPromises()
+      expect(view.get('[role="alertdialog"] [role="alert"]').text()).toBe('Your Tresso server could not take this change just now. Try again.')
+      expect(useChatsStore().enabled).toBe(true)
+
+      const syncNow = vi.mocked(useMailStore().syncNow)
+      syncNow.mockImplementation(async () => {
+        await server.deliver(copy)
+        useMailStore().chatChanges++
+      })
+      await view.get('[role="alertdialog"] .button-danger').trigger('click')
+      await flushPromises()
+      expect(server.callsOf('removeAccount')).toEqual([[ACCOUNT_ID], [ACCOUNT_ID]])
+      expect(server.account).toBeNull()
+      await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('settings-accounts'))
+      expect(useChatsStore().enabled).toBe(false)
+    }, 10_000)
 
     it('goes back to Accounts once the account goes', async () => {
       await relayed()

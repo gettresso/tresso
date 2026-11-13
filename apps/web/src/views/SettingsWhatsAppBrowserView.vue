@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { accountSubtitle } from '@tresso/core'
 import { useChatsStore } from '@/stores/chats'
@@ -10,8 +10,9 @@ import AppIcon from '@/components/AppIcon.vue'
 /**
  * Settings, WhatsApp in the browser (the WhatsApp plan's WP11): what the server's chat account says, read only. The
  * browser has no bridge: connecting, the relay, the bridge, the link, where the chats live and which chats come in are
- * changed on the Mac that relays WhatsApp. Only Notify me, a setting the server keeps, can be changed here. The chats
- * left out are listed with why they cannot be taken back in here. Without a chat account in the copy the router keeps
+ * changed on the Mac that relays WhatsApp. Only Notify me, a setting the server keeps, can be changed here, and the
+ * chats can always be removed from the server (also when the Mac is lost), after a confirmation. The chats left out
+ * are listed with why they cannot be taken back in here. Without a chat account in the copy the router keeps
  * this page closed, and the page goes back to Accounts when the account goes while it is open.
  */
 const chats = useChatsStore()
@@ -23,6 +24,33 @@ const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | null = null
 const saving = ref(false)
 const error = ref<string | null>(null)
+const confirmingRemove = ref(false)
+const removing = ref(false)
+const removeError = ref<string | null>(null)
+const removeButton = ref<HTMLButtonElement | null>(null)
+const removeCancel = ref<HTMLButtonElement | null>(null)
+
+// The confirmation takes focus on Cancel when it opens, and gives it back to the button when it closes.
+watch(confirmingRemove, async (open) => {
+  await nextTick()
+  ;(open ? removeCancel.value : removeButton.value)?.focus()
+})
+
+async function remove(): Promise<void> {
+  if (removing.value) {
+    return
+  }
+  removing.value = true
+  removeError.value = null
+  try {
+    await chats.removeFromServer()
+    // The pull brings the account's removal; the page then leaves for Accounts (the watcher below).
+  } catch (cause) {
+    removeError.value = cause instanceof Error ? cause.message : 'Your Tresso server could not take this change just now. Try again.'
+  } finally {
+    removing.value = false
+  }
+}
 
 const relay = computed(() => deviceLabel(account.value?.relayDeviceName ?? null))
 /** The relaying Mac as the plan names it (`the Tresso app on <relay device name>`). */
@@ -157,6 +185,23 @@ onBeforeUnmount(() => {
         <ul class="left-list">
           <li v-for="row in leftOutRows" :key="row.id" class="left-row" dir="auto">{{ row.name }}</li>
         </ul>
+      </section>
+
+      <section class="panel remove" aria-label="Remove">
+        <p>Removing WhatsApp from your Tresso server deletes your chats there and on every device, also when the Mac that relays them is gone.</p>
+        <button ref="removeButton" type="button" class="button button-danger" :disabled="removing" @click="confirmingRemove = true">Remove WhatsApp from your Tresso server</button>
+        <div v-if="confirmingRemove" class="confirm" role="alertdialog" aria-labelledby="wa-remove-title" aria-describedby="wa-remove-body" @keydown.esc.prevent="confirmingRemove = false">
+          <p id="wa-remove-title"><strong>Remove WhatsApp from your Tresso server?</strong></p>
+          <p id="wa-remove-body">
+            Your chats, messages and waiting replies are removed from your Tresso server and from every device; waiting replies are not sent. Your Mac disconnects WhatsApp in Tresso when it
+            is next online. WhatsApp itself and the bridge's own store on your Mac are not touched.
+          </p>
+          <div class="actions">
+            <button type="button" class="button button-danger" :disabled="removing" @click="remove">{{ removing ? 'Removing…' : 'Remove' }}</button>
+            <button ref="removeCancel" type="button" class="button button-quiet" :disabled="removing" @click="confirmingRemove = false">Cancel</button>
+          </div>
+          <p v-if="removeError" class="form-error" role="alert">{{ removeError }}</p>
+        </div>
       </section>
     </template>
   </section>
@@ -333,6 +378,28 @@ h3 {
   white-space: nowrap;
   text-overflow: ellipsis;
   unicode-bidi: isolate;
+}
+.remove {
+  flex-flow: row wrap;
+  align-items: center;
+}
+.remove > p {
+  flex: 1 1 320px;
+  color: var(--ink-2);
+}
+.confirm {
+  flex: 1 1 100%;
+  padding: 14px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-card);
+}
+.confirm p {
+  margin: 0 0 8px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .left-row + .left-row {
   border-top: 1px solid var(--line);
