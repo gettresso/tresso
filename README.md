@@ -239,8 +239,9 @@ events are coming next.
 **WhatsApp.** With WhatsApp set to "All my devices", a client can also read, search and answer your WhatsApp chats.
 That needs permissions of their own, separate from mail: "Read your WhatsApp chats" (`chat:read`) and "Send WhatsApp
 messages as you" (`chat:send`); no other permission includes them. The easiest way is a personal access token with
-those ticked (below). An app that signs in itself only gets them when it names them when it registers, and you see
-them listed apart on the consent screen. Answers are queued and sent by the Mac that relays WhatsApp, only into chats
+those ticked under WhatsApp in the token form (below). An app that signs in itself only gets them when it names them
+when it registers, and on the consent screen they are boxes of their own, never ticked for you: Allow without a tick
+gives the app no WhatsApp at all. Answers are queued and sent by the Mac that relays WhatsApp, only into chats
 you already have, never to a new number. Messages come from other people, so treat what an AI app does with them with
 care.
 
