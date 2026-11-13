@@ -67,6 +67,19 @@ export const KEPT_SAVE_LIMIT_MS = 3_000
 
 const UNIFIED_INBOX: ListScope = { kind: 'inbox', mailAccountId: null }
 
+const CHAT_TOMBSTONES: ReadonlySet<string> = new Set(['chatAccount', 'chat', 'chatMessage', 'chatOutgoing'])
+
+/** Whether a page of the delta changed chats: rows in one of its chat lists, or a chat tombstone. */
+export function carriesChats(page: ChangePage): boolean {
+  return (
+    (page.chatAccounts?.length ?? 0) > 0 ||
+    (page.chats?.length ?? 0) > 0 ||
+    (page.chatMessages?.length ?? 0) > 0 ||
+    (page.chatOutgoing?.length ?? 0) > 0 ||
+    page.deleted.some((removed) => CHAT_TOMBSTONES.has(removed.type))
+  )
+}
+
 export type SyncState = 'idle' | 'syncing' | 'error'
 
 /**
@@ -143,6 +156,11 @@ export const useMailStore = defineStore('mail', () => {
    * before it says the conversation is not there (it may not have reached the copy yet).
    */
   const pulls = ref(0)
+  /**
+   * Pages of the delta applied that carried chat rows or removed some: the chat screens and the WhatsApp relay read the
+   * copy's chats again on it (in the "All my devices" mode every chat row comes this way).
+   */
+  const chatChanges = ref(0)
 
   /**
    * The first pull after opening the copy is over (done, or failed while offline): from then on the copy holds what
@@ -340,6 +358,9 @@ export const useMailStore = defineStore('mail', () => {
         }
       },
       onApplied: (page) => {
+        if (carriesChats(page)) {
+          chatChanges.value += 1
+        }
         delivered.push(...page.mailNotifications)
         deliveredHandOvers.push(...page.handOvers)
         void refresh()
@@ -1190,6 +1211,7 @@ export const useMailStore = defineStore('mail', () => {
     syncStatus,
     ready,
     synced,
+    chatChanges,
     start,
     stop,
     syncNow,
