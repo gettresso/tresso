@@ -9,6 +9,8 @@ export class ApiError extends Error {
     readonly violations: Record<string, string> = {},
     /** How long the server asked to wait before trying again (Retry-After), in ms; null when it did not say. */
     readonly retryAfterMs: number | null = null,
+    /** The problem's `code` when the body named one (the chat endpoints' `not_the_relay`, say); null otherwise. */
+    readonly code: string | null = null,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -16,10 +18,12 @@ export class ApiError extends Error {
 
   static async fromResponse(path: string, response: Response): Promise<ApiError> {
     let detail: string | null = null
+    let code: string | null = null
     const violations: Record<string, string> = {}
     try {
-      const body = (await response.json()) as { detail?: unknown; title?: unknown; violations?: unknown }
+      const body = (await response.json()) as { detail?: unknown; title?: unknown; violations?: unknown; code?: unknown }
       detail = typeof body.detail === 'string' ? body.detail : typeof body.title === 'string' ? body.title : null
+      code = typeof body.code === 'string' ? body.code : null
       if (Array.isArray(body.violations)) {
         for (const violation of body.violations as { propertyPath?: unknown; message?: unknown }[]) {
           if (typeof violation.propertyPath === 'string' && typeof violation.message === 'string' && !(violation.propertyPath in violations)) {
@@ -31,7 +35,7 @@ export class ApiError extends Error {
       // Not JSON: keep the generic message.
     }
 
-    return new ApiError(response.status, detail ?? `Request to ${path} failed (${response.status}).`, violations, retryAfterMs(response.headers.get('Retry-After')))
+    return new ApiError(response.status, detail ?? `Request to ${path} failed (${response.status}).`, violations, retryAfterMs(response.headers.get('Retry-After')), code)
   }
 }
 
