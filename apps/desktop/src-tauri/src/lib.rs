@@ -138,9 +138,9 @@ fn main_window(app: &tauri::App) -> tauri::Result<()> {
   let window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
     .on_new_window(|url, _features| {
       if opens_outside(&url)
-        && let Err(error) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+        && tauri_plugin_opener::open_url(url.as_str(), None::<&str>).is_err()
       {
-        log::error!("Opening {url} failed: {error}");
+        log::error!("{}", open_failed(&url));
       }
       tauri::webview::NewWindowResponse::Deny
     })
@@ -153,6 +153,12 @@ fn main_window(app: &tauri::App) -> tauri::Result<()> {
   #[cfg(not(target_os = "macos"))]
   let _ = window;
   Ok(())
+}
+
+/// The log line when the browser or mail app could not take a link. Never the link itself, nor the opener's error,
+/// which may repeat it: a meeting or sign-in link is a key to what it opens. The scheme says enough to look further.
+fn open_failed(url: &tauri::Url) -> String {
+  format!("Opening a link in the browser failed (scheme {})", url.scheme())
 }
 
 /// Whether a link a page wants in a new window opens outside the app: web pages and mail addresses only.
@@ -224,6 +230,14 @@ mod tests {
     let inset = &mac["app"]["windows"][0]["trafficLightPosition"];
     assert_eq!(inset["x"].as_f64(), Some(frame_token("frame-traffic-light-inset-x")));
     assert_eq!(inset["y"].as_f64(), Some(frame_token("frame-traffic-light-inset-y")));
+  }
+
+  #[test]
+  fn a_failed_open_is_logged_without_the_link() {
+    let url: tauri::Url = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_secret%40thread.v2/0".parse().unwrap();
+    let line = open_failed(&url);
+    assert_eq!(line, "Opening a link in the browser failed (scheme https)");
+    assert!(!line.contains("teams.microsoft.com") && !line.contains("secret"));
   }
 
   #[test]
