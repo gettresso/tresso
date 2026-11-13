@@ -1229,7 +1229,42 @@ describe('the WhatsApp relay store in "All my devices"', () => {
       expect(wa.error).toBe(OTHER_NUMBER)
       const beats = statuses().length
       await pass(HEARTBEAT_MS * 2)
+      // Pulls do not start it again either: no more 409s for this number.
+      for (let i = 0; i < 3; i++) {
+        await mail.syncNow()
+        await pass()
+      }
       expect(statuses()).toHaveLength(beats)
+    })
+
+    it('puts the groups setting back when a switch with "Keep group chats on instead" fails', async () => {
+      await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: NUMBER, displayName: null, includeGroups: true, notify: false })
+      await server.deliver(store)
+      const wa = await localWith({ includeGroups: false })
+      server.fail('connect', new ChatApiError(503, 'Unavailable'))
+      expect(await wa.switchMode('all', { copy: true, keepGroups: true })).toBe(false)
+      expect(wa.config).toMatchObject({ mode: 'local', includeGroups: false })
+    })
+
+    it('hands the chats left out to the server during the switch, so a Mac that takes over before this one relayed knows them', async () => {
+      shell.add('A1', DIRECT, 10)
+      shell.add('B1', '31622222222@s.whatsapp.net', 9)
+      const wa = await localWith({ leftOut: [DIRECT] })
+      // The bridge stays unlinked: this Mac never relays after the switch.
+      expect(await wa.switchMode('all', { copy: true })).toBe(true)
+      expect(server.chats.get(DIRECT)).toMatchObject({ leftOut: true, name: null })
+      expect(batches().every((batch) => batch.messages.length === 0)).toBe(true)
+
+      const second = await SqliteMailStore.open(await memorySql())
+      mail.store = second
+      await server.deliver(second)
+      const other = await restart(connectedConfig({ deviceId: '7a1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f' }))
+      shell.emit(LINKED)
+      await pass()
+      expect(await other.useThisMac()).toBe(true)
+      await pass(3_000)
+      expect(sentJids()).toContain('31622222222@s.whatsapp.net')
+      expect(sentJids()).not.toContain(DIRECT)
     })
 
     it('says when a switch would remove the group chats, and keeps them on when the user chose so', async () => {
