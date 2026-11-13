@@ -1337,13 +1337,31 @@ The macOS app has a full menu bar (`apps/desktop/src-tauri/src/menu.rs`, describ
 ids and shortcuts): Tresso (About Tresso, Check for Updates…, Settings… ⌘,, Services, Hide Tresso ⌘H, Hide Others
 ⌥⌘H, Show All, Quit Tresso ⌘Q), File (New Message ⌘N, New Event, New To-do, Close Window ⌘W), Edit (Undo, Redo, Cut,
 Copy, Paste, Paste and Match Style ⌥⇧⌘V, Delete, Select All, Find… ⌘F), View (Inbox, Triage, To-dos, Calendar,
-Search, Hide Sidebar or Show Sidebar ⌃⌘S, Reload, Enter Full Screen ⌃⌘F), Window (Minimize ⌘M, Zoom, Bring All to Front, Tresso ⌘0) and Help
-(Tresso Help, the README; Release Notes, the releases page). The standard items are AppKit's own, so they act on the
-focused web content; Paste and Match Style and Delete, which Tauri has no item for, are added natively. Items that act
-in the web client reach it as the `menu` event with the action's name, handled in one place
+Search, Hide Sidebar or Show Sidebar ⌃⌘S, Reload, Enter Full Screen ⌃⌘F), Mailbox (Get New Mail ⇧⌘N; Daily Brief,
+Waiting On, Drafts, Clean Up, Batches), Message (Reply ⌘R, Reply All ⇧⌘R, Forward ⇧⌘F; Archive ⌃⌘A, Move to Trash ⌘⌫,
+Move to…; Mark as Unread or Mark as Read ⇧⌘U, Flag or Unflag ⇧⌘L), Window (Minimize ⌘M, Zoom, Bring All to Front,
+Tresso ⌘0) and Help (Tresso Help, the README; Release Notes, the releases page). The standard items are AppKit's own,
+so they act on the focused web content; Paste and Match Style and Delete, which Tauri has no item for, are added
+natively. Items that act in the web client reach it as the `menu` event with the action's name, handled in one place
 (`apps/web/src/platform/menu.ts`), and are enabled through the one command `menu_state` while someone is signed in
 (the state lib.rs manages once, which the bar's setup fills); the same command names the sidebar item after what it
-would do (Hide Sidebar while the sidebar shows). Reload acts signed out too, and only after the draft is
+would do (Hide Sidebar while the sidebar shows).
+
+Get New Mail pulls now (the mail store's `syncNow`). Mailbox's places are the sidebar's fixed places that View does not
+list already; smart inboxes and accounts are the user's own and get no items. The Message menu acts on the conversation
+open in the reading pane: the pane offers its own actions while it is mounted (`mail/openConversation.ts`), so an item
+does exactly what the pane's button or key does, undo notice and instant change included. Reply, Reply All and Forward
+take the newest message, as its own buttons do; Move to… opens the pane's folder menu; Mark as Unread is U (back to the
+list), Mark as Read reads what is unread; Flag and Unflag are S. The menu enables these items only while a conversation
+is loaded and has the user's attention (no conversations selected in the list, no hand-over being written, as for the
+pane's keys), and `menu_state` names Mark as Read or Unread and Flag or Unflag after it. A menu shortcut reaches the menu
+before the web view, so the two whose keys also edit text (⌘⌫ deletes to the start of the line, ⇧⌘U underlines in the
+composer) are disabled while a text field or the compose window has the focus, as a Mac app disables what does not
+apply to the focused view (`platform/editing.ts` follows the focus; a menu test keeps every other shortcut off the text
+keys). The web client sends `menu_state` once per change of what it says, never per key or per scroll: changes in one
+tick go together, and a change that ends where it began (the focus moving between fields, a sync reloading the open
+conversation) sends nothing. Not in the menus, because the web client has no such action: Snooze, Mark All as Read,
+Next and Previous Message, and Sent, Archive and Trash as places. Reload acts signed out too, and only after the draft is
 saved and nothing is on its way, as before a restart for an update (one at a time: a second Reload while one waits is
 the same one, and "Later" ends it); it has no ⌘R, which other mail apps use for Reply.
 Closing the window hides it and the app stays in the Dock; the Dock icon and Window > Tresso bring it back, and so do
