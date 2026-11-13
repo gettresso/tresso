@@ -28,6 +28,7 @@ final class NotificationPlanningTest extends DatabaseTestCase
 
     /** Tuesday 20 October 2026; summer time in Amsterdam ends on Sunday 25 October. */
     private const string NOW = '2026-10-20T09:00:00+00:00';
+    private const string TEAMS = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting';
 
     /** @var array<string, string> */
     private array $kim;
@@ -92,14 +93,17 @@ final class NotificationPlanningTest extends DatabaseTestCase
 
     public function testAReminderNamesTheMeetingAppAndThePlaceButNeverTheLink(): void
     {
-        $this->store('teams@test', self::meeting('teams@test', '20261022T100000', ['CONFERENCE;VALUE=URI:https://teams.microsoft.com/l/meetup-join/19%3ameeting', 'LOCATION:Room 3.2\\, Herengracht office']));
+        $this->store('teams@test', self::meeting('teams@test', '20261022T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Room 3.2\, Herengracht office']));
         $this->store('meet@test', self::meeting('meet@test', '20261022T120000', ['X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij']));
         $this->store('other@test', self::meeting('other@test', '20261022T140000', ['CONFERENCE;VALUE=URI:https://video.example.com/room', 'LOCATION:Room 1']));
         $this->store('room@test', self::meeting('room@test', '20261022T160000', ['LOCATION:Room 1']));
+        $this->store('zoom@test', self::meeting('zoom@test', '20261022T180000', ['CONFERENCE;VALUE=URI:https://zoom.us/j/123?pwd=abc', 'LOCATION:Zoom Meeting']));
+        $this->store('webex@test', self::meeting('webex@test', '20261022T200000', ['CONFERENCE;VALUE=URI:https://acme.webex.com/meet/kim']));
+        $this->store('allday@test', ['BEGIN:VEVENT', 'UID:allday@test', 'DTSTAMP:20261019T080000Z', 'DTSTART;VALUE=DATE:20261024', 'DTEND;VALUE=DATE:20261025', 'SUMMARY:Offsite', 'X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'END:VEVENT']);
         // Outlook writes the app in the place and the link in the description.
         $this->store('outlook@test', self::meeting('outlook@test', '20261023T100000', ['LOCATION:Microsoft Teams Meeting', 'DESCRIPTION:Join: https://teams.microsoft.com/l/meetup-join/19%3aoutlook']));
-        // The link only in the place: it is the meeting, and not a place to name.
-        $this->store('linkplace@test', self::meeting('linkplace@test', '20261023T120000', ['LOCATION:Room 2 (https://teams.microsoft.com/l/meetup-join/19%3aplace)']));
+        // The link only in the place: it is the meeting, and not a place to name or travel to.
+        $this->store('linkplace@test', self::meeting('linkplace@test', '20261023T120000', ['LOCATION:Room 2 (https://teams.microsoft.com/l/meetup-join/19%3aplace)', 'X-TRESSO-TRAVEL-MINUTES:15']));
         // A host that only carries an app's link in its path is no app's meeting.
         $this->store('lookalike@test', self::meeting('lookalike@test', '20261023T140000', ['CONFERENCE;VALUE=URI:https://example.com/redirect/teams.microsoft.com/l/meetup-join/1']));
         // A link with a user name in it is not offered as a meeting at all.
@@ -112,14 +116,95 @@ final class NotificationPlanningTest extends DatabaseTestCase
             'meet@test: Thursday 22 October, 12:00 to 13:00, on Google Meet.',
             'other@test: Thursday 22 October, 14:00 to 15:00, online. Or in Room 1.',
             'room@test: Thursday 22 October, 16:00 to 17:00, Room 1',
+            'zoom@test: Thursday 22 October, 18:00 to 19:00, on Zoom.',
+            'webex@test: Thursday 22 October, 20:00 to 21:00, on Webex.',
+            'allday@test: Saturday 24 October (all day), on Google Meet.',
             'outlook@test: Friday 23 October, 10:00 to 11:00, on Microsoft Teams.',
+            'linkplace@test: Leave now: about 15 minutes to Room 2.',
             'linkplace@test: Friday 23 October, 12:00 to 13:00, on Microsoft Teams. Or in Room 2.',
             'lookalike@test: Friday 23 October, 14:00 to 15:00, online.',
             'unsafe@test: Friday 23 October, 16:00 to 17:00, Room 4',
         ], $this->bodies());
-        foreach ($this->bodies() as $body) {
-            self::assertStringNotContainsString('http', $body, 'No link in a reminder.');
-        }
+        $this->assertNoLinks();
+    }
+
+    public function testAPlaceLosesItsLinksAlsoWithoutAMeetingAndInEveryForm(): void
+    {
+        // No meeting is found in these, so the place alone said where to go, link and all.
+        $this->store('jitsi@test', self::meeting('jitsi@test', '20261022T100000', ['LOCATION:https://jitsi.example.org/SecretRoom']));
+        $this->store('http@test', self::meeting('http@test', '20261022T120000', ['LOCATION:Room 7 http://teams.microsoft.com/l/meetup-join/secret']));
+        $this->store('passcode@test', self::meeting('passcode@test', '20261022T140000', ['LOCATION:https://zoom.us/s/123?pwd=abc']));
+        $this->store('appscheme@test', self::meeting('appscheme@test', '20261022T160000', ['LOCATION:Room 8 msteams://teams.microsoft.com/l/meetup-join/secret']));
+        // With a meeting: a link without its scheme, and one glued to a word.
+        $this->store('noscheme@test', self::meeting('noscheme@test', '20261023T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:teams.microsoft.com/l/meetup-join/19%3asecret']));
+        $this->store('glued@test', self::meeting('glued@test', '20261023T120000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Roomhttps://teams.microsoft.com/l/meetup-join/secret']));
+
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'jitsi@test: Thursday 22 October, 10:00 to 11:00',
+            'http@test: Thursday 22 October, 12:00 to 13:00, Room 7',
+            'passcode@test: Thursday 22 October, 14:00 to 15:00',
+            'appscheme@test: Thursday 22 October, 16:00 to 17:00, Room 8',
+            'noscheme@test: Friday 23 October, 10:00 to 11:00, on Microsoft Teams.',
+            'glued@test: Friday 23 October, 12:00 to 13:00, on Microsoft Teams.',
+        ], $this->bodies());
+        $this->assertNoLinks();
+    }
+
+    public function testAPlaceKeepsItsBracketsAndOneThatOnlySaysOnlineIsLeftOut(): void
+    {
+        $this->store('floor@test', self::meeting('floor@test', '20261022T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Herengracht office (3rd floor)']));
+        $this->store('tbd@test', self::meeting('tbd@test', '20261022T120000', ['CONFERENCE;VALUE=URI:https://video.example.com/room', 'LOCATION:(TBD)']));
+        $this->store('vergadering@test', self::meeting('vergadering@test', '20261022T140000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Microsoft Teams-vergadering']));
+        $this->store('word@test', self::meeting('word@test', '20261022T160000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Teams']));
+        $this->store('online@test', self::meeting('online@test', '20261023T100000', ['CONFERENCE;VALUE=URI:https://video.example.com/room', 'LOCATION:Online']));
+        $this->store('dots@test', self::meeting('dots@test', '20261023T120000', ['X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'LOCATION:...']));
+
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'floor@test: Thursday 22 October, 10:00 to 11:00, on Microsoft Teams. Or in Herengracht office (3rd floor).',
+            'tbd@test: Thursday 22 October, 12:00 to 13:00, online. Or in (TBD).',
+            'vergadering@test: Thursday 22 October, 14:00 to 15:00, on Microsoft Teams.',
+            'word@test: Thursday 22 October, 16:00 to 17:00, on Microsoft Teams.',
+            'online@test: Friday 23 October, 10:00 to 11:00, online.',
+            'dots@test: Friday 23 October, 12:00 to 13:00, on Google Meet.',
+        ], $this->bodies());
+    }
+
+    public function testLookalikeAndBrokenLinksAreNotCalledAnApp(): void
+    {
+        $this->store('suffix@test', self::meeting('suffix@test', '20261022T100000', ['CONFERENCE;VALUE=URI:https://teams.microsoft.com.evil.example/l/meetup-join/1']));
+        // A Cyrillic "o" in "microsoft".
+        $this->store('homograph@test', self::meeting('homograph@test', '20261022T120000', ["CONFERENCE;VALUE=URI:https://teams.micr\u{43E}soft.com/l/meetup-join/1"]));
+        $this->store('fragment@test', self::meeting('fragment@test', '20261022T140000', ['CONFERENCE;VALUE=URI:https://evil.example#@teams.microsoft.com/l/meetup-join/1']));
+        // A conference property without an address.
+        $this->store('empty@test', self::meeting('empty@test', '20261022T160000', ['X-GOOGLE-CONFERENCE:https://', 'LOCATION:Room 1']));
+
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'suffix@test: Thursday 22 October, 10:00 to 11:00, online.',
+            'homograph@test: Thursday 22 October, 12:00 to 13:00, online.',
+            'fragment@test: Thursday 22 October, 14:00 to 15:00, online.',
+            'empty@test: Thursday 22 October, 16:00 to 17:00, Room 1',
+        ], $this->bodies());
+        $this->assertNoLinks();
+    }
+
+    public function testNonLatinAndLongPlacesAreShownWhole(): void
+    {
+        $long = trim(str_repeat('Long place ', 60));
+        $this->store('arabic@test', self::meeting('arabic@test', '20261022T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:غرفة ٣']));
+        $this->store('long@test', self::meeting('long@test', '20261022T120000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:'.$long]));
+
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'arabic@test: Thursday 22 October, 10:00 to 11:00, on Microsoft Teams. Or in غرفة ٣.',
+            'long@test: Thursday 22 October, 12:00 to 13:00, on Microsoft Teams. Or in '.$long.'.',
+        ], $this->bodies());
     }
 
     public function testAnOccurrenceAndAnEditWithoutTheMeetingDropTheApp(): void
@@ -206,6 +291,14 @@ final class NotificationPlanningTest extends DatabaseTestCase
         );
 
         return array_values(array_unique($times));
+    }
+
+    /** No planned notification (reminder or leave-now) holds a link. */
+    private function assertNoLinks(): void
+    {
+        foreach ($this->bodies() as $body) {
+            self::assertDoesNotMatchRegularExpression('~https?:|://|www\\.|microsoft\\.com|secret~i', $body, 'No link in a notification.');
+        }
     }
 
     /**
