@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AccessibilityInfo, Alert, Linking } from 'react-native'
+import { AccessibilityInfo, Alert, AppState, Linking } from 'react-native'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SqliteMailStore, SyncedChat, SyncedChatAccount, SyncedChatOutgoing, UpdateChatRequest } from '@tresso/core'
 import { ApiError } from '@/auth/session'
@@ -237,6 +237,25 @@ describe('the chat screen', () => {
     expect(screen.queryByText(/waiting for your Mac|, sending$/)).toBeNull()
   })
 
+  it('says nothing and puts no text back for a reply cancelled before its queueing answered', async () => {
+    const answer = deferred<SyncedChatOutgoing>()
+    const queueReply = vi.fn(() => answer.promise)
+    const { api } = await open({ account: account({ relayOnline: false }) }, fakeApi({ queueReply }))
+    const field = await screen.findByLabelText('Reply to Bram Visser')
+    fireEvent.change(field, { target: { value: 'On my way' } })
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(screen.getByText('On my way')).toBeTruthy())
+
+    const id = (queueReply.mock.calls[0] as unknown as [string, { id: string }])[1].id
+    await act(async () => env.chats.actions.cancel(reply(id, 'c1', { text: 'On my way' })))
+    expect(api.cancelReply).toHaveBeenCalledWith(id)
+    await act(async () => answer.reject(new ApiError(409, 'This reply was cancelled.', {}, null, 'cancelled')))
+
+    await waitFor(() => expect(screen.queryByText('On my way')).toBeNull())
+    expect((field as HTMLTextAreaElement).value).toBe('')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('keeps Send off for an empty reply and says when one is too long', async () => {
     const { api } = await open()
     const field = await screen.findByLabelText('Reply to Bram Visser')
@@ -389,11 +408,56 @@ describe('the chat screen', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Attach a file' }))
       expect(await screen.findByText(/uploading, 0%$/)).toBeTruthy()
       expect(screen.queryByText(/waiting for your Mac/)).toBeNull()
+      files.removed = []
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
       expect(await screen.findByText('plan.pdf was not sent.')).toBeTruthy()
       expect(api.queueReply).not.toHaveBeenCalled()
       expect(api.cancelReply).not.toHaveBeenCalled()
+      await waitFor(() => expect(files.removed, 'The picker\'s copy goes after a cancel too.').toEqual(['file:///cache/plan.pdf']))
+      picker.result = { canceled: true, assets: null }
+    })
+
+    it('stops an upload when the app goes to the background, and queues nothing', async () => {
+      picker.result = { canceled: false, assets: [{ uri: 'file:///cache/plan.pdf', name: 'plan.pdf', size: 31, mimeType: 'application/pdf' }] }
+      const handlers: ((state: string) => void)[] = []
+      const listen = vi.spyOn(AppState, 'addEventListener').mockImplementation((_type, handler) => {
+        handlers.push(handler as (state: string) => void)
+        return { remove: () => undefined } as ReturnType<typeof AppState.addEventListener>
+      })
+      const api = fakeApi({
+        uploadFile: vi.fn(
+          (_chatId: string, _uploadId: string, _file: { uri: string }, options?: { signal?: AbortSignal }) =>
+            new Promise<never>((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new DOMException('Cancelled.', 'AbortError')), { once: true })),
+        ),
+      })
+      await open({}, api)
+      fireEvent.click(await screen.findByRole('button', { name: 'Attach a file' }))
+      expect(await screen.findByText(/uploading, 0%$/)).toBeTruthy()
+
+      act(() => handlers.forEach((handler) => handler('background')))
+
+      expect(await screen.findByText('plan.pdf was not sent.')).toBeTruthy()
+      expect(api.queueReply).not.toHaveBeenCalled()
+      listen.mockRestore()
+      picker.result = { canceled: true, assets: null }
+    })
+
+    it('says a file may still be sent when its cancel was not confirmed, and keeps it in the chat', async () => {
+      picker.result = { canceled: false, assets: [{ uri: 'file:///cache/plan.pdf', name: 'plan.pdf', size: 31, mimeType: 'application/pdf' }] }
+      const answer = deferred<SyncedChatOutgoing>()
+      const api = fakeApi({ queueReply: vi.fn(() => answer.promise), cancelReply: vi.fn(async () => Promise.reject(new TypeError('Network request failed'))) })
+      await open({ account: account({ relayOnline: false }) }, api)
+      fireEvent.click(await screen.findByRole('button', { name: 'Attach a file' }))
+      await waitFor(() => expect(api.queueReply).toHaveBeenCalled())
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(api.cancelReply).toHaveBeenCalled())
+      const id = (vi.mocked(api.queueReply).mock.calls[0] as unknown as [string, { id: string }])[1].id
+      await act(async () => answer.resolve(reply(id, 'c1', { text: '', file: { name: 'plan.pdf', size: 31 } })))
+
+      expect(await screen.findByText('plan.pdf may still be sent. Check the chat.')).toBeTruthy()
+      expect(screen.getByText(/, waiting for your Mac$/)).toBeTruthy()
       picker.result = { canceled: true, assets: null }
     })
 
@@ -406,6 +470,10 @@ describe('the chat screen', () => {
 
       expect(await screen.findByText('plan.pdf was not sent. Too many files uploaded at once. Wait a few minutes, then attach it again.')).toBeTruthy()
       expect(api.queueReply).not.toHaveBeenCalled()
+      await waitFor(() => expect(files.removed, 'The picker\'s copy goes after a failure.').toContain('file:///cache/plan.pdf'))
+      // Attach waits until the server's Retry-After, and says why.
+      expect(screen.getByText('Too many files sent at once. Wait a few minutes, then attach it again.')).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Attach a file' }).getAttribute('aria-disabled')).toBe('true')
       picker.result = { canceled: true, assets: null }
     })
 
@@ -422,6 +490,7 @@ describe('the chat screen', () => {
     })
 
     it('says when the phone could not hand a file to an app', async () => {
+      const announce = vi.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined)
       const opened = vi.spyOn(Linking, 'openURL').mockRejectedValue(new Error('No app'))
       const store = await copyWith({ chats: [BRAM], messages: [message('m4', 'c1', minutes(15), { text: '', mediaKind: 'image', mediaName: null, mediaSize: 10, mediaState: 'stored', mediaError: null, mediaAccess: 'allowed' })] })
       env.chats = { account: account(), store, drafts: new Map(), createTodo: vi.fn(), actions: new ChatActions({ store: () => store, api: fakeApi(), now: Date.now, newId: () => 'x', changed: () => env.bump() }) }
@@ -430,7 +499,9 @@ describe('the chat screen', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Open, Photo, 10 B' }))
 
       expect(await screen.findByText('This phone could not open the file.')).toBeTruthy()
+      expect(announce, 'Said to a screen reader too.').toHaveBeenCalledWith('This phone could not open the file.')
       opened.mockRestore()
+      announce.mockRestore()
     })
   })
 })

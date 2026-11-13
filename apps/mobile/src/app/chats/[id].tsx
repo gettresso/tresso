@@ -4,7 +4,7 @@ import * as DocumentPicker from 'expo-document-picker'
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { CHAT_MAX_FILE_BYTES, replyText, TODO_TITLE_MAX_LENGTH, type ChatPage, type SyncedChatMessage, type SyncedChatOutgoing } from '@tresso/core'
-import { FileNotSent, outcomeUnknown, type FileUpload } from '@/chat/chatActions'
+import { ATTACH_HELD, FileNotSent, outcomeUnknown, ReplyCancelled, type FileUpload } from '@/chat/chatActions'
 import { fileSizeOf, removeCachedCopy } from '@/chat/fileUpload'
 import { useChats } from '@/chat/ChatProvider'
 import { CHAT_MISSING, cancelFailureText, chatInitials, chatName, COUNTER_FROM, counterText, relayBanner, replyProblemText, retryFailureText, sendFailureText, FILE_NOT_OPENED, fileFailureText, mediaTitle, mediaView, UNSCANNED_WARNING } from '@/chat/texts'
@@ -214,6 +214,10 @@ export default function ChatScreen() {
     try {
       await actions.send(chat, typed)
     } catch (error) {
+      if (error instanceof ReplyCancelled) {
+        // The user cancelled it while it was being queued, and the server kept that: nothing to say or put back.
+        return
+      }
       // The text goes back in the box (or its draft, when another chat is on screen now), before anything typed meanwhile.
       const draft = chats.draftOf(forChat)
       chats.setDraft(forChat, draft === '' ? typed : `${typed}\n${draft}`)
@@ -231,8 +235,20 @@ export default function ChatScreen() {
 
   /** Attach a file: one picked from the device, uploaded and queued for the Mac. */
   const [attachingFile, setAttachingFile] = useState(false)
+  // After the server said too many files, Attach waits until its Retry-After (`revision` changes when that starts).
+  const [heldTick, setHeldTick] = useState(0)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const heldFor = useMemo(() => actions.attachHeld(), [actions, revision, heldTick])
+  useEffect(() => {
+    if (heldFor === null) {
+      return
+    }
+    const timer = setTimeout(() => setHeldTick((tick) => tick + 1), heldFor)
+    return () => clearTimeout(timer)
+  }, [heldFor])
+  const attachHeld = heldFor !== null
   async function attach() {
-    if (chat === null || attachingFile) {
+    if (chat === null || attachingFile || actions.attachHeld() !== null) {
       return
     }
     const forChat = chat
@@ -264,7 +280,7 @@ export default function ChatScreen() {
       await actions.sendFile(forChat, { uri: asset.uri, name: asset.name, size, lastModified: asset.lastModified ?? null })
     } catch (error) {
       if (mounted.current && onScreen.current === forChat.id) {
-        setSendError(error instanceof FileNotSent ? fileFailureText(asset.name, error.phase, error.reason, error.unsure, error.cancelled) : `${asset.name} was not sent.`)
+        setSendError(error instanceof FileNotSent ? fileFailureText(asset.name, error.phase, error.reason, error.unsure, error.cancelled, error.maybeSent) : `${asset.name} was not sent.`)
       }
     } finally {
       // The picker's copy in the cache goes, whatever came of it: a new pick makes a new one.
@@ -289,14 +305,18 @@ export default function ChatScreen() {
   }, [actions, id])
   const onCancelUpload = useCallback((reply: SyncedChatOutgoing) => void actions.cancel(reply), [actions])
 
-  /** What the last action on a file said, by message (a refusal, a link that could not open). */
+  /** What the last action on a file said, by message (a refusal, a link that could not open), also to a screen reader. */
   const [mediaNote, setMediaNote] = useState<{ messageId: string; text: string } | null>(null)
+  const noteMedia = useCallback((messageId: string, text: string) => {
+    setMediaNote({ messageId, text })
+    AccessibilityInfo.announceForAccessibility(text)
+  }, [])
   const onMedia = useCallback(
     (message: SyncedChatMessage, action: 'download' | 'open' | 'confirm') => {
       const open = async (acceptUnscanned: boolean) => {
         const link = await actions.fileLink(message.id, acceptUnscanned)
         if (link === null) {
-          setMediaNote({ messageId: message.id, text: 'This file cannot be opened yet.' })
+          noteMedia(message.id, 'This file cannot be opened yet.')
           return
         }
         try {
@@ -304,14 +324,14 @@ export default function ChatScreen() {
         } catch (error) {
           console.error('Handing a WhatsApp file to an app failed', error instanceof Error ? error.name : typeof error)
           if (mounted.current) {
-            setMediaNote({ messageId: message.id, text: FILE_NOT_OPENED })
+            noteMedia(message.id, FILE_NOT_OPENED)
           }
         }
       }
       const fail = (error: unknown) => {
         console.error('A WhatsApp file action failed', error instanceof Error ? error.name : typeof error)
         if (mounted.current) {
-          setMediaNote({ messageId: message.id, text: outcomeUnknown(error) ? 'Tresso could not reach your Tresso server. Try again.' : 'Your Tresso server did not take this.' })
+          noteMedia(message.id, outcomeUnknown(error) ? 'Tresso could not reach your Tresso server. Try again.' : 'Your Tresso server did not take this.')
         }
       }
       setMediaNote(null)
@@ -329,7 +349,7 @@ export default function ChatScreen() {
         ])
       }
     },
-    [actions, syncNow],
+    [actions, syncNow, noteMedia],
   )
 
   // Cancel, Delete and Try again, one at a time per reply.
@@ -522,6 +542,7 @@ export default function ChatScreen() {
           <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
             {length >= COUNTER_FROM && <Text style={[styles.note, !checked.ok && checked.problem === 'too_long' && styles.problem]}>{counterText(length)}</Text>}
             {problem !== null && <Text style={[styles.note, styles.problem]}>{problem}</Text>}
+            {attachHeld && <Text style={styles.note}>{ATTACH_HELD}</Text>}
             {sendError !== null && (
               <Text style={[styles.note, styles.problem]} accessibilityRole="alert" accessibilityLiveRegion="assertive">
                 {sendError}
@@ -529,12 +550,13 @@ export default function ChatScreen() {
             )}
             <View style={styles.composerRow}>
               <Pressable
-                style={({ pressed }) => [styles.attach, (pressed || attachingFile) && styles.pressed]}
+                style={({ pressed }) => [styles.attach, (pressed || attachingFile || attachHeld) && styles.pressed]}
                 onPress={() => void attach()}
-                disabled={attachingFile}
+                disabled={attachingFile || attachHeld}
                 accessibilityRole="button"
                 accessibilityLabel="Attach a file"
-                accessibilityState={{ disabled: attachingFile, busy: attachingFile }}
+                accessibilityHint={attachHeld ? ATTACH_HELD : undefined}
+                accessibilityState={{ disabled: attachingFile || attachHeld, busy: attachingFile }}
               >
                 <Icon name="attach" size={20} color={theme.ink} />
               </Pressable>
