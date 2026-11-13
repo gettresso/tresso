@@ -5,6 +5,7 @@ import { classificationReasonText, dueLabel, triagePlacement, unsubscribeOffer, 
 import { errorMessage } from '@/api/errors'
 import type { AppliedAction } from '@tresso/core'
 import { shortcutAllowed, useMessageActions } from '@/mail/useMessageActions'
+import { useConversationCommands } from '@/mail/openConversation'
 import { shortDue, senderName } from '@/mail/format'
 import { useComposeStore } from '@/stores/compose'
 import { useHandOversStore } from '@/stores/handOvers'
@@ -53,6 +54,7 @@ const canMakeTodo = computed(() => todos.value.length === 0 && !busy.value && !m
 let unmounted = false
 
 const flagged = computed(() => messages.value.some((message) => message.flags.flagged))
+const read = computed(() => messages.value.every((message) => message.flags.seen))
 /** Who this conversation is handed over to and still waited on. */
 const waitingOn = computed(() => openHandOversOf(mail.handOvers, props.threadId))
 // Folders the conversation can move to: its account's, except the ones mail apps manage themselves.
@@ -179,6 +181,27 @@ function toggleFlag(): Promise<void> {
   })
 }
 
+/** Marks it unread as U does (and goes back to the list), or reads what is unread. */
+function toggleRead(): Promise<void> {
+  if (read.value) {
+    return markUnread()
+  }
+  return exclusive(async () => {
+    await run(
+      messages.value.filter((message) => !message.flags.seen).map((message) => message.id),
+      'markRead',
+    )
+  })
+}
+
+/** A reply, reply to all or forward of the newest message: the one open at the bottom, as its own buttons do it. */
+async function reply(kind: 'reply' | 'replyAll' | 'forward'): Promise<void> {
+  const newest = messages.value[messages.value.length - 1]
+  if (newest) {
+    await compose.openReply(newest, kind)
+  }
+}
+
 function moveTo(folderId: string): void {
   void relocate('move', folderId)
 }
@@ -247,6 +270,23 @@ function shortcut(event: KeyboardEvent): void {
   }
 }
 onMounted(() => window.addEventListener('keydown', shortcut))
+
+// The desktop app's Message menu (platform/menu.ts) runs the same actions as the buttons and keys above, and waits when
+// they do: while the conversation loads, conversations are selected in the list, or a hand-over is being written.
+useConversationCommands({
+  ready: () => thread.value !== null && !selection.active && handOvers.handingOver === null,
+  read: () => read.value,
+  flagged: () => flagged.value,
+  reply,
+  archive: () => relocate('archive'),
+  trash: () => relocate('trash'),
+  chooseFolder: async () => {
+    await moveMenu.value?.show()
+  },
+  toggleRead,
+  toggleFlag,
+})
+
 onBeforeUnmount(() => {
   unmounted = true
   window.removeEventListener('keydown', shortcut)

@@ -12,6 +12,7 @@ import { releaseOtherUsersPush } from '@/platform/webPush'
 import NoticeStack from '@/components/NoticeStack.vue'
 import { problemPlacement } from '@/components/problemPlacement'
 import { useFocusReturn } from '@/components/focusReturn'
+import { recheckEditing } from '@/platform/editing'
 import UpdateCard from '@/components/UpdateCard.vue'
 import { useUpdatesStore } from '@/stores/updates'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
@@ -275,7 +276,7 @@ watch(
   <div class="app-layer" :inert="auth.paymentRequired">
     <RouterView />
     <template v-if="auth.isAuthenticated">
-      <Transition name="sink"><ComposeWindow v-if="compose.draft" /></Transition>
+      <Transition name="sink" @after-leave="recheckEditing"><ComposeWindow v-if="compose.draft" /></Transition>
       <Transition name="layer" @after-leave="handOverFocus.restore()"><HandOverDialog v-if="handOvers.handingOver" :key="handOvers.handingOver.id" :message="handOvers.handingOver" /></Transition>
       <NoticeStack />
       <UpdateCard v-if="isDesktop" />
