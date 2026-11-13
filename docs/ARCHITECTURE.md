@@ -2160,7 +2160,9 @@ for Mac connects WhatsApp. With it:
   online, the bridge and the link as it last reported them, which chats come in, and the chats left out (with why they
   are taken back in on the Mac). Notify me, a setting the server keeps, is the one setting (`PATCH` of the account).
   `Remove WhatsApp from your Tresso server` (confirmed first) deletes the account (`DELETE`, a 404 counts as done) with
-  every chat, message and reply, waiting replies unsent, for every device, also when the relaying Mac is lost: that Mac
+  every chat, message and reply, waiting replies unsent, for every device, also when the relaying Mac is lost (once the
+  server confirmed it, the account also goes from this copy at once, so the page leaves even when the pull after it
+  fails; the reply box says why it is off while Tresso still checks who is signed in): that Mac
   disconnects WhatsApp in Tresso at its next call or pull, and WhatsApp and the bridge's store stay. No connect, relay,
   mode, folder or link control. A Mac in "All my devices" that does not relay has the same through Disconnect, which
   deletes the server's account first.
