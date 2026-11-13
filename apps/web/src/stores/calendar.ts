@@ -17,6 +17,7 @@ import {
   startOfWeek,
   todoBlocks as plannedTodoBlocks,
   toWall,
+  type CalendarCapabilities,
   type CalendarDay,
   type ConferenceProvider,
   type EditScope,
@@ -337,9 +338,14 @@ export const useCalendarStore = defineStore('calendar', () => {
    * changes nothing, when the link arrived meanwhile. Guests are never mailed.
    */
   async function dropMeetingRequest(eventId: string): Promise<SyncedCalendarEvent> {
-    const saved = await auth.send<SyncedCalendarEvent>('DELETE', `/api/v1/calendar-events/${encodeURIComponent(eventId)}/meeting-link?only=request`)
+    const saved = await auth.send<SyncedCalendarEvent>('DELETE', `/api/v1/calendar-events/${encodeURIComponent(eventId)}/meeting-link/request`)
     await mail.syncNow()
     return saved
+  }
+
+  /** What the server's calendar offers: the assistant features, and whether it drops a meeting request alone. */
+  function capabilities(): Promise<CalendarCapabilities> {
+    return auth.api<CalendarCapabilities>('/api/v1/calendar/capabilities')
   }
 
   const keptEditor = shallowRef<KeptEditor | undefined>(undefined)
@@ -395,6 +401,7 @@ export const useCalendarStore = defineStore('calendar', () => {
     event,
     requestMeetingLink,
     dropMeetingRequest,
+    capabilities,
     keptEditor,
     keepEditor,
     takeKeptEditor,

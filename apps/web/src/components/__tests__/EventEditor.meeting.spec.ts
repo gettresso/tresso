@@ -36,6 +36,8 @@ describe('the meeting link in the event editor', () => {
   let linkArrived: boolean
   /** Reading one event fails. */
   let readFails: boolean
+  /** What /calendar/capabilities says about the request-only drop; undefined: a server without the field. */
+  let canDrop: boolean | undefined
 
   function router() {
     return createRouter({
@@ -56,6 +58,7 @@ describe('the meeting link in the event editor', () => {
     server = new Map()
     linkArrived = false
     readFails = false
+    canDrop = true
     const mail = useMailStore()
     mail.calendars = [WORK, HOME]
     mail.accounts = [account('m365', 'microsoft', 'kim@company.example'), account('gmail', 'gmail', 'kim@gmail.example')]
@@ -69,6 +72,11 @@ describe('the meeting link in the event editor', () => {
         if (url.pathname === '/api/v1/calendar/meeting-preferences') {
           return new Response(JSON.stringify(preferences))
         }
+        if (url.pathname === '/api/v1/calendar/capabilities') {
+          const capabilities: Record<string, boolean> = { eventDrafts: false, meetingTimes: false, attendeeAvailability: false, eventSuggestions: false, textSuggestions: false, meetingBriefs: false, briefSummaries: false }
+          if (canDrop !== undefined) capabilities.meetingRequestDrop = canDrop
+          return new Response(JSON.stringify(capabilities))
+        }
         const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
         requests.push({ method, path: `${url.pathname}${url.search}`, body })
         const id = /^\/api\/v1\/calendar-events\/([^/]+)/.exec(url.pathname)?.[1]
@@ -76,10 +84,10 @@ describe('the meeting link in the event editor', () => {
         if (method === 'GET' && readFails) {
           return new Response(JSON.stringify({ detail: 'The server is busy. Try again in a moment.' }), { status: 503, headers: { 'Content-Type': 'application/problem+json' } })
         }
-        if (url.pathname.endsWith('/meeting-link') && method === 'DELETE' && linkArrived) {
+        if (url.pathname.endsWith('/meeting-link/request') && linkArrived) {
           return new Response(JSON.stringify({ detail: 'The meeting link has arrived meanwhile. Nothing was changed.' }), { status: 409, headers: { 'Content-Type': 'application/problem+json' } })
         }
-        if (url.pathname.endsWith('/meeting-link')) {
+        if (url.pathname.endsWith('/meeting-link') || url.pathname.endsWith('/meeting-link/request')) {
           const request: ConferenceRequest | null = method === 'POST' ? { provider: body?.provider as 'teams', status: 'pending', reason: null, requestedAt: new Date(NOW).toISOString() } : null
           return new Response(JSON.stringify({ ...stored, conferenceRequest: request }))
         }
@@ -233,7 +241,7 @@ describe('the meeting link in the event editor', () => {
     const again = await editor({ kind: 'edit', occurrence: occurrenceOf(failed)[0]! })
     await again.findAll('.meeting-row .actions button')[2]!.trigger('click')
     await flushPromises()
-    expect(requests[requests.length - 1]).toMatchObject({ method: 'DELETE', path: '/api/v1/calendar-events/failed/meeting-link?only=request' })
+    expect(requests[requests.length - 1]).toMatchObject({ method: 'DELETE', path: '/api/v1/calendar-events/failed/meeting-link/request' })
     expect(title(again)).toBe('Meeting link')
   })
 
@@ -308,7 +316,7 @@ describe('the meeting link in the event editor', () => {
     const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(failed)[0]! })
     await wrapper.findAll('.meeting-row .actions button')[2]!.trigger('click')
     await flushPromises()
-    expect(requests.filter((request) => request.method === 'DELETE').map((request) => request.path)).toEqual(['/api/v1/calendar-events/late/meeting-link?only=request'])
+    expect(requests.filter((request) => request.method === 'DELETE').map((request) => request.path)).toEqual(['/api/v1/calendar-events/late/meeting-link/request'])
     expect(title(wrapper)).toBe('Meeting link')
     expect(wrapper.get('.meeting-row .link').attributes('title')).toBe(TEAMS_URL)
   })
@@ -578,5 +586,32 @@ describe('the meeting link in the event editor', () => {
     await wrapper.get('form').trigger('submit')
     await vi.waitFor(() => expect(wrapper.text()).toContain('This event was moved to another calendar meanwhile. Close it and open it again to change it.'))
     expect(requests.some((request) => request.method === 'PUT')).toBe(false)
+  })
+
+  it('offers Leave without a link only when the server says it can drop the request alone', async () => {
+    const failed = event('nodrop', { conferenceRequest: { provider: 'teams', status: 'failed', reason: 'refused', requestedAt: new Date(NOW - 600_000).toISOString() } })
+    server.set('nodrop', failed)
+    for (const answer of [false, undefined]) {
+      canDrop = answer
+      const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(failed)[0]! })
+      expect(wrapper.findAll('.meeting-row .actions button').map((button) => button.text())).toEqual(['Retry', 'Use another app'])
+      wrapper.unmount()
+    }
+  })
+
+  it('shows a link that the provider still made after the request was dropped', async () => {
+    const failed = event('after', { conferenceRequest: { provider: 'teams', status: 'failed', reason: 'unreachable', requestedAt: new Date(NOW - 600_000).toISOString() } })
+    server.set('after', failed)
+    const sync = followSync()
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(failed)[0]! })
+    await wrapper.findAll('.meeting-row .actions button')[2]!.trigger('click')
+    await flushPromises()
+    expect(title(wrapper)).toBe('Meeting link')
+    expect(wrapper.find('.meeting-row [role="alert"]').exists()).toBe(false)
+    server.set('after', { ...failed, conference: { provider: 'teams', url: TEAMS_URL, id: null, dialIn: null, removable: false }, conferenceRequest: null })
+    await sync()
+    expect(wrapper.get('.meeting-row .link').attributes('title')).toBe(TEAMS_URL)
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('.meeting-row [role="alert"]').exists()).toBe(false)
   })
 })

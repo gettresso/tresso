@@ -3137,10 +3137,12 @@ first reads the event from the server. It sends Meet or Teams as `conferenceProv
 the editor did not know of (the save stops and the row shows that link); a removal (both null) only when the user
 removed the link, which is offered only where core's `meetingRemovable` allows it. Anything else sends the server's
 link back, with the series' request only for the series, while the switch is on and the calendar offers it. Retry
-calls `POST /calendar-events/{id}/meeting-link`; Leave without a link calls `DELETE .../meeting-link?only=request`,
-which never touches a link, and on its 409 the row shows the link that arrived. Both act on the series and keep the
-editor open. Connect a meeting app keeps the editor's values in memory and opens Settings, Meeting apps, whose "Back
-to the event" reopens it. On an event someone else organizes the editor only says who added the link.
+calls `POST /calendar-events/{id}/meeting-link`; Leave without a link calls `DELETE .../meeting-link/request`, which
+never touches a link, and is offered only when `GET /calendar/capabilities` reports `meetingRequestDrop`; on its 409
+the row shows the link that arrived, and a link the provider still makes after it shows from the synced copy. Both act
+on the series and keep the editor open. Connect a meeting app keeps the editor's values in memory and opens Settings,
+Meeting apps, whose "Back to the event" reopens it. On an event someone else organizes the editor only says who added
+the link.
 
 #### AI features (interfaces with built-in and planned AI implementations)
 

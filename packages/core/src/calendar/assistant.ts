@@ -16,6 +16,11 @@ export interface CalendarCapabilities {
   textSuggestions: boolean
   meetingBriefs: boolean
   briefSummaries: boolean
+  /**
+   * The server drops a requested meeting link without touching a link (DELETE .../meeting-link/request). Servers from
+   * before it lack the field: no "Leave without a link" then.
+   */
+  meetingRequestDrop?: boolean
 }
 
 /**

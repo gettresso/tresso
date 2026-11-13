@@ -324,8 +324,18 @@ const addedBy = computed(() => {
   return conference === null || organizer === null ? null : addedByText(conference, preferences.value.ownLink, organizer.name?.trim() || organizer.address)
 })
 
+/** The server drops a request without touching a link: only then is "Leave without a link" offered. */
+const canLeave = ref(false)
+
 onMounted(() => {
   meetingApps.ensureLoaded().catch((e: unknown) => (meetingError.value = `The meeting apps could not be loaded: ${errorMessage(e)}`))
+  if (props.target.kind === 'edit') {
+    calendar
+      .capabilities()
+      .then((capabilities) => (canLeave.value = capabilities.meetingRequestDrop === true))
+      // Unknown: the button stays away, as on a server without the request-only drop.
+      .catch(() => (canLeave.value = false))
+  }
 })
 
 /**
@@ -838,6 +848,7 @@ const repeatSummary = computed(() => {
             :removable="hadLink && !locked"
             :busy="meetingBusy || !preferencesReady"
             :error="meetingError"
+            :can-leave="canLeave"
             @toggle="toggleLink"
             @pick="pickApp"
             @remove="removeLink"
