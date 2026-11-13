@@ -2047,6 +2047,19 @@ off, so it never goes twice). It keeps every point above:
   backend for the account: a former relay may still report `sent`), and only then the cursor and the claim go. A relay
   call answered 409 `not_the_relay` (or 404) stops the relay and pulls at once; it stays off until the copy names a
   relay again. After this Mac's own `PUT` the device is not compared until the pull after it ended.
+- **Consent and the number.** The store refuses "All my devices" without the user's yes to copying (`{ copy: true }`),
+  unless the server's account is in the copy already (a takeover); the connect dialog treats `?mode=all` as that yes
+  only while another Mac relays, checked again at Connect. Before every `PUT` (connect, switch, takeover, Change folder)
+  and before the relay starts, the number the bridge is linked to is compared with the account's: another number is
+  refused (`This Mac is linked to another WhatsApp number...`), an unknown one is asked about first (`{ number: true }`).
+  The server refuses it too: a `PUT` with another number for an account that holds chats is 409 `other_number`, and a
+  `PUT` without a number keeps the stored one.
+- **What this Mac holds back.** Before the relay starts after a connect, switch or takeover, the stricter of this Mac's
+  config and the account (groups off, notify off) is PATCHed to the server and saved in the config (`server-adopted`);
+  from then on the account is the one source and the config follows it, and Settings shows the account's values. The
+  relay's settings add the chats left out in the config that the server has no taken-in row for, and leave groups out
+  while the config does, so nothing left out on this Mac is uploaded, also in the first import after a switch. The relay
+  and the heartbeat start only after a pull of this copy worked in this session.
 - **Heartbeat** at once, on every change of the bridge (process, link, port exposure) and every 60 seconds while this
   Mac relays, also while the bridge is stopped or unlinked (that is what it reports).
 - **Use this Mac instead.** On a Mac in "All my devices" that does not relay: `PUT` with this device, the cursor from 0
@@ -2059,10 +2072,15 @@ off, so it never goes twice). It keeps every point above:
   devices": mark, note the replies waiting in the local rows (`carried-replies`, noted again whole while the rows
   exist), `PUT`, save the config, remove the `wa:` rows (only now), clear the server cursor (a first import from 0 with
   the same `importSince`), unmark. The noted replies are queued on the server once their chat came through the delta,
-  each with a new UUIDv7 kept before it is sent (the server takes ids at most 10 minutes old; a repeat of a queued id gets
-  the same reply back, and a 422 on `id` means it was never queued); one whose chat never comes is given up after the
-  first import and a pull after it, and counted in Settings. To "Only this Mac": mark, stop, report a kept claim,
-  `DELETE` the account, save the config, remove what was kept for the account, then wait until the copy applied the
+  each with a new UUIDv7 (on the server's clock) kept before it is sent: a repeat of a queued id gets the same reply
+  back, and one the user cancelled meanwhile is 409 `cancelled` whatever its age (the server looks the id up before it
+  checks the id's age). A 422 on `id` is never answered with a new id (the reply may have been queued and cancelled
+  before); it is counted apart, as are cancelled ones and those whose chat never comes (given up after the first import
+  and a pull after it). The counts stay in the copy until the user dismisses them; waiting ones can be cancelled, and the
+  replies that were not sent here are not carried (the confirmation says how many). To "Only this Mac": mark, stop, report a kept claim,
+  `DELETE` the account (noted outside the copy too, per user, so a sign-out during it is finished at the next sign-in
+  of the same user; another user's sign-in drops the note without touching that account), save the config (the chats
+  left out on the server join the config's), remove what was kept for the account, then wait until the copy applied the
   account's tombstone before the local relay reads the bridge's store from 0. A switch the server refused before it took
   anything is undone and said; after a crash it is tried again every 30 seconds. Disconnect reports a kept claim and
   deletes the account first; an account found gone from the copy is checked with the server, and gone there too,
@@ -2071,16 +2089,21 @@ off, so it never goes twice). It keeps every point above:
   live one: with the relay stopped the cursor goes back to rowid 0 keeping its store and its first import, a mark
   (`server-history:<account id>`) notes the moment and the chats it is about (and the rowid it began from), and the
   history is marked read through that moment by a chat state change: in the same `PATCH` as `leftOut: false` for a chat
-  taken back in, and for group chats as they come in through the delta. The mark goes once the relay read past where it
-  began and a pull after that found nothing more to mark. Both are offered only on the relaying Mac, which reads the
-  bridge's store.
+  taken back in (the cursor is reset before that request, so a failed one leaves the chat left out), and for group chats
+  as they come in through the delta. The mark goes once the relay read past where it began and a pull after that found
+  nothing more to mark. Both are refused by the store on a Mac that does not relay, which cannot read the bridge again.
 - **Chat actions.** The chat screens write through `ChatActions` (`apps/web/src/stores/chatActions.ts`): the local ones
   in "Only this Mac", the server ones in "All my devices" (queue a reply with a UUIDv7, cancel, try again, read through,
   archive, leave out, take back in). Each shows at once in the copy and is put back when the server refuses or cannot be
-  reached, unless the delta changed that row meanwhile; errors are said in plain words. The server actions need only a
+  reached, field by field to what the server last confirmed (so a later refused change never restores an earlier one),
+  unless the delta changed that field meanwhile; errors are said in plain words. A reply whose outcome is not known (no
+  answer, 408, 5xx) keeps its id per chat in the copy (`unsure-replies`): sending the same text again reuses it, so the
+  server queues it once; it is let go once sent, refused, brought by the delta or older than the server's id window. The server actions need only a
   `ChatApi` and a copy, not the relay, so the browser can use them as they are. On the relaying Mac a waiting reply says
   `waiting for the bridge`; on another Mac `waiting for your Mac` (or `sending` while the relaying Mac is online), and the
-  composer names the Mac that sends. Attach stays "Only this Mac" until files go through the server.
+  composer names the Mac that sends. Attach stays "Only this Mac" until files go through the server (shown, disabled,
+  with why). Every crash point of both switches, a sign-out during one, a second user and the carried replies' crash
+  points have a test in `apps/web/src/stores/__tests__/whatsappRelayServer.spec.ts`.
 
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
 whether the conversation is in an inbox or junk folder, and date (`ListScope`: an inbox or a smart inbox).
@@ -3405,7 +3428,8 @@ chat's JID and WhatsApp id, so it never needs either readable.
   `relay/outgoing/{replyId}/result`) need `CHAT_MANAGE` (our own apps with `mail:write`) and our desktop app
   (`DESKTOP_CLIENT`); `App\Chat\ChatRelayGuard` then answers only the account's relaying device (409 with
   `"code": "not_the_relay"` for another desktop of the user, until it takes over through
-  `PUT /api/v1/chat-accounts/whatsapp`). Queueing a reply (`POST /api/v1/chats/{id}/outgoing`), cancelling it
+  `PUT /api/v1/chat-accounts/whatsapp`; a desktop linked to another number than the account's may not take over an
+  account that holds chats, 409 `"code": "other_number"`, and a `PUT` without a number keeps the stored one). Queueing a reply (`POST /api/v1/chats/{id}/outgoing`), cancelling it
   (`DELETE /api/v1/chat-outgoing/{id}`) need `CHAT_SEND`; trying it again (`POST /api/v1/chat-outgoing/{id}/retry`)
   needs `CHAT_SEND` and one of our own apps (`FIRST_PARTY_CLIENT`), since a reply that failed as `unconfirmed` may
   have gone out and only the user decides to send it again. Replies queued by a caller that is not one of our apps
@@ -3459,7 +3483,9 @@ chat's JID and WhatsApp id, so it never needs either readable.
 - **Reply queue.** A reply's id is a UUIDv7 the client made in the last 10 minutes; the same id again returns the stored
   reply (200), the same id for another chat or user is 409 `id_taken` (the chat is looked up first, so another user's
   chat is a 404 whatever the id), and the id of a reply that was cancelled or went with a chat left out is 409
-  `cancelled` for good (its tombstone is the record). At most 100 replies per user in 10 minutes (429). The relay
+  `cancelled` for good (its tombstone is the record). Both are looked up before the id's age is checked, so a late repeat
+  of a reply that was queued or cancelled is answered as such and never as "too old, make a new id", which would send a
+  cancelled reply after all. At most 100 replies per user in 10 minutes (429). The relay
   claims the oldest waiting reply of its account (`waiting` to `sending`); a claimed reply is never handed out again.
   The claim answers a `claimToken` (16 random bytes, hex), kept with the reply beside the claiming device
   (`claim_token`, `claimed_by`) and never in the delta or any other answer; it is short-lived and random, so it is
