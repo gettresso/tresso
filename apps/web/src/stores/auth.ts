@@ -64,6 +64,8 @@ const REFRESH_LOCK_WAIT_MS = 60_000
  */
 export const REFRESH_RETRY_DELAY_MS = 2_000
 const EXPIRED = 'Your session has expired. Sign in again.'
+/** A request that may not be sent twice was refused for its access token; the next request gets a fresh one. */
+const NOT_SENT_AGAIN = 'The server did not take the sign-in of this request. Try again.'
 
 const oauthConfig: OAuthClientConfig = config
 
@@ -225,6 +227,15 @@ function endBrowserSession(): void {
   form.hidden = true
   document.body.append(form)
   form.submit()
+}
+
+/** How `api` and `send` may handle a request. */
+export interface RequestOptions {
+  /**
+   * False: the request is never sent a second time, not even after the server refused an access token this tab took for
+   * valid (401). For a request that must not happen twice, such as the WhatsApp relay's claim of a reply.
+   */
+  retry?: boolean
 }
 
 function jsonRequest(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): RequestInit {
@@ -702,17 +713,23 @@ export const useAuthStore = defineStore('auth', () => {
     return response
   }
 
-  async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  async function api<T>(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<T> {
     // A request that hangs is given up after a while, so what waits on it (a hand-over, say) fails instead of waiting for
     // ever. Uploads of the user's files may rightly take longer and keep only the caller's own signal.
     const upload = init.body instanceof FormData || init.body instanceof Blob
-    return upload ? answer<T>(path, init) : withDeadline((signal) => answer<T>(path, { ...init, signal }), init.signal)
+    return upload ? answer<T>(path, init, options) : withDeadline((signal) => answer<T>(path, { ...init, signal }, options), init.signal)
   }
 
-  async function answer<T>(path: string, init: RequestInit): Promise<T> {
+  async function answer<T>(path: string, init: RequestInit, options: RequestOptions): Promise<T> {
     const session = generation.value
     const sent = await accessToken()
     let response = await request(path, init, sent)
+    if (response.status === 401 && session === generation.value && options.retry === false) {
+      // Never sent twice (a relay's claim sent again takes the next reply): a fresh token is fetched for the next
+      // request, and this one fails as refused. A refresh the server refuses ends the session there.
+      await accessTokenAfterRejection(sent).catch(() => undefined)
+      throw new ApiError(401, NOT_SENT_AGAIN)
+    }
     if (response.status === 401 && session === generation.value) {
       // The server refused a token this tab took for valid (revoked, or the clock is off): refresh once and retry
       // once. Only a refused refresh or a second 401 ends the session.
@@ -746,8 +763,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /** POST, PUT, PATCH (as JSON merge patch) or DELETE. */
-  function send<T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
-    return api<T>(path, jsonRequest(method, body))
+  function send<T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
+    return api<T>(path, jsonRequest(method, body), options)
   }
 
   /**

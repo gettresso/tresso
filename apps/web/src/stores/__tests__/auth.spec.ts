@@ -671,6 +671,22 @@ describe('auth store', () => {
       expect(auth.isAuthenticated).toBe(true)
     })
 
+    it('never sends a request marked not to retry twice: the token is refreshed for the next one, and the session stays', async () => {
+      const server = stubServer({
+        api: (_path, token) => (token === 'access-2' ? Response.json({ id: 'claim-2' }) : Response.json({}, { status: 401 })),
+      })
+      localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
+      const auth = await authStore()
+
+      await expect(auth.send('POST', '/api/v1/chat-accounts/a/relay/outgoing/claim', { deviceId: 'd' }, { retry: false })).rejects.toMatchObject({ name: 'ApiError', status: 401 })
+
+      expect(server.calls.map((call) => call.token)).toEqual(['access-1'])
+      expect(server.refreshes).toEqual(['refresh-1'])
+      expect(auth.isAuthenticated).toBe(true)
+      await expect(auth.send('POST', '/api/v1/chat-accounts/a/relay/outgoing/claim', { deviceId: 'd' }, { retry: false })).resolves.toEqual({ id: 'claim-2' })
+      expect(server.calls.map((call) => call.token)).toEqual(['access-1', 'access-2'])
+    })
+
     it('ends the session when the API refuses the refreshed token too', async () => {
       const server = stubServer({ api: () => Response.json({}, { status: 401 }) })
       localStorage.setItem('auth.tokens', JSON.stringify(TOKENS))
