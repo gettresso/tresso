@@ -2986,7 +2986,8 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
   and `conferenceError` (`refused`, `not_supported`), and nothing when the meeting is there or none was asked for.
   A request still pending five minutes after it was asked for, with no write of the event waiting, is failed
   (`refused`): by the next synced version without a meeting, or else by the `SweepMeetingRequests` run every minute on
-  the maintenance worker (which gives the event's row a new change number, so clients see it). A synced version that
+  the maintenance worker (which gives the event's row a new change number, so clients see it, and reads only the
+  rows with a request, through the partial index `calendar_object_conference_request`). A synced version that
   has the meeting clears the request whatever its state.
 - Removal of a Google Meet meeting: the master carries `X-TRESSO-CONFERENCE-REMOVE:meet`. Only then, and only when the
   user organizes the event, does the worker patch `"conferenceData": null` (with `conferenceDataVersion=1`); a master
@@ -3044,9 +3045,11 @@ What the workers do with it (`apps/sync/internal/googlecal`, `graphcal`):
   never provider text, never a link. Meeting links are never logged.
 - Graph's body: a description with a join line is written as HTML of escaped text (line breaks as `<br>`). When the
   body has a Teams join block, the user's text goes before the block, and the join line (with what the user wrote
-  below it) after it. Join lines Tresso put after the block before are no part of the block: each trailing element
-  of the block whose text is a join line is dropped first, so the line is never doubled and a changed or removed
-  link leaves nothing behind.
+  below it) after it. What Tresso put after the block before is no part of the block: from the end, the last div or
+  paragraph (also with attributes, a link inside or wrapped in another div, as Exchange may rewrite it) is dropped
+  when its first line is a join line, and so are the wrappers it leaves empty; the block's own first element is never
+  touched. So the line and the text below it are never doubled, and a changed or removed link leaves nothing behind;
+  the text below a removed line stays when the description still ends with it.
 
 #### AI features (interfaces with built-in and planned AI implementations)
 
