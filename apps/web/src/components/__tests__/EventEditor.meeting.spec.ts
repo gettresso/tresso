@@ -580,7 +580,8 @@ describe('the meeting link in the event editor', () => {
     await wrapper.get('.scope input[value="all"]').setValue(true)
     const body = await save(wrapper)
     expect(wrapper.text()).not.toContain('A meeting link was added meanwhile.')
-    expect(body).toMatchObject({ conferenceProvider: 'teams', conferenceUrl: null })
+    // The series already has a Teams link: it keeps it, and nothing new is asked for.
+    expect(body).toMatchObject({ conferenceProvider: null, conferenceUrl: TEAMS_URL })
   })
 
   it('stops with a plain sentence when the event moved to another calendar meanwhile', async () => {
@@ -706,5 +707,69 @@ describe('the meeting link in the event editor', () => {
     await wrapper.get('form').trigger('submit')
     await vi.waitFor(() => expect(wrapper.emitted('saved')).toHaveLength(1))
     expect(requests.find((request) => request.method === 'PUT')!.body).toMatchObject({ conferenceUrl: OTHER, conferenceProvider: null })
+  })
+
+  function seriesWithMovedOccurrence(seriesLink: SyncedCalendarEvent['conference']) {
+    const series = event('team-sync', { recurrence: 'FREQ=DAILY;COUNT=3', start: { dateTime: '2026-10-20T10:00:00', timeZone: AMS }, end: { dateTime: '2026-10-20T11:00:00', timeZone: AMS }, conference: seriesLink })
+    const moved = event('team-sync-2', { uid: series.uid, recurrenceId: '20261021T080000Z', start: { dateTime: '2026-10-21T12:00:00', timeZone: AMS }, end: { dateTime: '2026-10-21T13:00:00', timeZone: AMS } })
+    return { series, moved }
+  }
+
+  it('promises nothing new for all events when the series already has a link of that app', async () => {
+    const { series, moved } = seriesWithMovedOccurrence({ provider: 'teams', url: TEAMS_URL, id: null, dialIn: null, removable: false })
+    server.set('team-sync', series)
+    server.set('team-sync-2', moved)
+    const override = occurrenceOf(series, moved).find((item) => item.event.id === 'team-sync-2')!
+    const wrapper = await editor({ kind: 'edit', occurrence: override })
+    await toggle(wrapper).trigger('click')
+    await wrapper.get('.scope input[value="this"]').setValue(true)
+    expect(hint(wrapper)).toBe('Tresso makes the Teams link when you save.')
+    await wrapper.get('.scope input[value="all"]').setValue(true)
+    expect(hint(wrapper)).toBe('The series keeps its current link. Nothing new is made when you save.')
+    expect(wrapper.text()).not.toContain('It replaces the current link.')
+    expect(await save(wrapper)).toMatchObject({ conferenceUrl: TEAMS_URL, conferenceProvider: null })
+  })
+
+  it('says the series got a link when a save for all events meets one the editor did not know', async () => {
+    const { series, moved } = seriesWithMovedOccurrence(null)
+    server.set('team-sync', { ...series, conference: { provider: 'teams', url: TEAMS_URL, id: null, dialIn: null, removable: false } })
+    server.set('team-sync-2', moved)
+    const override = occurrenceOf(series, moved).find((item) => item.event.id === 'team-sync-2')!
+    const wrapper = await editor({ kind: 'edit', occurrence: override })
+    await toggle(wrapper).trigger('click')
+    await wrapper.get('.scope input[value="all"]').setValue(true)
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('The series got a meeting link meanwhile. Check the meeting link row, then save again.'))
+    expect(requests.some((request) => request.method === 'PUT')).toBe(false)
+    expect(wrapper.text()).not.toContain('It is shown now')
+    // The row now tells what saving does with the series' link, and the next save keeps it.
+    expect(hint(wrapper)).toBe('The series keeps its current link. Nothing new is made when you save.')
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.emitted('saved')).toHaveLength(1))
+    expect(requests.find((request) => request.method === 'PUT')!.body).toMatchObject({ conferenceUrl: TEAMS_URL, conferenceProvider: null })
+  })
+
+  it('removes a link, and after reopening makes a new one of the same app', async () => {
+    const MEET = 'https://meet.google.com/kfp-wzqn-rtx'
+    const meet = calendarEvent('again', 'home', { summary: 'again', start: { dateTime: '2026-10-22T10:00:00', timeZone: AMS }, end: { dateTime: '2026-10-22T11:00:00', timeZone: AMS }, conference: { provider: 'meet', url: MEET, id: null, dialIn: null, removable: true } })
+    server.set('again', meet)
+    const first = await editor({ kind: 'edit', occurrence: occurrenceOf(meet)[0]! })
+    await first.get('.meeting-row button[aria-haspopup="menu"]').trigger('click')
+    await first.findAll('[role="menuitem"]')[0]!.trigger('click')
+    expect(await save(first)).toMatchObject({ conferenceUrl: null, conferenceProvider: null })
+    first.unmount()
+
+    // The server took the link off; the event opens again without it.
+    const without = { ...meet, conference: null }
+    server.set('again', without)
+    requests.length = 0
+    const second = await editor({ kind: 'edit', occurrence: occurrenceOf(without)[0]! })
+    expect(toggle(second).attributes('aria-checked')).toBe('false')
+    await toggle(second).trigger('click')
+    await second.get('.meeting-row button[aria-haspopup="menu"]').trigger('click')
+    await second.findAll('[role="menuitemradio"]').find((item) => item.text().includes('Google Meet'))!.trigger('click')
+    expect(hint(second)).toBe('Tresso makes the Google Meet link when you save.')
+    expect(second.text()).not.toContain('It replaces the current link.')
+    expect(await save(second)).toMatchObject({ conferenceUrl: null, conferenceProvider: 'meet' })
   })
 })

@@ -562,7 +562,16 @@ async function meetingFields(target: { occurrence: Occurrence; scope: EditScope 
     const known = knownLinks.get(fresh?.id ?? '') ?? null
     if (target !== null && fresh !== null && fresh.conference !== null && fresh.conference.url !== known?.url) {
       await refreshFromServer()
+      if (fresh.id !== target.occurrence.event.id) {
+        // The series' link, which the row of this occurrence does not show: say what changed, and that the row now
+        // tells what a save does with it.
+        throw new Stale(known === null ? 'The series got a meeting link meanwhile. Check the meeting link row, then save again.' : "The series' meeting link was changed meanwhile. Check the meeting link row, then save again.")
+      }
       throw new Stale(known === null ? 'A meeting link was added meanwhile. It is shown now; save again to keep it.' : 'The meeting link was changed meanwhile. It is shown now; save again to keep it.')
+    }
+    // The series already has a link of this app: it keeps it, and the save asks for nothing.
+    if (target !== null && fresh !== null && fresh.id !== target.occurrence.event.id && fresh.conference !== null && sameApp(fresh.conference, app.app)) {
+      return { conferenceUrl: fresh.conference.url, conferenceProvider: null }
     }
     if (app.app === 'meet' || app.app === 'teams') {
       return { conferenceUrl: null, conferenceProvider: app.app }
@@ -581,6 +590,35 @@ async function meetingFields(target: { occurrence: Occurrence; scope: EditScope 
   return { conferenceUrl: kept.conferenceUrl, conferenceProvider: asks ? provider : null }
 }
 
+/**
+ * A moved occurrence saved for all or following events: the save is about the series, so the series' link is the one
+ * that counts, not the occurrence's (which may have none).
+ */
+const targetsSeries = computed(() => {
+  if (props.target.kind !== 'edit') return false
+  const occurrence = props.target.occurrence
+  return occurrence.recurring && scope.value !== 'this' && occurrence.event.id !== occurrence.seriesId
+})
+
+/** Whether `app` is the app of a link: by how it reads here, or by its host (the server compares hosts). */
+function sameApp(conference: NonNullable<SyncedCalendarEvent['conference']>, app: MeetingApp): boolean {
+  return appOf(conference) === app || conference.provider === app
+}
+
+/**
+ * The row would make a link of the app the series' link already is: the server keeps the series' link (a save asking
+ * for the app of an existing meeting keeps it), so the row promises nothing new and the save asks for nothing.
+ */
+const seriesKeeps = computed(() => {
+  if (!targetsSeries.value || props.target.kind !== 'edit' || removed.value || !linkOn.value) return false
+  const series = knownLinks.get(props.target.occurrence.seriesId) ?? null
+  const app = chosen.value
+  return series !== null && app !== null && app.ok && (explicitApp.value !== null || !hadLink.value) && sameApp(series, app.app)
+})
+
+/** The row as core says it, with the truth for a series that keeps its link. */
+const shownRow = computed(() => (seriesKeeps.value ? { ...meeting.value, hint: 'The series keeps its current link. Nothing new is made when you save.' } : meeting.value))
+
 /** Another app picked on an event with a link: saving replaces that link. */
 const replacing = computed(() => {
   if (removed.value || !linkOn.value || props.target.kind !== 'edit') return false
@@ -590,7 +628,7 @@ const replacing = computed(() => {
   if (target === null) return false
   const app = chosen.value
   const makes = app !== null && app.ok && (explicitApp.value !== null || !hadLink.value)
-  return makes && app.app !== appOf(target)
+  return makes && !seriesKeeps.value && app.app !== appOf(target)
 })
 
 const meetingChanged = computed(() => touched.value || explicitApp.value !== null || removed.value)
@@ -866,7 +904,7 @@ const repeatSummary = computed(() => {
           <span>Meeting link</span>
           <MeetingLinkRow
             v-if="organizes"
-            :row="meeting"
+            :row="shownRow"
             :choices="rowChoices"
             :chosen="chosen"
             :default-app="defaultApp"
