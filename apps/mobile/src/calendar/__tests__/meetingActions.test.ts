@@ -20,7 +20,7 @@ describe('the meeting link actions', () => {
     expect(meetingActionError(new SessionEndedDuringRequestError())).toBe('You were signed out. Sign in and try again.')
     expect(meetingActionError(new TypeError('Network request failed'))).toBe('No connection. Try again when you are online.')
     expect(meetingActionError(status(401, 'Your session expired.'))).toBe('Your sign-in ended. Sign in again and try again.')
-    expect(meetingActionError(status(403, 'Access Denied.'))).toBe('This sign-in may not change your calendar. Sign in again and allow calendar access.')
+    expect(meetingActionError(status(403, 'Access Denied.'))).toBe('This sign-in is not allowed to make this change. Sign in again and allow the access Tresso asks for.')
     expect(meetingActionError(status(404))).toBe('This event is no longer in your calendar.')
     expect(meetingActionError(status(502))).toBe('The server could not do this now. Try again later.')
     expect(meetingActionError('odd')).toBe('That did not work. Try again.')
@@ -32,7 +32,7 @@ describe('the meeting link actions', () => {
 
   it("show the server's own refusal as one line of plain text, cut at its limit", () => {
     expect(meetingActionError(status(422, 'Only the organizer can change the meeting link.'))).toBe('Only the organizer can change the meeting link.')
-    expect(meetingActionError(status(422, '  This calendar\nis‮ read-only.​ '))).toBe('This calendar is read-only.')
+    expect(meetingActionError(status(422, '  This calendar\nis\u202e read-only.\u200b '))).toBe('This calendar is read-only.')
     expect(meetingActionError(status(422, ' \n '))).toBe('That did not work. Try again.')
     const long = meetingActionError(status(422, 'a'.repeat(500)))
     expect(Array.from(long)).toHaveLength(REFUSAL_MAX)
