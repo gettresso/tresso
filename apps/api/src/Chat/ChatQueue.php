@@ -51,8 +51,8 @@ use Symfony\Component\Validator\ConstraintViolationList;
  *
  * Every write locks the owner first ({@see ChatOwnerLock}). Every way a reply ends reaches the devices: sent and failed
  * (also by the sweep) as the row with its new state in the delta, a cancelled reply as a removal (tombstone
- * `chatOutgoing`), since cancelling deletes the row. Nothing writes the status `cancelled`, which the delta would leave
- * out without a removal.
+ * `chatOutgoing`): cancelling deletes the row, or, for one that may have gone out, marks it `cancelled`, which writes the
+ * same removal ({@see ChatOutgoing::isHiddenFromClients()}) and is purged after {@see KEEP_CANCELLED}.
  */
 final readonly class ChatQueue
 {
@@ -66,6 +66,13 @@ final readonly class ChatQueue
      * renewal would stop, and it needs no call that could itself fail while the file goes out.
      */
     public const string FILE_CLAIM_LEASE = 'PT30M';
+
+    /**
+     * How long a reply cancelled while its sending was unconfirmed is kept (counted from its claim), so its relay's late
+     * `sent: true` can still show that it went out. Its removal (the tombstone) stays after it, so its id stays refused;
+     * an answer after this is not found, and the relay lets it go ({@see purgeCancelled()}).
+     */
+    public const string KEEP_CANCELLED = 'P30D';
 
     /** How long a claim of this reply lasts before the sweep fails it as unconfirmed. */
     public static function leaseOf(ChatOutgoing $outgoing): \DateInterval
@@ -121,7 +128,9 @@ final readonly class ChatQueue
         if (null !== $queued) {
             return [$queued, false];
         }
-        $this->refuseCancelled($user, $id);
+        if ($this->isCancelled($user, $id)) {
+            $this->refuseCancelledWith($user, $chat, $input);
+        }
         $late = $input->idViolations($now);
         if (\count($late) > 0) {
             throw new ValidationException($late);
@@ -145,15 +154,17 @@ final readonly class ChatQueue
         }
 
         try {
-            return $this->entityManager->wrapInTransaction(function () use ($user, $id, $chat, $input, $now): array {
+            $queued = $this->entityManager->wrapInTransaction(function () use ($user, $id, $chat, $input, $now): ?array {
                 // Two requests with one id take turns here, so the second finds the reply of the first.
                 $this->ownerLock->lock($user->getId());
                 $queued = $this->alreadyQueued($id, $user, $chat);
                 if (null !== $queued) {
                     return [$queued, false];
                 }
-                // Cancelled while this request waited for the lock.
-                $this->refuseCancelled($user, $id);
+                // Cancelled while this request waited for the lock: refused after this transaction (null).
+                if ($this->isCancelled($user, $id)) {
+                    return null;
+                }
                 // Left out or removed while this request waited.
                 try {
                     $this->entityManager->refresh($chat);
@@ -192,6 +203,37 @@ final readonly class ChatQueue
             // Another user's reply took this id at the same moment.
             throw ChatProblem::idTaken();
         }
+
+        return $queued ?? $this->refuseCancelledWith($user, $chat, $input);
+    }
+
+    /**
+     * Refuses the queueing of a reply the user cancelled before it arrived (409 `cancelled`). The file uploaded for it
+     * goes now (in its own transaction, under the owner's lock and the upload's row lock, as queueing takes it): nothing
+     * will ever take it, and until the hourly sweep it would count toward the waiting files of the user and the chat.
+     */
+    private function refuseCancelledWith(User $user, Chat $chat, QueueReply $input): never
+    {
+        if (null !== $input->file) {
+            $uploadId = $input->file->uploadId;
+            $this->entityManager->wrapInTransaction(function () use ($user, $chat, $uploadId): void {
+                $this->ownerLock->lock($user->getId());
+                $upload = $this->uploads->findOneForChat($user, $chat, $uploadId);
+                if (null === $upload) {
+                    return;
+                }
+                try {
+                    $this->entityManager->refresh($upload, LockMode::PESSIMISTIC_WRITE);
+                } catch (EntityNotFoundException) {
+                    return;
+                }
+                $this->collector->release([$upload->getObjectKey()]);
+                $this->entityManager->remove($upload);
+                $this->entityManager->flush();
+            });
+        }
+
+        throw ChatProblem::cancelled();
     }
 
     /**
@@ -320,7 +362,7 @@ final readonly class ChatQueue
     /**
      * A cancel for a reply the server has not seen: its queueing may still be on its way (the cancel overtook it). When
      * the id is one a new reply could have (a UUIDv7 made in the last 10 minutes) and nobody holds it, the removal is
-     * written now, so that queueing, arriving later, is refused for good (409 `cancelled`, {@see refuseCancelled()}).
+     * written now, so that queueing, arriving later, is refused for good (409 `cancelled`, {@see refuseCancelledWith()}).
      * Limited per user (`chat_reply_cancel`). Another id is not found. Inside the cancel's transaction, under the owner's
      * lock, which queueing takes too.
      */
@@ -341,6 +383,20 @@ final readonly class ChatQueue
             throw new TooManyRequestsHttpException(max(1, $limit->getRetryAfter()->getTimestamp() - time()), 'Too many replies cancelled at once. Wait a few minutes, then try again.');
         }
         $this->sequencer->tombstones($user->getId(), ChatOutgoing::changeType(), [$id->toRfc4122()], $this->sequencer->next($user->getId()));
+    }
+
+    /**
+     * Removes replies cancelled while their sending was unconfirmed whose claim is older than {@see KEEP_CANCELLED}: their
+     * sealed text and claim token are not kept without limit. Their tombstone, written when they were cancelled, stays,
+     * so the devices keep them removed and their id stays refused. Their file went when they were cancelled. A batch at
+     * a time, skipping rows a report holds. Returns how many went.
+     */
+    public function purgeCancelled(\DateTimeImmutable $now): int
+    {
+        return (int) $this->connection->executeStatement(
+            'DELETE FROM chat_outgoing WHERE id IN (SELECT id FROM chat_outgoing WHERE status = :cancelled AND claimed_at < :before ORDER BY claimed_at LIMIT 1000 FOR UPDATE SKIP LOCKED)',
+            ['cancelled' => ChatOutgoingStatus::Cancelled->value, 'before' => $now->sub(new \DateInterval(self::KEEP_CANCELLED))->format('Y-m-d H:i:s')],
+        );
     }
 
     /**
@@ -383,13 +439,6 @@ final readonly class ChatQueue
      * a repeat of the request that queued it must not queue it again. The type is written into the statement, not bound,
      * so the planner sees that the partial index on it applies (sync_tombstone_chat_outgoing) for a generic plan too.
      */
-    private function refuseCancelled(User $user, Uuid $id): void
-    {
-        if ($this->isCancelled($user, $id)) {
-            throw ChatProblem::cancelled();
-        }
-    }
-
     private function isCancelled(User $user, Uuid $id): bool
     {
         return false !== $this->connection->fetchOne(

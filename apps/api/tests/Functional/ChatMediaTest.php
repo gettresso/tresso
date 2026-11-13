@@ -677,6 +677,27 @@ final class ChatMediaTest extends DatabaseTestCase
         self::assertCount(ChatUploads::MAX_UNQUEUED, $this->chatObjects(), 'Refused before it was stored.');
     }
 
+    public function testAttachesCancelledBeforeTheirQueueingLeaveNoUploadBehind(): void
+    {
+        // Each of the three 4 KB uploads the 12 KB bound holds would stay without the release, and the fourth refused.
+        for ($i = 0; $i < 10; ++$i) {
+            $uploadId = Uuid::v7()->toRfc4122();
+            $this->uploadForReply($uploadId, str_repeat((string) $i, 4000));
+            self::assertResponseStatusCodeSame(201);
+            $replyId = self::newReplyId();
+            $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$replyId, server: $this->web);
+            self::assertResponseStatusCodeSame(204);
+            $this->client->jsonRequest('POST', '/api/v1/chats/'.$this->chatId.'/outgoing', ['id' => $replyId, 'text' => '', 'file' => ['uploadId' => $uploadId, 'name' => 'a.txt']], $this->web);
+            self::assertResponseStatusCodeSame(409);
+            self::assertSame('cancelled', $this->decodedResponse()['code'] ?? null);
+            $this->runCollections();
+        }
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_upload'), 'Every refused queueing let its upload go.');
+        self::assertSame([], $this->chatObjects(), 'And its file.');
+
+        $this->queueFileReply(str_repeat('n', 4000));
+    }
+
     public function testWaitingFilesAreBoundPerUser(): void
     {
         $ids = [];
