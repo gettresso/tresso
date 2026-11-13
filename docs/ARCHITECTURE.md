@@ -3109,6 +3109,18 @@ What the workers do with it (`apps/sync/internal/googlecal`, `graphcal`):
   a removed line stays when the description still ends with it. An own link has no meeting outcome to report, so a
   join line left in the block changes no result.
 
+Settings, Meeting apps (web and desktop) reads and writes `GET`/`PATCH /api/v1/calendar/meeting-preferences` through
+the `meetingApps` store, and every control saves at once (a failed save shows why under the control and puts the old
+value back). The Google Meet card has a row per Gmail account and the Microsoft Teams card one per Microsoft account
+whose calendars can have Teams (or are not synced yet): connected, not connected (switched off in Tresso through
+`disabled`, or no calendar access, which Connect asks for) or permission expired (Reconnect signs in again). Disconnect
+only switches the app off in Tresso. The own link is checked with core's `meetingLinkProblem` before it is sent. The
+default app table lists per account with a writable calendar the apps core's `meetingChoices` allows there, an app
+that cannot serve it right now with what is missing in brackets, and says which apps are not offered and why; "Every
+other calendar" sets `defaultOther`. Zoom and Teams for other calendars need the server owner first and have no card;
+Zoom is listed as a choice only when `apps` has it. The popover reads the own link from the same store, for "My own
+link".
+
 #### AI features (interfaces with built-in and planned AI implementations)
 
 Tresso defines the interfaces and, where a deterministic version is useful on its own, implements it. The planned AI

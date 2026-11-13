@@ -238,6 +238,15 @@ describe('the popover around the link', () => {
     return mount(EventDetail, { props: { occurrence, calendar: work, zone: AMS, now: NOW, busy: false, error: null, clock }, attachTo: document.body })
   }
 
+  it('names the saved own link "My own link"', () => {
+    setActivePinia(createPinia())
+    const own = 'https://meet.example.com/kim'
+    const [occurrence] = expandOccurrences([calendarEvent('own', 'work', { conference: conference('other', own) })], Date.UTC(2026, 9, 19), Date.UTC(2026, 9, 25), AMS)
+    const wrapper = mount(EventDetail, { props: { occurrence: occurrence!, calendar: work, zone: AMS, now: NOW, busy: false, error: null, clock, ownLink: own } })
+    expect(wrapper.get('.app').text()).toBe('My own link')
+    expect(detail(occurrence!).get('.app').text()).toBe('Meeting link')
+  })
+
   it('reads the request from the series for a moved occurrence', () => {
     const series = calendarEvent('series', 'work', { summary: 'Standup', recurrence: 'FREQ=DAILY;COUNT=3', conferenceRequest: request() })
     const moved = calendarEvent('moved', 'work', {

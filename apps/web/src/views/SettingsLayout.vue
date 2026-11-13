@@ -22,6 +22,7 @@ const underAccounts = computed(() => typeof route.name === 'string' && route.nam
       <RouterLink :to="{ name: 'settings-batches' }" class="item">Batched delivery</RouterLink>
       <RouterLink :to="{ name: 'settings-brief' }" class="item">Daily brief</RouterLink>
       <RouterLink :to="{ name: 'settings-calendar' }" class="item">Calendar</RouterLink>
+      <RouterLink :to="{ name: 'settings-meeting-apps' }" class="item">Meeting apps</RouterLink>
       <RouterLink :to="{ name: 'settings-access-tokens' }" class="item">Access tokens</RouterLink>
       <RouterLink :to="{ name: 'settings-connected-apps' }" class="item">Connected apps</RouterLink>
       <RouterLink v-if="isDesktop" :to="{ name: 'settings-updates' }" class="item">Updates</RouterLink>

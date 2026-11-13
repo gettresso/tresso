@@ -94,6 +94,7 @@ const router = createRouter({
             { path: 'signatures', name: 'settings-signatures', component: () => import('@/views/SettingsSignaturesView.vue') },
             { path: 'brief', name: 'settings-brief', component: () => import('@/views/SettingsBriefView.vue') },
             { path: 'calendar', name: 'settings-calendar', component: () => import('@/views/SettingsCalendarView.vue') },
+            { path: 'meeting-apps', name: 'settings-meeting-apps', component: () => import('@/views/SettingsMeetingAppsView.vue') },
             { path: 'access-tokens', name: 'settings-access-tokens', component: () => import('@/views/SettingsAccessTokensView.vue') },
             { path: 'connected-apps', name: 'settings-connected-apps', component: () => import('@/views/SettingsConnectedAppsView.vue') },
             { path: 'smart-inboxes', name: 'settings-smart-inboxes', component: () => import('@/views/SettingsSmartInboxesView.vue') },

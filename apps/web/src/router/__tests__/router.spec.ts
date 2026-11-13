@@ -99,6 +99,13 @@ describe('router', () => {
     }
   })
 
+  it('opens Settings, Meeting apps', async () => {
+    useAuthStore().tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+
+    await router.push('/settings/meeting-apps')
+    expect(router.currentRoute.value.name).toBe('settings-meeting-apps')
+  })
+
   it('shows the first settings page for a settings path that matches none', async () => {
     useAuthStore().tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
 

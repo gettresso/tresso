@@ -38,6 +38,7 @@ import { inView, reducedMotion } from '@/components/calendar/genie'
 import { useCalendarStore, type CalendarViewKind, type Response } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
 import { useAuthStore } from '@/stores/auth'
+import { useMeetingAppsStore } from '@/stores/meetingApps'
 import { useComposeStore } from '@/stores/compose'
 import { shortcutAllowed } from '@/mail/useMessageActions'
 import { useTodosStore } from '@/stores/todos'
@@ -47,6 +48,7 @@ import { useViewRequest } from '@/components/viewRequests'
 
 const calendar = useCalendarStore()
 const auth = useAuthStore()
+const meetingApps = useMeetingAppsStore()
 const mail = useMailStore()
 const compose = useComposeStore()
 const todos = useTodosStore()
@@ -111,6 +113,9 @@ let ticking: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   ticking = setInterval(() => (calendar.now = Date.now()), 30_000)
   window.addEventListener('keydown', onShortcut)
+  // Only for the name "My own link" in the popover; without the preferences a link reads "Meeting link", and the
+  // next visit tries again.
+  meetingApps.ensureLoaded().catch(() => undefined)
 })
 onBeforeUnmount(() => {
   if (ticking !== null) clearInterval(ticking)
@@ -509,6 +514,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside
         :busy="busy"
         :error="actionError"
         :clock="auth.serverNow"
+        :own-link="meetingApps.preferences?.ownLink ?? null"
         @close="closeDetail"
         @edit="edit"
         @delete="deleteSelected"
