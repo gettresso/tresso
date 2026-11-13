@@ -9,10 +9,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
- * The form a pasted meeting link must have: the rule of `meetingLinkProblem` in packages/core/src/calendar/meeting.ts.
- * The cases below hold until packages/core/src/calendar/meeting-links.json is on main (the core meeting package adds
- * it); from then on the shared cases are checked too, as ChatJidTest does with importable-jids.json, and a missing file
- * fails the test in CI.
+ * The form a pasted meeting link must have: the rule of `meetingLinkProblem` in packages/core/src/calendar/meeting.ts,
+ * checked against the shared cases in packages/core/src/calendar/meeting-links.json (which meeting.test.ts reads as
+ * well), as ChatJidTest does with importable-jids.json, and against the cases below. The dev container mounts apps/api
+ * only, so there the shared cases are skipped; in CI (the whole repository) a missing file fails the test.
  */
 final class MeetingLinkAddressTest extends TestCase
 {
@@ -60,6 +60,8 @@ final class MeetingLinkAddressTest extends TestCase
         yield 'an IPv4 address' => ['https://192.0.2.10/room', MeetingLinkAddress::NO_HOST];
         yield 'a last label of digits' => ['https://meet.123/room', MeetingLinkAddress::NO_HOST];
         yield 'a last label in hex' => ['https://meet.0x7f/room', MeetingLinkAddress::NO_HOST];
+        yield 'a fullwidth digit in the last label' => ["https://127.0.0.\u{FF11}/", MeetingLinkAddress::NO_HOST];
+        yield 'a fullwidth x in a hex last label' => ["https://1.0\u{FF58}7f/", MeetingLinkAddress::NO_HOST];
         yield 'an IPv6 address' => ['https://[2001:db8::1]/kim', MeetingLinkAddress::NO_HOST];
         yield 'an empty label' => ['https://meet..example/kim', MeetingLinkAddress::INVALID];
         yield 'a label that starts with a dot' => ['https://.example/kim', MeetingLinkAddress::INVALID];
@@ -104,6 +106,7 @@ final class MeetingLinkAddressTest extends TestCase
         self::assertSame('Use a link without a user name or password in it.', MeetingLinkAddress::violation('https://kim:hunter2@secret-room.example/abc'));
         self::assertSame('Use a link without spaces, line breaks or hidden characters.', MeetingLinkAddress::violation('https://secret-room.example/a b'));
         self::assertSame('Use a link with a full web address, such as https://meet.example.com/room.', MeetingLinkAddress::violation('https://secret-room/abc'));
+        self::assertSame('This link does not look right. Check it and paste it again.', MeetingLinkAddress::violation('https://secret_room.example/abc'));
         foreach (['http://secret-room.example/abc', 'https://kim:hunter2@secret-room.example/abc', 'https://secret-room.example/'.str_repeat('x', 2100)] as $link) {
             $message = (string) MeetingLinkAddress::violation($link);
             self::assertStringNotContainsString('secret-room', $message);
@@ -112,8 +115,8 @@ final class MeetingLinkAddressTest extends TestCase
     }
 
     /**
-     * The shared cases of packages/core, once the core meeting package put them there: {cases: [{input, ownLink,
-     * reason}]}, with `ownLink` whether it is taken as an own link and `reason` the problem code (null when taken).
+     * The shared cases of packages/core: {description, cases: [{name, link, ownLink, join, problem}]}, with `problem`
+     * the code of meetingLinkProblem (null when the link may be used) and `ownLink` whether it is taken as an own link.
      *
      * @return iterable<string, array{string, bool, ?string}>
      */
@@ -121,7 +124,8 @@ final class MeetingLinkAddressTest extends TestCase
     {
         $source = self::source();
         if (null === $source) {
-            yield 'packages/core/src/calendar/meeting-links.json is not there (yet)' => ['', false, null];
+            // requireCore() below fails or skips the test before these arguments are used.
+            yield 'packages/core is not here' => ['', false, null];
 
             return;
         }
@@ -130,32 +134,41 @@ final class MeetingLinkAddressTest extends TestCase
         if (!\is_array($cases) || [] === $cases) {
             throw new \UnexpectedValueException('meeting-links.json holds no cases.');
         }
-        foreach ($cases as $index => $case) {
-            $reason = \is_array($case) ? ($case['reason'] ?? null) : null;
-            if (!\is_array($case) || !\is_string($case['input'] ?? null) || !\is_bool($case['ownLink'] ?? null) || (null !== $reason && !\is_string($reason))) {
-                throw new \UnexpectedValueException('A case of meeting-links.json is not {input, ownLink, reason}: align this test with the file.');
+        foreach ($cases as $case) {
+            if (!\is_array($case) || !\is_string($case['name'] ?? null) || !\is_string($case['link'] ?? null) || !\is_bool($case['ownLink'] ?? null)
+                || !\array_key_exists('problem', $case) || (null !== $case['problem'] && !\is_string($case['problem']))) {
+                throw new \UnexpectedValueException('A case of meeting-links.json is not {name, link, ownLink, join, problem}.');
             }
-            yield $index.': '.var_export($case['input'], true) => [$case['input'], $case['ownLink'], $reason];
+            yield $case['name'] => [$case['link'], $case['ownLink'], $case['problem']];
         }
     }
 
     #[DataProvider('sharedCases')]
-    public function testKeepsTheLinksTheClientsKeep(string $link, bool $ownLink, ?string $reason): void
+    public function testFindsWhatPackagesCoreFinds(string $link, bool $ownLink, ?string $problem): void
     {
-        if (null === self::source()) {
-            if (is_file(self::root().'/packages/core/src/calendar/meeting.test.ts') && false !== getenv('CI') && str_contains((string) @file_get_contents(self::root().'/packages/core/src/calendar/meeting.test.ts'), 'meeting-links.json')) {
-                self::fail('packages/core reads meeting-links.json, but the file is missing.');
-            }
-            self::markTestSkipped('packages/core/src/calendar/meeting-links.json is not on this branch yet; the cases above hold the rule.');
-        }
+        $this->requireCore();
 
-        self::assertSame($ownLink, null === MeetingLinkAddress::problem($link));
-        if ($ownLink) {
+        self::assertSame($problem, MeetingLinkAddress::problem($link));
+        self::assertSame($ownLink, null === $problem);
+    }
+
+    public function testTheSharedCasesAreThere(): void
+    {
+        $this->requireCore();
+
+        self::assertNotNull(self::source(), 'packages/core/src/calendar/meeting-links.json is missing.');
+        self::assertGreaterThanOrEqual(84, iterator_count(self::sharedCases()));
+    }
+
+    private function requireCore(): void
+    {
+        if (is_dir(self::root().'/packages/core')) {
             return;
         }
-        if (null !== $reason) {
-            self::assertSame($reason, MeetingLinkAddress::problem($link));
+        if (false !== getenv('CI')) {
+            self::fail('packages/core is missing: CI checks out the whole repository.');
         }
+        self::markTestSkipped('packages/core is not next to apps/api here (the dev container mounts apps/api only).');
     }
 
     private static function source(): ?string
