@@ -1688,8 +1688,15 @@ its first message when the copy changes. Bubbles follow core's `timeline` (a rep
 with day rows, group senders in their colour, and files by their kind and size and where they stand (3.17, Files):
 Download asks the relaying Mac for the file, Open hands a fresh signed link to the system (which downloads it and never
 runs it), a file that could not be checked for malware opens only after a warning (`Open anyway`), and Try again asks
-again after a failure that may pass. Attach a file picks one file, uploads it as the raw body of a PUT and queues a reply
-that carries it (an unsure try goes again under the same upload and reply ids; over 100 MB is refused first). A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
+again after a failure that may pass; the file's action is also one of the bubble's accessibility actions, and a file's
+change of state is announced. Attach a file picks one file and streams it from its place on the phone as the raw body of
+a PUT (expo-file-system's upload task, which ships with Expo: no new native module), with its progress in the bubble
+(`Uploading, 40%`, never "waiting for your Mac"), then queues a reply that carries it. Cancel stops the upload and queues
+nothing; Cancel while the reply is being queued cancels it on the server once that answered; leaving the chat, the app
+going to the background and a sign-out stop it too. A size the picker did not give is read from the file, an unknown or
+too large one is refused before anything is sent, and the picker's cache copy is removed afterwards. An unsure try goes
+again under the same upload and reply ids for 9 minutes, kept in the copy (`phone-unsure-file:<chat>`) with a fingerprint
+of the file's name, size and last change, never the name, and dropped once the copy has that reply. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
 made by the server's clock (`Session.serverNow`, so a phone whose clock is off is not refused); it shows as waiting at
 once (held in memory, not in the copy, so a closed app leaves no reply the server never got), the server's answer is
 stored, and a refusal takes it back and puts the text back in the box. A request without an answer, a 408 or a 5xx may
@@ -2159,10 +2166,15 @@ for Mac connects WhatsApp. With it:
   says `Sent on WhatsApp by <Mac>. No signature, no subject.`. A file row shows its kind, name and size and where the
   file stands (3.17, Files): `Download` asks the relaying Mac for it (nothing else does), then `Waiting for your Mac.`
   while that Mac is offline, `Checking for malware.`, `Open` (a fresh signed link in a new tab, opened in the click so
-  the browser does not block it), `Download anyway` after a warning for a file that could not be checked, or why it did
-  not come with `Try again` where it may pass. Attach reads the file in the page (an `<input type="file">`), uploads it
-  and queues a reply that carries it; an unsure try goes again under the same upload and reply ids. Asking and attaching
-  wait while writes are held (`chats.writesHeld`). A desktop that does not relay works the same way; the relaying Mac
+  the browser does not block it), `Download anyway` after a warning in the row (an alertdialog with the focus on
+  Cancel, Escape to close; not the browser's confirm, which Enter would accept) for a file that could not be checked, or
+  why it did not come with `Try again` where it may pass; a new state is said politely, a failure at once. Attach reads
+  the file in the page (an `<input type="file">`) and uploads it with a progress bar and Cancel (an XMLHttpRequest, since
+  fetch reports no upload progress), one at a time in a chat and in several chats at once, then queues a reply that
+  carries it. Cancel while uploading queues nothing; Cancel while the reply is being queued cancels it on the server once
+  that answered; leaving the chat, the copy going and the session ending stop it. An unsure try goes again under the
+  same upload and reply ids for 9 minutes, kept in the copy (`unsure-files`) by a fingerprint of the file, never its
+  name, and dropped once the copy has that reply. Asking and attaching wait while writes are held (`chats.writesHeld`). A desktop that does not relay works the same way; the relaying Mac
   downloads its own files from its bridge and sends files attached on it through the server's queue too.
 - Settings, WhatsApp (`SettingsWhatsAppBrowserView.vue`) shows the account read only: the relaying Mac and whether it is
   online, the bridge and the link as it last reported them, which chats come in, and the chats left out (with why they
