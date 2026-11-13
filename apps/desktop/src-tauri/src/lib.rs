@@ -181,7 +181,7 @@ fn single_instance(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri:
 
 #[cfg(test)]
 mod tests {
-  use super::opens_outside;
+  use super::{open_failed, opens_outside};
 
   /// The sources of one directive of the app's Content-Security-Policy.
   fn csp_sources(directive: &str) -> Vec<String> {
