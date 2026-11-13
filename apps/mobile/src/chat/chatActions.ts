@@ -21,11 +21,70 @@ export interface ChatActionsDeps {
   onError?(what: string, error: unknown): void
 }
 
-/** A send in this chat whose request got no answer: it may have been queued, so the same text goes again under its id. */
+/**
+ * A send whose outcome is unknown (no answer, a timeout, a server error): it may have been queued, so the same text in the
+ * same chat goes again under its id. Kept in memory and in the copy's chat values (UNSURE_PREFIX), with a hash of the
+ * text rather than the text, so a resend after the app was closed reuses the id too.
+ */
 interface Unsure {
   id: string
-  text: string
+  chatId: string
+  /** textHash of the trimmed text. */
+  hash: string
+  /** When the id was made (the server's time), epoch ms. */
   at: number
+}
+
+/** Before the chat id in the chat value that holds its unsure send (see Unsure). */
+export const UNSURE_PREFIX = 'phone-unsure-reply:'
+
+/** A read the server refused: not asked again for the same last message until the chat is looked at again. */
+interface RefusedRead {
+  lastMessageAt: string
+  /** Not before this (epoch ms, the server's Retry-After), even when the chat is looked at again. */
+  notBefore: number
+  /** Until the screen is active or focused again. */
+  held: boolean
+}
+
+/**
+ * A 53-bit hash of a text (cyrb53), hex: enough to tell one reply text from another within one chat and nine minutes,
+ * and not the text itself.
+ */
+export function textHash(text: string): string {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ code, 2654435761)
+    h2 = Math.imul(h2 ^ code, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16)
+}
+
+/**
+ * Whether a failed request may still have been done by the server: no answer (network, timeout), 408, or a server error
+ * (5xx: a proxy may answer 502 or 504 after the API took it). Any other answer is a refusal.
+ */
+export function outcomeUnknown(error: unknown): boolean {
+  const failure = chatApiFailure(error)
+  return failure === null || failure.status === 408 || failure.status >= 500
+}
+
+function readUnsure(value: string | null): Unsure | null {
+  if (value === null) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(value) as Partial<Unsure>
+    return typeof parsed.id === 'string' && typeof parsed.chatId === 'string' && typeof parsed.hash === 'string' && typeof parsed.at === 'number'
+      ? { id: parsed.id, chatId: parsed.chatId, hash: parsed.hash, at: parsed.at }
+      : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -52,6 +111,8 @@ export class ChatActions {
   /** Replies tried again, shown as waiting until the copy no longer has them as failed. */
   private readonly retrying = new Map<string, SyncedChatOutgoing>()
   private readonly unsure = new Map<string, Unsure>()
+  /** Reads the server refused, per chat. */
+  private readonly refusedRead = new Map<string, RefusedRead>()
   /** Chats being read. */
   private readonly reading = new Set<string>()
   private readonly listeners = new Set<() => void>()
@@ -116,6 +177,11 @@ export class ChatActions {
         changed = true
       }
     }
+    const unsure = this.unsure.get(chatId)
+    if (unsure !== undefined && byId.has(unsure.id)) {
+      // It was queued after all: the same text sent again now is a new reply.
+      this.forgetUnsure(chatId)
+    }
     for (const [id, row] of [...this.retrying]) {
       if (row.chatId === chatId && byId.get(id)?.status !== 'failed' && !this.retryingNow.has(id)) {
         this.retrying.delete(id)
@@ -143,8 +209,9 @@ export class ChatActions {
       throw new Error('The chat is not on this phone.')
     }
     const now = this.deps.now()
-    const earlier = this.unsure.get(chat.id)
-    const id = earlier !== undefined && earlier.text === checked.text && now - earlier.at < REUSE_ID_MS ? earlier.id : this.deps.newId(now)
+    const hash = textHash(checked.text)
+    const earlier = await this.unsureOf(store, chat.id, now)
+    const id = earlier !== null && earlier.hash === hash ? earlier.id : this.deps.newId(now)
     const waiting: SyncedChatOutgoing = {
       id,
       chatId: chat.id,
@@ -168,15 +235,15 @@ export class ChatActions {
       } else {
         this.pending.set(chat.id, left)
       }
-      if (chatApiFailure(error) === null) {
-        this.unsure.set(chat.id, { id, text: checked.text, at: earlier?.id === id ? earlier.at : now })
+      if (outcomeUnknown(error)) {
+        await this.keepUnsure(store, { id, chatId: chat.id, hash, at: earlier?.id === id ? earlier.at : now })
       } else {
-        this.unsure.delete(chat.id)
+        this.forgetUnsure(chat.id)
       }
       this.emit()
       throw error
     }
-    this.unsure.delete(chat.id)
+    this.forgetUnsure(chat.id)
     // Shown as the server has it until the copy has it too (see settle; the delta brings the same row).
     this.landed.add(id)
     this.pending.set(chat.id, (this.pending.get(chat.id) ?? []).map((reply) => (reply.id === id ? queued : reply)))
@@ -191,6 +258,45 @@ export class ChatActions {
       this.deps.onError?.('Keeping a queued reply on this phone failed', error)
     }
     return queued
+  }
+
+  /** The unsure send of a chat, from memory or the copy; null when there is none or it is too old to reuse. */
+  private async unsureOf(store: MailStore, chatId: string, now: number): Promise<Unsure | null> {
+    let unsure = this.unsure.get(chatId) ?? null
+    if (unsure === null) {
+      try {
+        unsure = readUnsure(await store.chatMeta(UNSURE_PREFIX + chatId))
+      } catch (error) {
+        this.deps.onError?.('Reading an unsure reply failed', error)
+      }
+    }
+    if (unsure === null || unsure.chatId !== chatId) {
+      return null
+    }
+    if (!(now - unsure.at < REUSE_ID_MS && now >= unsure.at)) {
+      this.forgetUnsure(chatId)
+      return null
+    }
+    this.unsure.set(chatId, unsure)
+    return unsure
+  }
+
+  private async keepUnsure(store: MailStore, unsure: Unsure): Promise<void> {
+    this.unsure.set(unsure.chatId, unsure)
+    try {
+      await store.setChatMeta(UNSURE_PREFIX + unsure.chatId, JSON.stringify(unsure))
+    } catch (error) {
+      this.deps.onError?.('Keeping an unsure reply failed', error)
+    }
+  }
+
+  /** Forgets a chat's unsure send, in memory and in the copy. */
+  private forgetUnsure(chatId: string): void {
+    this.unsure.delete(chatId)
+    const store = this.deps.store()
+    if (store !== null) {
+      store.setChatMeta(UNSURE_PREFIX + chatId, null).catch((error: unknown) => this.deps.onError?.('Forgetting an unsure reply failed', error))
+    }
   }
 
   /**
@@ -256,7 +362,9 @@ export class ChatActions {
 
   /**
    * Reads a chat in Tresso through its last message (never in WhatsApp: the phone keeps its own unread state there).
-   * Resolves whether the server took it; a read already under way, or a chat read through already, does nothing.
+   * Resolves whether the server took it; a read already under way, or a chat read through already, does nothing. A read
+   * the server refused (or that got no answer) is not asked again for the same last message until the chat is looked at
+   * again (lookedAt), and never before its Retry-After: taking it back changes the copy, which would read the chat again.
    */
   async markRead(chat: Pick<SyncedChat, 'id' | 'chatAccountId' | 'jid'>): Promise<boolean> {
     const store = this.deps.store()
@@ -271,6 +379,14 @@ export class ChatActions {
       if (stored === null || stored.id !== chat.id || stored.leftOut || !after(stored.lastMessageAt, stored.readThrough)) {
         return false
       }
+      const refused = this.refusedRead.get(chat.id)
+      if (refused !== undefined) {
+        if (refused.lastMessageAt === stored.lastMessageAt && (refused.held || this.deps.now() < refused.notBefore)) {
+          return false
+        }
+        // A newer message came, or the chat is looked at again after its wait.
+        this.refusedRead.delete(chat.id)
+      }
       target = stored.lastMessageAt
       previous = stored.readThrough
       await store.putChats([{ ...stored, readThrough: target }])
@@ -283,6 +399,9 @@ export class ChatActions {
       return true
     } catch (error) {
       this.deps.onError?.('Reading the chat on the server failed', error)
+      if (target !== null) {
+        this.refusedRead.set(chat.id, { lastMessageAt: target, notBefore: this.deps.now() + (chatApiFailure(error)?.retryAfterMs ?? 0), held: true })
+      }
       if (target !== null && this.deps.store() === store) {
         try {
           const now = await store.chatByJid(chat.chatAccountId, chat.jid)
@@ -301,8 +420,20 @@ export class ChatActions {
     }
   }
 
+  /**
+   * The chat is looked at again (the app came to the front, or the screen got the focus): a refused read may be asked
+   * again, once its Retry-After passed.
+   */
+  lookedAt(chatId: string): void {
+    const refused = this.refusedRead.get(chatId)
+    if (refused !== undefined) {
+      this.refusedRead.set(chatId, { ...refused, held: false })
+    }
+  }
+
   /** Forgets everything under way (a sign-out, another user): nothing of one user's chats stays for the next. */
   clear(): void {
+    this.refusedRead.clear()
     this.pending.clear()
     this.hidden.clear()
     this.hiddenIn.clear()

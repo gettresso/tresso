@@ -153,12 +153,21 @@ function requestFailure(error: unknown): string {
     return 'The server could not be reached. Check your connection.'
   }
   const detail = error instanceof Error ? error.message.trim() : ''
-  return detail === '' ? `The server answered ${failure.status}.` : detail
+  if (detail === '') {
+    return `The server answered ${failure.status}.`
+  }
+  return /[.!?]$/.test(detail) ? detail : `${detail}.`
 }
 
-/** The line under the reply box after a reply could not be queued; the text stays in the box. */
-export function sendFailureText(error: unknown): string {
-  return `Not sent. ${requestFailure(error)}`
+/**
+ * The line under the reply box after queueing a reply failed; the text is back in the box. When the server may have taken
+ * it (no answer, a timeout, a server error: see outcomeUnknown) it says so: Send with the same text goes as the same
+ * reply, never a second one.
+ */
+export function sendFailureText(error: unknown, unknown: boolean): string {
+  return unknown
+    ? `This reply may have been sent. ${requestFailure(error)} Check the chat before you send it again.`
+    : `Not sent. ${requestFailure(error)}`
 }
 
 /** After Cancel or Delete failed. */

@@ -1,15 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { SqliteMailStore, SyncedChat, SyncedChatOutgoing, UpdateChatRequest } from '@tresso/core'
 import { ApiError } from '@/auth/session'
-import { ChatActions, REUSE_ID_MS } from '@/chat/chatActions'
+import { ChatActions, outcomeUnknown, REUSE_ID_MS, UNSURE_PREFIX } from '@/chat/chatActions'
 import type { PhoneChatApi } from '@/chat/chatApi'
 import { chat, copyWith, deferred, reply } from './fixtures'
 
 const NOW = Date.parse('2026-11-13T10:31:00.000Z')
+/** Ids across every setUp, as a device never makes one twice. */
+let ids = 0
 
-function setUp(store: SqliteMailStore, api: Partial<PhoneChatApi> = {}) {
-  let now = NOW
-  let ids = 0
+function setUp(store: SqliteMailStore, api: Partial<PhoneChatApi> = {}, start = NOW) {
+  let now = start
   const changed = vi.fn()
   const errors: string[] = []
   const full: PhoneChatApi = {
@@ -43,8 +44,8 @@ describe('ChatActions', () => {
 
       const sending = actions.send(chat('c1'), '  On my way  ')
 
+      await vi.waitFor(() => expect(actions.shown('c1', [])).toHaveLength(1))
       const shown = actions.shown('c1', [])
-      expect(shown).toHaveLength(1)
       expect(shown[0]).toMatchObject({ status: 'waiting', text: 'On my way', chatId: 'c1' })
       expect(api.queueReply).toHaveBeenCalledWith('c1', { id: shown[0]!.id, text: 'On my way' })
       expect(await outgoingOf(store, 'c1')).toEqual([])
@@ -85,6 +86,58 @@ describe('ChatActions', () => {
       expect(ids[1]).toBe(ids[0])
       expect(ids[2]).not.toBe(ids[1])
       expect(ids[3], 'An id older than the server takes is never used again.').not.toBe(ids[2])
+    })
+
+    it('takes a server error or a timeout as a send that may have gone out, and sends the same text under the same id', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const answers = [new ApiError(502, 'Bad Gateway'), new ApiError(504, 'Gateway Timeout'), new ApiError(408, 'Request Timeout')]
+      const queueReply = vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(answers.shift()))
+      const { actions } = setUp(store, { queueReply })
+
+      for (let i = 0; i < 3; i++) {
+        await expect(actions.send(chat('c1'), 'Hello')).rejects.toThrow()
+      }
+
+      const ids = new Set(queueReply.mock.calls.map((call) => (call as unknown as [string, { id: string }])[1].id))
+      expect(ids.size).toBe(1)
+      expect(outcomeUnknown(new ApiError(500, 'x'))).toBe(true)
+      expect(outcomeUnknown(new ApiError(422, 'x'))).toBe(false)
+      expect(outcomeUnknown(new ApiError(429, 'x'))).toBe(false)
+      expect(outcomeUnknown(new TypeError('Network request failed'))).toBe(true)
+    })
+
+    it('reuses the id of a send without an answer after the app was closed, and forgets it once the delta has that reply', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const before = setUp(store, { queueReply: vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(new TypeError('Network request failed'))) })
+      await expect(before.actions.send(chat('c1'), 'On my way')).rejects.toThrow()
+      const kept = JSON.parse((await store.chatMeta(UNSURE_PREFIX + 'c1')) ?? '{}') as { id?: string; hash?: string }
+      expect(kept.id).toBeDefined()
+      expect(JSON.stringify(kept)).not.toContain('On my way')
+
+      // The app was closed: a new session of the same copy, a minute later.
+      const after = setUp(store, {}, NOW + 60_000)
+      const queued = await after.actions.send(chat('c1'), 'On my way')
+      expect(queued.id).toBe(kept.id)
+      expect(await store.chatMeta(UNSURE_PREFIX + 'c1')).toBeNull()
+
+      // The same text again on purpose: a new reply.
+      const again = await after.actions.send(chat('c1'), 'On my way')
+      expect(again.id).not.toBe(kept.id)
+    })
+
+    it('forgets a send without an answer when the delta brings that reply, so the same text later is a new reply', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const queueReply = vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(new TypeError('Network request failed')))
+      const { actions, api } = setUp(store, { queueReply })
+      await expect(actions.send(chat('c1'), 'On my way')).rejects.toThrow()
+      const first = (queueReply.mock.calls[0] as unknown as [string, { id: string }])[1].id
+
+      actions.settle('c1', [reply(first, 'c1', { text: 'On my way' })])
+      await vi.waitFor(async () => expect(await store.chatMeta(UNSURE_PREFIX + 'c1')).toBeNull())
+      api.queueReply = vi.fn(async (chatId: string, request: { id: string; text: string }) => reply(request.id, chatId, { text: request.text }))
+      const second = await actions.send(chat('c1'), 'On my way')
+
+      expect(second.id).not.toBe(first)
     })
 
     it('makes a new id after the server answered, also with a refusal', async () => {
@@ -208,6 +261,42 @@ describe('ChatActions', () => {
       expect(errors).toEqual(['Reading the chat on the server failed'])
     })
 
+    it('does not ask again for a read the server refused, until the chat is looked at again or a newer message came', async () => {
+      const unread = chat('c1')
+      const store = await copyWith({ chats: [unread] })
+      const updateChat = vi.fn(async (): Promise<SyncedChat> => Promise.reject(new TypeError('Network request failed')))
+      const { actions } = setUp(store, { updateChat })
+
+      await actions.markRead(unread)
+      await actions.markRead(unread)
+      await actions.markRead(unread)
+      expect(updateChat).toHaveBeenCalledTimes(1)
+
+      actions.lookedAt('c1')
+      await actions.markRead(unread)
+      expect(updateChat).toHaveBeenCalledTimes(2)
+
+      await store.putChats([{ ...unread, lastMessageAt: '2026-11-13T10:20:00.000Z' }])
+      await actions.markRead(unread)
+      expect(updateChat, 'A newer message is read again.').toHaveBeenCalledTimes(3)
+    })
+
+    it('waits for Retry-After before reading again, also when the chat is looked at again', async () => {
+      const unread = chat('c1')
+      const store = await copyWith({ chats: [unread] })
+      const updateChat = vi.fn(async (): Promise<SyncedChat> => Promise.reject(new ApiError(429, 'Too many requests.', {}, 30_000)))
+      const { actions, later } = setUp(store, { updateChat })
+
+      await actions.markRead(unread)
+      actions.lookedAt('c1')
+      await actions.markRead(unread)
+      expect(updateChat).toHaveBeenCalledTimes(1)
+
+      later(30_000)
+      await actions.markRead(unread)
+      expect(updateChat).toHaveBeenCalledTimes(2)
+    })
+
     it('asks nothing for a chat that is read through already, left out, or not on the phone', async () => {
       const read = chat('c1', { readThrough: '2026-11-13T10:14:00.000Z' })
       const leftOut = chat('c2', { jid: '31600000002@s.whatsapp.net', leftOut: true })
@@ -234,7 +323,7 @@ describe('ChatActions', () => {
     const store = await copyWith({ chats: [chat('c1')] })
     const { actions } = setUp(store, { queueReply: vi.fn(() => new Promise<SyncedChatOutgoing>(() => {})) })
     void actions.send(chat('c1'), 'Hello')
-    expect(actions.shown('c1', [])).toHaveLength(1)
+    await vi.waitFor(() => expect(actions.shown('c1', [])).toHaveLength(1))
 
     actions.clear()
 
