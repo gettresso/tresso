@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
 import {
+  CHAT_SCOPES,
   DEFAULT_PERSONAL_ACCESS_TOKEN_LIFETIME,
   PERSONAL_ACCESS_TOKEN_LIFETIMES,
   PERSONAL_ACCESS_TOKEN_SCOPES,
@@ -37,6 +38,11 @@ onMounted(async () => {
     loading.value = false
   }
 })
+
+/** WhatsApp is set apart from the other permissions: separate from mail, and off unless ticked. */
+const chatScopeValues: readonly string[] = CHAT_SCOPES
+const mailAndSettingsScopes = PERSONAL_ACCESS_TOKEN_SCOPES.filter((scope) => !chatScopeValues.includes(scope.value))
+const whatsAppScopes = PERSONAL_ACCESS_TOKEN_SCOPES.filter((scope) => chatScopeValues.includes(scope.value))
 
 function day(at: string): string {
   return new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
@@ -244,7 +250,7 @@ function selectSecret(event: FocusEvent): void {
           <fieldset class="group">
             <FieldLabel name="scopes" tag="legend">What it may do</FieldLabel>
             <div class="scopes">
-              <label v-for="scope in PERSONAL_ACCESS_TOKEN_SCOPES" :key="scope.value" class="check">
+              <label v-for="scope in mailAndSettingsScopes" :key="scope.value" class="check">
                 <input v-model="chosenScopes" type="checkbox" :value="scope.value" />
                 <span>
                   <span class="check-label">{{ scope.label }}</span>
@@ -252,6 +258,19 @@ function selectSecret(event: FocusEvent): void {
                 </span>
               </label>
             </div>
+            <fieldset class="whatsapp" aria-describedby="whatsapp-scopes-note">
+              <legend class="whatsapp-title">WhatsApp</legend>
+              <small id="whatsapp-scopes-note" class="hint">Separate from mail. Reaches messages other people sent you. Leave off unless this token is for WhatsApp.</small>
+              <div class="scopes">
+                <label v-for="scope in whatsAppScopes" :key="scope.value" class="check">
+                  <input v-model="chosenScopes" type="checkbox" :value="scope.value" />
+                  <span>
+                    <span class="check-label">{{ scope.label }}</span>
+                    <span class="hint">{{ scope.description }}</span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
             <small v-if="errors.scopes" class="error">{{ errors.scopes }}</small>
           </fieldset>
 
@@ -428,6 +447,21 @@ h2 {
 }
 .group .hint {
   font-weight: 400;
+}
+.whatsapp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 8px 0 0;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.whatsapp-title {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
 }
 .scopes {
   display: flex;
