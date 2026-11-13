@@ -770,6 +770,43 @@ final readonly class EventEditor
     }
 
     /**
+     * "Leave without a link": drops the series' pending or failed request and nothing else. Unlike
+     * {@see self::removeMeeting()} it never takes a link off the event, never tells the guests and never asks the
+     * provider to remove a meeting: when the series has a link (it arrived after the client last looked) it refuses.
+     * A request that is still in the event's text goes out of it with a write that asks for nothing; one only on the
+     * object is cleared there. No request and no link changes nothing.
+     *
+     * @throws MeetingLinkPresent when the series has a meeting link
+     */
+    public function dropMeetingRequest(CalendarEvent $row): CalendarEvent
+    {
+        $calendar = $row->getCalendar();
+        self::requireOrganizer($row);
+        self::requireWritable($calendar);
+        $object = $this->objects->lock($row->getObject());
+        $vcalendar = CalendarDocument::parse($object->getIcal());
+        $master = CalendarDocument::master($vcalendar) ?? throw new EditRejected('This event no longer exists.');
+        if (null !== ConferenceDetector::detect($master)) {
+            throw new MeetingLinkPresent();
+        }
+
+        if (null === Props::get($master, self::CONFERENCE_REQUEST) && null === Props::get($master, self::CONFERENCE_NONCE)) {
+            if (null !== $object->getConferenceRequest()) {
+                $this->store->setConferenceRequest($object, null);
+            }
+
+            return $this->masterRow($object, $row);
+        }
+        self::dropConferenceRequest($master);
+        self::touch($master, false);
+        $object->setConferenceRequest(null);
+        // Nobody is told: the event did not change for its guests.
+        $rows = $this->store->save($object, $vcalendar, notify: false);
+
+        return $rows[''] ?? $row;
+    }
+
+    /**
      * Whether the user organizes the event: it names no organizer, or one of the user's addresses.
      *
      * @param list<string> $self
