@@ -714,6 +714,28 @@ describe('ChatPane', () => {
     wrapper = view
   })
 
+  it('keeps the window usable when a read of older messages fails, and reads them on the next try', async () => {
+    const messages = Array.from({ length: 80 }, (_, index) => incoming(`M${String(index).padStart(3, '0')}`, DIRECT, -300 + index))
+    const copy = await copyWith([direct], messages)
+    const view = await open(DIRECT_ID, copy)
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const scroller = view.get('.timeline').element as HTMLElement
+    scroller.scrollTop = 40
+    vi.spyOn(copy, 'chatPage').mockRejectedValueOnce(new Error('database is closing'))
+
+    await view.get('button.older').trigger('click')
+    await flushPromises()
+    expect(logged).toHaveBeenCalledWith('Reading older chat messages failed', 'Error')
+    expect(bubbles(view)).toHaveLength(50)
+    expect(scroller.scrollTop).toBe(40)
+    expect(view.get('button.older').attributes('disabled')).toBeUndefined()
+
+    await view.get('button.older').trigger('click')
+    await flushPromises()
+    expect(bubbles(view)).toHaveLength(80)
+    wrapper = view
+  })
+
   it('names the sender in a group, and a file by its kind', async () => {
     const copy = await copyWith([group], [incoming('G1', GROUP, -10, { sender: { id: '1', name: 'Mom' } })])
     const view = await open(GROUP_ID, copy)
