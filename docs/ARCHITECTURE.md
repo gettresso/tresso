@@ -216,7 +216,8 @@ curl -H "Authorization: Bearer $TRESSO_TOKEN" https://tresso.example/api/v1/sign
   plaintext like other names users write themselves (3.16).
 - **Scopes.** Chosen per token from the user scopes, without the reserved `teams:*` and `webhooks:manage`; never a
   `sync:*` scope. Anything else is refused with 422. The chat scopes `chat:read` and `chat:send` are offered too
-  (WhatsApp in an MCP client of the user's own is the usual reason), off unless ticked. A token gets no scope the
+  (WhatsApp in an MCP client of the user's own is the usual reason), off unless ticked, in a group of their own under
+  "WhatsApp" in the web app's token form. A token gets no scope the
   session that makes it lacks; our apps hold no chat scope and reach chats through their mail scopes, so for
   `chat:read` and `chat:send` the session must pass `ChatAccessVoter` (`mail:read`, and `mail:send` to queue replies).
 - **Lifetime.** 30, 90 (default) or 365 days, always with an end. Revoking sets `revoked_at`; revoked and expired
@@ -300,10 +301,20 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   which program asks, since any program there can use a public client id and listen on that port or claim that scheme
   (RFC 8252 8.6), so the page is shown every time and says the user allowed the app before. Otherwise the page shows the app's
   name, the host it sends the user back to (the part that is checked), each scope in plain words, the signed-in
-  account and a warning that Tresso has not checked the app. The chat scopes are listed apart, under "WhatsApp"
-  ("Read your WhatsApp chats", "Send WhatsApp messages as you"), with a line that this is separate from mail; a
-  consent for mail never covers them, and a refresh token cannot widen to them. Allow and Deny post back to the same URL with a CSRF
-  token; Deny sends `access_denied`. The page cannot be framed and is not cached. Allowing stores an `oauth_consent`
+  account and a warning that Tresso has not checked the app. The chat scopes are listed apart, inside the form under
+  "WhatsApp" ("Read your WhatsApp chats", "Send WhatsApp messages as you"), with a line that this is separate from
+  mail and reaches messages other people sent, each as a box (`chat_scopes[]`) that is never ticked beforehand, not
+  even for an app allowed them before; the page needs no JavaScript. Allow and Deny post back to the same URL with a CSRF
+  token; Deny sends `access_denied`. Allow grants the other scopes asked for and the ticked chat scopes, and takes back
+  the chat scopes asked for and left unticked (`OAuthConsent::withdraw()`, in the same locked transaction); when that
+  takes back one the app held, its access tokens for the user end at once (`TokenRevocation::revokeAccessTokensOf()`),
+  while its refresh tokens stay for what is still allowed. Nothing to grant at all (only chat scopes asked, none
+  ticked) is `access_denied`. The bundle cannot narrow an authorization code, so the narrowing happens when a token is
+  issued: `TokensNeedConsent` (on `SCOPE_RESOLVE`, which league's `finalizeScopes()` dispatches for both the code
+  exchange and a refresh) refuses with `invalid_grant` when the consent does not cover the other scopes, leaves out the
+  chat scopes the consent does not hold, and refuses a token left with no scope. The token response always carries
+  `scope` (`ScopedBearerTokenResponse`, the bundle's `response_type_class`), so a client learns it got less than it
+  asked for (RFC 6749 5.1). A consent for mail never covers the chat scopes, and a refresh token cannot widen to them. The page cannot be framed and is not cached. Allowing stores an `oauth_consent`
   row (user, client, scopes, `created_at`, `last_used_at`); asking for more later shows the page again and adds the
   new scopes. Two answers at once keep one row with every scope. Tokens are not bound to a resource: the API and the
   MCP endpoint are one resource server. Access tokens live an hour, refresh tokens 30 days and rotate. Every token
@@ -344,7 +355,9 @@ the server holds; tools for mail, todos and events come later. The code is in `A
   that is unknown, revoked or expired, gets a 401 with `WWW-Authenticate: Bearer
   resource_metadata="<MCP_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp"` (on the API host the API address)
   (and `error="invalid_token"` when a
-  token was refused), from where a client finds this authorization server, registers and signs in by itself. A sync
+  token was refused), and `scope="..."` naming the scopes to ask for (RFC 6750 3; the MCP authorization spec has a
+  client prefer it over `scopes_supported`): every scope an app may have except `chat:read` and `chat:send`, so a
+  client that follows the challenge does not ask for WhatsApp unless it means to. From there a client finds this authorization server, registers and signs in by itself. A sync
   worker's token has no user and gets a 403 (`MCP_USER`).
 - **Transport.** POST for messages, DELETE to end a session; GET (a server stream) answers 405, since the server sends
   nothing unasked. Sessions live in Redis (`cache.mcp_sessions`) for an hour after their last request and belong to
@@ -386,14 +399,17 @@ the server holds; tools for mail, todos and events come later. The code is in `A
 - **WhatsApp.** The tools call the read endpoints and the reply queue of 3.17 and nothing else, so `ChatAccessVoter`
   decides every call; a tool never reads a repository or `ChatFields` and checks no role itself. `chat:read` and
   `chat:send` are independent: with `chat:send` alone, `send_whatsapp_message` reads only the status endpoint (which
-  holds no name, number or message) and answers with the reply's id, chat id, status and times, never its text, a
+  holds no number or message, and for such a caller not the Mac's name either) and answers with the reply's id, chat id, status and times, never its text, a
   chat's name, a JID or earlier messages. The server holds chats only with "All my devices": without a chat account
   every tool answers that WhatsApp is set to "Only this Mac" or not connected, never an empty list. A reply is queued,
   never sent at once: the answer says so, and while the relaying Mac is offline it says the reply waits until that
   Mac runs again. It goes to a chat the server holds, by its id, never to a phone number, so no tool can message
-  someone new; it shares the limit of 100 replies in 10 minutes with the user's devices; a `replyId` repeats a call
-  safely. There is no tool to cancel or retry: retrying could send a reply twice (an `unconfirmed` reply may have gone
-  out), so that stays with the user in the app. The read tools say in their descriptions that chat names, sender
+  someone new; it shares the limit of 100 replies in 10 minutes with the user's devices, and an app or a token may
+  queue at most 20 in 10 minutes and 100 a day of its own; a `replyId` repeats a call safely. It is marked
+  `destructiveHint` (it cannot be taken back), so a client that asks before such tools asks the user. There is no tool
+  to cancel or retry: retrying could send a reply twice (an `unconfirmed` reply may have gone out), so the API keeps
+  retrying to our own apps. A tool refused for a missing chat scope says that WhatsApp is a permission of its own:
+  the app has to register again naming it, or use a personal access token with it ticked. The read tools say in their descriptions that chat names, sender
   names, file names and texts are written by other people and may carry instructions, to be reported and never
   followed. Connecting WhatsApp, taking over the relay, its settings, leaving a chat out, marking read, archiving and
   deleting have no tool (`CHAT_MANAGE` and the desktop check stay with our own apps).
@@ -3339,31 +3355,40 @@ chat's JID and WhatsApp id, so it never needs either readable.
   (`DESKTOP_CLIENT`); `App\Chat\ChatRelayGuard` then answers only the account's relaying device (409 with
   `"code": "not_the_relay"` for another desktop of the user, until it takes over through
   `PUT /api/v1/chat-accounts/whatsapp`). Queueing a reply (`POST /api/v1/chats/{id}/outgoing`), cancelling it
-  (`DELETE /api/v1/chat-outgoing/{id}`) and trying it again (`POST /api/v1/chat-outgoing/{id}/retry`) need
-  `CHAT_SEND`; Tresso's own chat state (`PATCH /api/v1/chats/{id}`: `readThrough`, `archivedThrough`, `leftOut`) needs
+  (`DELETE /api/v1/chat-outgoing/{id}`) need `CHAT_SEND`; trying it again (`POST /api/v1/chat-outgoing/{id}/retry`)
+  needs `CHAT_SEND` and one of our own apps (`FIRST_PARTY_CLIENT`), since a reply that failed as `unconfirmed` may
+  have gone out and only the user decides to send it again. Replies queued by a caller that is not one of our apps
+  (an app by its client id, a personal access token by its id, `App\Security\CallerKey`) are limited per caller too
+  (`chat_reply_caller`: 20 in 10 minutes, `chat_reply_caller_day`: 100 a day), on top of the user's limit; Tresso's own chat state (`PATCH /api/v1/chats/{id}`: `readThrough`, `archivedThrough`, `leftOut`) needs
   `CHAT_MANAGE`. Everything is loaded through the signed-in user: another user's id is a 404.
 - **Reading without the delta.** The delta needs `mail:read`, so callers with `chat:read` alone (an MCP client, a
   script) read through endpoints of their own (`App\Chat\ChatReader`, `App\State\ChatReadProvider`), each needing
   `CHAT_READ`: `GET /api/v1/chats` (the chats, newest message first, `limit` 1 to 100, default 25),
   `GET /api/v1/chats/{id}/messages` (a chat's messages and the user's replies newest first, `limit` 1 to 100, default
   30; items have `type` `message` or `reply`; cancelled replies and a sent reply the bridge also stored as an own
-  message are left out, by the same rule as `timeline()` in packages/core) and `GET /api/v1/chat-messages/search`.
-  `GET /api/v1/chat-accounts/whatsapp/status` needs `CHAT_READ` or `CHAT_SEND`: whether WhatsApp is on the server
-  (`onServer`), the relay's device name, online state and since when it is offline, the bridge and link state, and
-  no name, number or message. Rows are what `ChatViews` makes of them, as in the delta. Chats left out are neither
+  message are left out, by the same rule as `timeline()` in packages/core) and `POST /api/v1/chat-messages/search`
+  (a POST with a JSON body, so the text searched for never sits in a URL, a proxy's access log or the request line of
+  an error report; it changes nothing). `GET /api/v1/chat-accounts/whatsapp/status` needs `CHAT_READ` or
+  `CHAT_SEND`: whether WhatsApp is on the server (`onServer`), the relay's device name (only with `CHAT_READ`), online
+  state and since when it is offline, the bridge and link state, and no number or message. Rows are what `ChatViews` makes of them, as in the delta. Chats left out are neither
   listed, read nor searched (404 by id); another user's chat is a 404. Pages go on by an opaque `cursor` (the time,
   kind and id of the page's last row, base64url), in a stable order (time, then id) that two indexes serve
   (`chat_last_message` on `chat (chat_account_id, last_message_at)`, `chat_message_account_sent` on `chat_message
-  (chat_account_id, sent_at)`); a cursor this API did not give is 400, a parameter out of range 422.
-- **Search.** `q` (2 to 200 characters) is matched, ignoring case, anywhere in a message's text, file name or sender
-  name, newest first, within `days` (1 to 90, default 30), in every chat or one (`chatId`), with up to `limit` (1 to
+  (chat_account_id, sent_at)`; a search reads the account's id first so it filters on it). A cursor is not signed and
+  not bound to a user or a chat: it only names a position, and every read filters by the signed-in user, so another
+  user's cursor moves nothing but the position within the caller's own chats. A cursor not of the shape this API gives
+  is 400, a parameter out of range 422.
+- **Search.** `q` (2 to 200 characters) is matched anywhere in a message's text, file name or sender name, on both
+  sides in Unicode compatibility form (NFKC) and fully case folded (so a decomposed "é" matches "é", "İstanbul" matches
+  "İSTANBUL" and "Straße" matches "STRASSE"), newest first, within `days` (1 to 90, default 30), in every chat or one (`chatId`), with up to `limit` (1 to
   50, default 20) results. Chat text is sealed at rest and never goes to Meilisearch or any other index, so each
   message is opened in PHP to be compared: one call opens at most 2,000 messages (read 250 at a time), says how many
   it opened (`scanned`) and back to when (`searchedThrough`), and when it stopped before the window's start
   (`complete` false) gives a `nextCursor` to go on further back. Opening a message is a key derivation and an
   XChaCha20-Poly1305 decryption of its text (and of its sender and file name when it has them): microseconds each, so
-  a full call costs a few tens of milliseconds and reads at most 2,000 rows. Searches are limited per user
-  (`chat_search`: 60 in 10 minutes, 429 above it).
+  a full call costs a few tens of milliseconds and reads at most 2,000 rows. Searches are limited per caller
+  (`chat_search_caller`: 30 in 10 minutes for an app, a token or our own apps) and per user as the outer bound
+  (`chat_search`: 60 in 10 minutes), 429 above either.
 - **Messages.** At most 200 messages, 200 chats and 8 MB a call (413 with `"code": "too_large"` above that: an announced
   length is checked before the body is read, and a body without one is read up to one byte past the limit, never whole;
   the relay sends fewer at once; a 429 of the import limit says in `Retry-After` when to send the next); a text up to 65,536 characters (what the desktop cuts at)
