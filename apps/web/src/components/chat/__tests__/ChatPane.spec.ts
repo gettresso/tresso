@@ -8,7 +8,14 @@ import { ACCOUNT_ID, FakeChatServer } from '@/stores/__tests__/chatServerFixture
 import type { WhatsAppCommands } from '@/platform/whatsapp'
 import { at, copyWith, DIRECT, DIRECT_ID, direct, fakeMail, fakeRelay, fakeShell, GROUP, GROUP_ID, group, incoming, LINKED, NOW, STOPPED } from '@/stores/__tests__/chatFixtures'
 
-const fakes = vi.hoisted(() => ({ server: null as unknown, relay: null as unknown, mail: null as unknown, shell: null as unknown, todos: { create: null as unknown }, selection: { active: false }, compose: { draft: null as unknown, minimized: false, notify: () => undefined } }))
+const fakes = vi.hoisted(() => ({ server: null as unknown, relay: null as unknown, mail: null as unknown, shell: null as unknown, todos: { create: null as unknown }, selection: { active: false }, compose: { draft: null as unknown, minimized: false, notify: () => undefined }, desktop: false, browser: [] as string[] }))
+vi.mock('@/platform/desktop', async (original) => ({
+  ...(await original<typeof import('@/platform/desktop')>()),
+  get isDesktop() {
+    return fakes.desktop
+  },
+  openInBrowser: async (url: string) => void fakes.browser.push(url),
+}))
 vi.mock('@/stores/whatsappRelay', () => ({ useWhatsAppRelayStore: () => fakes.relay }))
 vi.mock('@/api/chats', () => ({ useChatApi: () => fakes.server }))
 vi.mock('@/stores/mail', () => ({ useMailStore: () => fakes.mail }))
@@ -192,6 +199,39 @@ describe('ChatPane', () => {
     expect(unconfirmed.get('.why').text()).toBe('Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.')
     expect(unconfirmed.findAll('.under button').map((button) => button.text())).toEqual(['Try again', 'Delete'])
     wrapper = view
+  })
+
+  it('on a Mac that does not relay, asks the relaying Mac for a file and opens it in the user\'s browser', async () => {
+    fakes.desktop = true
+    fakes.browser = []
+    const server = new FakeChatServer()
+    fakes.server = server
+    await server.connect({ deviceId: 'other-device', deviceName: 'Office iMac', address: null, displayName: null, includeGroups: true, notify: false })
+    await server.relayMessages(ACCOUNT_ID, {
+      deviceId: 'other-device',
+      firstImport: false,
+      chats: [{ jid: DIRECT, name: 'Bram Visser', kind: 'direct' }],
+      messages: [{ chatJid: DIRECT, waId: 'S1', fromMe: false, sender: null, text: '', sentAt: at(-3), media: { kind: 'document', name: 'plan.pdf', size: 2048 } }],
+    })
+    for (const message of server.messages.values()) {
+      server.messages.set(`${DIRECT}\nS1`, { ...message, mediaState: 'stored', mediaAccess: 'allowed' })
+    }
+    const copy = await SqliteMailStore.open(await memorySql())
+    await server.deliver(copy)
+    relay.config = { ...relay.config!, mode: 'all' }
+    relay.serverAccount = server.account
+    relay.relaysHere = false
+    const opened = vi.spyOn(window, 'open')
+
+    const view = await open(`chat-${DIRECT}`, copy)
+    await view.get('.media button').trigger('click')
+    await flushPromises()
+
+    expect(fakes.browser).toEqual([expect.stringMatching(/\/content\/chat-media\/msg-\d+$/)])
+    expect(opened, 'The desktop app has no tabs: the file opens in the browser.').not.toHaveBeenCalled()
+    expect((fakes.shell as ReturnType<typeof fakeShell>).calls, 'Never through this Mac\'s bridge.').toEqual([])
+    opened.mockRestore()
+    fakes.desktop = false
   })
 
   it('on a Mac that does not relay ("All my devices"), says a reply waits for your Mac and who sends it', async () => {

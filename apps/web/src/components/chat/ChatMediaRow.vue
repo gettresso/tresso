@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import type { SyncedChatMessage } from '@tresso/core'
 import type { MediaState } from '@/stores/chats'
 import AppIcon from '@/components/AppIcon.vue'
@@ -23,10 +23,30 @@ const view = computed(() => (props.server ? serverMediaView(props.message, props
 const line = computed(() => props.note ?? view.value?.line ?? mediaStateText(props.message, props.state))
 const failed = computed(() => (view.value === null ? props.state.state === 'failed' : view.value.failed || !!props.note))
 
-function confirmUnscanned(): void {
-  if (window.confirm(UNSCANNED_WARNING)) {
-    emit('openUnscanned')
-  }
+/**
+ * "Download anyway" asks first, in the row (as leaving a chat out does): an alertdialog with the warning, the focus on
+ * Cancel, Escape to cancel. The browser's own confirm is not used: Enter would accept it, and the desktop webview has
+ * none of its own.
+ */
+const confirming = ref(false)
+const cancelButton = ref<HTMLButtonElement | null>(null)
+const anyway = ref<HTMLButtonElement | null>(null)
+
+async function askUnscanned(): Promise<void> {
+  confirming.value = true
+  await nextTick()
+  cancelButton.value?.focus()
+}
+
+async function closeConfirm(): Promise<void> {
+  confirming.value = false
+  await nextTick()
+  anyway.value?.focus()
+}
+
+function acceptUnscanned(): void {
+  confirming.value = false
+  emit('openUnscanned')
 }
 </script>
 
@@ -41,13 +61,14 @@ function confirmUnscanned(): void {
     </span>
     <span class="text">
       <span class="title" dir="auto">{{ title }}</span>
-      <span class="line" :role="failed ? 'alert' : undefined">{{ line }}</span>
+      <!-- Said as it changes: politely for a new state (Ready to open, Checking for malware), at once for a failure. -->
+      <span class="line" :role="failed ? 'alert' : 'status'" :aria-live="failed ? 'assertive' : 'polite'">{{ line }}</span>
     </span>
     <template v-if="view">
       <button v-if="view.action === 'download'" type="button" class="button button-quiet action" :disabled="disabled" @click="emit('download')"><AppIcon name="download" :size="14" /> Download</button>
       <button v-else-if="view.action === 'retry'" type="button" class="button button-quiet action" :disabled="disabled" @click="emit('download')">Try again</button>
       <button v-else-if="view.action === 'open'" type="button" class="button button-quiet action" @click="emit('open')">Open</button>
-      <button v-else-if="view.action === 'confirm'" type="button" class="button button-quiet action" @click="confirmUnscanned">Download anyway</button>
+      <button v-else-if="view.action === 'confirm'" ref="anyway" type="button" class="button button-quiet action" :disabled="confirming" @click="askUnscanned">Download anyway</button>
       <button v-else-if="view.pending" type="button" class="button button-quiet action" disabled aria-busy="true">{{ view.pending }}</button>
     </template>
     <template v-else>
@@ -58,6 +79,19 @@ function confirmUnscanned(): void {
         Try again
       </button>
     </template>
+  </span>
+  <span
+    v-if="confirming"
+    class="confirm"
+    role="alertdialog"
+    :aria-labelledby="`chat-unscanned-${message.id}`"
+    @keydown.esc.prevent="closeConfirm"
+  >
+    <span :id="`chat-unscanned-${message.id}`" class="confirm-text">{{ UNSCANNED_WARNING }}</span>
+    <span class="confirm-actions">
+      <button type="button" class="button button-danger" @click="acceptUnscanned">Download anyway</button>
+      <button ref="cancelButton" type="button" class="button button-quiet" @click="closeConfirm">Cancel</button>
+    </span>
   </span>
 </template>
 
@@ -101,6 +135,20 @@ function confirmUnscanned(): void {
 }
 .failed .line {
   color: var(--danger);
+}
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--ground);
+  font-size: 12px;
+}
+.confirm-actions {
+  display: flex;
+  gap: 8px;
 }
 .action {
   flex: none;

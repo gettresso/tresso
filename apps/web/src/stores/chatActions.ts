@@ -64,6 +64,10 @@ export type ChatActionErrorCode =
   | 'wait'
   | 'other_number'
   | 'checking'
+  | 'still_sending'
+  | 'file_too_large'
+  | 'too_much_waiting'
+  | 'too_many_files'
 
 const TEXTS: Record<ChatActionErrorCode, string> = {
   empty: 'The reply is empty.',
@@ -87,6 +91,10 @@ const TEXTS: Record<ChatActionErrorCode, string> = {
     'This Mac is linked to another WhatsApp number than your Tresso server holds. Disconnect WhatsApp on the server first, or link this Mac to the same number.',
   // The mail store's STILL_CHECKING: the server has not confirmed who is signed in yet in this page load.
   checking: 'Tresso is still checking who is signed in. Try again once it is connected.',
+  still_sending: 'Your Mac may still be sending this reply. Check WhatsApp on your phone, and try again in a few minutes if it did not arrive.',
+  file_too_large: 'The file is larger than 100 MB, the most Tresso sends.',
+  too_much_waiting: 'Files waiting for your Mac take up too much space. Wait until they are sent, or cancel some, then attach this one again.',
+  too_many_files: 'Too many files sent at once. Wait a few minutes, then attach it again.',
 }
 
 /**
@@ -114,11 +122,20 @@ export function unsureOutcome(error: unknown): boolean {
   return failure === null ? !(error instanceof ChatActionError) : failure.status === 408 || failure.status >= 500
 }
 
+/** A 409's `code` as what the user is told; any other is `refused`. */
+const CONFLICTS: Record<string, ChatActionErrorCode> = {
+  already_going_out: 'already_going_out',
+  not_failed: 'not_failed',
+  still_sending: 'still_sending',
+  cancelled: 'cancelled',
+  other_number: 'other_number',
+}
+
 /**
  * What a failed server request means for the user. `about`: a reply (a 429 is the reply limit) or any other change of
  * WhatsApp on the server (a 429 asks to wait).
  */
-export function chatActionError(error: unknown, about: 'reply' | 'change' = 'reply'): ChatActionError {
+export function chatActionError(error: unknown, about: 'reply' | 'change' | 'upload' = 'reply'): ChatActionError {
   if (error instanceof ChatActionError) {
     return error
   }
@@ -133,23 +150,13 @@ export function chatActionError(error: unknown, about: 'reply' | 'change' = 'rep
     case 404:
       return new ChatActionError('not_found', null, wait)
     case 409:
-      return new ChatActionError(
-        failure.code === 'already_going_out'
-          ? 'already_going_out'
-          : failure.code === 'not_failed'
-            ? 'not_failed'
-            : failure.code === 'cancelled'
-              ? 'cancelled'
-              : failure.code === 'other_number'
-                ? 'other_number'
-                : 'refused',
-        null,
-        wait,
-      )
+      return new ChatActionError(CONFLICTS[failure.code ?? ''] ?? 'refused', null, wait)
+    case 413:
+      return new ChatActionError(failure.code === 'too_much_waiting' ? 'too_much_waiting' : 'file_too_large', null, wait)
     case 422:
       return new ChatActionError('refused', null, wait)
     case 429:
-      return new ChatActionError(about === 'reply' ? 'too_many' : 'wait', null, wait)
+      return new ChatActionError(about === 'reply' ? 'too_many' : about === 'upload' ? 'too_many_files' : 'wait', null, wait)
     default:
       return new ChatActionError('failed', null, wait)
   }

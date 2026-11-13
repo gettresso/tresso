@@ -182,8 +182,13 @@ function openFile(message: SyncedChatMessage | null, acceptUnscanned: boolean): 
 }
 
 /** The line about a file attached in this chat; one attached in another chat says nothing here. */
+const attachState = computed(() => chats.attachStateOf(props.chatId))
+const uploading = computed(() => {
+  const state = attachState.value
+  return state.state === 'sending' && state.phase !== undefined ? state : null
+})
 const attachLine = computed(() => {
-  const state = chats.attaching
+  const state = attachState.value
   return state.state !== 'idle' && state.chatId === props.chatId ? attachText(state) : null
 })
 /** What was typed here before and not sent; the composer starts with it. */
@@ -577,7 +582,13 @@ function keepPolling(): void {
 
 watch(
   () => props.chatId,
-  () => void open(),
+  (_now, before) => {
+    // Leaving a chat while its file uploads: the upload stops, and nothing is queued.
+    if (before !== undefined) {
+      chats.cancelAttach(before)
+    }
+    void open()
+  },
   { immediate: true },
 )
 watch(() => chats.version, () => void reload())
@@ -756,6 +767,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   unmounted = true
+  chats.cancelAttach(props.chatId)
   window.removeEventListener('keydown', shortcut)
   window.removeEventListener('focus', onFocus)
   if (poll !== null) {
@@ -853,13 +865,16 @@ onBeforeUnmount(() => {
         :send-note="sendNote"
         :can-attach="chats.canAttach"
         :attach-note="chats.attachNote"
-        :attaching="chats.attaching.state === 'sending'"
+        :attaching="attachState.state === 'sending'"
         :attach-line="attachLine"
+        :upload-progress="uploading?.progress ?? null"
+        :can-cancel-upload="uploading !== null"
         :announcement="announcement"
         :error="sendError"
         :draft="draft"
         @update:draft="onDraft"
         @attach="attach"
+        @cancel-upload="chats.cancelAttach(chatId)"
       />
       <input ref="filePicker" type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" @change="onFilePicked" />
     </template>

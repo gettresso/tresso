@@ -300,6 +300,31 @@ export function inInbox(chat: Pick<SyncedChat, 'lastMessageAt' | 'archivedThroug
   return Number.isNaN(archivedThrough) || !((Date.parse(chat.lastMessageAt) || 0) <= archivedThrough)
 }
 
+/**
+ * Names a file the user picked without saying its name: a 53-bit hash (cyrb53, hex) of its name, size and last change.
+ * Enough to tell the same pick again within one chat (an attach whose outcome was not known goes again under the same
+ * ids) and kept beside those ids in the copy, where the name itself never goes.
+ */
+export function fileFingerprint(name: string, size: number, lastModified: number | null): string {
+  const text = `${name}\n${size}\n${lastModified ?? ''}`
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ code, 2654435761)
+    h2 = Math.imul(h2 ^ code, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16)
+}
+
+/**
+ * How long the ids of an attach whose outcome was not known are used again: the server takes a reply id at most 10
+ * minutes after it was made, so a minute is left for clocks and the request itself.
+ */
+export const UNSURE_FILE_MS = 9 * 60 * 1000
+
 /** The text a file sent from the desktop is shown with (recordLocalAttachment): `File: <name>`. */
 export const SENT_FILE_PREFIX = 'File: '
 

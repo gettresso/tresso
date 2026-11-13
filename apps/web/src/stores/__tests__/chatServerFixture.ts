@@ -4,6 +4,7 @@ import {
   chatKindOf,
   type ChatApi,
   type ChatMediaResponse,
+  type ChatUploadOptions,
   type MailStore,
   type RelayImportResponse,
   type SyncedChat,
@@ -368,8 +369,17 @@ export class FakeChatServer implements ChatApi {
     return this.mediaOf(message, `https://api.test/content/chat-media/${messageId}?unscanned=1`)
   }
 
-  async uploadFile(chatId: string, uploadId: string, body: Blob): Promise<{ id: string; chatId: string; size: number }> {
-    await this.enter('uploadFile', [chatId, uploadId, body])
+  async uploadFile(chatId: string, uploadId: string, body: Blob, options: ChatUploadOptions = {}): Promise<{ id: string; chatId: string; size: number }> {
+    options.onProgress?.(body.size / 2, body.size)
+    // A held upload can be cancelled while it waits, as a real request can.
+    const aborted = new Promise<never>((_resolve, reject) => {
+      const fail = () => reject(new DOMException('The upload was cancelled.', 'AbortError'))
+      if (options.signal?.aborted) {
+        fail()
+      }
+      options.signal?.addEventListener('abort', fail, { once: true })
+    })
+    await Promise.race([this.enter('uploadFile', [chatId, uploadId, body]), aborted])
     const content = await body.text()
     const known = this.uploads.get(uploadId)
     if (known !== undefined && (known.chatId !== chatId || known.content !== content)) {
