@@ -182,6 +182,8 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
     busy.current = true
     setActing(kind)
     setActionError(null)
+    // A new attempt starts clean: no line left from an earlier Retry or Leave next to this one's outcome.
+    setDone(null)
     try {
       const text = await run()
       if (alive.current && text !== null) {
@@ -217,11 +219,15 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
     }
     if (outcome === 'arrived') {
       // Said before the sync: the link it brings replaces this block. A failed sync leaves the line to say why the
-      // request is still here; the session shows its own sync error.
+      // request is still here; the session shows its own sync error, so it is no failure of Leave.
       if (alive.current) {
         setDone({ request: requestKey, text })
       }
-      await onSync()
+      try {
+        await onSync()
+      } catch {
+        // Shown by the session's sync state; the line above says what happened.
+      }
       return null
     }
     return text
@@ -288,24 +294,24 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
           <View style={styles.actions}>
             {ask !== null && canRetry(provider) && (
               <Pressable
-                style={styles.action}
+                style={[styles.action, acting !== null && styles.actionDisabled]}
                 onPress={() => void act('retry', () => retry(ask, provider))}
                 disabled={acting !== null}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: acting !== null, busy: acting === 'retry' }}
               >
-                <Text style={styles.actionLabel}>{acting === 'retry' ? 'Retrying' : 'Retry'}</Text>
+                <Text style={[styles.actionLabel, acting !== null && styles.actionLabelDisabled]}>{acting === 'retry' ? 'Retrying' : 'Retry'}</Text>
               </Pressable>
             )}
             {onLeave !== null && (
               <Pressable
-                style={styles.action}
+                style={[styles.action, acting !== null && styles.actionDisabled]}
                 onPress={() => void act('leave', () => leave(onLeave))}
                 disabled={acting !== null}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: acting !== null, busy: acting === 'leave' }}
               >
-                <Text style={styles.actionLabel}>Leave without a link</Text>
+                <Text style={[styles.actionLabel, acting !== null && styles.actionLabelDisabled]}>{acting === 'leave' ? 'Leaving' : 'Leave without a link'}</Text>
               </Pressable>
             )}
           </View>
@@ -357,5 +363,8 @@ function makeStyles(theme: Theme) {
     actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingTop: 4 },
     action: { minHeight: 44, paddingVertical: 10, paddingHorizontal: 14, justifyContent: 'center', borderRadius: 8, borderWidth: 1, borderColor: theme.lineStrong },
     actionLabel: { fontSize: 15, fontWeight: '600', color: theme.ink },
+    // While Retry or Leave runs: a quieter border and label, still readable (ink2 on the surface is 4.5:1 or more).
+    actionDisabled: { borderColor: theme.line },
+    actionLabelDisabled: { color: theme.ink2 },
   })
 }

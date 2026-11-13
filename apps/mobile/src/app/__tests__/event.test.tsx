@@ -575,7 +575,7 @@ describe('the meeting link on the event screen', () => {
       show(event({ id: 'o1', recurrenceId: '20261023T080000Z', conferenceRequest: undefined }), series)
 
       fireEvent.click(await screen.findByRole('button', { name: 'Leave without a link' }))
-      fireEvent.click(screen.getByRole('button', { name: 'Leave without a link' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Leaving' }))
       fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
       expect(mail.dropMeetingRequest).toHaveBeenCalledExactlyOnceWith('s1')
       expect(mail.requestMeetingLink).not.toHaveBeenCalled()
@@ -652,10 +652,101 @@ describe('the meeting link on the event screen', () => {
 
     it('is not offered to a guest or on a calendar the user cannot write', async () => {
       mail.meetingRequestDrop.mockResolvedValue(true)
+      const guest = show(event({ selfResponse: 'accepted', organizer: sanne, conferenceRequest: request({ status: 'failed', reason: 'refused' }) }))
+      await act(async () => {})
+      expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+      guest.unmount()
+
       state.calendars = new Map([['cal', { ...calendar, writable: false }]])
       show(failed())
       await act(async () => {})
 
+      expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
+    })
+
+    it('is not offered while the server has not answered whether it has the drop', async () => {
+      mail.meetingRequestDrop.mockReturnValue(new Promise<boolean>(() => {}))
+      show(failed())
+      await act(async () => {})
+
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
+    })
+
+    it('reads "Leaving" while it runs, with Retry disabled', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      mail.dropMeetingRequest.mockReturnValue(new Promise(() => {}))
+      show(failed())
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Leave without a link' }))
+
+      expect(screen.getByRole('button', { name: 'Leaving' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Retry' }).getAttribute('aria-disabled')).toBe('true')
+    })
+
+    it('says a link arrived and raises no error when the sync after the 409 fails', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      mail.dropMeetingRequest.mockResolvedValue('arrived')
+      mail.syncNow.mockRejectedValue(new Error('offline'))
+      show(failed())
+
+      const leave = await screen.findByRole('button', { name: 'Leave without a link' })
+      await act(async () => {
+        fireEvent.click(leave)
+      })
+
+      expect(screen.getByText('The meeting link arrived meanwhile. Nothing was changed.')).toBeTruthy()
+      expect(screen.queryByText(/did not work|Try again/)).toBeNull()
+      expect(announce).toHaveBeenCalledExactlyOnceWith('The meeting link arrived meanwhile. Nothing was changed.')
+    })
+
+    it('sets nothing and says nothing when Leave answers after the screen closed', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      let answer: (outcome: 'dropped') => void = () => {}
+      mail.dropMeetingRequest.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+      const view = show(failed())
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Leave without a link' }))
+      view.unmount()
+      await act(async () => {
+        answer('dropped')
+      })
+
+      expect(announce).not.toHaveBeenCalled()
+    })
+
+    it('clears the line of an earlier Retry when a later Leave fails', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      mail.dropMeetingRequest.mockRejectedValue(Object.assign(new Error('Internal'), { status: 500 }))
+      show(failed())
+
+      const leave = await screen.findByRole('button', { name: 'Leave without a link' })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      })
+      expect(screen.getByText('Asked for the link again.')).toBeTruthy()
+
+      await act(async () => {
+        fireEvent.click(leave)
+      })
+      expect(screen.queryByText('Asked for the link again.')).toBeNull()
+      expect(screen.getByText('The server could not do this now. Try again later.')).toBeTruthy()
+    })
+
+    it('forgets one reader\'s answer when another one comes', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      const view = show(failed())
+      await screen.findByRole('button', { name: 'Leave without a link' })
+
+      // Another user signed in: a new reader whose answer is not there yet.
+      const next = vi.fn(() => new Promise<boolean>(() => {}))
+      const before = mail.meetingRequestDrop
+      mail.meetingRequestDrop = next as unknown as typeof before
+      view.rerender(<EventScreen />)
+      mail.meetingRequestDrop = before
+
+      expect(next).toHaveBeenCalledOnce()
       expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
     })
   })
