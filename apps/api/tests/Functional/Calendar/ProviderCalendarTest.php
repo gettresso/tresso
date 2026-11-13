@@ -678,6 +678,63 @@ final class ProviderCalendarTest extends DatabaseTestCase
         self::assertStringNotContainsString('X-TRESSO-CONFERENCE', self::string($moved), 'A Tresso calendar has no Google meeting to remove.');
     }
 
+    public function testASaveFromACopyOlderThanTheMeetingKeepsIt(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $eventId = $this->createWithMeet($primary);
+        $operations = $this->claim();
+        $this->report($operations[0]['id'], ['outcome' => 'done', 'remoteId' => 'trabc', 'etag' => 'e1', 'current' => ['remoteId' => 'trabc', 'etag' => 'e1', 'ical' => self::providerVersion(self::string($operations[0]['ical']), "CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://meet.google.com/abc-defg-hij\r\nX-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij")]]);
+
+        // The client still had the event without the link and asks for Meet as it did then.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($primary, ['summary' => 'Weekly sync, renamed', 'conferenceUrl' => null, 'conferenceProvider' => 'meet']), $this->user);
+
+        self::assertResponseIsSuccessful();
+        $event = $this->decodedResponse();
+        self::assertSame('https://meet.google.com/abc-defg-hij', \is_array($event['conference']) ? $event['conference']['url'] : null, 'The meeting stays,');
+        self::assertNull($event['conferenceRequest'], 'and no second one is asked for.');
+        $ical = self::string($this->claim()[0]['ical']);
+        self::assertStringContainsString('X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', $ical);
+        self::assertStringNotContainsString('X-TRESSO-CONFERENCE', $ical, 'No request and no word to remove it.');
+        self::assertSame([], $this->outgoing(), 'Nobody gets mail from Tresso.');
+    }
+
+    public function testASaveOfAWholeSeriesFromAnOlderCopyKeepsItsMeeting(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $this->storeObject($primary, 'standup', '"1"', self::meetSeries());
+        $eventId = self::string($this->occurrences($this->user, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0]['eventId']);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($primary, [
+            'summary' => 'Standup, renamed',
+            'start' => ['dateTime' => '2026-10-19T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-19T09:15:00', 'timeZone' => 'Europe/Amsterdam'],
+            'recurrence' => 'FREQ=DAILY;COUNT=3',
+            'conferenceUrl' => null,
+            'conferenceProvider' => 'meet',
+        ]), $this->user);
+
+        self::assertResponseIsSuccessful();
+        self::assertNull($this->decodedResponse()['conferenceRequest']);
+        $ical = self::string($this->claim()[0]['ical']);
+        self::assertStringContainsString('X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', $ical);
+        self::assertStringNotContainsString('X-TRESSO-CONFERENCE', $ical);
+    }
+
+    public function testASaveThatAsksForAnotherAppStillReplacesTheLink(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($primary, ['conferenceUrl' => 'https://meet.company.example/kim']), $this->user);
+        self::assertResponseStatusCodeSame(201);
+        $eventId = $this->responseString('id');
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($primary, ['conferenceUrl' => null, 'conferenceProvider' => 'meet']), $this->user);
+
+        self::assertResponseIsSuccessful();
+        $event = $this->decodedResponse();
+        self::assertNull($event['conference'], 'The own link goes,');
+        self::assertSame('pending', \is_array($event['conferenceRequest']) ? $event['conferenceRequest']['status'] : null, 'and Meet is asked for.');
+    }
+
     public function testLeavingWithoutALinkDropsAFailedRequestOnly(): void
     {
         $primary = $this->reportCalendars()[0]['id'];
