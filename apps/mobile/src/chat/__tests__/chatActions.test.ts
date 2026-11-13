@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fileFingerprint, type SqliteMailStore, type SyncedChat, type SyncedChatOutgoing, type UpdateChatRequest } from '@tresso/core'
 import { ApiError } from '@/auth/session'
-import { ChatActions, outcomeUnknown, ReplyCancelled, REUSE_ID_MS, UNSURE_FILES, UNSURE_PREFIX, unsureFileKey } from '@/chat/chatActions'
+import { ChatActions, OLD_UNSURE_FILE_PREFIX, outcomeUnknown, ReplyCancelled, REUSE_ID_MS, UNSURE_FILES, UNSURE_PREFIX, unsureFileKey } from '@/chat/chatActions'
+import { AttachHeld } from '@/chat/texts'
 import type { PhoneChatApi } from '@/chat/chatApi'
 import { chat, copyWith, deferred, reply } from './fixtures'
 
@@ -198,6 +199,38 @@ describe('ChatActions', () => {
       await expect(sending).rejects.toBeInstanceOf(ReplyCancelled)
       expect(actions.shown('c1', [])).toEqual([])
       expect(await store.chatMeta(UNSURE_PREFIX + 'c1'), 'Nothing to send again.').toBeNull()
+    })
+
+    it('takes a cancelled reply whose queueing got no answer as cancelled, and the same text again as a new reply', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const answer = deferred<SyncedChatOutgoing>()
+      const queueReply = vi.fn<PhoneChatApi['queueReply']>(() => answer.promise)
+      const { actions, api } = setUp(store, { queueReply })
+
+      const sending = actions.send(chat('c1'), 'On my way')
+      await vi.waitFor(() => expect(actions.shown('c1', [])).toHaveLength(1))
+      await actions.cancel(actions.shown('c1', [])[0]!)
+      answer.reject(new TypeError('Network request failed'))
+      await expect(sending).rejects.toBeInstanceOf(ReplyCancelled)
+      expect(await store.chatMeta(UNSURE_PREFIX + 'c1'), 'Nothing kept to send again.').toBeNull()
+
+      api.queueReply = vi.fn(async (chatId: string, request: { id: string; text: string }) => reply(request.id, chatId, { text: request.text }))
+      const again = await actions.send(chat('c1'), 'On my way')
+      expect(again.id).not.toBe(queueReply.mock.calls[0]![1].id)
+    })
+
+    it('forgets the unsure send of a reply the user cancels, so the same text is a new reply', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const { actions, api } = setUp(store, { queueReply: vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(new TypeError('Network request failed'))) })
+      await expect(actions.send(chat('c1'), 'On my way')).rejects.toThrow()
+      const kept = JSON.parse((await store.chatMeta(UNSURE_PREFIX + 'c1')) ?? '{}') as { id: string }
+
+      // The reply shows (the server took it after all); the user cancels it before the copy settled the unsure send.
+      await actions.cancel(reply(kept.id, 'c1', { text: 'On my way' }))
+
+      await vi.waitFor(async () => expect(await store.chatMeta(UNSURE_PREFIX + 'c1')).toBeNull())
+      api.queueReply = vi.fn(async (chatId: string, request: { id: string; text: string }) => reply(request.id, chatId, { text: request.text }))
+      expect((await actions.send(chat('c1'), 'On my way')).id).not.toBe(kept.id)
     })
 
     it('never takes a refusal as cancelled for a reply the user did not cancel', async () => {
@@ -550,6 +583,30 @@ describe('ChatActions', () => {
       expect(actions.attachHeld()).toBeNull()
       await actions.sendFile(chat('c1'), PLAN)
       expect(uploadFile).toHaveBeenCalledTimes(2)
+    })
+
+    it('holds Attach after too many replies on the queueing of a file, and says the real wait', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const { actions } = setUp(store, { queueReply: vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(new ApiError(429, 'Too many WhatsApp replies at once.', {}, 90_000))) })
+
+      const failure = await actions.sendFile(chat('c1'), PLAN).catch((error: unknown) => error)
+
+      expect(failure).toMatchObject({ phase: 'queue', unsure: false })
+      expect((failure as { reason: unknown }).reason).toBeInstanceOf(AttachHeld)
+      expect(((failure as { reason: Error }).reason).message).toBe('Too many files sent at once. Wait 2 minutes, then attach it again.')
+      expect(actions.attachHeld()).toBe(90_000)
+    })
+
+    it('removes the per-file values an earlier build kept, the first time it reads the unsure files', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      await store.setChatMeta(`${OLD_UNSURE_FILE_PREFIX}c1:abc`, '{}')
+      await store.setChatMeta(`${OLD_UNSURE_FILE_PREFIX}c1`, '{}')
+      const { actions } = setUp(store)
+
+      await actions.sendFile(chat('c1'), PLAN)
+
+      expect(await store.chatMeta(`${OLD_UNSURE_FILE_PREFIX}c1:abc`)).toBeNull()
+      expect(await store.chatMeta(`${OLD_UNSURE_FILE_PREFIX}c1`)).toBeNull()
     })
 
     it('keeps an unsure file per chat and file, so another file sent meanwhile leaves it alone', async () => {

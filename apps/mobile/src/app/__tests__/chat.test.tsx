@@ -468,7 +468,7 @@ describe('the chat screen', () => {
 
       fireEvent.click(await screen.findByRole('button', { name: 'Attach a file' }))
 
-      expect(await screen.findByText('plan.pdf was not sent. Too many files uploaded at once. Wait a few minutes, then attach it again.')).toBeTruthy()
+      expect(await screen.findByText('plan.pdf was not sent. Too many files sent at once. Wait a minute, then attach it again.'), 'The real wait, not the server\'s "a few minutes".').toBeTruthy()
       expect(api.queueReply).not.toHaveBeenCalled()
       await waitFor(() => expect(files.removed, 'The picker\'s copy goes after a failure.').toContain('file:///cache/plan.pdf'))
       // Attach waits until the server's Retry-After, and says why.
