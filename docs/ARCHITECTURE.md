@@ -2937,8 +2937,10 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
   120 seconds) has a new nonce; Google's request id is derived from the UID and the nonce, so it makes a new meeting.
 - The result of a write may carry `conferenceStatus` (`pending` while the provider is still making it, or `failed`)
   and `conferenceError` (`refused`, `not_supported`), and nothing when the meeting is there or none was asked for.
-  A request still pending five minutes later, when a synced version without a meeting arrives and no write waits, is
-  failed (`refused`).
+  A request still pending five minutes after it was asked for, with no write of the event waiting, is failed
+  (`refused`): by the next synced version without a meeting, or else by the `SweepMeetingRequests` run every minute on
+  the maintenance worker (which gives the event's row a new change number, so clients see it). A synced version that
+  has the meeting clears the request whatever its state.
 - Removal of a Google Meet meeting: the master carries `X-TRESSO-CONFERENCE-REMOVE:meet`. Only then, and only when the
   user organizes the event, does the worker patch `"conferenceData": null` (with `conferenceDataVersion=1`); a master
   that merely lacks `X-GOOGLE-CONFERENCE` is never a reason to remove Google's meeting, and a marker on an override is
@@ -2947,7 +2949,13 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
 - A Teams meeting Graph made cannot be removed (`conference.removable` is false); the API refuses the change.
 - A link the API knows (the user's own) travels as `CONFERENCE` and as the last line of the description, "Join the
   meeting: <url>" or "Join with <App>: <url>" (`MeetingJoinLine`); Google and Microsoft keep the line, and the
-  detector reads it back. Into Graph's HTML body it goes as escaped text.
+  detector reads it back. Into Graph's HTML body it goes as escaped text. The line is read as the last such line
+  anywhere in the description, and as Exchange may give it back in a text body (the address again in angle brackets
+  after it, more spaces after the colon). The API and the workers read it by one rule, tested on both sides against
+  `apps/api/tests/Fixtures/meeting-join-lines.json`.
+- Deploy order: the API before the workers. The workers send `conferenceStatus` and `conferenceError` and read the
+  nonce and the removal word; an API without them ignores the fields and writes neither property, so nothing changes
+  until it is out. Workers older than the API keep working, without the outcome reports and without removal.
 
 The web and desktop clients show an event's link in the popover as the app's name (from `conference.provider`, which
 the server sets only for a link on that app's own host; anything else reads "Meeting link"), the link on one line
@@ -2981,14 +2989,17 @@ What the workers do with it (`apps/sync/internal/googlecal`, `graphcal`):
   sent again without it as well; Google's meeting then stays and its version shows it.
 - Graph: a Teams meeting is asked for with `isOnlineMeeting` and `onlineMeetingProvider` on create, or on a patch of
   the organizer's master that is not an online meeting yet. A calendar without Teams gets the event without the
-  meeting, reported as `not_supported`. Nothing ever sets `isOnlineMeeting` back.
+  meeting, reported as `not_supported`, and so does a write Graph answers with 400 while it carries the two fields
+  (sent once more without them). Nothing ever sets `isOnlineMeeting` back.
 - The result of a done write whose master asked for a meeting the provider's version lacks: `pending` when Google's
   request status is `pending`, when Graph has the event as an online meeting without a join link yet, or when the
   version could not be read back; else `failed` with `not_supported` or `refused`. Only these codes are reported:
   never provider text, never a link. Meeting links are never logged.
-- Graph's body: a description whose last line is the join line is written as HTML of escaped text (line breaks as
-  `<br>`); when the body has a Teams join block, the user's text goes before it and the join line after it, so it
-  stays the description's last line.
+- Graph's body: a description with a join line is written as HTML of escaped text (line breaks as `<br>`). When the
+  body has a Teams join block, the user's text goes before the block, and the join line (with what the user wrote
+  below it) after it. Join lines Tresso put after the block before are no part of the block: each trailing element
+  of the block whose text is a join line is dropped first, so the line is never doubled and a changed or removed
+  link leaves nothing behind.
 
 #### AI features (interfaces with built-in and planned AI implementations)
 
