@@ -426,6 +426,26 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(204, 'Nothing goes out.');
     }
 
+    public function testALateRepeatOfACancelledReplyIsRefusedAsCancelledNotAsTooOld(): void
+    {
+        // Queued an hour ago, its answer lost; the user cancelled it on another device since.
+        $late = self::uuidV7At('-1 hour');
+        $this->chatEntityManager()->wrapInTransaction(function (EntityManagerInterface $entityManager) use ($late): void {
+            $chat = $entityManager->find(Chat::class, Uuid::fromString($this->chatId));
+            self::assertInstanceOf(Chat::class, $chat);
+            $entityManager->persist($this->chatFields()->newOutgoing(Uuid::fromString($late), $chat, 'Never mind', new \DateTimeImmutable('-1 hour')));
+        });
+        $this->chatEntityManager()->clear();
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$late, server: $this->web);
+        self::assertResponseStatusCodeSame(204);
+
+        $this->queueReply($this->chatId, 'Never mind', $late);
+
+        self::assertResponseStatusCodeSame(409, 'Not 422 on the id: the client must not make a new id and send it again.');
+        self::assertSame('cancelled', $this->decodedResponse()['code'] ?? null);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'));
+    }
+
     public function testTheRepliesOfALeftOutChatAreNeverQueuedAgain(): void
     {
         $id = self::newReplyId();
