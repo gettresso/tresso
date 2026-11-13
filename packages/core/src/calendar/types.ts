@@ -60,6 +60,11 @@ export interface Conference {
   url: string
   id: string | null
   dialIn: string | null
+  /**
+   * Whether the API takes this link off the event: false for a Teams meeting Microsoft made on a Microsoft 365 event.
+   * Rows stored before the server sent it lack it; `meetingRemovable` (meeting.ts) falls back to core's own rule then.
+   */
+  removable?: boolean
 }
 
 /** A meeting link that was asked for and is not on the event (yet). Master rows only. */
