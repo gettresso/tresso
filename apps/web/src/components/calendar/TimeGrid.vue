@@ -222,7 +222,10 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
             :aria-label="occurrenceLabel(block.occurrence, zone, calendars(block.occurrence.event.calendarId), now)"
             @click="emit('open', block.occurrence)"
           >
-            <span class="title">{{ block.occurrence.event.summary || 'Untitled event' }}</span>
+            <span class="title" :class="{ linked: block.occurrence.event.conference }"
+              ><span class="title-text">{{ block.occurrence.event.summary || 'Untitled event' }}</span
+              ><AppIcon v-if="block.occurrence.event.conference" name="video" :size="12" class="has-link"
+            /></span>
             <span class="meta">{{ occurrenceTimes(block.occurrence, zone) }}<template v-if="block.occurrence.event.location">, {{ block.occurrence.event.location }}</template></span>
           </button>
           <button
@@ -403,6 +406,20 @@ const dayLength = (day: CalendarDay): number => Math.round((day.end - day.start)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* An event with a meeting link: a small camera after the title, which keeps the room it needs. */
+.block .title.linked {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.has-link {
+  flex: none;
 }
 .block .meta {
   font: 400 11px/14px var(--font-ui);
