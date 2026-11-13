@@ -89,6 +89,9 @@ final readonly class ChatMediaCollector
             throw new \LogicException('Only WhatsApp files are collected here.');
         }
         $this->connection->transactional(function () use ($objectKey, $parsed): void {
+            // The verdict's lock first, then the key's, in the order re-encryption takes them: content cannot be
+            // quarantined, released or written again while its last copy goes.
+            $this->connection->executeStatement("SELECT pg_advisory_xact_lock(hashtextextended('scan:' || :sha, 0))", ['sha' => $parsed->fingerprint]);
             $this->lock($objectKey);
             $parameters = ['key' => $objectKey, 'fingerprint' => $parsed->fingerprint];
             $referenced = (bool) $this->connection->fetchOne(
@@ -101,8 +104,6 @@ final readonly class ChatMediaCollector
                 return;
             }
             $this->storage->delete($objectKey);
-            // The verdict's lock: content cannot be quarantined or released while its last copy goes.
-            $this->connection->executeStatement("SELECT pg_advisory_xact_lock(hashtextextended('scan:' || :sha, 0))", ['sha' => $parsed->fingerprint]);
             $held = (bool) $this->connection->fetchOne(
                 'SELECT EXISTS (SELECT 1 FROM attachment WHERE sha256 = :fingerprint)
                      OR EXISTS (SELECT 1 FROM draft_attachment WHERE sha256 = :fingerprint)
