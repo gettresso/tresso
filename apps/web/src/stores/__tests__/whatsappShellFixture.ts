@@ -32,7 +32,12 @@ export class FakeShell {
   /** Commands that reject, with what. */
   failures: Record<string, unknown> = {}
   readonly saved: WhatsAppConfig[] = []
-  readonly sent: { recipient: string; text: string }[] = []
+  readonly sent: { recipient: string; text: string; file?: string }[] = []
+  /** The shell's refusal of a download, by WhatsApp id (`not_found`, `mismatch`, ...). */
+  readonly downloadRefusals = new Map<string, string>()
+  /** Files staged to send, by path: their content. */
+  readonly staged = new Map<string, string>()
+  readonly discarded: string[] = []
   /** When each read began. */
   readonly readTimes: number[] = []
 
@@ -107,14 +112,33 @@ export class FakeShell {
           return { rows, maxRowid: this.rows.length, storeId: this.storeId }
         }),
       names: (_folder, ids) => record('names', () => Object.fromEntries(ids.map((id) => [id, { number: id, name: null }]))),
-      send: (recipient, text) =>
+      send: (recipient, text, mediaPath) =>
         record('send', () => {
-          this.sent.push({ recipient, text })
+          this.sent.push(mediaPath === null || mediaPath === undefined ? { recipient, text } : { recipient, text, file: mediaPath })
           return this.sendAnswer()
         }),
-      download: () => record('download', () => ({ path: '/tmp/x', verified: true })),
+      download: (_folder, messageId) =>
+        record('download', () => {
+          const refusal = this.downloadRefusals.get(messageId)
+          if (refusal !== undefined) {
+            throw refusal
+          }
+          return { path: '/tmp/x', verified: true, sha256: 'a'.repeat(64), size: 3 }
+        }),
       openFile: () => record('openFile', () => undefined),
       chooseFile: () => record('chooseFile', () => null),
+      file: (path) => record('file', () => new Blob([`bytes of ${path}`])),
+      stageFile: (content, name) =>
+        record('stageFile', async () => {
+          const path = `/outbox/${this.staged.size + 1}/${name}`
+          this.staged.set(path, await content.text())
+          return path
+        }),
+      discardFile: (path) =>
+        record('discardFile', () => {
+          this.staged.delete(path)
+          this.discarded.push(path)
+        }),
       onState: (handle) =>
         record('onState', () => {
           this.listener = handle

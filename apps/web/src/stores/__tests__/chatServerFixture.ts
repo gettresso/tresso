@@ -3,6 +3,7 @@ import {
   canonicalChatJid,
   chatKindOf,
   type ChatApi,
+  type ChatMediaResponse,
   type MailStore,
   type RelayImportResponse,
   type SyncedChat,
@@ -43,6 +44,10 @@ export class FakeChatServer implements ChatApi {
   /** A call that waits for the test before it answers. */
   held = new Map<keyof ChatApi, Promise<void>>()
   private claims = new Map<string, string>()
+  /** Files uploaded for replies, by upload id: chat, size, content. */
+  readonly uploads = new Map<string, { chatId: string; size: number; content: string }>()
+  /** Files the relay brought, by message id. */
+  readonly files = new Map<string, string>()
   private made = 0
   private seq = 0
 
@@ -228,6 +233,7 @@ export class FakeChatServer implements ChatApi {
         mediaKind: message.media?.kind ?? null,
         mediaName: message.media?.name ?? null,
         mediaSize: message.media?.size ?? null,
+        ...(message.media ? { mediaState: 'remote' as const, mediaError: null, mediaAccess: null } : {}),
       })
       if (Date.parse(message.sentAt) > Date.parse(chat.lastMessageAt)) {
         chat.lastMessageAt = message.sentAt
@@ -256,7 +262,7 @@ export class FakeChatServer implements ChatApi {
     this.claims.set(next.id, token)
     this.outgoing.set(next.id, { ...next, status: 'sending', claimedAt: new Date().toISOString() })
     const chat = [...this.chats.values()].find((candidate) => candidate.id === next.chatId)!
-    return { id: next.id, chatId: next.chatId, chatJid: chat.jid, text: next.text, claimToken: token }
+    return { id: next.id, chatId: next.chatId, chatJid: chat.jid, text: next.text, claimToken: token, file: next.file ? { name: next.file.name, size: next.file.size ?? 0, url: `https://api.test/content/chat-files/${next.id}` } : null }
   }
 
   async reportReply(accountId: string, outgoingId: string, request: Parameters<ChatApi['reportReply']>[2]): Promise<SyncedChatOutgoing> {
@@ -283,9 +289,132 @@ export class FakeChatServer implements ChatApi {
     if (chat === undefined || this.account === null) {
       throw new ChatApiError(404, 'Not found.')
     }
-    const row: SyncedChatOutgoing = { id: request.id, chatId, chatAccountId: this.account.id, text: request.text.trim(), status: 'waiting', error: null, createdAt: new Date().toISOString(), claimedAt: null, sentAt: null }
+    let file: SyncedChatOutgoing['file']
+    if (request.file !== undefined) {
+      const upload = this.uploads.get(request.file.uploadId)
+      if (upload === undefined || upload.chatId !== chatId) {
+        throw new ChatApiError(422, 'Validation failed.', null, null, { 'file.uploadId': 'Upload it again.' })
+      }
+      this.uploads.delete(request.file.uploadId)
+      file = { name: request.file.name, size: upload.size }
+    }
+    const row: SyncedChatOutgoing = {
+      id: request.id,
+      chatId,
+      chatAccountId: this.account.id,
+      text: request.text.trim(),
+      status: 'waiting',
+      error: null,
+      createdAt: new Date().toISOString(),
+      claimedAt: null,
+      sentAt: null,
+      ...(file === undefined ? {} : { file }),
+    }
     this.outgoing.set(row.id, row)
     return row
+  }
+
+  private messageById(id: string): SyncedChatMessage {
+    const found = [...this.messages.values()].find((message) => message.id === id && message.mediaKind !== null)
+    if (found === undefined) {
+      throw new ChatApiError(404, 'Not found.')
+    }
+    return found
+  }
+
+  private mediaOf(message: SyncedChatMessage, url: string | null): ChatMediaResponse {
+    return {
+      messageId: message.id,
+      kind: message.mediaKind ?? 'document',
+      name: message.mediaName,
+      size: message.mediaSize,
+      state: message.mediaState ?? 'remote',
+      error: message.mediaError ?? null,
+      access: message.mediaAccess ?? null,
+      url,
+    }
+  }
+
+  private setMessage(message: SyncedChatMessage): void {
+    for (const [key, candidate] of this.messages) {
+      if (candidate.id === message.id) {
+        this.messages.set(key, message)
+      }
+    }
+  }
+
+  async requestMedia(messageId: string): Promise<ChatMediaResponse> {
+    await this.enter('requestMedia', [messageId])
+    let message = this.messageById(messageId)
+    if (message.mediaState === 'remote' || message.mediaState === 'failed' || message.mediaState === undefined) {
+      message = { ...message, mediaState: 'requested', mediaError: null, mediaAccess: null }
+      this.setMessage(message)
+    }
+    return this.mediaOf(message, null)
+  }
+
+  async media(messageId: string): Promise<ChatMediaResponse> {
+    await this.enter('media', [messageId])
+    const message = this.messageById(messageId)
+    return this.mediaOf(message, message.mediaState === 'stored' && message.mediaAccess === 'allowed' ? `https://api.test/content/chat-media/${messageId}` : null)
+  }
+
+  async unscannedMediaLink(messageId: string): Promise<ChatMediaResponse> {
+    await this.enter('unscannedMediaLink', [messageId])
+    const message = this.messageById(messageId)
+    if (message.mediaAccess !== 'confirm') {
+      throw new ChatApiError(403, 'Forbidden.')
+    }
+    return this.mediaOf(message, `https://api.test/content/chat-media/${messageId}?unscanned=1`)
+  }
+
+  async uploadFile(chatId: string, uploadId: string, body: Blob): Promise<{ id: string; chatId: string; size: number }> {
+    await this.enter('uploadFile', [chatId, uploadId, body])
+    const content = await body.text()
+    const known = this.uploads.get(uploadId)
+    if (known !== undefined && (known.chatId !== chatId || known.content !== content)) {
+      throw new ChatApiError(409, 'Taken.', 'id_taken')
+    }
+    this.uploads.set(uploadId, { chatId, size: body.size, content })
+    return { id: uploadId, chatId, size: body.size }
+  }
+
+  async claimMedia(accountId: string, request: Parameters<ChatApi['claimMedia']>[1]): Promise<Awaited<ReturnType<ChatApi['claimMedia']>>> {
+    await this.enter('claimMedia', [accountId, request])
+    this.relayCheck(accountId, request.deviceId)
+    const next = [...this.messages.values()].find((message) => message.mediaState === 'requested')
+    if (next === undefined) {
+      return null
+    }
+    const chat = [...this.chats.values()].find((candidate) => candidate.id === next.chatId)!
+    return { messageId: next.id, chatJid: chat.jid, waId: next.waId, kind: next.mediaKind ?? 'document', size: next.mediaSize, maxBytes: 100 * 1024 * 1024 }
+  }
+
+  async uploadMedia(accountId: string, messageId: string, request: Parameters<ChatApi['uploadMedia']>[2]): Promise<Awaited<ReturnType<ChatApi['uploadMedia']>>> {
+    await this.enter('uploadMedia', [accountId, messageId, request])
+    this.relayCheck(accountId, request.deviceId)
+    const message = this.messageById(messageId)
+    this.files.set(messageId, await request.body.text())
+    this.setMessage({ ...message, mediaState: 'stored', mediaError: null, mediaAccess: 'scanning' })
+    return { messageId, state: 'stored', error: null }
+  }
+
+  async failMedia(accountId: string, messageId: string, request: Parameters<ChatApi['failMedia']>[2]): Promise<Awaited<ReturnType<ChatApi['failMedia']>>> {
+    await this.enter('failMedia', [accountId, messageId, request])
+    this.relayCheck(accountId, request.deviceId)
+    const message = this.messageById(messageId)
+    this.setMessage({ ...message, mediaState: 'failed', mediaError: request.error, mediaAccess: null })
+    return { messageId, state: 'failed', error: request.error }
+  }
+
+  async replyFile(url: string): Promise<Blob> {
+    await this.enter('replyFile', [url])
+    const id = url.split('/').pop() ?? ''
+    const row = this.outgoing.get(id)
+    if (row?.file === undefined || row.file === null || row.status !== 'sending') {
+      throw new ChatApiError(404, 'Not found.')
+    }
+    return new Blob([`content of ${row.file.name}`])
   }
 
   async cancelReply(id: string): Promise<void> {
