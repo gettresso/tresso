@@ -14,13 +14,28 @@ final class ThirdPartyClients
 {
     public const array GRANT_TYPES = ['authorization_code', 'refresh_token'];
 
-    /** @return list<string> */
+    /**
+     * Every scope such an app may hold, as the metadata advertises them (`scopes_supported`).
+     *
+     * @return list<string>
+     */
     public static function scopeValues(): array
     {
         return array_map(static fn (Scope $scope): string => $scope->value, Scope::thirdPartyAppScopes());
     }
 
-    /** Only what is offered: the chat scopes are not, until the MCP tools for chats exist. */
+    /**
+     * What an app that registers without naming scopes may ask for: everything offered except the chat scopes, which
+     * an app only gets by naming them when it registers.
+     *
+     * @return list<string>
+     */
+    public static function defaultScopeValues(): array
+    {
+        return array_map(static fn (Scope $scope): string => $scope->value, Scope::thirdPartyDefaultScopes());
+    }
+
+    /** Only what is offered ({@see scopeValues()}). */
     public static function mayAskFor(string $scope): bool
     {
         return \in_array($scope, self::scopeValues(), true);

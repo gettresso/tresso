@@ -64,22 +64,42 @@ final class ScopeTest extends TestCase
     }
 
     /**
-     * Chats are reached only by their own scopes, and until the MCP tools for chats exist no caller that is not one of
-     * our own apps can obtain them: not a personal access token, not an app that is not ours.
+     * Chats are reached only by their own scopes. Apps that are not ours and personal access tokens may hold them, but
+     * an app that names no scopes when it registers is never offered them, and our own apps never ask for them.
      */
-    public function testNoCallerThatIsNotOursCanObtainTheChatScopes(): void
+    public function testTheChatScopesAreOfferedOnlyWhenNamed(): void
     {
-        $offered = array_map(static fn (Scope $s): string => $s->value, [...Scope::personalAccessTokenScopes(), ...Scope::thirdPartyAppScopes()]);
-
         self::assertSame([Scope::ChatRead, Scope::ChatSend], Scope::chatScopes());
-        self::assertNotContains('chat:read', $offered);
-        self::assertNotContains('chat:send', $offered);
-        self::assertFalse(ThirdPartyClients::mayAskFor('chat:read'));
-        self::assertFalse(ThirdPartyClients::mayAskFor('chat:send'));
+        self::assertContains('chat:read', self::values(Scope::personalAccessTokenScopes()));
+        self::assertContains('chat:send', self::values(Scope::personalAccessTokenScopes()));
+        self::assertSame(self::values(Scope::personalAccessTokenScopes()), self::values(Scope::thirdPartyAppScopes()));
+        self::assertSame(ThirdPartyClients::scopeValues(), self::values(Scope::thirdPartyAppScopes()));
+
+        self::assertNotContains('chat:read', ThirdPartyClients::defaultScopeValues());
+        self::assertNotContains('chat:send', ThirdPartyClients::defaultScopeValues());
+        self::assertSame(array_values(array_diff(ThirdPartyClients::scopeValues(), ['chat:read', 'chat:send'])), ThirdPartyClients::defaultScopeValues());
+
+        self::assertTrue(ThirdPartyClients::mayAskFor('chat:read'));
+        self::assertTrue(ThirdPartyClients::mayAskFor('chat:send'));
         self::assertTrue(ThirdPartyClients::mayAskFor('mail:read'));
         self::assertFalse(ThirdPartyClients::mayAskFor('sync:ingest'));
         self::assertFalse(ThirdPartyClients::mayAskFor('teams:read'));
+
+        self::assertTrue(Scope::ChatRead->isChat());
+        self::assertTrue(Scope::ChatSend->isChat());
+        self::assertFalse(Scope::MailRead->isChat());
+        self::assertFalse(Scope::MailSend->isChat());
         self::assertSame('Read your WhatsApp chats', Scope::ChatRead->label());
         self::assertSame('Send WhatsApp messages as you', Scope::ChatSend->label());
+    }
+
+    /**
+     * @param list<Scope> $scopes
+     *
+     * @return list<string>
+     */
+    private static function values(array $scopes): array
+    {
+        return array_map(static fn (Scope $s): string => $s->value, $scopes);
     }
 }

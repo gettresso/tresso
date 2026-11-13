@@ -61,8 +61,8 @@ enum Scope: string
     }
 
     /**
-     * What a personal access token may hold: the user scopes, without those reserved for features not built yet and
-     * without the chat scopes. Never a sync scope.
+     * What a personal access token may hold: the user scopes, without those reserved for features not built yet. Never
+     * a sync scope. The chat scopes are among them, but a token only holds the ones the user ticks.
      *
      * @return list<self>
      */
@@ -70,15 +70,15 @@ enum Scope: string
     {
         return array_values(array_filter(
             self::userScopes(),
-            static fn (self $scope): bool => !\in_array($scope, [self::TeamsRead, self::TeamsWrite, self::WebhooksManage, ...self::chatScopes()], true),
+            static fn (self $scope): bool => !\in_array($scope, [self::TeamsRead, self::TeamsWrite, self::WebhooksManage], true),
         ));
     }
 
     /**
      * WhatsApp chats are private: only these scopes reach them for a caller that is not one of our own apps, and no
-     * other scope implies them, so no grant from before gains them. Until the MCP tools for chats exist no such caller
-     * can obtain them: they are neither offered to apps that are not ours ({@see thirdPartyAppScopes()}) nor to personal
-     * access tokens. Our own apps reach chats through their mail scopes ({@see ChatAccessVoter}).
+     * other scope implies them, so no grant from before gains them. An app that is not ours gets them only by naming
+     * them ({@see thirdPartyDefaultScopes()}), a personal access token only when the user ticks them. Our own apps reach
+     * chats through their mail scopes ({@see ChatAccessVoter}).
      *
      * @return list<self>
      */
@@ -89,14 +89,35 @@ enum Scope: string
 
     /**
      * What an app that is not ours (registered through dynamic client registration, such as an MCP client) may ask
-     * for: the same as a personal access token. Never a sync scope, never the scopes of features not built yet, and not
-     * the {@see chatScopes()} yet.
+     * for: the same as a personal access token. Never a sync scope, never the scopes of features not built yet. This is
+     * what the metadata advertises (`scopes_supported`).
      *
      * @return list<self>
      */
     public static function thirdPartyAppScopes(): array
     {
         return self::personalAccessTokenScopes();
+    }
+
+    /**
+     * What an app that registers without naming scopes may ask for: {@see thirdPartyAppScopes()} without the
+     * {@see chatScopes()}. The chat scopes are only for an app that names them when it registers, so an app made for mail
+     * never ends up asking for WhatsApp by default.
+     *
+     * @return list<self>
+     */
+    public static function thirdPartyDefaultScopes(): array
+    {
+        return array_values(array_filter(
+            self::thirdPartyAppScopes(),
+            static fn (self $scope): bool => !\in_array($scope, self::chatScopes(), true),
+        ));
+    }
+
+    /** Whether this is one of the {@see chatScopes()}, which the consent screen shows apart from the others. */
+    public function isChat(): bool
+    {
+        return \in_array($this, self::chatScopes(), true);
     }
 
     /**

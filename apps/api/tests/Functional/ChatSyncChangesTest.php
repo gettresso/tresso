@@ -125,7 +125,7 @@ final class ChatSyncChangesTest extends DatabaseTestCase
     #[DataProvider('callersThatAreNotOurs')]
     public function testOtherCallersGetNoChatsWhileTheCursorIsTheSame(string $caller): void
     {
-        $everything = array_map(static fn (Scope $scope): string => $scope->value, 'third-party' === $caller ? Scope::thirdPartyAppScopes() : Scope::personalAccessTokenScopes());
+        $everything = array_map(static fn (Scope $scope): string => $scope->value, Scope::thirdPartyDefaultScopes());
         $headers = 'third-party' === $caller
             ? $this->thirdPartyHeaders('kim@example.test', $everything)
             : $this->personalAccessTokenHeaders('kim@example.test', $everything);

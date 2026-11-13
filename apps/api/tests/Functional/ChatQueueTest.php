@@ -600,9 +600,12 @@ final class ChatQueueTest extends DatabaseTestCase
 
     public function testCallersWithoutAChatScopeNeverQueue(): void
     {
-        $this->queueReply($this->chatId, 'Hi', headers: $this->personalAccessTokenHeaders('kim@example.test', array_map(static fn (Scope $scope): string => $scope->value, Scope::personalAccessTokenScopes())));
+        $everyOther = array_map(static fn (Scope $scope): string => $scope->value, Scope::thirdPartyDefaultScopes());
+        $this->queueReply($this->chatId, 'Hi', headers: $this->personalAccessTokenHeaders('kim@example.test', $everyOther));
         self::assertResponseStatusCodeSame(403);
-        $this->queueReply($this->chatId, 'Hi', headers: $this->thirdPartyHeaders('kim@example.test', array_map(static fn (Scope $scope): string => $scope->value, Scope::thirdPartyAppScopes())));
+        $this->queueReply($this->chatId, 'Hi', headers: $this->thirdPartyHeaders('kim@example.test', $everyOther));
+        self::assertResponseStatusCodeSame(403);
+        $this->queueReply($this->chatId, 'Hi', headers: $this->personalAccessTokenHeaders('kim@example.test', ['chat:read']));
         self::assertResponseStatusCodeSame(403);
         $this->client->jsonRequest('POST', '/api/v1/chats/'.$this->chatId.'/outgoing', ['id' => self::newReplyId(), 'text' => 'Hi'], ['HTTP_ACCEPT' => 'application/json']);
         self::assertResponseStatusCodeSame(401);

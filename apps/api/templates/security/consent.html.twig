@@ -44,15 +44,35 @@
                 <p class="error" role="alert">{{ error }}</p>
             {% endif %}
 
-            <h2 class="scopes-title">It will be able to</h2>
-            <ul class="scopes">
-                {% for scope in scopes %}
-                    <li>
-                        <strong>{{ scope.label }}</strong>
-                        <span>{{ scope.description }}</span>
-                    </li>
-                {% endfor %}
-            </ul>
+            {% if scopes is not empty %}
+                <h2 class="scopes-title">It will be able to</h2>
+                <ul class="scopes">
+                    {% for scope in scopes %}
+                        <li>
+                            <strong>{{ scope.label }}</strong>
+                            <span>{{ scope.description }}</span>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+
+            {% if chat_scopes is not empty %}
+                <section class="chat-scopes" aria-labelledby="chat-scopes-title">
+                    <h2 class="scopes-title" id="chat-scopes-title">WhatsApp</h2>
+                    <p class="chat-scopes-note">
+                        This is separate from mail. It reaches the WhatsApp chats your Mac passes on to Tresso, which
+                        hold messages other people sent you.
+                    </p>
+                    <ul class="scopes">
+                        {% for scope in chat_scopes %}
+                            <li>
+                                <strong>{{ scope.label }}</strong>
+                                <span>{{ scope.description }}</span>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                </section>
+            {% endif %}
 
             <form class="form decision" method="post" action="{{ action }}">
                 <input type="hidden" name="_csrf_token" value="{{ csrf_token(csrf_token_id) }}">

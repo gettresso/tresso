@@ -12,9 +12,9 @@ use League\OAuth2\Server\Repositories\ScopeRepositoryInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 
 /**
- * An access token of an app that is not ours with scopes no such app can obtain yet (the chat scopes), made straight by
- * the authorization server's repositories and signed with its key: so the rules for those scopes are tested before an
- * app can be given them. Needs {@see AuthenticatesUsers} and {@see ConnectsThirdPartyApps}.
+ * An access token of an app that is not ours with any scopes, made straight by the authorization server's repositories
+ * and signed with its key, without the consent screen: so the rules for a scope (the chat scopes, say) are tested
+ * apart from how an app is given it. Needs {@see AuthenticatesUsers} and {@see ConnectsThirdPartyApps}.
  *
  * @property KernelBrowser $client
  */

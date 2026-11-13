@@ -27,6 +27,9 @@ use Twig\Environment;
  * client id and listen on that port or claim that scheme (RFC 8252 8.6), so the page is shown every time, saying the
  * user allowed the app before. Denying sends the app `access_denied`.
  *
+ * The WhatsApp scopes ({@see Scope::chatScopes()}) are listed apart from the others, with a line that they are
+ * separate from mail.
+ *
  * Before anything is shown, the request must only ask for scopes such an app may have, and a `resource` (RFC 8707)
  * must be one this server protects; anything else goes back to the app as `invalid_scope` or `invalid_target`.
  * Tokens are not bound to a resource: the API and the MCP endpoint are one resource server.
@@ -110,10 +113,11 @@ final readonly class ConsentScreen
      */
     private function checkScopes(AuthorizationRequestResolveEvent $event, Client $client, array $scopes): void
     {
-        // A client registered without scopes may ask for what is offered, no more.
+        // A client stored without scopes may ask for what an app that names no scopes is offered, no more: never the
+        // chat scopes, which an app gets only by naming them when it registers.
         $registered = array_map(strval(...), $client->getScopes());
         if ([] === $registered) {
-            $registered = ThirdPartyClients::scopeValues();
+            $registered = ThirdPartyClients::defaultScopeValues();
         }
         foreach ($scopes as $scope) {
             if (!ThirdPartyClients::mayAskFor($scope) || !\in_array($scope, $registered, true)) {
@@ -165,11 +169,13 @@ final readonly class ConsentScreen
     {
         $redirectUri = self::targetOf($event, $client);
         $request = $this->requests->getCurrentRequest() ?? throw new \LogicException('The consent screen needs a request.');
+        $asked = array_map(static fn (string $scope): Scope => Scope::from($scope), $scopes);
 
         $response = new Response($this->twig->render('security/consent.html.twig', [
             'app_name' => $client->getName(),
             'address' => AppAddress::of($redirectUri),
-            'scopes' => array_map(static fn (string $scope): Scope => Scope::from($scope), $scopes),
+            'scopes' => array_values(array_filter($asked, static fn (Scope $scope): bool => !$scope->isChat())),
+            'chat_scopes' => array_values(array_filter($asked, static fn (Scope $scope): bool => $scope->isChat())),
             'email' => $user->getEmail(),
             'action' => $request->getRequestUri(),
             'error' => $error,

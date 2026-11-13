@@ -231,6 +231,32 @@ final class PersonalAccessTokenTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(201, 'With mail:send in the session, the token may have it.');
     }
 
+    /**
+     * Our apps sign in without the chat scopes (packages/core USER_SCOPES): they reach WhatsApp through their mail
+     * scopes. A token they make may get the chat scopes the session reaches that way, and only those, and only when
+     * the user ticks them.
+     */
+    public function testOurAppGivesATokenTheChatScopesItReachesThroughMail(): void
+    {
+        $ourApp = $this->userHeaders('kim@example.test', ['mail:read', 'mail:send', 'settings:write']);
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Claude', 'scopes' => ['chat:read', 'chat:send']], $ourApp);
+        self::assertResponseStatusCodeSame(201);
+        self::assertSame(['chat:read', 'chat:send'], $this->decodedResponse()['scopes'] ?? null);
+
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Mail script', 'scopes' => ['mail:read']], $ourApp);
+        self::assertResponseStatusCodeSame(201);
+        self::assertSame(['mail:read'], $this->decodedResponse()['scopes'] ?? null, 'Nothing chat unless ticked.');
+        $this->client->request('GET', '/api/v1/chat-accounts/whatsapp/status', server: $this->patHeaders($this->responseString('token')));
+        self::assertResponseStatusCodeSame(403);
+
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Reader', 'scopes' => ['chat:read', 'chat:send']], $this->userHeaders('kim@example.test', ['mail:read', 'settings:write']));
+        self::assertResponseStatusCodeSame(422, 'Without mail:send the session cannot queue replies, so neither can its token.');
+        self::assertSame(['scopes[1]'], $this->violationPaths());
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Reader', 'scopes' => ['chat:read']], $this->userHeaders('kim@example.test', self::SETTINGS));
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['scopes[0]'], $this->violationPaths());
+    }
+
     public function testATokenGetsNoRealtimeToken(): void
     {
         $headers = $this->patHeaders($this->createToken(['mail:read']));
