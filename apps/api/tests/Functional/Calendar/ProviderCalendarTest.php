@@ -229,6 +229,48 @@ final class ProviderCalendarTest extends DatabaseTestCase
         return [$accountId, self::string($calendars[0]['id'])];
     }
 
+    /**
+     * Another Google account of Kim's, with one calendar that makes Meet meetings.
+     *
+     * @return array{string, string} the account's id and the calendar's
+     */
+    private function connectSecondGoogleAccount(): array
+    {
+        $query = $this->start('google', features: ['mail', 'calendar']);
+        $this->googleTokens('google-access-2', 'google-refresh-2', 'openid '.self::GMAIL_SCOPE.' '.self::GOOGLE_CALENDAR_SCOPES, ['sub' => 'google-sub-2', 'email' => 'kim.work@gmail.example']);
+        $connected = [];
+        parse_str((string) parse_url($this->returnFromProvider('google', $query['state']), \PHP_URL_QUERY), $connected);
+        $accountId = self::string($connected['connected'] ?? null);
+        $this->client->jsonRequest('POST', '/internal/sync/leases', ['workerId' => 'w1'], $this->worker);
+        self::assertResponseIsSuccessful();
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$accountId.'/calendars', ['workerId' => 'w1', 'source' => 'google', 'providerSchedules' => true, 'calendars' => [
+            ['remoteId' => 'kim.work@gmail.example', 'name' => 'Work', 'isDefault' => true, 'conferenceProviders' => ['meet']],
+        ]], $this->worker);
+        self::assertResponseIsSuccessful();
+        $calendars = $this->decodedResponse()['calendars'] ?? null;
+        self::assertIsArray($calendars);
+        self::assertIsArray($calendars[0]);
+
+        return [$accountId, self::string($calendars[0]['id'])];
+    }
+
+    /** A Teams meeting Microsoft made, on the Microsoft calendar; returns the event's id. */
+    private function storeTeamsEvent(string $accountId, string $calendarId): string
+    {
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$accountId.'/calendars/'.$calendarId.'/objects', ['workerId' => 'w1', 'changed' => [
+            ['remoteId' => 'AAMkEvent1', 'etag' => 'W/"1"', 'ical' => implode("\r\n", [
+                'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Tresso//Calendar sync//EN', 'BEGIN:VEVENT', 'UID:standup@contoso.example', 'DTSTAMP:20261018T080000Z',
+                'DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTEND;TZID=Europe/Amsterdam:20261019T093000', 'SUMMARY:Standup',
+                'CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc',
+                'X-MICROSOFT-SKYPETEAMSMEETINGURL:https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc', 'END:VEVENT', 'END:VCALENDAR', '',
+            ])],
+        ]], $this->worker);
+        self::assertResponseIsSuccessful();
+        $ids = $this->connection()->fetchFirstColumn('SELECT e.id FROM calendar_event e WHERE e.calendar_id = ?', [$calendarId]);
+
+        return self::string($ids[0] ?? null);
+    }
+
     public function testAMeetingAskedForIsPendingUntilTheProviderMadeIt(): void
     {
         $primary = $this->reportCalendars()[0]['id'];
@@ -735,6 +777,173 @@ final class ProviderCalendarTest extends DatabaseTestCase
         self::assertSame('pending', \is_array($event['conferenceRequest']) ? $event['conferenceRequest']['status'] : null, 'and Meet is asked for.');
     }
 
+    public function testASplitAsksTheNewSeriesForAMeetingOfItsOwn(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $this->storeObject($primary, 'standup', '"1"', self::meetSeries());
+        $occurrences = $this->occurrences($this->user, '2026-10-20T00:00:00+00:00', '2026-10-21T00:00:00+00:00');
+        $seriesId = self::string($occurrences[0]['eventId']);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$seriesId.'?scope=following&recurrenceId='.self::string($occurrences[0]['recurrenceId']), self::event($primary, [
+            'summary' => 'Standup, later',
+            'start' => ['dateTime' => '2026-10-20T10:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-20T10:15:00', 'timeZone' => 'Europe/Amsterdam'],
+            'recurrence' => 'FREQ=DAILY;COUNT=3',
+            'conferenceUrl' => null,
+            'conferenceProvider' => 'meet',
+        ]), $this->user);
+
+        self::assertResponseIsSuccessful();
+        $newSeries = $this->decodedResponse();
+        self::assertNotSame($seriesId, $newSeries['id']);
+        self::assertSame('pending', \is_array($newSeries['conferenceRequest']) ? $newSeries['conferenceRequest']['status'] : null, 'The new event at Google asks for a meeting,');
+        $newIcal = array_values(array_filter(array_map(static fn (array $operation): string => self::string($operation['ical']), $this->claim()), static fn (string $ical): bool => !str_contains($ical, 'UID:standup@google.com')))[0] ?? '';
+        self::assertStringContainsString("X-TRESSO-CONFERENCE-REQUEST:meet\r\n", $newIcal);
+        self::assertStringNotContainsString('X-GOOGLE-CONFERENCE', $newIcal, 'not for the old series\' meeting.');
+        $old = $this->getJson('/api/v1/calendar-events/'.$seriesId, $this->user);
+        self::assertSame('https://meet.google.com/abc-defg-hij', \is_array($old['conference']) ? $old['conference']['url'] : null, 'The old series keeps its link.');
+    }
+
+    public function testAMoveToAnotherAccountAsksForAMeetingThere(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        [$workAccount, $workCalendar] = $this->connectSecondGoogleAccount();
+        $this->storeObject($primary, 'review', '"1"', implode("\r\n", [
+            'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Tresso//Calendar sync//EN', 'BEGIN:VEVENT', 'UID:review@google.com', 'DTSTAMP:20261018T080000Z',
+            'DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTEND;TZID=Europe/Amsterdam:20261019T093000', 'SUMMARY:Review',
+            'X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'END:VEVENT', 'END:VCALENDAR', '',
+        ]));
+        $eventId = self::string($this->occurrences($this->user, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0]['eventId']);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($workCalendar, [
+            'summary' => 'Review',
+            'start' => ['dateTime' => '2026-10-19T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-19T09:30:00', 'timeZone' => 'Europe/Amsterdam'],
+            'conferenceUrl' => null,
+            'conferenceProvider' => 'meet',
+        ]), $this->user);
+
+        self::assertResponseIsSuccessful();
+        $moved = $this->decodedResponse();
+        self::assertNull($moved['conference'], 'The other account\'s Google makes its own meeting:');
+        self::assertSame('pending', \is_array($moved['conferenceRequest']) ? $moved['conferenceRequest']['status'] : null);
+        $this->client->jsonRequest('POST', '/internal/sync/accounts/'.$workAccount.'/calendar-operations/claim', ['workerId' => 'w1'], $this->worker);
+        $operations = $this->decodedResponse()['operations'] ?? null;
+        self::assertIsArray($operations);
+        self::assertIsArray($operations[0]);
+        $ical = self::string($operations[0]['ical']);
+        self::assertStringContainsString("X-TRESSO-CONFERENCE-REQUEST:meet\r\n", $ical);
+        self::assertStringNotContainsString('X-GOOGLE-CONFERENCE', $ical);
+        self::assertStringNotContainsString('X-TRESSO-CONFERENCE-REMOVE', $ical);
+    }
+
+    public function testASaveOfOneOccurrenceFromAnOlderCopyKeepsTheMeeting(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $this->storeObject($primary, 'standup', '"1"', self::meetSeries());
+        $occurrence = $this->occurrences($this->user, '2026-10-20T00:00:00+00:00', '2026-10-21T00:00:00+00:00')[0];
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.self::string($occurrence['eventId']).'?scope=this&recurrenceId='.self::string($occurrence['recurrenceId']), self::event($primary, [
+            'summary' => 'Standup, with Lisa',
+            'start' => ['dateTime' => '2026-10-20T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-20T09:15:00', 'timeZone' => 'Europe/Amsterdam'],
+            'conferenceUrl' => null,
+            'conferenceProvider' => 'meet',
+        ]), $this->user);
+
+        self::assertResponseIsSuccessful();
+        $override = $this->decodedResponse();
+        self::assertSame('https://meet.google.com/abc-defg-hij', \is_array($override['conference']) ? $override['conference']['url'] : null);
+        self::assertStringNotContainsString('X-TRESSO-CONFERENCE', self::string($this->claim()[0]['ical']));
+    }
+
+    public function testASaveFromAnOlderCopyKeepsATeamsMeetingMicrosoftMade(): void
+    {
+        $this->reportCalendars();
+        [$accountId, $calendarId] = $this->connectMicrosoft();
+        $eventId = $this->storeTeamsEvent($accountId, $calendarId);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($calendarId, ['summary' => 'Standup, renamed', 'conferenceUrl' => null, 'conferenceProvider' => 'teams']), $this->user);
+
+        self::assertResponseIsSuccessful('Kept, not refused as a removal.');
+        $event = $this->decodedResponse();
+        self::assertSame('https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc', \is_array($event['conference']) ? $event['conference']['url'] : null);
+        self::assertNull($event['conferenceRequest']);
+    }
+
+    public function testLeavingWithoutALinkWhileTheWriteIsUnderWayMayEndWithTheLink(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $eventId = $this->createWithMeet($primary);
+        $inFlight = $this->claim();
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link/request', server: $this->user);
+        self::assertResponseStatusCodeSame(200);
+        self::assertNull($this->decodedResponse()['conferenceRequest']);
+        self::assertSame([false], array_map(static fn (mixed $notify): bool => (bool) $notify, $this->connection()->fetchFirstColumn('SELECT notify FROM calendar_operation WHERE claimed_by IS NULL')), 'The write that drops it tells nobody.');
+
+        // The write that carried the request reaches Google, which makes the meeting.
+        $withMeet = "CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://meet.google.com/abc-defg-hij\r\nX-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij";
+        $this->report($inFlight[0]['id'], ['outcome' => 'done', 'remoteId' => 'trabc', 'etag' => 'e1', 'current' => ['remoteId' => 'trabc', 'etag' => 'e1', 'ical' => self::providerVersion(self::string($inFlight[0]['ical']), $withMeet)]]);
+        $next = $this->claim();
+        self::assertCount(1, $next);
+        self::assertStringNotContainsString('X-TRESSO-CONFERENCE', self::string($next[0]['ical']), 'The dropping write asks for nothing and removes nothing.');
+        $this->report($next[0]['id'], ['outcome' => 'done', 'remoteId' => 'trabc', 'etag' => 'e2', 'current' => ['remoteId' => 'trabc', 'etag' => 'e2', 'ical' => self::providerVersion(self::string($next[0]['ical']), $withMeet)]]);
+
+        $event = $this->getJson('/api/v1/calendar-events/'.$eventId, $this->user);
+        self::assertSame('https://meet.google.com/abc-defg-hij', \is_array($event['conference']) ? $event['conference']['url'] : null, 'The user ends with a working link.');
+        self::assertNull($event['conferenceRequest']);
+    }
+
+    public function testLeavingWithoutALinkRefusesATeamsMeetingAndALinkInTheText(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        [$accountId, $calendarId] = $this->connectMicrosoft();
+        $teams = $this->storeTeamsEvent($accountId, $calendarId);
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($primary, ['description' => 'Call in: https://company.zoom.us/j/1234567890']), $this->user);
+        $text = $this->responseString('id');
+
+        foreach (['Teams' => $teams, 'text' => $text] as $kind => $eventId) {
+            $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link/request', server: $this->user);
+            self::assertResponseStatusCodeSame(409, $kind);
+            self::assertNotNull($this->getJson('/api/v1/calendar-events/'.$eventId, $this->user)['conference'], $kind);
+        }
+    }
+
+    public function testDroppingARequestGivesTheSeriesANewChangeNumber(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $eventId = $this->createWithMeet($primary);
+        $operations = $this->claim();
+        $this->report($operations[0]['id'], ['outcome' => 'done', 'remoteId' => 'trabc', 'etag' => 'e1', 'current' => ['remoteId' => 'trabc', 'etag' => 'e1', 'ical' => self::providerVersion(self::string($operations[0]['ical']))]]);
+        $before = $this->connection()->fetchOne('SELECT change_seq FROM calendar_event WHERE id = ?', [$eventId]);
+        self::assertIsNumeric($before);
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link/request', server: $this->user);
+
+        self::assertResponseStatusCodeSame(200);
+        $after = $this->connection()->fetchOne('SELECT change_seq FROM calendar_event WHERE id = ?', [$eventId]);
+        self::assertIsNumeric($after);
+        self::assertGreaterThan((int) $before, (int) $after, 'Other devices learn it through the delta.');
+    }
+
+    public function testAnUnknownPathUnderTheMeetingLinkRemovesNothing(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $this->storeObject($primary, 'review', '"1"', implode("\r\n", [
+            'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Tresso//Calendar sync//EN', 'BEGIN:VEVENT', 'UID:review@google.com', 'DTSTAMP:20261018T080000Z',
+            'DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTEND;TZID=Europe/Amsterdam:20261019T093000', 'SUMMARY:Review',
+            'X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'END:VEVENT', 'END:VCALENDAR', '',
+        ]));
+        $eventId = self::string($this->occurrences($this->user, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0]['eventId']);
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link/requests', server: $this->user);
+
+        self::assertContains($this->client->getResponse()->getStatusCode(), [404, 405]);
+        self::assertNotNull($this->getJson('/api/v1/calendar-events/'.$eventId, $this->user)['conference']);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM calendar_operation'));
+    }
+
     public function testLeavingWithoutALinkDropsAFailedRequestOnly(): void
     {
         $primary = $this->reportCalendars()[0]['id'];
@@ -743,7 +952,7 @@ final class ProviderCalendarTest extends DatabaseTestCase
         $this->report($operations[0]['id'], ['outcome' => 'done', 'remoteId' => 'trabc', 'etag' => 'e1', 'current' => ['remoteId' => 'trabc', 'etag' => 'e1', 'ical' => self::providerVersion(self::string($operations[0]['ical']))]]);
         self::assertSame('failed', $this->conferenceRequest($eventId)['status'] ?? null);
 
-        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link?only=request', server: $this->user);
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link/request', server: $this->user);
 
         self::assertResponseStatusCodeSame(200);
         self::assertNull($this->decodedResponse()['conferenceRequest']);
@@ -756,7 +965,7 @@ final class ProviderCalendarTest extends DatabaseTestCase
         $primary = $this->reportCalendars()[0]['id'];
         $eventId = $this->createWithMeet($primary);
 
-        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link?only=request', server: $this->user);
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link/request', server: $this->user);
 
         self::assertResponseStatusCodeSame(200);
         self::assertNull($this->conferenceRequest($eventId));
@@ -775,7 +984,7 @@ final class ProviderCalendarTest extends DatabaseTestCase
         $before = self::string($this->connection()->fetchOne('SELECT ical FROM calendar_object WHERE remote_id = ?', ['trabc']));
 
         // The client still showed the request as failed: it looked before Google's version came.
-        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link?only=request', server: $this->user);
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link/request', server: $this->user);
 
         self::assertResponseStatusCodeSame(409);
         self::assertStringContainsString('The meeting link has arrived meanwhile. Nothing was changed.', (string) $this->client->getResponse()->getContent());
@@ -793,7 +1002,7 @@ final class ProviderCalendarTest extends DatabaseTestCase
         $this->claim();
 
         foreach ([1, 2] as $time) {
-            $this->client->request('DELETE', '/api/v1/calendar-events/'.$plain.'/meeting-link?only=request', server: $this->user);
+            $this->client->request('DELETE', '/api/v1/calendar-events/'.$plain.'/meeting-link/request', server: $this->user);
             self::assertResponseStatusCodeSame(200, 'Time '.$time);
             self::assertNull($this->decodedResponse()['conferenceRequest']);
         }
@@ -815,19 +1024,19 @@ final class ProviderCalendarTest extends DatabaseTestCase
         ]));
         $byCalendar = array_column($this->occurrences($this->user, '2026-10-19T00:00:00+00:00', '2026-10-21T00:00:00+00:00'), 'eventId', 'calendarId');
 
-        $this->client->request('DELETE', '/api/v1/calendar-events/'.self::string($byCalendar[$calendars[0]['id']]).'/meeting-link?only=request', server: $this->user);
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.self::string($byCalendar[$calendars[0]['id']]).'/meeting-link/request', server: $this->user);
         self::assertResponseStatusCodeSame(422);
         self::assertStringContainsString('Only the organizer can change the meeting link.', (string) $this->client->getResponse()->getContent());
-        $this->client->request('DELETE', '/api/v1/calendar-events/'.self::string($byCalendar[$calendars[1]['id']]).'/meeting-link?only=request', server: $this->user);
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.self::string($byCalendar[$calendars[1]['id']]).'/meeting-link/request', server: $this->user);
         self::assertResponseStatusCodeSame(422);
         self::assertStringContainsString('This calendar is read-only.', (string) $this->client->getResponse()->getContent());
 
         $primaryEvent = $this->createWithMeet($calendars[0]['id']);
         $this->createUser('lisa@example.test', 'Lisa');
         $lisa = $this->userHeaders('lisa@example.test', ['calendar:read', 'calendar:write']);
-        $this->client->request('DELETE', '/api/v1/calendar-events/'.$primaryEvent.'/meeting-link?only=request', server: $lisa);
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$primaryEvent.'/meeting-link/request', server: $lisa);
         self::assertResponseStatusCodeSame(404);
-        $this->client->request('DELETE', '/api/v1/calendar-events/'.$primaryEvent.'/meeting-link?only=request', server: $this->userHeaders('kim@example.test', ['calendar:read']));
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$primaryEvent.'/meeting-link/request', server: $this->userHeaders('kim@example.test', ['calendar:read']));
         self::assertResponseStatusCodeSame(403);
         self::assertSame('pending', $this->conferenceRequest($primaryEvent)['status'] ?? null);
     }
@@ -854,7 +1063,7 @@ final class ProviderCalendarTest extends DatabaseTestCase
             }
             self::assertSame('pending', $this->conferenceRequest($seriesId)['status'] ?? null);
 
-            $this->client->request('DELETE', '/api/v1/calendar-events/'.$id.'/meeting-link?only=request', server: $this->user);
+            $this->client->request('DELETE', '/api/v1/calendar-events/'.$id.'/meeting-link/request', server: $this->user);
 
             self::assertResponseStatusCodeSame(200, $kind);
             self::assertSame($seriesId, $this->decodedResponse()['id'], 'The answer is the series.');

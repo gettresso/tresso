@@ -10,7 +10,8 @@ use App\Security\Scope;
 use App\State\CalendarCapabilitiesProvider;
 
 /**
- * Which calendar assistant features this server offers, so clients show only what works.
+ * Which calendar assistant features, and which newer calendar operations, this server offers, so clients show only
+ * what works.
  */
 #[ApiResource(
     shortName: 'CalendarCapabilities',
@@ -41,6 +42,12 @@ final readonly class CalendarCapabilities
         public bool $meetingBriefs,
         /** Briefs carry a written summary. */
         public bool $briefSummaries,
+        /**
+         * `DELETE /api/v1/calendar-events/{id}/meeting-link/request` drops only a meeting request (always on this
+         * server). Without it a client hides "Leave without a link": an older server has only the DELETE that removes
+         * the link.
+         */
+        public bool $meetingRequestDrop,
     ) {
     }
 }

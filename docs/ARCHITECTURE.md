@@ -3042,16 +3042,22 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
 - Deploy order: the API before the workers. The workers send `conferenceStatus` and `conferenceError` and read the
   nonce and the removal word; an API without them ignores the fields and writes neither property, so nothing changes
   until it is out. Workers older than the API keep working, without the outcome reports and without removal.
-- "Leave without a link" is `DELETE /api/v1/calendar-events/{id}/meeting-link?only=request`: it drops the series'
-  pending or failed request and nothing else. When the series has a link (it arrived after the client last looked)
-  it answers 409 and changes nothing; it never removes a link, never notifies guests and never writes
+- "Leave without a link" is `DELETE /api/v1/calendar-events/{id}/meeting-link/request` (a path of its own, so an
+  older server answers 404 or 405 instead of running the plain `DELETE`; servers that have it say
+  `meetingRequestDrop: true` in `GET /api/v1/calendar/capabilities`, and clients hide the button otherwise). It drops
+  the series' pending or failed request and nothing else. When the series has a link (it arrived after the client last
+  looked) it answers 409 and changes nothing; it never removes a link, never notifies guests and never writes
   `X-TRESSO-CONFERENCE-REMOVE`. A request still in the iCalendar text goes out with a write that only lacks the
-  `X-TRESSO-CONFERENCE-*` properties (asking the provider for nothing); one only on the object is cleared there. The
-  plain `DELETE` still removes the link.
+  `X-TRESSO-CONFERENCE-*` properties (asking the provider for nothing, with `notify` false); one only on the object is
+  cleared there. A write that already carried the request to the provider may still come back with a meeting: then
+  the link appears seconds after a successful drop, and clients show it from the delta like any other. The plain
+  `DELETE .../meeting-link` still removes the link.
 - A save with `conferenceUrl: null` and `conferenceProvider` X on an event that has a meeting of app X keeps it: no
-  removal, no new request, no write about the meeting (a client's copy may predate the link). Removal is both fields
-  null or `DELETE .../meeting-link`; another app replaces the link; a fresh link of the same app is `DELETE` then
-  `POST .../meeting-link`.
+  removal, no new request, no write about the meeting (a client's copy may predate the link). This holds for the event,
+  one occurrence and the whole series, and for a move within the same mail account. A "this and following" split and
+  a move to another account's calendar make a new event at the provider, which asks for a meeting of its own. Removal
+  is both fields null or `DELETE .../meeting-link`; another app replaces the link; a fresh link of the same app is
+  `DELETE` then `POST .../meeting-link`.
 
 The web and desktop clients show an event's link in the popover as the app's name (from `conference.provider`, which
 the server sets only for a link on that app's own host; anything else reads "Meeting link"), the link on one line

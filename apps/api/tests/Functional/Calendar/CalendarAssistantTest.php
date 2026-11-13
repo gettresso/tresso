@@ -63,6 +63,7 @@ final class CalendarAssistantTest extends DatabaseTestCase
             'textSuggestions' => false,
             'meetingBriefs' => true,
             'briefSummaries' => false,
+            'meetingRequestDrop' => true,
         ], $this->getJson('/api/v1/calendar/capabilities', $this->kim));
     }
 
