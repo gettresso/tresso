@@ -37,7 +37,7 @@ describe('the meeting link in the event editor', () => {
   /** Reading one event fails. */
   let readFails: boolean
   /** What /calendar/capabilities says about the request-only drop; undefined: a server without the field. */
-  let canDrop: boolean | undefined
+  let canDrop: boolean | undefined | null
 
   function router() {
     return createRouter({
@@ -72,9 +72,12 @@ describe('the meeting link in the event editor', () => {
         if (url.pathname === '/api/v1/calendar/meeting-preferences') {
           return new Response(JSON.stringify(preferences))
         }
+        if (url.pathname === '/api/v1/calendar/capabilities' && canDrop === null) {
+          return new Response(JSON.stringify({ detail: 'The server is busy.' }), { status: 503, headers: { 'Content-Type': 'application/problem+json' } })
+        }
         if (url.pathname === '/api/v1/calendar/capabilities') {
           const capabilities: Record<string, boolean> = { eventDrafts: false, meetingTimes: false, attendeeAvailability: false, eventSuggestions: false, textSuggestions: false, meetingBriefs: false, briefSummaries: false }
-          if (canDrop !== undefined) capabilities.meetingRequestDrop = canDrop
+          if (canDrop !== undefined && canDrop !== null) capabilities.meetingRequestDrop = canDrop
           return new Response(JSON.stringify(capabilities))
         }
         const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
@@ -506,7 +509,8 @@ describe('the meeting link in the event editor', () => {
     await sync()
     expect(wrapper.get('.meeting-row button[aria-haspopup="menu"]').text()).toBe('Microsoft Teams')
     expect(wrapper.get('.meeting-row .link').attributes('title')).toBe(TEAMS_URL)
-    expect(wrapper.text()).toContain('A meeting link was added meanwhile. It is shown now; save again to keep it.')
+    expect(wrapper.text()).toContain('A meeting link was added meanwhile. It is shown now.')
+    expect(wrapper.text()).not.toContain('save again to keep it')
     expect(await save(wrapper)).toMatchObject({ conferenceUrl: TEAMS_URL, conferenceProvider: null })
   })
 
@@ -613,5 +617,94 @@ describe('the meeting link in the event editor', () => {
     expect(wrapper.get('.meeting-row .link').attributes('title')).toBe(TEAMS_URL)
     expect(toggle(wrapper).attributes('aria-checked')).toBe('true')
     expect(wrapper.find('.meeting-row [role="alert"]').exists()).toBe(false)
+  })
+
+  it('offers no Leave without a link when the capabilities cannot be read', async () => {
+    canDrop = null
+    const failed = event('nocaps', { conferenceRequest: { provider: 'teams', status: 'failed', reason: 'refused', requestedAt: new Date(NOW - 600_000).toISOString() } })
+    server.set('nocaps', failed)
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(failed)[0]! })
+    expect(wrapper.findAll('.meeting-row .actions button').map((button) => button.text())).toEqual(['Retry', 'Use another app'])
+  })
+
+  it.each([
+    ['Teams', 'work', 'teams' as const, 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_kim%40thread.v2/0', 'Microsoft Teams', 'The current link is already a Teams link. Remove it first to get a new one.'],
+    ['Meet', 'home', 'meet' as const, 'https://meet.google.com/kim-room-abc', 'Google Meet', 'The current link is already a Google Meet link. Remove it first to get a new one.'],
+  ])('does not offer %s for a new link while the own link is a room of that app', async (_name, calendarId, provider, url, label, via) => {
+    preferences = { ...preferences, ownLink: url }
+    const own = calendarEvent('own-room', calendarId, { summary: 'own', start: { dateTime: '2026-10-22T10:00:00', timeZone: AMS }, end: { dateTime: '2026-10-22T11:00:00', timeZone: AMS }, conference: { provider, url, id: null, dialIn: null, removable: true } })
+    server.set('own-room', own)
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(own)[0]! })
+    expect(wrapper.get('.meeting-row button[aria-haspopup="menu"]').text()).toBe('My own link')
+    await wrapper.get('.meeting-row button[aria-haspopup="menu"]').trigger('click')
+    const item = wrapper.findAll('[role="menuitemradio"]').find((entry) => entry.text().includes(label))!
+    expect(item.attributes('aria-disabled')).toBe('true')
+    expect(item.get('.via').text()).toBe(via)
+    await item.trigger('click')
+    expect(wrapper.text()).not.toContain('It replaces the current link.')
+    expect(await save(wrapper)).toMatchObject({ conferenceUrl: url, conferenceProvider: null })
+  })
+
+  it.each([
+    ['switched off and on again', async (wrapper: Awaited<ReturnType<typeof editor>>) => {
+      await toggle(wrapper).trigger('click')
+      await toggle(wrapper).trigger('click')
+    }],
+    ['removed and undone', async (wrapper: Awaited<ReturnType<typeof editor>>) => {
+      await wrapper.get('.meeting-row button[aria-haspopup="menu"]').trigger('click')
+      await wrapper.findAll('[role="menuitem"]')[0]!.trigger('click')
+      await wrapper.get('.meeting-row .actions button').trigger('click')
+    }],
+  ])('makes no link when the kept link was taken off elsewhere after it was %s', async (_name, act) => {
+    const own = event('kept-gone', { conference: { provider: 'other', url: OWN, id: null, dialIn: null, removable: true } })
+    server.set('kept-gone', own)
+    const sync = followSync()
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(own)[0]! })
+    await act(wrapper)
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('true')
+    server.set('kept-gone', { ...own, conference: null })
+    await sync()
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('false')
+    expect(await save(wrapper)).toMatchObject({ conferenceUrl: null, conferenceProvider: null })
+  })
+
+  it('reads before a removal too, and stops when the event moved meanwhile', async () => {
+    const own = event('moved-removal', { conference: { provider: 'other', url: OWN, id: null, dialIn: null, removable: true } })
+    server.set('moved-removal', { ...own, calendarId: 'home' })
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(own)[0]! })
+    await toggle(wrapper).trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('This event was moved to another calendar meanwhile. Close it and open it again to change it.'))
+    expect(requests.some((request) => request.method === 'PUT')).toBe(false)
+  })
+
+  it('says a pick for all events replaces the series link of a moved occurrence', async () => {
+    const series = event('series-own', { recurrence: 'FREQ=DAILY;COUNT=3', start: { dateTime: '2026-10-20T10:00:00', timeZone: AMS }, end: { dateTime: '2026-10-20T11:00:00', timeZone: AMS }, conference: { provider: 'other', url: OWN, id: null, dialIn: null, removable: true } })
+    const moved = event('series-own-2', { uid: series.uid, recurrenceId: '20261021T080000Z', start: { dateTime: '2026-10-21T12:00:00', timeZone: AMS }, end: { dateTime: '2026-10-21T13:00:00', timeZone: AMS } })
+    server.set('series-own', series)
+    server.set('series-own-2', moved)
+    const override = occurrenceOf(series, moved).find((item) => item.event.id === 'series-own-2')!
+    const wrapper = await editor({ kind: 'edit', occurrence: override })
+    await toggle(wrapper).trigger('click')
+    await wrapper.get('.scope input[value="this"]').setValue(true)
+    expect(wrapper.text()).not.toContain('It replaces the current link.')
+    await wrapper.get('.scope input[value="all"]').setValue(true)
+    expect(wrapper.text()).toContain('It replaces the current link.')
+  })
+
+  it('takes a link changed elsewhere over a pick, and says it changed', async () => {
+    const own = event('changed', { conference: { provider: 'other', url: OWN, id: null, dialIn: null, removable: true } })
+    const OTHER = 'https://video.example.org/room/9'
+    server.set('changed', { ...own, conference: { provider: 'other', url: OTHER, id: null, dialIn: null, removable: true } })
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(own)[0]! })
+    await wrapper.get('.meeting-row button[aria-haspopup="menu"]').trigger('click')
+    await wrapper.findAll('[role="menuitemradio"]').find((item) => item.text().includes('Microsoft Teams'))!.trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('The meeting link was changed meanwhile. It is shown now; save again to keep it.'))
+    expect(requests.some((request) => request.method === 'PUT')).toBe(false)
+    expect(wrapper.get('.meeting-row .link').attributes('title')).toBe(OTHER)
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.emitted('saved')).toHaveLength(1))
+    expect(requests.find((request) => request.method === 'PUT')!.body).toMatchObject({ conferenceUrl: OTHER, conferenceProvider: null })
   })
 })

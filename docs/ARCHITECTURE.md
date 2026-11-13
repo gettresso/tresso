@@ -3128,21 +3128,22 @@ calendar, its mail account and the preferences: off, no app, before saving, the 
 reconnect, an app that cannot serve the calendar or the account, and removed. The first guest switches it on with the
 calendar's default when "Add a meeting link when I invite guests" is on and the user has not used the switch; a
 changed calendar follows its default unless the user picked an app. While the event keeps its link the app button
-names that link's app, and picking it again changes nothing. The row follows the copy on this device while the editor
-is open: a link that arrives shows by itself and wins over a pick or the switch made before it (the row says it was
-added meanwhile), and a link taken off elsewhere switches an untouched row off, so a save does not make it again. A
-save stops with a plain sentence when the event moved to another calendar meanwhile. Every save of an existing event
-first reads the event from the server. It sends Meet or Teams as `conferenceProvider` and the own link as
-`conferenceUrl` only when the user switched a new link on or picked an app, and not when the server already has a link
-the editor did not know of (the save stops and the row shows that link); a removal (both null) only when the user
-removed the link, which is offered only where core's `meetingRemovable` allows it. Anything else sends the server's
-link back, with the series' request only for the series, while the switch is on and the calendar offers it. Retry
-calls `POST /calendar-events/{id}/meeting-link`; Leave without a link calls `DELETE .../meeting-link/request`, which
-never touches a link, and is offered only when `GET /calendar/capabilities` reports `meetingRequestDrop`; on its 409
-the row shows the link that arrived, and a link the provider still makes after it shows from the synced copy. Both act
-on the series and keep the editor open. Connect a meeting app keeps the editor's values in memory and opens Settings,
-Meeting apps, whose "Back to the event" reopens it. On an event someone else organizes the editor only says who added
-the link.
+names that link's app, and picking it again changes nothing; when that link is on Meet's or Teams' host but reads as
+another app (the own link is a Teams room), that app is not offered, since the server keeps a meeting of the same app
+on a save. The row follows the copy on this device while the editor is open: a link that arrives or changes shows by
+itself and wins over a pick or the switch made before it (the row says so), and a link taken off elsewhere switches
+the row off unless the user picked another app, so a save does not make it again. A save stops with a plain sentence
+when the event moved to another calendar meanwhile. Every save of an existing event first reads the event from the
+server. It sends Meet or Teams as `conferenceProvider` and the own link as `conferenceUrl` only when the user switched
+a new link on or picked an app, and not when the server already has a link the editor did not know of (the save stops
+and the row shows that link); a removal (both null) only when the user removed the link, which is offered only where
+core's `meetingRemovable` allows it. Anything else sends the server's link back, with the series' request only for the
+series, while the switch is on and the calendar offers it. Retry calls `POST /calendar-events/{id}/meeting-link`;
+Leave without a link calls `DELETE .../meeting-link/request`, which never touches a link, and is offered only when
+`GET /calendar/capabilities` reports `meetingRequestDrop`; on its 409 the row shows the link that arrived, and a link
+the provider still makes after it shows from the synced copy. Both act on the series and keep the editor open. Connect
+a meeting app keeps the editor's values in memory and opens Settings, Meeting apps, whose "Back to the event" reopens
+it. On an event someone else organizes the editor only says who added the link.
 
 #### AI features (interfaces with built-in and planned AI implementations)
 
