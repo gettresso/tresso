@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Mcp\Tools;
 
 use App\Calendar\Assistant\SchedulingRules;
+use App\Calendar\MeetingLinkAddress;
+use App\Entity\MeetingPreferences;
 use App\Enum\NotificationChannel;
 use App\Enum\RuleRole;
 use App\Mcp\Api;
@@ -17,13 +19,16 @@ use App\Security\Scope;
 
 /**
  * The calendar settings: the user's calendars (/api/v1/calendars), what the meeting time finder keeps free
- * (/api/v1/calendar/scheduling-preferences) and the reminder rules (/api/v1/reminder-rules). Events themselves are
- * not settings and have no tools here.
+ * (/api/v1/calendar/scheduling-preferences), which app makes the meeting link of a new event
+ * (/api/v1/calendar/meeting-preferences) and the reminder rules (/api/v1/reminder-rules). Events themselves are not
+ * settings and have no tools here.
  */
 final readonly class CalendarTools implements ToolProvider
 {
     private const string CALENDAR_ID = 'The id of the calendar, from list_calendars.';
     private const string RULE_ID = 'The id of the reminder rule, from list_reminder_rules.';
+    private const string MEETING_PREFERENCES = 'Which app makes the meeting link of a new event per mail account (meet, '
+        .'teams, zoom, own or none), the user\'s own room link, and whether a link is added when guests are invited.';
 
     /** What PUT /reminder-rules/{id} takes: the rule as GET answers it, without its id. */
     private const array RULE_FIELDS = [
@@ -146,6 +151,44 @@ final readonly class CalendarTools implements ToolProvider
                 'planTodos' => Schema::boolean('Open todos with a deadline and a duration get free time planned before their deadline.'),
             ]),
             run: static fn (ToolArguments $arguments, Api $api): array => $api->patch('/calendar/scheduling-preferences', $arguments->only(['bufferMinutes', 'travelMinutes', 'minimumNoticeMinutes', 'planTodos'])),
+        );
+
+        yield new Tool(
+            name: 'get_meeting_preferences',
+            title: 'Get meeting preferences',
+            description: self::MEETING_PREFERENCES.' Also the apps this server can offer (apps).',
+            scopes: [Scope::SettingsRead],
+            effect: ToolEffect::Read,
+            inputSchema: Schema::object(),
+            run: static fn (ToolArguments $arguments, Api $api): array => $api->get('/calendar/meeting-preferences'),
+        );
+
+        yield new Tool(
+            name: 'update_meeting_preferences',
+            title: 'Change meeting preferences',
+            description: self::MEETING_PREFERENCES.' Only the fields given change; defaults and disabled replace the '
+                .'whole map or list.',
+            scopes: [Scope::SettingsWrite],
+            effect: ToolEffect::Update,
+            inputSchema: Schema::object([
+                'ownLink' => Schema::string('The user\'s own room link: https only, without a name or password in it. Every event that uses it gets this same link, so anyone who has it can enter the room. An empty string removes it.', null, MeetingLinkAddress::MAX_LENGTH),
+                'addWithGuests' => Schema::boolean('Switch the meeting link on when the first guest is added to an event.'),
+                'defaults' => [
+                    'type' => 'object',
+                    'description' => 'The app per mail account (an id from list_mail_accounts) for events on that account\'s calendars.',
+                    'propertyNames' => Schema::id('A mail account id, from list_mail_accounts.'),
+                    'additionalProperties' => Schema::enum(MeetingPreferences::DEFAULTS, 'meet, teams, zoom, own or none.'),
+                ],
+                'defaultOther' => Schema::enum(MeetingPreferences::DEFAULTS, 'The app for calendars without a default of their own (Tresso calendars, new accounts).'),
+                'disabled' => Schema::list(
+                    Schema::object([
+                        'app' => Schema::enum(MeetingPreferences::SWITCHABLE, 'meet (only for a Google account) or teams (only for a Microsoft account).'),
+                        'mailAccountId' => Schema::id('The mail account, from list_mail_accounts.'),
+                    ], ['app', 'mailAccountId']),
+                    'Apps switched off in Tresso for one mail account.',
+                ),
+            ]),
+            run: static fn (ToolArguments $arguments, Api $api): array => $api->patch('/calendar/meeting-preferences', $arguments->only(['ownLink', 'addWithGuests', 'defaults', 'defaultOther', 'disabled'])),
         );
     }
 
