@@ -822,6 +822,16 @@ final readonly class EventEditor
         return null !== $existing && $changes->conferenceProvider === $existing['provider'] ? $existing['url'] : null;
     }
 
+    /** The same changes without a provider to ask: the link they name (or none) is written as given. */
+    private static function withoutProvider(EventChanges $changes): EventChanges
+    {
+        return new EventChanges(
+            $changes->summary, $changes->description, $changes->location, $changes->url, $changes->start, $changes->end, $changes->rrule,
+            $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
+            $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
+        );
+    }
+
     /**
      * Whether the user organizes the event: it names no organizer, or one of the user's addresses.
      *
@@ -1021,17 +1031,19 @@ final readonly class EventEditor
             $rule = $sameKind ? self::shiftRule($rule, self::daysBetween($occurrence, $changes->start), $changes->start) : $rule;
         }
         Props::set($newMaster, 'SEQUENCE', 0);
+        // Without the provider: the new series is a new event at the provider, which makes a meeting of its own when
+        // asked (below); keeping the old series' meeting properties would leave it with none.
         $this->write($newMaster, new EventChanges(
             $changes->summary, $changes->description, $changes->location, $changes->url, $start, $end, $rule,
             $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
-            $changes->useDefaultReminders, $changes->travelMinutes, $changes->important, $changes->conferenceProvider,
+            $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
         ), $next, $object->getCalendar(), true, $self);
         if (null !== $edited) {
             // The occurrence the user edited was changed before: its override replaces the new series' first
             // occurrence, so it takes the edit too, but only what the user changed. A client may send the series'
             // values for the fields left alone, which must not undo what made this occurrence its own.
             $sameLength = self::wallClockSeconds($changes->end) - self::wallClockSeconds($changes->start) === $masterLength;
-            $this->writeEdits($edited, $oldMaster, $changes, $next, $object->getCalendar(), $self, 0 === $shift && $sameLength);
+            $this->writeEdits($edited, $oldMaster, self::withoutProvider($changes), $next, $object->getCalendar(), $self, 0 === $shift && $sameLength);
             if (self::atItsOwnTime($edited) && self::sameAsSeries($edited, $newMaster)) {
                 // Nothing left that makes it its own: the new series' first occurrence, which a later change of the
                 // series must reach.
@@ -1054,16 +1066,19 @@ final readonly class EventEditor
      */
     private function move(CalendarObject $object, VCalendar $vcalendar, VCalendar $old, ?VEvent $master, EventChanges $changes, ?string $key, Calendar $target, bool $notify, array $self, ?MailAccount $organizer): CalendarEvent
     {
+        // A meeting of the source's account stays only within that account: the new calendar's provider makes its own
+        // (so the guard that keeps a meeting a save asks for again does not hold across accounts).
+        $written = $object->getCalendar()->getMailAccount() === $target->getMailAccount() ? $changes : self::withoutProvider($changes);
         $moved = null;
         if (null !== $master) {
             if (null === $key) {
-                $this->write($master, $changes, $vcalendar, $object->getCalendar(), true, $self);
+                $this->write($master, $written, $vcalendar, $object->getCalendar(), true, $self);
             } else {
-                $moved = $this->editAll($vcalendar, $object->getCalendar(), $master, $changes, $key, $self);
+                $moved = $this->editAll($vcalendar, $object->getCalendar(), $master, $written, $key, $self);
             }
         } elseif (null !== $key) {
             // The occurrence the user opened takes the edit, as it would without the move.
-            $this->write($this->occurrence($vcalendar, null, $key), $changes, $vcalendar, $object->getCalendar(), false, $self);
+            $this->write($this->occurrence($vcalendar, null, $key), $written, $vcalendar, $object->getCalendar(), false, $self);
         }
         if (null !== $this->objects->findOneByUid($target, $object->getUid())) {
             throw new EditRejected('The other calendar already has this event.');

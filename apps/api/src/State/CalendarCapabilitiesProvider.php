@@ -35,6 +35,7 @@ final readonly class CalendarCapabilitiesProvider implements ProviderInterface
             $this->extractor->readsText(),
             true,
             $this->briefs->writesSummaries(),
+            true,
         );
     }
 }

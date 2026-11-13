@@ -435,7 +435,7 @@ final class CalendarInvitationTest extends DatabaseTestCase
         $eventId = $this->responseString('id');
         self::assertCount(1, $this->outgoing());
 
-        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link?only=request', server: $this->kim);
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link/request', server: $this->kim);
 
         self::assertResponseStatusCodeSame(409);
         self::assertSame('https://meet.company.example/kim', \is_array($this->getJson('/api/v1/calendar-events/'.$eventId, $this->kim)['conference'] ?? null) ? $this->getJson('/api/v1/calendar-events/'.$eventId, $this->kim)['conference']['url'] : null);
