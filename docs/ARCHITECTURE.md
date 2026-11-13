@@ -2122,18 +2122,26 @@ off, so it never goes twice). It keeps every point above:
   composer names the Mac that sends. Attach stays "Only this Mac" until files go through the server (shown, disabled,
   with why). A read of a chat the server refused or did not answer is put back and held, as on the phone: not asked
   again for the same last message until the chat is looked at again (opened, or its window got the focus), and never
-  before the server's `Retry-After`, so a refusal cannot loop through the copy. Every crash point of both switches, a sign-out during one, a second user and the carried replies' crash
-  points have a test in `apps/web/src/stores/__tests__/whatsappRelayServer.spec.ts`.
+  before the server's `Retry-After` (on the server's clock), also not for a newer message, so a refusal cannot loop
+  through the copy. Writes to the server's chats (replies, chat state, leaving out, the account's settings) and the
+  automatic read wait until the server confirmed the copy's user in this page load (`mail.confirmed`, as mail's
+  `confirmedOnly`): until then they say `Tresso is still checking who is signed in.` and the reply box is off; reading
+  works. Leaving a chat out says there that its messages go from the server and from every device. Every crash point of
+  both switches, a sign-out during one, a second user and the carried replies' crash points have a test in
+  `apps/web/src/stores/__tests__/whatsappRelayServer.spec.ts`.
 
 WhatsApp in the browser (app.gettresso.com) has no bridge and runs nothing of the relay: `whatsappRelay.ts` never
 starts there (`whatsapp_available` is never asked), and `chatsFromServer` (`apps/web/src/platform/whatsapp.ts`, true
 outside the desktop app) makes the chat screens show the chats the server holds, exactly while the copy holds the
 server's WhatsApp chat account (the user chose "All my devices" on a Mac), with no switch. `chats.enabled` is the one
-flag every chat screen reads: on the desktop as above, in the browser the account in the copy (read when the copy opens
-and on every delta page with chat rows, so its tombstone turns it off). Without it nothing of WhatsApp shows and every
-WhatsApp address leads to Accounts or the Unified Inbox; an address opened before the copy is open waits for it (at most
-10 seconds, then opens, and the screen leaves once the copy says there is no account), and a screen open when the account
-goes leaves too. `/settings/whatsapp/connect` never opens: only Tresso for Mac connects WhatsApp. With it:
+flag every chat screen reads: on the desktop as above, in the browser the account in the copy (read when the copy
+opens and on every delta page with chat rows, so its tombstone turns it off). A copy without the account says "none"
+only once it holds what the server has (a pull ended in this session, or it synced before and has no chat backfill to
+do), so a link opened while signing in on a new browser waits for the first pull instead of leaving. Without it
+nothing of WhatsApp shows and every WhatsApp address leads to Accounts or the Unified Inbox; an address opened before
+the copy is open waits for it (at most 10 seconds, then opens, and the screen leaves once the copy says there is no
+account), and a screen open when the account goes leaves too. `/settings/whatsapp/connect` never opens: only Tresso
+for Mac connects WhatsApp. With it:
 
 - The sidebar's WhatsApp row (`+31612345678, via Kim's MacBook Pro`, the unread chats in the Unified Inbox), the Unified
   Inbox's chat rows and `Channels` tabs, `/whatsapp`, and the chat pane, all from the IndexedDB copy fed by the delta;
@@ -2150,8 +2158,12 @@ goes leaves too. `/settings/whatsapp/connect` never opens: only Tresso for Mac c
   nothing to download, until files go through the server.
 - Settings, WhatsApp (`SettingsWhatsAppBrowserView.vue`) shows the account read only: the relaying Mac and whether it is
   online, the bridge and the link as it last reported them, which chats come in, and the chats left out (with why they
-  are taken back in on the Mac). Notify me, a setting the server keeps, is the one control (`PATCH` of the account). No
-  connect, relay, mode, folder, link or disconnect control.
+  are taken back in on the Mac). Notify me, a setting the server keeps, is the one setting (`PATCH` of the account).
+  `Remove WhatsApp from your Tresso server` (confirmed first) deletes the account (`DELETE`, a 404 counts as done) with
+  every chat, message and reply, waiting replies unsent, for every device, also when the relaying Mac is lost: that Mac
+  disconnects WhatsApp in Tresso at its next call or pull, and WhatsApp and the bridge's store stay. No connect, relay,
+  mode, folder or link control. A Mac in "All my devices" that does not relay has the same through Disconnect, which
+  deletes the server's account first.
 - No notifications of WhatsApp in the browser: the server pushes new WhatsApp messages to the phone only, and the web
   client shows no in-tab notifications of its own.
 
