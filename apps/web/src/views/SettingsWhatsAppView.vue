@@ -18,6 +18,9 @@ import {
   REMOVE_TITLE,
   bridgeText,
   carriedText,
+  carryCountsText,
+  notCarriedText,
+  pauseText,
   deviceLabel,
   otherRelayText,
   serverRefusedText,
@@ -167,8 +170,19 @@ const relayRow = computed<{ value: string; ok: boolean; takeOver: 'relay' | 'swi
 })
 const switching = computed(() => (wa.modeSwitch === null ? null : switchText(wa.modeSwitch.to, wa.modeSwitch.to === 'local' && wa.modeSwitch.removed)))
 const refusedLine = computed(() => (allDevices.value ? serverRefusedText(wa.serverRefused) : null))
-const carriedLine = computed(() => carriedText(wa.carried.length, wa.carryLost))
+const carriedLine = computed(() => carriedText(wa.carried.length))
+const countsLine = computed(() => carryCountsText(wa.carryCounts))
+const failingLine = computed(() =>
+  wa.relayPauseMs !== null ? pauseText(wa.relayPauseMs) : 'Reading WhatsApp messages failed just now. Tresso tries again in a moment.',
+)
 const modeValue = computed(() => wa.config?.mode ?? 'local')
+/** In the confirmation of the switch to "All my devices": the replies not sent here, which are not carried over. */
+const notCarriedLine = ref<string | null>(null)
+
+async function askMode(value: 'local' | 'all'): Promise<void> {
+  confirmingMode.value = value
+  notCarriedLine.value = value === 'all' ? notCarriedText(await wa.notCarried()) : null
+}
 
 function onMode(event: Event): void {
   const select = event.target as HTMLSelectElement
@@ -176,13 +190,14 @@ function onMode(event: Event): void {
   // The switch is asked first; the select shows the saved place until then.
   select.value = modeValue.value
   if (value !== modeValue.value) {
-    confirmingMode.value = value
+    void askMode(value)
   }
 }
 
+/** The answer Copy or Remove: the yes to copying is passed on, the store refuses "All my devices" without it. */
 async function switchMode(): Promise<void> {
   const to = confirmingMode.value
-  if (to !== null && (await wa.switchMode(to))) {
+  if (to !== null && (await wa.switchMode(to, { copy: to === 'all' }))) {
     confirmingMode.value = null
   }
 }
@@ -192,11 +207,28 @@ function takeOver(kind: 'relay' | 'switch'): void {
   if (kind === 'relay') {
     void wa.useThisMac()
   } else {
-    confirmingMode.value = 'all'
+    void askMode('all')
   }
 }
 
-const groupsValue = computed(() => (wa.config?.includeGroups === false ? 'direct' : 'all'))
+/** The question about an unknown WhatsApp number was answered yes: the step it stopped is done again with that yes. */
+async function relayAnyway(): Promise<void> {
+  const task = wa.askNumber
+  if (task === 'take-over') {
+    await wa.useThisMac({ number: true })
+  } else if (task === 'folder') {
+    await wa.changeFolder({ number: true })
+  } else if (task === 'mode') {
+    if (await wa.switchMode('all', { copy: true, number: true })) {
+      confirmingMode.value = null
+    }
+  }
+}
+
+/** In "All my devices" the server's account says what comes in and Notify me, for every device; else this Mac's config. */
+const includeGroupsShown = computed(() => (allDevices.value && wa.serverAccount !== null ? wa.serverAccount.includeGroups : wa.config?.includeGroups !== false))
+const notifyShown = computed(() => (allDevices.value && wa.serverAccount !== null ? wa.serverAccount.notify : wa.config?.notify === true))
+const groupsValue = computed(() => (includeGroupsShown.value ? 'all' : 'direct'))
 
 function onGroups(event: Event): void {
   const value = (event.target as HTMLSelectElement).value
@@ -238,7 +270,11 @@ async function connectDone(): Promise<void> {
  */
 const leftOutRows = computed(() =>
   allDevices.value
-    ? chats.leftOut.map((chat) => ({ jid: chat.jid, name: chatName(chat) }))
+    ? [
+        ...chats.leftOut.map((chat) => ({ jid: chat.jid, name: chatName(chat) })),
+        // Left out on this Mac before the server had a chat for them: still kept from the server.
+        ...chats.leftOutHere.map((jid) => ({ jid, name: chatName({ name: null, jid, kind: jid.endsWith('@g.us') ? 'group' : 'direct' }) })),
+      ]
     : (wa.config?.leftOut ?? []).map((jid) => {
         const stored = chats.leftOut.find((chat) => chat.jid === jid)
         return { jid, name: chatName(stored ?? { name: null, jid, kind: jid.endsWith('@g.us') ? 'group' : 'direct' }) }
@@ -305,9 +341,22 @@ onBeforeUnmount(() => {
         <strong>{{ wa.importState === 'stuck' ? 'Bringing in your chats is stuck.' : `Bringing in your chats since ${importSince}.` }}</strong>
         <span v-if="importView.detail">{{ importView.detail }}</span>
       </div>
-      <p v-else-if="readsHere && wa.relayFailing !== null" class="import-failing">Reading WhatsApp messages failed just now. Tresso tries again in a moment.</p>
+      <p v-else-if="readsHere && wa.relayFailing !== null" class="import-failing">{{ failingLine }}</p>
+      <div v-if="wa.switchFailing && wa.modeSwitch?.to === 'all'" class="import stuck">
+        <span>Your Tresso server did not take the switch yet; Tresso keeps trying.</span>
+        <div class="actions">
+          <button type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.stayLocal()">Stay on Only this Mac</button>
+        </div>
+      </div>
       <p v-if="refusedLine" class="import-failing">{{ refusedLine }}</p>
-      <p v-if="carriedLine" class="waiting">{{ carriedLine }}</p>
+      <div v-if="carriedLine" class="waiting">
+        <span>{{ carriedLine }}</span>
+        <button type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.cancelCarried()">Cancel them</button>
+      </div>
+      <div v-if="countsLine" class="waiting">
+        <span>{{ countsLine }}</span>
+        <button type="button" class="button button-quiet outline" @click="wa.dismissCarryCounts()">Dismiss</button>
+      </div>
 
       <section class="panel rows" aria-label="Connection">
         <div class="row">
@@ -357,6 +406,7 @@ onBeforeUnmount(() => {
         <div v-if="confirmingMode" class="confirm" role="alertdialog" aria-labelledby="wa-mode-title" aria-describedby="wa-mode-body">
           <p id="wa-mode-title"><strong>{{ confirmingMode === 'all' ? COPY_TITLE : REMOVE_TITLE }}</strong></p>
           <p id="wa-mode-body">{{ confirmingMode === 'all' ? COPY_BODY : REMOVE_BODY }}</p>
+          <p v-if="confirmingMode === 'all' && notCarriedLine">{{ notCarriedLine }}</p>
           <div class="actions">
             <button type="button" :class="confirmingMode === 'all' ? 'button button-primary' : 'button button-danger'" :disabled="wa.busy !== null" @click="switchMode">
               {{ wa.busy === 'mode' ? (confirmingMode === 'all' ? 'Copying…' : 'Removing…') : confirmingMode === 'all' ? 'Copy' : 'Remove' }}
@@ -397,7 +447,7 @@ onBeforeUnmount(() => {
               Desktop notifications for new WhatsApp messages on this Mac.<template v-if="allDevices"> Your Tresso server keeps this setting for your other devices too.</template>
             </span>
           </span>
-          <input id="wa-notify" type="checkbox" role="switch" class="switch" aria-describedby="wa-notify-note" :checked="wa.config?.notify === true" :disabled="wa.busy !== null" @change="setNotify" />
+          <input id="wa-notify" type="checkbox" role="switch" class="switch" aria-describedby="wa-notify-note" :checked="notifyShown" :disabled="wa.busy !== null" @change="setNotify" />
         </div>
       </section>
 
@@ -443,7 +493,14 @@ onBeforeUnmount(() => {
       </section>
     </template>
 
-    <p v-if="wa.error && !connecting" class="form-error" role="alert">{{ wa.error }}</p>
+    <div v-if="wa.askNumber && !connecting" class="confirm" role="alertdialog" aria-labelledby="wa-number-title">
+      <p id="wa-number-title"><strong>{{ wa.error }}</strong></p>
+      <div class="actions">
+        <button type="button" class="button button-danger" :disabled="wa.busy !== null" @click="relayAnyway">Relay from this Mac</button>
+        <button type="button" class="button button-quiet" :disabled="wa.busy !== null" @click="wa.error = null; wa.askNumber = null">Cancel</button>
+      </div>
+    </div>
+    <p v-else-if="wa.error && !connecting" class="form-error" role="alert">{{ wa.error }}</p>
 
     <ConnectWhatsApp v-if="connecting && wa.configLoaded" :mode="route.query.mode === 'all' ? 'all' : 'local'" @close="closeConnect" @done="connectDone" />
   </section>

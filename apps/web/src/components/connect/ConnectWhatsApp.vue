@@ -46,9 +46,14 @@ const dialog = ref<HTMLDialogElement | null>(null)
 const place = ref<'local' | 'all'>(props.mode ?? 'local')
 /** "All my devices" was picked and waits for the user's yes to copying the chats to the server. */
 const confirmingCopy = ref(false)
-/** The user said yes to copying (or came to take the relay over, where the chats are on the server already). */
-let copyConfirmed = props.mode === 'all'
-const copyButton = ref<HTMLButtonElement | null>(null)
+/** The user said yes to copying the chats to the server (Copy). */
+let copyConfirmed = false
+/**
+ * The dialog was opened to take the relay over from another Mac (`mode` all) and the server's account is there: the
+ * chats are on the server already, so nothing is asked. Checked again when Connect is pressed.
+ */
+const takeOverFromOther = computed(() => props.mode === 'all' && wa.otherRelay !== null)
+const copyCancel = ref<HTMLButtonElement | null>(null)
 const allRadio = ref<HTMLInputElement | null>(null)
 /** Connected from this dialog: it now shows the import and offers Done. */
 const connectedHere = ref(false)
@@ -103,13 +108,24 @@ function stateOf(done: boolean): 'done' | 'open' {
   return done ? 'done' : 'open'
 }
 
-async function connect(): Promise<void> {
+async function connect(numberConfirmed = false): Promise<void> {
   if (!canConnect.value || confirmingCopy.value) {
     return
   }
-  if (await wa.connect(place.value)) {
+  if (place.value === 'all' && !copyConfirmed && !takeOverFromOther.value) {
+    // Opened to take over, but no other Mac relays now: the chats would be copied, so that is asked first.
+    await askCopy()
+    return
+  }
+  if (await wa.connect(place.value, { copy: place.value === 'all', number: numberConfirmed })) {
     connectedHere.value = true
   }
+}
+
+async function askCopy(): Promise<void> {
+  confirmingCopy.value = true
+  await nextTick()
+  copyCancel.value?.focus()
 }
 
 /** "All my devices" picked: asked first (Copy, Cancel); Connect waits for the answer. */
@@ -118,12 +134,10 @@ watch(place, async (next) => {
     confirmingCopy.value = false
     return
   }
-  if (copyConfirmed) {
+  if (copyConfirmed || takeOverFromOther.value) {
     return
   }
-  confirmingCopy.value = true
-  await nextTick()
-  copyButton.value?.focus()
+  await askCopy()
 })
 
 async function answerCopy(copy: boolean): Promise<void> {
@@ -274,23 +288,30 @@ onUnmounted(() => {
           <span id="wa-place-all" class="place-note">{{ PLACE_ALL_NOTE }}</span>
         </span>
       </label>
-      <div v-if="confirmingCopy" class="copy-confirm" role="alertdialog" aria-labelledby="wa-copy-title" aria-describedby="wa-copy-body">
-        <p id="wa-copy-title"><strong>{{ COPY_TITLE }}</strong></p>
-        <p id="wa-copy-body">{{ COPY_BODY }}</p>
-        <div class="actions">
-          <button ref="copyButton" type="button" class="button button-primary" @click="answerCopy(true)">Copy</button>
-          <button type="button" class="button button-quiet" @click="answerCopy(false)">Cancel</button>
-        </div>
-      </div>
     </fieldset>
+    <div v-if="confirmingCopy" class="copy-confirm" role="alertdialog" aria-labelledby="wa-copy-title" aria-describedby="wa-copy-body">
+      <p id="wa-copy-title"><strong>{{ COPY_TITLE }}</strong></p>
+      <p id="wa-copy-body">{{ COPY_BODY }}</p>
+      <div class="actions">
+        <button type="button" class="button button-primary" @click="answerCopy(true)">Copy</button>
+        <button ref="copyCancel" type="button" class="button button-quiet" @click="answerCopy(false)">Cancel</button>
+      </div>
+    </div>
 
     <p class="visually-hidden" role="status">{{ announcement }}</p>
-    <p v-if="wa.error" class="error" role="alert">{{ wa.error }}</p>
+    <div v-if="wa.askNumber === 'connect'" class="copy-confirm" role="alertdialog" aria-labelledby="wa-number-title">
+      <p id="wa-number-title"><strong>{{ wa.error }}</strong></p>
+      <div class="actions">
+        <button type="button" class="button button-danger" :disabled="wa.busy !== null" @click="connect(true)">Relay from this Mac</button>
+        <button type="button" class="button button-quiet" :disabled="wa.busy !== null" @click="wa.error = null; wa.askNumber = null">Cancel</button>
+      </div>
+    </div>
+    <p v-else-if="wa.error" class="error" role="alert">{{ wa.error }}</p>
 
     <div class="footer">
       <a :href="INSTALL_URL" target="_blank" rel="noopener noreferrer" class="install">How to install whatsapp-mcp</a>
       <button v-if="connectedHere" type="button" class="button button-primary big" @click="emit('done')">Done</button>
-      <button v-else type="button" class="button button-primary big" :disabled="!canConnect" @click="connect">
+      <button v-else type="button" class="button button-primary big" :disabled="!canConnect" @click="connect(false)">
         Connect WhatsApp<kbd>Enter</kbd>
       </button>
     </div>

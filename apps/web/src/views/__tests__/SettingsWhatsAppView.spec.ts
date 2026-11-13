@@ -332,7 +332,7 @@ describe('SettingsWhatsAppView', () => {
       await select.setValue('all')
       await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
       await flushPromises()
-      expect(switchMode).toHaveBeenCalledWith('all')
+      expect(switchMode).toHaveBeenCalledWith('all', { copy: true })
       expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
     })
 
@@ -351,7 +351,7 @@ describe('SettingsWhatsAppView', () => {
       expect(confirm.get('#wa-mode-body').text()).toBe(REMOVE_BODY)
       expect(confirm.findAll('button').map((button) => button.text())).toEqual(['Remove', 'Cancel'])
       await confirm.findAll('button')[0]!.trigger('click')
-      expect(switchMode).toHaveBeenCalledWith('local')
+      expect(switchMode).toHaveBeenCalledWith('local', { copy: false })
     })
 
     it('names the Mac that relays, with Use this Mac instead', async () => {
@@ -379,7 +379,7 @@ describe('SettingsWhatsAppView', () => {
       await relay.element.get('button').trigger('click')
       expect(wrapper.get('#wa-mode-title').text()).toBe(COPY_TITLE)
       await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
-      expect(switchMode).toHaveBeenCalledWith('all')
+      expect(switchMode).toHaveBeenCalledWith('all', { copy: true })
     })
 
     it('leads a Mac not connected to the connect dialog to take the relay over', async () => {
@@ -396,7 +396,7 @@ describe('SettingsWhatsAppView', () => {
       wa.serverAccount = ACCOUNT
       wa.modeSwitch = { to: 'all', accountId: null }
       wa.carried = [{ jid: '31612345678@s.whatsapp.net', text: 'Secret', id: null }]
-      wa.carryLost = 1
+      wa.carryCounts = { lost: 1, cancelled: 0, unsure: 0, notSent: 0 }
       wa.serverRefused = 2
       const wrapper = open()
       expect(wrapper.text()).toContain('Moving your WhatsApp chats to your Tresso server.')
@@ -405,6 +405,62 @@ describe('SettingsWhatsAppView', () => {
       expect(wrapper.text()).toContain('could not be carried over')
       expect(wrapper.text()).toContain('2 messages could not be copied to your Tresso server')
       expect(wrapper.text()).not.toContain('Secret')
+    })
+
+    it('asks whether to relay when a WhatsApp number is not known, and takes over with that yes', async () => {
+      const useThisMac = vi.spyOn(wa, 'useThisMac').mockResolvedValue(true)
+      wa.config = { ...CONFIG, mode: 'all' }
+      wa.serverAccount = { ...ACCOUNT, relayDeviceId: '6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f' }
+      wa.askNumber = 'take-over'
+      wa.error = 'Tresso cannot tell whether this Mac is linked to the same WhatsApp number as your Tresso server.'
+      const wrapper = open()
+      const ask = wrapper.get('[aria-labelledby="wa-number-title"]')
+      expect(ask.text()).toContain('Tresso cannot tell whether')
+      expect(wrapper.find('.form-error').exists()).toBe(false)
+      await ask.findAll('button')[0]!.trigger('click')
+      expect(useThisMac).toHaveBeenCalledWith({ number: true })
+    })
+
+    it('offers to stay on "Only this Mac" while a switch cannot finish', async () => {
+      const stayLocal = vi.spyOn(wa, 'stayLocal').mockResolvedValue(true)
+      wa.modeSwitch = { to: 'all', accountId: null }
+      wa.switchFailing = true
+      const wrapper = open()
+      const button = wrapper.findAll('button').find((candidate) => candidate.text() === 'Stay on Only this Mac')!
+      await button.trigger('click')
+      expect(stayLocal).toHaveBeenCalled()
+    })
+
+    it('says what became of replies not carried over until it is dismissed, and names those not sent in the confirmation', async () => {
+      const dismiss = vi.spyOn(wa, 'dismissCarryCounts').mockResolvedValue()
+      vi.spyOn(wa, 'notCarried').mockResolvedValue(2)
+      wa.carryCounts = { lost: 0, cancelled: 1, unsure: 0, notSent: 0 }
+      const wrapper = open()
+      expect(wrapper.text()).toContain('1 reply was cancelled on another device and was not sent.')
+      await wrapper.findAll('button').find((candidate) => candidate.text() === 'Dismiss')!.trigger('click')
+      expect(dismiss).toHaveBeenCalled()
+
+      await wrapper.get<HTMLSelectElement>('#wa-place').setValue('all')
+      await flushPromises()
+      expect(wrapper.get('[role="alertdialog"]').text()).toContain('2 replies on this Mac that were not sent are not carried over: they go with the chats on this Mac.')
+    })
+
+    it('shows the server account\'s settings in "All my devices", not this Mac\'s config', () => {
+      wa.config = { ...CONFIG, mode: 'all', includeGroups: true, notify: false }
+      wa.serverAccount = { ...ACCOUNT, includeGroups: false, notify: true }
+      const wrapper = open()
+      expect(wrapper.get<HTMLSelectElement>('#wa-groups').element.value).toBe('direct')
+      expect(wrapper.get<HTMLInputElement>('#wa-notify').element.checked).toBe(true)
+    })
+
+    it('says how long the relay waits when the server asked it to', () => {
+      wa.config = { ...CONFIG, mode: 'all' }
+      wa.serverAccount = ACCOUNT
+      wa.importState = 'done'
+      wa.relayFailing = 'store'
+      wa.relayPauseMs = 10 * 60_000
+      const wrapper = open()
+      expect(wrapper.get('.import-failing').text()).toBe('Your Tresso server asked Tresso to wait; it tries again in about 10 minutes.')
     })
 
     it('says when WhatsApp was disconnected on another device', () => {

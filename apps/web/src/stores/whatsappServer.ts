@@ -165,3 +165,88 @@ export async function removeServerState(store: MailStore, accountId: string): Pr
     await store.setChatMeta(SERVER_ACCOUNT, null)
   }
 }
+
+/** What became of the replies of a switch to "All my devices" that did not reach the server's queue (CARRY_COUNTS). */
+export interface CarryCounts {
+  /** Their chat never came in, or was left out. */
+  lost: number
+  /** Cancelled meanwhile (409 `cancelled`). */
+  cancelled: number
+  /** Maybe queued or cancelled before, too old to tell (422 on `id`). */
+  unsure: number
+  /** Replies that were not sent here (`failed`) when the switch began: they went with the local rows. */
+  notSent: number
+}
+
+/** The counts above, kept until the user dismissed the line that says them. */
+export const CARRY_COUNTS = 'carry-counts'
+
+export const NO_CARRY_COUNTS: CarryCounts = { lost: 0, cancelled: 0, unsure: 0, notSent: 0 }
+
+export function readCarryCounts(value: string | null): CarryCounts {
+  const raw = parse(value) as Partial<Record<keyof CarryCounts, unknown>> | null
+  if (raw === null || typeof raw !== 'object') {
+    return { ...NO_CARRY_COUNTS }
+  }
+  const count = (field: keyof CarryCounts): number => (typeof raw[field] === 'number' && Number.isSafeInteger(raw[field]) && (raw[field] as number) > 0 ? (raw[field] as number) : 0)
+  return { lost: count('lost'), cancelled: count('cancelled'), unsure: count('unsure'), notSent: count('notSent') }
+}
+
+export async function setCarryCounts(store: MailStore, counts: CarryCounts): Promise<void> {
+  const any = counts.lost + counts.cancelled + counts.unsure + counts.notSent > 0
+  await store.setChatMeta(CARRY_COUNTS, any ? JSON.stringify(counts) : null)
+}
+
+/**
+ * A removal of the server's account that the user confirmed (Remove, Disconnect) and the server has not confirmed yet,
+ * per user, outside the copy: a sign-out deletes the copy with its marks, and the next sign-in of the same user must
+ * still finish the removal. Holds the account id only. Another user's entry is dropped without touching their account.
+ */
+const PENDING_REMOVAL_PREFIX = 'tresso.whatsapp.pendingRemoval.'
+
+function storage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+
+export function notePendingRemoval(userId: string, accountId: string | null): void {
+  try {
+    if (accountId === null) {
+      storage()?.removeItem(`${PENDING_REMOVAL_PREFIX}${userId}`)
+    } else {
+      storage()?.setItem(`${PENDING_REMOVAL_PREFIX}${userId}`, accountId)
+    }
+  } catch {
+    // Storage refused: the copy's mark still covers a crash; only a sign-out in between is not covered.
+  }
+}
+
+export function pendingRemoval(userId: string): string | null {
+  try {
+    const value = storage()?.getItem(`${PENDING_REMOVAL_PREFIX}${userId}`) ?? null
+    return value !== null && ID.test(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+/** Drops the pending removals of every other user (their accounts are theirs to remove at their next sign-in). */
+export function keepPendingRemovalOf(userId: string): void {
+  const kept = storage()
+  if (kept === null) {
+    return
+  }
+  try {
+    for (let i = kept.length - 1; i >= 0; i--) {
+      const key = kept.key(i)
+      if (key !== null && key.startsWith(PENDING_REMOVAL_PREFIX) && key !== `${PENDING_REMOVAL_PREFIX}${userId}`) {
+        kept.removeItem(key)
+      }
+    }
+  } catch {
+    // Nothing more to do.
+  }
+}

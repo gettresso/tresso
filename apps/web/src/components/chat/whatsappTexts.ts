@@ -292,14 +292,44 @@ export function serverRefusedText(count: number): string | null {
   return count === 0 ? null : `${count.toLocaleString('en')} ${count === 1 ? 'message' : 'messages'} could not be copied to your Tresso server; ${count === 1 ? 'it stays' : 'they stay'} in the bridge on this Mac only.`
 }
 
-/** Replies that waited here at the switch: still to go to the server's queue, and those that could not. */
-export function carriedText(waiting: number, lost: number): string | null {
+/** Replies that waited here at the switch: still to go to the server's queue. Null when none waits. */
+export function carriedText(waiting: number): string | null {
+  return waiting === 0
+    ? null
+    : `${waiting.toLocaleString('en')} ${waiting === 1 ? 'reply' : 'replies'} written on this Mac before the switch ${waiting === 1 ? 'goes' : 'go'} to your Tresso server once ${waiting === 1 ? 'its chat is' : 'their chats are'} there.`
+}
+
+function replies(count: number): string {
+  return `${count.toLocaleString('en')} ${count === 1 ? 'reply' : 'replies'}`
+}
+
+/** What became of the replies of a switch that did not reach the server's queue, by why; null when nothing. */
+export function carryCountsText(counts: { lost: number; cancelled: number; unsure: number; notSent: number }): string | null {
   const parts: string[] = []
-  if (waiting > 0) {
-    parts.push(`${waiting.toLocaleString('en')} ${waiting === 1 ? 'reply' : 'replies'} written on this Mac before the switch ${waiting === 1 ? 'goes' : 'go'} to your Tresso server once ${waiting === 1 ? 'its chat is' : 'their chats are'} there.`)
+  if (counts.notSent > 0) {
+    parts.push(`${replies(counts.notSent)} that ${counts.notSent === 1 ? 'was' : 'were'} not sent on this Mac ${counts.notSent === 1 ? 'was' : 'were'} not carried over.`)
   }
-  if (lost > 0) {
-    parts.push(`${lost.toLocaleString('en')} ${lost === 1 ? 'reply' : 'replies'} written on this Mac before the switch could not be carried over, because ${lost === 1 ? 'its chat' : 'their chats'} did not come in or ${lost === 1 ? 'was' : 'were'} left out. Write ${lost === 1 ? 'it' : 'them'} again if needed.`)
+  if (counts.lost > 0) {
+    parts.push(`${replies(counts.lost)} could not be carried over, because ${counts.lost === 1 ? 'its chat' : 'their chats'} did not come in or ${counts.lost === 1 ? 'was' : 'were'} left out. Write ${counts.lost === 1 ? 'it' : 'them'} again if needed.`)
+  }
+  if (counts.cancelled > 0) {
+    parts.push(`${replies(counts.cancelled)} ${counts.cancelled === 1 ? 'was' : 'were'} cancelled on another device and ${counts.cancelled === 1 ? 'was' : 'were'} not sent.`)
+  }
+  if (counts.unsure > 0) {
+    parts.push(`${replies(counts.unsure)} may already have been queued or cancelled before; Tresso did not send ${counts.unsure === 1 ? 'it' : 'them'} again. Check the chat, and write ${counts.unsure === 1 ? 'it' : 'them'} again if needed.`)
   }
   return parts.length === 0 ? null : parts.join(' ')
+}
+
+/** In the switch's confirmation: the replies on this Mac that were not sent, which are not carried over. */
+export function notCarriedText(count: number): string | null {
+  return count === 0 ? null : `${replies(count)} on this Mac that ${count === 1 ? 'was' : 'were'} not sent ${count === 1 ? 'is' : 'are'} not carried over: ${count === 1 ? 'it goes' : 'they go'} with the chats on this Mac.`
+}
+
+/** Why the relay paused, when the server asked it to wait (429, 403): how long, in plain words. */
+export function pauseText(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000))
+  return ms < 60_000
+    ? 'Your Tresso server asked Tresso to wait a moment before it sends more messages.'
+    : `Your Tresso server asked Tresso to wait; it tries again in about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`
 }
