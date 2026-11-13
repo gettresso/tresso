@@ -17,6 +17,11 @@ enum BlobKind: string
     case Outgoing = 'outgoing';
     /** A draft's copy for the account's Drafts folder. */
     case Drafts = 'drafts';
+    /**
+     * A WhatsApp file: one the relaying Mac brought for the user's other devices, or one a browser or phone uploaded
+     * for a reply ({@see \App\Chat\ChatMedia}, {@see \App\Chat\ChatUploads}).
+     */
+    case ChatMedia = 'chatmedia';
     /** Infected content, out of reach of downloads. */
     case Quarantine = 'quarantine';
 }

@@ -91,6 +91,22 @@ final readonly class ChangeSequencer
     }
 
     /**
+     * Marks chat messages changed whose file changed in bulk SQL (a scan verdict), with a change number per
+     * {@see CHUNK} messages, so clients learn whether the file may be downloaded.
+     *
+     * @param list<string> $messageIds
+     */
+    public function touchChatMessages(Uuid $userId, array $messageIds): void
+    {
+        foreach (array_chunk(array_values(array_unique($messageIds)), $this->chunkSize) as $chunk) {
+            $this->connection->executeStatement(
+                'UPDATE chat_message SET change_seq = :seq WHERE id = ANY(CAST(:ids AS UUID[]))',
+                ['seq' => $this->next($userId), 'ids' => '{'.implode(',', $chunk).'}'],
+            );
+        }
+    }
+
+    /**
      * Marks drafts changed whose files changed in bulk SQL (a scan verdict), so clients fetch their attachments again.
      *
      * @param list<string> $draftIds

@@ -16,6 +16,7 @@ use App\Enum\ChatOutgoingError;
 use App\Enum\ChatOutgoingStatus;
 use App\Repository\ChatOutgoingRepository;
 use App\Repository\ChatRepository;
+use App\Repository\ChatUploadRepository;
 use App\Security\CallerKey;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
@@ -23,6 +24,7 @@ use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\EntityNotFoundException;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\TooManyRequestsHttpException;
 use Symfony\Component\RateLimiter\RateLimiterFactoryInterface;
@@ -43,6 +45,9 @@ use Symfony\Component\Validator\ConstraintViolationList;
  * - A result names its claim by the claim's token and is final: only that claim takes it, the same result again is
  *   answered as the first time, and `sent: true` still wins over `unconfirmed` of the same claim ({@see report()}).
  *
+ * A reply may carry a file the client uploaded to the chat before ({@see ChatUploads}); only our own apps attach files.
+ * The reply takes the upload over, and its file goes once the reply went out or is cancelled ({@see ChatMediaCollector}).
+ *
  * Every write locks the owner first ({@see ChatOwnerLock}). Every way a reply ends reaches the devices: sent and failed
  * (also by the sweep) as the row with its new state in the delta, a cancelled reply as a removal (tombstone
  * `chatOutgoing`), since cancelling deletes the row. Nothing writes the status `cancelled`, which the delta would leave
@@ -61,6 +66,8 @@ final readonly class ChatQueue
         private ChatFields $fields,
         private ChatOwnerLock $ownerLock,
         private ChatClaims $claims,
+        private ChatUploadRepository $uploads,
+        private ChatMediaCollector $collector,
         #[Autowire(service: 'limiter.chat_reply')]
         private RateLimiterFactoryInterface $limiter,
         #[Autowire(service: 'limiter.chat_reply_caller')]
@@ -81,6 +88,9 @@ final readonly class ChatQueue
     public function queue(User $user, mixed $chatId, QueueReply $input, \DateTimeImmutable $now, string $caller = CallerKey::OURS): array
     {
         $id = Uuid::fromString($input->id);
+        if (null !== $input->file && CallerKey::OURS !== $caller) {
+            throw new AccessDeniedHttpException('Only Tresso\'s own apps send files on WhatsApp.');
+        }
         // The chat first: another user's chat is not found, whatever id the request names.
         $chat = \is_string($chatId) ? $this->chats->findOneOwnedBy($user, $chatId) : null;
         if (!$chat instanceof Chat) {
@@ -135,6 +145,17 @@ final readonly class ChatQueue
                 self::refuseLeftOut($chat);
 
                 $outgoing = $this->fields->newOutgoing($id, $chat, trim($input->text), $now);
+                if (null !== $input->file) {
+                    $upload = $this->uploads->findOneForChat($user, $chat, $input->file->uploadId);
+                    if (null === $upload) {
+                        throw new ValidationException(new ConstraintViolationList([
+                            new ConstraintViolation('This file is not uploaded to this chat, or it waited too long. Upload it again.', null, [], null, 'file.uploadId', null),
+                        ]));
+                    }
+                    // Taken over: the reply refers to the file from here on, so it is never without one.
+                    $this->fields->attachFile($outgoing, $input->file->cleanName(), $upload);
+                    $this->entityManager->remove($upload);
+                }
                 $this->entityManager->persist($outgoing);
                 $this->entityManager->flush();
 
@@ -199,7 +220,8 @@ final readonly class ChatQueue
         $wentOutAfterAll = $sent && ChatOutgoingStatus::Failed === $status && ChatOutgoingError::Unconfirmed === $outgoing->getError();
         if ($theClaim && ($fromRelay || $sent) && (ChatOutgoingStatus::Sending === $status || $wentOutAfterAll)) {
             if ($sent) {
-                $outgoing->markSent($now);
+                // It went out: the file it carried is no longer needed here.
+                $this->collector->release([$outgoing->markSent($now)]);
                 $outgoing->getChat()->messageAt($now);
             } else {
                 $outgoing->markFailed($result->error ?? throw new \LogicException('Validation guarantees an error.'));
@@ -225,6 +247,7 @@ final readonly class ChatQueue
             if (!\in_array($outgoing->getStatus(), [ChatOutgoingStatus::Waiting, ChatOutgoingStatus::Failed], true)) {
                 throw ChatProblem::alreadyGoingOut();
             }
+            $this->collector->release([$outgoing->getFileObjectKey()]);
             $this->entityManager->remove($outgoing);
             $this->entityManager->flush();
         });

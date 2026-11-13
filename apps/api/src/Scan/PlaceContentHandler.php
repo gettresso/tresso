@@ -13,7 +13,7 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Uid\Uuid;
 
 /**
- * Moves content to quarantine while any attachment with it is infected, and back to every key an attachment still
+ * Moves content to quarantine while any attachment (or WhatsApp file) with it is infected, and back to every key an attachment still
  * refers to once none is. Storage errors make Messenger retry; the downloads follow the committed verdict meanwhile.
  */
 #[AsMessageHandler]
@@ -76,7 +76,8 @@ final readonly class PlaceContentHandler
     {
         return (bool) $this->connection->fetchOne(
             "SELECT EXISTS (SELECT 1 FROM attachment WHERE sha256 = :sha AND scan_status = 'infected')
-                 OR EXISTS (SELECT 1 FROM draft_attachment WHERE sha256 = :sha AND scan_status = 'infected')",
+                 OR EXISTS (SELECT 1 FROM draft_attachment WHERE sha256 = :sha AND scan_status = 'infected')
+                 OR EXISTS (SELECT 1 FROM chat_message WHERE media_sha256 = :sha AND media_scan_status = 'infected')",
             ['sha' => $sha256],
         );
     }
@@ -92,6 +93,8 @@ final readonly class PlaceContentHandler
             '(SELECT m.owner_id, a.key_version IS NOT NULL AS encrypted FROM attachment a JOIN mail_account m ON m.id = a.mail_account_id WHERE a.sha256 = :sha LIMIT 1)
              UNION ALL
              (SELECT d.owner_id, da.key_version IS NOT NULL AS encrypted FROM draft_attachment da JOIN draft d ON d.id = da.draft_id WHERE da.sha256 = :sha LIMIT 1)
+             UNION ALL
+             (SELECT c.owner_id, true AS encrypted FROM chat_message cm JOIN chat_account c ON c.id = cm.chat_account_id WHERE cm.media_sha256 = :sha LIMIT 1)
              LIMIT 1',
             ['sha' => $sha256],
         );
@@ -103,7 +106,8 @@ final readonly class PlaceContentHandler
     }
 
     /**
-     * Where attachments with this content expect it: the received key, and the upload key of draft uploads.
+     * Where attachments with this content expect it: the received key, the upload key of draft uploads, and the key of
+     * WhatsApp files.
      *
      * @return list<string>
      */
@@ -114,7 +118,9 @@ final readonly class PlaceContentHandler
             : [];
         /** @var list<string> $draftKeys */
         $draftKeys = $this->connection->fetchFirstColumn('SELECT DISTINCT object_key FROM draft_attachment WHERE sha256 = :sha', ['sha' => $sha256]);
+        /** @var list<string> $chatKeys */
+        $chatKeys = $this->connection->fetchFirstColumn('SELECT DISTINCT media_object_key FROM chat_message WHERE media_sha256 = :sha AND media_object_key IS NOT NULL', ['sha' => $sha256]);
 
-        return array_values(array_unique([...$keys, ...$draftKeys]));
+        return array_values(array_unique([...$keys, ...$draftKeys, ...$chatKeys]));
     }
 }

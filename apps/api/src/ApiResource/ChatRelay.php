@@ -7,15 +7,21 @@ namespace App\ApiResource;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Link;
 use ApiPlatform\Metadata\Post;
+use ApiPlatform\Metadata\Put;
 use App\ApiResource\Input\Chat\RelayClaim;
+use App\ApiResource\Input\Chat\RelayMediaClaim;
+use App\ApiResource\Input\Chat\RelayMediaFailed;
 use App\ApiResource\Input\Chat\RelayMessages;
 use App\ApiResource\Input\Chat\RelayResult;
 use App\ApiResource\Input\Chat\RelayStatus;
 use App\ApiResource\Output\Chat\RelayClaimOutput;
 use App\ApiResource\Output\Chat\RelayImportOutput;
+use App\ApiResource\Output\Chat\RelayMediaClaimOutput;
+use App\ApiResource\Output\Chat\RelayMediaOutput;
 use App\ApiResource\Output\Chat\RelayStatusOutput;
 use App\Security\ChatAccessVoter;
 use App\Security\FirstPartyClients;
+use App\State\ChatMediaUploadProcessor;
 use App\State\ChatRelayProcessor;
 
 /**
@@ -24,6 +30,10 @@ use App\State\ChatRelayProcessor;
  * and {@see FirstPartyClients::DESKTOP_ATTRIBUTE}), for an account of the signed-in user (another user's is not found),
  * and only the account's relaying device is answered: another desktop gets 409 `not_the_relay`
  * ({@see \App\Chat\ChatRelayGuard}).
+ *
+ * Files ({@see \App\Chat\ChatMedia}): the relay takes the oldest file the user asked for on another device, downloads
+ * it through its bridge and uploads it as the raw body of a PUT (its device in `X-Device-Id`, its SHA-256 in
+ * `X-Content-SHA256`), or says why it could not.
  */
 #[ApiResource(
     shortName: 'ChatRelay',
@@ -83,6 +93,51 @@ use App\State\ChatRelayProcessor;
             read: false,
             processor: ChatRelayProcessor::class,
             name: 'chat_relay_result',
+        ),
+        // The oldest file the user asked for that no relay holds; 204 when none waits.
+        new Post(
+            uriTemplate: '/chat-accounts/{accountId}/relay/media/claim',
+            uriVariables: ['accountId' => new Link(fromClass: ChatAccountResource::class, identifiers: ['id'])],
+            status: 200,
+            security: "is_granted('".ChatAccessVoter::MANAGE."') and is_granted('".FirstPartyClients::DESKTOP_ATTRIBUTE."')",
+            input: RelayMediaClaim::class,
+            output: RelayMediaClaimOutput::class,
+            read: false,
+            processor: ChatRelayProcessor::class,
+            name: 'chat_relay_media_claim',
+        ),
+        // The file, as the body; safe to send again.
+        new Put(
+            uriTemplate: '/chat-accounts/{accountId}/relay/media/{messageId}',
+            uriVariables: [
+                'accountId' => new Link(fromClass: ChatAccountResource::class, identifiers: ['id']),
+                'messageId' => new Link(fromClass: ChatMediaResource::class, identifiers: ['messageId']),
+            ],
+            status: 200,
+            security: "is_granted('".ChatAccessVoter::MANAGE."') and is_granted('".FirstPartyClients::DESKTOP_ATTRIBUTE."')",
+            inputFormats: ['binary' => ['application/octet-stream']],
+            input: false,
+            output: RelayMediaOutput::class,
+            read: false,
+            deserialize: false,
+            validate: false,
+            processor: ChatMediaUploadProcessor::class,
+            name: 'chat_relay_media_upload',
+        ),
+        // Why the relay could not bring the file. The same failure again changes nothing.
+        new Post(
+            uriTemplate: '/chat-accounts/{accountId}/relay/media/{messageId}/failed',
+            uriVariables: [
+                'accountId' => new Link(fromClass: ChatAccountResource::class, identifiers: ['id']),
+                'messageId' => new Link(fromClass: ChatMediaResource::class, identifiers: ['messageId']),
+            ],
+            status: 200,
+            security: "is_granted('".ChatAccessVoter::MANAGE."') and is_granted('".FirstPartyClients::DESKTOP_ATTRIBUTE."')",
+            input: RelayMediaFailed::class,
+            output: RelayMediaOutput::class,
+            read: false,
+            processor: ChatRelayProcessor::class,
+            name: 'chat_relay_media_failed',
         ),
     ],
 )]

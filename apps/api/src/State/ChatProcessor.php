@@ -8,6 +8,7 @@ use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\ApiResource\ChatResource;
 use App\ApiResource\Input\Chat\UpdateChat;
+use App\Chat\ChatMediaCollector;
 use App\Chat\ChatOwnerLock;
 use App\Chat\ChatTime;
 use App\Chat\ChatViews;
@@ -26,7 +27,8 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
  * the inbox, left out or taken again. Who may is decided by the operation's security
  * ({@see \App\Security\ChatAccessVoter::MANAGE}); the chat is loaded through the user, so another user's is not found.
  *
- * Leaving a chat out removes its messages and replies from the server (a tombstone each, so clients drop them) and keeps
+ * Leaving a chat out removes its messages and replies from the server (a tombstone each, so clients drop them), with
+ * every file they held and the uploads waiting in it ({@see ChatMediaCollector}), and keeps
  * the chat, so the relay knows to leave it out ({@see \App\Chat\ChatIngestor}); taking it in again stores what the relay
  * sends from then on.
  *
@@ -42,6 +44,7 @@ final readonly class ChatProcessor implements ProcessorInterface
         private ChatOwnerLock $ownerLock,
         private ChangeSequencer $sequencer,
         private CurrentUser $currentUser,
+        private ChatMediaCollector $collector,
     ) {
     }
 
@@ -87,6 +90,8 @@ final readonly class ChatProcessor implements ProcessorInterface
     private function removeContent(Chat $chat): void
     {
         $owner = $chat->getChatAccount()->getOwner()->getId();
+        $this->collector->release($this->collector->keysOf($chat->getChatAccount()->getId()->toRfc4122(), [$chat->getId()->toRfc4122()]));
+        $this->connection->executeStatement('DELETE FROM chat_upload WHERE chat_id = :chat', ['chat' => $chat->getId()->toRfc4122()]);
         foreach (['chat_message' => ChatMessage::changeType(), 'chat_outgoing' => ChatOutgoing::changeType()] as $table => $type) {
             $ids = array_map(
                 static fn (mixed $id): string => \is_string($id) ? $id : throw new \UnexpectedValueException('Expected an id.'),

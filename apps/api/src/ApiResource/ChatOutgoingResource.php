@@ -66,6 +66,9 @@ use App\State\ChatOutgoingProvider;
 )]
 final readonly class ChatOutgoingResource
 {
+    /**
+     * @param array{name: string, size: ?int}|null $file the file it carries, its name and size in bytes; null for a text reply
+     */
     public function __construct(
         #[ApiProperty(identifier: true)]
         public string $id,
@@ -79,6 +82,7 @@ final readonly class ChatOutgoingResource
         public string $createdAt,
         public ?string $claimedAt,
         public ?string $sentAt,
+        public ?array $file = null,
     ) {
     }
 
@@ -97,6 +101,7 @@ final readonly class ChatOutgoingResource
             $view['createdAt'],
             $view['claimedAt'],
             $view['sentAt'],
+            $view['file'],
         );
     }
 }

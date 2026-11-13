@@ -12,6 +12,7 @@ use App\ApiResource\ChatProblem;
 use App\ApiResource\Input\Chat\ConnectChatAccount;
 use App\ApiResource\Input\Chat\UpdateChatAccount;
 use App\Chat\ChatFields;
+use App\Chat\ChatMediaCollector;
 use App\Chat\ChatOwnerLock;
 use App\Chat\ChatViews;
 use App\Entity\Chat;
@@ -45,6 +46,7 @@ final readonly class ChatAccountProcessor implements ProcessorInterface
         private ChangeSequencer $sequencer,
         private ChatOwnerLock $ownerLock,
         private CurrentUser $currentUser,
+        private ChatMediaCollector $collector,
     ) {
     }
 
@@ -67,7 +69,9 @@ final readonly class ChatAccountProcessor implements ProcessorInterface
                 ?? throw new NotFoundHttpException('Chat account not found.');
 
             if ($operation instanceof DeleteOperationInterface) {
-                // The database removes its chats, messages and replies; clients infer that from the account's tombstone.
+                // The database removes its chats, messages, replies and uploads; clients infer that from the account's
+                // tombstone. Their files go once that is committed.
+                $this->collector->release($this->collector->keysOf($account->getId()->toRfc4122()));
                 $this->entityManager->remove($account);
 
                 return null;
@@ -124,12 +128,18 @@ final readonly class ChatAccountProcessor implements ProcessorInterface
     }
 
     /**
-     * Removes the account's group chats, with their messages and replies (the database cascades), and tells clients:
-     * a tombstone per chat, with a change number per {@see ChangeSequencer::CHUNK} chats so a page stays bounded.
+     * Removes the account's group chats, with their messages, replies and uploads (the database cascades) and their
+     * files, and tells clients: a tombstone per chat, with a change number per {@see ChangeSequencer::CHUNK} chats so a page stays bounded.
      */
     private function removeGroupChats(ChatAccount $account): void
     {
         $owner = $account->getOwner()->getId();
+        /** @var list<string> $groups */
+        $groups = $this->connection->fetchFirstColumn(
+            'SELECT id FROM chat WHERE chat_account_id = :account AND kind = :group',
+            ['account' => $account->getId()->toRfc4122(), 'group' => ChatKind::Group->value],
+        );
+        $this->collector->release($this->collector->keysOf($account->getId()->toRfc4122(), $groups));
         $ids = array_map(
             static fn (mixed $id): string => \is_string($id) ? $id : throw new \UnexpectedValueException('Expected a chat id.'),
             $this->connection->fetchFirstColumn(

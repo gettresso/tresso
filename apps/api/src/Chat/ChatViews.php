@@ -7,6 +7,9 @@ namespace App\Chat;
 use App\Entity\Chat;
 use App\Entity\ChatAccount;
 use App\Entity\ChatOutgoing;
+use App\Enum\ChatMediaState;
+use App\Enum\ScanStatus;
+use App\Scan\DownloadPolicy;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -15,8 +18,13 @@ use Symfony\Component\Uid\Uuid;
  *
  * @phpstan-type AccountView array{id: string, channel: string, address: ?string, displayName: ?string, relayDeviceId: string, relayDeviceName: string, relayOnline: bool, relayOfflineSince: ?string, bridge: string, link: string, linkedAt: ?string, loopbackOnly: ?bool, includeGroups: bool, notify: bool}
  * @phpstan-type ChatView array{id: string, chatAccountId: string, jid: string, name: ?string, kind: string, lastMessageAt: string, readThrough: ?string, archivedThrough: ?string, leftOut: bool}
- * @phpstan-type MessageView array{id: string, chatId: string, chatAccountId: string, waId: string, fromMe: bool, sentAt: string, sender: array{id: string, name: ?string}|null, text: string, mediaKind: ?string, mediaName: ?string, mediaSize: ?int}
- * @phpstan-type OutgoingView array{id: string, chatId: string, chatAccountId: string, text: string, status: string, error: ?string, createdAt: string, claimedAt: ?string, sentAt: ?string}
+ * @phpstan-type MessageView array{id: string, chatId: string, chatAccountId: string, waId: string, fromMe: bool, sentAt: string, sender: array{id: string, name: ?string}|null, text: string, mediaKind: ?string, mediaName: ?string, mediaSize: ?int, mediaState: ?string, mediaError: ?string, mediaAccess: ?string}
+ * @phpstan-type FileView array{name: string, size: ?int}
+ * @phpstan-type OutgoingView array{id: string, chatId: string, chatAccountId: string, text: string, status: string, error: ?string, createdAt: string, claimedAt: ?string, sentAt: ?string, file: FileView|null}
+ *
+ * A message's file: `mediaState` says where it is (`remote` on the Mac, `requested`, `stored` on the server, `failed`
+ * with `mediaError`), and `mediaAccess` what a client may do with a stored one, from its scan (`allowed`, `scanning`,
+ * `confirm`, `blocked`; null while it is not stored). A reply's `file` is the name and size of the file it carries.
  */
 final readonly class ChatViews
 {
@@ -29,13 +37,16 @@ final readonly class ChatViews
 
     /** The columns {@see messageRow()} reads, as `m`. */
     public const string MESSAGE_COLUMNS = 'm.id, m.chat_id, m.chat_account_id, m.sealed_wa_id, m.from_me, m.sent_at, m.sealed_sender, m.sealed_text, m.media_kind,
-        m.sealed_media_name, m.media_size';
+        m.sealed_media_name, m.media_size, m.media_state, m.media_error, m.media_scan_status';
 
     /** The columns {@see outgoingRow()} reads, as `o`. */
-    public const string OUTGOING_COLUMNS = 'o.id, o.chat_id, o.chat_account_id, o.sealed_text, o.status, o.error, o.created_at, o.claimed_at, o.sent_at';
+    public const string OUTGOING_COLUMNS = 'o.id, o.chat_id, o.chat_account_id, o.sealed_text, o.status, o.error, o.created_at, o.claimed_at, o.sent_at,
+        o.sealed_file_name, o.file_size';
 
-    public function __construct(private ChatFields $fields)
-    {
+    public function __construct(
+        private ChatFields $fields,
+        private DownloadPolicy $downloads,
+    ) {
     }
 
     /**
@@ -121,6 +132,7 @@ final readonly class ChatViews
             'createdAt' => self::requiredDate($outgoing->getCreatedAt()),
             'claimedAt' => self::date($outgoing->getClaimedAt()),
             'sentAt' => self::date($outgoing->getSentAt()),
+            'file' => self::file($this->fields->outgoingFileName($outgoing), $outgoing->getFileSize()),
         ];
     }
 
@@ -167,6 +179,9 @@ final readonly class ChatViews
             'mediaKind' => self::nullableText($row['media_kind']),
             'mediaName' => $this->fields->open($owner, ChatField::MessageMedia, $id, self::nullableText($row['sealed_media_name'])),
             'mediaSize' => null === $row['media_size'] ? null : self::int($row['media_size']),
+            'mediaState' => self::nullableText($row['media_state']),
+            'mediaError' => self::nullableText($row['media_error']),
+            'mediaAccess' => $this->mediaAccess(self::nullableText($row['media_state']), self::nullableText($row['media_scan_status'])),
         ];
     }
 
@@ -189,7 +204,29 @@ final readonly class ChatViews
             'createdAt' => self::requiredDate($row['created_at']),
             'claimedAt' => self::date($row['claimed_at']),
             'sentAt' => self::date($row['sent_at']),
+            'file' => self::file(
+                $this->fields->open($owner, ChatField::OutgoingFileName, $id, self::nullableText($row['sealed_file_name'])),
+                null === $row['file_size'] ? null : self::int($row['file_size']),
+            ),
         ];
+    }
+
+    /** What a client may do with a stored file, from its scan; null while it is not stored. */
+    private function mediaAccess(?string $state, ?string $scanStatus): ?string
+    {
+        if (ChatMediaState::Stored->value !== $state || null === $scanStatus) {
+            return null;
+        }
+
+        return $this->downloads->access(ScanStatus::from($scanStatus))->value;
+    }
+
+    /**
+     * @return FileView|null
+     */
+    private static function file(?string $name, ?int $size): ?array
+    {
+        return null === $name ? null : ['name' => $name, 'size' => $size];
     }
 
     /** Stored without a zone and read in the default one, as the ORM reads it: entities and SQL rows give one string. */

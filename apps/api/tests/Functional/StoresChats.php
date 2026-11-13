@@ -9,10 +9,13 @@ use App\Entity\Chat;
 use App\Entity\ChatAccount;
 use App\Entity\ChatMessage;
 use App\Entity\ChatOutgoing;
+use App\Entity\ChatUpload;
 use App\Entity\User;
 use App\Enum\ChatChannel;
 use App\Enum\ChatKind;
 use App\Enum\ChatMediaKind;
+use App\Storage\BlobKind;
+use App\Storage\BlobVault;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
 
@@ -91,10 +94,18 @@ trait StoresChats
         });
     }
 
-    protected function storeChatOutgoing(Chat $chat, string $text): ChatOutgoing
+    /**
+     * @param array{string, string}|null $file the name and content of a file the reply carries, stored as an upload would
+     */
+    protected function storeChatOutgoing(Chat $chat, string $text, ?array $file = null): ChatOutgoing
     {
-        return $this->chatEntityManager()->wrapInTransaction(function (EntityManagerInterface $entityManager) use ($chat, $text): ChatOutgoing {
+        return $this->chatEntityManager()->wrapInTransaction(function (EntityManagerInterface $entityManager) use ($chat, $text, $file): ChatOutgoing {
             $outgoing = $this->chatFields()->newOutgoing(Uuid::v7(), $chat, $text, new \DateTimeImmutable());
+            if (null !== $file) {
+                $stored = static::getContainer()->get(BlobVault::class)->store($chat->getChatAccount()->getOwner()->getId(), BlobKind::ChatMedia, $file[1]);
+                $upload = new ChatUpload(Uuid::v7(), $chat, $stored->key, $stored->keyVersion, $stored->fingerprint, \strlen($file[1]), 'application/pdf', new \DateTimeImmutable());
+                $this->chatFields()->attachFile($outgoing, $file[0], $upload);
+            }
             $entityManager->persist($outgoing);
 
             return $outgoing;
@@ -102,9 +113,9 @@ trait StoresChats
     }
 
     /**
-     * Rows in the four chat tables.
+     * Rows in the chat tables.
      *
-     * @return array{chat_account: int, chat: int, chat_message: int, chat_outgoing: int}
+     * @return array{chat_account: int, chat: int, chat_message: int, chat_outgoing: int, chat_upload: int}
      */
     protected function chatRowCounts(): array
     {
@@ -115,6 +126,6 @@ trait StoresChats
             return $rows;
         };
 
-        return ['chat_account' => $count('chat_account'), 'chat' => $count('chat'), 'chat_message' => $count('chat_message'), 'chat_outgoing' => $count('chat_outgoing')];
+        return ['chat_account' => $count('chat_account'), 'chat' => $count('chat'), 'chat_message' => $count('chat_message'), 'chat_outgoing' => $count('chat_outgoing'), 'chat_upload' => $count('chat_upload')];
     }
 }

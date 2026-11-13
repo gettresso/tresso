@@ -6,6 +6,7 @@ namespace App\Storage;
 
 use App\Chat\ChatField;
 use App\Chat\ChatFields;
+use App\Chat\ChatMediaCollector;
 use App\Entity\Attachment;
 use App\Entity\MailAccount;
 use App\Entity\ProviderGrant;
@@ -36,7 +37,14 @@ final readonly class Reencryption
              OR u.data_key_version < (SELECT MAX(k.version) FROM user_key k WHERE k.owner_id = u.id)
              OR EXISTS (SELECT 1 FROM user_key k WHERE k.owner_id = u.id AND k.version < u.data_key_version))';
 
-    public const array STEPS = ['credentials', 'messages', 'attachments', 'draftFiles', 'outgoing', 'bodyTexts', 'snippets', 'notificationBodies', 'chatFields'];
+    /** Where WhatsApp files are referred to: table, key column, key version column, fingerprint column. */
+    private const array CHAT_MEDIA = [
+        ['chat_message', 'media_object_key', 'media_key_version', 'media_sha256'],
+        ['chat_outgoing', 'file_object_key', 'file_key_version', 'file_sha256'],
+        ['chat_upload', 'object_key', 'key_version', 'sha256'],
+    ];
+
+    public const array STEPS = ['credentials', 'messages', 'attachments', 'draftFiles', 'outgoing', 'bodyTexts', 'snippets', 'notificationBodies', 'chatFields', 'chatMedia'];
 
     public function __construct(
         private Connection $connection,
@@ -48,6 +56,7 @@ final readonly class Reencryption
         private MessageFields $fields,
         private ChatFields $chatFields,
         private UploadCollector $uploads,
+        private ChatMediaCollector $chatMedia,
         private LoggerInterface $logger,
     ) {
     }
@@ -78,6 +87,7 @@ final readonly class Reencryption
                 'snippets' => $this->snippets($owner, $current, $batch, $until),
                 'notificationBodies' => $this->notificationBodies($owner, $current, $batch, $until),
                 'chatFields' => $this->chatFields($owner, $current, $batch, $until),
+                'chatMedia' => $this->chatMedia($owner, $current, $batch, $until),
             };
             $failed += $stepFailed;
             $progress($step, $moved, $stepFailed);
@@ -151,6 +161,14 @@ final readonly class Reencryption
                     ChatField::cases(),
                 )),
                 ['owner' => $parameters['owner'], 'sealed' => $parameters['sealed']],
+            )),
+            // Every WhatsApp file a row refers to: a file shared by two rows is two rows to move (the second is quick).
+            'chatMedia' => self::count($this->connection->fetchOne(
+                'SELECT '.implode(' + ', array_map(
+                    static fn (array $place): string => \sprintf('(SELECT COUNT(*) FROM %1$s x JOIN chat_account a ON a.id = x.chat_account_id WHERE a.owner_id = :owner AND x.%2$s IS NOT NULL AND x.%3$s IS DISTINCT FROM :current)', ...$place),
+                    self::CHAT_MEDIA,
+                )),
+                ['owner' => $parameters['owner'], 'current' => $parameters['current']],
             )),
         ];
     }
@@ -520,6 +538,57 @@ final readonly class Reencryption
             );
             $moved += $fieldMoved;
             $failed += $fieldFailed;
+        }
+
+        return [$moved, $failed];
+    }
+
+    /**
+     * WhatsApp files ({@see BlobKind::ChatMedia}): a received file the relay brought, a reply's file, an upload. The
+     * object keeps its name (its fingerprint does not change); a quarantined one is moved in quarantine.
+     *
+     * @return array{int, int}
+     */
+    private function chatMedia(Uuid $owner, int $current, int $batch, ?\DateTimeImmutable $until): array
+    {
+        $moved = $failed = 0;
+        foreach (self::CHAT_MEDIA as [$table, $keyColumn, $versionColumn, $shaColumn]) {
+            [$placeMoved, $placeFailed] = $this->walk(
+                \sprintf(
+                    'SELECT x.id, x.%2$s AS key, x.%3$s AS key_version, x.%4$s AS sha256 FROM %1$s x JOIN chat_account a ON a.id = x.chat_account_id
+                     WHERE a.owner_id = :owner AND x.%2$s IS NOT NULL AND x.%3$s IS DISTINCT FROM :current AND x.id > CAST(:after AS UUID) ORDER BY x.id LIMIT :batch',
+                    $table,
+                    $keyColumn,
+                    $versionColumn,
+                    $shaColumn,
+                ),
+                $owner,
+                $current,
+                $batch,
+                $until,
+                function (array $row) use ($owner, $table, $keyColumn, $versionColumn): bool {
+                    $key = self::string($row['key']);
+                    $sha = self::string($row['sha256']);
+
+                    return $this->connection->transactional(function () use ($row, $owner, $table, $keyColumn, $versionColumn, $key, $sha): bool {
+                        $this->lockContent($sha);
+                        // Like a store: the collector must not take the object while it is written again.
+                        $this->chatMedia->lock($key);
+                        [$from, $kind] = $this->locate([
+                            [$key, BlobKind::ChatMedia],
+                            [Attachment::quarantineKey($sha, $owner), BlobKind::Quarantine],
+                        ]);
+                        $stored = $this->blobs->reencrypt($owner, $kind, $from);
+
+                        return 1 === $this->connection->executeStatement(
+                            \sprintf('UPDATE %1$s SET %3$s = :version WHERE id = :id AND %2$s = :key AND %3$s IS NOT DISTINCT FROM :oldVersion', $table, $keyColumn, $versionColumn),
+                            ['version' => $stored->keyVersion, 'id' => $row['id'], 'key' => $key, 'oldVersion' => $row['key_version']],
+                        );
+                    });
+                },
+            );
+            $moved += $placeMoved;
+            $failed += $placeFailed;
         }
 
         return [$moved, $failed];

@@ -18,10 +18,15 @@ use Symfony\Component\Uid\Uuid;
  * client (a UUIDv7), so a repeated request makes no second reply. The text is sealed with the owner's field key.
  *
  * The bridge keeps no record of what it sends, so a row with status `sent` is the record of the reply.
+ *
+ * A reply may carry a file a browser or phone uploaded ({@see ChatUpload}): sealed with the owner's key under
+ * {@see \App\Storage\BlobKind::ChatMedia} until it went out (or the reply is cancelled), then removed. Its name and
+ * size stay, as the record of what was sent.
  */
 #[ORM\Entity(repositoryClass: ChatOutgoingRepository::class)]
 #[ORM\Index(columns: ['chat_account_id', 'change_seq'])]
 #[ORM\Index(columns: ['chat_account_id', 'status', 'id'])]
+#[ORM\Index(name: 'chat_outgoing_file_sha', columns: ['file_sha256'])]
 class ChatOutgoing implements TracksChanges
 {
     #[ORM\Id]
@@ -71,6 +76,30 @@ class ChatOutgoing implements TracksChanges
      */
     #[ORM\Column(length: 43, nullable: true)]
     private ?string $claimToken = null;
+
+    /** The file's name as it goes out, sealed; null for a text reply. */
+    #[ORM\Column(type: Types::TEXT, nullable: true)]
+    private ?string $sealedFileName = null;
+
+    /** The file's size in bytes; null for a text reply. */
+    #[ORM\Column(type: Types::BIGINT, nullable: true)]
+    private ?int $fileSize = null;
+
+    /** Where the file is until it went out; internal. */
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $fileObjectKey = null;
+
+    /** The key version the file is encrypted with; internal. */
+    #[ORM\Column(nullable: true)]
+    private ?int $fileKeyVersion = null;
+
+    /** The owner's fingerprint of the file's content; internal. */
+    #[ORM\Column(length: 64, nullable: true)]
+    private ?string $fileSha256 = null;
+
+    /** What the file is, from its content or the uploader's word; internal. */
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $fileContentType = null;
 
     /**
      * Made by {@see \App\Chat\ChatFields::newOutgoing()}, which seals the text for $id.
@@ -139,13 +168,71 @@ class ChatOutgoing implements TracksChanges
         return $this->claimToken;
     }
 
-    /** Final: the claim ends. */
-    public function markSent(\DateTimeImmutable $now): void
+    public function getSealedFileName(): ?string
+    {
+        return $this->sealedFileName;
+    }
+
+    public function getFileSize(): ?int
+    {
+        return $this->fileSize;
+    }
+
+    public function getFileObjectKey(): ?string
+    {
+        return $this->fileObjectKey;
+    }
+
+    public function getFileKeyVersion(): ?int
+    {
+        return $this->fileKeyVersion;
+    }
+
+    public function getFileSha256(): ?string
+    {
+        return $this->fileSha256;
+    }
+
+    public function getFileContentType(): ?string
+    {
+        return $this->fileContentType;
+    }
+
+    public function hasFile(): bool
+    {
+        return null !== $this->sealedFileName;
+    }
+
+    /**
+     * Takes over an uploaded file, with its name sealed by {@see \App\Chat\ChatFields::attachFile()}.
+     */
+    public function attachFile(string $sealedName, ChatUpload $upload): void
+    {
+        $this->sealedFileName = $sealedName;
+        $this->fileSize = $upload->getSize();
+        $this->fileObjectKey = $upload->getObjectKey();
+        $this->fileKeyVersion = $upload->getKeyVersion();
+        $this->fileSha256 = $upload->getSha256();
+        $this->fileContentType = $upload->getContentType();
+    }
+
+    /**
+     * Final: the claim ends. The file went out, so it is no longer kept; its name and size stay.
+     *
+     * @return string|null the key of the file that is no longer needed here, for {@see \App\Chat\ChatMediaCollector}
+     */
+    public function markSent(\DateTimeImmutable $now): ?string
     {
         $this->status = ChatOutgoingStatus::Sent;
         $this->error = null;
         $this->sentAt = $now;
         $this->endClaim();
+        $key = $this->fileObjectKey;
+        $this->fileObjectKey = null;
+        $this->fileKeyVersion = null;
+        $this->fileSha256 = null;
+
+        return $key;
     }
 
     /**
@@ -182,7 +269,7 @@ class ChatOutgoing implements TracksChanges
 
     public static function clientFields(): ?array
     {
-        return ['chat', 'sealedText', 'status', 'error', 'createdAt', 'claimedAt', 'sentAt'];
+        return ['chat', 'sealedText', 'status', 'error', 'createdAt', 'claimedAt', 'sentAt', 'sealedFileName', 'fileSize'];
     }
 
     public static function changeType(): string

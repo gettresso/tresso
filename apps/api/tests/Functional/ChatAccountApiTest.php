@@ -248,7 +248,7 @@ final class ChatAccountApiTest extends DatabaseTestCase
         $this->client->request('DELETE', '/api/v1/chat-accounts/'.$id, server: $this->web);
 
         self::assertResponseStatusCodeSame(204);
-        self::assertSame(['chat_account' => 0, 'chat' => 0, 'chat_message' => 0, 'chat_outgoing' => 0], $this->chatRowCounts());
+        self::assertSame(['chat_account' => 0, 'chat' => 0, 'chat_message' => 0, 'chat_outgoing' => 0, 'chat_upload' => 0], $this->chatRowCounts());
         $this->client->request('GET', '/api/v1/chat-accounts', server: $this->web);
         self::assertSame([], $this->decodedResponse());
     }

@@ -6,6 +6,7 @@ namespace App;
 
 use App\Billing\ReconcileSubscriptions;
 use App\Bulk\SweepBulkActions;
+use App\Chat\SweepChatMedia;
 use App\Chat\SweepChatRelays;
 use App\Scan\SweepPendingScans;
 use App\Security\OAuth\PurgeExpiredOAuthTokens;
@@ -41,6 +42,7 @@ final readonly class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::every('5 minutes', new SweepBulkActions()))
             ->add(RecurringMessage::every('1 minute', new SweepChatRelays()))
             ->add(RecurringMessage::every('1 minute', new SweepMeetingRequests()))
+            ->add(RecurringMessage::every('10 minutes', new SweepChatMedia()))
             ->add(RecurringMessage::every('1 hour', new SweepReencryption()))
             ->add(RecurringMessage::cron('17 3 * * *', new ReconcileSubscriptions()))
             ->add(RecurringMessage::cron('41 3 * * *', new PurgeOldPersonalAccessTokens()))

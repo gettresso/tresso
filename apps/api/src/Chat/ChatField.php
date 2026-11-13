@@ -21,6 +21,7 @@ enum ChatField: string
     case MessageText = 'chat-message-text';
     case MessageMedia = 'chat-message-media';
     case OutgoingText = 'chat-outgoing-text';
+    case OutgoingFileName = 'chat-outgoing-file-name';
 
     /** The context a value of this field in row $id is sealed for. */
     public function context(Uuid $id): string
@@ -34,7 +35,7 @@ enum ChatField: string
             self::AccountAddress, self::AccountName => 'chat_account',
             self::Jid, self::Name => 'chat',
             self::MessageWaId, self::MessageSender, self::MessageText, self::MessageMedia => 'chat_message',
-            self::OutgoingText => 'chat_outgoing',
+            self::OutgoingText, self::OutgoingFileName => 'chat_outgoing',
         };
     }
 
@@ -49,6 +50,7 @@ enum ChatField: string
             self::MessageSender => 'sealed_sender',
             self::MessageText, self::OutgoingText => 'sealed_text',
             self::MessageMedia => 'sealed_media_name',
+            self::OutgoingFileName => 'sealed_file_name',
         };
     }
 

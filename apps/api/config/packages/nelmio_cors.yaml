@@ -3,7 +3,9 @@ nelmio_cors:
         origin_regex: true
         allow_origin: ['%env(cors_origins:CORS_ALLOW_ORIGIN)%']
         allow_methods: ['GET', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE']
-        allow_headers: ['Content-Type', 'Authorization']
+        # X-Device-Id and X-Content-SHA256: a WhatsApp file's raw upload names the relaying device and the file's hash
+        # in headers, since its body is the file itself (App\Chat\ChatFileBody).
+        allow_headers: ['Content-Type', 'Authorization', 'X-Device-Id', 'X-Content-SHA256']
         # Date: the clients count the undo window on the server's clock (ServerClock in packages/core). Retry-After:
         # a failed sync waits as long as the server asked (SyncEngine).
         expose_headers: ['Link', 'Date', 'Retry-After']

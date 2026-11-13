@@ -86,7 +86,7 @@ final class ChatStateTest extends DatabaseTestCase
 
         self::assertResponseIsSuccessful();
         self::assertTrue($chat['leftOut'] ?? null);
-        self::assertSame(['chat_account' => 1, 'chat' => 1, 'chat_message' => 0, 'chat_outgoing' => 0], $this->chatRowCounts(), 'The chat stays, so the relay knows to leave it out.');
+        self::assertSame(['chat_account' => 1, 'chat' => 1, 'chat_message' => 0, 'chat_outgoing' => 0, 'chat_upload' => 0], $this->chatRowCounts(), 'The chat stays, so the relay knows to leave it out.');
         $page = $this->delta($cursor);
         $deleted = $page['deleted'];
         usort($deleted, static fn (array $a, array $b): int => [$a['type'], $a['id']] <=> [$b['type'], $b['id']]);
