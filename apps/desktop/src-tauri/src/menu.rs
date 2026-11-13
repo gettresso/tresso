@@ -1,8 +1,10 @@
-//! The menu bar of the macOS app, after the Human Interface Guidelines: the app menu, File, Edit, View, Window and
-//! Help, with the standard names, order and shortcuts. Every item does something real. What the web client does (a
-//! new message, a view, Settings) reaches it as the `menu` event with the action's name (MENU_EVENT,
-//! apps/web/src/platform/menu.ts); the web client enables those items once someone is signed in, and names View > Show
-//! Sidebar or Hide Sidebar after the sidebar's state (`menu_state`). The
+//! The menu bar of the macOS app, after the Human Interface Guidelines: the app menu, File, Edit, View, Mailbox,
+//! Message, Window and Help, with the standard names, order and shortcuts of a Mac mail app. Every item does something
+//! real. What the web client does (a new message, a view, Settings, a reply, an archive) reaches it as the `menu` event
+//! with the action's name (MENU_EVENT, apps/web/src/platform/menu.ts). The web client says through one command
+//! (`menu_state`) whether someone is signed in, whether a conversation is open, whether text is being edited, and
+//! what the sidebar and the open conversation are like: the items that act in it are enabled after that, and View >
+//! Show Sidebar, Message > Mark as Read and Message > Flag are named after it. The
 //! standard items are AppKit's own, so they act on the focused web content: Undo, Cut, Paste and Match Style, Full
 //! Screen, Minimize. The shell does the rest itself: updates, Reload, the main window, Help.
 //!
@@ -26,6 +28,23 @@ pub fn sidebar_label(shown: bool) -> &'static str {
   if shown { "Hide Sidebar" } else { "Show Sidebar" }
 }
 
+/// Message > Mark as Read or Mark as Unread: the open conversation is marked read or unread (the reading pane).
+pub const TOGGLE_READ: &str = "toggle-read";
+
+/// The read item's title, after what it would do: Mail's own names for it. A conversation is read when all its
+/// messages are.
+pub fn read_label(read: bool) -> &'static str {
+  if read { "Mark as Unread" } else { "Mark as Read" }
+}
+
+/// Message > Flag or Unflag: the open conversation is flagged, or its flags are taken off (the reading pane).
+pub const TOGGLE_FLAG: &str = "toggle-flag";
+
+/// The flag item's title, after what it would do. A conversation is flagged when one of its messages is.
+pub fn flag_label(flagged: bool) -> &'static str {
+  if flagged { "Unflag" } else { "Flag" }
+}
+
 /// The project's home: the updater's endpoint in tauri.conf.json lives under it (a test keeps the two together). The
 /// app has no help pages of its own; its README is the documentation.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -44,14 +63,61 @@ pub enum Action {
   Web(&'static str),
   /// Sent to the web client like Web, but it acts signed out too (Reload).
   WebAlways(&'static str),
+  /// Sent to the web client like Web; it acts on the conversation open in the reading pane, so it is enabled only
+  /// while someone is signed in and a conversation is open (`menu_state`), and, after [`Typing`], not while text is
+  /// being edited.
+  Message(&'static str, Typing),
   /// Done by the shell itself.
   Shell(Shell),
+}
+
+/// Whether a Message item acts while text is being edited: a menu item's shortcut reaches the menu before the text
+/// field or the composer sees it, so an item whose shortcut is also a text-editing key would take that key away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Typing {
+  /// It acts: its shortcut means nothing to a text field.
+  Acts,
+  /// It is disabled while a text field or the composer has the focus, as a Mac app disables what does not apply to
+  /// the focused view: its shortcut edits text there (⌘⌫ deletes to the start of the line, ⇧⌘U underlines).
+  Waits,
 }
 
 /// Whether the item acts in the web client only while someone is signed in: those are the items `menu_state` enables
 /// and disables. The one rule both the bar's setup and its tests use.
 pub fn needs_sign_in(action: Action) -> bool {
-  matches!(action, Action::Web(_))
+  matches!(action, Action::Web(_) | Action::Message(..))
+}
+
+/// What the web client says through `menu_state`: the items that act in it follow it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuState {
+  /// Someone is signed in and may use the app.
+  pub signed_in: bool,
+  /// The sidebar shows (View > Hide Sidebar).
+  pub sidebar_shown: bool,
+  /// A text field or the composer has the focus.
+  pub editing: bool,
+  /// The conversation open in the reading pane, while it has the user's attention; None while none is open.
+  pub message: Option<OpenMessage>,
+}
+
+/// The conversation open in the reading pane, as far as the menu's titles need it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct OpenMessage {
+  /// All its messages are read (Mark as Unread).
+  pub read: bool,
+  /// One of its messages is flagged (Unflag).
+  pub flagged: bool,
+}
+
+/// Whether an item `menu_state` manages acts in this state. Items it does not manage (Reload, the shell's) keep what
+/// they are; for them this is true.
+pub fn enabled_in(action: Action, state: &MenuState) -> bool {
+  match action {
+    Action::Web(_) => state.signed_in,
+    Action::Message(_, typing) => state.signed_in && state.message.is_some() && !(typing == Typing::Waits && state.editing),
+    Action::WebAlways(_) | Action::Shell(_) => true,
+  }
 }
 
 /// The ids of the items `menu_state` enables and disables, in the bar's order.
@@ -147,6 +213,10 @@ const fn web(id: &'static str, label: &'static str, accelerator: Option<&'static
   Entry::Item { id, label, accelerator, action: Action::Web(id) }
 }
 
+const fn message(id: &'static str, label: &'static str, accelerator: Option<&'static str>, typing: Typing) -> Entry {
+  Entry::Item { id, label, accelerator, action: Action::Message(id, typing) }
+}
+
 /// The macOS menu bar, in order.
 pub fn bar() -> Vec<Submenu> {
   use Entry::{Native as N, Separator};
@@ -222,6 +292,44 @@ pub fn bar() -> Vec<Submenu> {
       ],
     },
     Submenu {
+      id: None,
+      title: "Mailbox",
+      entries: vec![
+        // Mail's own name and shortcut: the web client pulls what changed on the server now (the mail store's syncNow).
+        web("get-new-mail", "Get New Mail", Some("Shift+Cmd+N")),
+        Separator,
+        // The sidebar's fixed places, in its order, except those View lists already (Inbox, Triage, To-dos, Calendar).
+        // No smart inboxes or accounts: those are the user's own, not fixed. No shortcuts, as for View's places.
+        web("go-brief", "Daily Brief", None),
+        web("go-waiting", "Waiting On", None),
+        web("go-drafts", "Drafts", None),
+        web("go-cleanup", "Clean Up", None),
+        web("go-batches", "Batches", None),
+      ],
+    },
+    Submenu {
+      id: None,
+      title: "Message",
+      entries: vec![
+        // Mail's names and shortcuts. They act on the conversation open in the reading pane, as its buttons do, and on
+        // nothing while none is open.
+        message("reply", "Reply", Some("Cmd+R"), Typing::Acts),
+        message("reply-all", "Reply All", Some("Shift+Cmd+R"), Typing::Acts),
+        message("forward", "Forward", Some("Shift+Cmd+F"), Typing::Acts),
+        Separator,
+        message("archive", "Archive", Some("Ctrl+Cmd+A"), Typing::Acts),
+        // The reading pane's own name for it; "Delete" is Edit > Delete, which deletes the selected text.
+        message("move-to-trash", "Move to Trash", Some("Cmd+Backspace"), Typing::Waits),
+        // Opens the reading pane's folder menu.
+        message("move-to", "Move to…", None, Typing::Acts),
+        Separator,
+        // Their titles follow the open conversation (`menu_state`): opening one reads it, so it starts as Mark as
+        // Unread. ⇧⌘U underlines in the composer, so it waits while text is edited.
+        message(TOGGLE_READ, read_label(true), Some("Shift+Cmd+U"), Typing::Waits),
+        message(TOGGLE_FLAG, flag_label(false), Some("Shift+Cmd+L"), Typing::Acts),
+      ],
+    },
+    Submenu {
       id: Some(tauri::menu::WINDOW_SUBMENU_ID),
       title: "Window",
       entries: vec![
@@ -272,9 +380,9 @@ impl<R: tauri::Runtime> Toggle for tauri::menu::MenuItem<R> {
   }
 }
 
-/// The items the web client acts on, by id: enabled while someone is signed in. Managed once (lib.rs); the bar's setup
-/// fills it, as Tauri keeps the first value managed for a type and ignores a second.
-pub struct MenuItems<T: Toggle = tauri::menu::MenuItem<tauri::Wry>>(std::sync::Mutex<Vec<(&'static str, T)>>);
+/// The items the web client acts on, by id, with what they do: enabled after `menu_state`. Managed once (lib.rs); the
+/// bar's setup fills it, as Tauri keeps the first value managed for a type and ignores a second.
+pub struct MenuItems<T: Toggle = tauri::menu::MenuItem<tauri::Wry>>(std::sync::Mutex<Vec<(&'static str, Action, T)>>);
 
 impl<T: Toggle> Default for MenuItems<T> {
   fn default() -> Self {
@@ -285,25 +393,22 @@ impl<T: Toggle> Default for MenuItems<T> {
 impl<T: Toggle> MenuItems<T> {
   /// Takes the items the bar was built with.
   #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-  pub fn fill(&self, items: Vec<(&'static str, T)>) -> Result<(), String> {
+  pub fn fill(&self, items: Vec<(&'static str, Action, T)>) -> Result<(), String> {
     self.0.lock().map_err(|error| error.to_string())?.extend(items);
     Ok(())
   }
 
-  /// Enables or disables every item; empty where the app has no menu bar.
-  pub fn enable(&self, enabled: bool) -> Result<(), String> {
-    for (_, item) in self.0.lock().map_err(|error| error.to_string())?.iter() {
-      item.set_enabled(enabled)?;
-    }
-    Ok(())
-  }
-
-  /// Names the sidebar item after what it does now: Hide Sidebar while the sidebar shows, Show Sidebar while it is
-  /// hidden. Nothing where the app has no menu bar.
-  pub fn name_sidebar_item(&self, shown: bool) -> Result<(), String> {
-    for (id, item) in self.0.lock().map_err(|error| error.to_string())?.iter() {
-      if *id == TOGGLE_SIDEBAR {
-        item.set_text(sidebar_label(shown))?;
+  /// Enables each item as the state says ([`enabled_in`]) and names the items whose titles follow it: Hide Sidebar or
+  /// Show Sidebar, Mark as Unread or Mark as Read, Unflag or Flag (with no conversation open, the titles it starts with).
+  /// Nothing where the app has no menu bar.
+  pub fn apply(&self, state: &MenuState) -> Result<(), String> {
+    for (id, action, item) in self.0.lock().map_err(|error| error.to_string())?.iter() {
+      item.set_enabled(enabled_in(*action, state))?;
+      match *id {
+        TOGGLE_SIDEBAR => item.set_text(sidebar_label(state.sidebar_shown))?,
+        TOGGLE_READ => item.set_text(read_label(state.message.is_none_or(|message| message.read)))?,
+        TOGGLE_FLAG => item.set_text(flag_label(state.message.is_some_and(|message| message.flagged)))?,
+        _ => {}
       }
     }
     Ok(())
@@ -311,19 +416,18 @@ impl<T: Toggle> MenuItems<T> {
 
   #[cfg(test)]
   fn ids(&self) -> Vec<&'static str> {
-    self.0.lock().unwrap().iter().map(|(id, _)| *id).collect()
+    self.0.lock().unwrap().iter().map(|(id, ..)| *id).collect()
   }
 }
 
-/// The web client says whether someone is signed in (and may use the app), and whether its sidebar shows: the items
-/// that act in it follow, and the sidebar item is named after what it would do.
+/// The web client says whether someone is signed in (and may use the app), whether its sidebar shows, whether text is
+/// being edited, and which conversation is open (None while none is): the items that act in it follow, and the items
+/// whose titles follow the state are named after what they would do. It says so once per change, not per key.
 #[tauri::command]
-pub fn menu_state<R: tauri::Runtime>(app: tauri::AppHandle<R>, signed_in: bool, sidebar_shown: bool) -> Result<(), String> {
+pub fn menu_state<R: tauri::Runtime>(app: tauri::AppHandle<R>, signed_in: bool, sidebar_shown: bool, editing: bool, message: Option<OpenMessage>) -> Result<(), String> {
   use tauri::Manager;
 
-  let items = app.state::<MenuItems<tauri::menu::MenuItem<R>>>();
-  items.enable(signed_in)?;
-  items.name_sidebar_item(sidebar_shown)
+  app.state::<MenuItems<tauri::menu::MenuItem<R>>>().apply(&MenuState { signed_in, sidebar_shown, editing, message })
 }
 
 /// The bar's items of our own, in its order, each enabled as it starts: the items that act in the web client wait for
@@ -345,8 +449,8 @@ pub fn own_items<R: tauri::Runtime, M: tauri::Manager<R>>(manager: &M, updates: 
 
 /// What `menu_state` enables and disables: the items among `own_items` that need someone signed in.
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
-pub fn for_signed_in<R: tauri::Runtime>(items: &[(&'static str, Action, tauri::menu::MenuItem<R>)]) -> Vec<(&'static str, tauri::menu::MenuItem<R>)> {
-  items.iter().filter(|(_, action, _)| needs_sign_in(*action)).map(|(id, _, item)| (*id, item.clone())).collect()
+pub fn for_signed_in<R: tauri::Runtime>(items: &[(&'static str, Action, tauri::menu::MenuItem<R>)]) -> Vec<(&'static str, Action, tauri::menu::MenuItem<R>)> {
+  items.iter().filter(|(_, action, _)| needs_sign_in(*action)).cloned().collect()
 }
 
 /// Brings the main window to the front, also from hidden (a closed window on macOS): for a click on a notification,
@@ -439,7 +543,7 @@ fn run(app: &tauri::AppHandle, id: &str) {
     return;
   };
   match action {
-    Action::Web(name) | Action::WebAlways(name) => {
+    Action::Web(name) | Action::WebAlways(name) | Action::Message(name, _) => {
       // The window may be closed (hidden): what the item does happens in it, so it comes back first.
       show_main_window(app);
       if let Err(error) = app.emit_to("main", MENU_EVENT, name) {
@@ -573,7 +677,7 @@ mod tests {
   #[test]
   fn the_menus_come_in_the_order_of_the_guidelines() {
     let menus: Vec<_> = bar().iter().map(|submenu| submenu.title).collect();
-    assert_eq!(menus, ["Tresso", "File", "Edit", "View", "Window", "Help"]);
+    assert_eq!(menus, ["Tresso", "File", "Edit", "View", "Mailbox", "Message", "Window", "Help"]);
   }
 
   #[test]
@@ -583,8 +687,10 @@ mod tests {
     assert_eq!(titles(&bar[1]), ["New Message", "New Event", "New To-do", "-", "CloseWindow"]);
     assert_eq!(titles(&bar[2]), ["Undo", "Redo", "-", "Cut", "Copy", "Paste", "PasteAndMatchStyle", "Delete", "SelectAll", "-", "Find…"]);
     assert_eq!(titles(&bar[3]), ["Inbox", "Triage", "To-dos", "Calendar", "Search", "-", "Hide Sidebar", "-", "Reload", "EnterFullScreen"]);
-    assert_eq!(titles(&bar[4]), ["Minimize", "Zoom", "-", "BringAllToFront", "-", "Tresso"]);
-    assert_eq!(titles(&bar[5]), ["Tresso Help", "Release Notes"]);
+    assert_eq!(titles(&bar[4]), ["Get New Mail", "-", "Daily Brief", "Waiting On", "Drafts", "Clean Up", "Batches"]);
+    assert_eq!(titles(&bar[5]), ["Reply", "Reply All", "Forward", "-", "Archive", "Move to Trash", "Move to…", "-", "Mark as Unread", "Flag"]);
+    assert_eq!(titles(&bar[6]), ["Minimize", "Zoom", "-", "BringAllToFront", "-", "Tresso"]);
+    assert_eq!(titles(&bar[7]), ["Tresso Help", "Release Notes"]);
   }
 
   #[test]
@@ -617,6 +723,62 @@ mod tests {
     }
     assert!(seen.contains(&normalized("Cmd+,")) && seen.contains(&normalized("Cmd+N")) && seen.contains(&normalized("Cmd+F")));
     assert!(seen.contains(&normalized("Cmd+Ctrl+S")) && seen.contains(&normalized("Cmd+Ctrl+F")));
+    // Mail's own shortcuts for its Mailbox and Message menus.
+    for (id, accelerator) in [("get-new-mail", "Cmd+Shift+N"), ("reply", "Cmd+R"), ("reply-all", "Cmd+Shift+R"), ("forward", "Cmd+Shift+F"), ("archive", "Cmd+Ctrl+A"), ("move-to-trash", "Cmd+Backspace"), (TOGGLE_READ, "Cmd+Shift+U"), (TOGGLE_FLAG, "Cmd+Shift+L")] {
+      let item = items().into_iter().find(|(own, ..)| *own == id).unwrap();
+      assert_eq!(item.2.map(normalized), Some(normalized(accelerator)), "{id}");
+    }
+    // ⌘R is Reply: Reload keeps none.
+    assert_eq!(items().into_iter().find(|(id, ..)| *id == "reload").unwrap().2, None);
+  }
+
+  /// Tauri drops a shortcut it cannot read without a word, which would leave the item without one: each must read.
+  #[test]
+  fn every_shortcut_is_one_tauri_reads() {
+    let natives = bar().into_iter().flat_map(|submenu| submenu.entries).filter_map(|entry| match entry {
+      Entry::Native(native) => native.accelerator(),
+      _ => None,
+    });
+    for accelerator in items().into_iter().filter_map(|(_, _, accelerator, _)| accelerator).chain(natives) {
+      assert!(accelerator.parse::<muda::accelerator::Accelerator>().is_ok(), "{accelerator}");
+    }
+  }
+
+  /// The shortcuts a focused text field or the composer uses itself: WebKit's text editing (⌘⌫ and ⌘⌦ delete to the
+  /// start and end of the line) and the composer's editor (TipTap's StarterKit: bold, italic, underline, strike, code,
+  /// lists, quote, code block, paragraph, a hard break, redo). The menu takes its shortcuts before the web view sees them.
+  const TEXT_KEYS: &[&str] = &[
+    "Cmd+Backspace",
+    "Cmd+Delete",
+    "Cmd+B",
+    "Cmd+I",
+    "Cmd+U",
+    "Shift+Cmd+U",
+    "Cmd+E",
+    "Shift+Cmd+S",
+    "Shift+Cmd+B",
+    "Shift+Cmd+7",
+    "Shift+Cmd+8",
+    "Shift+Cmd+9",
+    "Alt+Cmd+0",
+    "Alt+Cmd+C",
+    "Cmd+Enter",
+    "Cmd+Y",
+  ];
+
+  /// An item whose shortcut is also a text-editing key is disabled while text is edited, so the key edits the text: the
+  /// mail actions among them wait (Typing::Waits), and no other item of our own takes one.
+  #[test]
+  fn a_shortcut_that_edits_text_is_left_to_the_text_while_typing() {
+    let text: HashSet<String> = TEXT_KEYS.iter().map(|key| normalized(key)).collect();
+    let taken: Vec<_> = items().into_iter().filter(|(_, _, accelerator, _)| accelerator.is_some_and(|key| text.contains(&normalized(key)))).collect();
+    assert_eq!(taken.iter().map(|(id, ..)| *id).collect::<Vec<_>>(), ["move-to-trash", TOGGLE_READ]);
+    for (id, _, _, action) in taken {
+      assert!(matches!(action, Action::Message(_, Typing::Waits)), "{id} must be disabled while text is edited");
+      let typing = MenuState { signed_in: true, sidebar_shown: true, editing: true, message: Some(OpenMessage::default()) };
+      assert!(!enabled_in(action, &typing), "{id} acts while typing");
+      assert!(enabled_in(action, &MenuState { editing: false, ..typing }), "{id} does not act once typing ends");
+    }
   }
 
   #[test]
@@ -624,7 +786,7 @@ mod tests {
     let mut web: Vec<_> = items()
       .into_iter()
       .filter_map(|(id, _, _, action)| match action {
-        Action::Web(name) | Action::WebAlways(name) => {
+        Action::Web(name) | Action::WebAlways(name) | Action::Message(name, _) => {
           assert_eq!(name, id, "a web action is named after its item");
           Some(name)
         }
@@ -633,7 +795,37 @@ mod tests {
       .collect();
     web.sort_unstable();
     // The same list as MENU_ACTIONS in apps/web/src/platform/menu.ts.
-    assert_eq!(web, ["find", "new-event", "new-message", "new-todo", "reload", "settings", "toggle-sidebar", "view-calendar", "view-inbox", "view-search", "view-todos", "view-triage"]);
+    assert_eq!(
+      web,
+      [
+        "archive",
+        "find",
+        "forward",
+        "get-new-mail",
+        "go-batches",
+        "go-brief",
+        "go-cleanup",
+        "go-drafts",
+        "go-waiting",
+        "move-to",
+        "move-to-trash",
+        "new-event",
+        "new-message",
+        "new-todo",
+        "reload",
+        "reply",
+        "reply-all",
+        "settings",
+        "toggle-flag",
+        "toggle-read",
+        "toggle-sidebar",
+        "view-calendar",
+        "view-inbox",
+        "view-search",
+        "view-todos",
+        "view-triage"
+      ]
+    );
     let source = include_str!("../../../web/src/platform/menu.ts");
     for name in web {
       assert!(source.contains(&format!("'{name}'")), "the web client does not handle {name}");
@@ -664,39 +856,108 @@ mod tests {
     }
   }
 
+  fn fake_items() -> MenuItems<FakeItem> {
+    let items = MenuItems::<FakeItem>::default();
+    items.fill(signed_in_ids().into_iter().map(|id| (id, action_of(id).unwrap(), FakeItem::new())).collect()).unwrap();
+    items
+  }
+
+  const MESSAGE_IDS: [&str; 8] = ["reply", "reply-all", "forward", "archive", "move-to-trash", "move-to", TOGGLE_READ, TOGGLE_FLAG];
+
   /// What setup stores is what menu_state enables: every item that acts in the web client while someone is signed
   /// in, and nothing else (Reload acts signed out too).
   #[test]
   fn the_items_menu_state_enables_are_the_web_actions() {
-    let items = MenuItems::<FakeItem>::default();
-    items.fill(signed_in_ids().into_iter().map(|id| (id, FakeItem::new())).collect()).unwrap();
+    let items = fake_items();
+    let enabled = |id: &str| items.0.lock().unwrap().iter().find(|(own, ..)| *own == id).map(|(.., item)| item.0.get()).unwrap();
 
-    assert_eq!(items.ids(), ["settings", "new-message", "new-event", "new-todo", "find", "view-inbox", "view-triage", "view-todos", "view-calendar", "view-search", "toggle-sidebar"]);
-    items.enable(true).unwrap();
-    assert!(items.0.lock().unwrap().iter().all(|(_, item)| item.0.get()));
-    items.enable(false).unwrap();
-    assert!(items.0.lock().unwrap().iter().all(|(_, item)| !item.0.get()));
+    assert_eq!(
+      items.ids(),
+      [
+        "settings",
+        "new-message",
+        "new-event",
+        "new-todo",
+        "find",
+        "view-inbox",
+        "view-triage",
+        "view-todos",
+        "view-calendar",
+        "view-search",
+        "toggle-sidebar",
+        "get-new-mail",
+        "go-brief",
+        "go-waiting",
+        "go-drafts",
+        "go-cleanup",
+        "go-batches",
+        "reply",
+        "reply-all",
+        "forward",
+        "archive",
+        "move-to-trash",
+        "move-to",
+        TOGGLE_READ,
+        TOGGLE_FLAG
+      ]
+    );
+    let open = Some(OpenMessage { read: true, flagged: false });
+    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, message: open }).unwrap();
+    assert!(items.0.lock().unwrap().iter().all(|(.., item)| item.0.get()));
+    items.apply(&MenuState { signed_in: false, sidebar_shown: true, editing: false, message: open }).unwrap();
+    assert!(items.0.lock().unwrap().iter().all(|(.., item)| !item.0.get()));
+
+    // Signed in without an open conversation: the Message menu waits, the rest acts.
+    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, message: None }).unwrap();
+    for id in items.ids() {
+      assert_eq!(enabled(id), !MESSAGE_IDS.contains(&id), "{id} without an open conversation");
+    }
     assert!(!needs_sign_in(Action::WebAlways("reload")) && !needs_sign_in(Action::Shell(Shell::ShowMainWindow)));
   }
 
-  /// Only the sidebar item is renamed, after what it would do: Hide while the sidebar shows, Show while it is hidden.
+  /// While text is edited, only the items whose shortcut edits text are disabled; the rest of the Message menu acts.
   #[test]
-  fn the_sidebar_item_is_named_after_what_it_would_do() {
-    let items = MenuItems::<FakeItem>::default();
-    items.fill(signed_in_ids().into_iter().map(|id| (id, FakeItem::new())).collect()).unwrap();
-    let title = |id: &str| items.0.lock().unwrap().iter().find(|(own, _)| *own == id).map(|(_, item)| item.1.borrow().clone()).unwrap();
+  fn editing_text_disables_only_the_items_whose_shortcut_edits_text() {
+    let items = fake_items();
+    let enabled = |id: &str| items.0.lock().unwrap().iter().find(|(own, ..)| *own == id).map(|(.., item)| item.0.get()).unwrap();
 
-    items.name_sidebar_item(false).unwrap();
+    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: true, message: Some(OpenMessage::default()) }).unwrap();
+    assert!(!enabled("move-to-trash") && !enabled(TOGGLE_READ));
+    assert!(enabled("reply") && enabled("archive") && enabled("move-to") && enabled(TOGGLE_FLAG) && enabled("get-new-mail"));
+    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, message: Some(OpenMessage::default()) }).unwrap();
+    assert!(enabled("move-to-trash") && enabled(TOGGLE_READ));
+  }
+
+  /// The sidebar item, the read item and the flag item are named after what they would do; no other item is renamed.
+  #[test]
+  fn the_items_with_a_state_are_named_after_what_they_would_do() {
+    let items = fake_items();
+    let title = |id: &str| items.0.lock().unwrap().iter().find(|(own, ..)| *own == id).map(|(.., item)| item.1.borrow().clone()).unwrap();
+    let state = |sidebar_shown: bool, message: Option<OpenMessage>| MenuState { signed_in: true, sidebar_shown, editing: false, message };
+
+    items.apply(&state(false, Some(OpenMessage { read: false, flagged: true }))).unwrap();
     assert_eq!(title(TOGGLE_SIDEBAR), "Show Sidebar");
-    items.name_sidebar_item(true).unwrap();
+    assert_eq!(title(TOGGLE_READ), "Mark as Read");
+    assert_eq!(title(TOGGLE_FLAG), "Unflag");
+    items.apply(&state(true, Some(OpenMessage { read: true, flagged: false }))).unwrap();
     assert_eq!(title(TOGGLE_SIDEBAR), "Hide Sidebar");
+    assert_eq!(title(TOGGLE_READ), "Mark as Unread");
+    assert_eq!(title(TOGGLE_FLAG), "Flag");
+    // With nothing open, the titles the bar starts with.
+    items.apply(&state(true, Some(OpenMessage { read: false, flagged: true }))).unwrap();
+    items.apply(&state(true, None)).unwrap();
+    assert_eq!((title(TOGGLE_READ).as_str(), title(TOGGLE_FLAG).as_str()), (read_label(true), flag_label(false)));
     assert_eq!(title("view-inbox"), "", "no other item is renamed");
+    assert_eq!(title("reply"), "", "no other item is renamed");
     assert_eq!(action_of(TOGGLE_SIDEBAR), Some(Action::Web(TOGGLE_SIDEBAR)));
+    assert_eq!(action_of(TOGGLE_READ), Some(Action::Message(TOGGLE_READ, Typing::Waits)));
   }
 
   /// The command the web client calls, through Tauri's IPC on a mock app: signing in enables exactly the items that act
-  /// in the web client, in the state the bar's setup fills; signing out disables them. Reload, Help and the window item
-  /// stay as they are. The sidebar item takes the title of what it would do, from the same command.
+  /// in the web client, in the state the bar's setup fills, except the Message menu, which waits for an open
+  /// conversation; signing out disables them. Reload, Help and the window item stay as they are. The same command names
+  /// the sidebar, read and flag items after what they would do, and disables Move to Trash and Mark as Unread while text
+  /// is edited.
   #[test]
   fn signing_in_enables_the_web_items_through_menu_state() {
     use tauri::Manager;
@@ -710,7 +971,7 @@ mod tests {
     let own = own_items(&app, false).unwrap();
     app.state::<MenuItems<tauri::menu::MenuItem<MockRuntime>>>().fill(for_signed_in(&own)).unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
-    let send = |signed_in: bool, sidebar_shown: bool| {
+    let send = |body: serde_json::Value| {
       tauri::test::get_ipc_response(
         &webview,
         tauri::webview::InvokeRequest {
@@ -718,7 +979,7 @@ mod tests {
           callback: tauri::ipc::CallbackFn(0),
           error: tauri::ipc::CallbackFn(1),
           url: if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" }.parse().unwrap(),
-          body: tauri::ipc::InvokeBody::Json(serde_json::json!({ "signedIn": signed_in, "sidebarShown": sidebar_shown })),
+          body: tauri::ipc::InvokeBody::Json(body),
           headers: Default::default(),
           invoke_key: INVOKE_KEY.to_string(),
         },
@@ -727,15 +988,32 @@ mod tests {
     };
     let enabled = |id: &str| own.iter().find(|(own_id, ..)| *own_id == id).unwrap().2.is_enabled().unwrap();
     let title = |id: &str| own.iter().find(|(own_id, ..)| *own_id == id).unwrap().2.text().unwrap();
+    let is_message = |action: &Action| matches!(action, Action::Message(..));
 
-    assert!(!enabled("new-message") && !enabled("settings") && !enabled("view-calendar") && !enabled(TOGGLE_SIDEBAR));
-    assert_eq!(title(TOGGLE_SIDEBAR), "Hide Sidebar");
-    send(true, false);
+    assert!(!enabled("new-message") && !enabled("settings") && !enabled("view-calendar") && !enabled(TOGGLE_SIDEBAR) && !enabled("get-new-mail") && !enabled("reply"));
+    assert_eq!((title(TOGGLE_SIDEBAR), title(TOGGLE_READ), title(TOGGLE_FLAG)), (String::from("Hide Sidebar"), String::from("Mark as Unread"), String::from("Flag")));
+
+    // Signed in, nothing open: the Message menu waits.
+    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": false, "message": null }));
     assert_eq!(title(TOGGLE_SIDEBAR), "Show Sidebar");
     for (id, action, item) in &own {
-      assert_eq!(item.is_enabled().unwrap(), !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} after sign-in");
+      assert_eq!(item.is_enabled().unwrap(), !is_message(action) && !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} after sign-in");
     }
-    send(false, true);
+
+    // A conversation opens, unread and flagged: everything acts, and the titles say what they would do.
+    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": false, "message": { "read": false, "flagged": true } }));
+    for (id, action, item) in &own {
+      assert_eq!(item.is_enabled().unwrap(), !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} with a conversation open");
+    }
+    assert_eq!((title(TOGGLE_READ), title(TOGGLE_FLAG)), (String::from("Mark as Read"), String::from("Unflag")));
+
+    // Text is edited: ⌘⌫ and ⇧⌘U are left to the text.
+    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": true, "message": { "read": true, "flagged": false } }));
+    assert!(!enabled("move-to-trash") && !enabled(TOGGLE_READ));
+    assert!(enabled("reply") && enabled("archive") && enabled(TOGGLE_FLAG));
+    assert_eq!((title(TOGGLE_READ), title(TOGGLE_FLAG)), (String::from("Mark as Unread"), String::from("Flag")));
+
+    send(serde_json::json!({ "signedIn": false, "sidebarShown": true, "editing": false, "message": null }));
     assert_eq!(title(TOGGLE_SIDEBAR), "Hide Sidebar");
     for (id, action, item) in &own {
       assert_eq!(item.is_enabled().unwrap(), !needs_sign_in(*action) && !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} after sign-out");
@@ -758,6 +1036,9 @@ mod tests {
   fn each_item_finds_its_action() {
     assert_eq!(action_of(CHECK_FOR_UPDATES), Some(Action::Shell(Shell::CheckForUpdates)));
     assert_eq!(action_of("new-message"), Some(Action::Web("new-message")));
+    assert_eq!(action_of("get-new-mail"), Some(Action::Web("get-new-mail")));
+    assert_eq!(action_of("reply"), Some(Action::Message("reply", Typing::Acts)));
+    assert_eq!(action_of("move-to-trash"), Some(Action::Message("move-to-trash", Typing::Waits)));
     assert_eq!(action_of("main-window"), Some(Action::Shell(Shell::ShowMainWindow)));
     assert_eq!(action_of("release-notes"), Some(Action::Shell(Shell::Open(RELEASE_NOTES_URL))));
     assert_eq!(action_of("nothing"), None);
