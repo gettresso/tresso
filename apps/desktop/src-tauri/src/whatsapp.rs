@@ -1394,20 +1394,26 @@ fn forget_unused_folders(data_dir: &Path) -> Result<(), String> {
 }
 
 /// Removes every user's config but `user_id`'s (the user the server confirmed), and the folders only they named; returns
-/// the folders still chosen. Another user's WhatsApp leaves nothing behind on this Mac once someone else signed in here.
-fn keep_only_config(data_dir: &Path, user_id: &str) -> Result<Vec<PathBuf>, String> {
+/// the folders still chosen, or None when no other user's config was there (then nothing else changes: a folder the
+/// signed-in user picked in a connect not saved yet stays chosen, as does the bridge started from it). Another user's
+/// WhatsApp leaves nothing behind on this Mac once someone else signed in here.
+fn keep_only_config(data_dir: &Path, user_id: &str) -> Result<Option<Vec<PathBuf>>, String> {
   config_file(data_dir, user_id)?;
+  let mut removed = false;
   for user in config_users(data_dir) {
     if user != user_id {
       match fs::remove_file(data_dir.join(format!("whatsapp-{user}.json"))) {
-        Ok(()) => {}
+        Ok(()) => removed = true,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("Removing another user's WhatsApp settings failed: {error}")),
       }
     }
   }
+  if !removed {
+    return Ok(None);
+  }
   forget_unused_folders(data_dir)?;
-  chosen_folders(data_dir)
+  chosen_folders(data_dir).map(Some)
 }
 
 /// Removes a user's config and returns it. A folder no other user's config names is forgotten: using it again takes
@@ -2126,7 +2132,9 @@ pub fn whatsapp_config_clear<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Br
 #[tauri::command(async)]
 pub fn whatsapp_config_keep_only<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, user_id: String) -> Result<(), String> {
   bridge.enabled()?;
-  let kept = keep_only_config(&data_dir(&app)?, &user_id)?;
+  let Some(kept) = keep_only_config(&data_dir(&app)?, &user_id)? else {
+    return Ok(());
+  };
   if let Some(dir) = bridge.serving()
     && !kept.iter().any(|folder| dir.starts_with(folder))
   {
@@ -2711,14 +2719,33 @@ mod tests {
     save_config(&data, "u1", &config(&mine)).unwrap();
     save_config(&data, "u2", &config(&theirs)).unwrap();
 
-    assert_eq!(keep_only_config(&data, "u1").unwrap(), vec![mine.clone()]);
+    assert_eq!(keep_only_config(&data, "u1").unwrap(), Some(vec![mine.clone()]));
     assert!(load_config(&data, "u1").unwrap().is_some());
     assert_eq!(load_config(&data, "u2").unwrap(), None);
     assert_eq!(chosen_folder(&data, theirs.to_str().unwrap()), Err("not_chosen".to_string()));
     // A user without a config of their own removes everyone's.
-    assert!(keep_only_config(&data, "u3").unwrap().is_empty());
+    assert_eq!(keep_only_config(&data, "u3").unwrap(), Some(vec![]));
     assert_eq!(load_config(&data, "u1").unwrap(), None);
     assert!(keep_only_config(&data, "../u1").is_err());
+  }
+
+  #[test]
+  fn keeps_a_folder_picked_for_a_connect_when_no_other_users_config_goes() {
+    let data = temp();
+    let root = temp();
+    let picked = install(&root.join("picked"), None);
+    // The signed-in user picked a folder in the connect dialog; no config is saved yet, nobody else's exists.
+    remember_folder(&data, &picked).unwrap();
+
+    assert_eq!(keep_only_config(&data, "u1").unwrap(), None);
+    assert!(chosen_folder(&data, picked.to_str().unwrap()).is_ok());
+
+    // Once another user's config is removed, folders nobody's config names go.
+    let theirs = install(&root.join("theirs"), None);
+    remember_folder(&data, &theirs).unwrap();
+    save_config(&data, "u2", &config(&theirs)).unwrap();
+    assert_eq!(keep_only_config(&data, "u1").unwrap(), Some(vec![]));
+    assert_eq!(chosen_folder(&data, picked.to_str().unwrap()), Err("not_chosen".to_string()));
   }
 
   fn config(folder: &Path) -> Config {
