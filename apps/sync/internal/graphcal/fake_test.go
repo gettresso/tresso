@@ -41,6 +41,9 @@ type fakeGraph struct {
 	beforeWrite func(method, path string)
 	// transactions maps a create's transactionId to the event it made.
 	transactions map[string]string
+	// teams is how Graph answers isOnlineMeeting: "" makes the meeting right away, "pending" has the event as an
+	// online meeting without a join link yet, "ignored" makes none.
+	teams string
 }
 
 type fakeEvent struct {
@@ -378,9 +381,13 @@ func (f *fakeGraph) event(w http.ResponseWriter, r *http.Request, id string, req
 			target = &master.occurrences[index]
 			target.Type = "exception"
 		}
+		if body, ok := request.Body["isOnlineMeeting"]; ok && body == true && !f.hasTeams(f.calendarOf(e, master)) {
+			f.fail(w, http.StatusBadRequest, "ErrorInvalidRequest")
+			return
+		}
 		merge(target, request.Body)
 		if body, ok := request.Body["isOnlineMeeting"]; ok && body == true {
-			target.OnlineMeeting = &onlineMeetingInfo{JoinURL: "https://teams.microsoft.com/l/meetup-join/" + target.ID}
+			f.onlineMeeting(target)
 		}
 		if e != nil {
 			f.touch(e)
@@ -456,7 +463,12 @@ func (f *fakeGraph) create(w http.ResponseWriter, calendarID string, body map[st
 		e.Type = "seriesMaster"
 	}
 	if e.IsOnlineMeeting {
-		e.OnlineMeeting = &onlineMeetingInfo{JoinURL: "https://teams.microsoft.com/l/meetup-join/" + id}
+		if !f.hasTeams(calendarID) {
+			f.nextID--
+			f.fail(w, http.StatusBadRequest, "ErrorInvalidRequest")
+			return
+		}
+		f.onlineMeeting(&e)
 	}
 	stored := &fakeEvent{event: e, calendarID: calendarID}
 	if props, ok := body["singleValueExtendedProperties"].([]any); ok && len(props) == 1 {
@@ -469,6 +481,39 @@ func (f *fakeGraph) create(w http.ResponseWriter, calendarID string, body map[st
 		f.transactions[tx] = id
 	}
 	f.reply(w, f.full(stored))
+}
+
+// hasTeams: the calendar allows Teams meetings (a calendar that does not refuses isOnlineMeeting).
+func (f *fakeGraph) hasTeams(calendarID string) bool {
+	for _, entry := range f.calendars {
+		if entry.ID == calendarID {
+			for _, provider := range entry.AllowedOnlineMeetingProviders {
+				if provider == "teamsForBusiness" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (f *fakeGraph) calendarOf(e, master *fakeEvent) string {
+	if e != nil {
+		return e.calendarID
+	}
+	return master.calendarID
+}
+
+// onlineMeeting answers isOnlineMeeting the way f.teams says.
+func (f *fakeGraph) onlineMeeting(e *event) {
+	switch f.teams {
+	case "ignored":
+		e.IsOnlineMeeting, e.OnlineMeetingProvider, e.OnlineMeeting = false, "", nil
+	case "pending":
+		e.IsOnlineMeeting, e.OnlineMeeting = true, nil
+	default:
+		e.OnlineMeeting = &onlineMeetingInfo{JoinURL: "https://teams.microsoft.com/l/meetup-join/" + e.ID}
+	}
 }
 
 func (f *fakeGraph) respond(w http.ResponseWriter, id, action string) {
