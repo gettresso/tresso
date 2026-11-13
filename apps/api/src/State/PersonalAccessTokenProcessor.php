@@ -12,6 +12,7 @@ use App\ApiResource\Input\CreatePersonalAccessToken;
 use App\ApiResource\Output\CreatedPersonalAccessToken;
 use App\ApiResource\PersonalAccessTokenResource;
 use App\Repository\PersonalAccessTokenRepository;
+use App\Security\ChatAccessVoter;
 use App\Security\CurrentUser;
 use App\Security\PersonalAccessToken\PersonalAccessTokens;
 use App\Security\Scope;
@@ -64,7 +65,9 @@ final readonly class PersonalAccessTokenProcessor implements ProcessorInterface
     }
 
     /**
-     * A token never gets more than the session that makes it: every scope asked for must be one the caller holds.
+     * A token never gets more than the session that makes it: every scope asked for must be one the caller holds. Our
+     * own apps hold no chat scope: they reach chats through their mail scopes, as {@see ChatAccessVoter} decides, so a
+     * chat scope is one the session holds when that voter lets it read (`chat:read`) or queue replies (`chat:send`).
      *
      * @return list<Scope>
      */
@@ -74,7 +77,12 @@ final readonly class PersonalAccessTokenProcessor implements ProcessorInterface
         $violations = new ConstraintViolationList();
         foreach ($data->scopes as $index => $value) {
             $scope = Scope::from($value);
-            if (!$this->security->isGranted($scope->role())) {
+            $held = match ($scope) {
+                Scope::ChatRead => $this->security->isGranted(ChatAccessVoter::READ),
+                Scope::ChatSend => $this->security->isGranted(ChatAccessVoter::SEND),
+                default => $this->security->isGranted($scope->role()),
+            };
+            if (!$held) {
                 $violations->add(new ConstraintViolation(
                     'A token can only get permissions that you are signed in with here.',
                     null,

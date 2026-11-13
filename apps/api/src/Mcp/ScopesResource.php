@@ -38,6 +38,9 @@ final readonly class ScopesResource
             $tools = array_keys(array_filter($this->catalog->all(), static fn (Tool $tool): bool => \in_array($scope, $tool->scopes, true)));
             $lines[] = \sprintf('## %s (%s)', $scope->value, $scope->label());
             $lines[] = $scope->description();
+            if ($scope->isChat()) {
+                $lines[] = 'WhatsApp, separate from mail: an app gets it only when it names it when it registers and the user allows it, and a personal access token only when the user ticks it. No other scope includes it.';
+            }
             $lines[] = [] === $tools ? 'No tools yet.' : 'Tools: '.implode(', ', $tools).'.';
             $lines[] = '';
         }

@@ -269,6 +269,18 @@ body {
   font-size: 13px;
 }
 
+.chat-scopes {
+  margin: 16px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.chat-scopes-note {
+  margin: 0 0 8px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
 .decision {
   gap: 0;
 }

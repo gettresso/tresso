@@ -129,8 +129,8 @@ final readonly class ClientRegistrationRequest
     }
 
     /**
-     * Without a scope an app may ask for every scope an app that is not ours may have; what it gets is still what the
-     * user allows.
+     * Without a scope an app may ask for every scope an app that is not ours may have except the chat scopes, which it
+     * must name; what it gets is still what the user allows.
      *
      * @return non-empty-list<non-empty-string>
      */
@@ -138,7 +138,7 @@ final readonly class ClientRegistrationRequest
     {
         if (null === $scope) {
             /** @var non-empty-list<non-empty-string> */
-            return ThirdPartyClients::scopeValues();
+            return ThirdPartyClients::defaultScopeValues();
         }
         if (!\is_string($scope)) {
             throw ClientRegistrationRefused::metadata('scope must be a string of scopes separated by spaces.');

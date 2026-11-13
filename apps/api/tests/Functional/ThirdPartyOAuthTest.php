@@ -39,6 +39,8 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         'mail:read', 'mail:write', 'mail:send', 'todos:read', 'todos:write', 'calendar:read', 'calendar:write',
         'settings:read', 'settings:write', 'signatures:read', 'signatures:write',
     ];
+    /** What the metadata advertises: the scopes above and the chat scopes, which an app gets only by naming them. */
+    private const array ADVERTISED_SCOPES = [...self::THIRD_PARTY_SCOPES, 'chat:read', 'chat:send'];
 
     protected function setUp(): void
     {
@@ -62,7 +64,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
             'registration_endpoint' => 'http://localhost/oauth/register',
             'revocation_endpoint' => 'http://localhost/oauth/revoke',
             'revocation_endpoint_auth_methods_supported' => ['none'],
-            'scopes_supported' => self::THIRD_PARTY_SCOPES,
+            'scopes_supported' => self::ADVERTISED_SCOPES,
             'response_types_supported' => ['code'],
             'response_modes_supported' => ['query'],
             'prompt_values_supported' => ['login'],
@@ -86,7 +88,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
                 'resource' => $resource,
                 'resource_name' => $name,
                 'authorization_servers' => ['http://localhost'],
-                'scopes_supported' => self::THIRD_PARTY_SCOPES,
+                'scopes_supported' => self::ADVERTISED_SCOPES,
                 'bearer_methods_supported' => ['header'],
             ], $this->decodedResponse());
         }
@@ -159,7 +161,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
     {
         $registered = $this->register(['client_name' => 'Claude', 'redirect_uris' => ['https://claude.example/api/mcp/auth_callback']]);
 
-        self::assertSame(implode(' ', self::THIRD_PARTY_SCOPES), $registered['scope'] ?? null);
+        self::assertSame(implode(' ', self::THIRD_PARTY_SCOPES), $registered['scope'] ?? null, 'Without the chat scopes, which an app must name.');
         self::assertSame(['authorization_code', 'refresh_token'], $registered['grant_types'] ?? null);
         self::assertSame('none', $registered['token_endpoint_auth_method'] ?? null);
     }
@@ -238,8 +240,6 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         yield 'a sync scope' => [['scope' => 'mail:read sync:credentials'], 'invalid_client_metadata'];
         yield 'a teams scope' => [['scope' => 'teams:read'], 'invalid_client_metadata'];
         yield 'the webhooks scope' => [['scope' => 'webhooks:manage'], 'invalid_client_metadata'];
-        yield 'the chat read scope' => [['scope' => 'mail:read chat:read'], 'invalid_client_metadata'];
-        yield 'the chat send scope' => [['scope' => 'chat:send'], 'invalid_client_metadata'];
         yield 'an unknown scope' => [['scope' => 'offline_access'], 'invalid_client_metadata'];
         yield 'a confidential client' => [['token_endpoint_auth_method' => 'client_secret_basic'], 'invalid_client_metadata'];
         yield 'a client secret posted' => [['token_endpoint_auth_method' => 'client_secret_post'], 'invalid_client_metadata'];
@@ -529,10 +529,52 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
     }
 
     /**
-     * WhatsApp chats are not for apps that are not ours until the MCP tools for them exist: no app can be allowed the
-     * chat scopes, whether it registered naming scopes or not.
+     * An app that names the chat scopes when it registers may ask for them; the consent screen lists them apart from
+     * the others, under WhatsApp, with a line that this is separate from mail.
      */
-    public function testNoAppIsAllowedTheChatScopes(): void
+    public function testAnAppThatNamesTheChatScopesIsAskedForThemApart(): void
+    {
+        $registered = $this->register(['client_name' => 'Chat helper', 'redirect_uris' => [self::REDIRECT], 'scope' => 'mail:read chat:read chat:send']);
+        self::assertSame('mail:read chat:read chat:send', $registered['scope'] ?? null);
+        $clientId = $registered['client_id'] ?? null;
+        self::assertIsString($clientId);
+        $this->signIn('kim@example.test');
+        $verifier = $this->verifier();
+
+        $crawler = $this->authorize($clientId, ['mail:read', 'chat:read', 'chat:send'], $verifier, 'state-chat');
+
+        self::assertResponseIsSuccessful();
+        $items = static fn (string $selector): array => $crawler->filter($selector)->each(static fn (Crawler $item): string => $item->text());
+        self::assertSame(['Read mail', 'Read your WhatsApp chats', 'Send WhatsApp messages as you'], $items('.scopes li strong'));
+        self::assertSame(['Read your WhatsApp chats', 'Send WhatsApp messages as you'], $items('.chat-scopes li strong'), 'The chat scopes are listed on their own.');
+        self::assertSame(['WhatsApp'], $items('.chat-scopes h2'));
+        self::assertStringContainsString('This is separate from mail.', $crawler->filter('.chat-scopes-note')->text());
+
+        $token = $this->exchange($clientId, $this->answer($crawler, 'Allow', 'state-chat'), $verifier);
+        $this->client->request('GET', '/api/v1/chat-accounts/whatsapp/status', server: $this->bearer($token['access_token']));
+        self::assertResponseIsSuccessful();
+        self::assertFalse($this->decodedResponse()['onServer'] ?? null);
+    }
+
+    public function testAConsentScreenForMailAloneShowsNoWhatsAppSection(): void
+    {
+        $clientId = $this->registeredClientId(['scope' => 'mail:read chat:read']);
+        $this->signIn('kim@example.test');
+
+        $crawler = $this->authorize($clientId, ['mail:read'], $this->verifier(), 'state-mail');
+
+        self::assertResponseIsSuccessful();
+        self::assertCount(0, $crawler->filter('.chat-scopes'));
+        $crawler = $this->authorize($clientId, ['chat:read'], $this->verifier(), 'state-chat-only');
+        self::assertCount(0, $crawler->filter('.scopes-title:not(#chat-scopes-title)'), 'Only the WhatsApp section, without an empty list before it.');
+        self::assertSame(['Read your WhatsApp chats'], $crawler->filter('.chat-scopes li strong')->each(static fn (Crawler $item): string => $item->text()));
+    }
+
+    /**
+     * An app that does not name the chat scopes when it registers is never offered them: not when it registered
+     * without scopes, not when it named others.
+     */
+    public function testAnAppThatDoesNotNameTheChatScopesIsNeverAllowedThem(): void
     {
         $this->signIn('kim@example.test');
         foreach (['registered naming scopes' => $this->registeredClientId(['scope' => 'mail:read']), 'registered without scopes' => $this->registeredClientId()] as $case => $clientId) {
@@ -544,6 +586,40 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
             }
         }
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM oauth_consent'));
+    }
+
+    /**
+     * What the user allowed for mail does not cover WhatsApp: an app that may ask for the chat scopes is asked again on
+     * the consent screen, even on the web where a covered request is approved without it, and a refresh token cannot
+     * widen to them.
+     */
+    public function testAConsentForMailNeverWidensToTheChatScopes(): void
+    {
+        $clientId = $this->registeredClientId(['redirect_uris' => [self::WEB_REDIRECT], 'scope' => 'mail:read chat:read chat:send']);
+        $web = ['redirect_uri' => self::WEB_REDIRECT];
+        $this->signIn('kim@example.test');
+        $verifier = $this->verifier();
+        $crawler = $this->authorize($clientId, ['mail:read'], $verifier, 'mail', $web);
+        $this->client->submit($crawler->selectButton('Allow')->form());
+        $location = (string) $this->client->getResponse()->headers->get('Location');
+        self::assertStringStartsWith(self::WEB_REDIRECT.'?code=', $location);
+        parse_str((string) parse_url($location, \PHP_URL_QUERY), $query);
+        self::assertIsString($query['code'] ?? null);
+        $tokens = $this->exchange($clientId, $query['code'], $verifier, $web);
+
+        $crawler = $this->authorize($clientId, ['mail:read', 'chat:read'], $this->verifier(), 'chat', $web);
+        self::assertResponseIsSuccessful('Asked again: the consent covered mail only.');
+        self::assertSame(['Read your WhatsApp chats'], $crawler->filter('.chat-scopes li strong')->each(static fn (Crawler $item): string => $item->text()));
+
+        $this->client->request('POST', '/oauth/token', ['grant_type' => 'refresh_token', 'client_id' => $clientId, 'refresh_token' => $tokens['refresh_token'], 'scope' => 'mail:read chat:read']);
+        self::assertResponseStatusCodeSame(400);
+        self::assertSame('invalid_scope', $this->decodedResponse()['error'] ?? null);
+
+        $scopes = $this->connection()->fetchOne('SELECT scopes FROM oauth_consent');
+        self::assertIsString($scopes);
+        self::assertSame(['mail:read'], json_decode($scopes, true));
+        $this->client->request('GET', '/api/v1/chat-accounts/whatsapp/status', server: $this->bearer($tokens['access_token']));
+        self::assertResponseStatusCodeSame(403);
     }
 
     public function testAnAppAllowedBeforeDoesNotGainTheChatScopesOnRefresh(): void
@@ -1155,7 +1231,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         self::assertIsArray($scopes);
         foreach ($scopes as $scope) {
             self::assertIsString($scope);
-            self::assertDoesNotMatchRegularExpression('/^(sync|teams|chat):|^webhooks:/', $scope);
+            self::assertDoesNotMatchRegularExpression('/^(sync|teams):|^webhooks:/', $scope);
         }
     }
 }
