@@ -211,8 +211,13 @@ final class McpWhatsAppToolsTest extends DatabaseTestCase
         }
 
         // Nor through any sub-request a tool could make with this token.
-        foreach (['/chats', '/chats/'.$this->annaChat.'/messages', '/chat-messages/search', '/chat-accounts'] as $path) {
-            self::assertStringStartsWith('Not allowed', $this->mcpCallError($headers, $session, 'probe_api_operation', ['method' => 'GET', 'path' => $path]), $path);
+        foreach ([
+            ['GET', '/chats', null],
+            ['GET', '/chats/'.$this->annaChat.'/messages', null],
+            ['POST', '/chat-messages/search', ['q' => 'friday']],
+            ['GET', '/chat-accounts', null],
+        ] as [$method, $path, $body]) {
+            self::assertStringStartsWith('Not allowed', $this->mcpCallError($headers, $session, 'probe_api_operation', array_filter(['method' => $method, 'path' => $path, 'body' => $body], static fn (mixed $value): bool => null !== $value)), $path);
             $answers[] = (string) $this->client->getResponse()->getContent();
         }
 
