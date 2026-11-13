@@ -94,6 +94,10 @@ final readonly class ChatReadProvider implements ProviderInterface
         if (null === $value || '' === $value) {
             return $default;
         }
+        // A sub-request made in PHP (an MCP tool through App\Mcp\Api) keeps a number a number.
+        if (\is_int($value)) {
+            $value = (string) $value;
+        }
         if (!\is_string($value) || 1 !== preg_match('/^\d{1,6}$/', $value) || (int) $value < $min || (int) $value > $max) {
             throw self::invalid($name, \sprintf('%s must be a whole number from %d to %d.', $name, $min, $max));
         }

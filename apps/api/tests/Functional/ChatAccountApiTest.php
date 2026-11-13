@@ -289,17 +289,22 @@ final class ChatAccountApiTest extends DatabaseTestCase
         self::assertFalse($account['notify'] ?? null);
     }
 
-    public function testAPersonalAccessTokenCannotHoldAChatScope(): void
+    public function testAPersonalAccessTokenHoldsAChatScopeOnlyWhenTicked(): void
     {
-        // The session holds the chat scopes, so only the rule for tokens refuses them.
-        $session = $this->userHeaders('kim@example.test', ['settings:write', 'mail:read', 'chat:read', 'chat:send']);
-        foreach (['chat:read', 'chat:send'] as $scope) {
-            $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Script', 'scopes' => ['mail:read', $scope]], $session);
-            self::assertResponseStatusCodeSame(422, $scope);
-        }
+        $this->connect();
+        $session = $this->userHeaders('kim@example.test', ['settings:write', 'mail:read', 'mail:send']);
         $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Script', 'scopes' => ['mail:read']], $session);
-        self::assertResponseStatusCodeSame(201, 'The same session makes a token without them.');
-        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM personal_access_token'));
+        self::assertResponseStatusCodeSame(201);
+        $mail = ['HTTP_AUTHORIZATION' => 'Bearer '.$this->responseString('token'), 'HTTP_ACCEPT' => 'application/json'];
+        $this->client->jsonRequest('POST', '/api/v1/personal-access-tokens', ['name' => 'Chats', 'scopes' => ['chat:read']], $session);
+        self::assertResponseStatusCodeSame(201);
+        $chat = ['HTTP_AUTHORIZATION' => 'Bearer '.$this->responseString('token'), 'HTTP_ACCEPT' => 'application/json'];
+
+        $this->client->request('GET', '/api/v1/chat-accounts', server: $mail);
+        self::assertResponseStatusCodeSame(403, 'mail:read alone reaches no chat.');
+        $this->client->request('GET', '/api/v1/chat-accounts', server: $chat);
+        self::assertResponseIsSuccessful();
+        self::assertCount(1, $this->decodedResponse());
     }
 
     public function testNeedsASignedInCaller(): void
