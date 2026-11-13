@@ -2057,7 +2057,9 @@ off, so it never goes twice). It keeps every point above:
   account's is 409 `other_number` there too (an account without one learns it), and the relay stops. Without the yes to
   copying, a takeover relies on the account the copy holds: when the `PUT` answers with another (that one went
   meanwhile), the new empty account is removed again and the user is asked to choose "All my devices" with Copy.
-- **Chats left out before the server knew them.** At each relay start the relay hands every JID the config leaves
+- **Chats left out before the server knew them.** The switch to "All my devices" hands them over right after its `PUT`
+  (the relay guard asks for this device only, not a running bridge), before the switch is done, so a Mac that takes
+  over before this one ever relayed knows them; and at each relay start the relay hands every JID the config leaves
   out and the copy holds no server chat for to the server as a left-out chat (`RelayChat.leftOut` on
   `relay/messages`: the JID sealed, no name, no messages; a chat the server holds is left as it is), and the config's
   entry goes once that row is in the copy; until then the relay's fence keeps it out, so there is never a moment where

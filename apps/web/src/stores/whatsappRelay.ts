@@ -1469,6 +1469,17 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       refusedFor.value = null
       await writeSwitch(store, { to: 'all', accountId: account.id, copy: copyConfirmed })
       await store.setChatMeta(SERVER_ACCOUNT, account.id)
+      // The chats left out here go to the server as left-out chats now, as part of the switch: this Mac is the relay
+      // from the PUT on (the relay guard asks for the device only, not a running bridge), so a Mac that takes over
+      // before this one ever relayed knows them too. A failure leaves the switch marked, and it is tried again.
+      const leftOut = config.value?.leftOut ?? []
+      if (leftOut.length > 0) {
+        try {
+          await new ServerChatBackend({ api, store, accountId: account.id, deviceId: current.deviceId, importSince: Date.parse(current.importSince) }).handOverLeftOut(leftOut)
+        } catch (cause) {
+          throw chatActionError(cause, 'change')
+        }
+      }
       // This Mac's settings and the account's are brought together before the relay starts (adoptSettings).
       await store.setChatMeta(SERVER_ADOPTED, null)
       adopted.value = null
@@ -1964,7 +1975,17 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     const account = serverAccount.value
     const store = mail.synced ? mail.currentStore() : null
     const want =
-      current !== null && current.mode === 'all' && account !== null && relaysHere.value && store !== null && !takingOver.value && modeSwitch.value === null && !refusedNow(account) && caughtUp()
+      current !== null &&
+      current.mode === 'all' &&
+      account !== null &&
+      relaysHere.value &&
+      store !== null &&
+      !takingOver.value &&
+      modeSwitch.value === null &&
+      !refusedNow(account) &&
+      caughtUp() &&
+      // Refused for this number by the server (other_number): no more heartbeats until another number is linked.
+      !(numberRefused.value !== null && numberRefused.value === (identity.value?.number ?? ''))
     if (!want) {
       stopHeartbeat()
       return
@@ -2202,8 +2223,12 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
             await stepsToAll(store, id, consent.number === true, consent.copy === true)
           } catch (cause) {
             if (modeSwitch.value?.to === 'all' && modeSwitch.value.accountId === null) {
-              // The server took nothing: still "Only this Mac", its waiting replies where they were.
+              // The server took nothing: still "Only this Mac", its waiting replies where they were, and its groups
+              // setting as it was before "Keep group chats on instead" changed it for the switch.
               await undoSwitchToAll(store)
+              if (config.value !== null && config.value.includeGroups !== current.includeGroups) {
+                await updateConfig(id, (latest) => ({ ...latest, includeGroups: current.includeGroups }))
+              }
             }
             throw cause
           }
@@ -2265,7 +2290,16 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         await stopRelay()
         takingOver.value = true
         try {
-          const account = await putAccount(current, who, expected, consent.copy === true)
+          let account: SyncedChatAccount
+          try {
+            account = await putAccount(current, who, expected, consent.copy === true)
+          } catch (cause) {
+            // Not taken over: the groups setting goes back to what it was before "Keep group chats on instead".
+            if (config.value !== null && config.value.includeGroups !== current.includeGroups) {
+              await updateConfig(userId.value ?? '', (latest) => ({ ...latest, includeGroups: current.includeGroups }))
+            }
+            throw cause
+          }
           refusedFor.value = null
           await store.setChatMeta(SERVER_ACCOUNT, account.id)
           await store.setChatMeta(serverCursorKey(account.id), null)
