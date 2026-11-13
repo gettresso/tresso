@@ -25,6 +25,9 @@
     "allow-whatsapp-send",
     "allow-whatsapp-download",
     "allow-whatsapp-open-file",
-    "allow-whatsapp-choose-file"
+    "allow-whatsapp-choose-file",
+    "allow-whatsapp-file",
+    "allow-whatsapp-stage-file",
+    "allow-whatsapp-discard-file"
   ]
 }

@@ -70,6 +70,9 @@ pub fn run() {
       whatsapp::whatsapp_download,
       whatsapp::whatsapp_open_file,
       whatsapp::whatsapp_choose_file,
+      whatsapp::whatsapp_file,
+      whatsapp::whatsapp_stage_file,
+      whatsapp::whatsapp_discard_file,
     ])
     .setup(|app| {
       main_window(app)?;
