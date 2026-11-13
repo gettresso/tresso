@@ -97,6 +97,17 @@ export interface SyncedChatOutgoing {
   /** When the relaying device took it to send; null while it waits. */
   claimedAt: string | null
   sentAt: string | null
+  /**
+   * The file the desktop sent at once ("Only this Mac", recordLocalAttachment); absent or null for a text reply and in the
+   * delta. Kept in the row as both stores keep it (JSON), so no column is needed.
+   */
+  file?: SentFile | null
+}
+
+/** A file sent from this Mac: its name and its size in bytes (null when the shell could not tell it). */
+export interface SentFile {
+  name: string
+  size: number | null
 }
 
 /** A chat as a list shows it: the chat, its newest message, how many incoming messages are unread. */

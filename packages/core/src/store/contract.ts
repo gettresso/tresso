@@ -1166,6 +1166,13 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         expect((await db.chatPage('group', { limit: 5 }))!.messages[0]).toEqual(chatPage.chatMessages![4])
       })
 
+      it('keeps the file a reply of this device carries, as it was written', async () => {
+        const row = chatOutgoing('f1', 'anna', 'acct', { text: 'File: plan.pdf', status: 'sent', claimedAt: at(8), sentAt: at(8), createdAt: at(8), file: { name: 'plan.pdf', size: 4096 } })
+        await db.putChatOutgoing([row])
+        expect((await db.chat('anna'))!.outgoing.find((reply) => reply.id === 'f1')).toEqual(row)
+        expect((await db.chatPage('anna', { limit: 1 }))!.outgoing.find((reply) => reply.id === 'f1')?.file).toEqual({ name: 'plan.pdf', size: 4096 })
+      })
+
       it('stores a page given twice once', async () => {
         await db.apply({ ...chatPage, cursor: 41 })
 
