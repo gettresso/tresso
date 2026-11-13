@@ -17,6 +17,8 @@ const props = defineProps<{
   /** Replies cannot be written now; `note` says why (a notice above says more). */
   disabled: boolean
   note?: string | null
+  /** Who sends the reply, under the field (COMPOSER_NOTE on the Mac that sends). */
+  sendNote?: string
   /** A file can be attached (this Mac relays). */
   canAttach: boolean
   attaching: boolean
@@ -114,7 +116,7 @@ defineExpose({ focus: () => field.value?.focus() })
     <span v-if="checked.ok === false && checked.problem === 'control'" class="problem">The reply cannot contain control characters.</span>
     <span class="attach-line" role="status">{{ attachLine ?? '' }}</span>
     <span v-if="error" class="problem" role="alert">{{ error }}</span>
-    <span id="chat-composer-note" class="note">{{ disabled && note ? note : COMPOSER_NOTE }}</span>
+    <span id="chat-composer-note" class="note">{{ disabled && note ? note : (sendNote ?? COMPOSER_NOTE) }}</span>
     <span class="visually-hidden" role="status">{{ announcement }}</span>
   </form>
 </template>

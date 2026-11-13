@@ -1,5 +1,5 @@
 import { reactive, shallowReactive } from 'vue'
-import { LocalChatBackend, SqliteMailStore, type IncomingChat, type IncomingMessage } from '@tresso/core'
+import { LocalChatBackend, SqliteMailStore, type IncomingChat, type IncomingMessage, type SyncedChatAccount } from '@tresso/core'
 import { memorySql } from '@tresso/core/testing/sql'
 import type { BridgeState, DownloadedFile, SendResult, WhatsAppConfig } from '@/platform/whatsapp'
 
@@ -46,6 +46,9 @@ export function fakeRelay() {
     identity: { number: '31698765432', name: 'Kim Visser' } as { number: string; name: string | null } | null,
     busy: null as string | null,
     error: null as string | null,
+    /** "All my devices": the server's account in the copy, and whether this Mac relays it. */
+    serverAccount: null as SyncedChatAccount | null,
+    relaysHere: false,
     pollNow: async () => undefined,
     leaveOut: async (_jid: string) => true,
     takeBackIn: async (_jid: string) => true,
@@ -56,7 +59,14 @@ export function fakeRelay() {
 
 /** The mail store as the chat screens use it. */
 export function fakeMail() {
-  return shallowReactive({ synced: true, ready: true, store: null as SqliteMailStore | null, currentStore: () => null as SqliteMailStore | null })
+  return shallowReactive({
+    synced: true,
+    ready: true,
+    chatChanges: 0,
+    store: null as SqliteMailStore | null,
+    currentStore: () => null as SqliteMailStore | null,
+    syncNow: async () => undefined,
+  })
 }
 
 /** The desktop shell's commands the chat screens call. */

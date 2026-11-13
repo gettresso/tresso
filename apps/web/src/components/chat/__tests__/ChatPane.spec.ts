@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
-import { LocalChatBackend, type SqliteMailStore, type SyncedChatOutgoing } from '@tresso/core'
+import { LocalChatBackend, SqliteMailStore, type SyncedChatOutgoing } from '@tresso/core'
+import { memorySql } from '@tresso/core/testing/sql'
+import { ACCOUNT_ID, FakeChatServer } from '@/stores/__tests__/chatServerFixture'
 import type { WhatsAppCommands } from '@/platform/whatsapp'
 import { at, copyWith, DIRECT, DIRECT_ID, direct, fakeMail, fakeRelay, fakeShell, GROUP, GROUP_ID, group, incoming, LINKED, NOW, STOPPED } from '@/stores/__tests__/chatFixtures'
 
-const fakes = vi.hoisted(() => ({ relay: null as unknown, mail: null as unknown, shell: null as unknown, todos: { create: null as unknown }, selection: { active: false }, compose: { draft: null as unknown, minimized: false, notify: () => undefined } }))
+const fakes = vi.hoisted(() => ({ server: null as unknown, relay: null as unknown, mail: null as unknown, shell: null as unknown, todos: { create: null as unknown }, selection: { active: false }, compose: { draft: null as unknown, minimized: false, notify: () => undefined } }))
 vi.mock('@/stores/whatsappRelay', () => ({ useWhatsAppRelayStore: () => fakes.relay }))
+vi.mock('@/api/chats', () => ({ useChatApi: () => fakes.server }))
 vi.mock('@/stores/mail', () => ({ useMailStore: () => fakes.mail }))
 vi.mock('@/stores/todos', () => ({ useTodosStore: () => fakes.todos }))
 vi.mock('@/stores/compose', () => ({ useComposeStore: () => fakes.compose }))
@@ -186,6 +189,36 @@ describe('ChatPane', () => {
     expect(unconfirmed.get('.why').text()).toBe('Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.')
     expect(unconfirmed.findAll('.under button').map((button) => button.text())).toEqual(['Try again', 'Delete'])
     wrapper = view
+  })
+
+  it('on a Mac that does not relay ("All my devices"), says a reply waits for your Mac and who sends it', async () => {
+    const server = new FakeChatServer()
+    fakes.server = server
+    await server.connect({ deviceId: 'other-device', deviceName: 'Office iMac', address: null, displayName: null, includeGroups: true, notify: false })
+    server.account = { ...server.account!, relayOnline: false }
+    await server.relayMessages(ACCOUNT_ID, {
+      deviceId: 'other-device',
+      firstImport: false,
+      chats: [{ jid: DIRECT, name: 'Bram Visser', kind: 'direct' }],
+      messages: [{ chatJid: DIRECT, waId: 'S1', fromMe: false, sender: null, text: 'Hello', sentAt: at(-3), media: null }],
+    })
+    await server.queueReply(`chat-${DIRECT}`, { id: '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a51', text: 'On my way' })
+    const copy = await SqliteMailStore.open(await memorySql())
+    await server.deliver(copy)
+    relay.config = { ...relay.config!, mode: 'all' }
+    relay.serverAccount = server.account
+    relay.relaysHere = false
+    relay.linked = false
+    relay.relayRunning = false
+    relay.bridge = STOPPED
+
+    const view = await open(`chat-${DIRECT}`, copy)
+    expect(metaOf(view)[1]).toMatch(/^\d{1,2}:\d\d(?: [AP]M)?, waiting for your Mac$/)
+    // The bridge here does not matter: no notice, replies can be written, no Attach.
+    expect(view.find('.notice').exists()).toBe(false)
+    expect(view.get('#chat-composer-note').text()).toBe('Sent on WhatsApp by Office iMac. No signature, no subject.')
+    expect(view.find('button.attach').exists()).toBe(false)
+    expect(view.get('textarea').attributes('disabled')).toBeUndefined()
   })
 
   it('cancels a waiting reply and tries a failed one again, and says the change', async () => {

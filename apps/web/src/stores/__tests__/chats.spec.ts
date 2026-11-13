@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { LOCAL_CHAT_ACCOUNT, type SqliteMailStore } from '@tresso/core'
+import { ChatApiError, LOCAL_CHAT_ACCOUNT, type SqliteMailStore } from '@tresso/core'
 import type { WhatsAppCommands } from '@/platform/whatsapp'
+import { ACCOUNT_ID, FakeChatServer } from './chatServerFixture'
 import { at, config, copyWith, DIRECT, DIRECT_ID, direct, fakeMail, fakeRelay, fakeShell, GROUP, GROUP_ID, group, incoming, NOW } from './chatFixtures'
 
-const fakes = vi.hoisted(() => ({ relay: null as unknown, mail: null as unknown, shell: null as unknown, shown: [] as unknown[] }))
+const fakes = vi.hoisted(() => ({ relay: null as unknown, mail: null as unknown, shell: null as unknown, server: null as unknown, shown: [] as unknown[] }))
+vi.mock('@/api/chats', () => ({ useChatApi: () => fakes.server }))
 vi.mock('@/stores/whatsappRelay', () => ({ useWhatsAppRelayStore: () => fakes.relay }))
 vi.mock('@/stores/mail', () => ({ useMailStore: () => fakes.mail }))
 vi.mock('@/platform/notifier', () => ({ notifier: { show: async (list: unknown[]) => void fakes.shown.push(...list) } }))
@@ -340,5 +342,108 @@ describe('the chats store', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(reads).toHaveBeenCalledTimes(1)
     expect(chats.enabled).toBe(true)
+  })
+
+  describe('in "All my devices"', () => {
+    let server: FakeChatServer
+    const SERVER_CHAT = `chat-${DIRECT}`
+
+    beforeEach(async () => {
+      server = new FakeChatServer()
+      fakes.server = server
+      await server.connect({ deviceId: 'other-device', deviceName: 'Office iMac', address: null, displayName: null, includeGroups: true, notify: false })
+      await server.relayMessages(ACCOUNT_ID, {
+        deviceId: 'other-device',
+        firstImport: false,
+        chats: [{ jid: DIRECT, name: 'Bram Visser', kind: 'direct' }],
+        messages: [{ chatJid: DIRECT, waId: 'S1', fromMe: false, sender: null, text: 'From the server', sentAt: at(-3), media: null }],
+      })
+      await server.deliver(store)
+      server.calls.length = 0
+      relay.config = config({ mode: 'all' })
+      relay.serverAccount = server.account
+      relay.relaysHere = false
+      relay.linked = false
+      relay.bridge = { process: 'stopped', port: null, loopbackOnly: null, link: 'unknown', qr: null, error: null }
+    })
+
+    it("shows the server account's chats only, and reads them again when a delta page carries chat rows", async () => {
+      const chats = await ready()
+      expect(chats.enabled).toBe(true)
+      expect(chats.accountId).toBe(ACCOUNT_ID)
+      expect(chats.summaries.map((summary) => summary.chat.id)).toEqual([SERVER_CHAT])
+      expect(chats.account?.relayDeviceName).toBe('Office iMac')
+      // Another Mac relays: replies can be queued whatever this Mac's bridge does; no Attach.
+      expect(chats.relaysHere).toBe(false)
+      expect(chats.canReply).toBe(true)
+      expect(chats.canAttach).toBe(false)
+
+      await server.relayMessages(ACCOUNT_ID, {
+        deviceId: 'other-device',
+        firstImport: false,
+        chats: [{ jid: GROUP, name: 'Family', kind: 'group' }],
+        messages: [{ chatJid: GROUP, waId: 'S2', fromMe: false, sender: { id: '31611111111', name: 'Mom' }, text: 'Dinner?', sentAt: at(-1), media: null }],
+      })
+      await server.deliver(store)
+      mail.chatChanges++
+      await vi.waitFor(() => expect(chats.summaries.map((summary) => summary.chat.id)).toEqual([`chat-${GROUP}`, SERVER_CHAT]))
+    })
+
+    it('waits for the server account before it shows anything', async () => {
+      relay.serverAccount = null
+      const chats = await ready()
+      expect(chats.enabled).toBe(false)
+      expect(chats.summaries).toEqual([])
+    })
+
+    it('queues a reply on the server, without a relay round on a Mac that does not relay', async () => {
+      const pollNow = vi.spyOn(relay, 'pollNow')
+      const chats = await ready()
+      chats.setDraft(SERVER_CHAT, 'On my way')
+      const row = await chats.send(SERVER_CHAT, 'On my way')
+      expect(server.callsOf('queueReply')).toEqual([[SERVER_CHAT, { id: row.id, text: 'On my way' }]])
+      expect(chats.draftOf(SERVER_CHAT)).toBe('')
+      await vi.waitFor(() => expect(chats.version).toBeGreaterThan(0))
+      expect(pollNow).not.toHaveBeenCalled()
+    })
+
+    it('keeps the draft and takes the reply back out when the server refuses it', async () => {
+      const chats = await ready()
+      chats.setDraft(SERVER_CHAT, 'On my way')
+      server.fail('queueReply', new ChatApiError(404, 'Not found'))
+      await expect(chats.send(SERVER_CHAT, 'On my way')).rejects.toThrow('The chat or reply is no longer on your Tresso server.')
+      expect(chats.draftOf(SERVER_CHAT)).toBe('On my way')
+      expect((await store.chatPage(SERVER_CHAT, { limit: 1 }))?.outgoing.map((reply) => reply.status)).toEqual(['cancelled'])
+    })
+
+    it('marks a chat read, noted and archived on the server, and lists chats left out on any device', async () => {
+      const chats = await ready()
+      const chat = chats.summaries[0]!.chat
+      await chats.markRead(chat)
+      expect(server.callsOf('updateChat')).toEqual([[SERVER_CHAT, { readThrough: chat.lastMessageAt }]])
+      await chats.archive(chat)
+      expect(server.lastCall('updateChat')!).toEqual([SERVER_CHAT, { archivedThrough: chat.lastMessageAt }])
+      expect(chats.inboxSummaries).toEqual([])
+
+      server.chats.get(DIRECT)!.leftOut = true
+      await server.deliver(store)
+      await chats.refresh()
+      expect(chats.leftOut.map((left) => left.id)).toEqual([SERVER_CHAT])
+    })
+
+    it('on the relaying Mac sends through its relay at once, and replies wait for the bridge there', async () => {
+      relay.relaysHere = true
+      relay.linked = true
+      const pollNow = vi.spyOn(relay, 'pollNow')
+      const syncNow = vi.spyOn(mail, 'syncNow')
+      const chats = await ready()
+      expect(chats.canReply).toBe(true)
+      relay.linked = false
+      expect(chats.canReply).toBe(false)
+      relay.linked = true
+      await chats.send(SERVER_CHAT, 'On my way')
+      await vi.waitFor(() => expect(pollNow).toHaveBeenCalled())
+      expect(syncNow).toHaveBeenCalled()
+    })
   })
 })
