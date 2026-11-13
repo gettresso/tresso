@@ -89,6 +89,25 @@ final class MeetingPreferencesTest extends DatabaseTestCase
         self::assertSame(['own_link' => self::ROOM, 'add_with_guests' => false, 'default_other' => 'none'], $row);
     }
 
+    public function testANullLinkKeepsItAndAnEmptyOneClearsIt(): void
+    {
+        $this->patch(['ownLink' => self::ROOM]);
+
+        self::assertSame(self::ROOM, $this->patch(['ownLink' => null])['ownLink'], 'null keeps the link.');
+        self::assertSame(self::ROOM, $this->patch(['addWithGuests' => false])['ownLink'], 'Leaving it out keeps it.');
+        self::assertNull($this->patch(['ownLink' => ''])['ownLink'], 'An empty link clears it.');
+    }
+
+    public function testAnAppTheServerDoesNotOfferStillReachesClientsAsAString(): void
+    {
+        $this->patch(['defaults' => [$this->gmail => 'zoom'], 'defaultOther' => 'zoom']);
+
+        $preferences = $this->get();
+        self::assertSame([$this->gmail => 'zoom'], $preferences['defaults'], 'A plain string a client that does not know it can ignore.');
+        self::assertSame('zoom', $preferences['defaultOther']);
+        self::assertNotContains('zoom', \is_array($preferences['apps']) ? $preferences['apps'] : [], 'Only apps lists what the server offers.');
+    }
+
     public function testDefaultsAndDisabledAreReplacedWhole(): void
     {
         $this->patch(['defaults' => [$this->gmail => 'meet', $this->microsoft => 'teams'], 'disabled' => [['app' => 'meet', 'mailAccountId' => $this->gmail]]]);
@@ -122,8 +141,10 @@ final class MeetingPreferencesTest extends DatabaseTestCase
 
         foreach ([
             'http://secret-room.example/kim' => 'Use a link that starts with https://.',
-            'https://kim:hunter2@secret-room.example/kim' => 'Use a link without a name or password in it.',
-            'https://secret-room.example/kim room' => 'Use a link that starts with https://.',
+            'HTTPS://secret-room.example/kim' => 'Use a link that starts with https://.',
+            'https://kim:hunter2@secret-room.example/kim' => 'Use a link without a user name or password in it.',
+            'https://secret-room.example/kim room' => 'Use a link without spaces, line breaks or hidden characters.',
+            'https://secret-room/kim' => 'Use a link with a full web address, such as https://meet.example.com/room.',
             'https://secret-room.example/'.str_repeat('k', 2049 - 28) => 'Use a link of at most 2048 characters.',
         ] as $link => $message) {
             $this->patch(['ownLink' => $link, 'addWithGuests' => false], 422);
@@ -282,8 +303,7 @@ final class MeetingPreferencesTest extends DatabaseTestCase
         $user = static::getContainer()->get(UserRepository::class)->findOneBy(['email' => $owner]);
         self::assertInstanceOf(User::class, $user);
         $account = new MailAccount($user, $emailAddress, $emailAddress, $provider);
-        $entityManager->persist($account);
-        $entityManager->flush();
+        $entityManager->wrapInTransaction(static fn () => $entityManager->persist($account));
 
         return $account->getId()->toRfc4122();
     }

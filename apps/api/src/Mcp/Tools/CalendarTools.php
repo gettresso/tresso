@@ -171,7 +171,7 @@ final readonly class CalendarTools implements ToolProvider
             scopes: [Scope::SettingsWrite],
             effect: ToolEffect::Update,
             inputSchema: Schema::object([
-                'ownLink' => Schema::string('The user\'s own room link: https only, without a name or password in it. Every event that uses it gets this same link, so anyone who has it can enter the room. An empty string removes it.', null, MeetingLinkAddress::MAX_LENGTH),
+                'ownLink' => Schema::string('The user\'s own room link: an https link with a full web address, without a user name or password in it. Every event that uses it gets this same link, so anyone who has it can enter the room. An empty string removes it.', null, MeetingLinkAddress::MAX_LENGTH),
                 'addWithGuests' => Schema::boolean('Switch the meeting link on when the first guest is added to an event.'),
                 'defaults' => [
                     'type' => 'object',
