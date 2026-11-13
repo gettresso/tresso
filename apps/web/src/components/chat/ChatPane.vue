@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Ref } from 'vue'
 import { RouterLink, useRouter, type RouteLocationRaw } from 'vue-router'
 import {
   chatMessageKey,
@@ -34,6 +34,7 @@ import ChatBubble, { type BubbleView } from '@/components/chat/ChatBubble.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatNotice from '@/components/chat/ChatNotice.vue'
 import { attachText, chatName, chatNoticeKind, clockTime, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, localBubbleMeta, localReplyLabel, mediaKindLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
+import { errorName } from '@/components/chat/whatsappTexts'
 import { composing } from '@/components/chat/composition'
 
 /**
@@ -248,8 +249,27 @@ function announceReplies(rows: readonly SyncedChatOutgoing[]): void {
   }
   replyStates = next
   if (said !== null) {
-    announcement.value = said
+    say(announcement, said)
   }
+}
+
+/** The latest text handed to each live region; an earlier one still waiting for its tick is dropped. */
+const saying = new Map<Ref<string>, number>()
+
+/**
+ * Puts `text` in a live region so it is spoken also when it equals what the region says now: the region is emptied
+ * first and given the text on the next tick (an unchanged text changes nothing in the DOM, so it would not be said).
+ * A newer text for the same region before that tick replaces this one, so one event is said once.
+ */
+function say(region: Ref<string>, text: string): void {
+  const mine = (saying.get(region) ?? 0) + 1
+  saying.set(region, mine)
+  region.value = ''
+  void nextTick(() => {
+    if (!unmounted && saying.get(region) === mine) {
+      region.value = text
+    }
+  })
 }
 
 /** The first window: the newest messages, scrolled to the end, and the chat read. */
@@ -294,53 +314,70 @@ async function reload(): Promise<void> {
   reloading++
   const first = messages.value[0]
   const follow = nearBottom()
-  let page: ChatPage | null
   try {
-    page = await chats.page(props.chatId, { limit: Math.max(PAGE, messages.value.length + PAGE), from: first === undefined ? null : chatMessageKey(first) })
-  } finally {
-    reloading--
-  }
-  if (unmounted) {
-    return
-  }
-  if (mine !== loads) {
-    // Overtaken: by a later reload (which brings what this one would), or by older messages, after which it runs again.
-    if (reloadAgain && !loadingOlder.value && reloading === 0) {
-      reloadAgain = false
-      void reload()
+    let page: ChatPage | null
+    try {
+      page = await chats.page(props.chatId, { limit: Math.max(PAGE, messages.value.length + PAGE), from: first === undefined ? null : chatMessageKey(first) })
+    } catch (cause) {
+      // The window stays as it is; the next change of the chats reads it again.
+      console.error('Reading the chat failed', errorName(cause))
+      return
+    } finally {
+      reloading--
     }
-    return
-  }
-  if (page === null) {
-    chat.value = null
-    return
-  }
-  const newest = messages.value[messages.value.length - 1]
-  take(page)
-  announceIncoming(newest === undefined ? null : chatMessageKey(newest), page.messages)
-  await nextTick()
-  if (follow) {
-    toBottom()
-  }
-  markReadIfSeen()
-  if (olderAgain && !loadingOlder.value) {
-    olderAgain = false
-    void loadOlder(true)
+    if (unmounted) {
+      return
+    }
+    if (mine !== loads) {
+      // Overtaken: by a later reload (which brings what this one would), or by older messages, after which it runs again.
+      if (reloadAgain && !loadingOlder.value && reloading === 0) {
+        reloadAgain = false
+        void reload()
+      }
+      return
+    }
+    if (page === null) {
+      chat.value = null
+      return
+    }
+    const newest = messages.value[messages.value.length - 1]
+    take(page)
+    announceIncoming(newest === undefined ? null : chatMessageKey(newest), page.messages)
+    await nextTick()
+    if (follow) {
+      toBottom()
+    }
+    markReadIfSeen()
+    if (olderAgain && !loadingOlder.value) {
+      olderAgain = false
+      void loadOlder(true)
+    }
+  } finally {
+    // The older read it was to repeat is owed by a reload still under way, else by none: one that failed, found the
+    // chat gone or met a newer read of older messages drops it, so a later reload never reads an extra older page.
+    if (reloading === 0) {
+      olderAgain = false
+    }
   }
 }
 
 /**
  * Says incoming messages that landed at the newest end of the window in a read after the first one: the sender and the
  * start of the text for one, how many for several. Own messages, history read in older pages and the first load say
- * nothing.
+ * nothing, nor history the relay reads in (chats.historyThrough): anything while the first import runs, and while a
+ * re-read runs (the chat was just taken back in) everything sent before it began.
  */
 function announceIncoming(before: ChatMessageKey | null, list: readonly SyncedChatMessage[]): void {
-  const fresh = list.filter((message) => !message.fromMe && (before === null || compareChatMessageKeys(chatMessageKey(message), before) > 0))
+  const history = chats.historyThrough
+  const fresh = list.filter((message) => {
+    const key = chatMessageKey(message)
+    return !message.fromMe && (before === null || compareChatMessageKeys(key, before) > 0) && (history === null || key.sentAt > history)
+  })
   if (fresh.length === 0) {
     return
   }
   if (fresh.length > 1) {
-    incoming.value = `${fresh.length} new messages`
+    say(incoming, `${fresh.length} new messages`)
     return
   }
   const message = chats.named(fresh[0]!)
@@ -348,7 +385,7 @@ function announceIncoming(before: ChatMessageKey | null, list: readonly SyncedCh
   const text = labelText(message.text) || (message.mediaKind === null ? '' : mediaKindLabel(message.mediaKind))
   const characters = [...text]
   const start = characters.length > INCOMING_MAX ? `${characters.slice(0, INCOMING_MAX - 1).join('').trimEnd()}…` : text
-  incoming.value = start === '' ? sender : `${sender}: ${start}`
+  say(incoming, start === '' ? sender : `${sender}: ${start}`)
 }
 
 /** Older messages before the first one, keeping what is on screen where it is. */

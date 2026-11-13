@@ -97,6 +97,12 @@ export const useChatsStore = defineStore('chats', () => {
   const leftOut = shallowRef<SyncedChat[]>([])
   /** The Unified Inbox's channel tab; kept while the app runs. */
   const channel = ref<InboxChannel>('all')
+  /**
+   * Messages sent at or before this moment (epoch ms) are history being read in, not news: everything while the first
+   * import runs, those before the re-read began while one runs (the relay store's `liveFrom`), none once the import is
+   * done. Notifications and the open chat's live region say nothing for history.
+   */
+  const historyThrough = computed(() => (wa.importState === 'done' ? null : (wa.liveFrom ?? Number.POSITIVE_INFINITY)))
   /** Read again after every change of the chats; a chat pane reloads its window on it. */
   const version = ref(0)
   /** The chat a pane shows now, for notifications (none for the chat the user looks at). */
@@ -177,7 +183,7 @@ export const useChatsStore = defineStore('chats', () => {
       seen,
       now: Date.now(),
       notify: primed && wa.config?.notify === true,
-      historyThrough: wa.importState === 'done' ? null : (wa.liveFrom ?? Number.POSITIVE_INFINITY),
+      historyThrough: historyThrough.value,
       focusedChatId: focused,
       named,
     })
@@ -464,6 +470,7 @@ export const useChatsStore = defineStore('chats', () => {
     leftOut,
     channel,
     version,
+    historyThrough,
     openChatId,
     media,
     attaching,

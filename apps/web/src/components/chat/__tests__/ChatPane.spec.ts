@@ -611,6 +611,109 @@ describe('ChatPane', () => {
     wrapper = view
   })
 
+  it('says nothing for history the relay reads in: all of it during the first import, before the re-read began during one', async () => {
+    const copy = await copyWith([direct], [incoming('A1', DIRECT, -10)])
+    const view = await open(DIRECT_ID, copy)
+    const live = () => view.get('.incoming')
+    const backend = new LocalChatBackend(copy, { includeGroups: true, leftOut: [], importSince: 0 }, { number: null, name: null, deviceId: 'd', deviceName: 'Mac' })
+    // The relay stored something. While it reads in, the chats are read again at most once a second (on a timer).
+    const stored = async () => {
+      vi.setSystemTime(Date.now() + 2_000)
+      relay.revision++
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await flushPromises()
+    }
+
+    // The first import: everything is history, also what is newer than the window.
+    relay.importState = 'reading'
+    relay.liveFrom = null
+    await backend.ingest([direct], [incoming('A2', DIRECT, 1), incoming('A3', DIRECT, 2)], false)
+    await stored()
+    expect(bubbles(view)).toHaveLength(3)
+    expect(live().text()).toBe('')
+
+    // The chat was taken back in and is read again from minute 5: what was sent before is history, after it news.
+    relay.liveFrom = NOW + 5 * 60_000
+    await backend.ingest([direct], [incoming('A4', DIRECT, 3), incoming('A5', DIRECT, 4), incoming('A6', DIRECT, 5)], false)
+    await stored()
+    expect(bubbles(view)).toHaveLength(6)
+    expect(live().text()).toBe('')
+    await backend.ingest([direct], [incoming('A7', DIRECT, 6, { text: 'Back again' }), incoming('A8', DIRECT, 2)], false)
+    await stored()
+    expect(live().text()).toBe('Bram Visser: Back again')
+
+    // The import is done: everything newer than the window is news again.
+    relay.importState = 'done'
+    relay.liveFrom = null
+    await backend.ingest([direct], [incoming('A9', DIRECT, 7), incoming('A10', DIRECT, 8)], false)
+    await stored()
+    expect(live().text()).toBe('2 new messages')
+    wrapper = view
+  })
+
+  it('says a text again when it equals the one before, once per event', async () => {
+    const copy = await copyWith([direct], [incoming('A1', DIRECT, -10)])
+    const view = await open(DIRECT_ID, copy)
+    const live = view.get('.incoming').element
+    const backend = new LocalChatBackend(copy, { includeGroups: true, leftOut: [], importSince: 0 }, { number: null, name: null, deviceId: 'd', deviceName: 'Mac' })
+    const said: string[] = []
+    const observer = new MutationObserver(() => said.push(live.textContent ?? ''))
+    observer.observe(live, { childList: true, characterData: true, subtree: true })
+
+    await backend.ingest([direct], [incoming('A2', DIRECT, 1, { text: 'Ok' })], false)
+    relay.revision++
+    await flushPromises()
+    expect(said).toEqual(['Bram Visser: Ok'])
+
+    // The same text again: the region is emptied first, so the change is there to be said, and the text is set once.
+    await backend.ingest([direct], [incoming('A3', DIRECT, 2, { text: 'Ok' })], false)
+    relay.revision++
+    await flushPromises()
+    expect(said).toEqual(['Bram Visser: Ok', '', 'Bram Visser: Ok'])
+    observer.disconnect()
+    wrapper = view
+  })
+
+  it('forgets the older read it was to repeat when the reload that overtook it fails', async () => {
+    const messages = Array.from({ length: 80 }, (_, index) => incoming(`M${String(index).padStart(3, '0')}`, DIRECT, -300 + index))
+    const copy = await copyWith([direct], messages)
+    const view = await open(DIRECT_ID, copy)
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const real = copy.chatPage.bind(copy)
+    let releaseOlder!: () => void
+    const olderHeld = new Promise<void>((resolve) => (releaseOlder = resolve))
+    let failReload!: () => void
+    const reloadHeld = new Promise<void>((resolve) => (failReload = resolve))
+    // The older page is held; a reload starts meanwhile and is held too; the older page lands (overtaken), then the
+    // reload fails.
+    vi.spyOn(copy, 'chatPage')
+      .mockImplementationOnce(async (...args) => {
+        const page = await real(...args)
+        await olderHeld
+        return page
+      })
+      .mockImplementationOnce(async () => {
+        await reloadHeld
+        throw new Error('database is closing')
+      })
+    await view.get('button.older').trigger('click')
+    await flushPromises()
+    relay.revision++
+    await flushPromises()
+    releaseOlder()
+    await flushPromises()
+    failReload()
+    await flushPromises()
+    expect(logged).toHaveBeenCalledWith('Reading the chat failed', 'Error')
+    expect(bubbles(view)).toHaveLength(50)
+
+    // A later reload reads the window again, and no older page the user did not ask for.
+    relay.revision++
+    await flushPromises()
+    expect(bubbles(view)).toHaveLength(50)
+    wrapper = view
+  })
+
   it('names the sender in a group, and a file by its kind', async () => {
     const copy = await copyWith([group], [incoming('G1', GROUP, -10, { sender: { id: '1', name: 'Mom' } })])
     const view = await open(GROUP_ID, copy)

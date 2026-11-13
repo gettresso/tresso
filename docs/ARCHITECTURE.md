@@ -1888,7 +1888,9 @@ size unknown on either side both show. The bridge stores nothing when it sends. 
 the shell for now, before the bridge reads it whole into memory (to be raised once the bridge was measured). The
 re-read after a chat was taken back in counts from the start of the last read the relay stored, and writes its mark
 before it clears the cursor. An open, focused chat says incoming messages in a polite live region (one: the sender and
-the start of the text; several: how many).
+the start of the text; several: how many). History the relay reads in is not news there, by the rule notifications
+follow: nothing while the first import runs, and while a re-read runs only what was sent after it began. The region is
+emptied before each text, so a text equal to the one before is said again.
 
 `ServerChatBackend` (`packages/core/src/chat/serverBackend.ts`) is the backend for "All my devices", over `ChatApi`
 (`packages/core/src/chat/api.ts`: the request and answer types of the chat endpoints of 3.17, one method per endpoint;
