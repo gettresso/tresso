@@ -19,8 +19,10 @@ const props = defineProps<{
   note?: string | null
   /** Who sends the reply, under the field (COMPOSER_NOTE on the Mac that sends). */
   sendNote?: string
-  /** A file can be attached (this Mac relays). */
+  /** Attach is offered. */
   canAttach: boolean
+  /** Why Attach cannot be used here, said next to it; null when it can. */
+  attachNote?: string | null
   attaching: boolean
   /** The line about a file being sent or not sent. */
   attachLine?: string | null
@@ -93,7 +95,16 @@ defineExpose({ focus: () => field.value?.focus() })
 <template>
   <form class="composer" novalidate @submit.prevent="submit">
     <div class="row">
-      <button v-if="canAttach" type="button" class="attach" aria-label="Attach a file" title="Attach a file" :disabled="disabled || attaching" @click="emit('attach')">
+      <button
+        v-if="canAttach"
+        type="button"
+        class="attach"
+        aria-label="Attach a file"
+        :title="attachNote ?? 'Attach a file'"
+        :aria-describedby="attachNote ? 'chat-attach-note' : undefined"
+        :disabled="disabled || attaching || !!attachNote"
+        @click="emit('attach')"
+      >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M20 11.5l-8 8a5 5 0 01-7-7l8.5-8.5a3.3 3.3 0 014.7 4.7L9.7 17.2a1.7 1.7 0 01-2.4-2.4l7.5-7.5" />
         </svg>
@@ -116,6 +127,7 @@ defineExpose({ focus: () => field.value?.focus() })
     <span v-if="checked.ok === false && checked.problem === 'control'" class="problem">The reply cannot contain control characters.</span>
     <span class="attach-line" role="status">{{ attachLine ?? '' }}</span>
     <span v-if="error" class="problem" role="alert">{{ error }}</span>
+    <span v-if="canAttach && attachNote" id="chat-attach-note" class="note">{{ attachNote }}</span>
     <span id="chat-composer-note" class="note">{{ disabled && note ? note : (sendNote ?? COMPOSER_NOTE) }}</span>
     <span class="visually-hidden" role="status">{{ announcement }}</span>
   </form>

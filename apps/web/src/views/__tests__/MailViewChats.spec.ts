@@ -74,6 +74,7 @@ describe('MailView with chats', () => {
         { path: '/', name: 'unified', component: MailView },
         { path: '/inbox/:threadId', name: 'unified-thread', component: MailView },
         { path: '/chats/:chatId', name: 'unified-chat', component: MailView },
+        { path: '/whatsapp', name: 'whatsapp', component: MailView },
         { path: '/settings/whatsapp', name: 'settings-whatsapp', component: { template: '<p />' } },
       ],
     })
@@ -94,6 +95,15 @@ describe('MailView with chats', () => {
   }
 
   const rows = (view: VueWrapper) => view.findAll('.scroll a.link').map((link) => link.attributes('href'))
+
+  it('says the chats are being brought in, not that there are none, right after the switch to "All my devices"', async () => {
+    const wa = useWhatsAppRelayStore()
+    wa.config = config({ mode: 'all' })
+    await useChatsStore().refresh()
+    const view = await show('/whatsapp')
+    expect(view.text()).toContain('Bringing in your chats…')
+    expect(view.text()).not.toContain('No chats yet.')
+  })
 
   it('moves focus to the row after the chat that was left out', async () => {
     const view = await show(`/chats/${encodeURIComponent(DIRECT_ID)}`)

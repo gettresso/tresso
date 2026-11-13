@@ -60,8 +60,11 @@ describe('the server chat actions ("All my devices")', () => {
     const rows = (await store.chatPage(CHAT_ID, { limit: 1 }))!.outgoing
     expect(rows.map((row) => row.status)).toEqual(['cancelled'])
 
+    // No answer: it may have been queued all the same, so the error carries the id to send it again with.
     server.fail('queueReply', new TypeError('Failed to fetch'))
-    await expect(actions.send(CHAT_ID, 'Again')).rejects.toThrow('Tresso could not reach your Tresso server. Try again.')
+    const unsure = await actions.send(CHAT_ID, 'Again').catch((caught: unknown) => caught)
+    expect(unsure).toMatchObject({ code: 'unsure', replyId: expect.stringMatching(UUID_V7) })
+    expect((unsure as Error).message).toBe('Tresso could not tell whether your Tresso server took this reply; it may already be queued. Sending it again sends it once.')
   })
 
   it('cancels a waiting reply at once and puts it back when the server refuses', async () => {
@@ -134,6 +137,44 @@ describe('the server chat actions ("All my devices")', () => {
     await store.putChats([{ ...chat, readThrough: new Date(NOW).toISOString() }])
     answer()
     await expect(changing).rejects.toMatchObject({ code: 'offline' })
-    expect(await store.chatByJid(ACCOUNT_ID, DIRECT)).toMatchObject({ leftOut: true, readThrough: new Date(NOW).toISOString() })
+    // The refused field goes back; the one the delta brought stays.
+    expect(await store.chatByJid(ACCOUNT_ID, DIRECT)).toMatchObject({ leftOut: false, readThrough: new Date(NOW).toISOString() })
+  })
+
+  it('puts each refused change back to what the server last confirmed, not to what an earlier refused change showed', async () => {
+    const lastMessageAt = new Date(NOW - 60_000).toISOString()
+    let answerFirst!: () => void
+    server.held.set('updateChat', new Promise<void>((resolve) => (answerFirst = resolve)))
+    server.fail('updateChat', new ChatApiError(500, 'Broken'), true)
+    const first = actions.setState(CHAT_ID, { readThrough: lastMessageAt }).catch((caught: unknown) => caught)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const second = actions.setState(CHAT_ID, { archivedThrough: lastMessageAt }).catch((caught: unknown) => caught)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    answerFirst()
+    await first
+    await second
+    expect(await store.chatByJid(ACCOUNT_ID, DIRECT)).toMatchObject({ readThrough: null, archivedThrough: null })
+  })
+
+  it('sends a reply again under the id of an unsure try, so the server queues it once', async () => {
+    // The server stored the first, but its answer was lost on the way back (a proxy's 502).
+    const original = server.queueReply.bind(server)
+    server.queueReply = async (chatId, request) => {
+      const row = await original(chatId, request)
+      if (server.callsOf('queueReply').length === 1) {
+        throw new ChatApiError(502, 'Bad gateway')
+      }
+      return row
+    }
+    const first = await actions.send(CHAT_ID, 'On my way').catch((caught: unknown) => caught)
+    const id = (first as ChatActionError).replyId!
+    expect(first).toMatchObject({ code: 'unsure' })
+    await actions.send(CHAT_ID, 'On my way', id)
+    expect([...server.outgoing.values()].map((row) => row.text)).toEqual(['On my way'])
+
+    // Too old to queue now and maybe queued before: never made new.
+    server.queueReply = original
+    server.fail('queueReply', new ChatApiError(422, 'Invalid', null, null, { id: '' }))
+    await expect(actions.send(CHAT_ID, 'Second', '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a99')).rejects.toMatchObject({ code: 'maybe_queued' })
   })
 })

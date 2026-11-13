@@ -217,7 +217,9 @@ describe('ChatPane', () => {
     // The bridge here does not matter: no notice, replies can be written, no Attach.
     expect(view.find('.notice').exists()).toBe(false)
     expect(view.get('#chat-composer-note').text()).toBe('Sent on WhatsApp by Office iMac. No signature, no subject.')
-    expect(view.find('button.attach').exists()).toBe(false)
+    expect(view.get('button.attach').attributes('disabled')).toBeDefined()
+    expect(view.get('#chat-attach-note').text()).toBe('Files are sent in Only this Mac for now.')
+    expect(view.get('button.attach').attributes('aria-describedby')).toBe('chat-attach-note')
     expect(view.get('textarea').attributes('disabled')).toBeUndefined()
   })
 

@@ -6,7 +6,9 @@ import {
   LocalChatError,
   nameText,
   recordLocalAttachment,
+  replyText,
   uuidV7,
+  uuidV7Time,
   type ChatMessageKey,
   type ChatOutgoingError,
   type ChatPage,
@@ -22,7 +24,8 @@ import { notifier } from '@/platform/notifier'
 import { whatsAppShell, type ChosenFile } from '@/platform/whatsapp'
 import { errorName } from '@/components/chat/whatsappTexts'
 import { useChatApi } from '@/api/chats'
-import { localChatActions, serverChatActions, type ChatActions, type ChatStateChange } from '@/stores/chatActions'
+import { ChatActionError, localChatActions, serverChatActions, type ChatActions, type ChatStateChange } from '@/stores/chatActions'
+import { useAuthStore } from '@/stores/auth'
 import { useMailStore } from '@/stores/mail'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 
@@ -53,6 +56,9 @@ export type AttachState =
   | { state: 'sending'; chatId: string; name: string }
   | { state: 'sent'; chatId: string; name: string }
   | { state: 'failed'; chatId: string; name: string; error: AttachError }
+
+/** The chat value keeping replies whose outcome was not known, by chat (see the store's `unsure`). */
+export const UNSURE_REPLIES = 'unsure-replies'
 
 /** How often a chat screen reads its replies again while one waits or is being sent (the relay sends in its rounds). */
 const REPLY_POLL_MS = 3_000
@@ -94,10 +100,27 @@ export const useChatsStore = defineStore('chats', () => {
    * ChatNotice); on another Mac in "All my devices" always (it waits in the server's queue for the relaying Mac).
    */
   const canReply = computed(() => enabled.value && (relaysHere.value ? wa.linked : true))
-  /** Attach is offered (disabled while replies cannot be written): "Only this Mac" only (files reach the server later). */
-  const canAttach = computed(() => enabled.value && wa.config?.mode === 'local')
+  /** Attach is offered (disabled while replies cannot be written). */
+  const canAttach = computed(() => enabled.value)
+  /** This Mac is bringing its chats in (a switch under way, or the first import of the Mac that relays). */
+  const bringingIn = computed(
+    () =>
+      wa.available &&
+      wa.connected &&
+      (wa.modeSwitch !== null || (wa.config?.mode === 'all' && wa.serverAccount === null) || (relaysHere.value && (wa.importState === 'waiting' || wa.importState === 'reading'))),
+  )
+  /** Why Attach is off: files go through the server only with a later package. */
+  const attachNote = computed(() => (enabled.value && wa.config?.mode === 'all' ? 'Files are sent in Only this Mac for now.' : null))
   const localActions = localChatActions(() => mail.currentStore())
-  const serverActions = serverChatActions({ api: useChatApi(), store: () => mail.currentStore(), pulled: () => void mail.syncNow() })
+  const auth = useAuthStore()
+  const serverActions = serverChatActions({ api: useChatApi(), store: () => mail.currentStore(), now: () => auth.serverNow(), pulled: () => void mail.syncNow() })
+  /**
+   * Per chat, a reply whose sending ended without knowing whether the server took it (ChatActionError `unsure`): its
+   * trimmed text and id. Sending the same text again reuses the id, so it is queued once. Kept in the copy's chat values
+   * (UNSURE_REPLIES), so a reload reuses it too; gone once it is sent or refused, once the delta brings that id, or once
+   * the server's id window (10 minutes) has passed.
+   */
+  let unsure = new Map<string, { text: string; id: string }>()
   /** The side every write goes to now. */
   const actions = computed<ChatActions>(() => (wa.config?.mode === 'all' ? serverActions : localActions))
   const account = shallowRef<SyncedChatAccount | null>(null)
@@ -140,6 +163,54 @@ export const useChatsStore = defineStore('chats', () => {
 
   function store(): MailStore | null {
     return enabled.value ? mail.currentStore() : null
+  }
+
+  /** JIDs left out on this Mac that the server has no chat row for yet ("All my devices"); see read. */
+  const leftOutHere = shallowRef<string[]>([])
+
+  /** The server takes a reply id at most this old (QueueReply::ID_BEHIND), on its clock. */
+  const ID_WINDOW_MS = 10 * 60_000
+
+  function expired(id: string): boolean {
+    const at = uuidV7Time(id)
+    return at === null || auth.serverNow() - at > ID_WINDOW_MS
+  }
+
+  async function keepUnsure(copy: MailStore, chatId: string, entry: { text: string; id: string } | null): Promise<void> {
+    const next = new Map(unsure)
+    if (entry === null) {
+      next.delete(chatId)
+    } else {
+      next.set(chatId, entry)
+    }
+    unsure = next
+    await copy.setChatMeta(UNSURE_REPLIES, next.size === 0 ? null : JSON.stringify([...next]))
+  }
+
+  /** Reads the unsure replies from the copy, and lets go of those the delta brought or that are too old to reuse. */
+  async function settleUnsure(copy: MailStore): Promise<void> {
+    const raw = await copy.chatMeta(UNSURE_REPLIES)
+    let read = new Map<string, { text: string; id: string }>()
+    try {
+      const parsed = raw === null ? [] : (JSON.parse(raw) as unknown)
+      if (Array.isArray(parsed)) {
+        read = new Map(
+          parsed.filter(
+            (entry): entry is [string, { text: string; id: string }] =>
+              Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1]?.text === 'string' && typeof entry[1]?.id === 'string',
+          ),
+        )
+      }
+    } catch {
+      // Unreadable: nothing to reuse.
+    }
+    unsure = read
+    for (const [chatId, entry] of read) {
+      const arrived = (await copy.chatPage(chatId, { limit: 1 }))?.outgoing.some((row) => row.id === entry.id && row.status !== 'cancelled') ?? false
+      if (arrived || expired(entry.id)) {
+        await keepUnsure(copy, chatId, null)
+      }
+    }
   }
 
   /** Reads the chats again (once more after one under way, never two at once). */
@@ -193,6 +264,20 @@ export const useChatsStore = defineStore('chats', () => {
           ? (await Promise.all((wa.config?.leftOut ?? []).map((jid) => copy.chatByJid(LOCAL_CHAT_ACCOUNT, jid)))).filter((chat): chat is SyncedChat => chat !== null)
           : // Left out on any device: the server's rows say it.
             await copy.leftOutChats(shownAccount)
+      if (shownAccount !== null && shownAccount !== LOCAL_CHAT_ACCOUNT) {
+        // Left out on this Mac with no server chat to say so (left out before the switch): still left out.
+        const listed = new Set(leftOut.value.map((chat) => chat.jid))
+        const kept: string[] = []
+        for (const jid of wa.config?.leftOut ?? []) {
+          if (!listed.has(jid) && (await copy.chatByJid(shownAccount, jid))?.leftOut !== false) {
+            kept.push(jid)
+          }
+        }
+        leftOutHere.value = kept
+      } else {
+        leftOutHere.value = []
+      }
+      await settleUnsure(copy)
       version.value++
       notify(local)
     } catch (cause) {
@@ -336,16 +421,30 @@ export const useChatsStore = defineStore('chats', () => {
    *   it (the composer keeps the text then)
    */
   async function send(chatId: string, text: string): Promise<SyncedChatOutgoing> {
-    if (store() === null) {
+    const copy = store()
+    if (copy === null) {
       throw new LocalChatError('no_chat')
     }
+    const checked = replyText(text)
+    const earlier = unsure.get(chatId)
+    // The same text after an unsure try is that reply again; any other text is a new one.
+    const again = earlier !== undefined && checked.ok && checked.text === earlier.text && !expired(earlier.id) ? earlier.id : undefined
     let row: SyncedChatOutgoing
     try {
-      row = await actions.value.send(chatId, text)
+      row = await actions.value.send(chatId, text, again)
     } catch (cause) {
+      if (cause instanceof ChatActionError && cause.code === 'unsure' && cause.replyId !== null && checked.ok) {
+        await keepUnsure(copy, chatId, { text: checked.text, id: cause.replyId })
+      } else if (earlier !== undefined && checked.ok && checked.text === earlier.text) {
+        // Refused, or too old to tell: never sent again under that id.
+        await keepUnsure(copy, chatId, null)
+      }
       // A reply shown at once and put back: the pane shows the chat as it is again.
       version.value++
       throw cause
+    }
+    if (earlier !== undefined) {
+      await keepUnsure(copy, chatId, null)
     }
     drafts.delete(chatId)
     void afterReply()
@@ -460,7 +559,7 @@ export const useChatsStore = defineStore('chats', () => {
    */
   async function attach(chat: SyncedChat): Promise<void> {
     const copy = store()
-    if (copy === null || !canAttach.value || !canReply.value || attaching.value.state === 'sending') {
+    if (copy === null || !canAttach.value || attachNote.value !== null || !canReply.value || attaching.value.state === 'sending') {
       return
     }
     let picked: ChosenFile | null
@@ -518,10 +617,13 @@ export const useChatsStore = defineStore('chats', () => {
     draftOf,
     setDraft,
     enabled,
+    leftOutHere,
     accountId,
     relaysHere,
     canReply,
     canAttach,
+    attachNote,
+    bringingIn,
     account,
     summaries,
     inboxSummaries,

@@ -82,7 +82,8 @@ const backTo = computed(() => {
 
 const emptyText = computed(() => {
   if (inWhatsApp.value || channel.value === 'whatsapp') {
-    return 'No chats yet.'
+    // While this Mac brings its chats in (also right after a switch, before the server's rows return), say so.
+    return chats.bringingIn ? 'Bringing in your chats…' : 'No chats yet.'
   }
   if (inBatches.value) {
     return 'No batch delivered yet.'
