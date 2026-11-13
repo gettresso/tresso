@@ -17,9 +17,13 @@ const menu = ref<HTMLElement | null>(null)
 const button = ref<HTMLButtonElement | null>(null)
 const { style: menuStyle, above: menuAbove } = useAnchoredMenu(button, menu, open)
 
-defineExpose({ open })
+defineExpose({ open, show })
 
+/** Opens the menu with the focus on its first choice; nothing while the button is disabled or has no choices. */
 async function show(): Promise<void> {
+  if (props.disabled || props.items.length === 0) {
+    return
+  }
   open.value = true
   await nextTick()
   menu.value?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus()

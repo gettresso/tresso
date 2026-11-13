@@ -6,6 +6,8 @@ import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import type { ChangePage, SyncedMessage, SyncedUnsubscription, SyncedHandOver } from '@tresso/core'
 import { todo } from '@tresso/core/testing'
 import { deleteMailDatabase } from '@/mail/db'
+import { openConversation } from '@/mail/openConversation'
+import { runMenuAction, type MenuAction } from '@/platform/menu'
 import { useComposeStore } from '@/stores/compose'
 import { useHandOversStore } from '@/stores/handOvers'
 import { useMailStore } from '@/stores/mail'
@@ -441,6 +443,145 @@ describe('ReadingPane actions', () => {
 
     expect(await folderIdsOf('m2')).toEqual(['inbox'])
     expect(router.currentRoute.value.path).toBe('/inbox/t1')
+  })
+
+  describe('the Message menu', () => {
+    /** Runs a Message menu item as the desktop bridge does, against the conversation on screen. */
+    function menu(action: MenuAction): Promise<void> {
+      return runMenuAction(action, {
+        router: { push: vi.fn<(to: { name: string }) => Promise<undefined>>(async () => undefined) },
+        newMessage: vi.fn<() => void>(),
+        reload: vi.fn<() => Promise<void>>(async () => undefined),
+        signedIn: () => true,
+        toggleSidebar: vi.fn<() => void>(),
+        sidebarShown: () => true,
+        getNewMail: vi.fn<() => Promise<void>>(async () => undefined),
+        conversation: openConversation,
+        editing: () => false,
+      })
+    }
+
+    it('offers the conversation once it is loaded, as read and not flagged, and nothing once it is gone', async () => {
+      expect(openConversation()).toBeNull()
+      const wrapper = mountPane()
+      await opened(wrapper)
+
+      await vi.waitFor(() => expect(openConversation()?.read()).toBe(true))
+      expect(openConversation()?.flagged()).toBe(false)
+      wrapper.unmount()
+      expect(openConversation()).toBeNull()
+    })
+
+    it('archives as the button does: the same request, back to the list, and an undo', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+
+      await menu('archive')
+      await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/'))
+
+      expect(actions).toEqual([{ messageIds: ['m1', 'm2'], action: 'archive' }])
+      expect(useComposeStore().notices.find((n) => n.text === 'Archived.')?.action?.label).toBe('Undo')
+    })
+
+    it('moves to Trash as # does', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+
+      await menu('move-to-trash')
+
+      expect(actions).toEqual([{ messageIds: ['m1', 'm2'], action: 'trash' }])
+      expect(useComposeStore().notices.find((n) => n.text === 'Moved to Trash.')?.action?.label).toBe('Undo')
+    })
+
+    it('flags and unflags as S does, and says which it would do next', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+
+      await menu('toggle-flag')
+      expect(actions).toEqual([{ messageIds: ['m2'], action: 'flag' }])
+      await vi.waitFor(() => expect(openConversation()?.flagged()).toBe(true))
+      expect(wrapper.get('button[aria-keyshortcuts="S"]').attributes('aria-pressed')).toBe('true')
+
+      await menu('toggle-flag')
+      expect(actions[1]).toEqual({ messageIds: ['m2'], action: 'unflag' })
+      await vi.waitFor(() => expect(openConversation()?.flagged()).toBe(false))
+    })
+
+    it('marks a read conversation unread as U does, back to the list', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+
+      await menu('toggle-read')
+
+      expect(actions).toEqual([{ messageIds: ['m2'], action: 'markUnread' }])
+      await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/'))
+    })
+
+    it('reads an unread conversation', async () => {
+      // Reading it on open is refused, so it stays unread: the item offers Mark as Read.
+      refuse = 'markRead'
+      mountPane()
+      await vi.waitFor(() => expect(useComposeStore().notices.some((n) => n.tone === 'error')).toBe(true))
+      await vi.waitFor(() => expect(openConversation()?.read()).toBe(false))
+      refuse = null
+      actions.length = 0
+
+      await menu('toggle-read')
+
+      expect(actions).toEqual([{ messageIds: ['m2'], action: 'markRead' }])
+      await vi.waitFor(() => expect(openConversation()?.read()).toBe(true))
+      expect(router.currentRoute.value.path).toBe('/inbox/t1')
+    })
+
+    it('replies, replies to all and forwards the newest message, as its own buttons do', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      const openReply = vi.spyOn(useComposeStore(), 'openReply').mockResolvedValue()
+
+      await menu('reply')
+      await menu('reply-all')
+      await menu('forward')
+
+      expect(openReply.mock.calls.map(([message, kind]) => [message.id, kind])).toEqual([
+        ['m2', 'reply'],
+        ['m2', 'replyAll'],
+        ['m2', 'forward'],
+      ])
+    })
+
+    it('opens the folder menu for Move to…, with the focus on the first folder', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+
+      await menu('move-to')
+
+      await vi.waitFor(() => expect(wrapper.find('[role="menu"]').exists()).toBe(true))
+      expect(document.activeElement).toBe(wrapper.findAll('[role="menuitem"]')[0]!.element)
+      expect(actions).toHaveLength(1)
+    })
+
+    it('offers nothing while conversations are selected in the list or a hand-over is written, and does nothing then', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+
+      useSelectionStore().toggle('t9')
+      expect(openConversation()).toBeNull()
+      await menu('archive')
+      useSelectionStore().clear()
+      expect(openConversation()).not.toBeNull()
+
+      await wrapper.get('button[aria-keyshortcuts="H"]').trigger('click')
+      await vi.waitFor(() => expect(useHandOversStore().handingOver).not.toBeNull())
+      expect(openConversation()).toBeNull()
+      await menu('toggle-flag')
+      await settle()
+      expect(actions).toEqual([])
+    })
   })
 
   describe('unsubscribe', () => {

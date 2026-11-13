@@ -43,7 +43,7 @@ const savedText = computed(() =>
 </script>
 
 <template>
-  <section v-if="draft" ref="root" class="compose" :class="{ minimized: compose.minimized }" role="dialog" :aria-label="title" @keydown.esc="compose.close()">
+  <section v-if="draft" ref="root" data-compose-window class="compose" :class="{ minimized: compose.minimized }" role="dialog" :aria-label="title" @keydown.esc="compose.close()">
     <header class="bar">
       <h2>{{ title }}</h2>
       <span class="saved" aria-live="polite">{{ savedText }}</span>

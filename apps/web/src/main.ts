@@ -15,6 +15,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { isDesktop, onDeepLinks } from './platform/desktop'
 import { startMenuBridge } from './platform/menu'
+import { followEditing } from './platform/editing'
+import { openConversation } from './mail/openConversation'
 import { followReducedTransparency, vibrant } from './platform/vibrancy'
 import { followSelectionAccent, framed } from './platform/frame'
 import { useFrameStore } from './stores/frame'
@@ -23,6 +25,7 @@ import { onPushClick } from './platform/webPush'
 import { desktopLinkRoute } from './platform/signInLinks'
 import { useAuthStore } from './stores/auth'
 import { useComposeStore } from './stores/compose'
+import { useMailStore } from './stores/mail'
 import { useUpdatesStore } from './stores/updates'
 
 if (vibrant) {
@@ -53,8 +56,10 @@ if (isDesktop) {
       void router.replace(route)
     }
   })
-  // The menu bar (macOS): its actions run here, and its items act only while someone is signed in. It does not hold up
-  // the first screen; when it cannot start, the items that act in the app stay disabled.
+  // The menu bar (macOS): its actions run here, and its items act only while someone is signed in (the Message menu's
+  // while a conversation is open). It does not hold up the first screen; when it cannot start, the items that act in
+  // the app stay disabled.
+  const editing = followEditing(document)
   startMenuBridge(
     {
       router,
@@ -63,6 +68,9 @@ if (isDesktop) {
       reload: () => useUpdatesStore().reloadApp(),
       toggleSidebar: () => useFrameStore().toggle(),
       sidebarShown: () => useFrameStore().shown,
+      getNewMail: () => useMailStore().syncNow(),
+      conversation: openConversation,
+      editing: () => editing.editing.value,
     },
     { listen, invoke },
   ).catch((error: unknown) => console.error('The menu bar could not be connected to the app', error))
