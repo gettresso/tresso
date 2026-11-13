@@ -3575,7 +3575,7 @@ master keys (DATA_KEYS, environment)
   `chat-message-sender`, `chat-message-text`, `chat-message-media`) and `chat_outgoing.sealed_text` and
   `sealed_file_name` (`chat-outgoing-text`, `chat-outgoing-file-name`). Chats and messages are found by fingerprints
   under the user's index key (`jid_fingerprint`, `wa_fingerprint`). Readable are kinds, times, counts, sizes, states
-  and a file's SHA-256. Key rotation reseals every column of that list (`chatFields` step of `Reencryption`).
+  and a file's content fingerprint under the user's index key. Key rotation reseals every column of that list (`chatFields` step of `Reencryption`).
 - **Plaintext on purpose:** subject, sender and recipient addresses and names, dates, flags, sizes, folder and thread
   structure, attachment names and types. The server queries them: threading matches the normalized subject and the
   participants, sender rules and smart inboxes match addresses, recipient suggestions and the meeting brief search
@@ -3749,8 +3749,9 @@ it is the server.
   passes the messages on (`relay/messages`), says every minute and on each change that it is there and how its bridge
   and link stand (`relay/status`; 3 minutes without a word and every device shows the Mac offline since it was last
   heard from), claims and sends the replies written anywhere, and brings files the user asks for. Everything is
-  sealed with the owner's field key (3.16); the server looks chats and messages up by fingerprints, so it never needs a
-  JID or a WhatsApp id readable. Nothing moves while that Mac is off or asleep: replies wait for it.
+  sealed with the owner's field key (3.16): encryption at rest, as for mail, not end to end, since the server opens it
+  to serve the user's devices and the apps and clients the user gave `chat:read`. The server looks chats and messages up
+  by fingerprints, so it never needs a JID or a WhatsApp id readable to find them. Nothing moves while that Mac is off or asleep: replies wait for it.
 - **Takeover.** Another Mac of the user takes the relay over with "Use this Mac instead"
   (`PUT /api/v1/chat-accounts/whatsapp`): the former relay gets 409 `not_the_relay` from then on, may still report the
   claim it was sending, and stops; a Mac linked to another number than the account's may not take over an account

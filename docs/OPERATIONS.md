@@ -328,40 +328,50 @@ All my devices:
 53. Quit the bridge on Mac A: within a minute Mac B's Relaying Mac row shows the bridge's state.
 54. Cancel a waiting reply: it never goes out. Kill Tresso on Mac A in the middle of a send (try with the network off):
     the reply ends as not sent with the "could not confirm" text, and is sent again only with Try again.
-55. On Mac B, `Use this Mac instead`: Mac A stops relaying and its Settings names Mac B, no chat or message is doubled.
+55. A reply shown as could not confirm, cancelled, that did go out after all (its relay's late word): it comes back on
+    every device as sent. Try again on a reply that could not be confirmed while the relay may still be sending it says
+    to wait and sends nothing.
+56. On Mac B, `Use this Mac instead`: Mac A stops relaying and its Settings names Mac B, no chat or message is doubled.
     Take over while Mac A is sending a reply: it ends `sent` everywhere, never `not confirmed`, and goes once.
-56. Switch Mac A from "Only this Mac" to "All my devices" with a reply waiting (bridge unlinked): after linking again
+57. Switch Mac A from "Only this Mac" to "All my devices" with a reply waiting (bridge unlinked): after linking again
     it goes out exactly once. Switch back: Remove is asked, the chats go from Mac B, the browser and the phone, and Mac
     A reads them in again, read. Quit Tresso in the middle of a switch, both ways, and start it: the switch finishes.
-57. Leave a chat out on Mac B, take it back in on Mac A: old messages come back read, new ones unread. Groups off on
+58. Leave a chat out on Mac B, take it back in on Mac A: old messages come back read, new ones unread. Groups off on
     Mac A: groups go from every device; on again: they come back read.
-58. Disconnect on Mac B: the chats go from both Macs, the browser and the phone, and Mac A says WhatsApp was
+59. Disconnect on Mac B: the chats go from both Macs, the browser and the phone, and Mac A says WhatsApp was
     disconnected from the server. Remove WhatsApp from the server in the browser: the same.
-59. Push with Notify me on (set in the browser or on Mac A): one push per chat burst on the phone, named after the chat,
+60. Push with Notify me on (set in the browser or on Mac A): one push per chat burst on the phone, named after the chat,
     never the text or a number (a contact without a name says `New WhatsApp message`); a tap opens the chat. Expect a
     notification from WhatsApp itself as well.
-60. Console.app on both Macs and the API and worker logs show no message text, names or numbers.
+61. Console.app on both Macs and the API and worker logs show no message text, names or numbers.
 
 Files through the server:
 
-61. In the browser and on the phone, ask for a photo and a PDF while Mac A relays: both arrive, show `Checking for
+62. In the browser and on the phone, ask for a photo and a PDF while Mac A relays: both arrive, show `Checking for
     malware.`, then open (the photo inline in a tab, the PDF as a download). With Mac A offline the row says it waits
     for the Mac.
-62. A file over 100 MB, and an old message whose file WhatsApp no longer has: the row says why, and Try again is offered
+63. A file over 100 MB, and an old message whose file WhatsApp no longer has: the row says why, and Try again is offered
     only where it may pass.
-63. A file of nearly 100 MB on a slow line (a throttled network), asked for and attached: it arrives with its progress,
+64. A file of nearly 100 MB on a slow line (a throttled network), asked for and attached: it arrives with its progress,
     behind the real proxy in front of the API (the body limit and request time in "WhatsApp files and a proxy").
-64. Attach a file in the browser and on the phone: Mac A sends it, the recipient sees its name, and the staged copy in
+65. Attach a file in the browser and on the phone: Mac A sends it, the recipient sees its name, and the staged copy in
     the app's `whatsapp-outbox` folder is gone after.
-65. Cancel an attach halfway through the upload, and again while the reply is being queued (browser and phone):
+66. Quit Tresso on Mac A in the middle of sending a reply with a file: the app's `whatsapp-outbox` folder is empty
+    afterwards, also after the next start.
+67. Cancel an attach halfway through the upload, and again while the reply is being queued (browser and phone):
     nothing reaches the chat. Cut the network right after Cancel: the line says the file may still be sent. Send the
     phone app to the background mid upload: nothing is sent.
-66. Send yourself the EICAR test file on WhatsApp and ask for it: it is blocked and never opens on any device.
-67. Leave a chat out after downloading one of its files: the object is gone from storage.
+68. Sign out in the browser and on the phone in the middle of an upload: nothing is sent, and nothing is left waiting
+    for the Mac on any device.
+69. A file that could not be scanned (a scanner that was down, `confirm`) opens only after the warning was accepted, in
+    the browser and on the phone, and never on a server with `ATTACHMENTS_REQUIRE_SCAN=1`.
+70. VoiceOver on the phone: a file row's state and action, the attach progress and its Cancel are read out.
+71. Send yourself the EICAR test file on WhatsApp and ask for it: it is blocked and never opens on any device.
+72. Leave a chat out after downloading one of its files: the object is gone from storage.
 
 Tokens and MCP:
 
-68. A personal access token with every scope except the two WhatsApp ones, and an MCP client without them: neither
+73. A personal access token with every scope except the two WhatsApp ones, and an MCP client without them: neither
     sees any WhatsApp list or endpoint. With `chat:read`, a token and an MCP client list, read and search the chats and
     see a file's kind, name and size, but never get a link to it; with `chat:send` alone, a reply is queued and nothing
     is read. A third-party app that did not name the WhatsApp scopes never gets them.
