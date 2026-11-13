@@ -145,6 +145,10 @@ final class EventReaderTest extends TestCase
         yield 'Teams property' => [['X-MICROSOFT-SKYPETEAMSMEETINGURL:https://teams.microsoft.com/l/meetup-join/19%3ameeting'], 'teams', 'https://teams.microsoft.com/l/meetup-join/19%3ameeting'];
         yield 'RFC 7986' => [['CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://example.zoom.us/j/123456'], 'zoom', 'https://example.zoom.us/j/123456'];
         yield 'link in the description' => [['DESCRIPTION:Join: https://company.webex.com/meet/kim or call'], 'webex', 'https://company.webex.com/meet/kim'];
+        yield 'Tresso join line' => [['DESCRIPTION:Agenda\\n\\nJoin the meeting: https://meet.company.example/kim'], 'other', 'https://meet.company.example/kim'];
+        yield 'Tresso join line with a Zoom link' => [['DESCRIPTION:Join with Zoom: https://zoom.us/j/1234567890'], 'zoom', 'https://zoom.us/j/1234567890'];
+        yield 'CONFERENCE wins over the join line' => [['CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://example.zoom.us/j/123456', 'DESCRIPTION:Join the meeting: https://meet.company.example/kim'], 'zoom', 'https://example.zoom.us/j/123456'];
+        yield 'the join line wins over an earlier link' => [['DESCRIPTION:Last time: https://meet.google.com/abc-defg-hij\\n\\nJoin the meeting: https://meet.company.example/kim'], 'other', 'https://meet.company.example/kim'];
     }
 
     public function testReadsTressoChannelsTravelTimeAndTheDefaults(): void
