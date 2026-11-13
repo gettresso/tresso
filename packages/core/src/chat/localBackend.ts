@@ -8,6 +8,12 @@ import { LOCAL_CHAT_PREFIX, type SyncedChat, type SyncedChatAccount, type Synced
 export const LOCAL_CHAT_ACCOUNT = `${LOCAL_CHAT_PREFIX}account`
 /** The chat value (MailStore.chatMeta) holding the relay's cursor in the bridge's store. */
 export const LOCAL_CURSOR = 'cursor'
+/**
+ * The chat value holding, while a re-read of the bridge's store runs (resetLocalCursor with `liveFrom`), the moment it
+ * began, in epoch ms: rows sent before it are history (read), rows after it are live (unread). Removed once the re-read
+ * ended.
+ */
+export const LOCAL_HISTORY_THROUGH = 'history-through'
 
 /** The id of the chat with this JID in the "Only this Mac" mode. */
 export function localChatId(jid: string): string {
@@ -170,6 +176,8 @@ export class LocalChatBackend implements ChatBackend {
    */
   ingest(chats: IncomingChat[], messages: IncomingMessage[], firstImport: boolean): Promise<IngestCounts> {
     return this.locked(async () => {
+      // A re-read (not the first import after connecting) counts as history only what was sent before it began.
+      const historyThrough = firstImport ? readHistoryThrough(await this.store.chatMeta(LOCAL_HISTORY_THROUGH)) : null
       let leftOut = 0
       const described = new Map(chats.map((chat) => [chat.jid, chat]))
       const byChat = new Map<string, IncomingMessage[]>()
@@ -211,7 +219,7 @@ export class LocalChatBackend implements ChatBackend {
           kind: chat?.kind ?? existing?.kind ?? chatKindOf(jid),
           name: chat?.name ?? existing?.name ?? null,
           lastMessageAt,
-          readThrough: firstImport && nothingUnread(existing) ? lastMessageAt : (existing?.readThrough ?? null),
+          readThrough: firstImport && nothingUnread(existing) ? historyRead(existing, lastMessageAt, historyThrough) : (existing?.readThrough ?? null),
           archivedThrough: existing?.archivedThrough ?? null,
           leftOut: false,
         })
@@ -238,7 +246,12 @@ export class LocalChatBackend implements ChatBackend {
   }
 
   setCursor(cursor: RelayCursor): Promise<void> {
-    return this.locked(() => this.store.setChatMeta(LOCAL_CURSOR, JSON.stringify(cursor)))
+    return this.locked(async () => {
+      await this.store.setChatMeta(LOCAL_CURSOR, JSON.stringify(cursor))
+      if (cursor.firstImport === null) {
+        await this.store.setChatMeta(LOCAL_HISTORY_THROUGH, null)
+      }
+    })
   }
 
   /**
@@ -345,6 +358,24 @@ function nothingUnread(chat: SyncedChat | null): boolean {
     return true
   }
   return chat.readThrough !== null && timeOf(chat.readThrough) >= timeOf(chat.lastMessageAt)
+}
+
+/** A stored LOCAL_HISTORY_THROUGH; null when unset or not a time. */
+export function readHistoryThrough(value: string | null): number | null {
+  const at = value === null ? Number.NaN : Number(value)
+  return Number.isSafeInteger(at) && at >= 0 ? at : null
+}
+
+/**
+ * Where a first import (or a re-read) marks a chat that had nothing unread as read: through its last message, or, in a
+ * re-read, at most through the moment the re-read began, so messages that came in since stay unread. Never earlier than
+ * what the chat was read through already.
+ */
+function historyRead(existing: SyncedChat | null, lastMessageAt: string, historyThrough: number | null): string {
+  if (historyThrough === null || Date.parse(lastMessageAt) <= historyThrough) {
+    return lastMessageAt
+  }
+  return later(existing?.readThrough ?? null, new Date(historyThrough).toISOString())
 }
 
 /** The later of two times; `value` when `current` is null or does not parse. */
@@ -588,10 +619,19 @@ export function removeLocalGroupChats(store: MailStore): Promise<number> {
 
 /**
  * Makes the relay read the bridge's store again from the start, as a first import (history arrives read): when groups
- * are brought in again, the rows it passed over are behind its cursor. Stop the relay first.
+ * are brought in again, or a chat is taken back in, the rows it passed over are behind its cursor. With `liveFrom`
+ * (epoch ms, the moment of the reset) only rows sent before it count as history: what came in since arrives unread, as
+ * it would have live. Stop the relay first.
+ *
+ * Local mode only: the copy is this Mac's own. Against the server ("All my devices") a first-import batch may never
+ * follow a live one (the server honours `firstImport` only until the relay's first live batch), so there a chat taken
+ * back in must be read again with live batches only, its history marked read by a chat state change instead.
  */
-export function resetLocalCursor(store: MailStore): Promise<void> {
-  return serialized(store, () => store.setChatMeta(LOCAL_CURSOR, null))
+export function resetLocalCursor(store: MailStore, liveFrom: number | null = null): Promise<void> {
+  return serialized(store, async () => {
+    await store.setChatMeta(LOCAL_CURSOR, null)
+    await store.setChatMeta(LOCAL_HISTORY_THROUGH, liveFrom === null ? null : String(Math.floor(liveFrom)))
+  })
 }
 
 /**
@@ -603,5 +643,6 @@ export function removeLocalChats(store: MailStore): Promise<void> {
   return serialized(store, async () => {
     await store.removeChatAccount(LOCAL_CHAT_ACCOUNT)
     await store.setChatMeta(LOCAL_CURSOR, null)
+    await store.setChatMeta(LOCAL_HISTORY_THROUGH, null)
   })
 }

@@ -19,6 +19,7 @@ import {
   CHAT_REPLY_MAX,
   SENDER_COLORS,
   senderColor,
+  sentFileKind,
   timeline,
   unreadCount,
 } from './format'
@@ -351,6 +352,39 @@ describe('timeline', () => {
     for (const stored of [late, theirs, other, otherChat]) {
       expect(timeline([stored], [reply]).filter((entry) => entry.kind === 'outgoing')).toHaveLength(1)
     }
+  })
+
+  it('drops a file sent from the desktop once a history sync stored it as the bridge does', () => {
+    // The bridge stores nothing when it sends; a later history sync stores the own message with an empty caption and a
+    // name it made up (`image_<time>.jpg`; a document, whose name it sends as the title only, `document_<time>`).
+    const at = '2026-11-12T10:00:00+00:00'
+    const photo = message('1', { fromMe: true, text: '', sentAt: '2026-11-12T10:00:30+00:00', mediaKind: 'image', mediaName: 'image_20261112_100030.jpg', mediaSize: 2048 })
+    const sentPhoto = outgoing('a', { text: 'File: Holiday.JPG', sentAt: at })
+    expect(timeline([photo], [sentPhoto]).map((entry) => entry.kind)).toEqual(['message'])
+
+    const document = message('2', { fromMe: true, text: '', sentAt: at, mediaKind: 'document', mediaName: 'document_20261112_100000', mediaSize: 4096 })
+    expect(timeline([document], [outgoing('b', { text: 'File: plan.pdf', sentAt: at })]).map((entry) => entry.kind)).toEqual(['message'])
+    const voice = message('3', { fromMe: true, text: '', sentAt: at, mediaKind: 'audio', mediaName: 'audio_20261112_100000.ogg', mediaSize: 1 })
+    expect(timeline([voice], [outgoing('c', { text: 'File: note.ogg', sentAt: at })]).map((entry) => entry.kind)).toEqual(['message'])
+
+    // A file of another kind, or one with a caption, never stands in for it.
+    expect(timeline([photo], [outgoing('d', { text: 'File: plan.pdf', sentAt: at })])).toHaveLength(2)
+    expect(timeline([{ ...photo, text: 'Look' }], [sentPhoto])).toHaveLength(2)
+  })
+
+  it('tells which kind the bridge sends a file as', () => {
+    expect(['a.JPEG', 'b.png', 'c.gif', 'd.webp', 'e.ogg', 'f.MOV', 'g.avi', 'h.mp4', 'i.pdf', 'noextension'].map(sentFileKind)).toEqual([
+      'image',
+      'image',
+      'image',
+      'image',
+      'audio',
+      'video',
+      'video',
+      'video',
+      'document',
+      'document',
+    ])
   })
 
   it('keeps replies that are not sent even when the text matches', () => {

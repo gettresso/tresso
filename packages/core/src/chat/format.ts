@@ -1,5 +1,6 @@
 import type {
   ChatKind,
+  ChatMediaKind,
   ChatMedia,
   ChatOutgoingError,
   SyncedChat,
@@ -298,6 +299,38 @@ export function inInbox(chat: Pick<SyncedChat, 'lastMessageAt' | 'archivedThroug
   return Number.isNaN(archivedThrough) || !((Date.parse(chat.lastMessageAt) || 0) <= archivedThrough)
 }
 
+/** The text a file sent from the desktop is recorded with (recordLocalAttachment): `File: <name>`. */
+export const SENT_FILE_PREFIX = 'File: '
+
+/**
+ * The kind the bridge sends a file as, by its extension (whatsapp-bridge's sendWhatsAppMessage): jpg, jpeg, png, gif
+ * and webp as a picture, ogg as a voice message, mp4, avi and mov as a video, anything else as a document.
+ */
+export function sentFileKind(name: string): ChatMediaKind {
+  const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : ''
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension)) {
+    return 'image'
+  }
+  if (extension === 'ogg') {
+    return 'audio'
+  }
+  return ['mp4', 'avi', 'mov'].includes(extension) ? 'video' : 'document'
+}
+
+/**
+ * Whether a stored own message is the bridge's copy of a sent reply. Text replies match by their trimmed text. A file
+ * sent from the desktop (`File: <name>`) matches an own message with no text that carries a file of the kind it was
+ * sent as: the bridge stores none at sending, and the copy a history sync brings later has an empty caption and a name
+ * the bridge made up (`image_<time>.jpg`, `document_<time>` for a document, whose name it sends as the title only).
+ */
+function isEchoOf(message: SyncedChatMessage, reply: SyncedChatOutgoing): boolean {
+  const text = reply.text.trim()
+  if (reply.text.startsWith(SENT_FILE_PREFIX) && message.mediaKind !== null && message.text.trim() === '') {
+    return message.mediaKind === sentFileKind(reply.text.slice(SENT_FILE_PREFIX.length))
+  }
+  return message.text.trim() === text
+}
+
 export type TimelineEntry =
   | { kind: 'message'; at: number; message: SyncedChatMessage }
   | { kind: 'outgoing'; at: number; outgoing: SyncedChatOutgoing }
@@ -313,7 +346,7 @@ function sortTime(...candidates: number[]): number {
  * replies and each list keeps its order.
  *
  * A cancelled reply is left out. A sent reply is left out when the bridge also stored it: an own message of the same
- * chat with the same trimmed text, stored from 1 minute before to 5 minutes after the reply's `sentAt`. Sent replies
+ * chat with the same trimmed text (or, for a file the desktop sent, see isEchoOf), stored from 1 minute before to 5 minutes after the reply's `sentAt`. Sent replies
  * are matched oldest first, each to the nearest unmatched message, so one stored message stands in for one reply
  * only and a message typed on the phone more than a minute before a reply never hides it. A reply without text is
  * never matched.
@@ -330,11 +363,10 @@ export function timeline(
     .sort((a, b) => instant(a.sentAt) - instant(b.sentAt))
   for (const reply of sent) {
     const at = instant(reply.sentAt)
-    const text = reply.text.trim()
     let nearest: SyncedChatMessage | null = null
     let nearestDistance = Number.POSITIVE_INFINITY
     for (const message of echoes) {
-      if (used.has(message) || message.chatId !== reply.chatId || message.text.trim() !== text) {
+      if (used.has(message) || message.chatId !== reply.chatId || !isEchoOf(message, reply)) {
         continue
       }
       const offset = Date.parse(message.sentAt) - at
