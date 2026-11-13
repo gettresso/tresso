@@ -482,10 +482,10 @@ func (w *writer) htmlBody(ctx context.Context, id, text string) (itemBody, error
 	if err := w.session.request(ctx, http.MethodGet, eventPath(w.calendar.RemoteID, id)+"?$select=body", nil, &current); err != nil {
 		return itemBody{}, err
 	}
-	block := ""
+	block, below := "", ""
 	if strings.EqualFold(current.Body.ContentType, "html") {
 		// The join line Tresso wrote after the block last time is no part of it: the description says what goes there.
-		block = withoutJoinLines(meetingBlock(current.Body.Content))
+		block, below = withoutJoinLines(meetingBlock(current.Body.Content))
 	}
 	normal := lines(text)
 	_, line := joinLine(normal)
@@ -505,6 +505,10 @@ func (w *writer) htmlBody(ctx context.Context, id, text string) (itemBody, error
 	tail := ""
 	if line > i {
 		tail = normal[line:]
+	} else {
+		// The join line was taken out: what the user wrote below it (Tresso wrote it after the block) stays, when the
+		// description still ends with it.
+		tail = endingWith(normal[i:], below)
 	}
 	return textAsHTML(normal[:i], block, tail), nil
 }
@@ -567,28 +571,112 @@ func isJoinLine(text string) bool {
 	return where != nil && where[0] == 0 && where[1] == len(text)
 }
 
-var htmlTag = regexp.MustCompile(`<[^>]*>`)
+var (
+	htmlTag = regexp.MustCompile(`<[^>]*>`)
+	// blockOpen is the start tag of a div or a paragraph, with any attributes.
+	blockOpen = regexp.MustCompile(`(?i)<(div|p)(?:\s[^>]*)?>`)
+	// lineBreak is a <br> in any spelling.
+	lineBreak = regexp.MustCompile(`(?i)<br\s*/?>`)
+	// blockTag is a start or end tag of a div or a paragraph.
+	blockTag = regexp.MustCompile(`(?i)<(/?)(?:div|p)(?:\s[^>]*)?>`)
+	// closersOnly is nothing but end tags of divs and paragraphs (the wrappers around the last element) and space.
+	closersOnly = regexp.MustCompile(`(?i)^(?:\s*</(?:div|p)\s*>)*\s*$`)
+)
 
-// withoutJoinLines is a join block without the join lines Tresso put after it on an earlier write: each element at its
-// end that is a div of its own (with any attributes, around a link or other inline markup, as Exchange may rewrite
-// it) whose text is a join line. The block's own first element is never taken.
-func withoutJoinLines(block string) string {
+// withoutJoinLines is a join block without the join lines Tresso put after it on an earlier write. Tresso writes the
+// line (and the text the user typed below it) as one div at the end; Exchange may rewrite it with attributes, as a
+// paragraph, around a link or inside another div. So, from the end: the last div or paragraph, when only end tags of
+// its wrappers follow it, is dropped when its first line is a join line (the description gives the line and what
+// follows it again), and so are the wrappers it leaves empty. The block's own first element is never taken.
+//
+// below is the text after the join line in the last element taken (what the user wrote below the line), "" when none.
+func withoutJoinLines(block string) (string, string) {
+	took := false
+	below := ""
 	for {
 		trimmed := strings.TrimRight(block, " \t\r\n")
-		lower := strings.ToLower(trimmed)
-		if !strings.HasSuffix(lower, "</div>") {
-			return block
+		opens := blockOpen.FindAllStringSubmatchIndex(trimmed, -1)
+		if len(opens) == 0 {
+			return block, below
 		}
-		start := strings.LastIndex(lower[:len(lower)-len("</div>")], "<div")
-		if start <= 0 || strings.Contains(lower[start:len(lower)-len("</div>")], "</div") {
-			return block
+		last := opens[len(opens)-1]
+		start, contentStart := last[0], last[1]
+		if start < firstElementEnd(trimmed) {
+			return block, below
 		}
-		text := strings.TrimSpace(html.UnescapeString(htmlTag.ReplaceAllString(trimmed[start:], "")))
-		if !isJoinLine(text) {
-			return block
+		name := strings.ToLower(trimmed[last[2]:last[3]])
+		closeAt := strings.Index(strings.ToLower(trimmed[contentStart:]), "</"+name)
+		if closeAt < 0 {
+			return block, below
 		}
-		block = trimmed[:start]
+		closeEnd := strings.Index(trimmed[contentStart+closeAt:], ">")
+		if closeEnd < 0 {
+			return block, below
+		}
+		end := contentStart + closeAt + closeEnd + 1
+		if !closersOnly.MatchString(trimmed[end:]) {
+			return block, below
+		}
+		text := html.UnescapeString(htmlTag.ReplaceAllString(lineBreak.ReplaceAllString(trimmed[contentStart:contentStart+closeAt], "\n"), ""))
+		first, rest, _ := strings.Cut(strings.TrimLeft(lines(text), " \t\n"), "\n")
+		empty := strings.TrimSpace(text) == ""
+		if !(empty && took) && !isJoinLine(strings.TrimRight(first, " \t")) {
+			return block, below
+		}
+		if !took {
+			below = strings.TrimSpace(rest)
+		}
+		took = true
+		block = trimmed[:start] + trimmed[end:]
 	}
+}
+
+// endingWith is the last lines of text when they are below (compared with runs of spaces and tabs as one, as Exchange
+// gives text back), else "".
+func endingWith(text, below string) string {
+	if below == "" {
+		return ""
+	}
+	want := strings.Split(collapse(below), "\n")
+	have := strings.Split(strings.TrimRight(text, " \t\n"), "\n")
+	if len(have) < len(want) {
+		return ""
+	}
+	end := have[len(have)-len(want):]
+	for k := range want {
+		if collapse(end[k]) != want[k] {
+			return ""
+		}
+	}
+	return strings.Join(end, "\n")
+}
+
+var spaceRun = regexp.MustCompile(`[ \t]+`)
+
+// collapse is text with each run of spaces and tabs as one space and each line trimmed.
+func collapse(text string) string {
+	parts := strings.Split(text, "\n")
+	for k, part := range parts {
+		parts[k] = strings.TrimSpace(spaceRun.ReplaceAllString(part, " "))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// firstElementEnd is where the block's own first element (the one the separator is in) ends: what lies inside it is
+// Graph's, never Tresso's line. The whole block when its tags do not close.
+func firstElementEnd(block string) int {
+	depth := 0
+	for _, tag := range blockTag.FindAllStringSubmatchIndex(block, -1) {
+		if tag[3] > tag[2] {
+			depth--
+			if depth == 0 {
+				return tag[1]
+			}
+			continue
+		}
+		depth++
+	}
+	return len(block)
 }
 
 // meetingBlock is the HTML of an online meeting's join block in a body: from the element the separator line is in to
