@@ -281,14 +281,62 @@ describe('ConnectWhatsApp', () => {
     expect(radio('all').element.checked).toBe(true)
     await primary(wrapper).trigger('click')
     expect(connect).toHaveBeenCalledTimes(1)
-    expect(connect).toHaveBeenLastCalledWith('all')
+    expect(connect).toHaveBeenLastCalledWith('all', { copy: true, number: false })
   })
 
-  it('opens on "All my devices" without asking when it came to take the relay over', async () => {
+  function linkedAndReady(): void {
+    wa.folder = '/Users/kim/whatsapp-mcp'
+    wa.inspection = GOOD
+    wa.riskAccepted = true
+    wa.bridgeStarted = true
+    wa.bridge = { ...RUNNING, link: 'linked' }
+  }
+
+  it('opens on "All my devices" without asking only while another Mac relays the chats on the server', async () => {
+    const connect = vi.spyOn(wa, 'connect').mockResolvedValue(true)
+    linkedAndReady()
+    wa.serverAccount = { id: 'a', channel: 'whatsapp', address: null, displayName: null, relayDeviceId: 'other', relayDeviceName: 'Office iMac', relayOnline: true, relayOfflineSince: null, bridge: 'running', link: 'linked', linkedAt: null, loopbackOnly: true, includeGroups: true, notify: false }
     const wrapper = mount(ConnectWhatsApp, { attachTo: document.body, props: { mode: 'all' } })
     await flushPromises()
     expect(wrapper.get<HTMLInputElement>('input[type="radio"][value="all"]').element.checked).toBe(true)
     expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+    await primary(wrapper).trigger('click')
+    expect(connect).toHaveBeenLastCalledWith('all', { copy: true, number: false })
+    wrapper.unmount()
+  })
+
+  it('asks to copy at Connect when it was opened to take over but no Mac relays any more (a link is no consent)', async () => {
+    const connect = vi.spyOn(wa, 'connect').mockResolvedValue(true)
+    linkedAndReady()
+    const wrapper = mount(ConnectWhatsApp, { attachTo: document.body, props: { mode: 'all' } })
+    await flushPromises()
+    await primary(wrapper).trigger('click')
+    await flushPromises()
+    expect(connect).not.toHaveBeenCalled()
+    const ask = wrapper.get('[role="alertdialog"]')
+    expect(ask.text()).toContain(COPY_TITLE)
+    // The question is outside the fieldset that is disabled while the store is busy.
+    expect(wrapper.get('fieldset').find('[role="alertdialog"]').exists()).toBe(false)
+    expect(ask.findAll('button').map((button) => button.text())).toEqual(['Copy', 'Cancel'])
+    wrapper.unmount()
+  })
+
+  it('asks whether to relay when a WhatsApp number is not known, and connects with that yes', async () => {
+    const connect = vi.spyOn(wa, 'connect').mockResolvedValue(false)
+    linkedAndReady()
+    const wrapper = mount(ConnectWhatsApp, { attachTo: document.body, props: { mode: 'all' } })
+    wa.askNumber = 'connect'
+    wa.error = 'Tresso cannot tell whether this Mac is linked to the same WhatsApp number as your Tresso server.'
+    await flushPromises()
+    await wrapper.get<HTMLInputElement>('input[type="radio"][value="local"]').setValue(true)
+    await wrapper.get<HTMLInputElement>('input[type="radio"][value="all"]').setValue(true)
+    await flushPromises()
+    await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
+    await flushPromises()
+    const ask = wrapper.findAll('[role="alertdialog"]').find((dialog) => dialog.text().includes('Relay from this Mac'))!
+    await ask.findAll('button')[0]!.trigger('click')
+    expect(connect).toHaveBeenLastCalledWith('all', { copy: true, number: true })
+    wrapper.unmount()
   })
 
   it('shows a failure as an alert and closes with Close or Escape', async () => {

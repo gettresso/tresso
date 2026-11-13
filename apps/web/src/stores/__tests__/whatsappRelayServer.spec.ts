@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { reactive, shallowReactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import {
@@ -17,11 +17,13 @@ import {
 import { memorySql } from '@tresso/core/testing/sql'
 import type { WhatsAppConfig } from '@/platform/whatsapp'
 import type { SessionEnd } from '@/stores/auth'
-import { CARRIED_REPLIES, MODE_SWITCH, SERVER_ACCOUNT, serverHistoryKey } from '@/stores/whatsappServer'
+import { CARRIED_REPLIES, CARRY_COUNTS, MODE_SWITCH, SERVER_ACCOUNT, serverHistoryKey } from '@/stores/whatsappServer'
 import { ACCOUNT_ID, FakeChatServer, OTHER_DEVICE } from './chatServerFixture'
 import { DAY, DIRECT, FOLDER, FakeShell, GROUP, LINKED, NOW, RUNNING, WAITING } from './whatsappShellFixture'
 
 const DEVICE = '0193a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b'
+/** The number the fake shell's bridge is linked to. */
+const NUMBER = '31698765432'
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
@@ -42,6 +44,7 @@ const auth = reactive({
   me: null as { id: string } | null,
   knownUserId: null as string | null,
   handlers: [] as ((reason: SessionEnd) => unknown)[],
+  serverNow: () => Date.now(),
   onSessionEnd(handler: (reason: SessionEnd) => unknown) {
     auth.handlers.push(handler)
     return () => undefined
@@ -70,7 +73,22 @@ const mail = shallowReactive({
 })
 vi.mock('@/stores/mail', () => ({ useMailStore: () => mail }))
 
-const { useWhatsAppRelayStore, HEARTBEAT_MS, REMOVED_ELSEWHERE } = await import('../whatsappRelay')
+const { useWhatsAppRelayStore, HEARTBEAT_MS, OTHER_NUMBER, RELAY_ONLY, REMOVED_ELSEWHERE, SERVER_RETRY_MS: SERVER_RETRY, UNKNOWN_NUMBER } = await import('../whatsappRelay')
+
+/** A Storage in memory (the test environment's own may be missing). */
+function memoryStorage(): Storage {
+  const items = new Map<string, string>()
+  return {
+    get length() {
+      return items.size
+    },
+    clear: () => items.clear(),
+    getItem: (key) => items.get(key) ?? null,
+    key: (index) => [...items.keys()][index] ?? null,
+    removeItem: (key) => void items.delete(key),
+    setItem: (key, value) => void items.set(key, String(value)),
+  }
+}
 
 function connectedConfig(extra: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
   return {
@@ -117,6 +135,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     mail.pulls = 0
     mail.chatChanges = 0
     mail.syncState = 'idle'
+    vi.stubGlobal('localStorage', memoryStorage())
     setActivePinia(createPinia())
     errors = []
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void errors.push(args))
@@ -128,6 +147,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     await useWhatsAppRelayStore().dispose()
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   async function signedIn(config: WhatsAppConfig | null = null) {
@@ -143,11 +163,15 @@ describe('the WhatsApp relay store in "All my devices"', () => {
 
   /** An account this Mac relays, as the server and the copy hold it. */
   async function relayedHere(extra: Partial<WhatsAppConfig> = {}) {
-    await server.connect({ deviceId: DEVICE, deviceName: "Kim's MacBook Pro", address: null, displayName: null, includeGroups: true, notify: false })
+    await server.connect({ deviceId: DEVICE, deviceName: "Kim's MacBook Pro", address: NUMBER, displayName: null, includeGroups: true, notify: false })
     server.calls.length = 0
     await server.deliver(store)
     await store.setChatMeta(SERVER_ACCOUNT, ACCOUNT_ID)
-    return signedIn(connectedConfig(extra))
+    const wa = await signedIn(connectedConfig(extra))
+    // A pull of this copy in this session: only then does the relay trust it.
+    await mail.syncNow()
+    await pass()
+    return wa
   }
 
   function batches(): RelayMessagesRequest[] {
@@ -168,7 +192,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     shell.emit(LINKED)
     await pass()
 
-    expect(await wa.connect('all')).toBe(true)
+    expect(await wa.connect('all', { copy: true })).toBe(true)
     await pass()
 
     const [request] = server.callsOf('connect')[0] as [Record<string, unknown>]
@@ -196,7 +220,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     await pass()
     server.fail('connect', new TypeError('Failed to fetch'))
 
-    expect(await wa.connect('all')).toBe(false)
+    expect(await wa.connect('all', { copy: true })).toBe(false)
     expect(wa.error).toBe('Tresso could not reach your Tresso server. Try again.')
     expect(wa.connected).toBe(false)
     expect(shell.configs.has('u1')).toBe(false)
@@ -229,28 +253,28 @@ describe('the WhatsApp relay store in "All my devices"', () => {
 
   it('sends the heartbeat at once, every 60 seconds, and on every change of the bridge, also when it stops', async () => {
     const wa = await relayedHere()
-    // At once, and again as the bridge started.
-    expect(statuses().map((status) => status.bridge)).toEqual(['stopped', 'running'])
+    // At once, once the copy has caught up (the bridge started before that).
+    expect(statuses().map((status) => status.bridge)).toEqual(['running'])
     expect(wa.relayRunning).toBe(false)
 
     shell.emit(LINKED)
     await pass()
-    expect(statuses()).toHaveLength(3)
-    expect(statuses()[2]).toMatchObject({ bridge: 'running', link: 'linked', deviceId: DEVICE })
+    expect(statuses()).toHaveLength(2)
+    expect(statuses()[1]).toMatchObject({ bridge: 'running', link: 'linked', deviceId: DEVICE })
     expect(wa.relayRunning).toBe(true)
 
     await pass(HEARTBEAT_MS - 1_000)
-    expect(statuses()).toHaveLength(3)
+    expect(statuses()).toHaveLength(2)
     await pass(1_000)
-    expect(statuses()).toHaveLength(4)
+    expect(statuses()).toHaveLength(3)
 
     shell.emit({ ...RUNNING, link: 'unlinked' })
     await pass()
-    expect(statuses()).toHaveLength(5)
-    expect(statuses()[4]).toMatchObject({ bridge: 'running', link: 'unlinked' })
+    expect(statuses()).toHaveLength(4)
+    expect(statuses()[3]).toMatchObject({ bridge: 'running', link: 'unlinked' })
     expect(wa.relayRunning).toBe(false)
     await pass(HEARTBEAT_MS)
-    expect(statuses()).toHaveLength(6)
+    expect(statuses()).toHaveLength(5)
   })
 
   it('switches from "Only this Mac": the waiting replies go to the server queue with new ids, the local rows only after the account', async () => {
@@ -266,7 +290,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
 
     let answer!: () => void
     server.held.set('connect', new Promise<void>((resolve) => (answer = resolve)))
-    const switching = wa.switchMode('all')
+    const switching = wa.switchMode('all', { copy: true })
     await pass()
     // While the server has not answered, the local rows and their reply stay.
     expect(await store.chatMeta(MODE_SWITCH)).toBe(JSON.stringify({ to: 'all', accountId: null }))
@@ -307,7 +331,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     await queueLocalReply(store, localChatId(DIRECT), 'On my way', '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a51', Date.now())
     server.fail('connect', new ChatApiError(503, 'Unavailable'))
 
-    expect(await wa.switchMode('all')).toBe(false)
+    expect(await wa.switchMode('all', { copy: true })).toBe(false)
     expect(wa.error).toBe('Your Tresso server could not take this change just now. Try again.')
     expect(wa.config?.mode).toBe('local')
     expect(await store.chatMeta(MODE_SWITCH)).toBeNull()
@@ -540,7 +564,10 @@ describe('the WhatsApp relay store in "All my devices"', () => {
       server.delivering = true
       await syncNow()
     }
-    const taking = wa.useThisMac()
+    const taking = wa.useThisMac({ number: true })
+    onTestFinished(() => {
+      mail.syncNow = syncNow
+    })
     await pass(10_000)
     // Asked for, not in the copy yet: neither stopped as a former relay nor started.
     expect(server.lastCall('connect')![0]).toMatchObject({ deviceId: DEVICE })
@@ -684,5 +711,355 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(logged).not.toContain('Secret')
     expect(logged).not.toContain('31612345678')
     expect(logged).not.toContain('Kim')
+  })
+
+  describe('what the audit found', () => {
+    /** "Only this Mac" with the relay run once over the store, and the bridge unlinked again. */
+    async function localWith(extra: Partial<WhatsAppConfig>) {
+      const wa = await signedIn(connectedConfig({ mode: 'local', ...extra }))
+      shell.emit(LINKED)
+      await pass(3_000)
+      shell.emit({ ...RUNNING, link: 'unlinked' })
+      await pass()
+      return wa
+    }
+
+    function sentJids(): string[] {
+      return batches().flatMap((batch) => batch.messages.map((message) => message.chatJid))
+    }
+
+    it('never uploads a chat left out in "Only this Mac" after the switch, and lists it as left out', async () => {
+      shell.add('A1', DIRECT, 10)
+      shell.add('B1', '31622222222@s.whatsapp.net', 9)
+      const wa = await localWith({ leftOut: [DIRECT] })
+      expect(await wa.switchMode('all', { copy: true })).toBe(true)
+      shell.emit(LINKED)
+      await pass(3_000)
+      await mail.syncNow()
+      await pass(70_000)
+      shell.add('A2', DIRECT, 1)
+      await pass(3_000)
+      expect(sentJids()).toContain('31622222222@s.whatsapp.net')
+      expect(sentJids()).not.toContain(DIRECT)
+      expect(wa.config?.leftOut).toEqual([DIRECT])
+    })
+
+    it('never uploads groups when this Mac left them out, and makes the server leave them out before the first batch', async () => {
+      shell.add('A1', DIRECT, 10)
+      shell.add('G1', GROUP, 9)
+      const wa = await localWith({ includeGroups: false })
+      expect(await wa.switchMode('all', { copy: true })).toBe(true)
+      shell.emit(LINKED)
+      await pass(3_000)
+      expect(batches().length).toBeGreaterThan(0)
+      expect(sentJids()).not.toContain(GROUP)
+      expect(server.account?.includeGroups).toBe(false)
+    })
+
+    it('takes on the stricter setting when it relays an account that exists, before the first batch, and follows the server after', async () => {
+      await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: NUMBER, displayName: null, includeGroups: true, notify: true })
+      await server.deliver(store)
+      shell.add('A1', DIRECT, 10)
+      shell.add('G1', GROUP, 9)
+      // This Mac leaves groups out and does not notify; the account (relayed by another Mac) does both.
+      const wa = await localWith({ includeGroups: false, notify: false })
+      server.calls.length = 0
+      expect(await wa.switchMode('all', { copy: true })).toBe(true)
+      shell.emit(LINKED)
+      await pass(3_000)
+      expect(server.callsOf('updateAccount')[0]).toEqual([ACCOUNT_ID, { includeGroups: false, notify: false }])
+      const order = server.calls.map((call) => call.name)
+      expect(order.indexOf('updateAccount')).toBeLessThan(order.indexOf('relayMessages'))
+      expect(sentJids()).toContain(DIRECT)
+      expect(sentJids()).not.toContain(GROUP)
+
+      // Changed on the server later: the config follows.
+      server.account = { ...server.account!, notify: true }
+      await mail.syncNow()
+      await pass()
+      expect(wa.config?.notify).toBe(true)
+    })
+
+    describe('a carried reply', () => {
+      async function carriedAfterSwitch(): Promise<ReturnType<typeof useWhatsAppRelayStore>> {
+        shell.add('A1', DIRECT, 10)
+        const wa = await localWith({})
+        await queueLocalReply(store, localChatId(DIRECT), 'On my way', '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a51', Date.now())
+        expect(await wa.switchMode('all', { copy: true })).toBe(true)
+        return wa
+      }
+
+      it('cancelled elsewhere (409) is counted and never sent under a new id', async () => {
+        const wa = await carriedAfterSwitch()
+        server.fail('queueReply', new ChatApiError(409, 'Cancelled', 'cancelled'), true)
+        shell.emit(LINKED)
+        await pass(3_000)
+        await mail.syncNow()
+        await pass()
+        await mail.syncNow()
+        await pass(SERVER_RETRY)
+        expect(new Set(server.callsOf('queueReply').map((args) => (args[1] as { id: string }).id)).size).toBe(1)
+        expect(wa.carried).toEqual([])
+        expect(wa.carryCounts).toMatchObject({ cancelled: 1 })
+        expect(JSON.parse((await store.chatMeta(CARRY_COUNTS))!)).toMatchObject({ cancelled: 1 })
+      })
+
+      it('too old for the server (422 on id) is counted as maybe queued and never sent under a new id', async () => {
+        const wa = await carriedAfterSwitch()
+        server.fail('queueReply', new ChatApiError(422, 'Invalid', null, null, { id: '' }), true)
+        shell.emit(LINKED)
+        await pass(3_000)
+        await mail.syncNow()
+        await pass(SERVER_RETRY)
+        await mail.syncNow()
+        await pass()
+        expect(server.callsOf('queueReply')).toHaveLength(1)
+        expect(wa.carried).toEqual([])
+        expect(wa.carryCounts).toMatchObject({ unsure: 1 })
+        await wa.dismissCarryCounts()
+        expect(await store.chatMeta(CARRY_COUNTS)).toBeNull()
+      })
+
+      it('sent again under its kept id after a crash once the server stored it, so it is queued once', async () => {
+        const wa = await carriedAfterSwitch()
+        // The first try stores it on the server, and the Mac quits before it hears back.
+        const original = server.queueReply.bind(server)
+        server.queueReply = async (chatId, request) => {
+          await original(chatId, request)
+          throw new TypeError('Failed to fetch')
+        }
+        shell.emit(LINKED)
+        await pass(3_000)
+        await mail.syncNow()
+        await pass()
+        server.queueReply = original
+        const kept = wa.carried[0]?.id
+        expect(kept).toMatch(UUID_V7)
+        await pass(SERVER_RETRY)
+        const ids = server.callsOf('queueReply').map((args) => (args[1] as { id: string }).id)
+        expect(new Set(ids)).toEqual(new Set([kept]))
+        expect(server.outgoing.size).toBe(1)
+        expect(wa.carried).toEqual([])
+      })
+
+      it('can be cancelled while it waits for its chat', async () => {
+        const wa = await carriedAfterSwitch()
+        expect(wa.carried).toHaveLength(1)
+        expect(await wa.cancelCarried()).toBe(true)
+        expect(wa.carried).toEqual([])
+        expect(await store.chatMeta(CARRIED_REPLIES)).toBeNull()
+      })
+    })
+
+    it('counts the replies that were not sent here and are not carried over', async () => {
+      shell.add('A1', DIRECT, 10)
+      const wa = await localWith({})
+      const row = await queueLocalReply(store, localChatId(DIRECT), 'Failed one', '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a52', Date.now())
+      await store.putChatOutgoing([{ ...row, status: 'failed', error: 'refused' }])
+      expect(await wa.notCarried()).toBe(1)
+      expect(await wa.switchMode('all', { copy: true })).toBe(true)
+      expect(wa.carryCounts).toMatchObject({ notSent: 1 })
+      expect(wa.carried).toEqual([])
+    })
+
+    describe('consent and the WhatsApp number', () => {
+      it('refuses "All my devices" without the yes to copying, unless the server holds the chats already', async () => {
+        const wa = await localWith({})
+        expect(await wa.switchMode('all')).toBe(false)
+        expect(wa.error).toBe('Confirm that your WhatsApp chats may be copied to your Tresso server first.')
+        expect(server.callsOf('connect')).toEqual([])
+        expect(wa.config?.mode).toBe('local')
+      })
+
+      it('refuses to relay an account of another number, before anything changes', async () => {
+        await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: '31600000000', displayName: null, includeGroups: true, notify: false })
+        await server.deliver(store)
+        const wa = await localWith({})
+        server.calls.length = 0
+        expect(await wa.switchMode('all', { copy: true })).toBe(false)
+        expect(wa.error).toBe(OTHER_NUMBER)
+        expect(server.callsOf('connect')).toEqual([])
+        expect(wa.modeSwitch).toBeNull()
+        expect(wa.config?.mode).toBe('local')
+      })
+
+      it('refuses Use this Mac instead for another number, and asks when a number is not known', async () => {
+        await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: '31600000000', displayName: null, includeGroups: true, notify: false })
+        await server.deliver(store)
+        const wa = await signedIn(connectedConfig())
+        await mail.syncNow()
+        shell.emit(LINKED)
+        await pass()
+        server.calls.length = 0
+        expect(await wa.useThisMac()).toBe(false)
+        expect(wa.error).toBe(OTHER_NUMBER)
+        expect(server.callsOf('connect')).toEqual([])
+
+        server.account = { ...server.account!, address: null }
+        await mail.syncNow()
+        await pass()
+        expect(await wa.useThisMac()).toBe(false)
+        expect(wa.error).toBe(UNKNOWN_NUMBER)
+        expect(wa.askNumber).toBe('take-over')
+        expect(await wa.useThisMac({ number: true })).toBe(true)
+        expect(server.callsOf('connect')).toHaveLength(1)
+      })
+
+      it('says the server refusal of another number in plain words', async () => {
+        await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: NUMBER, displayName: null, includeGroups: true, notify: false })
+        const wa = await localWith({})
+        server.fail('connect', new ChatApiError(409, 'Another number', 'other_number'))
+        expect(await wa.switchMode('all', { copy: true })).toBe(false)
+        expect(wa.error).toBe(OTHER_NUMBER)
+        expect(wa.modeSwitch).toBeNull()
+      })
+
+      it('does not start the relay when the bridge here is linked to another number than the account', async () => {
+        const wa = await relayedHere()
+        server.account = { ...server.account!, address: '31600000000' }
+        await mail.syncNow()
+        shell.emit(LINKED)
+        await pass(3_000)
+        expect(wa.relayRunning).toBe(false)
+        expect(batches()).toEqual([])
+        expect(wa.error).toBe(OTHER_NUMBER)
+      })
+
+      it('checks the number of another folder in "All my devices"', async () => {
+        const wa = await relayedHere()
+        server.account = { ...server.account!, address: '31600000000' }
+        await mail.syncNow()
+        await pass()
+        expect(await wa.changeFolder()).toBe(false)
+        expect(wa.error).toBe(OTHER_NUMBER)
+        expect(shell.saved[shell.saved.length - 1]?.folder ?? FOLDER).toBe(FOLDER)
+      })
+
+      it('needs a linked bridge to take the relay over', async () => {
+        await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: NUMBER, displayName: null, includeGroups: true, notify: false })
+        await server.deliver(store)
+        server.calls.length = 0
+        const wa = await signedIn(connectedConfig())
+        await mail.syncNow()
+        expect(await wa.useThisMac()).toBe(false)
+        expect(wa.error).toBe('Link WhatsApp on this Mac to your phone first: only a linked bridge can relay.')
+        expect(server.callsOf('connect')).toEqual([])
+      })
+    })
+
+    it('does not trust a copy whose first pull failed', async () => {
+      await server.connect({ deviceId: DEVICE, deviceName: 'Mac', address: NUMBER, displayName: null, includeGroups: true, notify: false })
+      await server.deliver(store)
+      await store.setChatMeta(SERVER_ACCOUNT, ACCOUNT_ID)
+      // Marked synced, but no pull of this copy worked in this session.
+      const wa = await signedIn(connectedConfig())
+      shell.add('A1', DIRECT, 10)
+      shell.emit(LINKED)
+      await pass(10_000)
+      expect(wa.relayRunning).toBe(false)
+      expect(statuses()).toEqual([])
+      await mail.syncNow()
+      await pass()
+      expect(wa.relayRunning).toBe(true)
+    })
+
+    it('leaves taking a chat back in and groups on to the relaying Mac', async () => {
+      await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: NUMBER, displayName: null, includeGroups: false, notify: false })
+      await server.deliver(store)
+      const wa = await signedIn(connectedConfig({ leftOut: [DIRECT] }))
+      await mail.syncNow()
+      await pass()
+      expect(await wa.takeBackIn(DIRECT)).toBe(false)
+      expect(wa.error).toBe(RELAY_ONLY)
+      expect(await wa.setIncludeGroups(true)).toBe(false)
+      expect(server.callsOf('updateAccount')).toEqual([])
+    })
+
+    it('resets the cursor before it takes a chat back in, so a failed request leaves it left out', async () => {
+      const wa = await relayedHere()
+      shell.add('A1', DIRECT, 10)
+      shell.emit(LINKED)
+      await pass(3_000)
+      await mail.syncNow()
+      await pass(70_000)
+      expect(await wa.leaveOut(DIRECT)).toBe(true)
+      server.fail('updateChat', new ChatApiError(500, 'Broken'))
+      const before = batches().length
+      expect(await wa.takeBackIn(DIRECT)).toBe(false)
+      expect(readRelayCursor((await store.chatMeta(serverCursorKey(ACCOUNT_ID)))!)?.rowid).toBe(0)
+      expect(wa.config?.leftOut).toEqual([DIRECT])
+      await pass(3_000)
+      expect(batches().slice(before).flatMap((batch) => batch.messages.map((message) => message.chatJid))).not.toContain(DIRECT)
+    })
+
+    it('offers to stay on "Only this Mac" while a switch taken up after a restart is refused', async () => {
+      shell.add('A1', DIRECT, 10)
+      const wa = await localWith({})
+      await wa.dispose()
+      setActivePinia(createPinia())
+      auth.me = null
+      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: null }))
+      server.fail('connect', new ChatApiError(503, 'Unavailable'), true)
+      const again = await signedIn()
+      await pass()
+      expect(again.switchFailing).toBe(true)
+      expect(await again.stayLocal()).toBe(true)
+      expect(again.modeSwitch).toBeNull()
+      expect(again.config?.mode).toBe('local')
+      await pass(SERVER_RETRY)
+      expect(server.callsOf('connect').length).toBeGreaterThan(0)
+      const calls = server.callsOf('connect').length
+      await pass(SERVER_RETRY * 2)
+      expect(server.callsOf('connect')).toHaveLength(calls)
+    })
+
+    it('finishes a removal a sign-out cut short at the next sign-in of the same user, and drops it for another user', async () => {
+      const wa = await relayedHere()
+      let answer!: () => void
+      server.held.set('removeAccount', new Promise<void>((resolve) => (answer = resolve)))
+      server.fail('removeAccount', new TypeError('Failed to fetch'))
+      const switching = wa.switchMode('local')
+      await pass()
+      // Signed out while the DELETE runs: the copy (and its marks) go with the sign-out.
+      for (const handler of auth.handlers) {
+        handler('signedOut')
+      }
+      auth.me = null
+      answer()
+      await switching
+      expect(server.account).not.toBeNull()
+      expect(localStorage.getItem(`tresso.whatsapp.pendingRemoval.u1`)).toBe(ACCOUNT_ID)
+
+      // Another user signs in on this Mac: their sign-in drops it, without touching u1's account.
+      await wa.dispose()
+      setActivePinia(createPinia())
+      const other = useWhatsAppRelayStore()
+      await other.init()
+      await other.keepOnly('u2')
+      expect(localStorage.getItem(`tresso.whatsapp.pendingRemoval.u1`)).toBeNull()
+      expect(server.callsOf('removeAccount')).toHaveLength(1)
+
+      // The same user again, with the entry back: the removal is finished.
+      localStorage.setItem(`tresso.whatsapp.pendingRemoval.u1`, ACCOUNT_ID)
+      await other.dispose()
+      setActivePinia(createPinia())
+      await signedIn()
+      await pass()
+      expect(server.account).toBeNull()
+      expect(localStorage.getItem(`tresso.whatsapp.pendingRemoval.u1`)).toBeNull()
+    })
+
+    it('takes up a switch to "Only this Mac" that stopped after the config was saved', async () => {
+      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'local', accountId: ACCOUNT_ID, removed: true, cleared: false }))
+      await store.setChatMeta(serverCursorKey(ACCOUNT_ID), JSON.stringify({ storeId: 'store-1', rowid: 4, firstImport: null }))
+      const wa = await relayedHere({ mode: 'local' })
+      server.removeElsewhere()
+      await mail.syncNow()
+      await pass()
+      expect(server.callsOf('removeAccount')).toEqual([])
+      expect(await store.chatMeta(serverCursorKey(ACCOUNT_ID))).toBeNull()
+      expect(wa.modeSwitch).toBeNull()
+      expect(wa.config?.mode).toBe('local')
+    })
   })
 })

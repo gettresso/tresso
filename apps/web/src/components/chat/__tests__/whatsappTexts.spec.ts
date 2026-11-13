@@ -3,6 +3,9 @@ import type { BridgeState } from '@/platform/whatsapp'
 import {
   BRIDGE_PROBLEMS,
   carriedText,
+  carryCountsText,
+  notCarriedText,
+  pauseText,
   otherRelayText,
   serverRefusedText,
   switchText,
@@ -119,8 +122,14 @@ describe('the WhatsApp texts', () => {
     expect(serverRefusedText(0)).toBeNull()
     expect(serverRefusedText(1)).toBe('1 message could not be copied to your Tresso server; it stays in the bridge on this Mac only.')
     expect(serverRefusedText(3)).toBe('3 messages could not be copied to your Tresso server; they stay in the bridge on this Mac only.')
-    expect(carriedText(0, 0)).toBeNull()
-    expect(carriedText(2, 0)).toBe('2 replies written on this Mac before the switch go to your Tresso server once their chats are there.')
-    expect(carriedText(0, 1)).toContain('1 reply written on this Mac before the switch could not be carried over')
+    expect(carriedText(0)).toBeNull()
+    expect(carriedText(2)).toBe('2 replies written on this Mac before the switch go to your Tresso server once their chats are there.')
+    expect(carryCountsText({ lost: 0, cancelled: 0, unsure: 0, notSent: 0 })).toBeNull()
+    expect(carryCountsText({ lost: 1, cancelled: 0, unsure: 0, notSent: 0 })).toContain('1 reply could not be carried over')
+    expect(carryCountsText({ lost: 0, cancelled: 2, unsure: 0, notSent: 0 })).toBe('2 replies were cancelled on another device and were not sent.')
+    expect(carryCountsText({ lost: 0, cancelled: 0, unsure: 1, notSent: 0 })).toContain('may already have been queued or cancelled before')
+    expect(carryCountsText({ lost: 0, cancelled: 0, unsure: 0, notSent: 3 })).toBe('3 replies that were not sent on this Mac were not carried over.')
+    expect(notCarriedText(1)).toBe('1 reply on this Mac that was not sent is not carried over: it goes with the chats on this Mac.')
+    expect(pauseText(10 * 60_000)).toBe('Your Tresso server asked Tresso to wait; it tries again in about 10 minutes.')
   })
 })

@@ -24,6 +24,7 @@ const auth = reactive({
   me: null as { id: string } | null,
   knownUserId: null as string | null,
   handlers: [] as ((reason: SessionEnd) => unknown)[],
+  serverNow: () => Date.now(),
   onSessionEnd(handler: (reason: SessionEnd) => unknown) {
     auth.handlers.push(handler)
     return () => undefined
