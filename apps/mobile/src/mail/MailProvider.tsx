@@ -38,7 +38,7 @@ import { LAST_USER } from '@/auth/secureTokenStore'
 import { MailSession, NO_STATUS, type MailState } from '@/mail/mailSession'
 import { deleteSql, openSql } from '@/mail/sql'
 import { todoApi } from '@/mail/todoApi'
-import { meetingLinkCall } from '@/calendar/meetingActions'
+import { askForMeetingLink } from '@/calendar/meetingActions'
 
 const LIST_LIMIT = 200
 const UNIFIED_INBOX = { kind: 'inbox', mailAccountId: null } as const
@@ -113,8 +113,6 @@ interface Mail extends MailState {
   respond(eventId: string, response: 'accepted' | 'tentative' | 'declined', recurrenceId: string | null): Promise<void>
   /** Asks the calendar's provider for a meeting link on the whole series again (POST /api/v1/calendar-events/{id}/meeting-link); organizer only. */
   requestMeetingLink(eventId: string, provider: 'meet' | 'teams'): Promise<void>
-  /** Takes the link off the series or drops its request (DELETE /api/v1/calendar-events/{id}/meeting-link); organizer only. */
-  removeMeetingLink(eventId: string): Promise<void>
 }
 
 function json(method: string, body?: unknown): RequestInit {
@@ -347,19 +345,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
     [auth.session, session],
   )
   const requestMeetingLink = useCallback(
-    async (eventId: string, provider: 'meet' | 'teams') => {
-      const call = meetingLinkCall(eventId, provider)
-      await auth.session.api(call.path, json(call.method, call.body))
-      await session.syncNow()
-    },
-    [auth.session, session],
-  )
-  const removeMeetingLink = useCallback(
-    async (eventId: string) => {
-      const call = meetingLinkCall(eventId, null)
-      await auth.session.api(call.path, json(call.method, call.body))
-      await session.syncNow()
-    },
+    (eventId: string, provider: 'meet' | 'teams') => askForMeetingLink((path, init) => auth.session.api(path, init), () => session.syncNow(), eventId, provider),
     [auth.session, session],
   )
   const { userId, ready, synced, version, syncState, syncError, live, pulls, status } = state
@@ -411,9 +397,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
       clearOverdue,
       respond,
       requestMeetingLink,
-      removeMeetingLink,
     }),
-    [userId, touch, ready, synced, version, syncState, syncError, lookupError, live, status, pulls, mailAccounts, folders, act, inbox, triageWaiting, newestInInbox, summaries, smartInboxes, classifyThread, releaseThread, thread, body, unscannedLink, syncNow, auth.session, store, session, signatures, suggestContacts, send, cancelOutgoing, todos, todosOfThread, messages, makeTodo, removeTodo, setTodoDone, planTodo, unplanTodo, handOvers, outgoing, handOverApi, overdue, clearOverdue, respond, requestMeetingLink, removeMeetingLink],
+    [userId, touch, ready, synced, version, syncState, syncError, lookupError, live, status, pulls, mailAccounts, folders, act, inbox, triageWaiting, newestInInbox, summaries, smartInboxes, classifyThread, releaseThread, thread, body, unscannedLink, syncNow, auth.session, store, session, signatures, suggestContacts, send, cancelOutgoing, todos, todosOfThread, messages, makeTodo, removeTodo, setTodoDone, planTodo, unplanTodo, handOvers, outgoing, handOverApi, overdue, clearOverdue, respond, requestMeetingLink],
   )
 
   return <MailContext.Provider value={mail}>{children}</MailContext.Provider>

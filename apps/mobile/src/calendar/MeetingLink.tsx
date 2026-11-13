@@ -40,7 +40,7 @@ export const NOT_OPENED = 'Tresso does not open this link. Check where it leads 
  * A left to right mark before a link shown as text: Android does not take `writingDirection`, and a host in Hebrew or
  * Arabic letters would otherwise set the whole line right to left. Only on screen, never in what is copied or opened.
  */
-export const LTR_MARK = '‎'
+export const LTR_MARK = '\u200e'
 
 interface Props {
   conference: Conference | null
@@ -54,29 +54,27 @@ interface Props {
   clock: () => number
   /** Retry: asks the calendar's provider for the link again (POST .../meeting-link). Null when the user cannot. */
   onRetry: ((provider: RetryProvider) => Promise<void>) | null
-  /** Leave without a link: drops the request (DELETE .../meeting-link). Null when the user cannot. */
-  onLeave: (() => Promise<void>) | null
 }
 
 /**
  * An event's meeting link on the phone: Join (only for a link core's canJoin passes), the link as text with Copy link,
- * and the line under it; or the link that is being made, or that could not be made, with Retry and "Leave without a
- * link" for the organizer. Nothing when the event has no link and none was asked for. The link itself is never logged
- * or put into an error. Give it the link as its `key`, so a new link (the sync brought one) starts without the old
- * one's messages.
+ * and the line under it; or the link that is being made, or that could not be made, with Retry for the organizer.
+ * There is no "Leave without a link" yet: the API's removal would also take off a link that arrived after the phone's
+ * copy. Nothing when the event has no link and none was asked for. The link itself is never logged or put into an
+ * error. Give it the link as its `key`, so a new link (the sync brought one) starts without the old one's messages.
  */
-export function MeetingLink({ conference, request, organizes, line, clock, onRetry, onLeave }: Props) {
+export function MeetingLink({ conference, request, organizes, line, clock, onRetry }: Props) {
   const theme = useTheme()
   const styles = useMemo(() => makeStyles(theme), [theme])
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
   const [openFailed, setOpenFailed] = useState(false)
-  const [acting, setActing] = useState<'retry' | 'leave' | null>(null)
+  const [retrying, setRetrying] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Answers that come after the screen closed (or the link changed) set nothing, as on the web's CopyLinkButton.
   const alive = useRef(true)
-  // A second tap before the first one's answer does nothing: one openURL, one request.
+  // A second tap before the first one's answer does nothing: one openURL, one Retry.
   const opening = useRef(false)
   const busy = useRef(false)
   // Renders again when a link that is being made has waited too long, so it then reads as failed.
@@ -163,17 +161,17 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
     }, COPIED_MS)
   }
 
-  async function act(kind: 'retry' | 'leave', run: () => Promise<void>, done: string) {
+  async function retry(run: () => Promise<void>) {
     if (busy.current) {
       return
     }
     busy.current = true
-    setActing(kind)
+    setRetrying(true)
     setActionError(null)
     try {
       await run()
       if (alive.current) {
-        AccessibilityInfo.announceForAccessibility(done)
+        AccessibilityInfo.announceForAccessibility('Asked for the link again.')
       }
     } catch (error) {
       if (alive.current) {
@@ -184,7 +182,7 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
     } finally {
       busy.current = false
       if (alive.current) {
-        setActing(null)
+        setRetrying(false)
       }
     }
   }
@@ -239,37 +237,24 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
   }
   if (state === 'failed' && organizes) {
     const provider = request.provider
-    const retry = onRetry !== null && canRetry(provider) ? onRetry : null
+    const ask = onRetry !== null && canRetry(provider) ? onRetry : null
     return (
       <View style={styles.status}>
         <View accessibilityLiveRegion="polite" style={styles.status}>
           <Text style={styles.failedTitle}>{requestTitle(request, now)}</Text>
           <Text style={styles.hint}>{failureHint(request, now)}</Text>
         </View>
-        {(retry !== null || onLeave !== null) && (
+        {ask !== null && canRetry(provider) && (
           <View style={styles.actions}>
-            {retry !== null && canRetry(provider) && (
-              <Pressable
-                style={styles.action}
-                onPress={() => void act('retry', () => retry(provider), 'Asked for the link again.')}
-                disabled={acting !== null}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: acting !== null, busy: acting === 'retry' }}
-              >
-                <Text style={styles.actionLabel}>{acting === 'retry' ? 'Retrying' : 'Retry'}</Text>
-              </Pressable>
-            )}
-            {onLeave !== null && (
-              <Pressable
-                style={styles.action}
-                onPress={() => void act('leave', onLeave, 'The event stays without a link.')}
-                disabled={acting !== null}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: acting !== null, busy: acting === 'leave' }}
-              >
-                <Text style={styles.actionLabel}>Leave without a link</Text>
-              </Pressable>
-            )}
+            <Pressable
+              style={styles.action}
+              onPress={() => void retry(() => ask(provider))}
+              disabled={retrying}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: retrying, busy: retrying }}
+            >
+              <Text style={styles.actionLabel}>{retrying ? 'Retrying' : 'Retry'}</Text>
+            </Pressable>
           </View>
         )}
         {actionError !== null && <Text style={styles.error}>{actionError}</Text>}
