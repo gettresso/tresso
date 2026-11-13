@@ -54,7 +54,15 @@ export const PERSONAL_ACCESS_TOKEN_SCOPES: readonly PersonalAccessTokenScope[] =
   { value: 'signatures:write', label: 'Change signatures', description: 'Add, change and delete email signatures.' },
   { value: 'settings:read', label: 'See settings', description: 'See your mail accounts, smart inboxes and other settings.' },
   { value: 'settings:write', label: 'Change settings', description: 'Change settings such as account names, smart inboxes, rules and notifications. Never how a mail account connects, access tokens or connected apps.' },
+  { value: 'chat:read', label: 'Read your WhatsApp chats', description: 'Read the WhatsApp chats and messages your Mac passes on to Tresso, and the replies waiting to go out.' },
+  { value: 'chat:send', label: 'Send WhatsApp messages as you', description: 'Write replies in your WhatsApp chats; your Mac sends them from your WhatsApp.' },
 ]
+
+/**
+ * The WhatsApp scopes among PERSONAL_ACCESS_TOKEN_SCOPES. Separate from mail: no other scope includes them, and a token
+ * only holds them when the user ticks them.
+ */
+export const CHAT_SCOPES = ['chat:read', 'chat:send'] as const
 
 /** The label of a scope, or the scope itself for one this version does not know. */
 export function personalAccessTokenScopeLabel(scope: string): string {
