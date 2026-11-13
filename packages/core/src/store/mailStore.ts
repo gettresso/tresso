@@ -264,6 +264,8 @@ export interface MailStore extends SyncStore {
   chatMeta(key: string): Promise<string | null>
   /** Sets a chat value; null removes it. */
   setChatMeta(key: string, value: string | null): Promise<void>
+  /** Removes every chat value whose key starts with `prefix` (values an earlier version kept under another key). */
+  removeChatMetaStartingWith(prefix: string): Promise<void>
   /**
    * Finishes the writes under way and closes the copy; it takes no more writes. With `waitMs`, writes and reads that
    * have not finished by then are no longer waited for: the copy closes anyway (said in a log line), so storage that

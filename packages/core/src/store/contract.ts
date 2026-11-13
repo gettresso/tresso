@@ -1377,6 +1377,21 @@ export function describeMailStore(name: string, open: () => Promise<MailStore>, 
         expect(await db.cursor()).toBe(40)
       })
 
+      it('removes the chat values whose key starts with a prefix, and only those', async () => {
+        await db.setChatMeta('old-file:c1:a', '1')
+        await db.setChatMeta('old-file:c2:b', '2')
+        await db.setChatMeta('old-files', '3')
+        await db.setChatMeta('old_file:c1', '4')
+
+        await db.removeChatMetaStartingWith('old-file:')
+
+        expect(await db.chatMeta('old-file:c1:a')).toBeNull()
+        expect(await db.chatMeta('old-file:c2:b')).toBeNull()
+        expect(await db.chatMeta('old-files')).toBe('3')
+        expect(await db.chatMeta('old_file:c1'), 'Not a pattern.').toBe('4')
+        expect(await db.cursor()).toBe(40)
+      })
+
       it('stores a page with chat times that are no times, sorting those rows last, so the sync goes on', async () => {
         const odd = page({
           cursor: 41,
