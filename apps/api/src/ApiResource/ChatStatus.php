@@ -13,8 +13,9 @@ use App\State\ChatReadProvider;
 /**
  * Whether the user's WhatsApp is on the server ("All my devices") and the state of the desktop that relays it. With
  * "Only this Mac", or before WhatsApp is connected, the server holds no chats: `onServer` is false and the rest null.
- * Read with {@see ChatAccessVoter::READ} or {@see ChatAccessVoter::SEND}: it holds no name, number or message, so a
- * caller that may only queue replies learns whether they can go out, and nothing about the chats.
+ * Read with {@see ChatAccessVoter::READ} or {@see ChatAccessVoter::SEND}: it holds no number or message, so a caller
+ * that may only queue replies learns whether they can go out, and nothing about the chats; such a caller does not get
+ * the relay's device name either.
  *
  * @phpstan-import-type Status from ChatReader
  */
@@ -40,7 +41,7 @@ final readonly class ChatStatus
         /** False with "Only this Mac" or when WhatsApp is not connected: the server then holds no chats. */
         public bool $onServer,
         public ?string $chatAccountId,
-        /** The name of the desktop that relays. */
+        /** The name of the desktop that relays; null for a caller that may only queue replies. */
         public ?string $relayDeviceName,
         /** False once the relay was not heard from for 3 minutes; replies wait until it is back. */
         public ?bool $relayOnline,

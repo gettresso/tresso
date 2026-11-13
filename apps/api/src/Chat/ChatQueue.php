@@ -16,6 +16,7 @@ use App\Enum\ChatOutgoingError;
 use App\Enum\ChatOutgoingStatus;
 use App\Repository\ChatOutgoingRepository;
 use App\Repository\ChatRepository;
+use App\Security\CallerKey;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\DBAL\LockMode;
@@ -62,15 +63,22 @@ final readonly class ChatQueue
         private ChatClaims $claims,
         #[Autowire(service: 'limiter.chat_reply')]
         private RateLimiterFactoryInterface $limiter,
+        #[Autowire(service: 'limiter.chat_reply_caller')]
+        private RateLimiterFactoryInterface $callerLimiter,
+        #[Autowire(service: 'limiter.chat_reply_caller_day')]
+        private RateLimiterFactoryInterface $callerDailyLimiter,
     ) {
     }
 
     /**
-     * Queues the reply, or returns the one queued with its id before.
+     * Queues the reply, or returns the one queued with its id before. Replies are limited per user (`chat_reply`, all
+     * devices and tokens together) and, for a caller that is not one of our own apps ($caller, a {@see CallerKey}), per
+     * caller as well (`chat_reply_caller`, `chat_reply_caller_day`). A repeat of a request queues nothing and counts for
+     * no limit.
      *
      * @return array{ChatOutgoing, bool} the reply, and whether this request queued it
      */
-    public function queue(User $user, mixed $chatId, QueueReply $input, \DateTimeImmutable $now): array
+    public function queue(User $user, mixed $chatId, QueueReply $input, \DateTimeImmutable $now, string $caller = CallerKey::OURS): array
     {
         $id = Uuid::fromString($input->id);
         // The chat first: another user's chat is not found, whatever id the request names.
@@ -88,6 +96,18 @@ final readonly class ChatQueue
             throw new ValidationException($late);
         }
         self::refuseLeftOut($chat);
+        if (CallerKey::OURS !== $caller) {
+            $key = $user->getId()->toRfc4122().'|'.$caller;
+            foreach ([
+                [$this->callerLimiter, 'This app or token queued too many WhatsApp messages in the last 10 minutes. Wait a few minutes, then try again.'],
+                [$this->callerDailyLimiter, 'This app or token queued too many WhatsApp messages in the last day. Try again tomorrow.'],
+            ] as [$factory, $message]) {
+                $callerLimit = $factory->create($key)->consume();
+                if (!$callerLimit->isAccepted()) {
+                    throw new TooManyRequestsHttpException(max(1, $callerLimit->getRetryAfter()->getTimestamp() - time()), $message);
+                }
+            }
+        }
         $limit = $this->limiter->create($user->getId()->toRfc4122())->consume();
         if (!$limit->isAccepted()) {
             throw new TooManyRequestsHttpException($limit->getRetryAfter()->getTimestamp() - time(), 'Too many WhatsApp replies at once. Wait a few minutes, then try again.');

@@ -12,13 +12,14 @@ use ApiPlatform\Metadata\Post;
 use App\ApiResource\Input\Chat\QueueReply;
 use App\Chat\ChatViews;
 use App\Security\ChatAccessVoter;
+use App\Security\FirstPartyClients;
 use App\State\ChatOutgoingProcessor;
 use App\State\ChatOutgoingProvider;
 
 /**
  * The reply queue: a reply written on any device waits here until the relaying desktop sends it ({@see \App\Chat\ChatQueue}).
- * Queueing, cancelling and trying again need {@see ChatAccessVoter::SEND} (our own apps with `mail:send`, or a caller
- * holding `chat:send`); clients read replies through the delta (`chatOutgoing`). Another user's chat or reply is not
+ * Queueing and cancelling need {@see ChatAccessVoter::SEND} (our own apps with `mail:send`, or a caller holding
+ * `chat:send`); trying again also needs one of our own apps; clients read replies through the delta (`chatOutgoing`). Another user's chat or reply is not
  * found.
  *
  * @phpstan-import-type OutgoingView from ChatViews
@@ -50,11 +51,12 @@ use App\State\ChatOutgoingProvider;
             provider: ChatOutgoingProvider::class,
             processor: ChatOutgoingProcessor::class,
         ),
-        // Try again: a reply that failed waits again; any other is 409 `not_failed`.
+        // Try again: a reply that failed waits again; any other is 409 `not_failed`. Only in our own apps, where the user
+        // decides: a reply that failed as `unconfirmed` may have gone out, and a tool must not send it twice.
         new Post(
             uriTemplate: '/chat-outgoing/{id}/retry',
             status: 200,
-            security: "is_granted('".ChatAccessVoter::SEND."')",
+            security: "is_granted('".ChatAccessVoter::SEND."') and is_granted('".FirstPartyClients::ATTRIBUTE."')",
             input: false,
             provider: ChatOutgoingProvider::class,
             processor: ChatOutgoingProcessor::class,

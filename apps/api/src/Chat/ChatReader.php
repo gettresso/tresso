@@ -228,7 +228,7 @@ final readonly class ChatReader
     }
 
     /**
-     * Messages whose text, file name or sender name holds $query (ignoring case), newest first, in the chats the user
+     * Messages whose text, file name or sender name holds $query (ignoring case and compatibility forms), newest first, in the chats the user
      * did not leave out, from the last $days days. Chat text is sealed at rest, so there is no index to ask: each
      * message is opened to be compared. A call opens at most {@see SEARCH_SCAN} messages; when it stops there before the
      * window ends, `complete` is false and `nextCursor` goes on further back.
@@ -239,14 +239,29 @@ final readonly class ChatReader
      */
     public function search(User $owner, string $query, int $days, ?string $chatId, int $limit, ?ChatCursor $cursor): array
     {
-        $needle = mb_strtolower($query);
+        $needle = self::folded($query);
         $from = $this->clock->now()->modify(\sprintf('-%d days', $days));
-        $parameters = ['owner' => $owner->getId()->toRfc4122(), 'from' => $from->format('Y-m-d H:i:s')];
         $inChat = '';
+        $chat = null;
         if (null !== $chatId) {
-            $parameters['chat'] = $this->ownChat($owner, $chatId)['id'];
+            $chat = $this->ownChat($owner, $chatId);
             $inChat = 'AND m.chat_id = :chat';
         }
+        // The account first, so the messages are read by (chat_account_id, sent_at), the index chat_message_account_sent.
+        $account = null === $chat ? $this->accounts->findOneByChannel($owner, ChatChannel::WhatsApp)?->getId()->toRfc4122() : self::text($chat['row']['chat_account_id']);
+        if (null === $account) {
+            return [
+                'items' => [],
+                'query' => $query,
+                'from' => $from->format(\DATE_ATOM),
+                'scanned' => 0,
+                'scanLimit' => self::SEARCH_SCAN,
+                'searchedThrough' => null,
+                'complete' => true,
+                'nextCursor' => null,
+            ];
+        }
+        $parameters = ['account' => $account, 'from' => $from->format('Y-m-d H:i:s')] + (null === $chat ? [] : ['chat' => $chat['id']]);
 
         $owned = $owner->getId();
         $chatNames = [];
@@ -265,8 +280,7 @@ final readonly class ChatReader
                 'SELECT '.ChatViews::MESSAGE_COLUMNS.', c.sealed_name AS chat_sealed_name, c.kind AS chat_kind
                  FROM chat_message m
                  JOIN chat c ON c.id = m.chat_id
-                 JOIN chat_account a ON a.id = m.chat_account_id
-                 WHERE a.owner_id = :owner AND c.left_out = false AND m.sent_at >= :from '.$inChat.' '.$after.'
+                 WHERE m.chat_account_id = :account AND c.left_out = false AND m.sent_at >= :from '.$inChat.' '.$after.'
                  ORDER BY m.sent_at DESC, m.id DESC LIMIT :limit',
                 $batchParameters,
                 ['limit' => ParameterType::INTEGER],
@@ -410,12 +424,23 @@ final readonly class ChatReader
     private static function matches(string $needle, array $message): bool
     {
         foreach ([$message['text'], $message['mediaName'], $message['sender']['name'] ?? null] as $value) {
-            if (null !== $value && str_contains(mb_strtolower($value), $needle)) {
+            if (null !== $value && str_contains(self::folded($value), $needle)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Text as a search compares it: compatibility forms joined (NFKC: a decomposed "é" is "é", "ﬁ" is "fi") and case
+     * folded in full ("İ" folds as itself on both sides, "ß" to "ss"). Done to the query and to each message alike.
+     */
+    private static function folded(string $text): string
+    {
+        $normal = \Normalizer::normalize($text, \Normalizer::FORM_KC);
+
+        return mb_convert_case(\is_string($normal) ? $normal : $text, \MB_CASE_FOLD);
     }
 
     /** Whitespace at either end removed, as JavaScript's trim() removes it. */

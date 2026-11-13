@@ -37,14 +37,15 @@ final class ChatReadApiTest extends DatabaseTestCase
 
     public function testTheStatusSaysWhetherWhatsAppIsOnTheServerWithoutNamesOrNumbers(): void
     {
-        foreach (['chat:read' => $this->reader, 'chat:send' => $this->seededThirdPartyHeaders('kim@example.test', ['chat:send'])] as $scope => $headers) {
+        // The Mac's name is the user's: a caller that may only queue replies does not get it.
+        foreach (['chat:read' => [$this->reader, 'Kim\'s MacBook Pro'], 'chat:send' => [$this->seededThirdPartyHeaders('kim@example.test', ['chat:send']), null]] as $scope => [$headers, $device]) {
             $status = $this->get('/chat-accounts/whatsapp/status', $headers);
 
             self::assertSame([
                 'channel' => 'whatsapp',
                 'onServer' => true,
                 'chatAccountId' => $this->kimsAccount->getId()->toRfc4122(),
-                'relayDeviceName' => 'Kim\'s MacBook Pro',
+                'relayDeviceName' => $device,
                 'relayOnline' => true,
                 'relayOfflineSince' => null,
                 'bridge' => 'running',
@@ -52,6 +53,9 @@ final class ChatReadApiTest extends DatabaseTestCase
             ], $status, $scope);
             self::assertStringNotContainsString('31698765432', (string) $this->client->getResponse()->getContent(), 'The own number stays out.');
             self::assertStringNotContainsString('Kim Visser', (string) $this->client->getResponse()->getContent(), 'The own name stays out.');
+            if (null === $device) {
+                self::assertStringNotContainsString('MacBook', (string) $this->client->getResponse()->getContent());
+            }
         }
 
         $this->relayGoesOffline();
@@ -71,16 +75,21 @@ final class ChatReadApiTest extends DatabaseTestCase
             'a token with every other scope' => $this->personalAccessTokenHeaders('kim@example.test', $everyOther),
             'an app with every other scope' => $this->thirdPartyHeaders('kim@example.test', $everyOther),
         ] as $caller => $headers) {
-            foreach (['/chat-accounts/whatsapp/status', '/chats', '/chats/'.$this->annaChat.'/messages', '/chat-messages/search?q=friday'] as $path) {
+            foreach (['/chat-accounts/whatsapp/status', '/chats', '/chats/'.$this->annaChat.'/messages'] as $path) {
                 $this->client->request('GET', '/api/v1'.$path, server: $headers);
                 self::assertResponseStatusCodeSame(403, $caller.': '.$path);
             }
+            $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', ['q' => 'friday'], $headers);
+            self::assertResponseStatusCodeSame(403, $caller.': search');
         }
-        foreach (['/chats', '/chats/'.$this->annaChat.'/messages', '/chat-messages/search?q=friday'] as $path) {
+        foreach (['/chats', '/chats/'.$this->annaChat.'/messages'] as $path) {
             $this->client->request('GET', '/api/v1'.$path, server: $send);
             self::assertResponseStatusCodeSame(403, 'chat:send reads nothing: '.$path);
             self::assertStringNotContainsString('Anna', (string) $this->client->getResponse()->getContent());
         }
+        $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', ['q' => 'friday'], $send);
+        self::assertResponseStatusCodeSame(403, 'chat:send searches nothing.');
+        self::assertStringNotContainsString('Anna', (string) $this->client->getResponse()->getContent());
         $this->client->request('GET', '/api/v1/chats', server: ['HTTP_ACCEPT' => 'application/json']);
         self::assertResponseStatusCodeSame(401);
 
@@ -142,17 +151,46 @@ final class ChatReadApiTest extends DatabaseTestCase
         self::assertSame(array_column(self::list($this->get('/chats', $this->reader)['items'] ?? null), 'id'), $seen);
     }
 
-    public function testParametersOutOfRangeAndForeignCursorsAreRefused(): void
+    /**
+     * A cursor is not signed and not bound to a user or a chat: it only names a position (a time, a kind and a row id)
+     * and every read filters by the signed-in user, so a cursor of another user's only moves within the caller's own
+     * chats. What is checked is that it is one of the shape this API gives.
+     */
+    public function testParametersOutOfRangeAndCursorsOfAnotherShapeAreRefused(): void
     {
-        foreach (['/chats?limit=0' => 'limit', '/chats?limit=101' => 'limit', '/chats?limit=ten' => 'limit', '/chats/'.$this->annaChat.'/messages?limit=500' => 'limit', '/chat-messages/search?q=a' => 'q', '/chat-messages/search?q=friday&days=91' => 'days', '/chat-messages/search?q=friday&limit=51' => 'limit', '/chat-messages/search?q='.str_repeat('x', 201) => 'q', '/chat-messages/search?q=fri%01day' => 'q'] as $path => $field) {
+        foreach (['/chats?limit=0' => 'limit', '/chats?limit=101' => 'limit', '/chats?limit=ten' => 'limit', '/chats/'.$this->annaChat.'/messages?limit=500' => 'limit'] as $path => $field) {
             $this->client->request('GET', '/api/v1'.$path, server: $this->reader);
             self::assertResponseStatusCodeSame(422, $path);
             self::assertSame([$field], array_column(self::list($this->decodedResponse()['violations'] ?? null), 'propertyPath'), $path);
         }
-        foreach (['/chats?cursor=nonsense', '/chats/'.$this->annaChat.'/messages?cursor='.base64_encode('["x",0,"y"]'), '/chat-messages/search?q=friday&cursor=AAAA'] as $path) {
+        foreach ([
+            'one letter' => [['q' => 'a'], 'q'],
+            'too far back' => [['q' => 'friday', 'days' => 91], 'days'],
+            'too many results' => [['q' => 'friday', 'limit' => 51], 'limit'],
+            'too long' => [['q' => str_repeat('x', 201)], 'q'],
+            'a control character' => [['q' => "fri\u{0001}day"], 'q'],
+            'a chat id that is none' => [['q' => 'friday', 'chatId' => 'anna'], 'chatId'],
+        ] as $case => [$body, $field]) {
+            $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', $body, $this->reader);
+            self::assertResponseStatusCodeSame(422, $case);
+            self::assertSame([$field], array_column(self::list($this->decodedResponse()['violations'] ?? null), 'propertyPath'), $case);
+            self::assertStringNotContainsString('fri', (string) $this->client->getResponse()->getContent(), 'The text searched for is not repeated.');
+        }
+        foreach (['/chats?cursor=nonsense', '/chats/'.$this->annaChat.'/messages?cursor='.base64_encode('["x",0,"y"]')] as $path) {
             $this->client->request('GET', '/api/v1'.$path, server: $this->reader);
             self::assertResponseStatusCodeSame(400, $path);
         }
+        $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', ['q' => 'friday', 'cursor' => 'AAAA'], $this->reader);
+        self::assertResponseStatusCodeSame(400);
+        $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', ['q' => 'friday', 'days' => 'ten'], $this->reader);
+        self::assertResponseStatusCodeSame(400, 'A body of another shape.');
+    }
+
+    public function testTheSearchTextNeverGoesInAUrl(): void
+    {
+        $this->client->request('GET', '/api/v1/chat-messages/search?q=friday', server: $this->reader);
+
+        self::assertContains($this->client->getResponse()->getStatusCode(), [404, 405], 'Only a POST with a JSON body searches.');
     }
 
     public function testAChatIsReadWithItsMessagesAndRepliesNewestFirst(): void
@@ -209,14 +247,14 @@ final class ChatReadApiTest extends DatabaseTestCase
             self::assertResponseStatusCodeSame(404, $chat);
             self::assertStringNotContainsString('secret', (string) $this->client->getResponse()->getContent());
 
-            $this->client->request('GET', '/api/v1/chat-messages/search?q=friday&chatId='.$chat, server: $this->reader);
+            $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', ['q' => 'friday', 'chatId' => $chat], $this->reader);
             self::assertResponseStatusCodeSame(404, $chat);
         }
     }
 
     public function testSearchLooksInTextFileNamesAndSendersIgnoringCase(): void
     {
-        $friday = $this->get('/chat-messages/search?q=FRIDAY', $this->reader);
+        $friday = $this->search(['q' => 'FRIDAY'], $this->reader);
         self::assertSame([$this->ids['friday']], array_column(self::list($friday['items'] ?? null), 'id'), 'Not the chat left out, not Lisa\'s.');
         $hit = self::list($friday['items'] ?? null)[0];
         self::assertSame(['Anna de Vries', 'direct', $this->annaChat, 'Are we still on for Friday?'], [$hit['chatName'] ?? null, $hit['chatKind'] ?? null, $hit['chatId'] ?? null, $hit['text'] ?? null]);
@@ -228,10 +266,10 @@ final class ChatReadApiTest extends DatabaseTestCase
         self::assertSame(ChatReader::SEARCH_SCAN, $friday['scanLimit'] ?? null);
         self::assertSame($this->at(0)->format(\DATE_ATOM), $friday['searchedThrough'] ?? null);
 
-        self::assertSame([$this->ids['agenda']], array_column(self::list($this->get('/chat-messages/search?q=agenda.PDF', $this->reader)['items'] ?? null), 'id'));
-        self::assertSame([$this->ids['morning']], array_column(self::list($this->get('/chat-messages/search?q=bram', $this->reader)['items'] ?? null), 'id'));
-        self::assertSame([], self::list($this->get('/chat-messages/search?q=bram&chatId='.$this->annaChat, $this->reader)['items'] ?? null));
-        self::assertSame([$this->ids['see-you'], $this->ids['agenda'], $this->ids['friday']], array_column(self::list($this->get('/chat-messages/search?q=anna&chatId='.$this->annaChat, $this->reader)['items'] ?? null), 'id'), 'Newest first, by sender name.');
+        self::assertSame([$this->ids['agenda']], array_column(self::list($this->search(['q' => 'agenda.PDF'], $this->reader)['items'] ?? null), 'id'));
+        self::assertSame([$this->ids['morning']], array_column(self::list($this->search(['q' => 'bram'], $this->reader)['items'] ?? null), 'id'));
+        self::assertSame([], self::list($this->search(['q' => 'bram', 'chatId' => $this->annaChat], $this->reader)['items'] ?? null));
+        self::assertSame([$this->ids['see-you'], $this->ids['agenda'], $this->ids['friday']], array_column(self::list($this->search(['q' => 'anna', 'chatId' => $this->annaChat], $this->reader)['items'] ?? null), 'id'), 'Newest first, by sender name.');
     }
 
     public function testSearchKeepsToItsWindow(): void
@@ -240,11 +278,11 @@ final class ChatReadApiTest extends DatabaseTestCase
         self::assertInstanceOf(Chat::class, $chat);
         $this->messageAt($chat, 'ancient', 0, 'An ancient plan', sentAt: new \DateTimeImmutable('-40 days'));
 
-        $recent = $this->get('/chat-messages/search?q=ancient', $this->reader);
+        $recent = $this->search(['q' => 'ancient'], $this->reader);
         self::assertSame([], self::list($recent['items'] ?? null));
         self::assertTrue($recent['complete'] ?? null);
 
-        self::assertSame([$this->ids['ancient']], array_column(self::list($this->get('/chat-messages/search?q=ancient&days=45', $this->reader)['items'] ?? null), 'id'));
+        self::assertSame([$this->ids['ancient']], array_column(self::list($this->search(['q' => 'ancient', 'days' => 45], $this->reader)['items'] ?? null), 'id'));
     }
 
     /**
@@ -264,32 +302,52 @@ final class ChatReadApiTest extends DatabaseTestCase
         });
         $entityManager->clear();
 
-        $first = $this->get('/chat-messages/search?q=needle', $this->reader);
+        $first = $this->search(['q' => 'needle'], $this->reader);
         self::assertSame([], self::list($first['items'] ?? null));
         self::assertSame(ChatReader::SEARCH_SCAN, $first['scanned'] ?? null);
         self::assertFalse($first['complete'] ?? null, 'Stopped at the limit before the window\'s start.');
         $cursor = $first['nextCursor'] ?? null;
         self::assertIsString($cursor);
 
-        $second = $this->get('/chat-messages/search?q=needle&cursor='.$cursor, $this->reader);
+        $second = $this->search(['q' => 'needle', 'cursor' => $cursor], $this->reader);
         self::assertSame([$this->ids['needle']], array_column(self::list($second['items'] ?? null), 'id'));
         // Kim's five other messages are newer than the fillers, so the first call opened them and 1,995 fillers.
         self::assertSame(6, $second['scanned'] ?? null, 'The last five fillers and the needle.');
         self::assertTrue($second['complete'] ?? null);
     }
 
-    public function testSearchesAreLimitedPerUser(): void
+    /** In the tests: 8 searches in 10 minutes per caller, 12 per user. */
+    public function testSearchesAreLimitedPerCallerAndPerUser(): void
     {
-        for ($i = 0; $i < 12; ++$i) {
-            $this->get('/chat-messages/search?q=friday', $this->reader);
+        for ($i = 0; $i < 8; ++$i) {
+            $this->search(['q' => 'friday'], $this->reader);
         }
-
-        $this->client->request('GET', '/api/v1/chat-messages/search?q=friday', server: $this->reader);
-        self::assertResponseStatusCodeSame(429);
+        $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', ['q' => 'friday'], $this->reader);
+        self::assertResponseStatusCodeSame(429, 'This caller used its share.');
         self::assertGreaterThan(0, (int) $this->client->getResponse()->headers->get('Retry-After'));
 
+        $other = $this->seededThirdPartyHeaders('kim@example.test', ['chat:read']);
+        for ($i = 0; $i < 4; ++$i) {
+            $this->search(['q' => 'friday'], $other);
+        }
+        $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', ['q' => 'friday'], $other);
+        self::assertResponseStatusCodeSame(429, 'Another app of the same user has its own share, within the user\'s.');
+
         $lisa = $this->seededThirdPartyHeaders('lisa@example.test', ['chat:read']);
-        self::assertSame([$this->ids['lisa']], array_column(self::list($this->get('/chat-messages/search?q=friday', $lisa)['items'] ?? null), 'id'), 'Another user has a limit of her own.');
+        self::assertSame([$this->ids['lisa']], array_column(self::list($this->search(['q' => 'friday'], $lisa)['items'] ?? null), 'id'), 'Another user has a limit of her own.');
+    }
+
+    public function testSearchIgnoresCaseAndUnicodeForms(): void
+    {
+        $chat = $this->chatEntityManager()->find(Chat::class, Uuid::fromString($this->annaChat));
+        self::assertInstanceOf(Chat::class, $chat);
+        $this->messageAt($chat, 'istanbul', 1, 'Flight to İstanbul on Monday');
+        $this->messageAt($chat, 'cafe', 2, "Coffee at the cafe\u{0301} later");
+        $this->messageAt($chat, 'strasse', 3, 'Meet at the Hauptstraße');
+
+        self::assertSame([$this->ids['istanbul']], array_column(self::list($this->search(['q' => 'İSTANBUL'], $this->reader)['items'] ?? null), 'id'));
+        self::assertSame([$this->ids['cafe']], array_column(self::list($this->search(['q' => "CAF\u{00C9}"], $this->reader)['items'] ?? null), 'id'), 'A decomposed é matches a composed one.');
+        self::assertSame([$this->ids['strasse']], array_column(self::list($this->search(['q' => 'HAUPTSTRASSE'], $this->reader)['items'] ?? null), 'id'));
     }
 
     /**
@@ -320,6 +378,20 @@ final class ChatReadApiTest extends DatabaseTestCase
         self::assertIsArray($value);
 
         return $value;
+    }
+
+    /**
+     * @param array<string, mixed>  $body
+     * @param array<string, string> $headers
+     *
+     * @return array<mixed>
+     */
+    private function search(array $body, array $headers): array
+    {
+        $this->client->jsonRequest('POST', '/api/v1/chat-messages/search', $body, $headers);
+        self::assertResponseIsSuccessful('search: '.$this->client->getResponse()->getContent());
+
+        return $this->decodedResponse();
     }
 
     /**
