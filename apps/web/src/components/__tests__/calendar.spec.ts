@@ -65,6 +65,21 @@ describe('time grid', () => {
     wrapper.unmount()
   })
 
+  it('marks an event with a meeting link with a small camera after its title', () => {
+    const linked = expandOccurrences(
+      [timed('Call', '2026-10-20T09:00:00', '2026-10-20T10:00:00', { conference: { provider: 'meet', url: 'https://meet.google.com/kfp-wzqn-rtx', id: null, dialIn: null } }), timed('Desk', '2026-10-20T11:00:00', '2026-10-20T12:00:00')],
+      days[0]!.start,
+      days[6]!.end,
+      AMS,
+    )
+    const wrapper = mount(TimeGrid, { props: { days, occurrences: linked, zone: AMS, now, today: Date.UTC(2026, 9, 20), calendars: () => work, selectedKey: null } })
+    const [call, desk] = wrapper.findAll('.block')
+    expect(call!.find('.title').text()).toBe('Call')
+    expect(call!.get('.has-link').attributes('aria-hidden')).toBe('true')
+    expect(desk!.find('.has-link').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('gives an event crossing midnight one tab stop', () => {
     const night = expandOccurrences([timed('Night', '2026-10-20T22:00:00', '2026-10-21T02:00:00')], days[0]!.start, days[6]!.end, AMS)
     const wrapper = mount(TimeGrid, { props: { days, occurrences: night, zone: AMS, now, today: Date.UTC(2026, 9, 20), calendars: () => work, selectedKey: null } })
