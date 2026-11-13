@@ -1338,8 +1338,8 @@ ids and shortcuts): Tresso (About Tresso, Check for Updates…, Settings… ⌘,
 ⌥⌘H, Show All, Quit Tresso ⌘Q), File (New Message ⌘N, New Event, New To-do, Close Window ⌘W), Edit (Undo, Redo, Cut,
 Copy, Paste, Paste and Match Style ⌥⇧⌘V, Delete, Select All, Find… ⌘F), View (Inbox, Triage, To-dos, Calendar,
 Search, Hide Sidebar or Show Sidebar ⌃⌘S, Reload, Enter Full Screen ⌃⌘F), Mailbox (Get New Mail ⇧⌘N; Daily Brief,
-Waiting On, Drafts, Clean Up, Batches), Message (Reply ⌘R, Reply All ⇧⌘R, Forward ⇧⌘F; Archive ⌃⌘A, Move to Trash ⌘⌫,
-Move to…; Mark as Unread or Mark as Read ⇧⌘U, Flag or Unflag ⇧⌘L), Window (Minimize ⌘M, Zoom, Bring All to Front,
+Waiting On, Drafts, Clean Up, Outbox, Batches), Message (Reply ⌘R, Reply All ⇧⌘R, Forward ⇧⌘F; Archive ⌃⌘A, Move to
+Trash ⌘⌫, Move to…; Mark as Unread or Mark as Read ⇧⌘U, Flag or Unflag ⇧⌘L; Do, Hand Over…, Noted, Make To-do), Window (Minimize ⌘M, Zoom, Bring All to Front,
 Tresso ⌘0) and Help (Tresso Help, the README; Release Notes, the releases page). The standard items are AppKit's own,
 so they act on the focused web content; Paste and Match Style and Delete, which Tauri has no item for, are added
 natively. Items that act in the web client reach it as the `menu` event with the action's name, handled in one place
@@ -1348,20 +1348,34 @@ natively. Items that act in the web client reach it as the `menu` event with the
 would do (Hide Sidebar while the sidebar shows).
 
 Get New Mail pulls now (the mail store's `syncNow`). Mailbox's places are the sidebar's fixed places that View does not
-list already; smart inboxes and accounts are the user's own and get no items. The Message menu acts on the conversation
-open in the reading pane: the pane offers its own actions while it is mounted (`mail/openConversation.ts`), so an item
-does exactly what the pane's button or key does, undo notice and instant change included. Reply, Reply All and Forward
-take the newest message, as its own buttons do; Move to… opens the pane's folder menu; Mark as Unread is U (back to the
-list), Mark as Read reads what is unread; Flag and Unflag are S. The menu enables these items only while a conversation
-is loaded and has the user's attention (no conversations selected in the list, no hand-over being written, as for the
-pane's keys), and `menu_state` names Mark as Read or Unread and Flag or Unflag after it. A menu shortcut reaches the menu
-before the web view, so the two whose keys also edit text (⌘⌫ deletes to the start of the line, ⇧⌘U underlines in the
-composer) are disabled while a text field or the compose window has the focus, as a Mac app disables what does not
-apply to the focused view (`platform/editing.ts` follows the focus; a menu test keeps every other shortcut off the text
-keys). The web client sends `menu_state` once per change of what it says, never per key or per scroll: changes in one
-tick go together, and a change that ends where it began (the focus moving between fields, a sync reloading the open
-conversation) sends nothing. Not in the menus, because the web client has no such action: Snooze, Mark All as Read,
-Next and Previous Message, and Sent, Archive and Trash as places. Reload acts signed out too, and only after the draft is
+list already; Outbox is enabled only while the sidebar lists it (while mail waits in it); smart inboxes and accounts are
+the user's own and get no items. The Message menu acts on the conversation open in the reading pane: the pane offers its
+own actions while it is mounted (`mail/openConversation.ts`), so an item does exactly what the pane's button or key does,
+undo notice and instant change included. Reply, Reply All and Forward take the newest message, as its own buttons do;
+Move to… opens the pane's folder menu; Mark as Unread is U (back to the list), Mark as Read reads what is unread, and
+which of the two is decided once the read on opening is done; Flag and Unflag are S; Do, Hand Over…, Noted and Make
+To-do are D, H, K and T (Make To-do is disabled once the conversation has a to-do). The items and the pane's keys share
+one check of the user's attention (ReadingPane's `attentive`): the conversation is loaded, nothing is being written in
+the compose window (open and not minimized), no modal dialog (a modal `<dialog>`, an alert dialog, a modal element with
+the dialog role) and not the folder menu is open, no conversations are selected in the list, and no hand-over is being
+written. So the whole Message menu is disabled while composing. It is also disabled while the window is closed (hidden)
+or minimized (the page is not visible), and a Message item chosen then only brings the window back (`delivery` in
+menu.rs): the conversation the window held is never acted on unseen. `menu_state` names Mark as Read or Unread and Flag or
+Unflag after the conversation.
+
+Two Message shortcuts are also text keys: ⌘⌫ deletes to the start of the line, and ⇧⌘U underlines in the composer.
+Which sees a key first, the menu or the page, is not relied on. AppKit asks the menu for key equivalents, but wry hands
+`performKeyEquivalent:` to WKWebView, and WebKit may give the key to the page first and send only what the page left
+alone back to the menu. When the menu comes first, the two items are disabled while a text field or the compose window
+has the focus (`platform/editing.ts` follows the focus, and reads it again after every navigation and once the compose
+window is gone), so the key goes on to the text. When the page comes first, the text field takes the key, and should it
+still reach the menu, the web client reads the focus again when the action arrives and does nothing while it is in
+text. A menu test keeps every other shortcut off the text keys. The web client sends `menu_state` once per change of
+what it says, never per key or per scroll: changes in one tick go together, a change that ends where it began (the focus
+moving between fields, a sync reloading the open conversation) sends nothing, and a state counts as sent once the shell
+took it (one refusal is retried once). The shell changes all items in one task on the main thread. Not in the menus,
+because the web client has no such action: Snooze, Mark All as Read, Next and Previous Message, and Sent, Archive and
+Trash as places. Reload acts signed out too, and only after the draft is
 saved and nothing is on its way, as before a restart for an update (one at a time: a second Reload while one waits is
 the same one, and "Later" ends it); it has no ⌘R, which other mail apps use for Reply.
 Closing the window hides it and the app stays in the Dock; the Dock icon and Window > Tresso bring it back, and so do
