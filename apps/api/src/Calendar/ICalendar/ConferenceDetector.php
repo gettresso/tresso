@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Calendar\ICalendar;
 
 use App\Calendar\MeetingJoinLine;
+use App\Enum\CalendarSource;
 use Sabre\VObject\Component\VEvent;
 
 /**
@@ -16,12 +17,23 @@ use Sabre\VObject\Component\VEvent;
  */
 final class ConferenceDetector
 {
-    /** Join links per provider; the first match in the text wins. */
+    /**
+     * Join links per provider in free text; the first match wins. A link counts only where a link starts (at the start,
+     * after whitespace, a quote, an angle bracket or a parenthesis), never inside another link's path or query.
+     */
     private const array LINK_PATTERNS = [
-        'teams' => '~https://teams\.(?:microsoft|live)\.com/(?:l/meetup-join|meet)/[^\s<>"\')\]]+~i',
-        'meet' => '~https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:\?[^\s<>"\')\]]*)?~i',
-        'zoom' => '~https://(?:[a-z0-9-]+\.)?zoom\.us/(?:j|my|w)/[^\s<>"\')\]]+~i',
-        'webex' => '~https://[a-z0-9-]+\.webex\.com/(?:meet|join|[a-z0-9-]+/j\.php)[^\s<>"\')\]]*~i',
+        'teams' => '~(?<![^\s<>"\'(\[])https://teams\.(?:microsoft|live)\.com/(?:l/meetup-join|meet)/[^\s<>"\')\]]+~i',
+        'meet' => '~(?<![^\s<>"\'(\[])https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:\?[^\s<>"\')\]]*)?~i',
+        'zoom' => '~(?<![^\s<>"\'(\[])https://(?:[a-z0-9-]+\.)?zoom\.us/(?:j|my|w)/[^\s<>"\')\]]+~i',
+        'webex' => '~(?<![^\s<>"\'(\[])https://[a-z0-9-]+\.webex\.com/(?:meet|join|[a-z0-9-]+/j\.php)[^\s<>"\')\]]*~i',
+    ];
+
+    /** The hosts of each app: exactly these, or (with a leading dot) any name under them. */
+    private const array HOSTS = [
+        'teams' => ['teams.microsoft.com', 'teams.live.com'],
+        'meet' => ['meet.google.com'],
+        'zoom' => ['zoom.us', '.zoom.us'],
+        'webex' => ['.webex.com'],
     ];
 
     /**
@@ -60,15 +72,35 @@ final class ConferenceDetector
         return null;
     }
 
+    /**
+     * The app of a meeting link, by its host alone: an https link whose host is one of the app's (or under one), without
+     * a user name before it. Anything else is `other`, also a link that carries an app's link in its path or query.
+     */
     public static function providerOf(string $url): string
     {
-        foreach (self::LINK_PATTERNS as $provider => $pattern) {
-            if (1 === preg_match($pattern, $url)) {
-                return $provider;
+        $parts = parse_url($url);
+        if (false === $parts || 'https' !== strtolower($parts['scheme'] ?? '') || isset($parts['user']) || isset($parts['pass']) || !str_starts_with(strtolower($url), 'https://')) {
+            return 'other';
+        }
+        $host = strtolower(rtrim($parts['host'] ?? '', '.'));
+        foreach (self::HOSTS as $provider => $hosts) {
+            foreach ($hosts as $known) {
+                if (str_starts_with($known, '.') ? str_ends_with($host, $known) && \strlen($host) > \strlen($known) : $host === $known) {
+                    return $provider;
+                }
             }
         }
 
         return 'other';
+    }
+
+    /**
+     * Whether Tresso can take the event's meeting off it: not a Teams meeting Microsoft made on its own calendar's event
+     * (Graph keeps it until the event is deleted).
+     */
+    public static function removable(VEvent $event, CalendarSource $source): bool
+    {
+        return !(CalendarSource::Microsoft === $source && null !== self::text($event, 'X-MICROSOFT-SKYPETEAMSMEETINGURL'));
     }
 
     private static function dialIn(VEvent $event): ?string

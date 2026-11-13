@@ -14,7 +14,11 @@ namespace App\Calendar;
  */
 final class MeetingJoinLine
 {
-    public const string PATTERN = '/^Join (?:the meeting|with [^:\r\n]{1,40}): (https:\/\/\S+)$/m';
+    /**
+     * One line of its own: the link runs up to the first whitespace (also a no-break or other Unicode space), and spaces
+     * or tabs may follow it before the line ends.
+     */
+    public const string PATTERN = '/^Join (?:the meeting|with [^:\r\n]{1,40}): (https:\/\/[^\s\x{A0}\x{1680}\x{2000}-\x{200B}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]+)[ \t\x{A0}]*$/mu';
 
     /** The link of the last join line in the description, or null when it has none. */
     public static function find(string $description): ?string
