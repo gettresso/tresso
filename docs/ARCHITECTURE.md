@@ -1699,9 +1699,10 @@ queued reply stays in the chat. Leaving the chat, the app going to the backgroun
 reply cancelled while it is being queued ends the same way: a refusal as `cancelled` is no error and puts no text
 back. A size the picker did not give is read from the file, an unknown or too large one is refused before anything is
 sent, and the picker's cache copy is removed afterwards, also after a failure or a cancel. After a 429 on an upload,
-Attach waits until the server's Retry-After (on the server's clock) and says why. An unsure try goes again under the
-same upload and reply ids for 9 minutes, kept in the copy per chat and file (`phone-unsure-file:<chat>:<fingerprint>`,
-a fingerprint of the file's name, size and last change, never the name), and dropped once the copy has that reply. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
+Attach waits until the server's Retry-After (on the server's clock) and says how long, rounded up (`Wait 2 minutes`).
+An unsure try goes again under the same upload and reply ids for 9 minutes, kept in the copy in one value
+(`phone-unsure-files`) per chat and file (`<chat>:<fingerprint>`, a fingerprint of the file's name, size and last
+change, never the name); an entry goes once the copy has that reply or its 9 minutes passed, whichever file it is for. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
 made by the server's clock (`Session.serverNow`, so a phone whose clock is off is not refused); it shows as waiting at
 once (held in memory, not in the copy, so a closed app leaves no reply the server never got), the server's answer is
 stored, and a refusal takes it back and puts the text back in the box. A request without an answer, a 408 or a 5xx may
@@ -2181,11 +2182,13 @@ for Mac connects WhatsApp. With it:
   server at once (kept there also before the server saw the reply, so the queueing is refused as `cancelled`, which
   counts as cancelled, for a text reply too) and again once the queueing answered; when neither cancel was confirmed
   the line says `<name> may still be sent. Check the chat.` and the reply stays as the server has it. Leaving the chat,
-  the copy going and the session ending stop it. At the user's own sign-out a reply still being queued is cancelled with
-  the ending session's token before it is revoked (`auth.onSigningOut`); a session that ended by itself (expired, or
+  the copy going and the session ending stop it. At the user's own sign-out a reply still being queued, or one the user
+  cancelled whose cancel is not settled yet (also in the instant its queueing answers), is cancelled with the ending
+  session's token before it is revoked (`auth.onSigningOut`); a session that ended by itself (expired, or
   signed out elsewhere) has no token left, so such a reply, if the server took it, waits in the queue and can be
-  cancelled from another device. After a 429 on an upload, Attach waits until the server's Retry-After (on the server's
-  clock) and says why. The warning before an unchecked file closes when the file's state changes meanwhile, and closing
+  cancelled from another device. A cancel the user made is remembered until the delta removed that reply, so a queueing
+  refused as `cancelled` meanwhile (also one sent again after an unsure answer) counts as cancelled. After a 429 on an
+  upload, Attach waits until the server's Retry-After (on the server's clock) and says how long, rounded up. The warning before an unchecked file closes when the file's state changes meanwhile, and closing
   or accepting it puts the focus back on the row. An unsure try goes again under the
   same upload and reply ids for 9 minutes, kept in the copy (`unsure-files`) by a fingerprint of the file, never its
   name, and dropped once the copy has that reply. Asking and attaching wait while writes are held (`chats.writesHeld`). A desktop that does not relay works the same way; the relaying Mac
@@ -3792,7 +3795,13 @@ chat's JID and WhatsApp id, so it never needs either readable.
   of an id the server has not seen yet (the app cancelled while its queueing was on the way) writes the tombstone
   alone, so that queueing is refused as `cancelled` when it arrives; only for an id a new reply could still have (a
   UUIDv7 of the last 10 minutes, else 404), and at most 100 such cancels per user in 10 minutes
-  (`chat_reply_cancel`, 429).
+  (`chat_reply_cancel`, 429). A queueing refused that way lets its upload go at once (it no longer counts toward the
+  20 per chat or the waiting bytes). A reply kept as cancelled is removed 30 days after its claim
+  (`ChatQueue::KEEP_CANCELLED`, by `SweepChatMedia`), its tombstone staying, so its id stays refused; a relay's answer
+  after that is 404, which the relay takes as final, so a reply that went out that late stays removed. The tombstones
+  of replies are kept like every other tombstone: the delta has no way to start a copy over from an old cursor, so a
+  removal a device has not pulled yet must stay (an id is refused by its age after 10 minutes, but a device offline
+  for longer still needs the removal of a reply it holds).
 - **Left out.** Leaving a chat out removes its messages and replies (tombstones) and keeps the chat row with its sealed
   JID and name, which is no longer renamed: the relay must know to leave it out, and the user can take it in again. A
   chat the user left out on a desktop before the server knew it comes as a chat entry with `"leftOut": true` in
