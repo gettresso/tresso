@@ -1,7 +1,7 @@
 import type { NotificationChannel } from '../notifications'
 import { sameRule } from './rules'
 import { zoneOr, type Occurrence } from './occurrences'
-import type { AttendeeRole, EventStatus, EventTime, SyncedCalendar, SyncedCalendarEvent } from './types'
+import type { AttendeeRole, ConferenceProvider, EventStatus, EventTime, SyncedCalendar, SyncedCalendarEvent } from './types'
 import { DAY, formatDate, formatDateTime, parseRecurrenceKey, parseWall, toWall } from './zones'
 
 /** Which occurrences of a series a change or deletion applies to. */
@@ -47,6 +47,11 @@ export interface EventInput {
   /** Minutes to travel there, for leave-now reminders; estimated by the phone when null. */
   travelMinutes: number | null
   conferenceUrl: string | null
+  /**
+   * Ask the calendar's provider to make this meeting with the save (with `conferenceUrl` null). Null with
+   * `conferenceUrl` null removes the meeting link.
+   */
+  conferenceProvider?: ConferenceProvider | null
   organizerMailAccountId: string | null
 }
 
@@ -198,6 +203,7 @@ export function inputFromEvent(event: SyncedCalendarEvent): EventInput {
     important: event.important,
     travelMinutes: event.travelMinutes,
     conferenceUrl: event.conference?.url ?? null,
+    conferenceProvider: null,
     organizerMailAccountId: null,
   }
 }
