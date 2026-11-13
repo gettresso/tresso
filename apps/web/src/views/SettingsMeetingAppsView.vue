@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
-  defaultMeetingApp,
   displayLink,
-  meetingChoices,
   meetingLinkError,
   meetingLinkProblem,
   signInProvider,
@@ -14,8 +12,8 @@ import {
   type MeetingPreferencesUpdate,
   type ProviderFeature,
 } from '@tresso/core'
-import { errorMessage } from '@/api/errors'
-import { appPill, appRows, accountKind, defaultRows, otherOptions, type AppRow, type ProviderApp } from '@/calendar/meetingSettings'
+import { ApiError, errorMessage } from '@/api/errors'
+import { appPill, appRows, accountKind, defaultRows, otherRow, teamsEmpty, type AppRow, type ProviderApp } from '@/calendar/meetingSettings'
 import { calendarColor } from '@/calendar/look'
 import AppIcon from '@/components/AppIcon.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
@@ -28,6 +26,10 @@ import { useMeetingAppsStore } from '@/stores/meetingApps'
  * connected, the user's own room link, the app each account's events start with, and whether a guest switches the link
  * on. Every control saves at once; a failed save says why under the control and puts the old value back. Zoom and Teams
  * for other calendars need the owner first and are not offered here.
+ *
+ * The server replaces the defaults and the switched off apps whole, so the page reads the preferences on opening and
+ * again when the window comes back to the front, and builds every change from the latest answer (the store sends one
+ * change after the other).
  */
 const accounts = useAccountsStore()
 const calendar = useCalendarStore()
@@ -37,36 +39,72 @@ const loading = ref(true)
 const loadError = ref<string | null>(null)
 /** Errors of single controls, by control. */
 const errors = reactive<Record<string, string>>({})
-const busy = ref<string | null>(null)
+/** Controls whose change is on its way: a second click on them waits for the first. */
+const pending = reactive(new Set<string>())
 /** The desktop app opened the provider's page in the system browser; Settings, Accounts gets the answer. */
 const continueInBrowser = ref(false)
 
 const preferences = computed(() => meetingApps.preferences)
 
+/** Plain words for a failure: the field's own message when the server named one, and no "Failed to fetch". */
+function failure(error: unknown, field: string): string {
+  if (error instanceof ApiError) {
+    const own = error.violations[field] ?? Object.entries(error.violations).find(([path]) => path.startsWith(`${field}[`) || path.startsWith(`${field}.`))?.[1]
+    return own ?? error.message
+  }
+  if (error instanceof TypeError) {
+    return 'Tresso could not reach the server. Check your connection and try again.'
+  }
+  return errorMessage(error)
+}
+
+/** The id of a control's error, for aria-describedby. */
+function errorId(key: string): string {
+  return `meeting-error-${key.replace(/[^a-z0-9-]/gi, '-')}`
+}
+
 onMounted(async () => {
   try {
-    await Promise.all([meetingApps.ensureLoaded(), accounts.load()])
+    await Promise.all([meetingApps.reload(), accounts.load()])
     linkDraft.value = meetingApps.preferences?.ownLink ?? ''
   } catch (e) {
-    loadError.value = errorMessage(e)
+    loadError.value = failure(e, '')
   } finally {
     loading.value = false
   }
 })
 
-/** Saves one change; on an error the control shows it and `revert` puts the old value back on screen. */
-async function save(key: string, patch: MeetingPreferencesUpdate, revert: () => void = () => undefined): Promise<boolean> {
+// A page left open reads the preferences again when it comes back to the front: another tab or device may have
+// changed them, and the next change is built from them.
+function refresh(): void {
+  if (document.visibilityState === 'hidden' || loading.value) return
+  meetingApps.reload().catch(() => undefined)
+}
+onMounted(() => {
+  window.addEventListener('focus', refresh)
+  document.addEventListener('visibilitychange', refresh)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', refresh)
+  document.removeEventListener('visibilitychange', refresh)
+})
+
+/**
+ * Saves one change, built from the preferences as they are when it is sent. On an error the control shows why under
+ * itself and `revert` puts the old value back on screen. The control keeps the focus throughout.
+ */
+async function save(key: string, field: string, change: MeetingPreferencesUpdate | ((current: MeetingPreferences) => MeetingPreferencesUpdate), revert: () => void = () => undefined): Promise<boolean> {
   errors[key] = ''
-  busy.value = key
+  pending.add(key)
   try {
-    await meetingApps.update(patch)
+    await meetingApps.update(change)
     return true
   } catch (e) {
-    errors[key] = errorMessage(e)
+    errors[key] = failure(e, field)
     revert()
     return false
   } finally {
-    busy.value = null
+    pending.delete(key)
   }
 }
 
@@ -75,7 +113,7 @@ const cards = computed(() => {
   if (prefs === null) return []
   const make = (app: ProviderApp) => {
     const rows = appRows(app, accounts.accounts, calendar.calendars, prefs)
-    return { app, rows, pill: appPill(rows) }
+    return { app, rows, pill: appPill(rows), empty: app === 'meet' ? 'No Google account yet' : teamsEmpty(accounts.accounts) }
   }
   return (['meet', 'teams'] as const).filter((app) => prefs.apps.includes(app)).map(make)
 })
@@ -85,13 +123,11 @@ const CARD = {
     name: 'Google Meet',
     line: 'Uses a Google account you already connected',
     limit: 'Makes links for events on a Google calendar. The link is created together with the calendar event.',
-    empty: 'No Google account yet',
   },
   teams: {
     name: 'Microsoft Teams',
     line: 'Uses a Microsoft 365 account you already connected',
     limit: 'Needs a work or school account. Personal Outlook accounts cannot create Teams meetings for other apps.',
-    empty: 'No Microsoft 365 account yet',
   },
 } as const
 
@@ -103,33 +139,34 @@ async function signIn(key: string, account: MailAccount, features?: ProviderFeat
   const provider = signInProvider(account)
   if (provider === null) return
   errors[key] = ''
-  busy.value = key
+  pending.add(key)
   try {
     if ((await accounts.openProviderSignIn(provider, account.id, features)) === 'browser') {
       continueInBrowser.value = true
     }
   } catch (e) {
-    errors[key] = errorMessage(e)
+    errors[key] = failure(e, '')
   } finally {
-    busy.value = null
+    pending.delete(key)
   }
 }
 
 /** Connect switches the app on again in Tresso, and asks for calendar access when the account never gave it. */
 async function act(app: ProviderApp, row: AppRow): Promise<void> {
-  const prefs = preferences.value
-  if (prefs === null) return
   const key = rowKey(app, row.account)
-  const others = prefs.disabled.filter((entry) => !(entry.app === app && entry.mailAccountId === row.account.id))
+  if (pending.has(key)) return
+  const id = row.account.id
+  const without = (current: MeetingPreferences) => current.disabled.filter((entry) => !(entry.app === app && entry.mailAccountId === id))
   if (row.action === 'Disconnect') {
-    await save(key, { disabled: [...others, { app, mailAccountId: row.account.id }] })
+    await save(key, 'disabled', (current) => ({ disabled: [...without(current), { app, mailAccountId: id }] }))
     return
   }
   if (row.action === 'Reconnect') {
     await signIn(key, row.account, row.account.calendarStatus === 'not_granted' ? ['calendar'] : undefined)
     return
   }
-  if (others.length !== prefs.disabled.length && !(await save(key, { disabled: others }))) {
+  const off = preferences.value?.disabled.some((entry) => entry.app === app && entry.mailAccountId === id) ?? false
+  if (off && !(await save(key, 'disabled', (current) => ({ disabled: without(current) })))) {
     return
   }
   if (row.account.calendarStatus === 'not_granted') {
@@ -144,10 +181,17 @@ function initial(account: MailAccount): string {
 // The own link: saved on blur or Enter, checked by core's rule first so a wrong link sends nothing.
 const linkDraft = ref('')
 const savedLink = computed(() => preferences.value?.ownLink ?? '')
+/** The pointer went down on Remove: the field's blur that follows must not save what was typed first. */
+let removing = false
+
+// A link read again (another tab changed it) shows in the field, unless the user is changing it there.
+watch(savedLink, (now, before) => {
+  if (linkDraft.value === before) linkDraft.value = now
+})
 
 async function saveLink(): Promise<void> {
-  if (busy.value === 'ownLink' || linkDraft.value === savedLink.value) {
-    errors.ownLink = ''
+  if (removing || pending.has('ownLink') || linkDraft.value === savedLink.value) {
+    if (!removing && linkDraft.value === savedLink.value) errors.ownLink = ''
     return
   }
   if (linkDraft.value !== '') {
@@ -158,47 +202,35 @@ async function saveLink(): Promise<void> {
     }
   }
   const before = savedLink.value
-  await save('ownLink', { ownLink: linkDraft.value }, () => (linkDraft.value = before))
+  const typed = linkDraft.value
+  await save('ownLink', 'ownLink', { ownLink: typed }, () => (linkDraft.value = before))
 }
 
 async function removeLink(): Promise<void> {
+  removing = false
   const before = savedLink.value
   linkDraft.value = ''
-  await save('ownLink', { ownLink: '' }, () => (linkDraft.value = before))
+  await save('ownLink', 'ownLink', { ownLink: '' }, () => (linkDraft.value = before))
 }
 
 // The default app per account, and for every other calendar.
 const rows = computed(() => (preferences.value === null ? [] : defaultRows(accounts.accounts, calendar.calendars, preferences.value)))
-const notOffered = computed(() => rows.value.flatMap((row) => row.notOffered))
-const otherChoices = computed(() => (preferences.value === null ? [] : otherOptions(meetingChoices(undefined, null, preferences.value))))
-
-/** What a row's select shows: the saved choice, else what applies anyway; empty when that is not one of its options. */
-function shownValue(row: (typeof rows.value)[number], prefs: MeetingPreferences): string {
-  const value = row.saved ?? defaultMeetingApp(row.calendar, row.account, prefs) ?? 'none'
-  return row.options.some((option) => option.value === value) ? value : ''
-}
-
-const otherValue = computed(() => {
-  const prefs = preferences.value
-  if (prefs === null) return ''
-  const value = prefs.defaultOther ?? (prefs.ownLink !== null && meetingLinkProblem(prefs.ownLink) === null ? 'own' : 'none')
-  return otherChoices.value.some((option) => option.value === value) ? value : ''
-})
+const notOffered = computed(() => rows.value.flatMap((row) => row.notOffered.map((text, index) => ({ key: `${row.account.id}:${index}`, text }))))
+const other = computed(() => (preferences.value === null ? { options: [], value: '' } : otherRow(preferences.value)))
 
 async function pickDefault(row: (typeof rows.value)[number] | null, event: Event): Promise<void> {
-  const prefs = preferences.value
-  if (prefs === null) return
   const select = event.target as HTMLSelectElement
   const value = select.value as MeetingDefault
-  const previous = row === null ? otherValue.value : shownValue(row, prefs)
-  const patch: MeetingPreferencesUpdate = row === null ? { defaultOther: value } : { defaults: { ...prefs.defaults, [row.account.id]: value } }
-  await save(row === null ? 'default:other' : `default:${row.account.id}`, patch, () => (select.value = previous))
+  const previous = row === null ? other.value.value : row.value
+  const key = row === null ? 'default:other' : `default:${row.account.id}`
+  const change = row === null ? { defaultOther: value } : (current: MeetingPreferences) => ({ defaults: { ...current.defaults, [row.account.id]: value } })
+  await save(key, row === null ? 'defaultOther' : 'defaults', change, () => (select.value = previous))
 }
 
 async function toggleGuests(event: Event): Promise<void> {
   const box = event.target as HTMLInputElement
   const value = box.checked
-  await save('addWithGuests', { addWithGuests: value }, () => (box.checked = !value))
+  await save('addWithGuests', 'addWithGuests', { addWithGuests: value }, () => (box.checked = !value))
 }
 </script>
 
@@ -237,7 +269,7 @@ async function toggleGuests(event: Event): Promise<void> {
           </div>
           <ul class="rows">
             <li v-if="card.rows.length === 0" class="row">
-              <span class="who"><span class="address">{{ CARD[card.app].empty }}</span></span>
+              <span class="who"><span class="address">{{ card.empty }}</span></span>
               <RouterLink :to="{ name: 'settings-accounts-new' }" class="button button-quiet">Add an account</RouterLink>
             </li>
             <li v-for="row in card.rows" :key="row.account.id" class="row">
@@ -250,13 +282,13 @@ async function toggleGuests(event: Event): Promise<void> {
                 type="button"
                 class="button"
                 :class="row.action === 'Disconnect' ? 'button-quiet' : 'button-primary'"
-                :disabled="busy !== null"
                 :aria-label="`${row.action} ${CARD[card.app].name} for ${row.account.emailAddress}`"
+                :aria-describedby="errors[rowKey(card.app, row.account)] ? errorId(rowKey(card.app, row.account)) : undefined"
                 @click="act(card.app, row)"
               >
                 {{ row.action }}
               </button>
-              <p v-if="errors[rowKey(card.app, row.account)]" class="error" role="alert">{{ errors[rowKey(card.app, row.account)] }}</p>
+              <p v-if="errors[rowKey(card.app, row.account)]" :id="errorId(rowKey(card.app, row.account))" class="error" role="alert">{{ errors[rowKey(card.app, row.account)] }}</p>
             </li>
           </ul>
           <p class="limit">{{ CARD[card.app].limit }}</p>
@@ -274,8 +306,8 @@ async function toggleGuests(event: Event): Promise<void> {
               {{ savedLink ? 'Link set' : 'No link yet' }}
             </span>
           </div>
-          <label class="field" for="own-link">
-            <span class="label">Your room link</span>
+          <div class="field">
+            <label class="label" for="own-link">Your room link</label>
             <span class="link-input">
               <input
                 id="own-link"
@@ -288,14 +320,14 @@ async function toggleGuests(event: Event): Promise<void> {
                 spellcheck="false"
                 :title="savedLink ? displayLink(savedLink) : undefined"
                 :aria-invalid="errors.ownLink ? 'true' : undefined"
-                :aria-describedby="errors.ownLink ? 'own-link-error' : undefined"
+                :aria-describedby="errors.ownLink ? errorId('ownLink') : undefined"
                 @blur="saveLink"
                 @keydown.enter.prevent="saveLink"
               />
-              <button v-if="savedLink" type="button" class="button button-quiet" :disabled="busy !== null" @click="removeLink">Remove</button>
+              <button v-if="savedLink" type="button" class="button button-quiet" aria-label="Remove your room link" @pointerdown="removing = true" @click="removeLink">Remove</button>
             </span>
-          </label>
-          <p v-if="errors.ownLink" id="own-link-error" class="error" role="alert">{{ errors.ownLink }}</p>
+          </div>
+          <p v-if="errors.ownLink" :id="errorId('ownLink')" class="error" role="alert">{{ errors.ownLink }}</p>
           <p class="limit">Works with every calendar. Every event gets this same link, so anyone who has it can enter the room.</p>
         </article>
       </section>
@@ -316,16 +348,22 @@ async function toggleGuests(event: Event): Promise<void> {
                 <span class="swatch" :style="calendarColor(row.calendar)" aria-hidden="true"></span>
                 <span class="who">
                   <span class="address">{{ row.account.displayName }}</span>
-                  <span class="status">{{ row.account.emailAddress }}, {{ accountKind(row.account) }}</span>
+                  <span class="status">{{ row.account.emailAddress }}, {{ accountKind(row.account, calendar.calendars) }}</span>
                 </span>
               </th>
               <td>
                 <label class="visually-hidden" :for="`default-${row.account.id}`">Meeting app for {{ row.account.displayName }}</label>
-                <select :id="`default-${row.account.id}`" :value="shownValue(row, preferences)" :disabled="busy !== null" @change="pickDefault(row, $event)">
-                  <option v-if="shownValue(row, preferences) === ''" value="" disabled>Not set</option>
+                <select
+                  :id="`default-${row.account.id}`"
+                  :value="row.value"
+                  :aria-invalid="errors[`default:${row.account.id}`] ? 'true' : undefined"
+                  :aria-describedby="errors[`default:${row.account.id}`] ? errorId(`default:${row.account.id}`) : undefined"
+                  @change="pickDefault(row, $event)"
+                >
+                  <option v-if="row.value === ''" value="" disabled>Not set</option>
                   <option v-for="option in row.options" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
-                <p v-if="errors[`default:${row.account.id}`]" class="error" role="alert">{{ errors[`default:${row.account.id}`] }}</p>
+                <p v-if="errors[`default:${row.account.id}`]" :id="errorId(`default:${row.account.id}`)" class="error" role="alert">{{ errors[`default:${row.account.id}`] }}</p>
               </td>
             </tr>
             <tr>
@@ -338,19 +376,32 @@ async function toggleGuests(event: Event): Promise<void> {
               </th>
               <td>
                 <label class="visually-hidden" for="default-other">Meeting app for every other calendar</label>
-                <select id="default-other" :value="otherValue" :disabled="busy !== null" @change="pickDefault(null, $event)">
-                  <option v-if="otherValue === ''" value="" disabled>Not set</option>
-                  <option v-for="option in otherChoices" :key="option.value" :value="option.value">{{ option.label }}</option>
+                <select
+                  id="default-other"
+                  :value="other.value"
+                  :aria-invalid="errors['default:other'] ? 'true' : undefined"
+                  :aria-describedby="errors['default:other'] ? errorId('default:other') : undefined"
+                  @change="pickDefault(null, $event)"
+                >
+                  <option v-if="other.value === ''" value="" disabled>Not set</option>
+                  <option v-for="option in other.options" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
-                <p v-if="errors['default:other']" class="error" role="alert">{{ errors['default:other'] }}</p>
+                <p v-if="errors['default:other']" :id="errorId('default:other')" class="error" role="alert">{{ errors['default:other'] }}</p>
               </td>
             </tr>
           </tbody>
         </table>
-        <p v-for="line in notOffered" :key="line" class="limit not-offered">{{ line }}</p>
+        <p v-for="line in notOffered" :key="line.key" class="limit not-offered">{{ line.text }}</p>
 
         <label class="toggle">
-          <input type="checkbox" role="switch" :checked="preferences.addWithGuests" :disabled="busy !== null" aria-describedby="guests-hint" @change="toggleGuests" />
+          <input
+            type="checkbox"
+            role="switch"
+            :checked="preferences.addWithGuests"
+            :aria-invalid="errors.addWithGuests ? 'true' : undefined"
+            :aria-describedby="errors.addWithGuests ? `guests-hint ${errorId('addWithGuests')}` : 'guests-hint'"
+            @change="toggleGuests"
+          />
           <span>
             <span class="toggle-label">Add a meeting link when I invite guests</span>
             <span id="guests-hint" class="hint">
@@ -358,7 +409,7 @@ async function toggleGuests(event: Event): Promise<void> {
             </span>
           </span>
         </label>
-        <p v-if="errors.addWithGuests" class="error" role="alert">{{ errors.addWithGuests }}</p>
+        <p v-if="errors.addWithGuests" :id="errorId('addWithGuests')" class="error" role="alert">{{ errors.addWithGuests }}</p>
       </section>
     </template>
   </section>

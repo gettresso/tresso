@@ -47,4 +47,23 @@ describe('meeting preferences', () => {
     await nextTick()
     expect(store.preferences).toBeNull()
   })
+
+  it('drops an answer that arrives after another user signed in', async () => {
+    const store = useMeetingAppsStore()
+    const reading = store.reload()
+    useAuthStore().generation++
+    await reading
+    expect(store.preferences).toBeNull()
+  })
+
+  it('applies answers in the order the changes were asked for', async () => {
+    const store = useMeetingAppsStore()
+    await store.ensureLoaded()
+    const first = store.update({ addWithGuests: false })
+    const second = store.update((current) => ({ defaultOther: current.addWithGuests ? 'own' : 'none' }))
+    await Promise.all([first, second])
+    expect(calls.slice(1)).toEqual(['PATCH /api/v1/calendar/meeting-preferences', 'PATCH /api/v1/calendar/meeting-preferences'])
+    // The second was built from the first answer.
+    expect(store.preferences?.defaultOther).toBe('none')
+  })
 })

@@ -1,7 +1,12 @@
 import {
+  accountServiceProvider,
+  appLabel,
+  defaultMeetingApp,
   meetingChoices,
+  meetingLinkProblem,
   sortCalendars,
   type MailAccount,
+  type MeetingApp,
   type MeetingChoice,
   type MeetingDefault,
   type MeetingPreferences,
@@ -41,6 +46,12 @@ function servedBy(app: ProviderApp, account: MailAccount): boolean {
   return account.provider === (app === 'meet' ? 'gmail' : 'microsoft')
 }
 
+/** A Microsoft account whose calendars are synced and none of which can have a Teams meeting. */
+function withoutTeams(account: MailAccount, calendars: SyncedCalendar[]): boolean {
+  const own = calendars.filter((calendar) => calendar.mailAccountId === account.id)
+  return own.length > 0 && !own.some((calendar) => calendar.conferenceProviders.includes('teams'))
+}
+
 /**
  * The account rows of the Meet or Teams card. Every Gmail account for Meet. For Teams every Microsoft account, except
  * one whose calendars are synced and none of which can have a Teams meeting (a personal account): Teams is not offered
@@ -50,11 +61,7 @@ export function appRows(app: ProviderApp, accounts: MailAccount[], calendars: Sy
   const company = app === 'meet' ? 'Google' : 'Microsoft 365'
   return accounts
     .filter((account) => servedBy(app, account))
-    .filter((account) => {
-      if (app === 'meet') return true
-      const own = calendars.filter((calendar) => calendar.mailAccountId === account.id)
-      return own.length === 0 || own.some((calendar) => calendar.conferenceProviders.includes('teams'))
-    })
+    .filter((account) => app === 'meet' || !withoutTeams(account, calendars))
     .map((account): AppRow => {
       // A failed sign-in first; calendar access that was never given reads as not connected, with Connect asking for it.
       if (account.status === 'auth_failed' || account.calendarStatus === 'auth_failed') {
@@ -62,11 +69,16 @@ export function appRows(app: ProviderApp, accounts: MailAccount[], calendars: Sy
       }
       const off = preferences.disabled.some((entry) => entry.app === app && entry.mailAccountId === account.id)
       if (off || account.calendarStatus === 'not_granted') {
-        const status = app === 'teams' && account.calendarStatus === 'not_granted' ? 'Not connected. Needs calendar access.' : 'Not connected'
+        const status = account.calendarStatus === 'not_granted' ? 'Not connected. Needs calendar access.' : 'Not connected'
         return { account, state: 'off', status, action: 'Connect' }
       }
       return { account, state: 'connected', status: `Connected through this ${company} account`, action: 'Disconnect' }
     })
+}
+
+/** The Teams card without rows: no Microsoft account at all, or only ones that cannot make Teams links. */
+export function teamsEmpty(accounts: MailAccount[]): string {
+  return accounts.some((account) => account.provider === 'microsoft') ? 'No work or school account yet' : 'No Microsoft 365 account yet'
 }
 
 /** "Connected" when a row is and none needs signing in again, "Needs reconnecting" when one does, else "Not connected". */
@@ -76,10 +88,17 @@ export function appPill(rows: AppRow[]): Pill {
   return { text: 'Not connected', tone: 'plain' }
 }
 
-/** The provider words of a default table row: "kim@company.example, Microsoft 365". */
-export function accountKind(account: Pick<MailAccount, 'provider'>): string {
+/**
+ * The provider words of a default table row: "kim@company.example, Microsoft 365". A personal Microsoft address reads
+ * "Outlook", and another Microsoft account whose calendars cannot have Teams "Microsoft, without Teams": Tresso cannot
+ * tell those apart from a work account any better.
+ */
+export function accountKind(account: Pick<MailAccount, 'id' | 'provider' | 'emailAddress'>, calendars: SyncedCalendar[]): string {
   if (account.provider === 'gmail') return 'Google'
-  if (account.provider === 'microsoft') return 'Microsoft 365'
+  if (account.provider === 'microsoft') {
+    if (accountServiceProvider(account) === 'outlook') return 'Outlook'
+    return withoutTeams(account as MailAccount, calendars) ? 'Microsoft, without Teams' : 'Microsoft 365'
+  }
   return 'CalDAV'
 }
 
@@ -88,11 +107,14 @@ export interface DefaultOption {
   label: string
 }
 
-/** The bracket after an app the account could use but cannot right now. */
-function bracket(choice: MeetingChoice): string {
+/**
+ * The bracket after an app the account could use but cannot right now, in the word of the card's button: calendar
+ * access never given is "connect first" there too, though core counts it as reconnecting.
+ */
+function bracket(choice: MeetingChoice, account: MailAccount | null): string {
   switch (choice.problem) {
     case 'reconnect':
-      return ' (reconnect first)'
+      return account?.calendarStatus === 'not_granted' ? ' (connect first)' : ' (reconnect first)'
     case 'no_link':
       return ' (paste it first)'
     case null:
@@ -104,26 +126,30 @@ function bracket(choice: MeetingChoice): string {
 
 const NONE: DefaultOption = { value: 'none', label: 'No meeting link' }
 
-/**
- * The options of an account's select: every app that could serve its calendar, in core's order, with a bracket when
- * it cannot right now, then "No meeting link". An app that never serves that calendar (Meet for a Microsoft account,
- * Teams for an account without Teams) is left out.
- */
-export function defaultOptions(choices: MeetingChoice[]): DefaultOption[] {
-  return [...choices.filter((choice) => choice.problem !== 'other_calendar' && choice.problem !== 'unsupported').map((choice) => ({ value: choice.app, label: choice.label + bracket(choice) })), NONE]
+/** A saved choice that cannot serve the calendar (Teams on a personal account, Zoom on a server without it). */
+function unavailable(value: MeetingDefault): DefaultOption {
+  return { value, label: `${appLabel(value as MeetingApp)} (not available here)` }
 }
 
-/** The options of "Every other calendar": the apps that work with any calendar (the own link, Zoom), then none. */
-export function otherOptions(choices: MeetingChoice[]): DefaultOption[] {
-  return [...choices.filter((choice) => choice.app === 'own' || choice.app === 'zoom').map((choice) => ({ value: choice.app, label: choice.label + bracket(choice) })), NONE]
+/**
+ * The options of a select: the apps that may serve it, a saved choice that cannot (said so), then "No meeting link";
+ * and the value it shows: the saved choice, else the one that applies anyway when it is listed, else "" ("Not set").
+ */
+function withValue(options: DefaultOption[], saved: MeetingDefault | null, applies: MeetingDefault | null): { options: DefaultOption[]; value: string } {
+  const listed = (value: MeetingDefault | null) => value !== null && options.some((option) => option.value === value)
+  if (saved !== null) {
+    return listed(saved) ? { options: [...options, NONE], value: saved } : saved === 'none' ? { options: [...options, NONE], value: 'none' } : { options: [...options, unavailable(saved), NONE], value: saved }
+  }
+  const all = [...options, NONE]
+  return { options: all, value: applies === 'none' || listed(applies) ? (applies as string) : '' }
 }
 
 export interface DefaultRow {
   account: MailAccount
   calendar: SyncedCalendar
   options: DefaultOption[]
-  /** The saved choice; null when nothing is saved for this account (the select then shows what applies anyway). */
-  saved: MeetingDefault | null
+  /** What the select shows; "" when nothing is saved and nothing applies. */
+  value: string
   /** "Google Meet is not offered for Work: ..." lines for the apps this account's calendar cannot use. */
   notOffered: string[]
 }
@@ -142,6 +168,16 @@ function calendarKind(calendar: SyncedCalendar): string {
   }
 }
 
+/** Why an app is not offered for an account: another kind of calendar, or a calendar of the right kind without it. */
+function notOfferedLine(choice: MeetingChoice, name: string, calendar: SyncedCalendar): string {
+  if (choice.problem === 'unsupported') {
+    return `${choice.label} is not offered for ${name}: ${choice.via}`
+  }
+  return choice.app === 'meet'
+    ? `Google Meet is not offered for ${name}: a Meet link is made through a Google calendar event, and ${name} is ${calendarKind(calendar)}.`
+    : `Microsoft Teams is not offered for ${name}: a Teams link is made through a Microsoft 365 calendar event, and ${name} is ${calendarKind(calendar)}.`
+}
+
 /** One row per mail account with a writable calendar, in the order of the accounts. */
 export function defaultRows(accounts: MailAccount[], calendars: SyncedCalendar[], preferences: MeetingPreferences): DefaultRow[] {
   const rows: DefaultRow[] = []
@@ -149,16 +185,24 @@ export function defaultRows(accounts: MailAccount[], calendars: SyncedCalendar[]
     const calendar = accountCalendar(calendars, account.id)
     if (calendar === undefined) continue
     const choices = meetingChoices(calendar, account, preferences)
-    const kind = calendarKind(calendar)
-    const notOffered = choices
-      .filter((choice) => choice.problem === 'other_calendar')
-      .map((choice) =>
-        choice.app === 'meet'
-          ? `Google Meet is not offered for ${account.displayName}: a Meet link is made through a Google calendar event, and ${account.displayName} is ${kind}.`
-          : `Microsoft Teams is not offered for ${account.displayName}: a Teams link is made through a Microsoft 365 calendar event, and ${account.displayName} is ${kind}.`,
-      )
+    const offered = choices
+      .filter((choice) => choice.problem !== 'other_calendar' && choice.problem !== 'unsupported')
+      .map((choice) => ({ value: choice.app, label: choice.label + bracket(choice, account) }))
     const saved = Object.prototype.hasOwnProperty.call(preferences.defaults, account.id) ? (preferences.defaults[account.id] ?? null) : null
-    rows.push({ account, calendar, options: defaultOptions(choices), saved, notOffered })
+    const notOffered = choices.filter((choice) => choice.problem === 'other_calendar' || choice.problem === 'unsupported').map((choice) => notOfferedLine(choice, account.displayName, calendar))
+    rows.push({ account, calendar, ...withValue(offered, saved, defaultMeetingApp(calendar, account, preferences)), notOffered })
   }
   return rows
+}
+
+/**
+ * "Every other calendar": the apps that work with any calendar (the own link, Zoom when the server has it), a saved
+ * choice that cannot apply (said so), then none; it shows `defaultOther`, else the own link when one is saved.
+ */
+export function otherRow(preferences: MeetingPreferences): { options: DefaultOption[]; value: string } {
+  const offered = meetingChoices(undefined, null, preferences)
+    .filter((choice) => choice.app === 'own' || choice.app === 'zoom')
+    .map((choice) => ({ value: choice.app, label: choice.label + bracket(choice, null) }))
+  const own = preferences.ownLink !== null && meetingLinkProblem(preferences.ownLink) === null
+  return withValue(offered, preferences.defaultOther, own ? 'own' : 'none')
 }

@@ -3110,8 +3110,10 @@ What the workers do with it (`apps/sync/internal/googlecal`, `graphcal`):
   join line left in the block changes no result.
 
 Settings, Meeting apps (web and desktop) reads and writes `GET`/`PATCH /api/v1/calendar/meeting-preferences` through
-the `meetingApps` store, and every control saves at once (a failed save shows why under the control and puts the old
-value back). The Google Meet card has a row per Gmail account and the Microsoft Teams card one per Microsoft account
+the `meetingApps` store, and every control saves at once (a failed save shows the field's message under the control,
+puts the old value back and reads the preferences again). The store sends reads and changes one after the other and
+builds each change from the latest answer, since the server replaces `defaults` and `disabled` whole; the page reads
+the preferences on opening and when the window comes back to the front. The Google Meet card has a row per Gmail account and the Microsoft Teams card one per Microsoft account
 whose calendars can have Teams (or are not synced yet): connected, not connected (switched off in Tresso through
 `disabled`, or no calendar access, which Connect asks for) or permission expired (Reconnect signs in again). Disconnect
 only switches the app off in Tresso. The own link is checked with core's `meetingLinkProblem` before it is sent. The
