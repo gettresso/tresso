@@ -71,6 +71,9 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
   const [openFailed, setOpenFailed] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  // The request Retry was taken for: "Asked for the link again." stays on screen until the request changes (the sync
+  // brings the new one), also when that sync fails.
+  const [askedFor, setAskedFor] = useState<string | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Answers that come after the screen closed (or the link changed) set nothing, as on the web's CopyLinkButton.
   const alive = useRef(true)
@@ -81,6 +84,7 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
   const [tick, setTick] = useState(0)
 
   const now = clock()
+  const requestKey = request === null ? null : `${request.provider} ${request.status} ${request.requestedAt}`
   const state = requestState({ conference, conferenceRequest: request }, now)
 
   // Armed again after every tick until the state changes: the server's clock can still read under the limit when the
@@ -165,13 +169,15 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
     if (busy.current) {
       return
     }
+    const asked = requestKey
     busy.current = true
     setRetrying(true)
     setActionError(null)
     try {
       await run()
       if (alive.current) {
-        AccessibilityInfo.announceForAccessibility('Asked for the link again.')
+        setAskedFor(asked)
+        AccessibilityInfo.announceForAccessibility(ASKED)
       }
     } catch (error) {
       if (alive.current) {
@@ -257,12 +263,15 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
             </Pressable>
           </View>
         )}
+        {askedFor !== null && askedFor === requestKey && <Text style={styles.hint}>{ASKED}</Text>}
         {actionError !== null && <Text style={styles.error}>{actionError}</Text>}
       </View>
     )
   }
   return null
 }
+
+const ASKED = 'Asked for the link again.'
 
 const OPEN_FAILED = 'The meeting could not be opened on this phone. Copy the link instead.'
 

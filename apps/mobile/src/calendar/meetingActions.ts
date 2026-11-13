@@ -29,7 +29,7 @@ function refusal(message: string): string {
 /**
  * Why Retry did not go through, in plain words. Never the link: the server's answers to this request carry none.
  * The API answers this request with 404 (not the user's event), 422 (refused, with its own sentence), 403 (the
- * sign-in lacks calendar write access), 401 (the sign-in ended) or a server error; it has no 409 for it.
+ * sign-in lacks a permission the change needs: calendar write access, or sending mail for the invitations), 401 (the sign-in ended) or a server error; it has no 409 for it.
  */
 export function meetingActionError(error: unknown): string {
   if (error instanceof RequestTimeoutError) {
@@ -47,7 +47,7 @@ export function meetingActionError(error: unknown): string {
     return 'Your sign-in ended. Sign in again and try again.'
   }
   if (status === 403) {
-    return 'This sign-in may not change your calendar. Sign in again and allow calendar access.'
+    return 'This sign-in is not allowed to make this change. Sign in again and allow the access Tresso asks for.'
   }
   if (status === 404) {
     return 'This event is no longer in your calendar.'

@@ -449,6 +449,25 @@ describe('the meeting link on the event screen', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
+  it('shows that it asked again until the request changes, also when the sync after it failed', async () => {
+    const failed = request({ status: 'failed', reason: 'refused' })
+    const view = show(event({ conferenceRequest: failed }))
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    })
+    // The sync did not bring the new request: the copy still holds the failed one.
+    expect(screen.getByText('Asked for the link again.')).toBeTruthy()
+    expect(screen.getByText('Could not make the Teams link')).toBeTruthy()
+
+    // A later sync brings the server's answer, failed again with a new time: the line goes.
+    const [shown] = state.occurrences as Occurrence[]
+    state.occurrences = [{ ...shown!, event: event({ conferenceRequest: request({ status: 'failed', reason: 'refused', requestedAt: new Date(state.now - 1000).toISOString() }) }) }]
+    view.rerender(<EventScreen />)
+    expect(screen.getByText('Could not make the Teams link')).toBeTruthy()
+    expect(screen.queryByText('Asked for the link again.')).toBeNull()
+  })
+
   it('says in plain words why Retry did not go through', async () => {
     const refusal = Object.assign(new Error('Microsoft keeps a Teams meeting on its event.'), { name: 'ApiError', status: 422 })
     const cases: [unknown, string][] = [
@@ -456,7 +475,7 @@ describe('the meeting link on the event screen', () => {
       [refusal, 'Microsoft keeps a Teams meeting on its event.'],
       [Object.assign(new Error('Internal'), { status: 500 }), 'The server could not do this now. Try again later.'],
       [Object.assign(new Error('Expired'), { status: 401 }), 'Your sign-in ended. Sign in again and try again.'],
-      [Object.assign(new Error('Forbidden'), { status: 403 }), 'This sign-in may not change your calendar. Sign in again and allow calendar access.'],
+      [Object.assign(new Error('Forbidden'), { status: 403 }), 'This sign-in is not allowed to make this change. Sign in again and allow the access Tresso asks for.'],
     ]
     for (const [error, text] of cases) {
       mail.requestMeetingLink.mockRejectedValueOnce(error)
