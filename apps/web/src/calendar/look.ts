@@ -109,22 +109,6 @@ export function occurrenceLabel(occurrence: Occurrence, zone: string, calendar: 
   return parts.join(', ')
 }
 
-/** The button label of an online meeting: "Join Teams meeting", "Join Google Meet". */
-export function joinLabel(provider: string): string {
-  switch (provider) {
-    case 'teams':
-      return 'Join Teams meeting'
-    case 'meet':
-      return 'Join Google Meet'
-    case 'zoom':
-      return 'Join Zoom meeting'
-    case 'webex':
-      return 'Join Webex meeting'
-    default:
-      return 'Join meeting'
-  }
-}
-
 /** Moves focus among the event blocks of a view with the arrow keys; true when it handled the key. */
 export function moveFocus(event: KeyboardEvent, container: HTMLElement | null): boolean {
   if (container === null || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {

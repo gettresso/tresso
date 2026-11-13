@@ -12,8 +12,8 @@ import {
   type SyncedCalendar,
   type TodoBlock,
 } from '@tresso/core'
-import { calendarColor, joinLabel, occurrenceLabel, TODO_COLOR, todoBlockLabel } from '@/calendar/look'
-import AppIcon from '@/components/AppIcon.vue'
+import { calendarColor, occurrenceLabel, TODO_COLOR, todoBlockLabel } from '@/calendar/look'
+import JoinLink from '@/components/calendar/JoinLink.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -99,9 +99,7 @@ function sub(day: CalendarDay): string {
               </span>
               <span v-if="chip(occurrence)" class="chip" :class="{ pending: occurrence.event.selfResponse === 'needs-action' }">{{ chip(occurrence) }}</span>
             </button>
-            <a v-if="occurrence.event.conference" class="button button-quiet join" :href="occurrence.event.conference.url" target="_blank" rel="noopener noreferrer">
-              <AppIcon name="video" :size="15" /> {{ joinLabel(occurrence.event.conference.provider) }}
-            </a>
+            <JoinLink v-if="occurrence.event.conference" :conference="occurrence.event.conference" compact />
           </li>
         </template>
       </ul>
@@ -202,8 +200,5 @@ function sub(day: CalendarDay): string {
 .chip.pending {
   background: var(--surface);
   border: 1px dashed var(--cal);
-}
-.join {
-  height: 30px;
 }
 </style>

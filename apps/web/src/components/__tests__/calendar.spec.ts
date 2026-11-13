@@ -309,7 +309,7 @@ describe('editor and invitation card', () => {
     expect(wrapper.text()).toContain('Updated invitation')
     expect(wrapper.text()).toContain('Thursday 22 October, 10:00 to 11:00')
     expect(wrapper.text()).toContain('Overlaps Vendor call, 10:30 to 11:00 (maybe)')
-    expect(wrapper.text()).toContain('Join Teams meeting')
+    expect(wrapper.text()).toContain('Join with Microsoft Teams')
     expect(wrapper.text()).toContain('2 people: 1 going, 1 no reply')
     await wrapper.get('.invitation').trigger('keydown', { key: 'y' })
     await flushPromises()

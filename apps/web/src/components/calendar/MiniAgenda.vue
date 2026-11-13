@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { inAllDayRow, longDate, occurrenceTimes, occurrenceWhen, relativeDay, startOfWallDay, toWall, type Occurrence } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
-import { calendarColor, joinLabel, occurrenceLabel } from '@/calendar/look'
+import { calendarColor, occurrenceLabel } from '@/calendar/look'
+import JoinLink from '@/components/calendar/JoinLink.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import ResponseButtons from '@/components/calendar/ResponseButtons.vue'
 import { useCalendarStore, type Response } from '@/stores/calendar'
@@ -86,9 +87,7 @@ async function respond(occurrence: Occurrence, response: Response): Promise<void
         {{ next.event.summary || 'Untitled event' }}
       </RouterLink>
       <p class="meta">{{ occurrenceTimes(next, calendar.zone) }}<template v-if="next.event.location">, {{ next.event.location }}</template></p>
-      <a v-if="next.event.conference" class="button button-primary join" :href="next.event.conference.url" target="_blank" rel="noopener noreferrer">
-        <AppIcon name="video" :size="15" /> {{ joinLabel(next.event.conference.provider) }}
-      </a>
+      <JoinLink v-if="next.event.conference" class="join" :conference="next.event.conference" variant="primary" />
     </section>
 
     <section v-for="group in groups" :key="group.day" class="day" :aria-label="relativeDay(group.day, today)">

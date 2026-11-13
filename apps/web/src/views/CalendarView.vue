@@ -19,7 +19,7 @@ import {
   type TodoBlock,
 } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
-import { isDesktop, openInBrowser } from '@/platform/desktop'
+import { JOIN_FAILED, openMeeting } from '@/calendar/join'
 import AppIcon from '@/components/AppIcon.vue'
 import CalendarAccessNotices from '@/components/CalendarAccessNotices.vue'
 import FrameCapsule from '@/components/FrameCapsule.vue'
@@ -37,6 +37,7 @@ import TodoBlockDetail from '@/components/calendar/TodoBlockDetail.vue'
 import { inView, reducedMotion } from '@/components/calendar/genie'
 import { useCalendarStore, type CalendarViewKind, type Response } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
+import { useAuthStore } from '@/stores/auth'
 import { useComposeStore } from '@/stores/compose'
 import { shortcutAllowed } from '@/mail/useMessageActions'
 import { useTodosStore } from '@/stores/todos'
@@ -45,6 +46,7 @@ import SegmentedControl from '@/components/SegmentedControl.vue'
 import { useViewRequest } from '@/components/viewRequests'
 
 const calendar = useCalendarStore()
+const auth = useAuthStore()
 const mail = useMailStore()
 const compose = useComposeStore()
 const todos = useTodosStore()
@@ -291,14 +293,13 @@ async function toggle(calendarId: string, visible: boolean): Promise<void> {
   }
 }
 
-/** The meeting opens in a new tab; the desktop app has no tabs and opens it in the user's browser. */
+/**
+ * Shift J: the selected event's meeting opens in a new tab, or in the user's browser from the desktop app, as its Join
+ * button does. A link without a Join button (core's canJoin refuses it) is not opened by the key either.
+ */
 function joinMeeting(url: string): void {
-  if (!isDesktop) {
-    window.open(url, '_blank', 'noopener')
-    return
-  }
   actionError.value = null
-  openInBrowser(url).catch((error: unknown) => (actionError.value = `The meeting could not be opened: ${errorMessage(error)}`))
+  openMeeting(url).catch(() => (actionError.value = JOIN_FAILED))
 }
 
 /** T, J, K, 1 to 4, N, E and Esc, as the other shortcuts work: not while typing, writing, in a dialog or a menu. */
@@ -507,6 +508,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside
         :now="calendar.now"
         :busy="busy"
         :error="actionError"
+        :clock="auth.serverNow"
         @close="closeDetail"
         @edit="edit"
         @delete="deleteSelected"
