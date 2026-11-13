@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { BridgeState } from '@/platform/whatsapp'
 import {
   BRIDGE_PROBLEMS,
+  carriedText,
+  otherRelayText,
+  serverRefusedText,
+  switchText,
   bridgeText,
   errorName,
   folderText,
@@ -99,5 +103,24 @@ describe('the WhatsApp texts', () => {
     expect(errorName('The folder /Users/kim/secret cannot be used')).toBe('ShellError')
     expect(errorName(new TypeError('Kim said hi'))).toBe('TypeError')
     expect(errorName({ text: 'hi' })).toBe('UnknownError')
+  })
+
+  it('names the Mac that relays, online or since when it was last heard from', () => {
+    const now = Date.parse('2026-11-12T10:00:00Z')
+    expect(otherRelayText({ name: 'Office iMac', online: true, offlineSince: null }, now)).toBe('Office iMac, online now')
+    expect(otherRelayText({ name: 'Office iMac', online: false, offlineSince: '2026-11-12T09:40:00Z' }, now)).toBe('Office iMac, offline, last heard from 20 minutes ago')
+    expect(otherRelayText({ name: '\u200b', online: false, offlineSince: null }, now)).toBe('your Mac, offline')
+  })
+
+  it('says what a switch, refused rows and carried replies mean, in counts only', () => {
+    expect(switchText('all', false)).toBe('Moving your WhatsApp chats to your Tresso server.')
+    expect(switchText('local', false)).toBe('Removing your WhatsApp chats from your Tresso server.')
+    expect(switchText('local', true)).toContain('come in again on this Mac')
+    expect(serverRefusedText(0)).toBeNull()
+    expect(serverRefusedText(1)).toBe('1 message could not be copied to your Tresso server; it stays in the bridge on this Mac only.')
+    expect(serverRefusedText(3)).toBe('3 messages could not be copied to your Tresso server; they stay in the bridge on this Mac only.')
+    expect(carriedText(0, 0)).toBeNull()
+    expect(carriedText(2, 0)).toBe('2 replies written on this Mac before the switch go to your Tresso server once their chats are there.')
+    expect(carriedText(0, 1)).toContain('1 reply written on this Mac before the switch could not be carried over')
   })
 })

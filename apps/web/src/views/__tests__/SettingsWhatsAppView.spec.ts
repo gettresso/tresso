@@ -4,7 +4,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import type { BridgeState, WhatsAppConfig } from '@/platform/whatsapp'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
-import { BRIDGE_PROBLEMS, BUILD_COMMAND } from '@/components/chat/whatsappTexts'
+import { BRIDGE_PROBLEMS, BUILD_COMMAND, COPY_BODY, COPY_TITLE, REMOVE_BODY, REMOVE_TITLE } from '@/components/chat/whatsappTexts'
+import type { SyncedChatAccount } from '@tresso/core'
 import SettingsWhatsAppView from '../SettingsWhatsAppView.vue'
 
 const NOW = Date.parse('2026-11-12T10:00:00Z')
@@ -76,7 +77,7 @@ describe('SettingsWhatsAppView', () => {
     expect(row(wrapper, 'Bridge')).toMatchObject({ value: 'Running, last message 2 minutes ago', ok: true })
     expect(row(wrapper, 'Linked to phone')).toMatchObject({ value: 'Linked 17 days ago. WhatsApp can ask you to link again.', ok: true })
 
-    // No smart inboxes and "All my devices" not yet; Notify me is there, off by default.
+    // No smart inboxes; Notify me is there, off by default; "Only this Mac" is the place, "All my devices" can be chosen.
     expect(wrapper.text()).not.toContain('Sort into smart inboxes')
     expect(wrapper.text()).not.toContain('Your chats will show')
     expect(wrapper.get('label[for="wa-notify"]').text()).toBe('Notify me')
@@ -84,8 +85,11 @@ describe('SettingsWhatsAppView', () => {
     expect(wrapper.get<HTMLInputElement>('#wa-notify').element.checked).toBe(false)
     expect(wrapper.get('#wa-groups-note').text()).toBe('Group chats can be busy. Leave chats out one by one from the chat itself.')
     expect(wrapper.find('[aria-labelledby="wa-left-out"]').exists()).toBe(false)
-    expect(wrapper.get<HTMLSelectElement>('#wa-place').element.disabled).toBe(true)
-    expect(wrapper.get<HTMLOptionElement>('#wa-place option[value="all"]').element.disabled).toBe(true)
+    expect(wrapper.get<HTMLSelectElement>('#wa-place').element.disabled).toBe(false)
+    expect(wrapper.get<HTMLSelectElement>('#wa-place').element.value).toBe('local')
+    expect(wrapper.get<HTMLOptionElement>('#wa-place option[value="all"]').element.disabled).toBe(false)
+    expect(wrapper.get('#wa-place-note').text()).toBe('All my devices: this Mac copies chats to your Tresso server so web and mobile show them. Only this Mac: chats never leave this computer.')
+    expect(wrapper.text()).not.toContain('later version')
     expect(wrapper.get<HTMLSelectElement>('#wa-groups').element.value).toBe('all')
     expect(wrapper.text()).toContain('Disconnecting removes the WhatsApp chats Tresso copied. WhatsApp itself, the bridge and its own message store on this Mac stay as they are.')
   })
@@ -285,5 +289,129 @@ describe('SettingsWhatsAppView', () => {
     wrapper.findComponent({ name: 'ConnectWhatsApp' }).vm.$emit('done')
     await flushPromises()
     expect(router.currentRoute.value.name).toBe('whatsapp')
+  })
+
+  describe('where messages live', () => {
+    const ACCOUNT: SyncedChatAccount = {
+      id: '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4aa0',
+      channel: 'whatsapp',
+      address: null,
+      displayName: null,
+      relayDeviceId: CONFIG.deviceId,
+      relayDeviceName: "Kim's MacBook Pro",
+      relayOnline: true,
+      relayOfflineSince: null,
+      bridge: 'running',
+      link: 'linked',
+      linkedAt: null,
+      loopbackOnly: true,
+      includeGroups: true,
+      notify: false,
+    }
+
+    it('asks before copying the chats to the server, and switches only on Copy', async () => {
+      const switchMode = vi.spyOn(wa, 'switchMode').mockResolvedValue(true)
+      const wrapper = open()
+      const select = wrapper.get<HTMLSelectElement>('#wa-place')
+
+      await select.setValue('all')
+      // The saved place shows until the user answered.
+      expect(select.element.value).toBe('local')
+      const confirm = wrapper.get('[role="alertdialog"]')
+      expect(confirm.get('#wa-mode-title').text()).toBe(COPY_TITLE)
+      expect(COPY_TITLE).toBe('Copy your WhatsApp chats to your Tresso server? Web and mobile will show them.')
+      expect(confirm.get('#wa-mode-body').text()).toBe(COPY_BODY)
+      await flushPromises()
+      expect(document.activeElement?.textContent).toBe('Cancel')
+      expect(confirm.findAll('button').map((button) => button.text())).toEqual(['Copy', 'Cancel'])
+
+      await confirm.findAll('button')[1]!.trigger('click')
+      expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+      expect(switchMode).not.toHaveBeenCalled()
+
+      await select.setValue('all')
+      await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
+      await flushPromises()
+      expect(switchMode).toHaveBeenCalledWith('all')
+      expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+    })
+
+    it('asks before removing the chats from the server, saying what goes', async () => {
+      const switchMode = vi.spyOn(wa, 'switchMode').mockResolvedValue(true)
+      wa.config = { ...CONFIG, mode: 'all' }
+      wa.serverAccount = ACCOUNT
+      const wrapper = open()
+      expect(row(wrapper, 'Relaying Mac')).toMatchObject({ value: "Kim's MacBook Pro, this Mac", ok: true })
+      expect(wrapper.text()).toContain('Disconnecting removes your WhatsApp chats from your Tresso server and from every device.')
+
+      await wrapper.get<HTMLSelectElement>('#wa-place').setValue('local')
+      const confirm = wrapper.get('[role="alertdialog"]')
+      expect(confirm.get('#wa-mode-title').text()).toBe(REMOVE_TITLE)
+      expect(REMOVE_TITLE).toBe('Remove your WhatsApp chats from your Tresso server? Web and mobile will stop showing them.')
+      expect(confirm.get('#wa-mode-body').text()).toBe(REMOVE_BODY)
+      expect(confirm.findAll('button').map((button) => button.text())).toEqual(['Remove', 'Cancel'])
+      await confirm.findAll('button')[0]!.trigger('click')
+      expect(switchMode).toHaveBeenCalledWith('local')
+    })
+
+    it('names the Mac that relays, with Use this Mac instead', async () => {
+      const useThisMac = vi.spyOn(wa, 'useThisMac').mockResolvedValue(true)
+      wa.config = { ...CONFIG, mode: 'all' }
+      wa.serverAccount = { ...ACCOUNT, relayDeviceId: '6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f', relayDeviceName: 'Office iMac', relayOnline: false, relayOfflineSince: '2026-11-12T09:00:00Z' }
+      const wrapper = open()
+      const relay = row(wrapper, 'Relaying Mac')
+      expect(relay).toMatchObject({ value: 'Office iMac, offline, last heard from 1 hour ago', ok: false })
+      // Group chats and taking chats back in are for the Mac that reads the bridge.
+      expect(wrapper.get<HTMLSelectElement>('#wa-groups').element.disabled).toBe(true)
+      expect(wrapper.get('#wa-groups-note').text()).toContain('Change this on the Mac that relays WhatsApp.')
+      await relay.element.get('button').trigger('click')
+      expect(relay.element.get('button').text()).toBe('Use this Mac instead')
+      expect(useThisMac).toHaveBeenCalled()
+    })
+
+    it('offers a Mac in "Only this Mac" to relay for every device instead, asking to copy first', async () => {
+      const switchMode = vi.spyOn(wa, 'switchMode').mockResolvedValue(true)
+      wa.serverAccount = { ...ACCOUNT, relayDeviceId: '6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f', relayDeviceName: 'Office iMac' }
+      const wrapper = open()
+      const relay = row(wrapper, 'Relaying Mac')
+      expect(relay.value).toBe("Kim's MacBook Pro, this Mac")
+      expect(relay.text).toContain('Your other devices show WhatsApp through Office iMac, online now.')
+      await relay.element.get('button').trigger('click')
+      expect(wrapper.get('#wa-mode-title').text()).toBe(COPY_TITLE)
+      await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
+      expect(switchMode).toHaveBeenCalledWith('all')
+    })
+
+    it('leads a Mac not connected to the connect dialog to take the relay over', async () => {
+      wa.config = null
+      wa.serverAccount = { ...ACCOUNT, relayDeviceId: '6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f', relayDeviceName: 'Office iMac' }
+      const wrapper = open()
+      expect(wrapper.text()).toContain('Your WhatsApp chats are on your Tresso server, relayed by Office iMac.')
+      const link = wrapper.findAll('a').find((anchor) => anchor.text() === 'Use this Mac instead')!
+      expect(link.attributes('href')).toBe('/settings/whatsapp/connect?mode=all')
+    })
+
+    it('says a switch under way, the replies carried over and the messages the server refused, in counts', async () => {
+      wa.config = { ...CONFIG, mode: 'all' }
+      wa.serverAccount = ACCOUNT
+      wa.modeSwitch = { to: 'all', accountId: null }
+      wa.carried = [{ jid: '31612345678@s.whatsapp.net', text: 'Secret', id: null }]
+      wa.carryLost = 1
+      wa.serverRefused = 2
+      const wrapper = open()
+      expect(wrapper.text()).toContain('Moving your WhatsApp chats to your Tresso server.')
+      expect(wrapper.get<HTMLSelectElement>('#wa-place').element.disabled).toBe(true)
+      expect(wrapper.text()).toContain('1 reply written on this Mac before the switch goes to your Tresso server once its chat is there.')
+      expect(wrapper.text()).toContain('could not be carried over')
+      expect(wrapper.text()).toContain('2 messages could not be copied to your Tresso server')
+      expect(wrapper.text()).not.toContain('Secret')
+    })
+
+    it('says when WhatsApp was disconnected on another device', () => {
+      wa.config = null
+      wa.notice = 'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too. WhatsApp itself, the bridge and its own message store on this Mac stay as they are.'
+      const wrapper = open()
+      expect(wrapper.get('.notice').text()).toBe(wa.notice)
+    })
   })
 })

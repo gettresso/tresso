@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import AppIcon from '@/components/AppIcon.vue'
 import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
   BRIDGE_NOTE,
   BUILD_COMMAND,
+  COPY_BODY,
+  COPY_TITLE,
+  PLACE_ALL_NOTE,
+  PLACE_LOCAL_NOTE,
   FOLDER_NOTE,
   IMPORT_NOTE,
   INSTALL_URL,
@@ -23,15 +27,29 @@ import {
 /**
  * Connect WhatsApp (the ConnectWhatsApp board, with the plan's corrections): the folder, the bridge, the link to the
  * phone and the first import, each a check that is ticked once done, in order. Nothing links before the user confirmed
- * the risk; "Only this Mac" is the only mode in this release. After Connect it stays open to show the import; Done or
- * Close leave it (the import goes on, Settings shows it).
+ * the risk. Where the chats live: "Only this Mac" first and chosen unless the dialog was opened to take the relay over
+ * (`mode` all, "Use this Mac instead"); picking "All my devices" asks first whether the chats may be copied to the
+ * Tresso server. After Connect it stays open to show the import; Done or Close leave it (the import goes on, Settings
+ * shows it).
  *
  * A modal <dialog>: the rest of the page is inert while it is open, Escape closes it, and focus goes back to what
  * opened it.
  */
+const props = defineProps<{
+  /** The place chosen when the dialog opens; "Only this Mac" unless the user came to take the relay over. */
+  mode?: 'local' | 'all'
+}>()
 const emit = defineEmits<{ close: []; done: [] }>()
 const wa = useWhatsAppRelayStore()
 const dialog = ref<HTMLDialogElement | null>(null)
+/** Where the chats will live. */
+const place = ref<'local' | 'all'>(props.mode ?? 'local')
+/** "All my devices" was picked and waits for the user's yes to copying the chats to the server. */
+const confirmingCopy = ref(false)
+/** The user said yes to copying (or came to take the relay over, where the chats are on the server already). */
+let copyConfirmed = props.mode === 'all'
+const copyButton = ref<HTMLButtonElement | null>(null)
+const allRadio = ref<HTMLInputElement | null>(null)
 /** Connected from this dialog: it now shows the import and offers Done. */
 const connectedHere = ref(false)
 let opener: HTMLElement | null = null
@@ -53,7 +71,7 @@ const bridgeDone = computed(() => wa.bridge.process === 'owned' && wa.bridge.por
 const linkDone = computed(() => wa.linked)
 const importDone = computed(() => connectedHere.value && wa.importState === 'done')
 const canStart = computed(() => folderDone.value && wa.riskAccepted && wa.busy === null)
-const canConnect = computed(() => wa.riskAccepted && folderDone.value && bridgeDone.value && linkDone.value && wa.busy === null && !wa.connected)
+const canConnect = computed(() => wa.riskAccepted && folderDone.value && bridgeDone.value && linkDone.value && wa.busy === null && !wa.connected && !confirmingCopy.value)
 /** Start the bridge (first time), or start it again after it stopped or failed. */
 const startLabel = computed(() => (bridgeIdle(wa.bridge) && !wa.bridgeStarted ? 'Start the bridge' : 'Start again'))
 const showStart = computed(() => wa.bridge.process === 'stopped' && !linkView.value.expired)
@@ -86,12 +104,36 @@ function stateOf(done: boolean): 'done' | 'open' {
 }
 
 async function connect(): Promise<void> {
-  if (!canConnect.value) {
+  if (!canConnect.value || confirmingCopy.value) {
     return
   }
-  if (await wa.connect()) {
+  if (await wa.connect(place.value)) {
     connectedHere.value = true
   }
+}
+
+/** "All my devices" picked: asked first (Copy, Cancel); Connect waits for the answer. */
+watch(place, async (next) => {
+  if (next === 'local') {
+    confirmingCopy.value = false
+    return
+  }
+  if (copyConfirmed) {
+    return
+  }
+  confirmingCopy.value = true
+  await nextTick()
+  copyButton.value?.focus()
+})
+
+async function answerCopy(copy: boolean): Promise<void> {
+  copyConfirmed = copy
+  confirmingCopy.value = false
+  if (!copy) {
+    place.value = 'local'
+  }
+  await nextTick()
+  allRadio.value?.focus()
 }
 
 /** Enter presses the main button, unless it lands on a control that handles it (a button, a link). */
@@ -216,23 +258,30 @@ onUnmounted(() => {
       </li>
     </ol>
 
-    <fieldset class="places">
+    <fieldset class="places" :disabled="wa.connected || wa.busy !== null">
       <legend>Where your WhatsApp messages live</legend>
-      <label class="place" :class="{ on: true }">
-        <input type="radio" name="wa-place" value="local" checked />
+      <label class="place" :class="{ on: place === 'local' }">
+        <input v-model="place" type="radio" name="wa-place" value="local" aria-describedby="wa-place-local" />
         <span class="place-text">
           <span class="place-title">Only this Mac</span>
-          <span class="place-note">Chats never leave this computer. Web and mobile do not show WhatsApp.</span>
+          <span id="wa-place-local" class="place-note">{{ PLACE_LOCAL_NOTE }}</span>
         </span>
       </label>
-      <label class="place off">
-        <input type="radio" name="wa-place" value="all" disabled />
+      <label class="place" :class="{ on: place === 'all' }">
+        <input ref="allRadio" v-model="place" type="radio" name="wa-place" value="all" aria-describedby="wa-place-all" />
         <span class="place-text">
           <span class="place-title">All my devices</span>
-          <span class="place-note">This Mac passes your chats to your Tresso server, so web and mobile show them too. Replies from other devices are sent once this Mac is online.</span>
-          <span class="place-note">Coming in a later version.</span>
+          <span id="wa-place-all" class="place-note">{{ PLACE_ALL_NOTE }}</span>
         </span>
       </label>
+      <div v-if="confirmingCopy" class="copy-confirm" role="alertdialog" aria-labelledby="wa-copy-title" aria-describedby="wa-copy-body">
+        <p id="wa-copy-title"><strong>{{ COPY_TITLE }}</strong></p>
+        <p id="wa-copy-body">{{ COPY_BODY }}</p>
+        <div class="actions">
+          <button ref="copyButton" type="button" class="button button-primary" @click="answerCopy(true)">Copy</button>
+          <button type="button" class="button button-quiet" @click="answerCopy(false)">Cancel</button>
+        </div>
+      </div>
     </fieldset>
 
     <p class="visually-hidden" role="status">{{ announcement }}</p>
@@ -486,9 +535,26 @@ legend {
   border: 1.5px solid var(--ink);
   background: var(--ground);
 }
-.place.off {
+.places:disabled .place {
   cursor: default;
-  opacity: 0.6;
+}
+.copy-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  font-size: 14px;
+  line-height: 21px;
+}
+.copy-confirm p {
+  margin: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .place input {
   flex-shrink: 0;
