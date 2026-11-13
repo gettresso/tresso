@@ -30,6 +30,7 @@ import {
   setLocalChatAccount,
   setLocalChatState,
   uuidV7,
+  BridgeFileTooLarge,
   type ChatBackend,
   type ChatBridge,
   type ChatMediaError,
@@ -1018,7 +1019,13 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
           return { ok: false, error }
         }
       },
-      file: (path) => commands.file(path),
+      async file(path) {
+        try {
+          return await commands.file(path)
+        } catch (cause) {
+          throw cause === 'too_large' ? new BridgeFileTooLarge() : cause
+        }
+      },
       stage: (content, name) => commands.stageFile(content, name),
       discard: (path) => commands.discardFile(path),
     }

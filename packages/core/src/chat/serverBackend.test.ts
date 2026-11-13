@@ -39,6 +39,7 @@ import {
   ChatRelayImportStuck,
   ChatRelayOtherNumber,
   RELAY_MAX_REFUSED,
+  RELAY_MEDIA_MAX_TRIES,
   RELAY_MIN_BATCH_BYTES,
   ServerChatBackend,
   relayBodyBytes,
@@ -867,6 +868,18 @@ describe('ServerChatBackend', () => {
       await expect(backend.deliverMedia(request, new Blob(['x']), 'abc')).resolves.toBeUndefined()
       api.failMediaFailed = new ChatApiError(404, 'Not found.')
       await expect(backend.failMedia(request, 'unavailable')).resolves.toBeUndefined()
+    })
+
+    it('ends a request as unavailable after a few uploads without an answer, never for ever', async () => {
+      const request = { messageId: asked.messageId, chatJid: DIRECT, waId: 'P1', size: 12, maxBytes: 4096 }
+      api.failUpload = new TypeError('Failed to fetch')
+      for (let i = 1; i < RELAY_MEDIA_MAX_TRIES; i += 1) {
+        await expect(backend.deliverMedia(request, new Blob(['x']), 'abc')).rejects.toBeInstanceOf(TypeError)
+      }
+      api.failUpload = new ChatApiError(502, 'Bad Gateway')
+      await expect(backend.deliverMedia(request, new Blob(['x']), 'abc')).resolves.toBeUndefined()
+
+      expect(api.calls.filter((call) => call.kind === 'mediaFailed').map((call) => (call.kind === 'mediaFailed' ? call.request.error : null))).toEqual(['unavailable'])
     })
 
     it('stops when another device relays now, and waits when the server asks', async () => {

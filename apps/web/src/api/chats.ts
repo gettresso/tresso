@@ -33,6 +33,8 @@ export interface ChatTransport {
 }
 
 const BASE = '/api/v1'
+/** How long the relaying Mac fetches a reply's file before it gives up. */
+export const REPLY_FILE_FETCH_MS = 15 * 60_000
 
 function segment(id: string): string {
   return encodeURIComponent(id)
@@ -243,8 +245,9 @@ export function useChatApi(): ChatApi {
     send: (method, path, body, options) => auth.send(method, path, body, options),
     putFile: (path, body, headers) => auth.api(path, { method: 'PUT', body, headers: { 'Content-Type': 'application/octet-stream', ...headers } }),
     async fetchFile(url) {
-      // A signed link of the API: no token goes along, and nothing is followed elsewhere.
-      const response = await fetch(url, { credentials: 'omit', redirect: 'error', cache: 'no-store' })
+      // A signed link of the API: no token goes along, and nothing is followed elsewhere. Given up well within the claim's
+      // lease for a reply with a file (30 minutes), so the reply fails as file_unavailable before it could be unconfirmed.
+      const response = await fetch(url, { credentials: 'omit', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(REPLY_FILE_FETCH_MS) })
       if (!response.ok) {
         throw new ApiError(response.status, `The file could not be fetched (${response.status}).`)
       }
