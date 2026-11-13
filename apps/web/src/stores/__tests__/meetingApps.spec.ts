@@ -66,4 +66,23 @@ describe('meeting preferences', () => {
     // The second was built from the first answer.
     expect(store.preferences?.defaultOther).toBe('none')
   })
+
+  it('does not read again after a failed save when another user signed in meanwhile', async () => {
+    const store = useMeetingAppsStore()
+    await store.ensureLoaded()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async (input, init) => {
+        calls.push(`${init?.method ?? 'GET'} ${new URL(String(input)).pathname}`)
+        if ((init?.method ?? 'GET') === 'PATCH') {
+          useAuthStore().generation++
+          return new Response(JSON.stringify({ detail: 'Refused.' }), { status: 422, headers: { 'Content-Type': 'application/problem+json' } })
+        }
+        return new Response(JSON.stringify(STORED))
+      }),
+    )
+    calls.length = 0
+    await expect(store.update({ addWithGuests: false })).rejects.toThrow('Signed out while this request was under way.')
+    expect(calls).toEqual(['PATCH /api/v1/calendar/meeting-preferences'])
+  })
 })

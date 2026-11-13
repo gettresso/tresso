@@ -39,6 +39,8 @@ const loading = ref(true)
 const loadError = ref<string | null>(null)
 /** Errors of single controls, by control. */
 const errors = reactive<Record<string, string>>({})
+/** What a select or the switch shows while its change is on its way, so a re-render does not show the old value. */
+const picked = reactive<Record<string, string | boolean>>({})
 /** Controls whose change is on its way: a second click on them waits for the first. */
 const pending = reactive(new Set<string>())
 /** The desktop app opened the provider's page in the system browser; Settings, Accounts gets the answer. */
@@ -76,9 +78,15 @@ onMounted(async () => {
 
 // A page left open reads the preferences again when it comes back to the front: another tab or device may have
 // changed them, and the next change is built from them.
+let refreshing = false
 function refresh(): void {
-  if (document.visibilityState === 'hidden' || loading.value) return
-  meetingApps.reload().catch(() => undefined)
+  // One read at a time: a return to the tab fires focus and visibilitychange together, and a save waits behind reads.
+  if (document.visibilityState === 'hidden' || loading.value || refreshing) return
+  refreshing = true
+  meetingApps
+    .reload()
+    .catch(() => undefined)
+    .finally(() => (refreshing = false))
 }
 onMounted(() => {
   window.addEventListener('focus', refresh)
@@ -189,9 +197,17 @@ watch(savedLink, (now, before) => {
   if (linkDraft.value === before) linkDraft.value = now
 })
 
+/** The link last sent: a blur or Enter while it is on its way sends it only once, but a link typed since goes too. */
+let lastSent: string | null = null
+
 async function saveLink(): Promise<void> {
-  if (removing || pending.has('ownLink') || linkDraft.value === savedLink.value) {
-    if (!removing && linkDraft.value === savedLink.value) errors.ownLink = ''
+  if (removing) {
+    // This blur came from pressing Remove: Remove decides, the typed text is not saved.
+    removing = false
+    return
+  }
+  if (pending.has('ownLink') ? linkDraft.value === lastSent : linkDraft.value === savedLink.value) {
+    if (linkDraft.value === savedLink.value) errors.ownLink = ''
     return
   }
   if (linkDraft.value !== '') {
@@ -203,7 +219,11 @@ async function saveLink(): Promise<void> {
   }
   const before = savedLink.value
   const typed = linkDraft.value
-  await save('ownLink', 'ownLink', { ownLink: typed }, () => (linkDraft.value = before))
+  lastSent = typed
+  await save('ownLink', 'ownLink', { ownLink: typed }, () => {
+    // Put the saved link back only when nothing else was typed meanwhile.
+    if (linkDraft.value === typed) linkDraft.value = before
+  })
 }
 
 async function removeLink(): Promise<void> {
@@ -224,13 +244,17 @@ async function pickDefault(row: (typeof rows.value)[number] | null, event: Event
   const previous = row === null ? other.value.value : row.value
   const key = row === null ? 'default:other' : `default:${row.account.id}`
   const change = row === null ? { defaultOther: value } : (current: MeetingPreferences) => ({ defaults: { ...current.defaults, [row.account.id]: value } })
+  picked[key] = value
   await save(key, row === null ? 'defaultOther' : 'defaults', change, () => (select.value = previous))
+  if (picked[key] === value) delete picked[key]
 }
 
 async function toggleGuests(event: Event): Promise<void> {
   const box = event.target as HTMLInputElement
   const value = box.checked
+  picked.addWithGuests = value
   await save('addWithGuests', 'addWithGuests', { addWithGuests: value }, () => (box.checked = !value))
+  if (picked.addWithGuests === value) delete picked.addWithGuests
 }
 </script>
 
@@ -324,7 +348,7 @@ async function toggleGuests(event: Event): Promise<void> {
                 @blur="saveLink"
                 @keydown.enter.prevent="saveLink"
               />
-              <button v-if="savedLink" type="button" class="button button-quiet" aria-label="Remove your room link" @pointerdown="removing = true" @click="removeLink">Remove</button>
+              <button v-if="savedLink" type="button" class="button button-quiet" aria-label="Remove your room link" @pointerdown="removing = true" @pointerup="removing = false" @pointercancel="removing = false" @click="removeLink">Remove</button>
             </span>
           </div>
           <p v-if="errors.ownLink" :id="errorId('ownLink')" class="error" role="alert">{{ errors.ownLink }}</p>
@@ -355,7 +379,7 @@ async function toggleGuests(event: Event): Promise<void> {
                 <label class="visually-hidden" :for="`default-${row.account.id}`">Meeting app for {{ row.account.displayName }}</label>
                 <select
                   :id="`default-${row.account.id}`"
-                  :value="row.value"
+                  :value="picked[`default:${row.account.id}`] ?? row.value"
                   :aria-invalid="errors[`default:${row.account.id}`] ? 'true' : undefined"
                   :aria-describedby="errors[`default:${row.account.id}`] ? errorId(`default:${row.account.id}`) : undefined"
                   @change="pickDefault(row, $event)"
@@ -378,7 +402,7 @@ async function toggleGuests(event: Event): Promise<void> {
                 <label class="visually-hidden" for="default-other">Meeting app for every other calendar</label>
                 <select
                   id="default-other"
-                  :value="other.value"
+                  :value="picked['default:other'] ?? other.value"
                   :aria-invalid="errors['default:other'] ? 'true' : undefined"
                   :aria-describedby="errors['default:other'] ? errorId('default:other') : undefined"
                   @change="pickDefault(null, $event)"
@@ -397,7 +421,7 @@ async function toggleGuests(event: Event): Promise<void> {
           <input
             type="checkbox"
             role="switch"
-            :checked="preferences.addWithGuests"
+            :checked="(picked.addWithGuests as boolean | undefined) ?? preferences.addWithGuests"
             :aria-invalid="errors.addWithGuests ? 'true' : undefined"
             :aria-describedby="errors.addWithGuests ? `guests-hint ${errorId('addWithGuests')}` : 'guests-hint'"
             @change="toggleGuests"
