@@ -975,6 +975,11 @@ export class SqliteMailStore implements MailStore {
     return row === null ? null : parse<SyncedChat>(row)
   }
 
+  async leftOutChats(chatAccountId: string): Promise<SyncedChat[]> {
+    const rows = await this.reader.all<JsonRow>('SELECT json FROM chats WHERE chat_account_id = ? AND left_out = 1 ORDER BY last_message_at DESC, id DESC', [chatAccountId])
+    return rows.map((row) => parse<SyncedChat>(row))
+  }
+
   async unreadChatCount(): Promise<number> {
     // One statement; for each chat the index on (chat_id, from_me, sent_at) finds the first unread message, if any.
     const row = await this.reader.first<{ count: number }>(

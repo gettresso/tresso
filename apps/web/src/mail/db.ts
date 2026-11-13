@@ -1121,6 +1121,15 @@ export class IndexedDbMailStore implements MailStore {
     return (await this.db.getFromIndex('chats', 'byJid', [chatAccountId, jid]))?.chat ?? null
   }
 
+  async leftOutChats(chatAccountId: string): Promise<SyncedChat[]> {
+    // Few chats are left out: the index on (left out, time) gives them newest first; the id breaks a tie as in SQLite.
+    const left = await this.db.getAllFromIndex('chats', 'byLast', IDBKeyRange.bound([1, -Infinity], [1, Infinity]))
+    return left
+      .filter((stored) => stored.chatAccountId === chatAccountId)
+      .sort((a, b) => b.lastMessageAt - a.lastMessageAt || (a.chat.id < b.chat.id ? 1 : a.chat.id > b.chat.id ? -1 : 0))
+      .map((stored) => stored.chat)
+  }
+
   async unreadChatCount(): Promise<number> {
     const tx: ChatReadTx = this.db.transaction(['chats', 'chatMessages'])
     let count = 0
