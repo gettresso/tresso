@@ -8,6 +8,7 @@ use ApiPlatform\Metadata\DeleteOperationInterface;
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\ApiResource\ChatAccountResource;
+use App\ApiResource\ChatProblem;
 use App\ApiResource\Input\Chat\ConnectChatAccount;
 use App\ApiResource\Input\Chat\UpdateChatAccount;
 use App\Chat\ChatFields;
@@ -97,15 +98,29 @@ final readonly class ChatAccountProcessor implements ProcessorInterface
         $deviceId = Uuid::fromString($data->deviceId);
         $deviceName = trim($data->deviceName);
         $account = $this->accounts->findOneByChannel($user, ChatChannel::WhatsApp);
+        $address = $data->address;
         if (null === $account) {
             $account = new ChatAccount($user, ChatChannel::WhatsApp, $deviceId, $deviceName, $data->includeGroups, $data->notify, $now);
             $this->entityManager->persist($account);
         } else {
+            // A desktop linked to another number may not take over an account that holds chats: its chats would land in
+            // this account and the replies waiting here would go out from its number. A number it does not know (null)
+            // keeps the one stored, so the check is not lost by leaving it out.
+            $stored = $this->fields->accountAddress($account);
+            if (null !== $address && null !== $stored && $address !== $stored && $this->holdsChats($account)) {
+                throw ChatProblem::otherNumber();
+            }
+            $address ??= $stored;
             $account->relayFrom($deviceId, $deviceName, $now);
         }
-        $this->fields->setAccountIdentity($account, $data->address, $data->displayName);
+        $this->fields->setAccountIdentity($account, $address, $data->displayName);
 
         return $account;
+    }
+
+    private function holdsChats(ChatAccount $account): bool
+    {
+        return false !== $this->connection->fetchOne('SELECT 1 FROM chat WHERE chat_account_id = :account LIMIT 1', ['account' => $account->getId()->toRfc4122()]);
     }
 
     /**

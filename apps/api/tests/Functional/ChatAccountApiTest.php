@@ -107,6 +107,30 @@ final class ChatAccountApiTest extends DatabaseTestCase
         self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM chat_account'));
     }
 
+    public function testADesktopLinkedToAnotherNumberCannotTakeOverAnAccountWithChats(): void
+    {
+        $this->connect();
+        $id = $this->responseString('id');
+        $this->storeChat($this->findChatAccount($id), '31612345678@s.whatsapp.net', 'Anna');
+        $this->chatEntityManager()->clear();
+        $other = ['deviceId' => self::OTHER_MAC, 'deviceName' => 'Kim\'s iMac', 'displayName' => null, 'includeGroups' => true, 'notify' => false];
+
+        $this->connect($other + ['address' => '31611112222'], $this->userHeaders('kim@example.test', self::MAIL, 'desktop'));
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('other_number', $this->decodedResponse()['code'] ?? null);
+        self::assertSame(self::MAC, $this->connection()->fetchOne('SELECT relay_device_id FROM chat_account'), 'The relay stays.');
+
+        // The same number, or one the desktop does not know, takes over; an unknown one keeps the stored number.
+        $this->connect($other + ['address' => null], $this->userHeaders('kim@example.test', self::MAIL, 'desktop'));
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame(self::OTHER_MAC, $this->decodedResponse()['relayDeviceId'] ?? null);
+        self::assertSame('31698765432', $this->decodedResponse()['address'] ?? null);
+        $this->connect(self::connectBody());
+        self::assertResponseStatusCodeSame(200);
+        self::assertSame(self::MAC, $this->decodedResponse()['relayDeviceId'] ?? null);
+    }
+
     /**
      * @return iterable<string, array{string}>
      */
