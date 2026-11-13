@@ -95,6 +95,42 @@ The app is not signed with an Apple Developer ID yet. The install script lifts t
 - **One account, every device**: settings, mail accounts and HTML signatures stay in sync.
 - **Attachment virus scanning** before anything can be opened, and your mail encrypted at rest per user.
 - **Everywhere**: web, desktop (Tauri) and mobile (Expo), with notifications only for mail that needs you.
+- **WhatsApp next to your mail** (experimental, connected from Tresso for Mac): your chats in the Unified Inbox,
+  read and answered in Tresso, on your Mac only or on every device.
+
+## 💬 WhatsApp (experimental)
+
+Tresso can show your WhatsApp chats next to your mail and send your replies. It does not talk to WhatsApp itself: Tresso
+for Mac starts the WhatsApp bridge of [whatsapp-mcp](https://github.com/gettresso/whatsapp-mcp), which you build once on
+your Mac, and that bridge signs in as a linked device of your phone.
+
+**The risk.** The bridge uses WhatsApp Web's protocol, which WhatsApp does not officially support for other apps.
+WhatsApp can limit or ban accounts that use it. Use it with an account you can afford to lose access to. Tresso only
+starts a bridge built from its fork, which listens on your Mac alone and answers only Tresso; the upstream bridge
+listens on your whole network without a password, and Tresso refuses it. How to build it and close an open port:
+[docs/whatsapp-bridge.md](docs/whatsapp-bridge.md).
+
+**Turning it on.** It is off until you switch it on for a Mac: `defaults write app.tresso.desktop EnableWhatsApp -bool
+YES`, then start Tresso again and connect WhatsApp under Settings, Accounts. `defaults delete app.tresso.desktop
+EnableWhatsApp` turns it off. Tresso for Mac only; Windows and Linux have no WhatsApp yet.
+
+**Only this Mac** (the default). Your chats stay on that Mac: Tresso reads the bridge's store in the folder you chose
+and keeps a copy in the app. Nothing goes to your Tresso server, the browser or your phone.
+
+**All my devices.** One Mac copies your chats to your Tresso server, so the browser, your other Macs and the Tresso phone
+app show them too, and you can answer from any of them. What is copied: the chats of the last 30 days and everything
+after, their names, the messages and who sent them, and your replies. On the server all of it is encrypted with your
+own key; nobody reads it there, it goes into no search index and no AI. Files stay on your Mac until you ask for one on
+another device; then the Mac brings it, the server checks it for viruses, and you open it. That Mac has to be on for
+anything to move: while it is off or asleep, every device says so and your replies wait. You choose which chats come
+in, can leave a chat out (it is removed from the server and every device), and can let another Mac take over. With
+Notify me on, your phone gets one notification per chat, with the chat's name and never the message. To stop, switch
+the Mac back to "Only this Mac", or remove WhatsApp from the server in Settings, WhatsApp (also in the browser, if the
+Mac is gone).
+
+**What Tresso does not do.** Reading a chat in Tresso does not mark it read in WhatsApp. Tresso never sends a reply twice
+by itself: when it cannot tell whether a reply went out, it says so and you decide. Chats are not sorted into smart
+inboxes and do not appear in the daily brief.
 
 ## 🔓 Open source and Tresso Cloud
 

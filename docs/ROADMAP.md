@@ -138,6 +138,28 @@ Still to come in this phase:
 Planned, with your own AI key or endpoint: AI classification with feedback learning, automatic todo extraction, AI
 summaries in the daily brief.
 
+## WhatsApp
+
+Experimental, off until switched on per Mac, connected from Tresso for Mac through the user's own build of the
+whatsapp-mcp bridge (Tresso's fork). See "3.17 WhatsApp" in the architecture.
+
+- [x] W1 Only this Mac: the desktop shell starts and watches the bridge (loopback only, a token per process), reads
+  its store read only and sends through it; chats in the local copy, the relay, connect with the risk and the QR code,
+  Settings, the chat screens next to mail, replies that are never sent twice by themselves, files downloaded and
+  checked against the bridge's hash, desktop notifications
+- [x] W2 All my devices: chats, messages and replies sealed on the server, the relaying Mac with its heartbeat and
+  takeover, the reply queue with claims and leases, left-out chats and groups, switching modes that finishes after a
+  crash; the browser and other Macs read and answer the chats the server holds
+- [x] W3 The phone: chats among the mail, replies, files, and a push per chat that names the chat and never the text
+- [x] W4 WhatsApp in the MCP server and for tokens, behind `chat:read` and `chat:send` of their own: list, read and
+  search chats, queue a reply; no file links
+- [x] W5 Files through the server: asked for on another device, brought by the relaying Mac, sealed, scanned and
+  removed when nothing needs them; attaching from the browser and the phone with progress and cancel, bounded per
+  file, per chat and per user
+
+Still to come: smart inbox sorting and AI classification for chats, search over chats with an index, hand over for
+chats, Windows and Linux, pictures shown inline and voice messages played in the app.
+
 ## Phase 3: Native apps
 
 - [x] 3.1 Desktop sign-in: the system browser signs in, `tresso://auth/callback` brings the result back, tokens in the
