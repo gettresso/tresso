@@ -1702,7 +1702,10 @@ sent, and the picker's cache copy is removed afterwards, also after a failure or
 Attach waits until the server's Retry-After (on the server's clock) and says how long, rounded up (`Wait 2 minutes`).
 An unsure try goes again under the same upload and reply ids for 9 minutes, kept in the copy in one value
 (`phone-unsure-files`) per chat and file (`<chat>:<fingerprint>`, a fingerprint of the file's name, size and last
-change, never the name); an entry goes once the copy has that reply or its 9 minutes passed, whichever file it is for. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
+change, never the name); an entry goes once the copy has that reply or its 9 minutes passed, whichever file it is for.
+The values an earlier build kept one per file (`phone-unsure-file:...`) go the first time the unsure files are read. A
+text reply the user cancelled whose queueing got no answer counts as cancelled, and the same text again is a new reply.
+A 429 on the queueing of a file holds Attach like one on its upload. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
 made by the server's clock (`Session.serverNow`, so a phone whose clock is off is not refused); it shows as waiting at
 once (held in memory, not in the copy, so a closed app leaves no reply the server never got), the server's answer is
 stored, and a refusal takes it back and puts the text back in the box. A request without an answer, a 408 or a 5xx may
@@ -2187,7 +2190,10 @@ for Mac connects WhatsApp. With it:
   session's token before it is revoked (`auth.onSigningOut`); a session that ended by itself (expired, or
   signed out elsewhere) has no token left, so such a reply, if the server took it, waits in the queue and can be
   cancelled from another device. A cancel the user made is remembered until the delta removed that reply, so a queueing
-  refused as `cancelled` meanwhile (also one sent again after an unsure answer) counts as cancelled. After a 429 on an
+  refused as `cancelled` meanwhile (also one sent again after an unsure answer) counts as cancelled. A text reply the
+  user cancelled whose queueing then got no answer counts as cancelled too, and the same text sent again is a new reply
+  under a new id (also after cancelling a reply whose earlier send was unsure). A 429 on the queueing of a file holds
+  Attach like one on its upload, with the real wait. After a 429 on an
   upload, Attach waits until the server's Retry-After (on the server's clock) and says how long, rounded up. The warning before an unchecked file closes when the file's state changes meanwhile, and closing
   or accepting it puts the focus back on the row. An unsure try goes again under the
   same upload and reply ids for 9 minutes, kept in the copy (`unsure-files`) by a fingerprint of the file, never its
@@ -3797,7 +3803,7 @@ chat's JID and WhatsApp id, so it never needs either readable.
   UUIDv7 of the last 10 minutes, else 404), and at most 100 such cancels per user in 10 minutes
   (`chat_reply_cancel`, 429). A queueing refused that way lets its upload go at once (it no longer counts toward the
   20 per chat or the waiting bytes). A reply kept as cancelled is removed 30 days after its claim
-  (`ChatQueue::KEEP_CANCELLED`, by `SweepChatMedia`), its tombstone staying, so its id stays refused; a relay's answer
+  (`ChatQueue::KEEP_CANCELLED`, by `PurgeCancelledReplies` once a day, since nothing indexes those rows), its tombstone staying, so its id stays refused; a relay's answer
   after that is 404, which the relay takes as final, so a reply that went out that late stays removed. The tombstones
   of replies are kept like every other tombstone: the delta has no way to start a copy over from an old cursor, so a
   removal a device has not pulled yet must stay (an id is refused by its age after 10 minutes, but a device offline
