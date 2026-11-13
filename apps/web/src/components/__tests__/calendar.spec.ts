@@ -220,6 +220,14 @@ describe('editor and invitation card', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(String(input))
         const method = init?.method ?? 'GET'
+        // What the editor reads besides the save: the meeting preferences, and the event as the server has it.
+        if (method === 'GET' && url.pathname === '/api/v1/calendar/meeting-preferences') {
+          return new Response(JSON.stringify({ ownLink: null, addWithGuests: false, defaults: {}, defaultOther: null, disabled: [], apps: ['meet', 'teams', 'own'] }))
+        }
+        const event = /^\/api\/v1\/calendar-events\/([^/]+)$/.exec(url.pathname)
+        if (method === 'GET' && event !== null) {
+          return new Response(JSON.stringify(calendarEvent(decodeURIComponent(event[1]!), 'work')))
+        }
         requests.push({ method, path: `${url.pathname}${url.search}`, body: init?.body ? JSON.parse(String(init.body)) : undefined })
         return new Response(JSON.stringify(answer(method, url.pathname)), { status: 200 })
       }),

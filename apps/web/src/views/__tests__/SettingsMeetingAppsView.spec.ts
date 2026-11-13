@@ -6,6 +6,7 @@ import type { MailAccount, MeetingPreferences } from '@tresso/core'
 import { calendar } from '@tresso/core/testing'
 import { useAccountsStore } from '@/stores/accounts'
 import { useMeetingAppsStore } from '@/stores/meetingApps'
+import { useCalendarStore, type KeptEditor } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
 import SettingsMeetingAppsView from '../SettingsMeetingAppsView.vue'
 
@@ -114,7 +115,7 @@ describe('Settings, Meeting apps', () => {
   })
 
   async function page() {
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }, { path: '/settings/accounts/new', name: 'settings-accounts-new', component: { template: '<div />' } }] })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }, { path: '/settings/accounts/new', name: 'settings-accounts-new', component: { template: '<div />' } }, { path: '/calendar', name: 'calendar', component: { template: '<div />' } }] })
     const wrapper = mount(SettingsMeetingAppsView, { global: { plugins: [router] }, attachTo: document.body })
     await settle()
     return wrapper
@@ -591,5 +592,18 @@ describe('Settings, Meeting apps', () => {
     await input.trigger('blur')
     await settle()
     expect(patches()).toEqual([{ ownLink: 'https://meet.example.com/other' }])
+  })
+
+  it('offers to go back to an event being written', async () => {
+    const plain = await page()
+    expect(plain.find('.kept').exists()).toBe(false)
+    plain.unmount()
+
+    useCalendarStore().keepEditor({ target: { kind: 'new', start: 0, allDay: false }, values: {} as KeptEditor['values'], link: { on: true, app: null, touched: true, removed: false }, notify: true })
+    const wrapper = await page()
+    expect(wrapper.get('.kept').text()).toContain('You were writing an event.')
+    await wrapper.get('.kept button').trigger('click')
+    await settle()
+    expect((wrapper.vm.$router.currentRoute.value.name)).toBe('calendar')
   })
 })

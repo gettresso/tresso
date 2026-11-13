@@ -35,7 +35,7 @@ import ScopeDialog from '@/components/calendar/ScopeDialog.vue'
 import TimeGrid from '@/components/calendar/TimeGrid.vue'
 import TodoBlockDetail from '@/components/calendar/TodoBlockDetail.vue'
 import { inView, reducedMotion } from '@/components/calendar/genie'
-import { useCalendarStore, type CalendarViewKind, type Response } from '@/stores/calendar'
+import { useCalendarStore, type CalendarViewKind, type KeptEditor, type Response } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
 import { useAuthStore } from '@/stores/auth'
 import { useMeetingAppsStore } from '@/stores/meetingApps'
@@ -116,6 +116,12 @@ onMounted(() => {
   // Only for the name "My own link" in the popover; without the preferences a link reads "Meeting link", and the
   // next visit tries again.
   meetingApps.ensureLoaded().catch(() => undefined)
+  // Back from Settings ("Back to the event"): the event being written opens again as it was left.
+  const kept = calendar.takeKeptEditor()
+  if (kept !== undefined) {
+    restored.value = kept
+    editor.value = kept.target
+  }
 })
 onBeforeUnmount(() => {
   if (ticking !== null) clearInterval(ticking)
@@ -183,6 +189,8 @@ function closeDetail(): void {
 
 // Editor
 const editor = ref<EditorTarget | null>(null)
+/** An editor the user left for Settings, opened again with its values. */
+const restored = ref<KeptEditor | undefined>(undefined)
 function newEvent(start?: number, allDay = false): void {
   if (calendar.newEventCalendar === null) {
     status.value = 'There is no calendar to add events to.'
@@ -244,7 +252,12 @@ async function landing(event: SyncedCalendarEvent): Promise<HTMLElement | null> 
 function saved(didLand: boolean): void {
   landed.value = didLand
   status.value = 'Event saved.'
+  closeEditor()
+}
+
+function closeEditor(): void {
   editor.value = null
+  restored.value = undefined
 }
 
 // Deleting
@@ -536,7 +549,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeRailOutside
     </Transition>
 
     <Transition name="layer" :css="!landed" @after-leave="landed = false">
-      <EventEditor v-if="editor" :target="editor" :landing="landing" @close="editor = null" @saved="saved" />
+      <EventEditor v-if="editor" :target="editor" :landing="landing" :restore="restored" @close="closeEditor" @saved="saved" />
     </Transition>
     <Transition name="layer">
       <ScopeDialog

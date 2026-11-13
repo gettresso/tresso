@@ -3123,6 +3123,19 @@ other calendar" sets `defaultOther`. Zoom and Teams for other calendars need the
 Zoom is listed as a choice only when `apps` has it. The popover reads the own link from the same store, for "My own
 link".
 
+The event editor's "Meeting link" row (`MeetingLinkRow`) shows the state core's `meetingRow` names for the event's
+calendar, its mail account and the preferences: off, no app, before saving, the own link, being made, made, failed,
+reconnect, an app that cannot serve the calendar or the account, and removed. The first guest switches it on with the
+calendar's default when "Add a meeting link when I invite guests" is on and the user has not used the switch; a
+changed calendar follows its default unless the user picked an app. The save sends Meet or Teams as
+`conferenceProvider` and the own link as `conferenceUrl` only when the user switched a new link on or picked an app;
+a removal (both null) only when the user removed the link, which is offered only where core's `meetingRemovable`
+allows it. Anything else sends the link and the request as the server has them at the save (read then, so a link made
+since the editor opened is never removed), without a provider the event's calendar does not list. Retry and Leave
+without a link call `POST` and `DELETE /calendar-events/{id}/meeting-link` on the series and keep the editor open.
+Connect a meeting app keeps the editor's values in memory and opens Settings, Meeting apps, whose "Back to the event"
+reopens it. On an event someone else organizes the editor only says who added the link.
+
 #### AI features (interfaces with built-in and planned AI implementations)
 
 Tresso defines the interfaces and, where a deterministic version is useful on its own, implements it. The planned AI
