@@ -40,6 +40,12 @@ pub fn read_label(read: bool) -> &'static str {
 /// Message > Flag or Unflag: the open conversation is flagged, or its flags are taken off (the reading pane).
 pub const TOGGLE_FLAG: &str = "toggle-flag";
 
+/// Message > Make To-do: disabled once the conversation has a to-do, as the pane then shows no button for it.
+pub const MAKE_TODO: &str = "make-todo";
+
+/// Mailbox > Outbox: enabled only while the sidebar lists the Outbox (while mail waits in it).
+pub const GO_OUTBOX: &str = "go-outbox";
+
 /// The flag item's title, after what it would do. A conversation is flagged when one of its messages is.
 pub fn flag_label(flagged: bool) -> &'static str {
   if flagged { "Unflag" } else { "Flag" }
@@ -71,8 +77,12 @@ pub enum Action {
   Shell(Shell),
 }
 
-/// Whether a Message item acts while text is being edited: a menu item's shortcut reaches the menu before the text
-/// field or the composer sees it, so an item whose shortcut is also a text-editing key would take that key away.
+/// Whether a Message item acts while text is being edited. Which sees a key first, the menu or the page, is not relied
+/// on: AppKit asks the menu for a key equivalent, but wry hands performKeyEquivalent to WKWebView, and WebKit may give
+/// the key to the page first and send only what the page left alone back to the menu. Either way is safe for an item
+/// that waits: when the menu comes first, the item is disabled while text is edited, so the key goes on to the text;
+/// when the page comes first, the text field takes the key (⌘⌫ deletes, ⇧⌘U underlines), and should the key still
+/// reach the menu, the web client checks the focus again when the action arrives and does nothing while text is edited.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Typing {
   /// It acts: its shortcut means nothing to a text field.
@@ -97,26 +107,59 @@ pub struct MenuState {
   pub sidebar_shown: bool,
   /// A text field or the composer has the focus.
   pub editing: bool,
+  /// Mail waits in the Outbox, so the sidebar lists it (Mailbox > Outbox).
+  pub outbox: bool,
   /// The conversation open in the reading pane, while it has the user's attention; None while none is open.
   pub message: Option<OpenMessage>,
 }
 
-/// The conversation open in the reading pane, as far as the menu's titles need it.
+/// The conversation open in the reading pane, as far as the menu's titles and Make To-do need it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenMessage {
   /// All its messages are read (Mark as Unread).
   pub read: bool,
   /// One of its messages is flagged (Unflag).
   pub flagged: bool,
+  /// A to-do was made from it already: the pane shows no Make todo button, and Make To-do is disabled.
+  pub has_todo: bool,
 }
 
 /// Whether an item `menu_state` manages acts in this state. Items it does not manage (Reload, the shell's) keep what
 /// they are; for them this is true.
 pub fn enabled_in(action: Action, state: &MenuState) -> bool {
   match action {
+    Action::Web(GO_OUTBOX) => state.signed_in && state.outbox,
     Action::Web(_) => state.signed_in,
-    Action::Message(_, typing) => state.signed_in && state.message.is_some() && !(typing == Typing::Waits && state.editing),
+    Action::Message(name, typing) => {
+      let Some(message) = state.message.filter(|_| state.signed_in) else {
+        return false;
+      };
+      !(typing == Typing::Waits && state.editing) && !(name == MAKE_TODO && message.has_todo)
+    }
     Action::WebAlways(_) | Action::Shell(_) => true,
+  }
+}
+
+/// What a Message item does with its action. It acts on the conversation on screen: while the window is closed
+/// (hidden) or minimized none is, so the item only brings the window back (the conversation the window held is not
+/// acted on unseen).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub enum Delivery {
+  /// Sent to the web client.
+  Send,
+  /// Only the window comes back.
+  ShowOnly,
+}
+
+/// Whether an action goes to the web client, given whether the main window is on screen (visible, not minimized).
+/// Only the Message menu's actions depend on it: the others act wherever the window is, after it comes back.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub fn delivery(action: Action, window_on_screen: bool) -> Delivery {
+  match action {
+    Action::Message(..) if !window_on_screen => Delivery::ShowOnly,
+    _ => Delivery::Send,
   }
 }
 
@@ -304,6 +347,8 @@ pub fn bar() -> Vec<Submenu> {
         web("go-waiting", "Waiting On", None),
         web("go-drafts", "Drafts", None),
         web("go-cleanup", "Clean Up", None),
+        // Listed in the sidebar only while mail waits in it, and enabled only then (`menu_state`).
+        web(GO_OUTBOX, "Outbox", None),
         web("go-batches", "Batches", None),
       ],
     },
@@ -312,7 +357,7 @@ pub fn bar() -> Vec<Submenu> {
       title: "Message",
       entries: vec![
         // Mail's names and shortcuts. They act on the conversation open in the reading pane, as its buttons do, and on
-        // nothing while none is open.
+        // nothing while none has the user's attention (`menu_state`) or the window is not on screen ([`delivery`]).
         message("reply", "Reply", Some("Cmd+R"), Typing::Acts),
         message("reply-all", "Reply All", Some("Shift+Cmd+R"), Typing::Acts),
         message("forward", "Forward", Some("Shift+Cmd+F"), Typing::Acts),
@@ -327,6 +372,13 @@ pub fn bar() -> Vec<Submenu> {
         // Unread. ⇧⌘U underlines in the composer, so it waits while text is edited.
         message(TOGGLE_READ, read_label(true), Some("Shift+Cmd+U"), Typing::Waits),
         message(TOGGLE_FLAG, flag_label(false), Some("Shift+Cmd+L"), Typing::Acts),
+        Separator,
+        // The reading pane's own verdicts and to-do, as its buttons name them (D, H, K and T there: single keys, which a
+        // menu cannot take, and no standard shortcut fits them).
+        message("settle-do", "Do", None, Typing::Acts),
+        message("hand-over", "Hand Over…", None, Typing::Acts),
+        message("settle-noted", "Noted", None, Typing::Acts),
+        message(MAKE_TODO, "Make To-do", None, Typing::Acts),
       ],
     },
     Submenu {
@@ -423,11 +475,22 @@ impl<T: Toggle> MenuItems<T> {
 /// The web client says whether someone is signed in (and may use the app), whether its sidebar shows, whether text is
 /// being edited, and which conversation is open (None while none is): the items that act in it follow, and the items
 /// whose titles follow the state are named after what they would do. It says so once per change, not per key.
+///
+/// Every item is changed in one task on the main thread: each of Tauri's setters runs there at once from it, where from
+/// another thread each would wait for a hop of its own.
 #[tauri::command]
-pub fn menu_state<R: tauri::Runtime>(app: tauri::AppHandle<R>, signed_in: bool, sidebar_shown: bool, editing: bool, message: Option<OpenMessage>) -> Result<(), String> {
-  use tauri::Manager;
+pub fn menu_state<R: tauri::Runtime>(app: tauri::AppHandle<R>, signed_in: bool, sidebar_shown: bool, editing: bool, outbox: bool, message: Option<OpenMessage>) -> Result<(), String> {
+  let state = MenuState { signed_in, sidebar_shown, editing, outbox, message };
+  let handle = app.clone();
+  app
+    .run_on_main_thread(move || {
+      use tauri::Manager;
 
-  app.state::<MenuItems<tauri::menu::MenuItem<R>>>().apply(&MenuState { signed_in, sidebar_shown, editing, message })
+      if let Err(error) = handle.state::<MenuItems<tauri::menu::MenuItem<R>>>().apply(&state) {
+        log::error!("The menu could not follow the app's state: {error}");
+      }
+    })
+    .map_err(|error| error.to_string())
 }
 
 /// The bar's items of our own, in its order, each enabled as it starts: the items that act in the web client wait for
@@ -537,15 +600,19 @@ fn predefined(handle: &tauri::AppHandle, native: Native) -> tauri::Result<Option
 /// Runs a menu item of our own.
 #[cfg(target_os = "macos")]
 fn run(app: &tauri::AppHandle, id: &str) {
-  use tauri::Emitter;
+  use tauri::{Emitter, Manager};
 
   let Some(action) = action_of(id) else {
     return;
   };
   match action {
     Action::Web(name) | Action::WebAlways(name) | Action::Message(name, _) => {
+      let on_screen = app.get_webview_window("main").is_some_and(|window| window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true));
       // The window may be closed (hidden): what the item does happens in it, so it comes back first.
       show_main_window(app);
+      if delivery(action, on_screen) == Delivery::ShowOnly {
+        return;
+      }
       if let Err(error) = app.emit_to("main", MENU_EVENT, name) {
         log::error!("Sending the menu action {name} to the web client failed: {error}");
       }
@@ -687,8 +754,8 @@ mod tests {
     assert_eq!(titles(&bar[1]), ["New Message", "New Event", "New To-do", "-", "CloseWindow"]);
     assert_eq!(titles(&bar[2]), ["Undo", "Redo", "-", "Cut", "Copy", "Paste", "PasteAndMatchStyle", "Delete", "SelectAll", "-", "Find…"]);
     assert_eq!(titles(&bar[3]), ["Inbox", "Triage", "To-dos", "Calendar", "Search", "-", "Hide Sidebar", "-", "Reload", "EnterFullScreen"]);
-    assert_eq!(titles(&bar[4]), ["Get New Mail", "-", "Daily Brief", "Waiting On", "Drafts", "Clean Up", "Batches"]);
-    assert_eq!(titles(&bar[5]), ["Reply", "Reply All", "Forward", "-", "Archive", "Move to Trash", "Move to…", "-", "Mark as Unread", "Flag"]);
+    assert_eq!(titles(&bar[4]), ["Get New Mail", "-", "Daily Brief", "Waiting On", "Drafts", "Clean Up", "Outbox", "Batches"]);
+    assert_eq!(titles(&bar[5]), ["Reply", "Reply All", "Forward", "-", "Archive", "Move to Trash", "Move to…", "-", "Mark as Unread", "Flag", "-", "Do", "Hand Over…", "Noted", "Make To-do"]);
     assert_eq!(titles(&bar[6]), ["Minimize", "Zoom", "-", "BringAllToFront", "-", "Tresso"]);
     assert_eq!(titles(&bar[7]), ["Tresso Help", "Release Notes"]);
   }
@@ -745,8 +812,9 @@ mod tests {
   }
 
   /// The shortcuts a focused text field or the composer uses itself: WebKit's text editing (⌘⌫ and ⌘⌦ delete to the
-  /// start and end of the line) and the composer's editor (TipTap's StarterKit: bold, italic, underline, strike, code,
-  /// lists, quote, code block, paragraph, a hard break, redo). The menu takes its shortcuts before the web view sees them.
+  /// start and end of the line) and the composer's editor (RichEditor.vue: TipTap's StarterKit and Link; bold, italic,
+  /// underline, strike, code, the two lists, quote, code block, paragraph, a hard break, redo). Whichever sees a key
+  /// first ([`Typing`]), an item with one of these must leave it to the text while text is edited.
   const TEXT_KEYS: &[&str] = &[
     "Cmd+Backspace",
     "Cmd+Delete",
@@ -759,7 +827,6 @@ mod tests {
     "Shift+Cmd+B",
     "Shift+Cmd+7",
     "Shift+Cmd+8",
-    "Shift+Cmd+9",
     "Alt+Cmd+0",
     "Alt+Cmd+C",
     "Cmd+Enter",
@@ -775,7 +842,7 @@ mod tests {
     assert_eq!(taken.iter().map(|(id, ..)| *id).collect::<Vec<_>>(), ["move-to-trash", TOGGLE_READ]);
     for (id, _, _, action) in taken {
       assert!(matches!(action, Action::Message(_, Typing::Waits)), "{id} must be disabled while text is edited");
-      let typing = MenuState { signed_in: true, sidebar_shown: true, editing: true, message: Some(OpenMessage::default()) };
+      let typing = MenuState { signed_in: true, sidebar_shown: true, editing: true, outbox: true, message: Some(OpenMessage::default()) };
       assert!(!enabled_in(action, &typing), "{id} acts while typing");
       assert!(enabled_in(action, &MenuState { editing: false, ..typing }), "{id} does not act once typing ends");
     }
@@ -806,7 +873,10 @@ mod tests {
         "go-brief",
         "go-cleanup",
         "go-drafts",
+        "go-outbox",
         "go-waiting",
+        "hand-over",
+        "make-todo",
         "move-to",
         "move-to-trash",
         "new-event",
@@ -816,6 +886,8 @@ mod tests {
         "reply",
         "reply-all",
         "settings",
+        "settle-do",
+        "settle-noted",
         "toggle-flag",
         "toggle-read",
         "toggle-sidebar",
@@ -862,7 +934,7 @@ mod tests {
     items
   }
 
-  const MESSAGE_IDS: [&str; 8] = ["reply", "reply-all", "forward", "archive", "move-to-trash", "move-to", TOGGLE_READ, TOGGLE_FLAG];
+  const MESSAGE_IDS: [&str; 12] = ["reply", "reply-all", "forward", "archive", "move-to-trash", "move-to", TOGGLE_READ, TOGGLE_FLAG, "settle-do", "hand-over", "settle-noted", MAKE_TODO];
 
   /// What setup stores is what menu_state enables: every item that acts in the web client while someone is signed
   /// in, and nothing else (Reload acts signed out too).
@@ -890,6 +962,7 @@ mod tests {
         "go-waiting",
         "go-drafts",
         "go-cleanup",
+        "go-outbox",
         "go-batches",
         "reply",
         "reply-all",
@@ -898,17 +971,21 @@ mod tests {
         "move-to-trash",
         "move-to",
         TOGGLE_READ,
-        TOGGLE_FLAG
+        TOGGLE_FLAG,
+        "settle-do",
+        "hand-over",
+        "settle-noted",
+        MAKE_TODO
       ]
     );
-    let open = Some(OpenMessage { read: true, flagged: false });
-    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, message: open }).unwrap();
+    let open = Some(OpenMessage { read: true, flagged: false, has_todo: false });
+    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, outbox: true, message: open }).unwrap();
     assert!(items.0.lock().unwrap().iter().all(|(.., item)| item.0.get()));
-    items.apply(&MenuState { signed_in: false, sidebar_shown: true, editing: false, message: open }).unwrap();
+    items.apply(&MenuState { signed_in: false, sidebar_shown: true, editing: false, outbox: true, message: open }).unwrap();
     assert!(items.0.lock().unwrap().iter().all(|(.., item)| !item.0.get()));
 
     // Signed in without an open conversation: the Message menu waits, the rest acts.
-    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, message: None }).unwrap();
+    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, outbox: true, message: None }).unwrap();
     for id in items.ids() {
       assert_eq!(enabled(id), !MESSAGE_IDS.contains(&id), "{id} without an open conversation");
     }
@@ -921,10 +998,10 @@ mod tests {
     let items = fake_items();
     let enabled = |id: &str| items.0.lock().unwrap().iter().find(|(own, ..)| *own == id).map(|(.., item)| item.0.get()).unwrap();
 
-    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: true, message: Some(OpenMessage::default()) }).unwrap();
+    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: true, outbox: true, message: Some(OpenMessage::default()) }).unwrap();
     assert!(!enabled("move-to-trash") && !enabled(TOGGLE_READ));
     assert!(enabled("reply") && enabled("archive") && enabled("move-to") && enabled(TOGGLE_FLAG) && enabled("get-new-mail"));
-    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, message: Some(OpenMessage::default()) }).unwrap();
+    items.apply(&MenuState { signed_in: true, sidebar_shown: true, editing: false, outbox: true, message: Some(OpenMessage::default()) }).unwrap();
     assert!(enabled("move-to-trash") && enabled(TOGGLE_READ));
   }
 
@@ -933,18 +1010,18 @@ mod tests {
   fn the_items_with_a_state_are_named_after_what_they_would_do() {
     let items = fake_items();
     let title = |id: &str| items.0.lock().unwrap().iter().find(|(own, ..)| *own == id).map(|(.., item)| item.1.borrow().clone()).unwrap();
-    let state = |sidebar_shown: bool, message: Option<OpenMessage>| MenuState { signed_in: true, sidebar_shown, editing: false, message };
+    let state = |sidebar_shown: bool, message: Option<OpenMessage>| MenuState { signed_in: true, sidebar_shown, editing: false, outbox: true, message };
 
-    items.apply(&state(false, Some(OpenMessage { read: false, flagged: true }))).unwrap();
+    items.apply(&state(false, Some(OpenMessage { read: false, flagged: true, has_todo: false }))).unwrap();
     assert_eq!(title(TOGGLE_SIDEBAR), "Show Sidebar");
     assert_eq!(title(TOGGLE_READ), "Mark as Read");
     assert_eq!(title(TOGGLE_FLAG), "Unflag");
-    items.apply(&state(true, Some(OpenMessage { read: true, flagged: false }))).unwrap();
+    items.apply(&state(true, Some(OpenMessage { read: true, flagged: false, has_todo: false }))).unwrap();
     assert_eq!(title(TOGGLE_SIDEBAR), "Hide Sidebar");
     assert_eq!(title(TOGGLE_READ), "Mark as Unread");
     assert_eq!(title(TOGGLE_FLAG), "Flag");
     // With nothing open, the titles the bar starts with.
-    items.apply(&state(true, Some(OpenMessage { read: false, flagged: true }))).unwrap();
+    items.apply(&state(true, Some(OpenMessage { read: false, flagged: true, has_todo: false }))).unwrap();
     items.apply(&state(true, None)).unwrap();
     assert_eq!((title(TOGGLE_READ).as_str(), title(TOGGLE_FLAG).as_str()), (read_label(true), flag_label(false)));
     assert_eq!(title("view-inbox"), "", "no other item is renamed");
@@ -994,26 +1071,26 @@ mod tests {
     assert_eq!((title(TOGGLE_SIDEBAR), title(TOGGLE_READ), title(TOGGLE_FLAG)), (String::from("Hide Sidebar"), String::from("Mark as Unread"), String::from("Flag")));
 
     // Signed in, nothing open: the Message menu waits.
-    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": false, "message": null }));
+    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": false, "outbox": true, "message": null }));
     assert_eq!(title(TOGGLE_SIDEBAR), "Show Sidebar");
     for (id, action, item) in &own {
       assert_eq!(item.is_enabled().unwrap(), !is_message(action) && !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} after sign-in");
     }
 
     // A conversation opens, unread and flagged: everything acts, and the titles say what they would do.
-    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": false, "message": { "read": false, "flagged": true } }));
+    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": false, "outbox": true, "message": { "read": false, "flagged": true, "hasTodo": false } }));
     for (id, action, item) in &own {
       assert_eq!(item.is_enabled().unwrap(), !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} with a conversation open");
     }
     assert_eq!((title(TOGGLE_READ), title(TOGGLE_FLAG)), (String::from("Mark as Read"), String::from("Unflag")));
 
     // Text is edited: ⌘⌫ and ⇧⌘U are left to the text.
-    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": true, "message": { "read": true, "flagged": false } }));
+    send(serde_json::json!({ "signedIn": true, "sidebarShown": false, "editing": true, "outbox": true, "message": { "read": true, "flagged": false, "hasTodo": false } }));
     assert!(!enabled("move-to-trash") && !enabled(TOGGLE_READ));
     assert!(enabled("reply") && enabled("archive") && enabled(TOGGLE_FLAG));
     assert_eq!((title(TOGGLE_READ), title(TOGGLE_FLAG)), (String::from("Mark as Unread"), String::from("Flag")));
 
-    send(serde_json::json!({ "signedIn": false, "sidebarShown": true, "editing": false, "message": null }));
+    send(serde_json::json!({ "signedIn": false, "sidebarShown": true, "editing": false, "outbox": true, "message": null }));
     assert_eq!(title(TOGGLE_SIDEBAR), "Hide Sidebar");
     for (id, action, item) in &own {
       assert_eq!(item.is_enabled().unwrap(), !needs_sign_in(*action) && !matches!(action, Action::Shell(Shell::CheckForUpdates)), "{id} after sign-out");
@@ -1030,6 +1107,37 @@ mod tests {
     let source = include_str!("menu.rs");
     let code = &source[..source.find(&["#[cfg(test)]", "\nmod tests"].concat()).expect("menu.rs has its tests at the end")];
     assert!(!code.contains(".manage("), "menu.rs must not manage state; lib.rs manages MenuItems");
+  }
+
+  /// A Message item acts on the conversation on screen: with the window closed (hidden) or minimized it only brings the
+  /// window back. Every other item acts as before, after the window came back.
+  #[test]
+  fn a_message_item_only_shows_a_window_that_is_not_on_screen() {
+    for id in MESSAGE_IDS {
+      let action = action_of(id).unwrap();
+      assert_eq!(delivery(action, false), Delivery::ShowOnly, "{id}");
+      assert_eq!(delivery(action, true), Delivery::Send, "{id}");
+    }
+    for id in ["new-message", "get-new-mail", "view-inbox", "toggle-sidebar", "reload", GO_OUTBOX] {
+      assert_eq!(delivery(action_of(id).unwrap(), false), Delivery::Send, "{id}");
+    }
+  }
+
+  /// Mailbox > Outbox follows the sidebar, which lists the Outbox only while mail waits; Make To-do waits while the
+  /// conversation has a to-do, as the pane's button does.
+  #[test]
+  fn outbox_and_make_todo_follow_what_the_pane_and_the_sidebar_show() {
+    let open = OpenMessage { read: true, flagged: false, has_todo: false };
+    let state = MenuState { signed_in: true, sidebar_shown: true, editing: false, outbox: false, message: Some(open) };
+    assert!(!enabled_in(Action::Web(GO_OUTBOX), &state));
+    assert!(enabled_in(Action::Web(GO_OUTBOX), &MenuState { outbox: true, ..state }));
+    assert!(!enabled_in(Action::Web(GO_OUTBOX), &MenuState { outbox: true, signed_in: false, ..state }));
+    assert!(enabled_in(Action::Web("go-drafts"), &state));
+
+    let make = action_of(MAKE_TODO).unwrap();
+    assert!(enabled_in(make, &state));
+    assert!(!enabled_in(make, &MenuState { message: Some(OpenMessage { has_todo: true, ..open }), ..state }));
+    assert!(enabled_in(action_of("settle-do").unwrap(), &MenuState { message: Some(OpenMessage { has_todo: true, ..open }), ..state }));
   }
 
   #[test]
