@@ -10,6 +10,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,7 +20,9 @@ import (
 	"tresso/sync/internal/providerhttp"
 )
 
-// ConferenceRequest is the property the API puts on an event to ask the provider for an online meeting.
+// ConferenceRequest is the property the API puts on an event's master to ask the provider for an online meeting
+// ("teams"). On an occurrence it means nothing. Graph makes a Teams meeting with the event and never takes it off
+// again, so nothing here ever tries to remove one.
 const ConferenceRequest = "X-TRESSO-CONFERENCE-REQUEST"
 
 // fields is the part of an event Tresso writes. Attendees carry no answers: Graph takes those only through the
@@ -178,6 +181,7 @@ func (s *session) Write(ctx context.Context, calendar calsync.Calendar, operatio
 		return api.OperationResult{Outcome: api.OperationFailed, Error: text("The event could not be read.")}, nil
 	}
 	w := &writer{session: s, calendar: calendar, operation: operation, doc: doc}
+	w.teamsAsked = doc.Master() != nil && w.wantsTeams(doc.Master())
 	id := ""
 	if operation.RemoteID != nil {
 		id = *operation.RemoteID
@@ -214,6 +218,20 @@ type writer struct {
 	// other changeKey is someone else's change (Exchange changes the master's with every change to the series).
 	masterID string
 	known    string
+	// teamsAsked: the master asks for a Teams meeting, so the result says what became of it.
+	teamsAsked bool
+	// teamsNotSupported: the calendar cannot have Teams meetings; the event was written without one.
+	teamsNotSupported bool
+}
+
+// teamsProvider is the onlineMeetingProvider for a Teams meeting on this calendar. Empty when the calendar has none:
+// the event is then written without the meeting (never refused over it) and the result says not_supported.
+func (w *writer) teamsProvider() string {
+	provider := info(w.calendar).TeamsProvider
+	if provider == "" {
+		w.teamsNotSupported = true
+	}
+	return provider
 }
 
 // settle reads the series' changeKey after a step of this write. One that cannot be read is unknown, and a retry
@@ -266,14 +284,32 @@ func (w *writer) result(ctx context.Context, id string, writeErr error) (api.Ope
 	current, found, err := s.fetch(ctx, w.calendar.RemoteID, id)
 	if err != nil || !found {
 		// Written, but not read back: the next sync brings Graph's version.
-		return api.OperationResult{Outcome: api.OperationDone, RemoteID: &id}, nil
+		result := api.OperationResult{Outcome: api.OperationDone, RemoteID: &id}
+		w.teamsOutcome(&result, nil)
+		return result, nil
 	}
 	etag := current.ChangeKey
 	result := api.OperationResult{Outcome: api.OperationDone, RemoteID: &id, ETag: &etag}
 	if text, err := toICalendar(current, s.owner); err == nil {
 		result.Current = &api.RemoteObject{RemoteID: id, ETag: &etag, Ical: &text}
 	}
+	w.teamsOutcome(&result, &current)
 	return result, nil
+}
+
+// teamsOutcome says in a done write's result what became of the Teams meeting the master asked for, when Graph's
+// event (nil: not read back) has no join link: pending while Graph has the event as an online meeting, else not
+// made. Nothing when none was asked for or the meeting is there (as the reader sees it: an https join link).
+func (w *writer) teamsOutcome(result *api.OperationResult, current *event) {
+	if !w.teamsAsked {
+		return
+	}
+	made, pending := false, false
+	if current != nil {
+		made = current.OnlineMeeting != nil && strings.HasPrefix(current.OnlineMeeting.JoinURL, "https://")
+		pending = current.IsOnlineMeeting
+	}
+	api.ConferenceOutcome(result, made, current != nil, pending, w.teamsNotSupported)
 }
 
 func (w *writer) wantsTeams(v *ical.Component) bool {
@@ -302,11 +338,13 @@ func (w *writer) create(ctx context.Context) (string, error) {
 	body["transactionId"] = transactionID(w.operation.UID)
 	body["singleValueExtendedProperties"] = []extendedProperty{{ID: uidProperty, Value: w.operation.UID}}
 	if w.wantsTeams(master) {
-		provider := info(w.calendar).TeamsProvider
-		if provider == "" {
-			return "", &refusal{"This calendar cannot have Teams meetings."}
+		if provider := w.teamsProvider(); provider != "" {
+			body["isOnlineMeeting"], body["onlineMeetingProvider"] = true, provider
 		}
-		body["isOnlineMeeting"], body["onlineMeetingProvider"] = true, provider
+	}
+	if joinLineAt(d.Body.Content) >= 0 {
+		// A link Tresso knows travels as the description's last line: written as escaped text in an HTML body.
+		body["body"] = textAsHTML(d.Body.Content, "")
 	}
 	var created event
 	if err := w.session.request(ctx, http.MethodPost, eventsPath(w.calendar.RemoteID), body, &created); err != nil {
@@ -382,11 +420,9 @@ func (w *writer) patch(ctx context.Context, v *ical.Component, current event, re
 		body[key] = value
 	}
 	if recurrenceID == nil && w.wantsTeams(v) && !current.IsOnlineMeeting && current.IsOrganizer {
-		provider := info(w.calendar).TeamsProvider
-		if provider == "" {
-			return &refusal{"This calendar cannot have Teams meetings."}
+		if provider := w.teamsProvider(); provider != "" {
+			body["isOnlineMeeting"], body["onlineMeetingProvider"] = true, provider
 		}
-		body["isOnlineMeeting"], body["onlineMeetingProvider"] = true, provider
 	}
 	if _, changed := body["body"]; changed {
 		html, err := w.htmlBody(ctx, current.ID, want.Body.Content)
@@ -431,16 +467,53 @@ func (w *writer) htmlBody(ctx context.Context, id, text string) (itemBody, error
 		block = meetingBlock(current.Body.Content)
 	}
 	if block == "" {
+		if joinLineAt(text) >= 0 {
+			return textAsHTML(text, ""), nil
+		}
 		return itemBody{ContentType: "text", Content: text}, nil
 	}
-	if i := strings.Index(text, meetingSeparator); i >= 0 {
-		text = text[:i]
-	} else {
+	i := strings.Index(text, meetingSeparator)
+	if i < 0 {
 		// The user removed the join block from the description: the meeting stays, its text goes.
-		block = ""
+		return textAsHTML(text, ""), nil
 	}
-	escaped := strings.ReplaceAll(html.EscapeString(strings.TrimRight(text, "\n")), "\n", "<br>")
-	return itemBody{ContentType: "html", Content: "<html><body><div>" + escaped + "</div>" + block + "</body></html>"}, nil
+	// Tresso's join line stands after the block's text (it is the description's last line): it stays the last line,
+	// after the block.
+	tail := ""
+	if line := joinLineAt(text); line > i {
+		tail = text[line:]
+	}
+	return textAsHTML(text[:i], block, tail), nil
+}
+
+// textAsHTML is plain text as an HTML body: escaped, its line breaks as <br>, then the HTML of block (a meeting's join
+// block as Graph has it, or empty) and the text of each tail as a paragraph of its own.
+func textAsHTML(text, block string, tail ...string) itemBody {
+	content := "<html><body><div>" + escapedLines(text) + "</div>" + block
+	for _, t := range tail {
+		if strings.TrimSpace(t) != "" {
+			content += "<div>" + escapedLines(t) + "</div>"
+		}
+	}
+	return itemBody{ContentType: "html", Content: content + "</body></html>"}
+}
+
+func escapedLines(text string) string {
+	return strings.ReplaceAll(html.EscapeString(strings.TrimRight(text, "\n")), "\n", "<br>")
+}
+
+// joinLinePattern is the line Tresso keeps at the end of a description for a meeting link it knows ("Join the
+// meeting: <url>", "Join with <App>: <url>"), as the API's MeetingJoinLine writes and reads it.
+var joinLinePattern = regexp.MustCompile(`^Join (?:the meeting|with [^:\r\n]{1,40}): https://[^\s\x{0B}\x{85}\x{A0}\x{1680}\x{2000}-\x{200B}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]+[ \t\x{A0}]*$`)
+
+// joinLineAt is where the description's join line starts when it is the last line with text, else -1.
+func joinLineAt(text string) int {
+	trimmed := strings.TrimRight(text, " \t\r\n")
+	start := strings.LastIndex(trimmed, "\n") + 1
+	if !joinLinePattern.MatchString(trimmed[start:]) {
+		return -1
+	}
+	return start
 }
 
 // meetingBlock is the HTML of an online meeting's join block in a body: from the element the separator line is in to
