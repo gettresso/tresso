@@ -2949,6 +2949,21 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
   meeting: <url>" or "Join with <App>: <url>" (`MeetingJoinLine`); Google and Microsoft keep the line, and the
   detector reads it back. Into Graph's HTML body it goes as escaped text.
 
+The web and desktop clients show an event's link in the popover as the app's name (from `conference.provider`, which
+the server sets only for a link on that app's own host; anything else reads "Meeting link"), the link cut in the
+middle, Join (Shift J) and Copy link, and the dial-in number. The agenda, the mini agenda and the invitation card have
+a Join button labelled by core's `joinLabel` ("Join with Microsoft Teams"); the week and day grid mark such an event
+with a small camera. Every Join, button or key, goes through core's `canJoin`: a link it refuses (no https, a host
+whose letters may imitate another, a host without a dot, a user name before the host) gets no Join and is shown as
+text with Copy link. Join opens a new tab without opener or referrer in the browser, and the user's browser through
+the shell's opener on the desktop, never the app's own window. Copy writes the whole link to the clipboard on a click
+only and says "Copied" for 2 seconds; when the clipboard refuses, the whole link is shown to copy by hand. A link that
+was asked for shows "Making the Teams link" while `conferenceRequest` is pending and younger than 120 seconds (on the
+server's clock), and, to the organizer, "Could not make the Teams link" with core's reason once it failed or took
+longer. A link is never written to a log, an error message or analytics. `conference.removable` says whether the API
+takes a link off (false for a Teams meeting Microsoft made); core's `meetingRemovable` falls back to its own rule for
+rows stored before the server sent it.
+
 #### AI features (interfaces with built-in and planned AI implementations)
 
 Tresso defines the interfaces and, where a deterministic version is useful on its own, implements it. The planned AI
