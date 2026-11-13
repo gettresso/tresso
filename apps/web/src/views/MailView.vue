@@ -57,7 +57,9 @@ const chatRows = computed(() => {
  * In the browser, above the WhatsApp list (and the Unified Inbox's WhatsApp tab): what the relaying Mac's state means
  * for the chats, as the chat pane says it.
  */
-const listNotice = computed(() => (chats.enabled && chats.serverOnly && (inWhatsApp.value || channel.value === 'whatsapp') ? relayNotice(chats.account) : null))
+const listNotice = computed(() =>
+  chats.enabled && chats.serverOnly && (inWhatsApp.value || channel.value === 'whatsapp') && relayNotice(chats.account) !== null ? chats.account : null,
+)
 /*
  * In the browser the server's WhatsApp account can go while a WhatsApp address is open (disconnected on the Mac, or
  * "Only this Mac" chosen there), or the copy says only after the address opened that it holds none: nothing of WhatsApp
@@ -263,7 +265,8 @@ watch(
           </p>
         </template>
         <template v-else-if="listNotice" #aside>
-          <ChatRelayNotice class="list-notice" :notice="listNotice" />
+          <!-- Said by the chat pane's notice while a chat is open: this one is then no second live region. -->
+          <ChatRelayNotice class="list-notice" :account="listNotice" :quiet="chatId !== null" />
         </template>
         <template v-if="inBatches" #extra="{ conversation }">
           <UnsubscribeAction :offer="offers.get(conversation.threadId) ?? null" />

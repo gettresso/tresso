@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { ChatApiError, SqliteMailStore, uuidV7Time } from '@tresso/core'
+import { CHAT_BACKFILL, ChatApiError, SqliteMailStore, uuidV7Time } from '@tresso/core'
 import { memorySql } from '@tresso/core/testing/sql'
 import type { WhatsAppCommands } from '@/platform/whatsapp'
 import { useAuthStore } from '@/stores/auth'
@@ -167,6 +167,98 @@ describe('the chats store in the browser', () => {
       useAuthStore().tokens = null
       expect(await chats.serverChats()).toBe('none')
     })
+
+    it('waits on a fresh copy until the account comes or a pull ended, so a link opened at sign-in is kept', async () => {
+      mail.synced = false
+      mail.store = await SqliteMailStore.open(await memorySql())
+      const chats = useChatsStore()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(chats.serverChecked).toBe(false)
+      const answer = chats.serverChats()
+      // The first pull brings the account a few seconds later.
+      await vi.advanceTimersByTimeAsync(3_000)
+      await server.deliver(mail.store)
+      mail.chatChanges++
+      expect(await answer).toBe('shown')
+    })
+
+    it('says none on a fresh copy once a pull ended, or on a copy that synced before without a backfill to do', async () => {
+      mail.synced = false
+      const fresh = await SqliteMailStore.open(await memorySql())
+      mail.store = fresh
+      const chats = useChatsStore()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(chats.serverChecked).toBe(false)
+      mail.synced = true
+      await vi.waitFor(() => expect(chats.serverChecked).toBe(true))
+      expect(await chats.serverChats()).toBe('none')
+
+      setActivePinia(createPinia())
+      useAuthStore().tokens = { accessToken: 'a', refreshToken: 'r', expiresAt: NOW + 3_600_000 }
+      mail.synced = false
+      const before = await SqliteMailStore.open(await memorySql())
+      await before.markSynced(NOW - 60_000)
+      await before.setChatMeta(CHAT_BACKFILL, '1')
+      mail.store = before
+      const again = useChatsStore()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(again.serverChecked, 'Its chats are still to be fetched again.').toBe(false)
+      await before.setChatMeta(CHAT_BACKFILL, null)
+      mail.chatChanges++
+      await vi.waitFor(() => expect(again.serverChecked).toBe(true))
+      expect(again.enabled).toBe(false)
+    })
+  })
+
+  describe('before the server confirmed who is signed in', () => {
+    it('reads the chats but writes nothing, also no read by itself; then writes as usual', async () => {
+      mail.confirmed = false
+      const chats = await ready()
+      expect(chats.enabled).toBe(true)
+      expect(chats.summaries).toHaveLength(2)
+      expect(chats.writesHeld).toBe(true)
+      expect(chats.canReply).toBe(false)
+      const chat = chats.summaries[0]!.chat
+      await chats.markRead(chat)
+      const still = 'Tresso is still checking who is signed in. Try again once it is connected.'
+      await expect(chats.send(SERVER_CHAT, 'On my way')).rejects.toThrow(still)
+      await expect(chats.archive(chat)).rejects.toThrow(still)
+      await expect(chats.leaveChatOut(chat)).rejects.toThrow(still)
+      await expect(chats.setNotify(true)).rejects.toThrow(still)
+      await expect(chats.removeFromServer()).rejects.toThrow(still)
+      expect(server.calls).toEqual([])
+      expect((await store.chatPage(SERVER_CHAT, { limit: 5 }))?.outgoing).toEqual([])
+
+      mail.confirmed = true
+      expect(chats.canReply).toBe(true)
+      await chats.markRead(chat)
+      expect(server.callsOf('updateChat')).toEqual([[SERVER_CHAT, { readThrough: chat.lastMessageAt }]])
+    })
+  })
+
+  describe('removing WhatsApp from the server', () => {
+    it('deletes the account, pulls, and the chats go', async () => {
+      const syncNow = vi.spyOn(mail, 'syncNow').mockImplementation(async () => {
+        await server.deliver(store)
+        mail.chatChanges++
+      })
+      const chats = await ready()
+      await chats.removeFromServer()
+      expect(server.callsOf('removeAccount')).toEqual([[ACCOUNT_ID]])
+      expect(syncNow).toHaveBeenCalled()
+      await vi.waitFor(() => expect(chats.enabled).toBe(false))
+      expect(await chats.serverChats()).toBe('none')
+    })
+
+    it('counts an account already gone as removed, and says a refusal in plain words', async () => {
+      const chats = await ready()
+      server.fail('removeAccount', new ChatApiError(404, 'Not found.'))
+      await expect(chats.removeFromServer()).resolves.toBeUndefined()
+      server.fail('removeAccount', new ChatApiError(403, 'Forbidden.'))
+      await expect(chats.removeFromServer()).rejects.toThrow('This session of Tresso may not change WhatsApp chats. Sign out and in again.')
+      server.fail('removeAccount', new TypeError('Failed to fetch'))
+      await expect(chats.removeFromServer()).rejects.toThrow('Tresso could not reach your Tresso server. Try again.')
+    })
   })
 
   it('lists the chats with their unread counts, from the copy alone', async () => {
@@ -217,6 +309,28 @@ describe('the chats store in the browser', () => {
     await chats.markRead(chats.summaries[0]!.chat)
     expect(server.callsOf('updateChat')).toHaveLength(2)
     expect(chats.summaries[0]!.unread).toBe(0)
+  })
+
+  it('waits for Retry-After also when a newer message came meanwhile', async () => {
+    const chats = await ready()
+    server.fail('updateChat', new ChatApiError(429, 'Slow down.', null, 60_000))
+    const refusedAt = Date.now()
+    await chats.markRead(chats.summaries[0]!.chat)
+    vi.setSystemTime(refusedAt + 5_000)
+    await server.relayMessages(ACCOUNT_ID, {
+      deviceId: 'other-device',
+      firstImport: false,
+      chats: [],
+      messages: [{ chatJid: DIRECT, waId: 'S4', fromMe: false, sender: null, text: 'Hello?', sentAt: at(-1), media: null }],
+    })
+    await server.deliver(store)
+    await chats.refresh()
+    chats.lookedAt(SERVER_CHAT)
+    await chats.markRead(chats.summaries[0]!.chat)
+    expect(server.callsOf('updateChat')).toHaveLength(1)
+    vi.setSystemTime(refusedAt + 60_000)
+    await chats.markRead(chats.summaries[0]!.chat)
+    expect(server.callsOf('updateChat')).toHaveLength(2)
   })
 
   it('asks a held read again for a newer message', async () => {

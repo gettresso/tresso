@@ -1,6 +1,7 @@
 import { computed, ref, shallowRef, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
+  CHAT_BACKFILL,
   chatApiFailure,
   inInbox,
   LOCAL_CHAT_ACCOUNT,
@@ -130,10 +131,23 @@ export const useChatsStore = defineStore('chats', () => {
   /** This device sends the replies itself: "Only this Mac", or it relays the server's account. Never the browser. */
   const relaysHere = computed(() => !serverOnly && enabled.value && (wa.config?.mode === 'local' || wa.relaysHere))
   /**
+   * Writes to the server's chats wait until the server confirmed the open copy's user in this page load, as mail's do
+   * (mail.confirmed, the mail store's confirmedOnly): until then the chats can be read, not written, and no read is
+   * marked by itself. "Only this Mac" writes only to this Mac's copy and is not held.
+   */
+  const writesHeld = computed(() => (serverOnly || wa.config?.mode === 'all') && mail.confirmed !== true)
+
+  /** @throws ChatActionError `checking` while writes are held (writesHeld) */
+  function checkWritable(): void {
+    if (writesHeld.value) {
+      throw new ChatActionError('checking')
+    }
+  }
+  /**
    * A reply can be written: on the Mac that sends, while its bridge runs and is linked (else the pane says why,
    * ChatNotice); on another Mac in "All my devices" always (it waits in the server's queue for the relaying Mac).
    */
-  const canReply = computed(() => enabled.value && (relaysHere.value ? wa.linked : true))
+  const canReply = computed(() => enabled.value && !writesHeld.value && (relaysHere.value ? wa.linked : true))
   /** Attach is offered (disabled while replies cannot be written). */
   const canAttach = computed(() => enabled.value)
   /** This Mac is bringing its chats in (a switch under way, or the first import of the Mac that relays). */
@@ -387,8 +401,13 @@ export const useChatsStore = defineStore('chats', () => {
       return
     }
     let found: SyncedChatAccount | null
+    let known: boolean
     try {
       found = await serverAccountIn(copy)
+      // No account is an answer only once the copy holds what the server has: after a pull in this session, or a copy
+      // that synced before and has no backfill of its chats still to do. A fresh copy says nothing until then, so an
+      // address opened right after signing in on a new browser waits for the account instead of leaving.
+      known = found !== null || mail.synced || ((await copy.syncedAt()) !== null && (await copy.chatMeta(CHAT_BACKFILL)) === null)
     } catch (cause) {
       // The copy closed meanwhile, or could not be read: the next page with chat rows reads it again.
       console.error('Reading the WhatsApp account failed', errorName(cause))
@@ -400,11 +419,11 @@ export const useChatsStore = defineStore('chats', () => {
     if (JSON.stringify(found) !== JSON.stringify(serverAccount.value)) {
       serverAccount.value = found
     }
-    serverChecked.value = true
+    serverChecked.value = known
   }
 
   if (serverOnly) {
-    watch([() => mail.currentStore(), () => mail.ready, () => mail.chatChanges], () => void readServerAccount(), { immediate: true })
+    watch([() => mail.currentStore(), () => mail.ready, () => mail.chatChanges, () => mail.synced], () => void readServerAccount(), { immediate: true })
   }
 
   /**
@@ -500,6 +519,7 @@ export const useChatsStore = defineStore('chats', () => {
     if (store() === null) {
       return
     }
+    checkWritable()
     try {
       await actions.value.setState(chatId, change)
     } finally {
@@ -510,15 +530,19 @@ export const useChatsStore = defineStore('chats', () => {
   /**
    * The chat was read in Tresso up to its last message (never in WhatsApp: the phone keeps its own unread state). A read
    * that did not happen is logged by name, put back in the copy (setState) and held (refusedReads): not asked again for
-   * the same last message until the chat is looked at again, and never before the server's Retry-After.
+   * the same last message until the chat is looked at again, and never before the server's Retry-After (on the server's
+   * clock), also not for a newer message. While writes are held (writesHeld) nothing is asked.
    */
   async function markRead(chat: SyncedChat): Promise<void> {
     if (chat.readThrough !== null && Date.parse(chat.readThrough) >= Date.parse(chat.lastMessageAt)) {
       return
     }
+    if (writesHeld.value) {
+      return
+    }
     const refused = refusedReads.get(chat.id)
     if (refused !== undefined) {
-      if (refused.lastMessageAt === chat.lastMessageAt && (refused.held || Date.now() < refused.notBefore)) {
+      if (auth.serverNow() < refused.notBefore || (refused.lastMessageAt === chat.lastMessageAt && refused.held)) {
         return
       }
       // A newer message came, or the chat is looked at again after its wait.
@@ -529,7 +553,7 @@ export const useChatsStore = defineStore('chats', () => {
     } catch (cause) {
       console.error('Reading a chat failed', errorName(cause))
       const wait = cause instanceof ChatActionError ? cause.retryAfterMs : (chatApiFailure(cause)?.retryAfterMs ?? null)
-      refusedReads.set(chat.id, { lastMessageAt: chat.lastMessageAt, notBefore: Date.now() + (wait ?? 0), held: true })
+      refusedReads.set(chat.id, { lastMessageAt: chat.lastMessageAt, notBefore: auth.serverNow() + (wait ?? 0), held: true })
     }
   }
 
@@ -578,6 +602,7 @@ export const useChatsStore = defineStore('chats', () => {
     if (copy === null) {
       throw new LocalChatError('no_chat')
     }
+    checkWritable()
     const checked = replyText(text)
     const earlier = unsure.get(chatId)
     // The same text after an unsure try is that reply again; any other text is a new one.
@@ -607,6 +632,7 @@ export const useChatsStore = defineStore('chats', () => {
   /** Cancels a reply that waits or was not sent; one being sent cannot be (`already_going_out`). */
   async function cancel(chatId: string, id: string): Promise<void> {
     if (store() !== null) {
+      checkWritable()
       try {
         await actions.value.cancel(chatId, id)
       } finally {
@@ -619,6 +645,7 @@ export const useChatsStore = defineStore('chats', () => {
   /** The user's Try again: the only way a reply that was not sent, or whose sending is unconfirmed, goes out again. */
   async function retry(chatId: string, id: string): Promise<void> {
     if (store() !== null) {
+      checkWritable()
       try {
         await actions.value.retry(chatId, id)
       } catch (cause) {
@@ -638,6 +665,7 @@ export const useChatsStore = defineStore('chats', () => {
    * @throws ChatActionError in the browser when the server did not take it (the chat stays as it was)
    */
   async function leaveChatOut(chat: SyncedChat): Promise<boolean> {
+    checkWritable()
     if (serverOnly) {
       if (store() === null) {
         return false
@@ -668,6 +696,7 @@ export const useChatsStore = defineStore('chats', () => {
     if (serverOnly) {
       throw new Error(RELAY_ONLY)
     }
+    checkWritable()
     const done = await wa.takeBackIn(jid)
     await refresh()
     return done
@@ -685,6 +714,7 @@ export const useChatsStore = defineStore('chats', () => {
     if (!serverOnly || copy === null || shown === null || shown.notify === notify) {
       return
     }
+    checkWritable()
     let answered: SyncedChatAccount
     try {
       answered = await api.updateAccount(shown.id, { notify })
@@ -695,6 +725,30 @@ export const useChatsStore = defineStore('chats', () => {
     await readServerAccount()
     await refresh()
     void mail.syncNow()
+  }
+
+  /**
+   * The browser's "Remove WhatsApp from your Tresso server": deletes the server's chat account with every chat, message
+   * and reply under it (waiting replies are never sent), for every device. The relaying Mac finds the account gone at
+   * its next call or pull and disconnects WhatsApp in Tresso; WhatsApp itself and the bridge's store stay. An account
+   * already gone (404) counts as removed. The pull after it brings the tombstone, which turns the chat screens off.
+   *
+   * @throws ChatActionError when the server did not remove it
+   */
+  async function removeFromServer(): Promise<void> {
+    const shown = serverAccount.value
+    if (!serverOnly || shown === null) {
+      return
+    }
+    checkWritable()
+    try {
+      await api.removeAccount(shown.id)
+    } catch (cause) {
+      if (chatApiFailure(cause)?.status !== 404) {
+        throw chatActionError(cause, 'change')
+      }
+    }
+    await mail.syncNow()
   }
 
   function mediaOf(messageId: string): MediaState {
@@ -822,6 +876,8 @@ export const useChatsStore = defineStore('chats', () => {
     serverChecked,
     serverChats,
     setNotify,
+    removeFromServer,
+    writesHeld,
     lookedAt,
     draftOf,
     setDraft,

@@ -42,6 +42,7 @@ import {
   composerNote as sendNoteText,
   desktopReplyLabel,
   LEAVE_OUT_BODY,
+  LEAVE_OUT_BODY_SERVER,
   LEAVE_OUT_RELAY_ONLY,
   LEAVE_OUT_TITLE,
   LEAVE_OUT_TWO_CHATS,
@@ -111,7 +112,11 @@ const isGroup = computed(() => chat.value?.kind === 'group')
 /** The bridge's notice, on the Mac that sends only: on another Mac in "All my devices" replies wait in the server's queue. */
 const notice = computed(() => (chats.enabled && chats.relaysHere ? chatNoticeKind(wa.bridge) : null))
 /** In the browser: what the relaying Mac's state means here (no bridge of its own to start or link). */
-const relayNote = computed(() => (chats.enabled && chats.serverOnly ? relayNotice(chats.account) : null))
+const relayNote = computed(() => (chats.enabled && chats.serverOnly && relayNotice(chats.account) !== null ? chats.account : null))
+/** Leaving a chat out removes it from the server and every device where the chats are there. */
+const leaveOutBody = computed(() =>
+  [chats.serverOnly || wa.config?.mode === 'all' ? LEAVE_OUT_BODY_SERVER : LEAVE_OUT_BODY, LEAVE_OUT_TWO_CHATS, ...(chats.serverOnly ? [LEAVE_OUT_RELAY_ONLY] : [])].join(' '),
+)
 /**
  * A waiting reply is as good as being sent: this Mac's relay runs, or (another Mac in "All my devices") the relaying Mac
  * is online as the server last heard.
@@ -743,7 +748,7 @@ onBeforeUnmount(() => {
 
       <div v-if="confirmingLeave" class="confirm" role="alertdialog" aria-labelledby="chat-leave-title" aria-describedby="chat-leave-body" @keydown.esc.prevent="cancelLeave">
         <p id="chat-leave-title"><strong>{{ LEAVE_OUT_TITLE }}</strong></p>
-        <p id="chat-leave-body">{{ LEAVE_OUT_BODY }} {{ LEAVE_OUT_TWO_CHATS }}<template v-if="chats.serverOnly"> {{ LEAVE_OUT_RELAY_ONLY }}</template></p>
+        <p id="chat-leave-body">{{ leaveOutBody }}</p>
         <div class="confirm-actions">
           <button type="button" class="button button-danger" :disabled="busy" @click="leaveOut">Leave out</button>
           <button ref="leaveCancel" type="button" class="button button-quiet" :disabled="busy" @click="cancelLeave">Cancel</button>
@@ -751,7 +756,7 @@ onBeforeUnmount(() => {
       </div>
 
       <ChatNotice v-if="notice" :kind="notice" :busy="wa.busy !== null" @act="onNotice" />
-      <ChatRelayNotice v-else-if="relayNote" :notice="relayNote" />
+      <ChatRelayNotice v-else-if="relayNote" :account="relayNote" />
 
       <!-- A region, not a log: a log would read out the history as it loads; changes of a reply are said by the composer. -->
       <div ref="scroller" class="timeline" role="region" tabindex="0" aria-label="Messages" @scroll.passive="onScroll">

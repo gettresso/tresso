@@ -1,15 +1,29 @@
 <script setup lang="ts">
-import type { RelayNotice } from '@/components/chat/chatTexts'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import type { SyncedChatAccount } from '@tresso/core'
+import { relayNotice } from '@/components/chat/chatTexts'
 
 /**
- * In the browser: what the relaying Mac's state means for the chats (the WhatsAppStates board's banner, relayNotice).
- * Nothing can be done about it here, so it has no action: the Mac has to run, its bridge to run and be linked.
+ * In the browser: what the relaying Mac's state means for the chats (the WhatsAppStates board's banner, relayNotice),
+ * from the chat account's row. Nothing can be done about it here, so it has no action: the Mac has to run, its bridge
+ * to run and be linked. The time is read again every minute, so `since 23:50` becomes a date after midnight. `quiet`:
+ * another notice on screen says the same (the chat pane next to the list), so this one is no live region.
  */
-defineProps<{ notice: RelayNotice }>()
+const props = defineProps<{ account: Pick<SyncedChatAccount, 'relayOnline' | 'relayOfflineSince' | 'bridge' | 'link'>; quiet?: boolean }>()
+
+const now = ref(new Date())
+let clock: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  clock = setInterval(() => (now.value = new Date()), 60_000)
+})
+onBeforeUnmount(() => {
+  if (clock !== null) clearInterval(clock)
+})
+const notice = computed(() => relayNotice(props.account, now.value))
 </script>
 
 <template>
-  <div class="relay-notice" role="status">
+  <div v-if="notice" class="relay-notice" :role="quiet ? undefined : 'status'">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <rect x="3" y="4" width="18" height="12" rx="2" />
       <path d="M8 20h8M12 16v4" />
