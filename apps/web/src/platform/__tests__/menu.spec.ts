@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref, shallowRef } from 'vue'
 import { forgetViewRequests, onViewRequest } from '@/components/viewRequests'
 import type { ConversationCommands } from '@/mail/openConversation'
-import { MENU_ACTIONS, MENU_EVENT, MESSAGE_ACTIONS, TEXT_KEY_ACTIONS, runMenuAction, startMenuBridge, type MenuAction, type MenuShell } from '../menu'
+import { MENU_ACTIONS, MENU_EVENT, MENU_STATE_RETRY_MS, MESSAGE_ACTIONS, TEXT_KEY_ACTIONS, runMenuAction, startMenuBridge, type MenuAction, type MenuShell } from '../menu'
 
 /** An open conversation's commands, as the reading pane offers them: each a spy, its state in refs. */
 function conversation() {
@@ -428,5 +428,47 @@ describe('the menu bar bridge', () => {
     await nextTick()
     expect(desktop.invoke).toHaveBeenCalledTimes(3)
     stop()
+  })
+
+  it('tries a twice refused last state once more after a while, so the menu is not left stale', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    // Settles what is under way without moving the clock (vi.waitFor would move it).
+    const settled = async () => {
+      for (let i = 0; i < 10; i++) {
+        await Promise.resolve()
+      }
+    }
+    try {
+      const to = targets()
+      const desktop = shell()
+      const errors: unknown[] = []
+      vi.mocked(desktop.invoke).mockRejectedValueOnce(new Error('busy')).mockRejectedValueOnce(new Error('still busy'))
+      const stop = await startMenuBridge(to, desktop, (error) => errors.push(error))
+      await settled()
+      expect(errors).toHaveLength(1)
+      expect(desktop.invoke).toHaveBeenCalledTimes(2)
+
+      await vi.advanceTimersByTimeAsync(MENU_STATE_RETRY_MS - 1)
+      expect(desktop.invoke).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(desktop.invoke).toHaveBeenCalledTimes(3)
+      expect(vi.mocked(desktop.invoke).mock.calls[2]).toEqual(vi.mocked(desktop.invoke).mock.calls[0])
+
+      // Once only: a third refusal waits for the next change.
+      vi.mocked(desktop.invoke).mockClear()
+      vi.mocked(desktop.invoke).mockRejectedValue(new Error('gone'))
+      to.sidebar.value = false
+      await nextTick()
+      await settled()
+      expect(errors).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(MENU_STATE_RETRY_MS)
+      await settled()
+      expect(errors).toHaveLength(3)
+      await vi.advanceTimersByTimeAsync(MENU_STATE_RETRY_MS * 3)
+      expect(desktop.invoke).toHaveBeenCalledTimes(3)
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
