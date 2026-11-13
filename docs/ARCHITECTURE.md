@@ -1692,11 +1692,16 @@ again after a failure that may pass; the file's action is also one of the bubble
 change of state is announced. Attach a file picks one file and streams it from its place on the phone as the raw body of
 a PUT (expo-file-system's upload task, which ships with Expo: no new native module), with its progress in the bubble
 (`Uploading, 40%`, never "waiting for your Mac"), then queues a reply that carries it. Cancel stops the upload and queues
-nothing; Cancel while the reply is being queued cancels it on the server once that answered; leaving the chat, the app
-going to the background and a sign-out stop it too. A size the picker did not give is read from the file, an unknown or
-too large one is refused before anything is sent, and the picker's cache copy is removed afterwards. An unsure try goes
-again under the same upload and reply ids for 9 minutes, kept in the copy (`phone-unsure-file:<chat>`) with a fingerprint
-of the file's name, size and last change, never the name, and dropped once the copy has that reply. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
+nothing; Cancel while the reply is being queued cancels it on the server at once (the server keeps that cancel also
+before it saw the reply, so the queueing is then refused as `cancelled`, which counts as cancelled) and again once the
+queueing answered; when neither cancel was confirmed the line says `<name> may still be sent. Check the chat.` and the
+queued reply stays in the chat. Leaving the chat, the app going to the background and a sign-out stop it too. A text
+reply cancelled while it is being queued ends the same way: a refusal as `cancelled` is no error and puts no text
+back. A size the picker did not give is read from the file, an unknown or too large one is refused before anything is
+sent, and the picker's cache copy is removed afterwards, also after a failure or a cancel. After a 429 on an upload,
+Attach waits until the server's Retry-After (on the server's clock) and says why. An unsure try goes again under the
+same upload and reply ids for 9 minutes, kept in the copy per chat and file (`phone-unsure-file:<chat>:<fingerprint>`,
+a fingerprint of the file's name, size and last change, never the name), and dropped once the copy has that reply. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
 made by the server's clock (`Session.serverNow`, so a phone whose clock is off is not refused); it shows as waiting at
 once (held in memory, not in the copy, so a closed app leaves no reply the server never got), the server's answer is
 stored, and a refusal takes it back and puts the text back in the box. A request without an answer, a 408 or a 5xx may
@@ -2171,8 +2176,17 @@ for Mac connects WhatsApp. With it:
   why it did not come with `Try again` where it may pass; a new state is said politely, a failure at once. Attach reads
   the file in the page (an `<input type="file">`) and uploads it with a progress bar and Cancel (an XMLHttpRequest, since
   fetch reports no upload progress), one at a time in a chat and in several chats at once, then queues a reply that
-  carries it. Cancel while uploading queues nothing; Cancel while the reply is being queued cancels it on the server once
-  that answered; leaving the chat, the copy going and the session ending stop it. An unsure try goes again under the
+  carries it. The progress bar carries the percentage; the live line says `Uploading <name>…` once. Cancel (under the
+  bar or on the reply's bubble) while uploading queues nothing; while the reply is being queued it cancels it on the
+  server at once (kept there also before the server saw the reply, so the queueing is refused as `cancelled`, which
+  counts as cancelled, for a text reply too) and again once the queueing answered; when neither cancel was confirmed
+  the line says `<name> may still be sent. Check the chat.` and the reply stays as the server has it. Leaving the chat,
+  the copy going and the session ending stop it. At the user's own sign-out a reply still being queued is cancelled with
+  the ending session's token before it is revoked (`auth.onSigningOut`); a session that ended by itself (expired, or
+  signed out elsewhere) has no token left, so such a reply, if the server took it, waits in the queue and can be
+  cancelled from another device. After a 429 on an upload, Attach waits until the server's Retry-After (on the server's
+  clock) and says why. The warning before an unchecked file closes when the file's state changes meanwhile, and closing
+  or accepting it puts the focus back on the row. An unsure try goes again under the
   same upload and reply ids for 9 minutes, kept in the copy (`unsure-files`) by a fingerprint of the file, never its
   name, and dropped once the copy has that reply. Asking and attaching wait while writes are held (`chats.writesHeld`). A desktop that does not relay works the same way; the relaying Mac
   downloads its own files from its bridge and sends files attached on it through the server's queue too.
@@ -3753,7 +3767,13 @@ chat's JID and WhatsApp id, so it never needs either readable.
   device id, nothing else (409 `not_the_relay`). `sent: false` carries
   the shell's reason (`bridge_stopped`, `not_linked`, `refused`, `unconfirmed`, `file_unavailable`); nothing sends a failed reply again until
   the user's Try again. Cancelling deletes a waiting or failed reply (a tombstone); a reply being sent or sent is 409
-  `already_going_out`.
+  `already_going_out`. A reply whose sending is not confirmed (`unconfirmed`, its claim still kept) is not deleted but
+  marked cancelled with its claim (hidden from the apps by a tombstone, its file let go): a late `sent: true` from that
+  claim turns it into sent (it did go out, and the apps show it again), any other answer leaves it cancelled. A cancel
+  of an id the server has not seen yet (the app cancelled while its queueing was on the way) writes the tombstone
+  alone, so that queueing is refused as `cancelled` when it arrives; only for an id a new reply could still have (a
+  UUIDv7 of the last 10 minutes, else 404), and at most 100 such cancels per user in 10 minutes
+  (`chat_reply_cancel`, 429).
 - **Left out.** Leaving a chat out removes its messages and replies (tombstones) and keeps the chat row with its sealed
   JID and name, which is no longer renamed: the relay must know to leave it out, and the user can take it in again. A
   chat the user left out on a desktop before the server knew it comes as a chat entry with `"leftOut": true` in
@@ -3800,7 +3820,8 @@ chat's JID and WhatsApp id, so it never needs either readable.
   SHA-256 in `X-Content-SHA256`, both required; a body that does not match is 422), or says why not
   (`relay/media/{messageId}/failed`: `not_found`, `mismatch`, `unverified` when the store holds no hash, `too_large`,
   `unavailable`). A file is at most `CHAT_MAX_FILE_BYTES` (100 MB; 413 `too_large`, checked from the length before
-  the body is read, and while it is read; at most 100 MB, what the Mac sends, so a larger setting refuses to start).
+  the body is read, and while it is read; at most 100 MB, what the Mac sends: the API checks the setting as it boots
+  and refuses to start with a value that is not a whole number from 1 to 100 MB).
   An upload the relay got no answer to (no network, a proxy that cut the connection, a 5xx) is tried again with the
   next claim, and after three such tries the request ends as `unavailable`. It is stored as `chatmedia` under the owner and its content fingerprint, sealed
   with the owner's key, written before the relay's lock is taken and under a lock on its key, and scanned like a mail
@@ -3812,8 +3833,9 @@ chat's JID and WhatsApp id, so it never needs either readable.
   WhatsApp's name without direction overrides, never sniffed, sandboxed, not cached); `POST .../media/unscanned-link` gives one for a file that could not be scanned, to our
   own apps after the user confirmed, never on a server that requires scans. A file for a reply is uploaded first,
   `PUT /api/v1/chats/{chatId}/uploads/{id}` under an id the client makes (`CHAT_SEND` and our own apps; the same content
-  again is 200, other content 409 `id_taken`, also for two requests at once; at most 20 waiting per chat, 429;
-  `chat_upload`, 60 uploads in 10 minutes per user, 429 with Retry-After; uploads and the files of replies not sent
+  again is 200, other content 409 `id_taken`, also for two requests at once; at most 20 waiting per chat, 429, checked
+  before the file is stored and again under the owner's lock; `chat_upload`, 60 uploads in 10 minutes per user, 429
+  with Retry-After, checked before the body is read; uploads and the files of replies not sent
   yet together at most `CHAT_MAX_WAITING_BYTES`, 1 GB by default, 413 `too_much_waiting`, checked before anything is
   stored), then queued with
   `"file": {"uploadId", "name"}` (the upload is taken under its row lock, so the sweep cannot remove it meanwhile; the
@@ -3825,7 +3847,9 @@ chat's JID and WhatsApp id, so it never needs either readable.
   and the Mac passes them to the bridge without opening them. The delta's reply carries `file` (`name`, `size`). Files go when nothing needs them
   (`App\Chat\ChatMediaCollector`, after the commit, only once no message, reply or upload refers to the object): a
   reply's once it went out (its name and size stay) or is cancelled, an upload nobody queued after an hour
-  (`SweepChatMedia`, every ten minutes, which also removes temporary upload files a killed worker left), and every file of a chat left out, of group chats taken off the server and of a
+  (`SweepChatMedia`, every ten minutes), temporary upload files a killed worker left (`tresso-chat-*` older than an
+  hour, removed by that sweep and by the API itself as uploads arrive, at most every ten minutes per process, so they
+  go also where the API and the worker do not share a temporary directory), and every file of a chat left out, of group chats taken off the server and of a
   removed account; a removed user's objects go with the user. Key rotation writes the files again (`chatMedia` step of
   `Reencryption`).
 - **Delta.** Every write is a change in `chatAccounts`, `chats`, `chatMessages` and `chatOutgoing`; removals (a

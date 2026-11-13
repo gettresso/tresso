@@ -95,7 +95,8 @@ It prints how many relays went offline and how many replies could not be confirm
 
 With WhatsApp set to "All my devices", files go to the API as the raw body of a PUT: the relaying Mac's
 `PUT /api/v1/chat-accounts/{id}/relay/media/{messageId}` and the browser's and phone's
-`PUT /api/v1/chats/{chatId}/uploads/{id}`, up to `CHAT_MAX_FILE_BYTES` (100 MB, also the most it may be set to). PHP's
+`PUT /api/v1/chats/{chatId}/uploads/{id}`, up to `CHAT_MAX_FILE_BYTES` (100 MB, also the most it may be set to; the API
+refuses to start with a value that is not a whole number from 1 to 100 MB). PHP's
 form limits (`post_max_size`) do not apply to a PUT body, and the Caddy of the API image sets no limit, but a proxy in
 front of it may: allow request bodies of at least 100 MB on those two paths (for nginx `client_max_body_size 100m;`),
 and a request time of a few minutes. A proxy that refuses a body answers 413, which the apps show as "too large"; one
