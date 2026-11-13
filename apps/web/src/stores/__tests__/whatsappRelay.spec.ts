@@ -688,4 +688,86 @@ describe('the WhatsApp relay store', () => {
     await wa.keepOnly('u1')
     expect([...shell.configs.keys()]).toEqual(['u1'])
   })
+
+  it('waits for the switch before removing other users\' settings, so the cleanup is not skipped at launch', async () => {
+    shell.configs.set('u2', connectedConfig())
+    const wa = useWhatsAppRelayStore()
+    // keepOnly runs before init had its answer.
+    const kept = wa.keepOnly('u1')
+    await pass()
+    expect(shell.configs.has('u2')).toBe(true)
+    await wa.init()
+    await kept
+    expect(shell.calls).toContain('keepOnlyConfig')
+    expect(shell.configs.has('u2')).toBe(false)
+  })
+
+  it('turns groups on again when an earlier attempt saved the config but did not reset the cursor', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.add('A1', DIRECT, 10)
+    shell.add('G1', GROUP, 9)
+    shell.emit(LINKED)
+    await pass(3_000)
+    expect(await wa.setIncludeGroups(false)).toBe(true)
+    await pass()
+    expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, GROUP)).toBeNull()
+
+    // Groups on, but the cursor reset fails after the config was saved.
+    const failing = vi.spyOn(store, 'setChatMeta').mockImplementationOnce(() => Promise.reject(new Error('disk')))
+    expect(await wa.setIncludeGroups(true)).toBe(false)
+    failing.mockRestore()
+    await pass(3_000)
+    expect(wa.config?.includeGroups).toBe(true)
+    expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, GROUP)).toBeNull()
+
+    // Trying again resets the cursor: the older group messages come back.
+    expect(await wa.setIncludeGroups(true)).toBe(true)
+    await pass(3_000)
+    expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, GROUP)).not.toBeNull()
+
+    // With group chats in the copy, groups on again changes nothing.
+    const saves = shell.calls.filter((call) => call === 'saveConfig').length
+    expect(await wa.setIncludeGroups(true)).toBe(true)
+    expect(shell.calls.filter((call) => call === 'saveConfig').length).toBe(saves)
+  })
+
+  it('takes a chat back in: config first, then the relay reads the store again and the chat comes back read', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.add('A1', DIRECT, 10)
+    shell.emit(LINKED)
+    await pass(3_000)
+    expect(await wa.leaveOut(DIRECT)).toBe(true)
+    await pass(3_000)
+    expect(await store.chat(localChatId(DIRECT))).toMatchObject({ chat: { leftOut: true }, messages: [] })
+    const before = wa.revision
+
+    expect(await wa.takeBackIn(DIRECT)).toBe(true)
+    expect(shell.saved[shell.saved.length - 1]!.leftOut).toEqual([])
+    await pass(3_000)
+    const back = (await store.chats()).find(({ chat }) => chat.jid === DIRECT)
+    expect(back).toMatchObject({ unread: 0, chat: { leftOut: false } })
+    expect((await store.chat(localChatId(DIRECT)))?.messages).toHaveLength(1)
+    expect(wa.revision).toBeGreaterThan(before)
+    // A chat that is not left out is not touched.
+    expect(await wa.takeBackIn(GROUP)).toBe(true)
+  })
+
+  it('learns sender names from the relay and from the chat screens, once per session each', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.add('G1', GROUP, 9)
+    shell.emit(LINKED)
+    await pass(3_000)
+    // The fake gives numbers only: the relay learnt the sender as +number.
+    expect(wa.senderNames.get('31699999999')).toBe('+31699999999')
+
+    await wa.lookUpNames(['31611111111', '31611111111'])
+    expect(wa.senderNames.get('31611111111')).toBe('+31611111111')
+    const asked = shell.calls.filter((call) => call === 'names').length
+    await wa.lookUpNames(['31611111111'])
+    expect(shell.calls.filter((call) => call === 'names').length).toBe(asked)
+    expect(errors).toEqual([])
+  })
 })

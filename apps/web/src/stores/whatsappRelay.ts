@@ -1,4 +1,4 @@
-import { computed, effectScope, ref, watch } from 'vue'
+import { computed, effectScope, ref, shallowRef, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
   ChatRelay,
@@ -6,7 +6,9 @@ import {
   LOCAL_CHAT_ACCOUNT,
   LOCAL_CURSOR,
   LocalChatBackend,
+  LocalChatError,
   localChatId,
+  phoneLabel,
   readRelayCursor,
   removeLocalChats,
   removeLocalGroupChats,
@@ -17,6 +19,7 @@ import {
   type MailStore,
   type RelayProgress,
   type RelayStep,
+  type SenderLookup,
 } from '@tresso/core'
 import { isDesktop } from '@/platform/desktop'
 import { whatsAppShell, type BridgeInspection, type BridgeState, type WhatsAppConfig, type WhatsAppIdentity } from '@/platform/whatsapp'
@@ -29,11 +32,13 @@ const DAY = 24 * 60 * 60 * 1000
 const CHATS_REFRESH_MS = 5_000
 /** The device name when the shell cannot tell it (the config needs one). */
 const FALLBACK_DEVICE = 'This Mac'
+/** At most this many sender ids in one `names` call (the shell's limit). */
+const NAMES_PER_CALL = 500
 
 export const STOPPED_BRIDGE: BridgeState = { process: 'stopped', port: null, loopbackOnly: null, link: 'unknown', qr: null, error: null }
 
 /** What runs now, so a second click waits for it instead of starting the same thing twice. */
-export type WhatsAppTask = 'folder' | 'start' | 'connect' | 'disconnect' | 'groups' | 'notify' | 'cancel' | 'leave'
+export type WhatsAppTask = 'folder' | 'start' | 'connect' | 'disconnect' | 'groups' | 'notify' | 'cancel' | 'leave' | 'take-back'
 
 /** A step refused for a reason the user can act on; its message is shown as it is. */
 class WhatsAppProblem extends Error {
@@ -101,6 +106,17 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   const busy = ref<WhatsAppTask | null>(null)
   /** The last action's failure, in plain words. */
   const error = ref<string | null>(null)
+  /**
+   * Raised whenever the chats in the copy changed through this store: the relay stored messages or sent replies, or
+   * the user left a chat out, took one back in or changed which chats come in. The chat screens read again on it.
+   */
+  const revision = ref(0)
+  /**
+   * What group senders are called, by sender id, as far as this session learned it (the relay's lookups and the chat
+   * screens' own, lookUpNames): a message stored before its sender's name was known shows the name once it is. Kept
+   * in memory only, never logged.
+   */
+  const senderNames = shallowRef<ReadonlyMap<string, string>>(new Map())
 
   const connected = computed(() => config.value !== null)
   const folderReady = computed(() => folderText(inspection.value).ok)
@@ -137,6 +153,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   let runningTask: Promise<void> | null = null
   /** The config changes, in order (updateConfig). */
   let saves: Promise<void> = Promise.resolve()
+  /** Sender ids the chat screens asked the store about in this session (lookUpNames), found or not. */
+  const askedNames = new Set<string>()
 
   // ---- Starting ---------------------------------------------------------------------------------------------------
 
@@ -271,6 +289,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   function resetImport(): void {
+    senderNames.value = new Map()
+    askedNames.clear()
     importState.value = 'waiting'
     progress.value = null
     stuckRefused.value = 0
@@ -464,6 +484,43 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     relay.start()
   }
 
+  /** Keeps the names a lookup found (a name, else the number), so stored messages without one show it. */
+  function learnNames(found: Record<string, SenderLookup>): void {
+    const next = new Map(senderNames.value)
+    for (const [id, lookup] of Object.entries(found)) {
+      const name = lookup?.name?.trim() ? lookup.name : lookup?.number ? phoneLabel(lookup.number) : null
+      if (name !== null && next.get(id) !== name) {
+        next.set(id, name)
+      }
+    }
+    if (next.size !== senderNames.value.size || [...next].some(([id, name]) => senderNames.value.get(id) !== name)) {
+      senderNames.value = next
+    }
+  }
+
+  /**
+   * For the chat screens: looks up group senders whose messages carry no name (stored before the name was known), once
+   * per session each; what is found lands in `senderNames`.
+   */
+  async function lookUpNames(ids: readonly string[]): Promise<void> {
+    const from = config.value?.folder ?? null
+    const due = [...new Set(ids)].filter((id) => !askedNames.has(id) && !senderNames.value.has(id))
+    if (from === null || due.length === 0) {
+      return
+    }
+    for (const id of due) {
+      askedNames.add(id)
+    }
+    try {
+      for (let start = 0; start < due.length; start += NAMES_PER_CALL) {
+        learnNames(await commands.names(from, due.slice(start, start + NAMES_PER_CALL)))
+      }
+    } catch (cause) {
+      // Asked again in a later session; the relay's own lookups may find it meanwhile.
+      console.error('Looking up WhatsApp sender names failed', errorName(cause))
+    }
+  }
+
   /** The shell's bridge commands as the relay needs them (docs/ARCHITECTURE.md, the relay's wiring rules). */
   function chatBridge(from: string): ChatBridge {
     return {
@@ -478,7 +535,11 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
           throw cause
         }
       },
-      names: (ids) => commands.names(from, ids),
+      async names(ids) {
+        const found = await commands.names(from, ids)
+        learnNames(found)
+        return found
+      },
       // Rejects only when the shell refused the request before the bridge saw it; no timeout here may reject.
       async send(recipient, text) {
         const result = await commands.send(recipient, text)
@@ -514,6 +575,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       return
     }
     const ended = importState.value !== 'done' && !next.firstImport
+    if (progress.value === null || next.stored !== progress.value.stored || next.chats !== progress.value.chats) {
+      revision.value++
+    }
     progress.value = next
     relayFailing.value = null
     importState.value = next.firstImport ? 'reading' : 'done'
@@ -734,14 +798,18 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     return run('groups', async () => {
       const id = userId.value
       const current = config.value
-      // Groups on again with nothing to change does nothing; groups off always removes what is copied (a removal an
-      // earlier attempt could not finish is done now).
-      if (id === null || current === null || (include && current.includeGroups)) {
+      if (id === null || current === null) {
         return
       }
       const store = relayStore ?? mail.currentStore()
       if (store === null) {
         throw new WhatsAppProblem('Your mail on this Mac is still opening. Try again in a moment.')
+      }
+      // Groups off always removes what is copied (a removal an earlier attempt could not finish is done now). Groups on
+      // while the config says so already does nothing, unless the copy holds no group chat: then an earlier attempt
+      // saved the config but did not get to reset the cursor, and the older group messages are read again now.
+      if (include && current.includeGroups && (await store.chats()).some(({ chat }) => chat.chatAccountId === LOCAL_CHAT_ACCOUNT && chat.kind === 'group')) {
+        return
       }
       await holding(async () => {
         await stopRelay()
@@ -752,6 +820,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
           await removeLocalGroupChats(store)
         }
         await readChats(store, true)
+        revision.value++
       })
     })
   }
@@ -783,6 +852,41 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       if (store !== null) {
         await setLocalChatState(store, localChatId(jid), { leftOut: true })
       }
+      revision.value++
+    })
+  }
+
+  /**
+   * Settings' "Take back in": the config first (the chat is no longer left out), then, with the relay stopped, the
+   * copy's row is marked in again and the relay reads the bridge's store from the start (resetLocalCursor), as a first
+   * import: the chat's messages, which the relay passed over while it was left out, come back read. Then it starts again.
+   */
+  function takeBackIn(jid: string): Promise<boolean> {
+    return run('take-back', async () => {
+      const id = userId.value
+      const current = config.value
+      if (id === null || current === null || !current.leftOut.includes(jid)) {
+        return
+      }
+      const store = relayStore ?? mail.currentStore()
+      if (store === null) {
+        throw new WhatsAppProblem('Your mail on this Mac is still opening. Try again in a moment.')
+      }
+      await holding(async () => {
+        await stopRelay()
+        await updateConfig(id, (latest) => ({ ...latest, leftOut: latest.leftOut.filter((left) => left !== jid) }))
+        try {
+          await setLocalChatState(store, localChatId(jid), { leftOut: false })
+        } catch (cause) {
+          // A chat whose row is gone (groups were turned off meanwhile) is simply read again.
+          if (!(cause instanceof LocalChatError && cause.code === 'no_chat')) {
+            throw cause
+          }
+        }
+        await resetLocalCursor(store)
+        await readImportState(store)
+        revision.value++
+      })
     })
   }
 
@@ -792,6 +896,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
    * id it could check them against, so config load and save stay bound to the confirmed user here, in the web client.
    */
   async function keepOnly(id: string): Promise<void> {
+    // The switch may not be known yet (init has not had its answer): the cleanup waits for it rather than being skipped.
+    await whenChecked
     if (!available.value) {
       return
     }
@@ -840,6 +946,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     relayFailing,
     busy,
     error,
+    revision,
+    senderNames,
     connected,
     folderReady,
     linked,
@@ -854,6 +962,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     setIncludeGroups,
     setNotify,
     leaveOut,
+    takeBackIn,
+    lookUpNames,
     keepOnly,
     pollNow,
     dispose,

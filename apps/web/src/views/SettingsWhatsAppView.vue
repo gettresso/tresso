@@ -2,13 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
+import { useChatsStore } from '@/stores/chats'
+import { chatName } from '@/components/chat/chatTexts'
 import { shortDue } from '@/mail/format'
 import AppIcon from '@/components/AppIcon.vue'
 import ConnectWhatsApp from '@/components/connect/ConnectWhatsApp.vue'
 import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
   BUILD_COMMAND,
-  CHATS_LATER,
   CLOSE_PORT_URL,
   bridgeText,
   importText,
@@ -25,6 +26,7 @@ import {
  * does for mail. The desktop app on macOS only; the router keeps everyone else out.
  */
 const wa = useWhatsAppRelayStore()
+const chats = useChatsStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -150,6 +152,24 @@ async function closeConnect(): Promise<void> {
   await router.push({ name: 'settings-whatsapp' })
 }
 
+/** Done after connecting: the chats are what the user came for. */
+async function connectDone(): Promise<void> {
+  await wa.cancel()
+  await router.push({ name: wa.connected ? 'whatsapp' : 'settings-whatsapp' })
+}
+
+/** The chats the user left out, by JID: as the copy names them, else by number (a chat whose row went). */
+const leftOutRows = computed(() =>
+  (wa.config?.leftOut ?? []).map((jid) => {
+    const stored = chats.leftOut.find((chat) => chat.jid === jid)
+    return { jid, name: chatName(stored ?? { name: null, jid, kind: jid.endsWith('@g.us') ? 'group' : 'direct' }) }
+  }),
+)
+
+function setNotify(event: Event): void {
+  void wa.setNotify((event.target as HTMLInputElement).checked)
+}
+
 onMounted(() => {
   clock = setInterval(() => (now.value = Date.now()), 60_000)
 })
@@ -190,7 +210,6 @@ onBeforeUnmount(() => {
         <span class="pill" :class="{ ok: pill.ok }">{{ pill.text }}</span>
       </header>
 
-      <p class="later">{{ CHATS_LATER }}</p>
       <p class="visually-hidden" role="status">{{ importAnnouncement }}</p>
       <div v-if="wa.importState === 'reading' || wa.importState === 'stuck'" class="import" :class="{ stuck: wa.importState === 'stuck' }">
         <strong>{{ wa.importState === 'stuck' ? 'Bringing in your chats is stuck.' : `Bringing in your chats since ${importSince}.` }}</strong>
@@ -242,7 +261,7 @@ onBeforeUnmount(() => {
         <div class="option">
           <span class="option-text">
             <label for="wa-groups" class="option-label">Chats to bring in</label>
-            <span id="wa-groups-note" class="option-note">Group chats can be busy.</span>
+            <span id="wa-groups-note" class="option-note">Group chats can be busy. Leave chats out one by one from the chat itself.</span>
           </span>
           <select id="wa-groups" ref="groupsSelect" aria-describedby="wa-groups-note" :value="groupsValue" :disabled="wa.busy !== null" @change="onGroups">
             <option value="all">Direct chats and groups</option>
@@ -257,7 +276,24 @@ onBeforeUnmount(() => {
             <button ref="groupsCancel" type="button" class="button button-quiet" @click="confirmingGroups = false">Cancel</button>
           </div>
         </div>
-        <!-- Notify me comes with the chat screens, which send the notifications; until then it stays off (config.notify). -->
+        <div class="option">
+          <span class="option-text">
+            <label for="wa-notify" class="option-label">Notify me</label>
+            <span id="wa-notify-note" class="option-note">Desktop notifications for new WhatsApp messages on this Mac.</span>
+          </span>
+          <input id="wa-notify" type="checkbox" role="switch" class="switch" aria-describedby="wa-notify-note" :checked="wa.config?.notify === true" :disabled="wa.busy !== null" @change="setNotify" />
+        </div>
+      </section>
+
+      <section v-if="leftOutRows.length > 0" class="panel left-out" aria-labelledby="wa-left-out">
+        <h3 id="wa-left-out">Chats left out</h3>
+        <p class="option-note">Tresso does not read these chats. WhatsApp keeps them; taking one back in brings its messages back.</p>
+        <ul class="left-list">
+          <li v-for="row in leftOutRows" :key="row.jid" class="left-row">
+            <span class="left-name" dir="auto">{{ row.name }}</span>
+            <button type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="chats.takeBackIn(row.jid)">Take back in</button>
+          </li>
+        </ul>
       </section>
 
       <section class="panel disconnect" aria-label="Disconnect">
@@ -280,7 +316,7 @@ onBeforeUnmount(() => {
 
     <p v-if="wa.error && !connecting" class="form-error" role="alert">{{ wa.error }}</p>
 
-    <ConnectWhatsApp v-if="connecting && wa.configLoaded" @close="closeConnect" />
+    <ConnectWhatsApp v-if="connecting && wa.configLoaded" @close="closeConnect" @done="connectDone" />
   </section>
 </template>
 
@@ -377,7 +413,6 @@ h2 {
 .import.stuck {
   background: var(--delegate-soft);
 }
-.later,
 .waiting {
   margin: 0;
   color: var(--ink-2);
@@ -476,6 +511,37 @@ select {
   background: var(--paper);
   color: var(--ink);
   font: 400 14px var(--font-ui);
+}
+.switch {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  accent-color: var(--know);
+}
+.left-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.left-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+.left-row + .left-row {
+  border-top: 1px solid var(--line);
+}
+.left-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  unicode-bidi: isolate;
 }
 .disconnect {
   flex-flow: row wrap;

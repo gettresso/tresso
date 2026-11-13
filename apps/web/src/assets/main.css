@@ -47,6 +47,26 @@
   --avatar-4-text: #4a505c;
   /* What lies behind a dialog, dimmed. */
   --scrim: rgb(15 17 21 / 18%);
+  /*
+   * Chats (the WhatsApp boards): the brand mark with white on it in both themes, the timeline behind the bubbles, their
+   * bubbles (theirs white with an edge, mine the board's green), the day pill, and the six colours group senders are
+   * named in (core's SENDER_COLORS, in the same order). Every text on a bubble keeps 4.5:1 in both themes
+   * (components/chat/__tests__/chatColors.spec.ts works it out from this file).
+   */
+  --whatsapp: #256b5d;
+  --whatsapp-text: #ffffff;
+  --chat-timeline: #f8f9fa;
+  --bubble-theirs: #ffffff;
+  --bubble-theirs-edge: #e3e5e9;
+  --bubble-mine: #e3f2ee;
+  --bubble-meta: #4a505c;
+  --chat-day: #e3e5e9;
+  --sender-0: #4b2f86;
+  --sender-1: #256b5d;
+  --sender-2: #1a31a8;
+  --sender-3: #7a3704;
+  --sender-4: #b42318;
+  --sender-5: #4a505c;
   /* A lit top edge and a soft shadow: what makes a translucent layer read as glass rather than as a faded panel. */
   --glass-edge: inset 0 1px 0 rgb(255 255 255 / 75%), inset 0 0 0 1px rgb(255 255 255 / 35%);
   --raised: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%), 0 12px 32px rgb(22 24 29 / 12%);
@@ -110,6 +130,18 @@
     --avatar-3-text: #c3b4f5;
     --avatar-4-fill: #2a2f38;
     --avatar-4-text: #b5bbc6;
+    --chat-timeline: #12151a;
+    --bubble-theirs: #20242d;
+    --bubble-theirs-edge: #2a2f38;
+    --bubble-mine: #15322c;
+    --bubble-meta: #b5bbc6;
+    --chat-day: #2a2f38;
+    --sender-0: #c3b4f5;
+    --sender-1: #6cc7b2;
+    --sender-2: #aeb9ff;
+    --sender-3: #f29a55;
+    --sender-4: #f97066;
+    --sender-5: #b5bbc6;
     --glass-edge: inset 0 1px 0 rgb(255 255 255 / 12%), inset 0 0 0 1px rgb(255 255 255 / 6%);
     --raised: var(--glass-edge), 0 1px 2px rgb(0 0 0 / 30%), 0 12px 32px rgb(0 0 0 / 45%);
     --canvas-light:

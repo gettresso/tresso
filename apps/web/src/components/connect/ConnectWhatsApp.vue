@@ -6,7 +6,6 @@ import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
   BRIDGE_NOTE,
   BUILD_COMMAND,
-  CHATS_LATER,
   FOLDER_NOTE,
   IMPORT_NOTE,
   INSTALL_URL,
@@ -30,7 +29,7 @@ import {
  * A modal <dialog>: the rest of the page is inert while it is open, Escape closes it, and focus goes back to what
  * opened it.
  */
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; done: [] }>()
 const wa = useWhatsAppRelayStore()
 const dialog = ref<HTMLDialogElement | null>(null)
 /** Connected from this dialog: it now shows the import and offers Done. */
@@ -103,7 +102,7 @@ function onEnter(event: KeyboardEvent): void {
   }
   event.preventDefault()
   if (connectedHere.value) {
-    emit('close')
+    emit('done')
   } else {
     void connect()
   }
@@ -213,7 +212,6 @@ onUnmounted(() => {
           </span>
           <span class="note">{{ IMPORT_NOTE }}</span>
           <span v-if="importView.detail" class="detail">{{ importView.detail }}</span>
-          <span v-if="connectedHere" class="detail later">{{ CHATS_LATER }}</span>
         </span>
       </li>
     </ol>
@@ -242,7 +240,7 @@ onUnmounted(() => {
 
     <div class="footer">
       <a :href="INSTALL_URL" target="_blank" rel="noopener noreferrer" class="install">How to install whatsapp-mcp</a>
-      <button v-if="connectedHere" type="button" class="button button-primary big" @click="emit('close')">Done</button>
+      <button v-if="connectedHere" type="button" class="button button-primary big" @click="emit('done')">Done</button>
       <button v-else type="button" class="button button-primary big" :disabled="!canConnect" @click="connect">
         Connect WhatsApp<kbd>Enter</kbd>
       </button>

@@ -76,11 +76,14 @@ describe('SettingsWhatsAppView', () => {
     expect(row(wrapper, 'Bridge')).toMatchObject({ value: 'Running, last message 2 minutes ago', ok: true })
     expect(row(wrapper, 'Linked to phone')).toMatchObject({ value: 'Linked 17 days ago. WhatsApp can ask you to link again.', ok: true })
 
-    // No smart inboxes, no Notify me before the chat screens send notifications, and "All my devices" not yet.
+    // No smart inboxes and "All my devices" not yet; Notify me is there, off by default.
     expect(wrapper.text()).not.toContain('Sort into smart inboxes')
-    expect(wrapper.text()).not.toContain('Notify me')
-    expect(wrapper.find('[role="switch"]').exists()).toBe(false)
-    expect(wrapper.get('.later').text()).toBe('Your chats will show in Tresso in a later version.')
+    expect(wrapper.text()).not.toContain('Your chats will show')
+    expect(wrapper.get('label[for="wa-notify"]').text()).toBe('Notify me')
+    expect(wrapper.get('#wa-notify-note').text()).toBe('Desktop notifications for new WhatsApp messages on this Mac.')
+    expect(wrapper.get<HTMLInputElement>('#wa-notify').element.checked).toBe(false)
+    expect(wrapper.get('#wa-groups-note').text()).toBe('Group chats can be busy. Leave chats out one by one from the chat itself.')
+    expect(wrapper.find('[aria-labelledby="wa-left-out"]').exists()).toBe(false)
     expect(wrapper.get<HTMLSelectElement>('#wa-place').element.disabled).toBe(true)
     expect(wrapper.get<HTMLOptionElement>('#wa-place option[value="all"]').element.disabled).toBe(true)
     expect(wrapper.get<HTMLSelectElement>('#wa-groups').element.value).toBe('all')
@@ -246,5 +249,41 @@ describe('SettingsWhatsAppView', () => {
     expect(cancel).toHaveBeenCalled()
     expect(router.currentRoute.value.name).toBe('settings-whatsapp')
     expect(wrapper.find('dialog').exists()).toBe(false)
+  })
+
+  it('turns Notify me on and off through the store', async () => {
+    const setNotify = vi.spyOn(wa, 'setNotify').mockResolvedValue(true)
+    const wrapper = open()
+    await wrapper.get('#wa-notify').setValue(true)
+    expect(setNotify).toHaveBeenCalledWith(true)
+    wa.config = { ...CONFIG, notify: true }
+    await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('#wa-notify').element.checked).toBe(true)
+    await wrapper.get('#wa-notify').setValue(false)
+    expect(setNotify).toHaveBeenLastCalledWith(false)
+  })
+
+  it('lists the chats left out, and takes one back in', async () => {
+    const takeBackIn = vi.spyOn(wa, 'takeBackIn').mockResolvedValue(true)
+    wa.config = { ...CONFIG, leftOut: ['31612345678@s.whatsapp.net', '120363000000000001@g.us'] }
+    const wrapper = open()
+    await flushPromises()
+    const section = wrapper.get('[aria-labelledby="wa-left-out"]')
+    expect(section.get('h3').text()).toBe('Chats left out')
+    // The copy does not name them here (no chats store data): the number, and a group's kind.
+    expect(section.findAll('.left-name').map((name) => name.text())).toEqual(['+31612345678', 'Group'])
+    await section.findAll('button')[0]!.trigger('click')
+    expect(takeBackIn).toHaveBeenCalledWith('31612345678@s.whatsapp.net')
+  })
+
+  it('leads Done of the connect dialog to the WhatsApp list', async () => {
+    router.addRoute({ path: '/whatsapp', name: 'whatsapp', component: { template: '<p>Chats</p>' } })
+    vi.spyOn(wa, 'cancel').mockResolvedValue(true)
+    await router.push('/settings/whatsapp/connect')
+    const wrapper = open()
+    await flushPromises()
+    wrapper.findComponent({ name: 'ConnectWhatsApp' }).vm.$emit('done')
+    await flushPromises()
+    expect(router.currentRoute.value.name).toBe('whatsapp')
   })
 })

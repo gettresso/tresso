@@ -263,6 +263,7 @@ function resizeKey(event: KeyboardEvent): void {
         :batches="inBatches"
         :next-batch="batches.nextBatchLabel"
         :page="page"
+        :whatsapp="route.name === 'whatsapp' || route.name === 'whatsapp-chat'"
         @sign-out="signOut.request"
       />
     </details>
