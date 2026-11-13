@@ -122,7 +122,13 @@ const leaveOutBody = computed(() =>
  * is online as the server last heard.
  */
 const relayOnline = computed(() => (chats.relaysHere ? wa.relayRunning : chats.account?.relayOnline === true))
-const composerNote = computed(() => (notice.value !== null || !chats.relaysHere ? null : wa.linked ? null : 'Replies can be written once the bridge is linked.'))
+const composerNote = computed(() => {
+  if (chats.writesHeld) {
+    // Said by the reply box while the server has not confirmed who is signed in (chats.writesHeld).
+    return 'Tresso is still checking who is signed in. Replies can be written once it is connected.'
+  }
+  return notice.value !== null || !chats.relaysHere ? null : wa.linked ? null : 'Replies can be written once the bridge is linked.'
+})
 const sendNote = computed(() => sendNoteText(chats.relaysHere, chats.account?.relayDeviceName ?? null))
 /** The line about a file attached in this chat; one attached in another chat says nothing here. */
 const attachLine = computed(() => {

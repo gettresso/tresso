@@ -704,7 +704,9 @@ describe('ChatPane', () => {
     const view = await open(DIRECT_ID, copy)
     const live = () => view.get('.incoming')
     const backend = new LocalChatBackend(copy, { includeGroups: true, leftOut: [], importSince: 0 }, { number: null, name: null, deviceId: 'd', deviceName: 'Mac' })
-    // The relay stored something. While it reads in, the chats are read again at most once a second (on a timer).
+    // The relay stored something. While it reads in, the chats are read again at most once a second (on a timer). The
+    // read and the pane's reload take several turns of the event loop: each check below waits for its outcome rather
+    // than for a fixed number of turns, which a cold, busy run can outlast.
     const stored = async () => {
       vi.setSystemTime(Date.now() + 2_000)
       relay.revision++
@@ -717,25 +719,25 @@ describe('ChatPane', () => {
     relay.liveFrom = null
     await backend.ingest([direct], [incoming('A2', DIRECT, 1), incoming('A3', DIRECT, 2)], false)
     await stored()
-    expect(bubbles(view)).toHaveLength(3)
+    await vi.waitFor(() => expect(bubbles(view)).toHaveLength(3))
     expect(live().text()).toBe('')
 
     // The chat was taken back in and is read again from minute 5: what was sent before is history, after it news.
     relay.liveFrom = NOW + 5 * 60_000
     await backend.ingest([direct], [incoming('A4', DIRECT, 3), incoming('A5', DIRECT, 4), incoming('A6', DIRECT, 5)], false)
     await stored()
-    expect(bubbles(view)).toHaveLength(6)
+    await vi.waitFor(() => expect(bubbles(view)).toHaveLength(6))
     expect(live().text()).toBe('')
     await backend.ingest([direct], [incoming('A7', DIRECT, 6, { text: 'Back again' }), incoming('A8', DIRECT, 2)], false)
     await stored()
-    expect(live().text()).toBe('Bram Visser: Back again')
+    await vi.waitFor(() => expect(live().text()).toBe('Bram Visser: Back again'))
 
     // The import is done: everything newer than the window is news again.
     relay.importState = 'done'
     relay.liveFrom = null
     await backend.ingest([direct], [incoming('A9', DIRECT, 7), incoming('A10', DIRECT, 8)], false)
     await stored()
-    expect(live().text()).toBe('2 new messages')
+    await vi.waitFor(() => expect(live().text()).toBe('2 new messages'))
     wrapper = view
   })
 

@@ -44,7 +44,8 @@ async function remove(): Promise<void> {
   removeError.value = null
   try {
     await chats.removeFromServer()
-    // The pull brings the account's removal; the page then leaves for Accounts (the watcher below).
+    // Gone from the server and from this copy: the page leaves for Accounts (the watcher below).
+    confirmingRemove.value = false
   } catch (cause) {
     removeError.value = cause instanceof Error ? cause.message : 'Your Tresso server could not take this change just now. Try again.'
   } finally {

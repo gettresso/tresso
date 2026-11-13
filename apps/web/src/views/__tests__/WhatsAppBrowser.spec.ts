@@ -318,15 +318,14 @@ describe('WhatsApp in the browser', () => {
       expect(view.get('[role="alertdialog"] [role="alert"]').text()).toBe('Your Tresso server could not take this change just now. Try again.')
       expect(useChatsStore().enabled).toBe(true)
 
-      const syncNow = vi.mocked(useMailStore().syncNow)
-      syncNow.mockImplementation(async () => {
-        await server.deliver(copy)
-        useMailStore().chatChanges++
-      })
+      // The pull after it fails: the page still closes the confirmation and leaves, the chats gone from this device.
+      vi.mocked(useMailStore().syncNow).mockResolvedValue()
       await view.get('[role="alertdialog"] .button-danger').trigger('click')
       await flushPromises()
       expect(server.callsOf('removeAccount')).toEqual([[ACCOUNT_ID], [ACCOUNT_ID]])
       expect(server.account).toBeNull()
+      expect(view.find('[role="alertdialog"]').exists()).toBe(false)
+      expect(await copy.chatAccounts()).toEqual([])
       await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('settings-accounts'))
       expect(useChatsStore().enabled).toBe(false)
     }, 10_000)
