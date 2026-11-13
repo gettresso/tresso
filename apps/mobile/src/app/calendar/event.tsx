@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native'
 import { Stack, useLocalSearchParams } from 'expo-router'
 import { attendeeSummary, canWrite, DAY, describeRule, occurrenceTimes, occurrenceWhen, RESPONSE_WORDS, toWall, zoneLabel, type ParticipationStatus } from '@tresso/core'
@@ -35,6 +35,23 @@ export default function EventScreen() {
   const [now] = useState(() => Date.now())
   const serverNow = mail.serverNow
   const clock = useCallback(() => serverNow?.() ?? Date.now(), [serverNow])
+  // "Leave without a link" only on a server that has the request-only drop; nothing while that is not known.
+  const [leaveOffered, setLeaveOffered] = useState(false)
+  const readDrop = mail.meetingRequestDrop
+  useEffect(() => {
+    let current = true
+    readDrop().then(
+      (offered) => {
+        if (current) setLeaveOffered(offered)
+      },
+      () => {
+        if (current) setLeaveOffered(false)
+      },
+    )
+    return () => {
+      current = false
+    }
+  }, [readDrop])
 
   if (occurrence === null) {
     return (
@@ -50,7 +67,7 @@ export default function EventScreen() {
   const color = calendar?.color ?? '#6E56CF'
   const response = answered ?? event.selfResponse
   const rule = occurrence.series?.recurrence ?? null
-  // Retry acts on the series and only for its organizer, on a calendar the user can write.
+  // Retry and Leave act on the series and only for its organizer, on a calendar the user can write.
   const organizerActs = event.selfResponse === null && canWrite(calendar) && !occurrence.fromServer
   const ownZone = occurrence.timeZone !== null && occurrence.timeZone !== zone && !occurrence.allDay ? `${occurrenceTimes(occurrence, occurrence.timeZone)} in ${zoneLabel(occurrence.timeZone, occurrence.start)}.` : null
 
@@ -87,6 +104,8 @@ export default function EventScreen() {
         line={event.conference !== null ? meetingLine(event, event.organizer?.name || event.organizer?.address || null, event.location) : null}
         clock={clock}
         onRetry={organizerActs ? (provider) => mail.requestMeetingLink(occurrence.seriesId, provider) : null}
+        onLeave={organizerActs && leaveOffered ? () => mail.dropMeetingRequest(occurrence.seriesId) : null}
+        onSync={mail.syncNow}
       />
       {/* With a meeting link the place is in the line under it. */}
       {event.conference === null && event.location !== '' && <Text style={styles.line}>{event.location}</Text>}

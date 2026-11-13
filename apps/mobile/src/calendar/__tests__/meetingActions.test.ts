@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RequestTimeoutError, SessionEndedDuringRequestError } from '@tresso/core'
-import { askForMeetingLink, canRetry, meetingActionError, meetingLinkCall, REFUSAL_MAX } from '@/calendar/meetingActions'
+import { askForMeetingLink, canRetry, dropMeetingRequest, dropRequestCall, meetingActionError, meetingLinkCall, REFUSAL_MAX } from '@/calendar/meetingActions'
 
 function status(code: number, message = 'x'): Error {
   return Object.assign(new Error(message), { name: 'ApiError', status: code })
@@ -67,6 +67,48 @@ describe("the phone's Retry request (MailProvider.requestMeetingLink)", () => {
     const sync = vi.fn(() => Promise.reject(new Error('offline')))
 
     await expect(askForMeetingLink(api, sync, 's1', 'teams')).resolves.toBeUndefined()
+    expect(sync).toHaveBeenCalledOnce()
+  })
+})
+
+describe("the phone's Leave without a link (MailProvider.dropMeetingRequest)", () => {
+  it('drops only the request, on the series, never the link', () => {
+    expect(dropRequestCall('s/1')).toEqual({ path: '/api/v1/calendar-events/s%2F1/meeting-link/request', method: 'DELETE' })
+  })
+
+  it('sends the drop, then syncs', async () => {
+    const steps: string[] = []
+    const api = vi.fn(async (path: string, init: RequestInit) => {
+      steps.push(`${init.method} ${path}`)
+    })
+    const sync = vi.fn(async () => {
+      steps.push('sync')
+    })
+
+    await expect(dropMeetingRequest(api, sync, 's1')).resolves.toBe('dropped')
+    expect(steps).toEqual(['DELETE /api/v1/calendar-events/s1/meeting-link/request', 'sync'])
+  })
+
+  it('answers that a link arrived on a 409, without syncing itself', async () => {
+    const sync = vi.fn(async () => {})
+    const arrived = status(409, 'The meeting link has arrived meanwhile. Nothing was changed.')
+
+    await expect(dropMeetingRequest(() => Promise.reject(arrived), sync, 's1')).resolves.toBe('arrived')
+    expect(sync).not.toHaveBeenCalled()
+  })
+
+  it('fails without a sync on any other answer', async () => {
+    const sync = vi.fn(async () => {})
+    for (const error of [status(401), status(403), status(404), status(422, 'This calendar is read-only.'), status(500), new TypeError('offline')]) {
+      await expect(dropMeetingRequest(() => Promise.reject(error), sync, 's1')).rejects.toBe(error)
+    }
+    expect(sync).not.toHaveBeenCalled()
+  })
+
+  it('succeeds when the server dropped the request and only the sync after it failed', async () => {
+    const sync = vi.fn(() => Promise.reject(new Error('offline')))
+
+    await expect(dropMeetingRequest(async () => ({}), sync, 's1')).resolves.toBe('dropped')
     expect(sync).toHaveBeenCalledOnce()
   })
 })

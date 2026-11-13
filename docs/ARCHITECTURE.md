@@ -2821,8 +2821,12 @@ reads the address from `calendarStatusDetail`.
   (the host whole, read left to right, wrapping rather than cut again at large text sizes) with "Copy link"
   (expo-clipboard, so the app needs a development and store build that has it), who the link is from and the place
   as the other way to meet, and a link that is being made or could not be made in core's words. On a failed link the
-  organizer has "Retry" (POST `/api/v1/calendar-events/{id}/meeting-link`, Meet and Teams), on the series; the
-  phone has no "Leave without a link" yet.
+  organizer has "Retry" (POST `/api/v1/calendar-events/{id}/meeting-link`, Meet and Teams) and, when the server
+  says `meetingRequestDrop: true` in `GET /api/v1/calendar/capabilities` (read once per signed-in user, forgotten at
+  sign-out; no button while it is unknown or the read failed), "Leave without a link" (DELETE
+  `/api/v1/calendar-events/{id}/meeting-link/request`, never the plain DELETE), both on the series. A 409 from Leave
+  means a link arrived meanwhile: the phone says so and syncs to show it. A link the provider was still making may
+  appear with a later sync after Leave; that is no error.
 - Reminders are scheduled and sent by the server (next section), so they reach every device, also when no app is
   open.
 

@@ -38,7 +38,8 @@ import { LAST_USER } from '@/auth/secureTokenStore'
 import { MailSession, NO_STATUS, type MailState } from '@/mail/mailSession'
 import { deleteSql, openSql } from '@/mail/sql'
 import { todoApi } from '@/mail/todoApi'
-import { askForMeetingLink } from '@/calendar/meetingActions'
+import { askForMeetingLink, dropMeetingRequest as dropRequest } from '@/calendar/meetingActions'
+import { CalendarCapabilityCache } from '@/calendar/capabilities'
 
 const LIST_LIMIT = 200
 const UNIFIED_INBOX = { kind: 'inbox', mailAccountId: null } as const
@@ -113,6 +114,13 @@ interface Mail extends MailState {
   respond(eventId: string, response: 'accepted' | 'tentative' | 'declined', recurrenceId: string | null): Promise<void>
   /** Asks the calendar's provider for a meeting link on the whole series again (POST /api/v1/calendar-events/{id}/meeting-link); organizer only. */
   requestMeetingLink(eventId: string, provider: 'meet' | 'teams'): Promise<void>
+  /**
+   * "Leave without a link": drops the series' request only (DELETE /api/v1/calendar-events/{id}/meeting-link/request);
+   * `arrived` when a link arrived meanwhile (409, nothing changed: sync to show it). See dropMeetingRequest.
+   */
+  dropMeetingRequest(eventId: string): Promise<'dropped' | 'arrived'>
+  /** Whether this server has the request-only drop (GET /api/v1/calendar/capabilities), read once per signed-in user. */
+  meetingRequestDrop(): Promise<boolean>
 }
 
 function json(method: string, body?: unknown): RequestInit {
@@ -348,7 +356,19 @@ export function MailProvider({ children }: { children: ReactNode }) {
     (eventId: string, provider: 'meet' | 'teams') => askForMeetingLink((path, init) => auth.session.api(path, init), () => session.syncNow(), eventId, provider),
     [auth.session, session],
   )
+  const dropMeetingRequest = useCallback(
+    (eventId: string) => dropRequest((path, init) => auth.session.api(path, init), () => session.syncNow(), eventId),
+    [auth.session, session],
+  )
+  const capabilities = useMemo(() => new CalendarCapabilityCache(() => auth.session.api('/api/v1/calendar/capabilities')), [auth.session])
   const { userId, ready, synced, version, syncState, syncError, live, pulls, status } = state
+  // Signed out: what this server offers is read again for the next user.
+  useEffect(() => {
+    if (userId === null) {
+      capabilities.clear()
+    }
+  }, [userId, capabilities])
+  const meetingRequestDrop = useCallback(() => capabilities.meetingRequestDrop(userId), [capabilities, userId])
   const mail = useMemo<Mail>(
     () => ({
       userId,
@@ -397,8 +417,10 @@ export function MailProvider({ children }: { children: ReactNode }) {
       clearOverdue,
       respond,
       requestMeetingLink,
+      dropMeetingRequest,
+      meetingRequestDrop,
     }),
-    [userId, touch, ready, synced, version, syncState, syncError, lookupError, live, status, pulls, mailAccounts, folders, act, inbox, triageWaiting, newestInInbox, summaries, smartInboxes, classifyThread, releaseThread, thread, body, unscannedLink, syncNow, auth.session, store, session, signatures, suggestContacts, send, cancelOutgoing, todos, todosOfThread, messages, makeTodo, removeTodo, setTodoDone, planTodo, unplanTodo, handOvers, outgoing, handOverApi, overdue, clearOverdue, respond, requestMeetingLink],
+    [userId, touch, ready, synced, version, syncState, syncError, lookupError, live, status, pulls, mailAccounts, folders, act, inbox, triageWaiting, newestInInbox, summaries, smartInboxes, classifyThread, releaseThread, thread, body, unscannedLink, syncNow, auth.session, store, session, signatures, suggestContacts, send, cancelOutgoing, todos, todosOfThread, messages, makeTodo, removeTodo, setTodoDone, planTodo, unplanTodo, handOvers, outgoing, handOverApi, overdue, clearOverdue, respond, requestMeetingLink, dropMeetingRequest, meetingRequestDrop],
   )
 
   return <MailContext.Provider value={mail}>{children}</MailContext.Provider>

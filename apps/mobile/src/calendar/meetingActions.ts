@@ -27,9 +27,11 @@ function refusal(message: string): string {
 }
 
 /**
- * Why Retry did not go through, in plain words. Never the link: the server's answers to this request carry none.
- * The API answers this request with 404 (not the user's event), 422 (refused, with its own sentence), 403 (the
- * sign-in lacks a permission the change needs: calendar write access, or sending mail for the invitations), 401 (the sign-in ended) or a server error; it has no 409 for it.
+ * Why Retry or "Leave without a link" did not go through, in plain words. Never the link: the server's answers to
+ * these requests carry none. The API answers them with 404 (not the user's event), 422 (refused, with its own
+ * sentence), 403 (the sign-in lacks a permission the change needs: calendar write access, or sending mail for the
+ * invitations), 401 (the sign-in ended) or a server error. Retry has no 409; Leave's 409 (the link arrived meanwhile)
+ * is no failure and is handled by {@link dropMeetingRequest}.
  */
 export function meetingActionError(error: unknown): string {
   if (error instanceof RequestTimeoutError) {
@@ -42,7 +44,7 @@ export function meetingActionError(error: unknown): string {
   if (error instanceof TypeError) {
     return 'No connection. Try again when you are online.'
   }
-  const status = error instanceof Error && 'status' in error && typeof error.status === 'number' ? error.status : null
+  const status = statusOf(error)
   if (status === 401) {
     return 'Your sign-in ended. Sign in again and try again.'
   }
@@ -90,4 +92,46 @@ export async function askForMeetingLink(
   } catch {
     // The sync's failure is the session's to show (its sync state); the request itself was taken.
   }
+}
+
+/** The HTTP status an API error carries, or null. */
+function statusOf(error: unknown): number | null {
+  return error instanceof Error && 'status' in error && typeof error.status === 'number' ? error.status : null
+}
+
+/**
+ * "Leave without a link": DELETE /api/v1/calendar-events/{id}/meeting-link/request, on the series' id. It drops only
+ * the series' pending or failed request; never the plain DELETE .../meeting-link, which would also take off a link.
+ */
+export function dropRequestCall(seriesId: string): { path: string; method: 'DELETE' } {
+  return { path: `/api/v1/calendar-events/${encodeURIComponent(seriesId)}/meeting-link/request`, method: 'DELETE' }
+}
+
+/**
+ * Leave without a link as the phone's mail provider runs it. `dropped`: the server dropped the request (or there was
+ * none), and the copy was synced; a sync that fails after that does not fail it, as with Retry, and a link the
+ * provider was already making can still come with a later sync. `arrived`: the server answered 409 because the series
+ * has a link that arrived after the phone's copy; nothing was changed, and the caller syncs to show it. Any other
+ * failure rejects.
+ */
+export async function dropMeetingRequest(
+  api: (path: string, init: RequestInit) => Promise<unknown>,
+  syncNow: () => Promise<void>,
+  seriesId: string,
+): Promise<'dropped' | 'arrived'> {
+  const call = dropRequestCall(seriesId)
+  try {
+    await api(call.path, { method: call.method })
+  } catch (error) {
+    if (statusOf(error) === 409) {
+      return 'arrived'
+    }
+    throw error
+  }
+  try {
+    await syncNow()
+  } catch {
+    // The sync's failure is the session's to show (its sync state); the request was dropped.
+  }
+  return 'dropped'
 }
