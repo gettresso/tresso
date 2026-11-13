@@ -359,6 +359,7 @@ describe('Settings, Meeting apps', () => {
     stored = preferences({ ownLink: 'https://meet.example.com/kim' })
     const wrapper = await page()
     const input = wrapper.get('#own-link')
+    ;(input.element as HTMLInputElement).focus()
     await input.setValue('https://meet.example.com/other')
     const remove = wrapper.get('button[aria-label="Remove your room link"]')
     await remove.trigger('pointerdown')
@@ -539,5 +540,56 @@ describe('Settings, Meeting apps', () => {
     await settle()
     expect(patches()).toEqual([{ ownLink: 'https://meet.example.com/one' }, { ownLink: 'https://meet.example.com/two' }])
     expect((input.element as HTMLInputElement).value).toBe('https://meet.example.com/two')
+  })
+
+  it('leaves no error from an earlier refused change once a later one is saved', async () => {
+    const wrapper = await page()
+    let release: () => void = () => undefined
+    hold = new Promise<void>((resolve) => (release = resolve))
+    const fetch = globalThis.fetch as ReturnType<typeof vi.fn<typeof globalThis.fetch>>
+    const answer = fetch.getMockImplementation()!
+    // The first change is refused, the second saved: the mock answers them in that order.
+    let first = true
+    fetch.mockImplementation(async (input, init) => {
+      if ((init?.method ?? 'GET') === 'PATCH' && first) {
+        first = false
+        await hold
+        return new Response(JSON.stringify({ detail: 'Refused.' }), { status: 422, headers: { 'Content-Type': 'application/problem+json' } })
+      }
+      return answer(input, init)
+    })
+    const select = wrapper.get('#default-work')
+    await select.setValue('none')
+    await select.setValue('own')
+    release()
+    await settle()
+    expect(wrapper.find('#meeting-error-default-work').exists()).toBe(false)
+    expect(select.attributes('aria-invalid')).toBeUndefined()
+
+    first = true
+    hold = new Promise<void>((resolve) => (release = resolve))
+    const input = wrapper.get('#own-link')
+    await input.setValue('https://meet.example.com/three')
+    await input.trigger('blur')
+    await input.setValue('https://meet.example.com/four')
+    await input.trigger('blur')
+    release()
+    await settle()
+    expect(wrapper.find('#meeting-error-ownLink').exists()).toBe(false)
+    expect(input.attributes('aria-invalid')).toBeUndefined()
+    expect(patches()[patches().length - 1]).toEqual({ ownLink: 'https://meet.example.com/four' })
+  })
+
+  it('lets a press on Remove block only the blur of a focused link field', async () => {
+    stored = preferences({ ownLink: 'https://meet.example.com/kim' })
+    const wrapper = await page()
+    const input = wrapper.get('#own-link')
+    // Not focused: the press, released elsewhere, leaves nothing behind.
+    await wrapper.get('button[aria-label="Remove your room link"]').trigger('pointerdown')
+    ;(input.element as HTMLInputElement).focus()
+    await input.setValue('https://meet.example.com/other')
+    await input.trigger('blur')
+    await settle()
+    expect(patches()).toEqual([{ ownLink: 'https://meet.example.com/other' }])
   })
 })

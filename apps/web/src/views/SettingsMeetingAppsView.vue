@@ -106,6 +106,8 @@ async function save(key: string, field: string, change: MeetingPreferencesUpdate
   pending.add(key)
   try {
     await meetingApps.update(change)
+    // An earlier change of this control that failed while this one waited leaves no error behind.
+    errors[key] = ''
     return true
   } catch (e) {
     errors[key] = failure(e, field)
@@ -188,6 +190,7 @@ function initial(account: MailAccount): string {
 
 // The own link: saved on blur or Enter, checked by core's rule first so a wrong link sends nothing.
 const linkDraft = ref('')
+const linkField = ref<HTMLInputElement | null>(null)
 const savedLink = computed(() => preferences.value?.ownLink ?? '')
 /** The pointer went down on Remove: the field's blur that follows must not save what was typed first. */
 let removing = false
@@ -224,6 +227,11 @@ async function saveLink(): Promise<void> {
     // Put the saved link back only when nothing else was typed meanwhile.
     if (linkDraft.value === typed) linkDraft.value = before
   })
+}
+
+/** A press on Remove while the link field has the focus: the blur it causes must not save the typed link. */
+function pressRemove(): void {
+  removing = linkField.value !== null && document.activeElement === linkField.value
 }
 
 async function removeLink(): Promise<void> {
@@ -335,6 +343,7 @@ async function toggleGuests(event: Event): Promise<void> {
             <span class="link-input">
               <input
                 id="own-link"
+                ref="linkField"
                 v-model="linkDraft"
                 type="url"
                 inputmode="url"
@@ -348,7 +357,7 @@ async function toggleGuests(event: Event): Promise<void> {
                 @blur="saveLink"
                 @keydown.enter.prevent="saveLink"
               />
-              <button v-if="savedLink" type="button" class="button button-quiet" aria-label="Remove your room link" @pointerdown="removing = true" @pointerup="removing = false" @pointercancel="removing = false" @click="removeLink">Remove</button>
+              <button v-if="savedLink" type="button" class="button button-quiet" aria-label="Remove your room link" @pointerdown="pressRemove" @pointerup="removing = false" @pointercancel="removing = false" @click="removeLink">Remove</button>
             </span>
           </div>
           <p v-if="errors.ownLink" :id="errorId('ownLink')" class="error" role="alert">{{ errors.ownLink }}</p>
