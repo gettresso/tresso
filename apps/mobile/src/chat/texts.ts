@@ -1,21 +1,23 @@
 import {
   CHAT_REPLY_MAX,
   chatApiFailure,
-  chatSubtitle,
-  fileSize,
-  nameText,
   replyErrorText,
   replyLabel,
-  SENDER_COLORS,
-  senderColor,
-  type ChatMediaError,
-  type ChatMediaKind,
+  serverFileView,
   type ReplyTextProblem,
-  type SyncedChat,
+  type ServerFileView,
   type SyncedChatAccount,
-  type SyncedChatMessage,
   type SyncedChatOutgoing,
 } from '@tresso/core'
+
+// Shared with the web app (core's chat texts); kept importable from here for the phone's screens.
+export { chatName, clockTime, COUNTER_FROM, mediaKindLabel, mediaTitle, senderLabel, senderTone, UNSCANNED_WARNING } from '@tresso/core'
+
+/** What a file row says and offers on the phone (the file is asked for from the relaying Mac, then opened from the server). */
+export type MediaView = ServerFileView
+
+/** A file's row from its message: core's serverFileView, as the web app shows it. */
+export const mediaView = serverFileView
 
 /*
  * What the phone's chat screens say: the MobileWhatsAppChat board, the desktop's chat texts
@@ -23,11 +25,6 @@ import {
  * plan, section 6. Every name and text from WhatsApp goes through core's nameText or labelText where it is one line.
  * Pure, so every state is tested without a screen.
  */
-
-/** A chat's name: its WhatsApp name, else its number, else what it is (as the desktop's chatName). */
-export function chatName(chat: Pick<SyncedChat, 'name' | 'jid' | 'kind'>): string {
-  return nameText(chat.name) || chatSubtitle(chat) || (chat.kind === 'group' ? 'Group' : 'WhatsApp chat')
-}
 
 /** Up to two letters for a chat's avatar: the first of its first and last word (a number's first two digits). */
 export function chatInitials(name: string): string {
@@ -38,82 +35,6 @@ export function chatInitials(name: string): string {
   }
   const last = words.length > 1 ? ([...words[words.length - 1]!][0] ?? '') : ''
   return (first + last).toUpperCase()
-}
-
-/** A group sender's name as known, else `Unknown sender` (plan 5.1). */
-export function senderLabel(message: Pick<SyncedChatMessage, 'sender'>): string {
-  return nameText(message.sender?.name ?? null) || 'Unknown sender'
-}
-
-/** Which of the theme's six sender colours a sender's name is drawn in (core's senderColor, as an index). */
-export function senderTone(id: string): number {
-  return SENDER_COLORS.indexOf(senderColor(id))
-}
-
-/** `10:02`, the time of day of a message. */
-export function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-}
-
-const KIND_LABELS: Record<ChatMediaKind, string> = { image: 'Photo', video: 'Video', audio: 'Voice message', document: 'File' }
-
-/** `Photo`, `Video`, `Voice message`, `File`. */
-export function mediaKindLabel(kind: ChatMediaKind): string {
-  return KIND_LABELS[kind] ?? 'File'
-}
-
-/**
- * The first line of a file row (plan 6.7): the kind and the size (`Photo, 180 KB`); a document keeps its name instead of
- * the kind (`plan.pdf, 180 KB`), since the bridge invents the names of the other kinds.
- */
-export function mediaTitle(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaName' | 'mediaSize'>): string {
-  const kind = message.mediaKind ?? 'document'
-  const label = kind === 'document' ? nameText(message.mediaName) || 'File' : mediaKindLabel(kind)
-  return message.mediaSize === null ? label : `${label}, ${fileSize(message.mediaSize)}`
-}
-
-/** What a file row says and offers on the phone (the file is asked for from the relaying Mac, then opened from the server). */
-export interface MediaView {
-  line: string
-  action: 'download' | 'retry' | 'open' | 'confirm' | null
-  failed: boolean
-}
-
-const MEDIA_FAILURES: Record<ChatMediaError, string> = {
-  not_found: 'Your Mac could not find this file in WhatsApp.',
-  mismatch: "WhatsApp gave your Mac another file than this message's. It was not passed on.",
-  unverified: "Your Mac could not check that this is the message's file. It was not passed on.",
-  too_large: 'This file is larger than 100 MB, the most Tresso passes on.',
-  unavailable: 'Your Mac could not get this file from WhatsApp. WhatsApp may no longer have it.',
-}
-
-/**
- * A file's row from its message (the delta's `mediaState`, `mediaError`, `mediaAccess`): on the Mac (Download asks for
- * it), asked for, being checked for malware, ready (Open), not checked (Open anyway, after a warning), blocked, or not
- * brought (Try again, but not for a file too large).
- */
-export function mediaView(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaState' | 'mediaError' | 'mediaAccess'>, relayOnline: boolean): MediaView {
-  switch (message.mediaState ?? 'remote') {
-    case 'requested':
-      return { line: relayOnline ? 'Your Mac is bringing this file.' : 'Waiting for your Mac.', action: null, failed: false }
-    case 'failed': {
-      const error = message.mediaError ?? 'unavailable'
-      return { line: MEDIA_FAILURES[error], action: error === 'too_large' ? null : 'retry', failed: true }
-    }
-    case 'stored':
-      switch (message.mediaAccess ?? 'blocked') {
-        case 'allowed':
-          return { line: 'Ready to open.', action: 'open', failed: false }
-        case 'scanning':
-          return { line: 'Checking for malware.', action: null, failed: false }
-        case 'confirm':
-          return { line: 'This file could not be checked for malware.', action: 'confirm', failed: false }
-        default:
-          return { line: 'This file is blocked: it contains malware, or this server only opens checked files.', action: null, failed: true }
-      }
-    default:
-      return { line: `${mediaKindLabel(message.mediaKind ?? 'document')}, on your Mac`, action: 'download', failed: false }
-  }
 }
 
 /** A file on its way from the phone: `Uploading, 40%`, or `Queueing for your Mac` once it is up. */
@@ -142,9 +63,6 @@ export function fileFailureText(name: string, phase: 'upload' | 'queue', reason:
 
 /** A link to a file that the phone could not hand to an app. */
 export const FILE_NOT_OPENED = 'This phone could not open the file.'
-
-/** The warning before a file that could not be checked opens. */
-export const UNSCANNED_WARNING = 'This file could not be checked for malware. Open it only if you trust the sender.'
 
 /** What the banner above a chat says about the relaying Mac, or null when it relays and WhatsApp works. */
 export function relayBanner(account: Pick<SyncedChatAccount, 'relayOnline' | 'bridge' | 'link'> | null): string | null {
@@ -197,9 +115,6 @@ export function replyView(reply: Pick<SyncedChatOutgoing, 'status' | 'error'>, t
   const state = label === 'Waiting for your Mac' ? 'waiting' : label === 'Sent' ? 'sent' : 'sending'
   return { meta: time === '' ? label : `${time}, ${lower}`, state, reason: null, spoken: lower }
 }
-
-/** From which length the reply box says how many characters are used (as on the desktop). */
-export const COUNTER_FROM = 3_900
 
 /** `3,950 of 4,096 characters`. */
 export function counterText(length: number): string {

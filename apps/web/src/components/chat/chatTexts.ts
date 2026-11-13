@@ -1,21 +1,20 @@
 import {
-  chatSubtitle,
-  fileSize,
+  mediaKindLabel,
   nameText,
   replyErrorText,
-  SENDER_COLORS,
-  senderColor,
-  type ChatMediaError,
-  type ChatMediaKind,
+  serverFileView,
   type ChatOutgoingError,
   type ReplyLabel,
-  type SyncedChat,
+  type ServerFileView,
   type SyncedChatAccount,
   type SyncedChatMessage,
 } from '@tresso/core'
 import { shortTime } from '@/mail/format'
 import type { BridgeState } from '@/platform/whatsapp'
 import type { AttachState, MediaFailure, MediaState } from '@/stores/chats'
+
+// Shared with the phone; kept importable from here for the chat components.
+export { chatName, clockTime, COUNTER_FROM, mediaKindLabel, mediaTitle, senderLabel, senderTone, UNSCANNED_WARNING } from '@tresso/core'
 
 /**
  * A reply's label on this Mac, which relays itself ("Only this Mac"): a reply waits for the bridge, not for a Mac that is
@@ -82,46 +81,6 @@ export const LEAVE_OUT_BODY = 'Tresso removes its copy and stops reading it. The
 export const LEAVE_OUT_BODY_SERVER = "Tresso removes this chat's messages from your Tresso server and from every device, and stops reading it. The chat stays in WhatsApp."
 /** Next to "Leave this chat out": WhatsApp may keep one contact as two chats. */
 export const LEAVE_OUT_TWO_CHATS = 'A contact can appear as two chats in WhatsApp (by number and by hidden number). Leave both out to keep the contact out.'
-/** From which length the composer shows how many characters are left. */
-export const COUNTER_FROM = 3_900
-
-/** A chat's name: its WhatsApp name, else its number, else what it is. */
-export function chatName(chat: Pick<SyncedChat, 'name' | 'jid' | 'kind'>): string {
-  return nameText(chat.name) || chatSubtitle(chat) || (chat.kind === 'group' ? 'Group' : 'WhatsApp chat')
-}
-
-/** A group sender's name as known (a name, else the number the relay put there), else `Unknown sender` (plan 5.1). */
-export function senderLabel(message: Pick<SyncedChatMessage, 'sender'>): string {
-  return nameText(message.sender?.name ?? null) || 'Unknown sender'
-}
-
-/** Which of the six sender colours (SENDER_COLORS) a sender's name is drawn in, as an index for the theme's tokens. */
-export function senderTone(id: string): number {
-  return SENDER_COLORS.indexOf(senderColor(id))
-}
-
-/** `10:02`, the time of day of a message. */
-export function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-}
-
-const KIND_LABELS: Record<ChatMediaKind, string> = { image: 'Photo', video: 'Video', audio: 'Voice message', document: 'File' }
-
-/** `Photo`, `Video`, `Voice message`, `File`. */
-export function mediaKindLabel(kind: ChatMediaKind): string {
-  return KIND_LABELS[kind] ?? 'File'
-}
-
-/**
- * The first line of a file row (plan 6.7): the kind and the size (`Photo, 180 KB`); a document keeps its name instead
- * of the kind (`plan.pdf, 180 KB`), since the bridge invents the names of the other kinds.
- */
-export function mediaTitle(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaName' | 'mediaSize'>): string {
-  const kind = message.mediaKind ?? 'document'
-  const label = kind === 'document' ? nameText(message.mediaName) || 'File' : mediaKindLabel(kind)
-  return message.mediaSize === null ? label : `${label}, ${fileSize(message.mediaSize)}`
-}
-
 const FAILURES: Record<MediaFailure, string> = {
   failed: 'Could not download. The phone that sent it may be offline.',
   stopped: 'Could not download. The bridge is not running.',
@@ -242,55 +201,19 @@ export function relayNotice(account: Pick<SyncedChatAccount, 'relayOnline' | 're
   return null
 }
 
-const SERVER_FAILURES: Record<ChatMediaError, string> = {
-  not_found: 'Your Mac could not find this file in WhatsApp.',
-  mismatch: "WhatsApp gave your Mac another file than this message's. It was not passed on.",
-  unverified: "Your Mac could not check that this is the message's file. It was not passed on.",
-  too_large: 'This file is larger than 100 MB, the most Tresso passes on.',
-  unavailable: 'Your Mac could not get this file from WhatsApp. WhatsApp may no longer have it.',
-}
-
 /** What a file row says and offers for a file that goes through the server ("All my devices", not the relaying Mac). */
-export interface ServerMediaView {
-  line: string
-  action: 'download' | 'retry' | 'open' | 'confirm' | null
+export interface ServerMediaView extends ServerFileView {
   /** The action shows but cannot be pressed yet (asked for, being checked). */
   pending: string | null
-  failed: boolean
 }
 
-/**
- * A file on the server, from its message's state (the delta's `mediaState`, `mediaError`, `mediaAccess`): on the Mac
- * (Download asks for it), asked for (waiting for the Mac while it is offline), being checked for malware, ready (Open),
- * not checked (Download anyway, after a warning), blocked, or not brought (Try again, but not for a file too large).
- */
+/** core's serverFileView, with the pressed-but-not-yet state the browser's row shows on its button. */
 export function serverMediaView(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaState' | 'mediaError' | 'mediaAccess'>, relayOnline: boolean): ServerMediaView {
-  const kind = mediaKindLabel(message.mediaKind ?? 'document')
-  switch (message.mediaState ?? 'remote') {
-    case 'requested':
-      return { line: relayOnline ? 'Your Mac is bringing this file.' : 'Waiting for your Mac.', action: null, pending: relayOnline ? 'Downloading' : 'Waiting', failed: false }
-    case 'failed': {
-      const error = message.mediaError ?? 'unavailable'
-      return { line: SERVER_FAILURES[error], action: error === 'too_large' ? null : 'retry', pending: null, failed: true }
-    }
-    case 'stored':
-      switch (message.mediaAccess ?? 'blocked') {
-        case 'allowed':
-          return { line: 'Ready to open.', action: 'open', pending: null, failed: false }
-        case 'scanning':
-          return { line: 'Checking for malware.', action: null, pending: 'Checking', failed: false }
-        case 'confirm':
-          return { line: 'This file could not be checked for malware.', action: 'confirm', pending: null, failed: false }
-        default:
-          return { line: 'This file is blocked: it contains malware, or this server only opens checked files.', action: null, pending: null, failed: true }
-      }
-    default:
-      return { line: `${kind}, on your Mac`, action: 'download', pending: null, failed: false }
-  }
+  const view = serverFileView(message, relayOnline)
+  const state = message.mediaState ?? 'remote'
+  const pending = state === 'requested' ? (relayOnline ? 'Downloading' : 'Waiting') : state === 'stored' && message.mediaAccess === 'scanning' ? 'Checking' : null
+  return { ...view, pending }
 }
-
-/** The warning before a file that could not be checked opens. */
-export const UNSCANNED_WARNING = 'This file could not be checked for malware. Open it only if you trust the sender.'
 
 /** A chat left out, opened in the browser: only the Mac that relays reads the bridge again to take it back in. */
 export const LEFT_OUT_HERE = 'You left this chat out. Take it back in on the Mac that relays WhatsApp, under Settings, WhatsApp.'
