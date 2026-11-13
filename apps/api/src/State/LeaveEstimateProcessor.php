@@ -10,6 +10,7 @@ use App\ApiResource\Input\Notification\LeaveEstimateInput;
 use App\ApiResource\LeaveEstimateResource;
 use App\Entity\ScheduledNotification;
 use App\Enum\NotificationKind;
+use App\Notification\EventPlace;
 use App\Notification\NotificationPlanner;
 use App\Notification\Travel\TravelTimeEstimator;
 use App\Repository\CalendarEventRepository;
@@ -51,9 +52,9 @@ final readonly class LeaveEstimateProcessor implements ProcessorInterface
             throw new NotFoundHttpException('This occurrence has no leave-now reminder waiting for an estimate.');
         }
 
-        // Only the place goes to the geocoder: never a meeting link written in it. A place that is only a link is
-        // nowhere to travel to.
-        $place = NotificationPlanner::placeWithoutLinks($event->getLocation());
+        // Only the place goes to the geocoder: never a meeting link written in it. A place that is only a link, or only
+        // says "online", is nowhere to travel to.
+        $place = EventPlace::toTravelTo($event->getLocation());
         if ('' === $place) {
             return new LeaveEstimateResource(null, null);
         }
