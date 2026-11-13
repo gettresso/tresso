@@ -4,16 +4,33 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
+use App\Account\PurgeDeletedUser;
+use App\Account\PurgeDeletedUserHandler;
+use App\Chat\ChatMediaUrls;
 use App\Chat\ChatUploads;
 use App\Chat\CollectChatMedia;
+use App\Command\RescanAttachmentsCommand;
+use App\Entity\Attachment;
+use App\Entity\ChatMessage;
+use App\Scan\AttachmentAccess;
+use App\Scan\DownloadPolicy;
+use App\Scan\SweepPendingScans;
+use App\Scan\SweepPendingScansHandler;
+use App\Security\Crypto\UserKeys;
 use App\Storage\BlobKind;
 use App\Storage\BlobVault;
+use App\Storage\Reencryption;
 use App\Tests\Support\FakeVirusScanner;
 use App\Tests\Support\InMemoryObjectStorage;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\FrameworkBundle\Console\Application;
+use Symfony\Component\Console\Tester\CommandTester;
+use Symfony\Component\HttpFoundation\UriSigner;
+use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -427,6 +444,294 @@ final class ChatMediaTest extends DatabaseTestCase
         self::assertCount(1, $this->chatObjects(), 'The messages still refer to it.');
     }
 
+    public function testFilesAreForOurOwnAppsOnly(): void
+    {
+        $this->storePhoto();
+
+        foreach ([$this->seededThirdPartyHeaders('kim@example.test', ['chat:read']), $this->personalAccessTokenHeaders('kim@example.test', ['chat:read'])] as $headers) {
+            $this->client->request('GET', '/api/v1/chat-messages/'.$this->photoId.'/media', server: $headers);
+            self::assertResponseIsSuccessful();
+            $media = $this->decodedResponse();
+            self::assertSame(['stored', 'allowed', null], [$media['state'], $media['access'], $media['url']], 'Where it stands, never a link.');
+        }
+        $this->client->request('GET', '/api/v1/chat-messages/'.$this->photoId.'/media', server: $this->web);
+        self::assertIsString($this->decodedResponse()['url'] ?? null);
+    }
+
+    public function testAContentLinkWaitsForTheScanAndAnswersALaterVerdict(): void
+    {
+        $this->requestMedia($this->photoId);
+        $this->relay('media/claim');
+        $this->upload($this->photoId, self::PHOTO);
+        $scans = $this->takeScans();
+        $link = static::getContainer()->get(UriSigner::class)->sign('http://localhost/content/chat-media/'.$this->photoId, new \DateInterval('PT1H'));
+
+        $this->client->request('GET', $link);
+        self::assertResponseStatusCodeSame(409, 'Still being scanned.');
+
+        $this->runScans($scans);
+        $this->client->request('GET', $link);
+        self::assertResponseIsSuccessful();
+
+        $this->scanner()->alsoInfected = [self::PHOTO];
+        $tester = new CommandTester(new Application($this->client->getKernel())->find('app:attachments:rescan'));
+        $tester->execute(['--all' => true]);
+        $tester->assertCommandIsSuccessful();
+        $this->runScans($this->takeScans(RescanAttachmentsCommand::TRANSPORT));
+
+        self::assertSame('infected', $this->connection()->fetchOne('SELECT media_scan_status FROM chat_message WHERE id = :id', ['id' => $this->photoId]), 'The rescan covers chat files.');
+        $this->client->request('GET', $link);
+        self::assertResponseStatusCodeSame(403, 'A link given before is refused after the verdict.');
+    }
+
+    public function testAServerThatRequiresScansNeverLinksAFileThatCouldNotBeScanned(): void
+    {
+        $this->requestMedia($this->photoId);
+        $this->relay('media/claim');
+        $this->scanner()->maxSize = 8;
+        $this->upload($this->photoId, self::PHOTO);
+        $this->runQueuedScans();
+        $message = $this->chatEntityManager()->find(ChatMessage::class, Uuid::fromString($this->photoId));
+        self::assertInstanceOf(ChatMessage::class, $message);
+
+        $strict = new ChatMediaUrls(static::getContainer()->get(UrlGeneratorInterface::class), static::getContainer()->get(UriSigner::class), new DownloadPolicy(true));
+
+        self::assertSame(AttachmentAccess::Blocked, $strict->access($message));
+        self::assertNull($strict->forMessage($message, true));
+        $lenient = static::getContainer()->get(ChatMediaUrls::class);
+        self::assertSame(AttachmentAccess::Confirm, $lenient->access($message));
+        self::assertIsString($lenient->forMessage($message, true));
+    }
+
+    public function testTheScanSweepQueuesAChatFileWhoseScanGotLost(): void
+    {
+        $this->requestMedia($this->photoId);
+        $this->relay('media/claim');
+        $this->upload($this->photoId, self::PHOTO);
+        $this->takeScans();
+        $this->connection()->executeStatement("UPDATE chat_message SET media_scan_requested_at = NOW() - INTERVAL '1 hour' WHERE id = :id", ['id' => $this->photoId]);
+
+        static::getContainer()->get(SweepPendingScansHandler::class)(new SweepPendingScans());
+        $this->runScans($this->takeScans());
+
+        self::assertSame('clean', $this->connection()->fetchOne('SELECT media_scan_status FROM chat_message WHERE id = :id', ['id' => $this->photoId]));
+    }
+
+    public function testRotationWritesStoredAndQuarantinedFilesAgain(): void
+    {
+        $this->relayMessages([self::waMessage('M3', '', '2026-11-12T09:16:00+00:00', ['media' => ['kind' => 'document', 'name' => 'bad.exe', 'size' => null]])]);
+        $bad = $this->messageId('M3');
+        $this->storePhoto();
+        $this->requestMedia($bad);
+        $this->relay('media/claim');
+        $this->upload($bad, FakeVirusScanner::EICAR);
+        $this->runQueuedScans();
+        $kim = $this->kimsId();
+        $fingerprint = $this->connection()->fetchOne('SELECT media_sha256 FROM chat_message WHERE id = :id', ['id' => $bad]);
+        self::assertIsString($fingerprint);
+        $quarantined = Attachment::quarantineKey($fingerprint, $kim);
+        self::assertTrue($this->storage()->has($quarantined));
+
+        $tester = new CommandTester(new Application($this->client->getKernel())->find('app:crypto:rotate-user-keys'));
+        $tester->execute(['--user' => ['kim@example.test']]);
+        $tester->assertCommandIsSuccessful();
+        static::getContainer()->get(UserKeys::class)->reset();
+        $reencryption = static::getContainer()->get(Reencryption::class);
+        self::assertSame(2, $reencryption->remaining($kim)['chatMedia']);
+
+        $result = $reencryption->run($kim, 10, static function (): void {});
+
+        self::assertSame(0, $result->failed);
+        self::assertSame(0, $reencryption->remaining($kim)['chatMedia']);
+        self::assertSame(2, $this->countRows('SELECT COUNT(*) FROM chat_message WHERE media_key_version = 2'));
+        $blobs = static::getContainer()->get(BlobVault::class);
+        self::assertSame(self::PHOTO, $blobs->read($kim, $this->objectKey($this->photoId)));
+        self::assertSame(FakeVirusScanner::EICAR, $blobs->read($kim, $quarantined), 'Rewritten where it is: in quarantine.');
+    }
+
+    public function testDeletingTheUserRemovesTheirFiles(): void
+    {
+        $this->storePhoto();
+        $this->uploadForReply(Uuid::v7()->toRfc4122(), 'waiting upload');
+        self::assertCount(2, $this->chatObjects());
+
+        static::getContainer()->get(PurgeDeletedUserHandler::class)(new PurgeDeletedUser($this->kimsId()->toRfc4122()));
+
+        self::assertSame([], $this->chatObjects());
+    }
+
+    public function testTakingGroupsOffTheServerTakesTheirFiles(): void
+    {
+        $this->relayMessages(
+            [self::waMessage('G1', '', '2026-11-12T09:20:00+00:00', ['chatJid' => self::GROUP_JID, 'sender' => ['id' => '31611111111', 'name' => 'Mom'], 'media' => ['kind' => 'image', 'name' => 'family.jpg', 'size' => null]])],
+            [['jid' => self::GROUP_JID, 'name' => 'Family', 'kind' => 'group']],
+        );
+        $groupPhoto = $this->messageId('G1');
+        $this->requestMedia($groupPhoto);
+        $this->relay('media/claim');
+        $this->upload($groupPhoto, 'a group photo');
+        $this->storePhoto();
+        self::assertCount(2, $this->chatObjects());
+
+        $this->client->request('PATCH', '/api/v1/chat-accounts/'.$this->accountId, [], [], ['CONTENT_TYPE' => 'application/merge-patch+json'] + $this->desktop, '{"includeGroups":false}');
+        self::assertResponseIsSuccessful();
+        $this->runCollections();
+
+        self::assertSame([$this->objectKey($this->photoId)], $this->chatObjects(), 'The direct chat keeps its file.');
+    }
+
+    public function testAFailedFileReplyIsTriedAgainWithItsFile(): void
+    {
+        $replyId = $this->queueFileReply('%PDF-1.4 again');
+        $this->relay('outgoing/claim');
+        $this->report($replyId, ['sent' => false, 'error' => 'refused']);
+        self::assertResponseIsSuccessful();
+
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$replyId.'/retry', [], $this->web);
+        self::assertResponseIsSuccessful();
+        $this->relay('outgoing/claim');
+        $file = $this->decodedResponse()['file'] ?? null;
+        self::assertIsArray($file);
+        self::assertIsString($file['url'] ?? null);
+        $this->client->request('GET', $file['url']);
+        self::assertSame('%PDF-1.4 again', (string) $this->client->getInternalResponse()->getContent());
+    }
+
+    public function testAReplyWithAFileHasALongerLease(): void
+    {
+        $fileReply = $this->queueFileReply('%PDF-1.4 slow');
+        $this->relay('outgoing/claim');
+        $textReply = $this->queueReply($this->chatId, 'A text')['id'] ?? null;
+        self::assertIsString($textReply);
+        $this->relay('outgoing/claim');
+        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '10 minutes'");
+
+        $this->sweep();
+
+        self::assertSame(['failed', 'sending'], [$this->statusOf($textReply), $this->statusOf($fileReply)], 'A text is unconfirmed after 5 minutes, a file is still on its way.');
+
+        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '31 minutes' WHERE id = :id", ['id' => $fileReply]);
+        $this->sweep();
+        self::assertSame('failed', $this->statusOf($fileReply));
+        self::assertSame('unconfirmed', $this->connection()->fetchOne('SELECT error FROM chat_outgoing WHERE id = :id', ['id' => $fileReply]));
+    }
+
+    public function testTheClaimsOwnAnswerReplacesUnconfirmed(): void
+    {
+        foreach ([[['sent' => false, 'error' => 'file_unavailable'], 'failed', 'file_unavailable'], [['sent' => true], 'sent', null]] as [$answer, $status, $error]) {
+            $replyId = $this->queueFileReply('%PDF-1.4 late '.$status);
+            $this->relay('outgoing/claim');
+            $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '31 minutes' WHERE id = :id", ['id' => $replyId]);
+            $this->sweep();
+            self::assertSame('failed', $this->statusOf($replyId));
+
+            $this->report($replyId, $answer);
+
+            self::assertResponseIsSuccessful();
+            self::assertSame([$status, $error], [$this->decodedResponse()['status'] ?? null, $this->decodedResponse()['error'] ?? null]);
+        }
+
+        $replyId = $this->queueFileReply('%PDF-1.4 unsure twice');
+        $this->relay('outgoing/claim');
+        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '31 minutes' WHERE id = :id", ['id' => $replyId]);
+        $this->sweep();
+        $token = $this->tokenOf($replyId);
+        $this->report($replyId, ['sent' => false, 'error' => 'unconfirmed']);
+        self::assertResponseIsSuccessful();
+        $this->report($replyId, ['sent' => false, 'error' => 'refused', 'claimToken' => 'another']);
+        self::assertResponseStatusCodeSame(409, 'Only the claim\'s own answer.');
+        self::assertSame($token, $this->tokenOf($replyId));
+    }
+
+    public function testTryAgainWaitsWhileAClaimThatMayStillRunLasts(): void
+    {
+        $replyId = $this->queueFileReply('%PDF-1.4 maybe');
+        $this->relay('outgoing/claim');
+        $this->report($replyId, ['sent' => false, 'error' => 'unconfirmed']);
+        self::assertResponseIsSuccessful();
+
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$replyId.'/retry', [], $this->web);
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('still_sending', $this->decodedResponse()['code'] ?? null);
+        $this->relay('outgoing/claim');
+        self::assertResponseStatusCodeSame(204, 'Never handed out again meanwhile.');
+
+        $this->connection()->executeStatement("UPDATE chat_outgoing SET claimed_at = NOW() - INTERVAL '31 minutes' WHERE id = :id", ['id' => $replyId]);
+        $this->client->jsonRequest('POST', '/api/v1/chat-outgoing/'.$replyId.'/retry', [], $this->web);
+        self::assertResponseIsSuccessful();
+        self::assertSame('waiting', $this->decodedResponse()['status'] ?? null);
+    }
+
+    public function testAChatHoldsAtMostTwentyWaitingUploads(): void
+    {
+        for ($i = 0; $i < ChatUploads::MAX_UNQUEUED; ++$i) {
+            $this->uploadForReply(Uuid::v7()->toRfc4122(), 'file '.$i);
+            self::assertResponseStatusCodeSame(201);
+        }
+
+        $this->uploadForReply(Uuid::v7()->toRfc4122(), 'one more');
+
+        self::assertResponseStatusCodeSame(429);
+        self::assertSame(ChatUploads::MAX_UNQUEUED, $this->countRows('SELECT COUNT(*) FROM chat_upload'));
+    }
+
+    public function testWaitingFilesAreBoundPerUser(): void
+    {
+        $ids = [];
+        for ($i = 0; $i < 3; ++$i) {
+            $ids[] = $id = Uuid::v7()->toRfc4122();
+            $this->uploadForReply($id, str_repeat((string) $i, 4000));
+            self::assertResponseStatusCodeSame(201);
+        }
+
+        $this->uploadForReply(Uuid::v7()->toRfc4122(), str_repeat('x', 4000));
+        self::assertResponseStatusCodeSame(413);
+        self::assertSame('too_much_waiting', $this->decodedResponse()['code'] ?? null);
+        self::assertSame('Files waiting for your Mac take up more than 12 KB. Wait until they are sent, or cancel some, then attach this one again.', $this->decodedResponse()['detail'] ?? null);
+        self::assertCount(3, $this->chatObjects(), 'Nothing more was stored.');
+
+        // A reply that went out frees its share.
+        $replyId = self::newReplyId();
+        $this->client->jsonRequest('POST', '/api/v1/chats/'.$this->chatId.'/outgoing', ['id' => $replyId, 'text' => '', 'file' => ['uploadId' => $ids[0], 'name' => 'a.txt']], $this->web);
+        $this->relay('outgoing/claim');
+        $this->report($replyId, ['sent' => true]);
+        $this->uploadForReply(Uuid::v7()->toRfc4122(), str_repeat('x', 4000));
+        self::assertResponseStatusCodeSame(201);
+    }
+
+    public function testUploadsAreLimitedPerUser(): void
+    {
+        $id = Uuid::v7()->toRfc4122();
+        for ($i = 0; $i < 25; ++$i) {
+            $this->uploadForReply($id, 'the same file');
+            self::assertResponseIsSuccessful();
+        }
+
+        $this->uploadForReply($id, 'the same file');
+
+        self::assertResponseStatusCodeSame(429);
+        self::assertNotNull($this->client->getResponse()->headers->get('Retry-After'));
+    }
+
+    public function testAPersonalAccessTokenCannotUpload(): void
+    {
+        $this->uploadForReply(Uuid::v7()->toRfc4122(), 'from a script', $this->personalAccessTokenHeaders('kim@example.test', ['chat:read', 'chat:send']));
+
+        self::assertResponseStatusCodeSame(403);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM chat_upload'));
+    }
+
+    public function testABodyWithoutALengthIsReadNoFurtherThanTheLimit(): void
+    {
+        $server = ['CONTENT_TYPE' => 'application/octet-stream', 'HTTP_TRANSFER_ENCODING' => 'chunked'] + $this->web;
+        self::assertArrayNotHasKey('CONTENT_LENGTH', $server);
+
+        $this->client->request('PUT', '/api/v1/chats/'.$this->chatId.'/uploads/'.Uuid::v7()->toRfc4122(), [], [], $server, str_repeat('x', 4097));
+        self::assertResponseStatusCodeSame(413);
+        $this->client->request('PUT', '/api/v1/chats/'.$this->chatId.'/uploads/'.Uuid::v7()->toRfc4122(), [], [], $server, str_repeat('x', 4096));
+        self::assertResponseStatusCodeSame(201);
+    }
+
     /**
      * @param array<string, string>|null $headers
      */
@@ -453,6 +758,65 @@ final class ChatMediaTest extends DatabaseTestCase
     private function uploadForReply(string $uploadId, string $content, ?array $headers = null): void
     {
         $this->client->request('PUT', '/api/v1/chats/'.$this->chatId.'/uploads/'.$uploadId, [], [], ['CONTENT_TYPE' => 'application/octet-stream'] + ($headers ?? $this->web), $content);
+    }
+
+    /** Kim's photo, asked for, brought by the relay and scanned clean. */
+    private function storePhoto(): void
+    {
+        $this->requestMedia($this->photoId);
+        $this->relay('media/claim');
+        $this->upload($this->photoId, self::PHOTO);
+        $this->runQueuedScans();
+    }
+
+    /** A reply carrying a file with this content, queued from Kim's web app; returns its id. */
+    private function queueFileReply(string $content): string
+    {
+        $uploadId = Uuid::v7()->toRfc4122();
+        $this->uploadForReply($uploadId, $content);
+        self::assertResponseStatusCodeSame(201);
+        $replyId = self::newReplyId();
+        $this->client->jsonRequest('POST', '/api/v1/chats/'.$this->chatId.'/outgoing', ['id' => $replyId, 'text' => '', 'file' => ['uploadId' => $uploadId, 'name' => 'file.pdf']], $this->web);
+        self::assertResponseStatusCodeSame(201);
+
+        return $replyId;
+    }
+
+    private function statusOf(string $replyId): mixed
+    {
+        return $this->connection()->fetchOne('SELECT status FROM chat_outgoing WHERE id = :id', ['id' => $replyId]);
+    }
+
+    /**
+     * The scans queued on $transport since the last request, taken off it.
+     *
+     * @return list<Envelope>
+     */
+    private function takeScans(string $transport = 'scan'): array
+    {
+        $queue = static::getContainer()->get('messenger.transport.'.$transport);
+        self::assertInstanceOf(InMemoryTransport::class, $queue);
+        $envelopes = array_values([...$queue->getSent()]);
+        $queue->reset();
+
+        return $envelopes;
+    }
+
+    /**
+     * Runs these scans and what they queue, as the scan worker would.
+     *
+     * @param list<Envelope> $envelopes
+     */
+    private function runScans(array $envelopes): void
+    {
+        $bus = static::getContainer()->get(MessageBusInterface::class);
+        while ([] !== $envelopes) {
+            foreach ($envelopes as $envelope) {
+                $bus->dispatch($envelope->with(new ReceivedStamp('scan')));
+            }
+            $envelopes = $this->takeScans();
+        }
+        $this->chatEntityManager()->clear();
     }
 
     private function messageId(string $waId): string

@@ -26,6 +26,9 @@ final readonly class ChatFileBody
 {
     public const string SHA256_HEADER = 'X-Content-SHA256';
 
+    /** What the temporary files are called, so a sweep finds those a killed worker left ({@see SweepChatMediaHandler}). */
+    public const string TEMPORARY_PREFIX = 'tresso-chat-';
+
     private const int CHUNK = 1024 * 1024;
 
     public function __construct(private ChatMediaLimits $limits)
@@ -48,7 +51,7 @@ final readonly class ChatFileBody
             throw self::invalid(\sprintf('Send the file\'s SHA-256 in %s.', self::SHA256_HEADER));
         }
 
-        $path = tempnam(sys_get_temp_dir(), 'tresso-chat-');
+        $path = tempnam(sys_get_temp_dir(), self::TEMPORARY_PREFIX);
         if (false === $path) {
             throw new \RuntimeException('No temporary file for an upload.');
         }

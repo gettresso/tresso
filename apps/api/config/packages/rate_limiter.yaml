@@ -62,6 +62,12 @@ framework:
             cache_pool: cache.rate_limiter_shared
         # WhatsApp replies queued per caller that is not one of our own apps (an app or a personal access token of the
         # user), on top of chat_reply: a tool sends far fewer than a person typing on their devices.
+        # Files uploaded for WhatsApp replies (App\Chat\ChatUploads), per user: a person attaches a few at a time.
+        chat_upload:
+            policy: sliding_window
+            limit: 60
+            interval: '10 minutes'
+            cache_pool: cache.rate_limiter_shared
         chat_reply_caller:
             policy: sliding_window
             limit: 20
@@ -122,6 +128,12 @@ when@test:
             chat_search:
                 policy: sliding_window
                 limit: 12
+                interval: '10 minutes'
+                cache_pool: cache.rate_limiter_shared
+            # Above the 20 waiting uploads a chat holds, so that cap is reached first.
+            chat_upload:
+                policy: sliding_window
+                limit: 25
                 interval: '10 minutes'
                 cache_pool: cache.rate_limiter_shared
             chat_reply_caller:

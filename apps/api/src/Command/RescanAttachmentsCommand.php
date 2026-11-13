@@ -18,7 +18,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\TransportNamesStamp;
 
 /**
- * Queues attachments (received, and attached to drafts) for a fresh scan that skips the verdict cache: for the given
+ * Queues attachments (received, and attached to drafts) and WhatsApp files the relay brought for a fresh scan that skips the verdict cache: for the given
  * users, or with --all for everyone, for example after a signature update or once clamd is back after scans failed.
  * Each content is queued once, and its verdict then applies to every attachment with that content.
  *
@@ -111,17 +111,20 @@ final readonly class RescanAttachmentsCommand
     {
         $received = ['a.sha256 > :cursor'];
         $drafts = ['d.sha256 > :cursor'];
+        $chats = ['cm.media_sha256 > :cursor'];
         $parameters = ['cursor' => $cursor, 'batch' => self::BATCH];
         $types = [];
         if (null !== $ownerIds) {
             $received[] = 'm.owner_id IN (:owners)';
             $drafts[] = 'dr.owner_id IN (:owners)';
+            $chats[] = 'ca.owner_id IN (:owners)';
             $parameters['owners'] = $ownerIds;
             $types['owners'] = ArrayParameterType::STRING;
         }
         if ([] !== $statuses) {
             $received[] = 'a.scan_status IN (:statuses)';
             $drafts[] = 'd.scan_status IN (:statuses)';
+            $chats[] = 'cm.media_scan_status IN (:statuses)';
             $parameters['statuses'] = $statuses;
             $types['statuses'] = ArrayParameterType::STRING;
         }
@@ -134,6 +137,9 @@ final readonly class RescanAttachmentsCommand
                 UNION ALL
                 (SELECT DISTINCT ON (d.sha256) d.id, \'draft\' AS target, d.sha256 FROM draft_attachment d JOIN draft dr ON dr.id = d.draft_id
                  WHERE '.implode(' AND ', $drafts).' ORDER BY d.sha256, d.id LIMIT :batch)
+                UNION ALL
+                (SELECT DISTINCT ON (cm.media_sha256) cm.id, \'chat\' AS target, cm.media_sha256 AS sha256 FROM chat_message cm JOIN chat_account ca ON ca.id = cm.chat_account_id
+                 WHERE '.implode(' AND ', $chats).' ORDER BY cm.media_sha256, cm.id LIMIT :batch)
              ) contents ORDER BY sha256, target DESC, id LIMIT :batch',
             $parameters,
             $types,
