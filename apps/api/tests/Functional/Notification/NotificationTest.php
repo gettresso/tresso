@@ -240,6 +240,19 @@ final class NotificationTest extends DatabaseTestCase
         self::assertSame('Leave now: about 20 minutes to Café Loos, Amsterdam.', $leave[0]['body']);
     }
 
+    public function testLeaveNowShowsThePlaceWithoutTheMeetingLink(): void
+    {
+        $start = $this->inMinutes(2 * 24 * 60);
+        $this->createEvent($start, ['location' => 'Café Loos, Amsterdam https://teams.microsoft.com/l/meetup-join/19%3asecret', 'travelMinutes' => 20]);
+        // A place that is only a link is nowhere to travel to.
+        $this->createEvent($start->modify('+2 hours'), ['location' => 'https://teams.microsoft.com/l/meetup-join/19%3aother', 'travelMinutes' => 20]);
+
+        $leave = array_values(array_filter($this->notifications(), static fn (array $n): bool => 'leave_now' === $n['kind']));
+        self::assertCount(1, $leave);
+        self::assertSame($start->modify('-25 minutes')->format(\DATE_ATOM), $this->atom($leave[0]['fireAt']));
+        self::assertSame('Leave now: about 20 minutes to Café Loos, Amsterdam.', $leave[0]['body']);
+    }
+
     public function testRulesAddTheBriefAndTheFollowUpForMeetings(): void
     {
         $this->client->jsonRequest('POST', '/api/v1/reminder-rules', [
@@ -398,6 +411,62 @@ final class NotificationTest extends DatabaseTestCase
         $this->fire(self::string($leave[0]['id']));
         $leave = array_values(array_filter($this->notifications(), static fn (array $n): bool => 'leave_now' === $n['kind']));
         self::assertNotNull($leave[0]['deliveredAt']);
+    }
+
+    public function testTheEstimateAndItsTextUseThePlaceWithoutTheMeetingLink(): void
+    {
+        $this->registerDevices();
+        $this->client->jsonRequest('POST', '/api/v1/reminder-rules', ['name' => 'Places', 'allDay' => false, 'withLocation' => true, 'reminders' => [], 'leaveNow' => true], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $this->runQueuedPlanning();
+        $start = $this->inMinutes(90);
+        $location = 'Keizersgracht 9, Amsterdam (https://teams.microsoft.com/l/meetup-join/19%3asecret)';
+        $eventId = $this->createEvent($start, ['location' => $location]);
+        $leave = array_values(array_filter($this->notifications(), static fn (array $n): bool => 'leave_now' === $n['kind']));
+        self::assertSame('Time to leave for Keizersgracht 9, Amsterdam.', $leave[0]['body']);
+
+        $this->http()->respond('https://nominatim.example.test/search', json_encode([['lat' => '52.360000', 'lon' => '4.880000']], \JSON_THROW_ON_ERROR));
+        $this->http()->respond('https://osrm.example.test/route/v1/driving/4.890000,52.370000;4.880000,52.360000', json_encode(['routes' => [['duration' => 1200]]], \JSON_THROW_ON_ERROR));
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events/'.$eventId.'/leave-estimate', ['latitude' => 52.37, 'longitude' => 4.89], $this->kim);
+        self::assertResponseIsSuccessful();
+        self::assertSame(20, $this->decodedResponse()['minutes']);
+
+        // The geocoder's answers are cached by place, so a run may not ask it again; when it does, it gets the place.
+        foreach (array_filter($this->http()->calls(), static fn (array $call): bool => str_starts_with($call['url'], 'https://nominatim.example.test/')) as $call) {
+            self::assertStringContainsString('Keizersgracht 9, Amsterdam', urldecode(str_replace('+', ' ', $call['url'])));
+            self::assertDoesNotMatchRegularExpression('~teams|secret|https?%3A~i', $call['url'], 'The geocoder never sees the meeting link.');
+        }
+        $leave = array_values(array_filter($this->notifications(), static fn (array $n): bool => 'leave_now' === $n['kind']));
+        self::assertSame('Leave now: about 20 minutes to Keizersgracht 9, Amsterdam.', $leave[0]['body']);
+
+        // A replan keeps the phone's estimate, and the place without the link.
+        $this->updateEvent($eventId, $start, ['summary' => 'Standup, renamed', 'location' => $location]);
+        $leave = array_values(array_filter($this->notifications(), static fn (array $n): bool => 'leave_now' === $n['kind']));
+        self::assertSame('Leave now: about 20 minutes to Keizersgracht 9, Amsterdam.', $leave[0]['body']);
+    }
+
+    public function testNoEstimateForAPlaceThatIsOnlyALink(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/reminder-rules', ['name' => 'Places', 'allDay' => false, 'withLocation' => true, 'reminders' => [], 'leaveNow' => true], $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $this->runQueuedPlanning();
+        $start = $this->inMinutes(90);
+        $eventId = $this->createEvent($start, ['location' => 'Herengracht 1, Amsterdam']);
+        self::assertCount(1, array_filter($this->notifications(), static fn (array $n): bool => 'leave_now' === $n['kind']));
+
+        // The place became a link after the plan: the phone may still ask, and the geocoder is not.
+        $local = $start->setTimezone(new \DateTimeZone('Europe/Amsterdam'));
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($this->calendarId, [
+            'summary' => 'Standup',
+            'start' => ['dateTime' => $local->format('Y-m-d\TH:i:s'), 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => $local->modify('+30 minutes')->format('Y-m-d\TH:i:s'), 'timeZone' => 'Europe/Amsterdam'],
+            'location' => 'https://teams.microsoft.com/l/meetup-join/19%3asecret',
+        ]), $this->kim);
+        self::assertResponseIsSuccessful();
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events/'.$eventId.'/leave-estimate', ['latitude' => 52.37, 'longitude' => 4.89], $this->kim);
+        self::assertResponseIsSuccessful();
+        self::assertNull($this->decodedResponse()['minutes']);
+        self::assertCount(0, array_filter($this->http()->calls(), static fn (array $call): bool => str_starts_with($call['url'], 'https://nominatim.example.test/')));
     }
 
     public function testSnoozesUntilTheStartButNotIntoThePast(): void

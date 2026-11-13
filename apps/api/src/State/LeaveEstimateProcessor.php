@@ -51,19 +51,25 @@ final readonly class LeaveEstimateProcessor implements ProcessorInterface
             throw new NotFoundHttpException('This occurrence has no leave-now reminder waiting for an estimate.');
         }
 
+        // Only the place goes to the geocoder: never a meeting link written in it. A place that is only a link is
+        // nowhere to travel to.
+        $place = NotificationPlanner::placeWithoutLinks($event->getLocation());
+        if ('' === $place) {
+            return new LeaveEstimateResource(null, null);
+        }
         $preferences = $this->preferences->forUser($user);
-        $minutes = $this->travel->minutes($data->latitude, $data->longitude, $event->getLocation(), $notification->getOccurrenceStartsAt(), $preferences->getTravelMode());
+        $minutes = $this->travel->minutes($data->latitude, $data->longitude, $place, $notification->getOccurrenceStartsAt(), $preferences->getTravelMode());
         if (null === $minutes) {
             return new LeaveEstimateResource(null, null);
         }
         $leaveAt = $notification->getOccurrenceStartsAt()->modify(\sprintf('-%d minutes', $minutes + $preferences->getExtraTravelMinutes()));
 
-        $this->entityManager->wrapInTransaction(function () use ($notification, $minutes, $leaveAt, $event): void {
+        $this->entityManager->wrapInTransaction(function () use ($notification, $minutes, $leaveAt, $place): void {
             $locked = $this->entityManager->find(ScheduledNotification::class, $notification->getId(), LockMode::PESSIMISTIC_WRITE);
             if (null === $locked || $locked->isDelivered() || null !== $locked->getDismissedAt()) {
                 return;
             }
-            $locked->estimate($minutes, $leaveAt, NotificationPlanner::leaveBody($minutes, $event->getLocation()));
+            $locked->estimate($minutes, $leaveAt, NotificationPlanner::leaveBody($minutes, $place));
             $this->entityManager->flush();
             $this->planner->announce($locked);
         });
