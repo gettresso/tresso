@@ -49,7 +49,7 @@ use Symfony\Component\Validator\ConstraintViolationList;
  * - The messages get a change number per {@see CHANGE_BYTES} of text, so a page of the delta, which never splits a
  *   change number, stays bounded however large the batch.
  * - Each chat's newest incoming message stored goes to {@see ChatNotifier} for a push (only with Notify me on, never
- *   for a batch of a first import).
+ *   for a batch honoured as part of the first import).
  */
 final readonly class ChatIngestor
 {
@@ -193,7 +193,7 @@ final readonly class ChatIngestor
             }
         }
         $this->entityManager->flush();
-        $this->notifier->stored($account, array_values($newestIncoming), $batch->firstImport, $now);
+        $this->notifier->stored($account, array_values($newestIncoming), $honourFirstImport, $now);
 
         $counts = array_count_values($results);
 

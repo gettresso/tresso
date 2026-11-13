@@ -33,12 +33,15 @@ final readonly class PushMessage
     public function __construct(
         public string $id,
         public string $kind,
+        #[\SensitiveParameter]
         public string $title,
+        #[\SensitiveParameter]
         public string $body,
         public ?string $path,
         public bool $silent,
         /** Push services drop it when it could not be delivered by then. */
         public \DateTimeImmutable $expiresAt,
+        #[\SensitiveParameter]
         public array $data = [],
         public string $androidChannel = self::REMINDERS,
     ) {
