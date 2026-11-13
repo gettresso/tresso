@@ -66,6 +66,15 @@ jobs:
           extensions: pdo_pgsql, redis, intl, sodium, zip, apcu
           tools: composer:v2
           coverage: none
+      # This PHP reads the runner's own time zone data. Ubuntu keeps the older names browsers still report (such as
+      # Asia/Calcutta) in a package of their own, which the ubuntu-26.04 runner does not have; the API image bundles
+      # PHP's own data, which knows them. The check fails the job early if the names are still missing.
+      - name: Install the older time zone names
+        working-directory: .
+        run: |
+          scripts/ci/retry.sh 4 sudo apt-get update
+          scripts/ci/retry.sh 4 sudo apt-get install -y --no-install-recommends tzdata-legacy
+          php -r 'new DateTimeZone("Asia/Calcutta");'
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress --no-interaction
       - name: Generate OAuth2 signing keys
