@@ -43,6 +43,9 @@ fn main() {
     "whatsapp_download",
     "whatsapp_open_file",
     "whatsapp_choose_file",
+    "whatsapp_file",
+    "whatsapp_stage_file",
+    "whatsapp_discard_file",
   ])))
   .expect("failed to run the Tauri build script");
 }

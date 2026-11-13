@@ -24,7 +24,12 @@
 //!   Tresso makes, marked as downloaded from the internet (quarantine), and kept only when its SHA-256 matches the one
 //!   the store holds; a file that differs is removed and refused. The bridge's path is used only after it proved to
 //!   be a file inside the store folder.
-//! - A file is sent only when the user picked it in the file dialog, and only Tresso's own downloads open.
+//! - A file is sent only when the user picked it in the file dialog, or when it is one the relay staged (a file a reply
+//!   written on another device carries, fetched from the server: `whatsapp_stage_file`), and only Tresso's own
+//!   downloads open. A staged file lives in a folder of its own (0700) inside the app's outbox, under one plain name, is
+//!   removed once it was sent (`whatsapp_discard_file`), and every staged file goes at sign-out and at the next launch.
+//! - The relay reads back only Tresso's own downloads (`whatsapp_file`), of at most 100 MB, to hand a file the user
+//!   asked for on another device to the server.
 //! - The bridge's output carries the text of incoming messages, and a message can hold line breaks, so a line in it
 //!   proves nothing by itself: a QR code is read only while the store has no session (no message arrives then), the
 //!   REST port only once the port answers as a bridge, a log out only once the session is gone from the store. Output
@@ -73,6 +78,10 @@ const SESSION_DB: &str = "whatsapp.db";
 const FOLDERS_FILE: &str = "whatsapp.folders.json";
 const PID_FILE: &str = "whatsapp.bridge.pid";
 const MEDIA_DIR: &str = "whatsapp-media";
+/// Files a reply written on another device carries, staged for the bridge until they are sent.
+const OUTBOX_DIR: &str = "whatsapp-outbox";
+/// The header the web client names a staged file in (percent-encoded UTF-8).
+const FILE_NAME_HEADER: &str = "x-file-name";
 const MAX_ROWS: u32 = 500;
 const MAX_IDS: usize = 500;
 const MAX_TEXT_BYTES: usize = 65_536;
@@ -366,6 +375,9 @@ struct Shared {
   data_dir: Mutex<Option<PathBuf>>,
   /// The files the user picked in the file dialog since the last sign-out: the only ones a message may carry.
   chosen_files: Mutex<HashSet<PathBuf>>,
+  /// The files the relay staged to send (`whatsapp_stage_file`) and not discarded yet: the only others a message may
+  /// carry.
+  staged_files: Mutex<HashSet<PathBuf>>,
   /// Whether WhatsApp is turned on, read once at launch (`setup`); off until then.
   switched_on: std::sync::OnceLock<bool>,
 }
@@ -438,6 +450,7 @@ impl Bridge {
       emit: Mutex::new(None),
       data_dir: Mutex::new(None),
       chosen_files: Mutex::new(HashSet::new()),
+      staged_files: Mutex::new(HashSet::new()),
       switched_on: std::sync::OnceLock::new(),
     }))
   }
@@ -554,6 +567,10 @@ impl Bridge {
   /// The sign-in ended: the bridge stops and the files picked for the user who left can no longer be sent.
   fn signed_out(&self) {
     lock(&self.0.chosen_files).clear();
+    lock(&self.0.staged_files).clear();
+    if let Some(data_dir) = lock(&self.0.data_dir).clone() {
+      let _ = fs::remove_dir_all(data_dir.join(OUTBOX_DIR));
+    }
     self.stop();
   }
 
@@ -1835,6 +1852,10 @@ pub struct Downloaded {
   path: String,
   /// The file's SHA-256 is the one the store holds. False only when the store holds none.
   verified: bool,
+  /// Hex SHA-256 of the copy.
+  sha256: String,
+  /// Bytes of the copy.
+  size: u64,
 }
 
 /// Whether a file name the store holds is one plain name. The bridge writes a download to `store/<chat>/<name>`, and a
@@ -1937,7 +1958,7 @@ fn copy_verified(store: &Path, reported: &str, media_dir: &Path, media: &Media, 
   if let Err(error) = fs::rename(&partial, &target) {
     return fail(format!("Saving the WhatsApp file failed: {error}"));
   }
-  Ok(Downloaded { path: target.display().to_string(), verified })
+  Ok(Downloaded { path: target.display().to_string(), verified, sha256: hex(&digest), size: written })
 }
 
 fn download(port: u16, token: &str, folder: &Path, media_dir: &Path, message_id: &str, chat_jid: &str, timeout: Duration) -> Result<Downloaded, String> {
@@ -2009,6 +2030,8 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) {
   );
   // Read once: a change takes effect at the next launch, never halfway through a session.
   bridge.0.switched_on.get_or_init(|| turned_on(std::env::var_os(ENABLE_ENV), enabled_by_default()));
+  // Files staged by an earlier run were never sent, or were sent and not removed: none is sent from here on.
+  let _ = fs::remove_dir_all(dir.join(OUTBOX_DIR));
   // Also with WhatsApp off: a bridge an earlier run left behind is stopped, not kept.
   if supported().is_ok() {
     let shared = Arc::clone(&bridge.0);
@@ -2212,7 +2235,7 @@ pub fn whatsapp_names<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, 
   names(store_file(&folder, SESSION_DB).ok().as_deref(), store_file(&folder, MESSAGES_DB).ok().as_deref(), &ids)
 }
 
-/// Checks a message before it goes to the bridge; the file must be one the user picked.
+/// Checks a message before it goes to the bridge; the file must be one the user picked (or the relay staged).
 fn checked_message(chosen_files: &HashSet<PathBuf>, recipient: &str, text: &str, media_path: Option<&str>) -> Result<Option<PathBuf>, String> {
   if !valid_recipient(recipient) {
     return Err(code("The recipient is not a phone number or a WhatsApp chat."));
@@ -2225,7 +2248,7 @@ fn checked_message(chosen_files: &HashSet<PathBuf>, recipient: &str, text: &str,
     Some(path) => {
       let canonical = Path::new(path).canonicalize().map_err(|_| code("The file to send is not there."))?;
       if !chosen_files.contains(&canonical) || !canonical.is_file() {
-        return Err(code("Only a file chosen with Attach can be sent."));
+        return Err(code("Only a file chosen with Attach, or one a reply carries, can be sent."));
       }
       if fs::metadata(&canonical).map_err(|_| code("The file to send is not there."))?.len() > MAX_SEND_BYTES {
         return Err(code("too_large"));
@@ -2242,7 +2265,8 @@ fn checked_message(chosen_files: &HashSet<PathBuf>, recipient: &str, text: &str,
 #[tauri::command(async)]
 pub fn whatsapp_send(bridge: State<'_, Bridge>, recipient: String, text: String, media_path: Option<String>) -> Result<Sent, String> {
   bridge.enabled()?;
-  let media = checked_message(&lock(&bridge.0.chosen_files), &recipient, &text, media_path.as_deref())?;
+  let sendable: HashSet<PathBuf> = lock(&bridge.0.chosen_files).union(&lock(&bridge.0.staged_files)).cloned().collect();
+  let media = checked_message(&sendable, &recipient, &text, media_path.as_deref())?;
   let snapshot = bridge.snapshot();
   match bridge.endpoint() {
     Some((port, token)) => Ok(send(port, &token, &recipient, &text, media.as_deref(), REQUEST_TIMEOUT)),
@@ -2284,6 +2308,127 @@ pub fn whatsapp_choose_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bri
   let chosen = chosen_file(&file)?;
   lock(&bridge.0.chosen_files).insert(file);
   Ok(Some(chosen))
+}
+
+/// The content of one of Tresso's own downloads, for the relay to hand to the server: at most `MAX_SEND_BYTES` (the
+/// server takes no larger file), as raw bytes.
+#[tauri::command(async)]
+pub fn whatsapp_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, path: String) -> Result<tauri::ipc::Response, String> {
+  bridge.enabled()?;
+  let file = openable(&data_dir(&app)?.join(MEDIA_DIR), &path)?;
+  read_limited(&file, MAX_SEND_BYTES).map(tauri::ipc::Response::new)
+}
+
+/// Stages a file a reply carries (the request's raw body), named in the `x-file-name` header, so `whatsapp_send` may
+/// send it. Returns its path.
+#[tauri::command(async)]
+pub fn whatsapp_stage_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+  bridge.enabled()?;
+  let tauri::ipc::InvokeBody::Raw(content) = request.body() else {
+    return Err(code("Send the file as raw bytes."));
+  };
+  let name = request.headers().get(FILE_NAME_HEADER).and_then(|value| value.to_str().ok()).map(percent_decoded).ok_or_else(|| code("Name the file."))?;
+  let staged = stage(&data_dir(&app)?.join(OUTBOX_DIR), &name?, content)?;
+  let text = staged.to_str().ok_or_else(|| code("The file's name cannot be used."))?.to_string();
+  lock(&bridge.0.staged_files).insert(staged);
+  Ok(text)
+}
+
+/// Removes a staged file once it was sent (or could not be); one that is gone already is fine.
+#[tauri::command(async)]
+pub fn whatsapp_discard_file(bridge: State<'_, Bridge>, path: String) -> Result<(), String> {
+  bridge.enabled()?;
+  let path = PathBuf::from(path);
+  let mut staged = lock(&bridge.0.staged_files);
+  if !staged.remove(&path) {
+    return Ok(());
+  }
+  discard(&path);
+  Ok(())
+}
+
+/// Reads a whole file of at most `limit` bytes; `too_large` above it.
+fn read_limited(file: &Path, limit: u64) -> Result<Vec<u8>, String> {
+  let mut content = Vec::new();
+  File::open(file).and_then(|opened| opened.take(limit + 1).read_to_end(&mut content)).map_err(|error| format!("Reading the WhatsApp file failed: {error}"))?;
+  if content.len() as u64 > limit {
+    return Err(code("too_large"));
+  }
+  Ok(content)
+}
+
+/// `%`-escapes of UTF-8 back to text; `refused` for a broken escape or bytes that are no UTF-8.
+fn percent_decoded(value: &str) -> Result<String, String> {
+  let bytes = value.as_bytes();
+  let mut out = Vec::with_capacity(bytes.len());
+  let mut i = 0;
+  while i < bytes.len() {
+    if bytes[i] == b'%' {
+      let pair = bytes.get(i + 1..i + 3).and_then(|pair| std::str::from_utf8(pair).ok()).and_then(|pair| u8::from_str_radix(pair, 16).ok()).ok_or_else(|| code("refused"))?;
+      out.push(pair);
+      i += 3;
+    } else {
+      out.push(bytes[i]);
+      i += 1;
+    }
+  }
+  String::from_utf8(out).map_err(|_| code("refused"))
+}
+
+/// The name a staged file gets: the last part of the given one, without control characters or leading dots, at most
+/// 200 bytes (cut at a character); `file` when nothing is left. It is the name WhatsApp shows the recipient.
+fn staged_name(name: &str) -> String {
+  let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
+  let clean: String = last.chars().filter(|c| !c.is_control()).collect::<String>().trim().trim_start_matches('.').to_string();
+  let mut cut = String::new();
+  for c in clean.chars() {
+    if cut.len() + c.len_utf8() > 200 {
+      break;
+    }
+    cut.push(c);
+  }
+  if cut.is_empty() { "file".to_string() } else { cut }
+}
+
+/// Writes `content` to `<outbox>/<random>/<name>` (folders 0700, the file 0600), at most `MAX_SEND_BYTES`.
+fn stage(outbox: &Path, name: &str, content: &[u8]) -> Result<PathBuf, String> {
+  if content.is_empty() {
+    return Err(code("The file is empty."));
+  }
+  if content.len() as u64 > MAX_SEND_BYTES {
+    return Err(code("too_large"));
+  }
+  let mut folder = [0u8; 16];
+  getrandom::fill(&mut folder).map_err(|error| format!("Staging the file failed: {error}"))?;
+  let dir = outbox.join(hex(&folder));
+  let write = || -> io::Result<PathBuf> {
+    media_folder(outbox)?;
+    media_folder(&dir)?;
+    let path = dir.join(staged_name(name));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::OpenOptionsExt;
+      options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    path.canonicalize()
+  };
+  write().map_err(|error| {
+    let _ = fs::remove_dir_all(&dir);
+    format!("Staging the file failed: {error}")
+  })
+}
+
+/// Removes a staged file with its own folder.
+fn discard(path: &Path) {
+  let _ = fs::remove_file(path);
+  if let Some(dir) = path.parent() {
+    let _ = fs::remove_dir(dir);
+  }
 }
 
 /// A file picked for Attach: its path and its size in bytes, so the sent reply can be matched to the bridge's later copy.
@@ -2978,6 +3123,60 @@ mod tests {
     let redirecting = server(move |_| Some(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")));
     assert_eq!(send(redirecting.port, TOKEN, "31612345678", "Hi", None, REQUEST_TIMEOUT), sent(false, "refused"));
     assert!(lock(&elsewhere.requests).is_empty());
+  }
+
+  #[test]
+  fn stages_a_reply_file_under_one_plain_name_and_removes_it_again() {
+    let data = temp();
+    let outbox = data.join(OUTBOX_DIR);
+    for (given, kept) in [
+      ("Drill manual.pdf", "Drill manual.pdf"),
+      ("C:\\Users\\kim\\notes.txt", "notes.txt"),
+      ("../../Library/LaunchAgents/x.plist", "x.plist"),
+      ("..", "file"),
+      ("  .hidden\u{7}", "hidden"),
+      ("", "file"),
+    ] {
+      assert_eq!(staged_name(given), kept, "{given:?}");
+    }
+    assert!(staged_name(&"é".repeat(300)).len() <= 200);
+
+    let staged = stage(&outbox, "../manual.pdf", b"%PDF manual").unwrap();
+    assert_eq!(staged.file_name().unwrap(), "manual.pdf");
+    assert_eq!(staged.parent().unwrap().parent().unwrap(), outbox.canonicalize().unwrap(), "In a folder of its own inside the outbox.");
+    assert_eq!(fs::read(&staged).unwrap(), b"%PDF manual");
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      assert_eq!(fs::metadata(&staged).unwrap().permissions().mode() & 0o777, 0o600);
+      assert_eq!(fs::metadata(staged.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+    let again = stage(&outbox, "manual.pdf", b"other").unwrap();
+    assert_ne!(again, staged, "Two files of one name never share a path.");
+    assert_eq!(stage(&outbox, "empty", b""), Err(code("The file is empty.")));
+
+    // A staged file may be sent; once discarded it may not.
+    let mut sendable: HashSet<PathBuf> = [staged.clone()].into();
+    assert_eq!(checked_message(&sendable, "31612345678", "", Some(staged.to_str().unwrap())), Ok(Some(staged.clone())));
+    discard(&staged);
+    sendable.remove(&staged);
+    assert!(!staged.exists() && !staged.parent().unwrap().exists());
+    assert!(checked_message(&sendable, "31612345678", "", Some(staged.to_str().unwrap())).is_err());
+  }
+
+  #[test]
+  fn reads_a_file_name_header_and_a_download_within_its_limit() {
+    assert_eq!(percent_decoded("Drill%20manual%20%C3%A9.pdf"), Ok("Drill manual é.pdf".to_string()));
+    assert_eq!(percent_decoded("plain.txt"), Ok("plain.txt".to_string()));
+    assert_eq!(percent_decoded("bad%2"), Err(code("refused")));
+    assert_eq!(percent_decoded("bad%zz"), Err(code("refused")));
+    assert_eq!(percent_decoded("%FF"), Err(code("refused")));
+
+    let root = temp();
+    let file = root.join("photo.jpg");
+    fs::write(&file, b"0123456789").unwrap();
+    assert_eq!(read_limited(&file, 10), Ok(b"0123456789".to_vec()));
+    assert_eq!(read_limited(&file, 9), Err(code("too_large")));
   }
 
   #[test]
@@ -3886,7 +4085,7 @@ mod tests {
   #[test]
   fn every_command_refuses_while_whatsapp_is_off() {
     use tauri::test::{INVOKE_KEY, mock_builder};
-    const COMMANDS: [&str; 18] = [
+    const COMMANDS: [&str; 21] = [
       "whatsapp_available",
       "whatsapp_device",
       "whatsapp_config_load",
@@ -3905,6 +4104,9 @@ mod tests {
       "whatsapp_download",
       "whatsapp_open_file",
       "whatsapp_choose_file",
+      "whatsapp_file",
+      "whatsapp_stage_file",
+      "whatsapp_discard_file",
     ];
     let manifest: Vec<&str> = include_str!("../build.rs")
       .split('"')
@@ -3932,7 +4134,10 @@ mod tests {
         whatsapp_send,
         whatsapp_download,
         whatsapp_open_file,
-        whatsapp_choose_file
+        whatsapp_choose_file,
+        whatsapp_file,
+        whatsapp_stage_file,
+        whatsapp_discard_file
       ])
       .build(tauri::generate_context!(test = true))
       .unwrap();
