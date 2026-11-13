@@ -2939,9 +2939,11 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
   and `conferenceError` (`refused`, `not_supported`), and nothing when the meeting is there or none was asked for.
   A request still pending five minutes later, when a synced version without a meeting arrives and no write waits, is
   failed (`refused`).
-- Removal of a Google Meet meeting: the master carries `X-TRESSO-CONFERENCE-REMOVE:meet`. Only then does the worker
-  patch `"conferenceData": null` (with `conferenceDataVersion=1`); a master that merely lacks `X-GOOGLE-CONFERENCE` is
-  never a reason to remove Google's meeting. A new request clears the marker; the provider's version drops it.
+- Removal of a Google Meet meeting: the master carries `X-TRESSO-CONFERENCE-REMOVE:meet`. Only then, and only when the
+  user organizes the event, does the worker patch `"conferenceData": null` (with `conferenceDataVersion=1`); a master
+  that merely lacks `X-GOOGLE-CONFERENCE` is never a reason to remove Google's meeting, and a marker on an override is
+  ignored. A new request clears the marker, the provider's version drops it, and a move to a calendar that is not
+  Google's leaves it behind (with a request the new calendar cannot serve).
 - A Teams meeting Graph made cannot be removed (`conference.removable` is false); the API refuses the change.
 - A link the API knows (the user's own) travels as `CONFERENCE` and as the last line of the description, "Join the
   meeting: <url>" or "Join with <App>: <url>" (`MeetingJoinLine`); Google and Microsoft keep the line, and the
