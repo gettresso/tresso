@@ -62,6 +62,16 @@ export interface Conference {
   dialIn: string | null
 }
 
+/** A meeting link that was asked for and is not on the event (yet). Master rows only. */
+export interface ConferenceRequest {
+  provider: 'meet' | 'teams' | 'zoom'
+  /** `pending`: the write is on its way or the provider is still making the meeting. */
+  status: 'pending' | 'failed'
+  /** Only with `failed`; a code, never the provider's words. */
+  reason: 'refused' | 'not_supported' | 'unreachable' | null
+  requestedAt: string
+}
+
 /**
  * An event as stored: a single event, the master of a series (`recurrence`, `rdates`, `exdates`), or the override of
  * one occurrence (`recurrenceId`). Recurrence ids are YYYYMMDD for all-day series, YYYYMMDDTHHMMSSZ otherwise.
@@ -92,6 +102,8 @@ export interface SyncedCalendarEvent {
   selfResponse: ParticipationStatus | null
   reminders: Reminder[]
   conference: Conference | null
+  /** A link asked for and not made yet, on the series' master only. Missing on rows stored before it existed. */
+  conferenceRequest?: ConferenceRequest | null
   /** The invitation this event came from. */
   messageId: string | null
   /** Why the last change did not reach the provider. */

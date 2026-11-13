@@ -91,6 +91,7 @@ export function calendarEvent(id: string, calendarId: string, extra: Partial<Syn
     selfResponse: null,
     reminders: [],
     conference: null,
+    conferenceRequest: null,
     messageId: null,
     syncError: null,
     travelMinutes: null,
