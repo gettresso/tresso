@@ -151,21 +151,21 @@ export function displayLink(url: string): string {
 /**
  * A link as one short line: without a leading `https://`, at most `max` characters (real Teams links are about 250),
  * with hidden characters made visible as in {@link displayLink}. The host is never cut in the middle, so a lookalike
- * such as "teams.microsoft.com.evil.example" always shows where it leads: the scheme (other than https) and the host,
- * up to the first `/`, `?` or `#`, stay whole and the rest is cut in the middle; a host longer than `max` alone loses
- * its left end, keeping the registrable part on the right. A link without a host (`javascript:`) is cut in the
- * middle. Show the full link in a title; Copy always copies the full link.
+ * such as "teams.microsoft.com.evil.example" always shows where it leads. What comes before the host (leading spaces
+ * or marks, a scheme with up to two slashes or backslashes, or only the slashes) and the host up to the first `/`, a backslash,
+ * `?` or `#` stay whole; a user name before an `@` is left out, so "teams.microsoft.com@evil.example" reads as
+ * "evil.example"; the rest is cut in the middle. A host longer than `max` alone loses its left end, keeping the
+ * registrable part on the right. Only a scheme without slashes (`javascript:`, `data:`) has no host and is cut in the
+ * middle. Show the full link in a title ({@link displayLink}); Copy always copies the full link.
  */
 export function linkText(url: string, max = 44): string {
   const limit = Math.max(3, Math.floor(max))
   const https = url.startsWith('https://')
-  const rest = visible(https ? url.slice('https://'.length) : url)
-  const scheme = https ? null : /^[a-z][a-z0-9+.-]*:\/\//i.exec(rest)
-  const chars = Array.from(rest)
-  if (chars.length <= limit) {
-    return chars.join('')
-  }
+  const rest = Array.from(visible(https ? url.slice('https://'.length) : url))
   const cutMiddle = (part: string[], room: number): string => {
+    if (part.length <= room) {
+      return part.join('')
+    }
     if (room <= 1) {
       return '\u2026'
     }
@@ -173,17 +173,32 @@ export function linkText(url: string, max = 44): string {
     const tail = room - 1 - head
     return `${part.slice(0, head).join('')}\u2026${tail > 0 ? part.slice(part.length - tail).join('') : ''}`
   }
-  if (!https && scheme === null) {
-    return cutMiddle(chars, limit)
+  const text = rest.join('')
+  const junk = /^[\s\ufffd]*/u.exec(text)?.[0] ?? ''
+  const after = text.slice(junk.length)
+  // After `https://` comes the host: "user:pass@" or "host:443" there is no scheme.
+  const scheme = https ? null : /^([a-z][a-z0-9+.-]*):([/\\]{0,2})/i.exec(after)
+  // Nor is "teams.microsoft.com:443/x" (a scheme has no dot) or "user:pass@host" (an @ before the path).
+  const authorityOf = (from: string): string => from.split(/[/\\?#]/, 1)[0] ?? ''
+  const real = scheme !== null && !scheme[1]!.includes('.') && !(scheme[2] === '' && authorityOf(after).includes('@')) ? scheme : null
+  if (real !== null && real[2] === '') {
+    return cutMiddle(rest, limit)
   }
-  const lead = scheme === null ? 0 : Array.from(scheme[0]).length
-  const found = chars.findIndex((char, index) => index >= lead && (char === '/' || char === '?' || char === '#'))
-  const hostEnd = found === -1 ? chars.length : found
-  const host = chars.slice(0, hostEnd)
+  const prefix = real !== null ? real[0] : (/^[/\\]{0,2}/.exec(after)?.[0] ?? '')
+  const lead = Array.from(junk + prefix)
+  const tail = rest.slice(lead.length)
+  const found = tail.findIndex((char) => char === '/' || char === '\\' || char === '?' || char === '#')
+  const authority = found === -1 ? tail : tail.slice(0, found)
+  const at = authority.lastIndexOf('@')
+  const host = [...lead, ...authority.slice(at + 1)]
+  const path = found === -1 ? [] : tail.slice(found)
+  if (host.length + path.length <= limit) {
+    return [...host, ...path].join('')
+  }
   if (host.length >= limit) {
     return `\u2026${host.slice(host.length - (limit - 1)).join('')}`
   }
-  return host.join('') + cutMiddle(chars.slice(hostEnd), limit - host.length)
+  return host.join('') + cutMiddle(path, limit - host.length)
 }
 
 /**
