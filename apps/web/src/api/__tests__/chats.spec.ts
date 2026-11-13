@@ -89,10 +89,10 @@ describe('the chat endpoints', () => {
     for (const [name, run, method, path, body, answer] of cases) {
       const { api, calls } = transport(answer)
       await run(api)
-      expect(calls, name).toHaveLength(1)
-      expect(calls[0]!.method, name).toBe(method)
-      expect(calls[0]!.path, name).toBe(path)
-      expect(JSON.stringify(calls[0]!.body), name).toBe(JSON.stringify(body))
+      expect({ name, calls: calls.map((call) => ({ method: call.method, path: call.path, body: JSON.stringify(call.body) })) }).toEqual({
+        name,
+        calls: [{ method, path, body: JSON.stringify(body) }],
+      })
     }
   })
 
