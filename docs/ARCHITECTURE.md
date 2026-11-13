@@ -3732,11 +3732,14 @@ chat's JID and WhatsApp id, so it never needs either readable.
   (`claim_token`, `claimed_by`) and never in the delta or any other answer; it is short-lived and random, so it is
   stored as it is, not sealed. The result must carry it back (compared in constant time): another token is 409
   `result_final`. A result is final and ends the claim: the same result again is a 200 (it changes nothing, so no token
-  is asked), another is 409 `result_final`, except that `sent: true` wins over `unconfirmed` of the same claim (it did go
-  out, and Try again would send it twice); `unconfirmed` keeps the claim for that, and Try again ends it. A desktop that
+  is asked), another is 409 `result_final`, except that the claim's own answer wins over `unconfirmed` (said by the
+  sweep or by the relay): `sent: true` (it did go out, and Try again would send it twice) and a definite `sent: false`
+  (nothing went out; the user sees the real reason). It is the claim's answer arriving late, never a send.
+  `unconfirmed` keeps the claim for that, and Try again ends it; Try again on such a reply is 409 `still_sending` while
+  the claim's lease still runs (its relay may still be sending it), so it is never handed out twice. A desktop that
   no longer relays the account may still report `sent: true` for a claim it made, with that claim's token and its own
   device id, nothing else (409 `not_the_relay`). `sent: false` carries
-  the shell's reason (`bridge_stopped`, `not_linked`, `refused`, `unconfirmed`); nothing sends a failed reply again until
+  the shell's reason (`bridge_stopped`, `not_linked`, `refused`, `unconfirmed`, `file_unavailable`); nothing sends a failed reply again until
   the user's Try again. Cancelling deletes a waiting or failed reply (a tombstone); a reply being sent or sent is 409
   `already_going_out`.
 - **Left out.** Leaving a chat out removes its messages and replies (tombstones) and keeps the chat row with its sealed
@@ -3750,8 +3753,11 @@ chat's JID and WhatsApp id, so it never needs either readable.
   stores it.
 - **Sweep.** `SweepChatRelays` runs every minute on `scheduler_default` (the `maintenance` worker), and by hand as
   `bin/console app:chat:sweep-relays`: a relay not heard from for 3 minutes goes offline from when it was last heard
-  from (its next call brings it back), and a reply still `sending` 5 minutes after its claim fails with `unconfirmed`,
-  since the bridge returns no id and may have sent it. Heartbeats are no change for clients; these flips are.
+  from (its next call brings it back), and a reply still `sending` 5 minutes after its claim (30 minutes for one that
+  carries a file: the relay fetches it and the bridge uploads up to 100 MB) fails with `unconfirmed`, since the bridge
+  returns no id and may have sent it. A lease in the sweep rather than a claim the relay renews: it holds also when the
+  relay crashed or lost its network halfway, exactly when a renewal would stop. The relay gives up fetching a reply's
+  file after 15 minutes (the reply then fails as `file_unavailable`). Heartbeats are no change for clients; these flips are.
 - **Locks.** Every chat write takes the owner's row first, `FOR NO KEY UPDATE` (`App\Chat\ChatOwnerLock`), then the
   chat rows: the order the change numbers take them in, so no two writers wait on each other in a circle. It conflicts
   with the change number update and with the key locks of `UserKeys`, and not with the KEY SHARE of an insert that
@@ -3774,31 +3780,40 @@ chat's JID and WhatsApp id, so it never needs either readable.
   delivery is not tried again by a sweep (a chat push is stale within minutes).
 - **Files.** A file stays on the relaying Mac until the user asks for it on another device; nothing downloads without
   that. `POST /api/v1/chat-messages/{id}/media/request` (`CHAT_MANAGE`, so our own apps only) moves a message's file from
-  `remote` (or `failed`) to `requested`. The relay takes the oldest request of its account
+  `remote` (or `failed`) to `requested`. Files are for our own apps only: a caller with `chat:read` that is not one of
+  them sees where a file stands and never gets a link, and asks for nothing. The relay takes the oldest request of its account
   (`relay/media/claim`: message id, JID, WhatsApp id, kind, the store's size and the server's limit; handed out again
   after 15 minutes without an answer), lets its shell download the file and check it against the SHA-256 the bridge's
   store holds, and uploads it (`PUT relay/media/{messageId}`, the file as the raw body, the device in `X-Device-Id`, the
   SHA-256 in `X-Content-SHA256`, both required; a body that does not match is 422), or says why not
   (`relay/media/{messageId}/failed`: `not_found`, `mismatch`, `unverified` when the store holds no hash, `too_large`,
   `unavailable`). A file is at most `CHAT_MAX_FILE_BYTES` (100 MB; 413 `too_large`, checked from the length before
-  the body is read, and while it is read). It is stored as `chatmedia` under the owner and its content fingerprint, sealed
+  the body is read, and while it is read; at most 100 MB, what the Mac sends, so a larger setting refuses to start).
+  An upload the relay got no answer to (no network, a proxy that cut the connection, a 5xx) is tried again with the
+  next claim, and after three such tries the request ends as `unavailable`. It is stored as `chatmedia` under the owner and its content fingerprint, sealed
   with the owner's key, written before the relay's lock is taken and under a lock on its key, and scanned like a mail
   attachment (`ScanTarget::Chat`; the verdict, quarantine and the sweep of pending scans cover it). The delta's message
   carries `mediaState`, `mediaError` and, once stored, `mediaAccess` (`allowed`, `scanning`, `confirm`, `blocked`).
-  `GET /api/v1/chat-messages/{id}/media` (`CHAT_READ`) says where it stands and gives a signed link valid for an hour
-  once it is clean (`/content/chat-media/{id}`, served as attachments are: a download under the last part of WhatsApp's
-  name, never sniffed, sandboxed); `POST .../media/unscanned-link` gives one for a file that could not be scanned, to our
+  `GET /api/v1/chat-messages/{id}/media` (`CHAT_READ`) says where it stands and, to our own apps, gives a signed link
+  valid for an hour once it is clean (`/content/chat-media/{id}`, served as attachments are: plain raster images
+  (PNG, GIF, JPEG, WebP, BMP, AVIF) inline from the API's origin, everything else as a download, under the last part of
+  WhatsApp's name without direction overrides, never sniffed, sandboxed, not cached); `POST .../media/unscanned-link` gives one for a file that could not be scanned, to our
   own apps after the user confirmed, never on a server that requires scans. A file for a reply is uploaded first,
   `PUT /api/v1/chats/{chatId}/uploads/{id}` under an id the client makes (`CHAT_SEND` and our own apps; the same content
-  again is 200, other content 409 `id_taken`; at most 20 waiting per chat), then queued with
-  `"file": {"uploadId", "name"}` (the text may then be empty; the name loses any folder and is sealed as
+  again is 200, other content 409 `id_taken`, also for two requests at once; at most 20 waiting per chat, 429;
+  `chat_upload`, 60 uploads in 10 minutes per user, 429 with Retry-After; uploads and the files of replies not sent
+  yet together at most `CHAT_MAX_WAITING_BYTES`, 1 GB by default, 413 `too_much_waiting`, checked before anything is
+  stored), then queued with
+  `"file": {"uploadId", "name"}` (the upload is taken under its row lock, so the sweep cannot remove it meanwhile; the
+  text may then be empty; the name loses any folder, control characters and direction overrides and is sealed as
   `tresso:chat-outgoing-file-name:<id>`); a caller that is not one of our apps cannot attach (403). The claim gives the
   relay the file's name, size and a signed link valid only while the reply is being sent (`/content/chat-files/{id}`); the
   relay stages the file with its shell and sends it, and a file it cannot fetch fails the reply as `file_unavailable`
-  without sending anything. The delta's reply carries `file` (`name`, `size`). Files go when nothing needs them
+  without sending anything. Files that go out are not scanned (as decided for this release): they are the user's own,
+  and the Mac passes them to the bridge without opening them. The delta's reply carries `file` (`name`, `size`). Files go when nothing needs them
   (`App\Chat\ChatMediaCollector`, after the commit, only once no message, reply or upload refers to the object): a
   reply's once it went out (its name and size stay) or is cancelled, an upload nobody queued after an hour
-  (`SweepChatMedia`, every ten minutes), and every file of a chat left out, of group chats taken off the server and of a
+  (`SweepChatMedia`, every ten minutes, which also removes temporary upload files a killed worker left), and every file of a chat left out, of group chats taken off the server and of a
   removed account; a removed user's objects go with the user. Key rotation writes the files again (`chatMedia` step of
   `Reencryption`).
 - **Delta.** Every write is a change in `chatAccounts`, `chats`, `chatMessages` and `chatOutgoing`; removals (a

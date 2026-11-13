@@ -88,7 +88,19 @@ nightly purges described in ARCHITECTURE.md it runs `SweepChatRelays` every minu
 bin/console app:chat:sweep-relays
 ```
 
-It prints how many relays went offline and how many replies could not be confirmed.
+It prints how many relays went offline and how many replies could not be confirmed. A reply that carries a file gets
+30 minutes before it counts as not confirmed.
+
+## WhatsApp files and a proxy in front of the API
+
+With WhatsApp set to "All my devices", files go to the API as the raw body of a PUT: the relaying Mac's
+`PUT /api/v1/chat-accounts/{id}/relay/media/{messageId}` and the browser's and phone's
+`PUT /api/v1/chats/{chatId}/uploads/{id}`, up to `CHAT_MAX_FILE_BYTES` (100 MB, also the most it may be set to). PHP's
+form limits (`post_max_size`) do not apply to a PUT body, and the Caddy of the API image sets no limit, but a proxy in
+front of it may: allow request bodies of at least 100 MB on those two paths (for nginx `client_max_body_size 100m;`),
+and a request time of a few minutes. A proxy that refuses a body answers 413, which the apps show as "too large"; one
+that cuts the connection makes the Mac try a requested file three times before it reports it as not brought.
+`CHAT_MAX_WAITING_BYTES` (1 GB by default) bounds what one user's files waiting for the Mac take up.
 
 ## Check by hand after a release
 
