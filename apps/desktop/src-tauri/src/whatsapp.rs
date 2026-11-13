@@ -78,6 +78,9 @@ const MAX_IDS: usize = 500;
 const MAX_TEXT_BYTES: usize = 65_536;
 const MAX_LEFT_OUT: usize = 10_000;
 const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// The largest file Attach sends: the download limit. The bridge reads a file whole into memory before it uploads it, and
+/// neither whatsapp-mcp nor its fork states a limit of its own; WhatsApp refuses larger files anyway.
+const MAX_SEND_BYTES: u64 = MAX_DOWNLOAD_BYTES;
 const MAX_ANSWER_BYTES: u64 = 1024 * 1024;
 /// A longer line of the bridge's output is dropped (a message can be long; no line Tresso reads is).
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -2223,6 +2226,9 @@ fn checked_message(chosen_files: &HashSet<PathBuf>, recipient: &str, text: &str,
       if !chosen_files.contains(&canonical) || !canonical.is_file() {
         return Err(code("Only a file chosen with Attach can be sent."));
       }
+      if fs::metadata(&canonical).map_err(|_| code("The file to send is not there."))?.len() > MAX_SEND_BYTES {
+        return Err(code("too_large"));
+      }
       Some(canonical)
     }
   };
@@ -2980,6 +2986,11 @@ mod tests {
     assert_eq!(checked_message(&chosen, "31612345678", "", Some(picked.to_str().unwrap())), Ok(Some(picked.canonicalize().unwrap())));
     assert!(checked_message(&chosen, "31612345678", "", Some(other.to_str().unwrap())).is_err());
     assert!(checked_message(&chosen, "31612345678", "", Some(root.to_str().unwrap())).is_err());
+    // A file over the limit is refused before the bridge reads it (a sparse file: nothing is written).
+    File::create(&picked).unwrap().set_len(MAX_SEND_BYTES + 1).unwrap();
+    assert_eq!(checked_message(&chosen, "31612345678", "", Some(picked.to_str().unwrap())), Err("too_large".to_string()));
+    File::create(&picked).unwrap().set_len(MAX_SEND_BYTES).unwrap();
+    assert!(checked_message(&chosen, "31612345678", "", Some(picked.to_str().unwrap())).is_ok());
     fs::remove_file(&picked).unwrap();
     assert!(checked_message(&chosen, "31612345678", "", Some(picked.to_str().unwrap())).is_err());
   }
