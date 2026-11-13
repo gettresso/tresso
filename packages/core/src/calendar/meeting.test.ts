@@ -132,9 +132,41 @@ describe('link text', () => {
     expect(text).toBe('teams.microsoft.com.evil.example/l/mee\u2026.v2/0')
     // Before a query or a fragment too, and with a user name in front of the host.
     expect(linkText(`https://teams.microsoft.com.evil.example?x=${'a'.repeat(60)}`)).toMatch(/^teams\.microsoft\.com\.evil\.example\?x=/)
-    expect(linkText(`https://teams.microsoft.com@evil.example/${'a'.repeat(60)}`).startsWith('teams.microsoft.com@evil.example/')).toBe(true)
+    expect(linkText(`https://teams.microsoft.com@evil.example/${'a'.repeat(60)}`).startsWith('evil.example/')).toBe(true)
     // Other schemes keep their scheme with the host.
     expect(linkText(`http://teams.microsoft.com.evil.example/${'a'.repeat(60)}`).startsWith('http://teams.microsoft.com.evil.example/')).toBe(true)
+  })
+
+  it('keeps the host whole however the text begins', () => {
+    const path = '/l/meetup-join/19%3ameeting_abc%40thread.v2/0'
+    const host = 'teams.microsoft.com.evil.example'
+    // No scheme, a leading space, a leading zero width space, only slashes, one slash, backslashes.
+    expect(linkText(`${host}${path}`).startsWith(`${host}/`)).toBe(true)
+    expect(linkText(` ${host}${path}`).startsWith(` ${host}/`)).toBe(true)
+    expect(linkText(`\u200b${host}${path}`).startsWith(`\ufffd${host}/`)).toBe(true)
+    expect(linkText(`//${host}${path}`).startsWith(`//${host}/`)).toBe(true)
+    expect(linkText(`https:/${host}${path}`).startsWith(`https:/${host}/`)).toBe(true)
+    expect(linkText(`https:\\\\${host}${path}`).startsWith(`https:\\\\${host}/`)).toBe(true)
+    expect(linkText(` https://${host}${path}`).startsWith(` https://${host}/`)).toBe(true)
+    // A host with a port is no scheme.
+    expect(linkText(`teams.microsoft.com.evil.example:443${path}`).startsWith('teams.microsoft.com.evil.example:443/')).toBe(true)
+    for (const text of [`${host}${path}`, `//${host}${path}`, `https:/${host}${path}`]) {
+      expect(Array.from(linkText(text))).toHaveLength(44)
+    }
+  })
+
+  it('leaves out a user name before the host', () => {
+    expect(linkText('https://teams.microsoft.com@evil.example/x')).toBe('evil.example/x')
+    expect(linkText('https://user:pass@teams.microsoft.com/l/1')).toBe('teams.microsoft.com/l/1')
+    expect(linkText('https://a@b@evil.example/x')).toBe('evil.example/x')
+    expect(linkText('teams.microsoft.com@evil.example/x')).toBe('evil.example/x')
+    expect(linkText('user:pass@evil.example/x')).toBe('evil.example/x')
+    expect(linkText('https://evil.example:8443/x')).toBe('evil.example:8443/x')
+    expect(linkText('http://teams.microsoft.com@evil.example/x')).toBe('http://evil.example/x')
+    // An @ in the path is not a user name.
+    expect(linkText('https://evil.example/@teams.microsoft.com')).toBe('evil.example/@teams.microsoft.com')
+    // The full text keeps it.
+    expect(displayLink('https://teams.microsoft.com@evil.example/x')).toBe('https://teams.microsoft.com@evil.example/x')
   })
 
   it('cuts a host longer than the limit on the left, keeping its registrable end', () => {
