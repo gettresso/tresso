@@ -19,7 +19,7 @@ import {
 } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { dayLabel } from '@/mail/format'
-import { shortcutAllowed } from '@/mail/useMessageActions'
+import { modalOpen, shortcutAllowed } from '@/mail/useMessageActions'
 import { useChatsStore } from '@/stores/chats'
 import { useComposeStore } from '@/stores/compose'
 import { useSelectionStore } from '@/stores/selection'
@@ -559,10 +559,28 @@ function onNotice(): void {
   }
 }
 
-// D makes a todo, K notes, E archives: only while the chat has the user's attention, not while they type.
+/**
+ * Whether the chat has the user's attention, by the mail pane's rules (ReadingPane's attentive): a chat on screen, the
+ * compose window not open in front, no modal layer (modalOpen), nothing ticked in the list (the bulk bar takes the keys
+ * then), and none of the pane's own menu, confirmation or todo field open.
+ */
+function attentive(): boolean {
+  return (
+    chat.value !== null &&
+    !chat.value.leftOut &&
+    !(compose.draft !== null && !compose.minimized) &&
+    !modalOpen() &&
+    !selection.active &&
+    menu.value?.open !== true &&
+    !confirmingLeave.value &&
+    todoTitle.value === null
+  )
+}
+
+// D makes a todo, K notes, E archives: only while the chat has the user's attention, not while they type, hold the key
+// down or use a modifier.
 function shortcut(event: KeyboardEvent): void {
-  // Not while mail is ticked in the list either: the bulk bar takes the keys then (as ReadingPane leaves them).
-  if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized) || selection.active || chat.value === null || chat.value.leftOut || menu.value?.open === true || confirmingLeave.value || todoTitle.value !== null) {
+  if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized) || !attentive()) {
     return
   }
   const action = { d: startTodo, k: noted, e: archive }[event.key.toLowerCase()]
