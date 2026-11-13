@@ -630,8 +630,9 @@ function problemRow(problem: MeetingChoice, input: MeetingRowInput): MeetingRow 
 export function meetingRow(input: MeetingRowInput): MeetingRow {
   const { event, preferences, guests } = input
 
-  // A Teams meeting on a Microsoft 365 event stays whatever the row was told: never "Removed", never another app.
-  if (event !== null && event.conference !== null && cannotRemoveMeeting(input.calendar?.source, event.conference)) {
+  // A link the server keeps (a Teams meeting Microsoft made) stays whatever the row was told: never "Removed", never
+  // another app.
+  if (event !== null && event.conference !== null && !meetingRemovable(input.calendar?.source, event.conference)) {
     return row('created', TITLE, createdHint(event.conference, input))
   }
 

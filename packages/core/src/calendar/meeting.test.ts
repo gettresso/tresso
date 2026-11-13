@@ -693,6 +693,13 @@ describe('the meeting link row', () => {
     expect(meetingRow({ ...input, explicit: true, chosen: pick(input.choices, 'own') })).toEqual(kept)
   })
 
+  it('lets a pasted Teams link on a Microsoft 365 event go when the server says it can', () => {
+    const pasted = saved({ conference: { ...conference('teams', TEAMS_URL), removable: true } })
+    expect(meetingRow(rowInput(microsoft, work, { event: pasted, removed: true, on: false }))).toMatchObject({ kind: 'removed', hint: 'Removed. The link goes when you save.' })
+    const graph = saved({ conference: { ...conference('teams', TEAMS_URL), removable: false } })
+    expect(meetingRow(rowInput(microsoft, work, { event: graph, removed: true, on: false })).kind).toBe('created')
+  })
+
   it("takes the server's word on removal, and core's rule for rows stored before it", () => {
     const teams = conference('teams', TEAMS_URL)
     // The server's flag wins both ways: a Teams link pasted into a Microsoft event can go, a Graph meeting cannot.
