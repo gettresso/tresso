@@ -8,6 +8,7 @@ import {
   labelText,
   nameText,
   replyLabel,
+  SENT_FILE_PREFIX,
   timeline,
   TODO_TITLE_MAX_LENGTH,
   type ChatMessageKey,
@@ -130,6 +131,56 @@ const composerNote = computed(() => {
   return notice.value !== null || !chats.relaysHere ? null : wa.linked ? null : 'Replies can be written once the bridge is linked.'
 })
 const sendNote = computed(() => sendNoteText(chats.relaysHere, chats.account?.relayDeviceName ?? null))
+/** The page's own file picker: in "All my devices" a file is read by the page and uploaded (chats.attachFile). */
+const filePicker = ref<HTMLInputElement | null>(null)
+
+function attach(): void {
+  const shown = chat.value
+  if (shown === null) {
+    return
+  }
+  if (chats.serverFiles) {
+    filePicker.value?.click()
+  } else {
+    void chats.attach(shown)
+  }
+}
+
+function onFilePicked(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+  // Cleared at once, so picking the same file again (after an unsure try) is a new pick.
+  input.value = ''
+  const shown = chat.value
+  if (file !== null && shown !== null) {
+    void chats.attachFile(shown, file)
+  }
+}
+
+/** Download: from the bridge on this Mac, or asked for from the relaying Mac ("All my devices"). */
+function downloadFile(message: SyncedChatMessage | null): void {
+  const shown = chat.value
+  if (message === null || shown === null) {
+    return
+  }
+  if (chats.downloadsThroughServer) {
+    void chats.requestFile(message)
+  } else {
+    void chats.download(shown, message)
+  }
+}
+
+function openFile(message: SyncedChatMessage | null, acceptUnscanned: boolean): void {
+  if (message === null) {
+    return
+  }
+  if (chats.downloadsThroughServer) {
+    void chats.openServerFile(message, acceptUnscanned)
+  } else {
+    void chats.openFile(message)
+  }
+}
+
 /** The line about a file attached in this chat; one attached in another chat says nothing here. */
 const attachLine = computed(() => {
   const state = chats.attaching
@@ -235,7 +286,8 @@ function view(entry: TimelineEntry): BubbleView {
   return {
     key: reply.id,
     mine: true,
-    text: reply.text,
+    // A file queued from the browser or another device has no text of its own: it shows as a sent file does here.
+    text: reply.text === '' && reply.file ? `${SENT_FILE_PREFIX}${reply.file.name}` : reply.text,
     media: null,
     sender: null,
     meta,
@@ -777,11 +829,15 @@ onBeforeUnmount(() => {
               :bubble="row.bubble"
               :media-state="row.bubble.media ? chats.mediaOf(row.bubble.media.id) : undefined"
               :busy="busy"
-              :media-remote="chats.serverOnly"
+              :media-server="chats.downloadsThroughServer"
+              :relay-online="relayOnline"
+              :media-note="row.bubble.media && chats.serverMediaNote?.messageId === row.bubble.media.id ? chats.serverMediaNote.text : null"
+              :media-held="chats.writesHeld"
               @retry="retry(row.bubble.outgoingId)"
               @cancel="cancel(row.bubble.outgoingId)"
-              @download="row.bubble.media && chat && chats.download(chat, row.bubble.media)"
-              @open="row.bubble.media && chats.openFile(row.bubble.media)"
+              @download="downloadFile(row.bubble.media)"
+              @open="openFile(row.bubble.media, false)"
+              @open-unscanned="openFile(row.bubble.media, true)"
             />
           </template>
         </ol>
@@ -803,8 +859,9 @@ onBeforeUnmount(() => {
         :error="sendError"
         :draft="draft"
         @update:draft="onDraft"
-        @attach="chats.attach(chat)"
+        @attach="attach"
       />
+      <input ref="filePicker" type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" @change="onFilePicked" />
     </template>
   </article>
 </template>

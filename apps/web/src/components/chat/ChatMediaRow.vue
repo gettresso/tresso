@@ -3,21 +3,31 @@ import { computed } from 'vue'
 import type { SyncedChatMessage } from '@tresso/core'
 import type { MediaState } from '@/stores/chats'
 import AppIcon from '@/components/AppIcon.vue'
-import { MEDIA_ON_RELAY, mediaRetry, mediaStateText, mediaTitle } from '@/components/chat/chatTexts'
+import { mediaRetry, mediaStateText, mediaTitle, serverMediaView, UNSCANNED_WARNING } from '@/components/chat/chatTexts'
 
 /**
  * The file a message carries (the WhatsAppInbox board's picture row, plan 6.7): an icon by kind (there is no thumbnail
  * before a download), the kind and size or a document's name, and what can be done: Download, Open once Tresso has
  * its own checked copy, Try again after a failure that may pass. A voice message gets no play control and no length.
- * `remote` (the browser): the file stays on the relaying Mac for now, so the row says so and offers nothing.
+ *
+ * `server` ("All my devices", a device other than the relaying Mac): the file is asked for from that Mac and opened
+ * from the server once it was checked for malware (serverMediaView); `note` is what the last action said. A file that
+ * could not be checked opens only after the user confirms the warning. `disabled`: asking is held (writesHeld).
  */
-const props = defineProps<{ message: SyncedChatMessage; state: MediaState; remote?: boolean }>()
-const emit = defineEmits<{ download: []; open: [] }>()
+const props = defineProps<{ message: SyncedChatMessage; state: MediaState; server?: boolean; relayOnline?: boolean; note?: string | null; disabled?: boolean }>()
+const emit = defineEmits<{ download: []; open: []; openUnscanned: [] }>()
 
 const icon = computed(() => (props.message.mediaKind === 'image' ? 'image' : props.message.mediaKind === 'video' ? 'video' : props.message.mediaKind === 'audio' ? 'know' : 'attachment'))
 const title = computed(() => mediaTitle(props.message))
-const line = computed(() => (props.remote ? MEDIA_ON_RELAY : mediaStateText(props.message, props.state)))
-const failed = computed(() => !props.remote && props.state.state === 'failed')
+const view = computed(() => (props.server ? serverMediaView(props.message, props.relayOnline ?? false) : null))
+const line = computed(() => props.note ?? view.value?.line ?? mediaStateText(props.message, props.state))
+const failed = computed(() => (view.value === null ? props.state.state === 'failed' : view.value.failed || !!props.note))
+
+function confirmUnscanned(): void {
+  if (window.confirm(UNSCANNED_WARNING)) {
+    emit('openUnscanned')
+  }
+}
 </script>
 
 <template>
@@ -33,7 +43,14 @@ const failed = computed(() => !props.remote && props.state.state === 'failed')
       <span class="title" dir="auto">{{ title }}</span>
       <span class="line" :role="failed ? 'alert' : undefined">{{ line }}</span>
     </span>
-    <template v-if="!remote">
+    <template v-if="view">
+      <button v-if="view.action === 'download'" type="button" class="button button-quiet action" :disabled="disabled" @click="emit('download')"><AppIcon name="download" :size="14" /> Download</button>
+      <button v-else-if="view.action === 'retry'" type="button" class="button button-quiet action" :disabled="disabled" @click="emit('download')">Try again</button>
+      <button v-else-if="view.action === 'open'" type="button" class="button button-quiet action" @click="emit('open')">Open</button>
+      <button v-else-if="view.action === 'confirm'" type="button" class="button button-quiet action" @click="confirmUnscanned">Download anyway</button>
+      <button v-else-if="view.pending" type="button" class="button button-quiet action" disabled aria-busy="true">{{ view.pending }}</button>
+    </template>
+    <template v-else>
       <button v-if="state.state === 'idle'" type="button" class="button button-quiet action" @click="emit('download')"><AppIcon name="download" :size="14" /> Download</button>
       <button v-else-if="state.state === 'downloading'" type="button" class="button button-quiet action" disabled aria-busy="true">Downloading</button>
       <button v-else-if="state.state === 'done'" type="button" class="button button-quiet action" @click="emit('open')">Open</button>

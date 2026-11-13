@@ -37,6 +37,11 @@ export interface ChatActions {
   /** Try again: a reply that was not sent waits again. */
   retry(chatId: string, id: string): Promise<void>
   setState(chatId: string, change: ChatStateChange): Promise<SyncedChat>
+  /**
+   * Queues a reply that carries a file uploaded to the chat before (`uploadId`), with an optional caption. "All my
+   * devices" only: "Only this Mac" sends a file at once from the bridge. `id` as for `send`.
+   */
+  sendFile(chatId: string, file: { uploadId: string; name: string; size: number }, text: string, id?: string): Promise<SyncedChatOutgoing>
 }
 
 export type ChatActionErrorCode =
@@ -168,6 +173,7 @@ export function localChatActions(store: () => MailStore | null, now: () => numbe
       await retryLocalReply(copy(), chatId, id)
     },
     setState: (chatId, change) => setLocalChatState(copy(), chatId, change),
+    sendFile: () => Promise.reject(new ChatActionError('refused')),
   }
 }
 
@@ -251,54 +257,71 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
     options.pulled?.()
   }
 
+  /** Shows a reply at once and queues it on the server; see `send`. */
+  async function queue(chatId: string, text: string, file: { uploadId: string; name: string; size: number } | null, again: string | undefined): Promise<SyncedChatOutgoing> {
+    const store = copy()
+    const { chat } = await page(store, chatId)
+    if (chat.leftOut) {
+      throw new ChatActionError('left_out')
+    }
+    const at = now()
+    const shown: SyncedChatOutgoing = {
+      id: again ?? uuidV7(at),
+      chatId,
+      chatAccountId: chat.chatAccountId,
+      text,
+      status: 'waiting',
+      error: null,
+      createdAt: new Date(at).toISOString(),
+      claimedAt: null,
+      sentAt: null,
+      ...(file === null ? {} : { file: { name: file.name, size: file.size } }),
+    }
+    await store.putChatOutgoing([shown])
+    try {
+      const queued = await api.queueReply(chatId, file === null ? { id: shown.id, text } : { id: shown.id, text, file: { uploadId: file.uploadId, name: file.name } })
+      await replaceReply(store, shown, queued)
+      return queued
+    } catch (error) {
+      // Not queued as far as this device knows: the reply goes from the chat (a cancelled row is never shown) and the
+      // composer keeps the text. When the server may have taken it all the same, the delta brings it back, and the
+      // error carries its id: sent again, it is the same reply, never a second one.
+      await replaceReply(store, shown, { ...shown, status: 'cancelled' })
+      if (unsureOutcome(error)) {
+        throw new ChatActionError('unsure', shown.id)
+      }
+      const failure = chatApiFailure(error)
+      if (again !== undefined && failure?.status === 422 && failure.violationPaths.includes('id')) {
+        // Too old to be queued now, and maybe queued (or cancelled) before: never under a new id by itself.
+        throw new ChatActionError('maybe_queued')
+      }
+      throw chatActionError(error)
+    } finally {
+      pulled()
+    }
+  }
+
   /** Per chat with changes under way: what the server last confirmed of it, to put a refused change back to. */
   const confirmed = new Map<string, { row: SyncedChat; pending: number }>()
 
   return {
     async send(chatId, text, again) {
-      const store = copy()
       const checked = replyText(text)
       if (!checked.ok) {
         throw new ChatActionError(checked.problem)
       }
-      const { chat } = await page(store, chatId)
-      if (chat.leftOut) {
-        throw new ChatActionError('left_out')
-      }
-      const at = now()
-      const shown: SyncedChatOutgoing = {
-        id: again ?? uuidV7(at),
-        chatId,
-        chatAccountId: chat.chatAccountId,
-        text: checked.text,
-        status: 'waiting',
-        error: null,
-        createdAt: new Date(at).toISOString(),
-        claimedAt: null,
-        sentAt: null,
-      }
-      await store.putChatOutgoing([shown])
-      try {
-        const queued = await api.queueReply(chatId, { id: shown.id, text: checked.text })
-        await replaceReply(store, shown, queued)
-        return queued
-      } catch (error) {
-        // Not queued as far as this device knows: the reply goes from the chat (a cancelled row is never shown) and the
-        // composer keeps the text. When the server may have taken it all the same, the delta brings it back, and the
-        // error carries its id: sent again, it is the same reply, never a second one.
-        await replaceReply(store, shown, { ...shown, status: 'cancelled' })
-        if (unsureOutcome(error)) {
-          throw new ChatActionError('unsure', shown.id)
+      return queue(chatId, checked.text, null, again)
+    },
+
+    async sendFile(chatId, file, text, again) {
+      const caption = text.trim()
+      if (caption !== '') {
+        const checked = replyText(text)
+        if (!checked.ok) {
+          throw new ChatActionError(checked.problem)
         }
-        const failure = chatApiFailure(error)
-        if (again !== undefined && failure?.status === 422 && failure.violationPaths.includes('id')) {
-          // Too old to be queued now, and maybe queued (or cancelled) before: never under a new id by itself.
-          throw new ChatActionError('maybe_queued')
-        }
-        throw chatActionError(error)
-      } finally {
-        pulled()
       }
+      return queue(chatId, caption, file, again)
     },
 
     async cancel(chatId, id) {

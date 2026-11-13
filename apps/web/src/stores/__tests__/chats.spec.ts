@@ -187,7 +187,7 @@ describe('the chats store', () => {
     // No hash in the store to check against: kept from opening too.
     setActivePinia(createPinia())
     const unchecked = await ready()
-    shell.downloadAnswer = () => Promise.resolve({ path: '/x/abc.jpg', verified: false })
+    shell.downloadAnswer = () => Promise.resolve({ path: '/x/abc.jpg', verified: false, sha256: 'a'.repeat(64), size: 3 })
     await unchecked.download(groupChat, photo)
     expect(unchecked.mediaOf(photo.id)).toEqual({ state: 'failed', reason: 'unverified' })
   })
@@ -375,11 +375,13 @@ describe('the chats store', () => {
       expect(chats.accountId).toBe(ACCOUNT_ID)
       expect(chats.summaries.map((summary) => summary.chat.id)).toEqual([SERVER_CHAT])
       expect(chats.account?.relayDeviceName).toBe('Office iMac')
-      // Another Mac relays: replies can be queued whatever this Mac's bridge does; no Attach.
+      // Another Mac relays: replies can be queued whatever this Mac's bridge does; files go through the server.
       expect(chats.relaysHere).toBe(false)
       expect(chats.canReply).toBe(true)
       expect(chats.canAttach).toBe(true)
-      expect(chats.attachNote).toBe('Files are sent in Only this Mac for now.')
+      expect(chats.attachNote).toBeNull()
+      expect(chats.serverFiles).toBe(true)
+      expect(chats.downloadsThroughServer).toBe(true)
 
       await server.relayMessages(ACCOUNT_ID, {
         deviceId: 'other-device',
