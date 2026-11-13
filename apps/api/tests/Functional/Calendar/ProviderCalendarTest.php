@@ -837,6 +837,53 @@ final class ProviderCalendarTest extends DatabaseTestCase
         self::assertStringNotContainsString('X-TRESSO-CONFERENCE-REMOVE', $ical);
     }
 
+    public function testAMoveWithinTheAccountFromAnOlderCopyKeepsTheMeeting(): void
+    {
+        // A second calendar of the same Google account: Google moves the event with its meeting.
+        $this->client->jsonRequest('POST', $this->base().'/calendars', [
+            'workerId' => 'w1',
+            'source' => 'google',
+            'providerSchedules' => true,
+            'calendars' => [
+                ['remoteId' => self::PRIMARY, 'name' => 'Kim', 'color' => '#9fc6e7', 'timeZone' => 'Europe/Amsterdam', 'isDefault' => true, 'conferenceProviders' => ['meet']],
+                ['remoteId' => 'team@group.calendar.google.com', 'name' => 'Team', 'color' => '#7bd148', 'timeZone' => 'Europe/Amsterdam', 'conferenceProviders' => ['meet']],
+            ],
+        ], $this->worker);
+        self::assertResponseIsSuccessful();
+        $calendars = $this->decodedResponse()['calendars'] ?? null;
+        self::assertIsArray($calendars);
+        $ids = [];
+        foreach ($calendars as $calendar) {
+            self::assertIsArray($calendar);
+            $ids[self::string($calendar['remoteId'])] = self::string($calendar['id']);
+        }
+        $primary = $ids[self::PRIMARY];
+        $team = $ids['team@group.calendar.google.com'];
+        $this->storeObject($primary, 'review', '"1"', implode("\r\n", [
+            'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Tresso//Calendar sync//EN', 'BEGIN:VEVENT', 'UID:review@google.com', 'DTSTAMP:20261018T080000Z',
+            'DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTEND;TZID=Europe/Amsterdam:20261019T093000', 'SUMMARY:Review',
+            'CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://meet.google.com/abc-defg-hij', 'X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'END:VEVENT', 'END:VCALENDAR', '',
+        ]));
+        $eventId = self::string($this->occurrences($this->user, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0]['eventId']);
+
+        // The client still had the event without the link, and moves it while asking for Meet as it did then.
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($team, [
+            'summary' => 'Review',
+            'start' => ['dateTime' => '2026-10-19T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-19T09:30:00', 'timeZone' => 'Europe/Amsterdam'],
+            'conferenceUrl' => null,
+            'conferenceProvider' => 'meet',
+        ]), $this->user);
+
+        self::assertResponseIsSuccessful();
+        $moved = $this->decodedResponse();
+        self::assertSame('https://meet.google.com/abc-defg-hij', \is_array($moved['conference']) ? $moved['conference']['url'] : null, 'The meeting goes along,');
+        self::assertNull($moved['conferenceRequest'], 'and no second one is asked for.');
+        $ical = self::string($this->connection()->fetchOne('SELECT o.ical FROM calendar_object o WHERE o.calendar_id = ? AND o.uid = ?', [$team, 'review@google.com']));
+        self::assertStringContainsString('X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', $ical);
+        self::assertStringNotContainsString('X-TRESSO-CONFERENCE', $ical, 'No request and no word to remove it.');
+    }
+
     public function testASaveOfOneOccurrenceFromAnOlderCopyKeepsTheMeeting(): void
     {
         $primary = $this->reportCalendars()[0]['id'];
