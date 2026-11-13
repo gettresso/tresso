@@ -52,6 +52,7 @@ const MEETING_PAIRS: [Token, Token, string][] = [
   ['ink', 'ground', 'the link and Copy link'],
   ['ink', 'surface', 'the app name, Making the link'],
   ['ink2', 'surface', 'the line under the link, the hints'],
+  ['ink2', 'surface', 'Retry and Leave while one of them runs'],
   ['danger', 'surface', 'Could not make the link, could not copy'],
 ]
 

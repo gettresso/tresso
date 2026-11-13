@@ -36,16 +36,19 @@ export default function EventScreen() {
   const serverNow = mail.serverNow
   const clock = useCallback(() => serverNow?.() ?? Date.now(), [serverNow])
   // "Leave without a link" only on a server that has the request-only drop; nothing while that is not known.
-  const [leaveOffered, setLeaveOffered] = useState(false)
+  // The answer is kept with the read it came from: when the reader changes (another user signed in), the previous
+  // answer no longer counts, so one user's yes never shows while the next user's read is under way.
   const readDrop = mail.meetingRequestDrop
+  const [dropAnswer, setDropAnswer] = useState<{ read: typeof readDrop; offered: boolean } | null>(null)
+  const leaveOffered = dropAnswer !== null && dropAnswer.read === readDrop && dropAnswer.offered
   useEffect(() => {
     let current = true
     readDrop().then(
       (offered) => {
-        if (current) setLeaveOffered(offered)
+        if (current) setDropAnswer({ read: readDrop, offered })
       },
       () => {
-        if (current) setLeaveOffered(false)
+        if (current) setDropAnswer({ read: readDrop, offered: false })
       },
     )
     return () => {
