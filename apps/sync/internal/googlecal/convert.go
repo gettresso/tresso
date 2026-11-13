@@ -65,6 +65,38 @@ type createRequest struct {
 	ConferenceSolutionKey struct {
 		Type string `json:"type"`
 	} `json:"conferenceSolutionKey"`
+	// Status is Google's answer to the request: pending, success or failure. Never sent.
+	Status *struct {
+		StatusCode string `json:"statusCode"`
+	} `json:"status,omitempty"`
+}
+
+// meetSolution is Google's conference solution type of a Google Meet meeting.
+const meetSolution = "hangoutsMeet"
+
+// joinLink is the meeting's link as Tresso reads it: the first video entry point with an https link, empty when there
+// is none.
+func (d *conferenceData) joinLink() string {
+	if d == nil {
+		return ""
+	}
+	for _, entry := range d.EntryPoints {
+		if entry.EntryPointType == "video" && strings.HasPrefix(entry.URI, "https://") {
+			return entry.URI
+		}
+	}
+	return ""
+}
+
+// hasMeet: the event has a Google Meet meeting as the reader sees one (X-GOOGLE-CONFERENCE): the hangoutsMeet
+// solution with an https video entry point.
+func (d *conferenceData) hasMeet() bool {
+	return d != nil && d.ConferenceSolution != nil && d.ConferenceSolution.Key.Type == meetSolution && d.joinLink() != ""
+}
+
+// pending: Google is still making the meeting a create request asked for.
+func (d *conferenceData) pending() bool {
+	return d != nil && d.CreateRequest != nil && d.CreateRequest.Status != nil && d.CreateRequest.Status.StatusCode == "pending"
 }
 
 // event is a Google Calendar event resource, as far as Tresso reads and writes it.
@@ -373,7 +405,7 @@ func writeConference(v *ical.Component, data *conferenceData) {
 	if data == nil {
 		return
 	}
-	meet := data.ConferenceSolution != nil && data.ConferenceSolution.Key.Type == "hangoutsMeet"
+	meet := data.ConferenceSolution != nil && data.ConferenceSolution.Key.Type == meetSolution
 	for _, entry := range data.EntryPoints {
 		switch entry.EntryPointType {
 		case "video":
