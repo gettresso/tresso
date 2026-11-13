@@ -1,7 +1,7 @@
 import type { MailStore } from '../store/mailStore'
 import { CHAT_REPLY_MAX, chatKindOf, nameText, replyText, SENT_FILE_PREFIX } from './format'
 import { chatInstant } from './rows'
-import { ChatRelayStopped, type ChatBackend, type ClaimedReply, type FirstImport, type IncomingChat, type IncomingMessage, type IngestCounts, type RelayCursor, type RelaySettings, type ReplyResult } from './relay'
+import { ChatRelayStopped, type ChatBackend, type ClaimedReply, type FirstImport, type IncomingChat, type IncomingMessage, type IngestCounts, type MediaRequest, type RelayCursor, type RelaySettings, type ReplyResult } from './relay'
 import { LOCAL_CHAT_PREFIX, type SentFile, type SyncedChat, type SyncedChatAccount, type SyncedChatMessage, type SyncedChatOutgoing } from './types'
 
 /** The chat account of the "Only this Mac" mode. */
@@ -273,7 +273,8 @@ export class LocalChatBackend implements ChatBackend {
         }
         const claimedAt = new Date(this.now()).toISOString()
         await this.store.putChatOutgoing([{ ...row, status: 'sending', error: null, claimedAt }])
-        return { id: row.id, chatId: row.chatId, chatJid: jid, text: row.text, token: claimedAt }
+        // A file is sent at once from this Mac (recordLocalAttachment), never through the queue.
+        return { id: row.id, chatId: row.chatId, chatJid: jid, text: row.text, token: claimedAt, file: null }
       }
       return null
     })
@@ -303,6 +304,26 @@ export class LocalChatBackend implements ChatBackend {
         }
       }
     })
+  }
+
+  /** Never asked for: a reply queued on this Mac carries no file (`claimNext`). */
+  replyFile(): Promise<Blob> {
+    return Promise.reject(new Error('A reply on this Mac carries no file to fetch.'))
+  }
+
+  /** No other device asks for files in "Only this Mac": the chats are here, and so are their files. */
+  claimMedia(): Promise<MediaRequest | null> {
+    return Promise.resolve(null)
+  }
+
+  /** Never asked for (`claimMedia` hands out nothing). */
+  deliverMedia(): Promise<void> {
+    return Promise.reject(new Error('Only this Mac takes no files from the relay.'))
+  }
+
+  /** Never asked for (`claimMedia` hands out nothing). */
+  failMedia(): Promise<void> {
+    return Promise.reject(new Error('Only this Mac takes no files from the relay.'))
   }
 
   private locked<T>(task: () => Promise<T>): Promise<T> {

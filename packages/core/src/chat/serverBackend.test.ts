@@ -12,6 +12,10 @@ import {
   type ChatApi,
   type RelayClaimResponse,
   type RelayImportResponse,
+  type RelayMediaClaimResponse,
+  type RelayMediaFailedRequest,
+  type RelayMediaResponse,
+  type RelayMediaUploadRequest,
   type RelayMessageResult,
   type RelayMessagesRequest,
   type RelayResultRequest,
@@ -75,6 +79,9 @@ type Call =
   | { kind: 'claim'; accountId: string; deviceId: string }
   | { kind: 'result'; accountId: string; outgoingId: string; request: RelayResultRequest }
   | { kind: 'status'; accountId: string; request: RelayStatusRequest }
+  | { kind: 'mediaClaim'; accountId: string; deviceId: string }
+  | { kind: 'upload'; accountId: string; messageId: string; deviceId: string; sha256: string; content: string }
+  | { kind: 'mediaFailed'; accountId: string; messageId: string; request: RelayMediaFailedRequest }
 
 interface ClaimState {
   token: string
@@ -103,6 +110,12 @@ class FakeChatApi implements ChatApi {
   failResult: unknown = null
   claimable: RelayClaimResponse[] = []
   readonly claims = new Map<string, ClaimState>()
+  mediaClaimable: RelayMediaClaimResponse[] = []
+  /** Answers an upload with this error instead of storing it. */
+  failUpload: unknown = null
+  failMediaFailed: unknown = null
+  failMediaClaim: unknown = null
+  readonly replyFiles = new Map<string, string>()
 
   accounts(): Promise<never> {
     return Promise.reject(new Error('not used'))
@@ -127,6 +140,49 @@ class FakeChatApi implements ChatApi {
   }
   updateChat(): Promise<never> {
     return Promise.reject(new Error('not used'))
+  }
+  requestMedia(): Promise<never> {
+    return Promise.reject(new Error('not used'))
+  }
+  media(): Promise<never> {
+    return Promise.reject(new Error('not used'))
+  }
+  unscannedMediaLink(): Promise<never> {
+    return Promise.reject(new Error('not used'))
+  }
+  uploadFile(): Promise<never> {
+    return Promise.reject(new Error('not used'))
+  }
+
+  claimMedia(accountId: string, request: { deviceId: string }): Promise<RelayMediaClaimResponse | null> {
+    this.calls.push({ kind: 'mediaClaim', accountId, deviceId: request.deviceId })
+    if (this.failMediaClaim !== null) {
+      return Promise.reject(this.failMediaClaim)
+    }
+    return this.guard(request.deviceId) ?? Promise.resolve(this.mediaClaimable.shift() ?? null)
+  }
+
+  async uploadMedia(accountId: string, messageId: string, request: RelayMediaUploadRequest): Promise<RelayMediaResponse> {
+    this.calls.push({ kind: 'upload', accountId, messageId, deviceId: request.deviceId, sha256: request.sha256, content: await request.body.text() })
+    if (this.failUpload !== null) {
+      throw this.failUpload
+    }
+    await (this.guard(request.deviceId) ?? Promise.resolve())
+    return { messageId, state: 'stored', error: null }
+  }
+
+  async failMedia(accountId: string, messageId: string, request: RelayMediaFailedRequest): Promise<RelayMediaResponse> {
+    this.calls.push({ kind: 'mediaFailed', accountId, messageId, request })
+    if (this.failMediaFailed !== null) {
+      throw this.failMediaFailed
+    }
+    await (this.guard(request.deviceId) ?? Promise.resolve())
+    return { messageId, state: 'failed', error: request.error }
+  }
+
+  replyFile(url: string): Promise<Blob> {
+    const content = this.replyFiles.get(url)
+    return content === undefined ? Promise.reject(new ChatApiError(404, 'Not found.')) : Promise.resolve(new Blob([content]))
   }
 
   relayStatus(accountId: string, request: RelayStatusRequest): Promise<{ relay: 'active' }> {
@@ -775,15 +831,76 @@ describe('ServerChatBackend', () => {
     })
   })
 
+  describe('files', () => {
+    const asked: RelayMediaClaimResponse = { messageId: '0193d000-0000-7000-8000-000000000001', chatJid: DIRECT, waId: 'P1', kind: 'image', size: 12, maxBytes: 4096 }
+
+    it('claims a file with this device and uploads it with its SHA-256', async () => {
+      expect(await backend.claimMedia()).toBeNull()
+      api.mediaClaimable = [asked]
+
+      const request = await backend.claimMedia()
+      expect(request).toEqual({ messageId: asked.messageId, chatJid: DIRECT, waId: 'P1', size: 12, maxBytes: 4096 })
+      await backend.deliverMedia(request!, new Blob(['a photo']), 'abc')
+
+      expect(api.calls).toEqual([
+        { kind: 'mediaClaim', accountId: ACCOUNT, deviceId: DEVICE },
+        { kind: 'mediaClaim', accountId: ACCOUNT, deviceId: DEVICE },
+        { kind: 'upload', accountId: ACCOUNT, messageId: asked.messageId, deviceId: DEVICE, sha256: 'abc', content: 'a photo' },
+      ])
+    })
+
+    it('ends the request when the server refuses the file, so the user sees why', async () => {
+      const request = { messageId: asked.messageId, chatJid: DIRECT, waId: 'P1', size: 12, maxBytes: 4096 }
+      api.failUpload = new ChatApiError(413, 'Too large.', 'too_large')
+      await backend.deliverMedia(request, new Blob(['x']), 'abc')
+      api.failUpload = new ChatApiError(422, 'Validation failed.', null, null, { file: '' })
+      await backend.deliverMedia(request, new Blob(['x']), 'abc')
+
+      expect(api.calls.filter((call) => call.kind === 'mediaFailed').map((call) => (call.kind === 'mediaFailed' ? call.request.error : null))).toEqual(['too_large', 'mismatch'])
+    })
+
+    it('passes over a file whose message is gone or that nobody asks for any more, and keeps relaying', async () => {
+      const request = { messageId: asked.messageId, chatJid: DIRECT, waId: 'P1', size: 12, maxBytes: 4096 }
+      api.failUpload = new ChatApiError(404, 'Not found.')
+      await expect(backend.deliverMedia(request, new Blob(['x']), 'abc')).resolves.toBeUndefined()
+      api.failUpload = new ChatApiError(409, 'Not requested.', 'not_requested')
+      await expect(backend.deliverMedia(request, new Blob(['x']), 'abc')).resolves.toBeUndefined()
+      api.failMediaFailed = new ChatApiError(404, 'Not found.')
+      await expect(backend.failMedia(request, 'unavailable')).resolves.toBeUndefined()
+    })
+
+    it('stops when another device relays now, and waits when the server asks', async () => {
+      const request = { messageId: asked.messageId, chatJid: DIRECT, waId: 'P1', size: 12, maxBytes: 4096 }
+      api.relayDevice = OTHER_DEVICE
+      await expect(backend.claimMedia()).rejects.toBeInstanceOf(ChatRelayStopped)
+      await expect(backend.deliverMedia(request, new Blob(['x']), 'abc')).rejects.toBeInstanceOf(ChatRelayStopped)
+      api.relayDevice = DEVICE
+      api.failMediaClaim = new ChatApiError(429, 'Slow down.', null, 30_000)
+      await expect(backend.claimMedia()).rejects.toBeInstanceOf(ChatRelayRetryLater)
+      api.failUpload = new TypeError('Failed to fetch')
+      await expect(backend.deliverMedia(request, new Blob(['x']), 'abc')).rejects.toBeInstanceOf(TypeError)
+    })
+
+    it('fetches the file a claimed reply carries through its signed link', async () => {
+      api.replyFiles.set('https://api.example/content/chat-files/r1', '%PDF manual')
+      api.claimable = [{ id: '0193c000-0000-7000-8000-000000000009', chatId: 'c1', chatJid: DIRECT, text: '', claimToken: 't', file: { name: 'manual.pdf', size: 11, url: 'https://api.example/content/chat-files/r1' } }]
+
+      const claimed = await backend.claimNext()
+      expect(claimed?.file).toEqual({ name: 'manual.pdf', size: 11, url: 'https://api.example/content/chat-files/r1' })
+      expect(await (await backend.replyFile(claimed!)).text()).toBe('%PDF manual')
+      await expect(backend.replyFile({ ...claimed!, file: null })).rejects.toThrow()
+    })
+  })
+
   describe('replies', () => {
-    const reply: RelayClaimResponse = { id: '0193c000-0000-7000-8000-000000000001', chatId: 'c1', chatJid: DIRECT, text: 'On my way', claimToken: 'a'.repeat(32) }
+    const reply: RelayClaimResponse = { id: '0193c000-0000-7000-8000-000000000001', chatId: 'c1', chatJid: DIRECT, text: 'On my way', claimToken: 'a'.repeat(32), file: null }
 
     it('claims one reply with this device and keeps its token for the result', async () => {
       expect(await backend.claimNext()).toBeNull()
       api.claimable = [reply]
 
       const claimed = await backend.claimNext()
-      expect(claimed).toEqual({ id: reply.id, chatId: 'c1', chatJid: DIRECT, text: 'On my way', token: reply.claimToken })
+      expect(claimed).toEqual({ id: reply.id, chatId: 'c1', chatJid: DIRECT, text: 'On my way', token: reply.claimToken, file: null })
       // Kept without its text until reported.
       expect(JSON.parse((await store.chatMeta(serverClaimKey(ACCOUNT)))!)).toEqual({ id: reply.id, token: reply.claimToken, result: null })
       await backend.report(claimed!, { sent: true })
@@ -1017,6 +1134,10 @@ describe('ServerChatBackend', () => {
           sent.push(`${recipient} ${text}`)
           return Promise.resolve({ ok: true })
         },
+        download: () => Promise.resolve({ ok: false, error: 'not_found' }),
+        file: () => Promise.reject(new Error('not used')),
+        stage: () => Promise.reject(new Error('not used')),
+        discard: () => Promise.resolve(),
       }
       relay = new ChatRelay({
         bridge,
@@ -1124,7 +1245,7 @@ describe('ServerChatBackend', () => {
     })
 
     it('stops when another device took over, and sends the waiting replies one at a time otherwise', async () => {
-      api.claimable = [{ id: '0193c000-0000-7000-8000-000000000001', chatId: 'c1', chatJid: DIRECT, text: 'First', claimToken: 't1' }]
+      api.claimable = [{ id: '0193c000-0000-7000-8000-000000000001', chatId: 'c1', chatJid: DIRECT, text: 'First', claimToken: 't1', file: null }]
       await relay.pollNow()
       expect(sent).toEqual([`${DIRECT} First`])
       expect(api.claims.get('0193c000-0000-7000-8000-000000000001')?.status).toBe('sent')
