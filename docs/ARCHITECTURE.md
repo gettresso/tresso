@@ -2771,10 +2771,12 @@ reads the address from `calendarStatusDetail`.
   event crossing midnight has one stop) and the arrow keys moving between events. Every event reads out title,
   time, calendar, place and answer. Mobile: an agenda of the next 30 days, a day view with the week
   strip, and the event detail with RSVP and the meeting link: a Join button named after the app (only for a link
-  core's `canJoin` passes; the system opens it with `Linking.openURL`), the link on one line with "Copy link"
+  core's `canJoin` passes; the system opens it with `Linking.openURL`), the link as text through core's `linkText`
+  (the host whole, read left to right, wrapping rather than cut again at large text sizes) with "Copy link"
   (expo-clipboard, so the app needs a development and store build that has it), who the link is from and the place
-  as the other way to meet, and a link that is being made or could not be made in core's words. The phone has no
-  Retry or removal for a link.
+  as the other way to meet, and a link that is being made or could not be made in core's words. On a failed link the
+  organizer has "Retry" (POST `/api/v1/calendar-events/{id}/meeting-link`, Meet and Teams) and "Leave without a
+  link" (DELETE), on the series.
 - Reminders are scheduled and sent by the server (next section), so they reach every device, also when no app is
   open.
 
