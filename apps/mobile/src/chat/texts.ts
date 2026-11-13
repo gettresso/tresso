@@ -8,6 +8,7 @@ import {
   replyLabel,
   SENDER_COLORS,
   senderColor,
+  type ChatMediaError,
   type ChatMediaKind,
   type ReplyTextProblem,
   type SyncedChat,
@@ -71,8 +72,52 @@ export function mediaTitle(message: Pick<SyncedChatMessage, 'mediaKind' | 'media
   return message.mediaSize === null ? label : `${label}, ${fileSize(message.mediaSize)}`
 }
 
-/** The second line of a file row: the phone does not download files; the Mac that relays has them. */
-export const MEDIA_ON_MAC = 'Open this file on your Mac.'
+/** What a file row says and offers on the phone (the file is asked for from the relaying Mac, then opened from the server). */
+export interface MediaView {
+  line: string
+  action: 'download' | 'retry' | 'open' | 'confirm' | null
+  failed: boolean
+}
+
+const MEDIA_FAILURES: Record<ChatMediaError, string> = {
+  not_found: 'Your Mac could not find this file in WhatsApp.',
+  mismatch: "WhatsApp gave your Mac another file than this message's. It was not passed on.",
+  unverified: "Your Mac could not check that this is the message's file. It was not passed on.",
+  too_large: 'This file is larger than 100 MB, the most Tresso passes on.',
+  unavailable: 'Your Mac could not get this file from WhatsApp. WhatsApp may no longer have it.',
+}
+
+/**
+ * A file's row from its message (the delta's `mediaState`, `mediaError`, `mediaAccess`): on the Mac (Download asks for
+ * it), asked for, being checked for malware, ready (Open), not checked (Open anyway, after a warning), blocked, or not
+ * brought (Try again, but not for a file too large).
+ */
+export function mediaView(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaState' | 'mediaError' | 'mediaAccess'>, relayOnline: boolean): MediaView {
+  switch (message.mediaState ?? 'remote') {
+    case 'requested':
+      return { line: relayOnline ? 'Your Mac is bringing this file.' : 'Waiting for your Mac.', action: null, failed: false }
+    case 'failed': {
+      const error = message.mediaError ?? 'unavailable'
+      return { line: MEDIA_FAILURES[error], action: error === 'too_large' ? null : 'retry', failed: true }
+    }
+    case 'stored':
+      switch (message.mediaAccess ?? 'blocked') {
+        case 'allowed':
+          return { line: 'Ready to open.', action: 'open', failed: false }
+        case 'scanning':
+          return { line: 'Checking for malware.', action: null, failed: false }
+        case 'confirm':
+          return { line: 'This file could not be checked for malware.', action: 'confirm', failed: false }
+        default:
+          return { line: 'This file is blocked: it contains malware, or this server only opens checked files.', action: null, failed: true }
+      }
+    default:
+      return { line: `${mediaKindLabel(message.mediaKind ?? 'document')}, on your Mac`, action: 'download', failed: false }
+  }
+}
+
+/** The warning before a file that could not be checked opens. */
+export const UNSCANNED_WARNING = 'This file could not be checked for malware. Open it only if you trust the sender.'
 
 /** What the banner above a chat says about the relaying Mac, or null when it relays and WhatsApp works. */
 export function relayBanner(account: Pick<SyncedChatAccount, 'relayOnline' | 'bridge' | 'link'> | null): string | null {

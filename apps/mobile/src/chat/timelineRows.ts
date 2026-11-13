@@ -1,5 +1,5 @@
-import { chatMessageKey, labelText, timeline, type SyncedChatMessage, type SyncedChatOutgoing, type TimelineEntry } from '@tresso/core'
-import { clockTime, MEDIA_ON_MAC, mediaTitle, replyView, senderLabel, senderTone, type ReplyView } from '@/chat/texts'
+import { chatMessageKey, labelText, SENT_FILE_PREFIX, timeline, type SyncedChatMessage, type SyncedChatOutgoing, type TimelineEntry } from '@tresso/core'
+import { clockTime, mediaTitle, mediaView, replyView, senderLabel, senderTone, type ReplyView } from '@/chat/texts'
 import { dayLabel } from '@/mail/format'
 
 /** A bubble of a chat screen. */
@@ -96,7 +96,7 @@ function bubbleOf(entry: TimelineEntry, options: { group: boolean; name: string;
     const message = entry.message
     const media = message.mediaKind === null ? null : message
     const who = message.fromMe ? 'You' : options.group ? senderLabel(message) : options.name
-    const said = [labelText(message.text), media === null ? '' : `${mediaTitle(media)}. ${MEDIA_ON_MAC}`].filter((part) => part !== '').join('. ')
+    const said = [labelText(message.text), media === null ? '' : `${mediaTitle(media)}. ${mediaView(media, options.relayOnline).line}`].filter((part) => part !== '').join('. ')
     return {
       kind: 'bubble',
       key: message.id,
@@ -117,18 +117,20 @@ function bubbleOf(entry: TimelineEntry, options: { group: boolean; name: string;
   if (view === null) {
     return null
   }
+  // A file queued from this phone or another device has no text of its own: it shows by its name.
+  const text = reply.text === '' && reply.file ? `${SENT_FILE_PREFIX}${reply.file.name}` : reply.text
   return {
     kind: 'bubble',
     key: reply.id,
     mine: true,
-    text: reply.text,
+    text,
     media: null,
     sender: null,
     meta: view.meta,
     state: view.state,
     reason: view.reason,
     reply,
-    label: ['You', time, view.spoken, labelText(reply.text)].filter((part) => part !== '').join(', '),
+    label: ['You', time, view.spoken, labelText(text)].filter((part) => part !== '').join(', '),
     grouped: false,
   }
 }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Alert, Linking } from 'react-native'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SqliteMailStore, SyncedChat, SyncedChatAccount, SyncedChatOutgoing, UpdateChatRequest } from '@tresso/core'
 import { ApiError } from '@/auth/session'
@@ -43,6 +44,8 @@ vi.mock('expo-router', async () => {
     useFocusEffect: (effect: () => void | (() => void)) => React.useEffect(effect, [effect]),
   }
 })
+const picker = vi.hoisted(() => ({ result: { canceled: true, assets: null } as unknown }))
+vi.mock('expo-document-picker', () => ({ getDocumentAsync: vi.fn(async () => picker.result) }))
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }))
 vi.mock('@/components/Notices', () => ({ useNotices: () => ({ notify: env.notify }) }))
 vi.mock('@/components/Icon', () => ({ Icon: () => null }))
@@ -93,6 +96,7 @@ const BRAM_SAYS = [
   message('m1', 'c1', minutes(0), { text: 'Hey Kim! Are we still on for moving the cabinets this weekend?' }),
   message('m2', 'c1', minutes(4), { fromMe: true, text: 'Yes, Saturday from 10. Thanks for helping!' }),
   message('m3', 'c1', minutes(16), { text: 'This is the wall. Can you bring the drill on Saturday?' }),
+  message('m4', 'c1', minutes(15), { text: '', mediaKind: 'image', mediaName: 'image_1.jpg', mediaSize: 184_320, mediaState: 'remote', mediaError: null, mediaAccess: null }),
 ]
 
 function fakeApi(overrides: Partial<PhoneChatApi> = {}): PhoneChatApi {
@@ -101,6 +105,10 @@ function fakeApi(overrides: Partial<PhoneChatApi> = {}): PhoneChatApi {
     cancelReply: vi.fn(async () => undefined),
     retryReply: vi.fn(async (id: string) => reply(id, 'c1', { status: 'waiting' })),
     updateChat: vi.fn(async (id: string, request: UpdateChatRequest) => ({ ...BRAM, id, readThrough: request.readThrough ?? null })),
+    requestMedia: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'requested' as const, error: null, access: null, url: null })),
+    media: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'stored' as const, error: null, access: 'allowed' as const, url: `https://api.test/content/chat-media/${messageId}` })),
+    unscannedMediaLink: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'stored' as const, error: null, access: 'confirm' as const, url: `https://api.test/content/chat-media/${messageId}?unscanned=1` })),
+    uploadFile: vi.fn(async (chatId: string, uploadId: string, body: Blob) => ({ id: uploadId, chatId, size: body.size })),
     ...overrides,
   }
 }
@@ -120,6 +128,7 @@ async function open(rows: { account?: SyncedChatAccount | null; chats?: SyncedCh
       now: () => Date.now(),
       newId: () => `0193a1c2-0000-7000-8000-${String(++ids).padStart(12, '0')}`,
       changed: () => env.bump(),
+      readFile: async (uri) => new Blob([`content of ${uri}`]),
     }),
   }
   render(<ChatScreen />)
@@ -295,5 +304,51 @@ describe('the chat screen', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
 
     await waitFor(() => expect(env.chats.createTodo).toHaveBeenCalledWith('Reply to Bram Visser'))
+  })
+
+  describe('files', () => {
+    it('asks the Mac for a file only on Download', async () => {
+      const { api } = await open()
+
+      expect(await screen.findByText('Photo, on your Mac')).toBeTruthy()
+      expect(api.requestMedia).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Download, Photo, 180 KB' }))
+      await waitFor(() => expect(api.requestMedia).toHaveBeenCalledWith('m4'))
+    })
+
+    it('opens a checked file through a fresh link, and one not checked only after the warning', async () => {
+      const opened = vi.spyOn(Linking, 'openURL').mockResolvedValue(undefined)
+      const alert = vi.spyOn(Alert, 'alert').mockImplementation(() => undefined)
+      const store = await copyWith({ chats: [BRAM], messages: [message('m4', 'c1', minutes(15), { text: '', mediaKind: 'image', mediaName: null, mediaSize: 10, mediaState: 'stored', mediaError: null, mediaAccess: 'allowed' })] })
+      const api = fakeApi()
+      env.chats = { account: account(), store, drafts: new Map(), createTodo: vi.fn(), actions: new ChatActions({ store: () => store, api, now: Date.now, newId: () => 'x', changed: () => env.bump() }) }
+      render(<ChatScreen />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Open, Photo, 10 B' }))
+      await waitFor(() => expect(opened).toHaveBeenCalledWith('https://api.test/content/chat-media/m4'))
+
+      await store.putChatMessages([message('m4', 'c1', minutes(15), { text: '', mediaKind: 'image', mediaName: null, mediaSize: 10, mediaState: 'stored', mediaError: null, mediaAccess: 'confirm' })])
+      act(() => env.bump())
+      fireEvent.click(await screen.findByRole('button', { name: 'Open anyway, Photo, 10 B' }))
+      expect(alert).toHaveBeenCalledTimes(1)
+      expect(api.unscannedMediaLink).not.toHaveBeenCalled()
+      const buttons = alert.mock.calls[0]![2] as { text: string; onPress?: () => void }[]
+      act(() => buttons.find((button) => button.text === 'Open anyway')!.onPress!())
+      await waitFor(() => expect(opened).toHaveBeenCalledWith('https://api.test/content/chat-media/m4?unscanned=1'))
+      opened.mockRestore()
+      alert.mockRestore()
+    })
+
+    it('attaches a file: uploaded, then queued for the Mac, shown by its name', async () => {
+      picker.result = { canceled: false, assets: [{ uri: 'file:///cache/plan.pdf', name: 'plan.pdf', size: 31, mimeType: 'application/pdf' }] }
+      const { api } = await open()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Attach a file' }))
+
+      await waitFor(() => expect(api.queueReply).toHaveBeenCalledTimes(1))
+      const [[, uploadId]] = vi.mocked(api.uploadFile).mock.calls
+      expect(vi.mocked(api.queueReply).mock.calls[0]![1]).toMatchObject({ text: '', file: { uploadId, name: 'plan.pdf' } })
+      picker.result = { canceled: true, assets: null }
+    })
   })
 })
