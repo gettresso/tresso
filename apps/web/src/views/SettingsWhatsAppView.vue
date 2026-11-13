@@ -13,6 +13,8 @@ import {
   CLOSE_PORT_URL,
   COPY_BODY,
   COPY_TITLE,
+  GROUPS_WOULD_GO,
+  LEFT_OUT_KEPT,
   MODE_NOTE,
   REMOVE_BODY,
   REMOVE_TITLE,
@@ -52,6 +54,11 @@ const confirmingDisconnect = ref(false)
 const confirmingGroups = ref(false)
 /** The place the user picked in "Where messages live", until they confirmed or cancelled the switch. */
 const confirmingMode = ref<'local' | 'all' | null>(null)
+/** In a confirmation that would remove the account's group chats (this Mac leaves groups out): keep groups on instead. */
+const keepGroups = ref(false)
+/** "Use this Mac instead" waits for a yes, because it would remove the account's group chats. */
+const confirmingTakeover = ref(false)
+
 const modeSelect = ref<HTMLSelectElement | null>(null)
 const modeCancel = ref<HTMLButtonElement | null>(null)
 const disconnectButton = ref<HTMLButtonElement | null>(null)
@@ -75,6 +82,13 @@ focusAround(
   () => confirmingGroups.value,
   () => groupsCancel.value,
   () => groupsSelect.value,
+)
+const takeoverButton = ref<HTMLButtonElement | null>(null)
+const takeoverCancel = ref<HTMLButtonElement | null>(null)
+focusAround(
+  () => confirmingTakeover.value,
+  () => takeoverCancel.value,
+  () => takeoverButton.value,
 )
 focusAround(
   () => confirmingMode.value !== null,
@@ -180,6 +194,7 @@ const modeValue = computed(() => wa.config?.mode ?? 'local')
 const notCarriedLine = ref<string | null>(null)
 
 async function askMode(value: 'local' | 'all'): Promise<void> {
+  keepGroups.value = false
   confirmingMode.value = value
   notCarriedLine.value = value === 'all' ? notCarriedText(await wa.notCarried()) : null
 }
@@ -197,7 +212,7 @@ function onMode(event: Event): void {
 /** The answer Copy or Remove: the yes to copying is passed on, the store refuses "All my devices" without it. */
 async function switchMode(): Promise<void> {
   const to = confirmingMode.value
-  if (to !== null && (await wa.switchMode(to, { copy: to === 'all' }))) {
+  if (to !== null && (await wa.switchMode(to, { copy: to === 'all', keepGroups: keepGroups.value }))) {
     confirmingMode.value = null
   }
 }
@@ -205,9 +220,20 @@ async function switchMode(): Promise<void> {
 /** "Use this Mac instead": in "All my devices" this Mac takes the relay over; in "Only this Mac" it switches (asked first). */
 function takeOver(kind: 'relay' | 'switch'): void {
   if (kind === 'relay') {
-    void wa.useThisMac()
+    if (wa.groupsWouldGo) {
+      keepGroups.value = false
+      confirmingTakeover.value = true
+    } else {
+      void wa.useThisMac()
+    }
   } else {
     void askMode('all')
+  }
+}
+
+async function confirmTakeover(): Promise<void> {
+  if (await wa.useThisMac({ keepGroups: keepGroups.value })) {
+    confirmingTakeover.value = false
   }
 }
 
@@ -215,11 +241,11 @@ function takeOver(kind: 'relay' | 'switch'): void {
 async function relayAnyway(): Promise<void> {
   const task = wa.askNumber
   if (task === 'take-over') {
-    await wa.useThisMac({ number: true })
+    await wa.useThisMac({ number: true, keepGroups: keepGroups.value })
   } else if (task === 'folder') {
     await wa.changeFolder({ number: true })
   } else if (task === 'mode') {
-    if (await wa.switchMode('all', { copy: true, number: true })) {
+    if (await wa.switchMode('all', { copy: true, number: true, keepGroups: keepGroups.value })) {
       confirmingMode.value = null
     }
   }
@@ -362,10 +388,25 @@ onBeforeUnmount(() => {
         <div class="row">
           <span class="label">Relaying Mac</span>
           <span class="value" dir="auto"><span class="dot" :class="{ ok: relayRow.ok }" aria-hidden="true" />{{ relayRow.value }}</span>
-          <button v-if="relayRow.takeOver" type="button" class="button button-quiet outline" :disabled="wa.busy !== null || wa.modeSwitch !== null" @click="takeOver(relayRow.takeOver)">
+          <button
+            v-if="relayRow.takeOver"
+            ref="takeoverButton"
+            type="button"
+            class="button button-quiet outline"
+            :disabled="wa.busy !== null || wa.modeSwitch !== null"
+            @click="takeOver(relayRow.takeOver)"
+          >
             {{ wa.busy === 'take-over' ? 'Taking over…' : 'Use this Mac instead' }}
           </button>
           <span v-if="relayRow.detail" class="detail" dir="auto">{{ relayRow.detail }}</span>
+          <div v-if="confirmingTakeover" class="confirm" role="alertdialog" aria-labelledby="wa-takeover-title">
+            <p id="wa-takeover-title"><strong>{{ GROUPS_WOULD_GO }}</strong></p>
+            <label class="keep-groups"><input v-model="keepGroups" type="checkbox" /> Keep group chats on instead</label>
+            <div class="actions">
+              <button type="button" class="button button-primary" :disabled="wa.busy !== null" @click="confirmTakeover">Use this Mac</button>
+              <button ref="takeoverCancel" type="button" class="button button-quiet" :disabled="wa.busy !== null" @click="confirmingTakeover = false">Cancel</button>
+            </div>
+          </div>
         </div>
         <div class="row">
           <span class="label">whatsapp-mcp</span>
@@ -405,8 +446,12 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="confirmingMode" class="confirm" role="alertdialog" aria-labelledby="wa-mode-title" aria-describedby="wa-mode-body">
           <p id="wa-mode-title"><strong>{{ confirmingMode === 'all' ? COPY_TITLE : REMOVE_TITLE }}</strong></p>
-          <p id="wa-mode-body">{{ confirmingMode === 'all' ? COPY_BODY : REMOVE_BODY }}</p>
+          <p id="wa-mode-body">{{ confirmingMode === 'all' ? `${COPY_BODY} ${LEFT_OUT_KEPT}` : REMOVE_BODY }}</p>
           <p v-if="confirmingMode === 'all' && notCarriedLine">{{ notCarriedLine }}</p>
+          <template v-if="confirmingMode === 'all' && wa.groupsWouldGo">
+            <p>{{ GROUPS_WOULD_GO }}</p>
+            <label class="keep-groups"><input v-model="keepGroups" type="checkbox" /> Keep group chats on instead</label>
+          </template>
           <div class="actions">
             <button type="button" :class="confirmingMode === 'all' ? 'button button-primary' : 'button button-danger'" :disabled="wa.busy !== null" @click="switchMode">
               {{ wa.busy === 'mode' ? (confirmingMode === 'all' ? 'Copying…' : 'Removing…') : confirmingMode === 'all' ? 'Copy' : 'Remove' }}
@@ -455,7 +500,7 @@ onBeforeUnmount(() => {
         <h3 id="wa-left-out">Chats left out</h3>
         <p class="option-note">
           Tresso does not read these chats; WhatsApp keeps them. Taking one back in reads the bridge's store again: its messages come back as read, also those that came while it was left out, and
-          new ones arrive as usual.<template v-if="!readsHere"> Take chats back in on the Mac that relays WhatsApp.</template>
+          new ones arrive as usual.<template v-if="allDevices"> {{ LEFT_OUT_KEPT }}</template><template v-if="!readsHere"> Take chats back in on the Mac that relays WhatsApp.</template>
         </p>
         <ul class="left-list">
           <li v-for="row in leftOutRows" :key="row.jid" class="left-row">
@@ -750,6 +795,12 @@ select {
   border-radius: var(--radius-card);
 }
 .confirm p {
+  margin: 0 0 8px;
+}
+.keep-groups {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 0 8px;
 }
 .actions {

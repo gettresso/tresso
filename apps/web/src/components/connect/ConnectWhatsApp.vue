@@ -8,6 +8,7 @@ import {
   BUILD_COMMAND,
   COPY_BODY,
   COPY_TITLE,
+  LEFT_OUT_KEPT,
   PLACE_ALL_NOTE,
   PLACE_LOCAL_NOTE,
   FOLDER_NOTE,
@@ -117,12 +118,17 @@ async function connect(numberConfirmed = false): Promise<void> {
     await askCopy()
     return
   }
-  if (await wa.connect(place.value, { copy: place.value === 'all', number: numberConfirmed })) {
+  // The yes to copying only when the user gave it: on the takeover path the store checks that the chats are on the server.
+  if (await wa.connect(place.value, { copy: place.value === 'all' && copyConfirmed, number: numberConfirmed })) {
     connectedHere.value = true
   }
 }
 
+/** The control the Copy question was opened from (the radio, or Connect), for the focus to go back to. */
+let askedFrom: HTMLElement | null = null
+
 async function askCopy(): Promise<void> {
+  askedFrom = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
   confirmingCopy.value = true
   await nextTick()
   copyCancel.value?.focus()
@@ -147,7 +153,9 @@ async function answerCopy(copy: boolean): Promise<void> {
     place.value = 'local'
   }
   await nextTick()
-  allRadio.value?.focus()
+  // Back where the question came from; the radio when that went (a radio re-rendered) or was never known.
+  ;(askedFrom?.isConnected ? askedFrom : allRadio.value)?.focus()
+  askedFrom = null
 }
 
 /** Enter presses the main button, unless it lands on a control that handles it (a button, a link). */
@@ -291,7 +299,7 @@ onUnmounted(() => {
     </fieldset>
     <div v-if="confirmingCopy" class="copy-confirm" role="alertdialog" aria-labelledby="wa-copy-title" aria-describedby="wa-copy-body">
       <p id="wa-copy-title"><strong>{{ COPY_TITLE }}</strong></p>
-      <p id="wa-copy-body">{{ COPY_BODY }}</p>
+      <p id="wa-copy-body">{{ COPY_BODY }} {{ LEFT_OUT_KEPT }}</p>
       <div class="actions">
         <button type="button" class="button button-primary" @click="answerCopy(true)">Copy</button>
         <button ref="copyCancel" type="button" class="button button-quiet" @click="answerCopy(false)">Cancel</button>

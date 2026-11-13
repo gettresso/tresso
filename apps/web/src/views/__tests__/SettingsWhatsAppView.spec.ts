@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import type { BridgeState, WhatsAppConfig } from '@/platform/whatsapp'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
-import { BRIDGE_PROBLEMS, BUILD_COMMAND, COPY_BODY, COPY_TITLE, REMOVE_BODY, REMOVE_TITLE } from '@/components/chat/whatsappTexts'
+import { BRIDGE_PROBLEMS, BUILD_COMMAND, COPY_BODY, COPY_TITLE, GROUPS_WOULD_GO, LEFT_OUT_KEPT, REMOVE_BODY, REMOVE_TITLE } from '@/components/chat/whatsappTexts'
 import type { SyncedChatAccount } from '@tresso/core'
 import SettingsWhatsAppView from '../SettingsWhatsAppView.vue'
 
@@ -320,7 +320,8 @@ describe('SettingsWhatsAppView', () => {
       const confirm = wrapper.get('[role="alertdialog"]')
       expect(confirm.get('#wa-mode-title').text()).toBe(COPY_TITLE)
       expect(COPY_TITLE).toBe('Copy your WhatsApp chats to your Tresso server? Web and mobile will show them.')
-      expect(confirm.get('#wa-mode-body').text()).toBe(COPY_BODY)
+      expect(confirm.get('#wa-mode-body').text()).toBe(`${COPY_BODY} ${LEFT_OUT_KEPT}`)
+      expect(LEFT_OUT_KEPT).toBe('Chats you left out stay out on every device: Tresso keeps only their WhatsApp address on your server, sealed, to recognise them.')
       await flushPromises()
       expect(document.activeElement?.textContent).toBe('Cancel')
       expect(confirm.findAll('button').map((button) => button.text())).toEqual(['Copy', 'Cancel'])
@@ -332,7 +333,7 @@ describe('SettingsWhatsAppView', () => {
       await select.setValue('all')
       await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
       await flushPromises()
-      expect(switchMode).toHaveBeenCalledWith('all', { copy: true })
+      expect(switchMode).toHaveBeenCalledWith('all', { copy: true, keepGroups: false })
       expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
     })
 
@@ -351,7 +352,7 @@ describe('SettingsWhatsAppView', () => {
       expect(confirm.get('#wa-mode-body').text()).toBe(REMOVE_BODY)
       expect(confirm.findAll('button').map((button) => button.text())).toEqual(['Remove', 'Cancel'])
       await confirm.findAll('button')[0]!.trigger('click')
-      expect(switchMode).toHaveBeenCalledWith('local', { copy: false })
+      expect(switchMode).toHaveBeenCalledWith('local', { copy: false, keepGroups: false })
     })
 
     it('names the Mac that relays, with Use this Mac instead', async () => {
@@ -379,7 +380,7 @@ describe('SettingsWhatsAppView', () => {
       await relay.element.get('button').trigger('click')
       expect(wrapper.get('#wa-mode-title').text()).toBe(COPY_TITLE)
       await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
-      expect(switchMode).toHaveBeenCalledWith('all', { copy: true })
+      expect(switchMode).toHaveBeenCalledWith('all', { copy: true, keepGroups: false })
     })
 
     it('leads a Mac not connected to the connect dialog to take the relay over', async () => {
@@ -394,7 +395,7 @@ describe('SettingsWhatsAppView', () => {
     it('says a switch under way, the replies carried over and the messages the server refused, in counts', async () => {
       wa.config = { ...CONFIG, mode: 'all' }
       wa.serverAccount = ACCOUNT
-      wa.modeSwitch = { to: 'all', accountId: null }
+      wa.modeSwitch = { to: 'all', accountId: null, copy: true }
       wa.carried = [{ jid: '31612345678@s.whatsapp.net', text: 'Secret', id: null }]
       wa.carryCounts = { lost: 1, cancelled: 0, unsure: 0, notSent: 0 }
       wa.serverRefused = 2
@@ -418,12 +419,12 @@ describe('SettingsWhatsAppView', () => {
       expect(ask.text()).toContain('Tresso cannot tell whether')
       expect(wrapper.find('.form-error').exists()).toBe(false)
       await ask.findAll('button')[0]!.trigger('click')
-      expect(useThisMac).toHaveBeenCalledWith({ number: true })
+      expect(useThisMac).toHaveBeenCalledWith({ number: true, keepGroups: false })
     })
 
     it('offers to stay on "Only this Mac" while a switch cannot finish', async () => {
       const stayLocal = vi.spyOn(wa, 'stayLocal').mockResolvedValue(true)
-      wa.modeSwitch = { to: 'all', accountId: null }
+      wa.modeSwitch = { to: 'all', accountId: null, copy: true }
       wa.switchFailing = true
       const wrapper = open()
       const button = wrapper.findAll('button').find((candidate) => candidate.text() === 'Stay on Only this Mac')!
@@ -461,6 +462,21 @@ describe('SettingsWhatsAppView', () => {
       wa.relayPauseMs = 10 * 60_000
       const wrapper = open()
       expect(wrapper.get('.import-failing').text()).toBe('Your Tresso server asked Tresso to wait; it tries again in about 10 minutes.')
+    })
+
+    it('says before a takeover that the group chats would go, and keeps them when asked', async () => {
+      const useThisMac = vi.spyOn(wa, 'useThisMac').mockResolvedValue(true)
+      wa.config = { ...CONFIG, mode: 'all', includeGroups: false }
+      wa.serverAccount = { ...ACCOUNT, relayDeviceId: '6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f', relayDeviceName: 'Office iMac', includeGroups: true }
+      const wrapper = open()
+      await row(wrapper, 'Relaying Mac').element.get('button').trigger('click')
+      expect(useThisMac).not.toHaveBeenCalled()
+      const confirm = wrapper.get('[aria-labelledby="wa-takeover-title"]')
+      expect(confirm.text()).toContain(GROUPS_WOULD_GO)
+      expect(GROUPS_WOULD_GO).toBe('Group chats will be removed from your Tresso server, because this Mac leaves groups out.')
+      await confirm.get('input[type="checkbox"]').setValue(true)
+      await confirm.findAll('button')[0]!.trigger('click')
+      expect(useThisMac).toHaveBeenCalledWith({ keepGroups: true })
     })
 
     it('says when WhatsApp was disconnected on another device', () => {

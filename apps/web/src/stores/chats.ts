@@ -8,7 +8,6 @@ import {
   recordLocalAttachment,
   replyText,
   uuidV7,
-  uuidV7Time,
   type ChatMessageKey,
   type ChatOutgoingError,
   type ChatPage,
@@ -168,13 +167,11 @@ export const useChatsStore = defineStore('chats', () => {
   /** JIDs left out on this Mac that the server has no chat row for yet ("All my devices"); see read. */
   const leftOutHere = shallowRef<string[]>([])
 
-  /** The server takes a reply id at most this old (QueueReply::ID_BEHIND), on its clock. */
-  const ID_WINDOW_MS = 10 * 60_000
-
-  function expired(id: string): boolean {
-    const at = uuidV7Time(id)
-    return at === null || auth.serverNow() - at > ID_WINDOW_MS
-  }
+  /**
+   * A reply whose outcome was not known came in through the delta: it was queued, so it counts as sent. Raised with
+   * its chat, so the pane takes back what it said (the error) and the composer is emptied when it still holds that text.
+   */
+  const unsureArrived = shallowRef<{ chatId: string; n: number } | null>(null)
 
   async function keepUnsure(copy: MailStore, chatId: string, entry: { text: string; id: string } | null): Promise<void> {
     const next = new Map(unsure)
@@ -187,7 +184,12 @@ export const useChatsStore = defineStore('chats', () => {
     await copy.setChatMeta(UNSURE_REPLIES, next.size === 0 ? null : JSON.stringify([...next]))
   }
 
-  /** Reads the unsure replies from the copy, and lets go of those the delta brought or that are too old to reuse. */
+  /**
+   * Reads the unsure replies from the copy, and lets go of those the delta brought: they were queued, so they are sent as
+   * far as the user is concerned (the draft that still holds the text goes). Never let go for age: an old id sent again
+   * is safe (the server answers a queued one with it, a cancelled one with 409, and an id too old to queue with a 422,
+   * which ends as `maybe_queued`).
+   */
   async function settleUnsure(copy: MailStore): Promise<void> {
     const raw = await copy.chatMeta(UNSURE_REPLIES)
     let read = new Map<string, { text: string; id: string }>()
@@ -207,8 +209,14 @@ export const useChatsStore = defineStore('chats', () => {
     unsure = read
     for (const [chatId, entry] of read) {
       const arrived = (await copy.chatPage(chatId, { limit: 1 }))?.outgoing.some((row) => row.id === entry.id && row.status !== 'cancelled') ?? false
-      if (arrived || expired(entry.id)) {
+      if (arrived) {
         await keepUnsure(copy, chatId, null)
+        const draft = drafts.get(chatId)
+        const typed = draft === undefined ? null : replyText(draft)
+        if (typed !== null && typed.ok && typed.text === entry.text) {
+          drafts.delete(chatId)
+        }
+        unsureArrived.value = { chatId, n: (unsureArrived.value?.n ?? 0) + 1 }
       }
     }
   }
@@ -428,7 +436,7 @@ export const useChatsStore = defineStore('chats', () => {
     const checked = replyText(text)
     const earlier = unsure.get(chatId)
     // The same text after an unsure try is that reply again; any other text is a new one.
-    const again = earlier !== undefined && checked.ok && checked.text === earlier.text && !expired(earlier.id) ? earlier.id : undefined
+    const again = earlier !== undefined && checked.ok && checked.text === earlier.text ? earlier.id : undefined
     let row: SyncedChatOutgoing
     try {
       row = await actions.value.send(chatId, text, again)
@@ -618,6 +626,7 @@ export const useChatsStore = defineStore('chats', () => {
     setDraft,
     enabled,
     leftOutHere,
+    unsureArrived,
     accountId,
     relaysHere,
     canReply,

@@ -265,6 +265,11 @@ export const REMOVE_TITLE = 'Remove your WhatsApp chats from your Tresso server?
 export const REMOVE_BODY =
   'Tresso deletes your WhatsApp chats from your Tresso server and from your other devices, with the replies still waiting there, and brings the chats in again on this Mac from the bridge. WhatsApp and the bridge keep everything.'
 
+/** In the Copy confirmation and the left-out list in "All my devices": what the server keeps of a chat left out. */
+export const LEFT_OUT_KEPT = 'Chats you left out stay out on every device: Tresso keeps only their WhatsApp address on your server, sealed, to recognise them.'
+/** In a takeover's confirmation when this Mac leaves groups out and the account does not. */
+export const GROUPS_WOULD_GO = 'Group chats will be removed from your Tresso server, because this Mac leaves groups out.'
+
 /** What a switch under way says (the copy keeps it until it is done, also through a restart). */
 export function switchText(to: 'all' | 'local', removed: boolean): string {
   if (to === 'all') {

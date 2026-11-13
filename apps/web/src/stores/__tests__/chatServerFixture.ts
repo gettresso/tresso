@@ -43,6 +43,7 @@ export class FakeChatServer implements ChatApi {
   /** A call that waits for the test before it answers. */
   held = new Map<keyof ChatApi, Promise<void>>()
   private claims = new Map<string, string>()
+  private made = 0
   private seq = 0
 
   private async enter(name: keyof ChatApi, args: unknown[]): Promise<void> {
@@ -112,7 +113,8 @@ export class FakeChatServer implements ChatApi {
     this.account =
       this.account === null
         ? {
-            id: ACCOUNT_ID,
+            // A new account after one was removed has a new id, as on the server.
+            id: this.made++ === 0 ? ACCOUNT_ID : `0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a${String(this.made).padStart(2, '0')}`,
             channel: 'whatsapp',
             address: request.address,
             displayName: request.displayName,
@@ -171,6 +173,12 @@ export class FakeChatServer implements ChatApi {
   async relayStatus(accountId: string, request: Parameters<ChatApi['relayStatus']>[1]): Promise<{ relay: 'active' }> {
     await this.enter('relayStatus', [accountId, request])
     this.relayCheck(accountId, request.deviceId)
+    if (request.address != null && this.account !== null) {
+      if (this.account.address !== null && this.account.address !== request.address) {
+        throw new ChatApiError(409, 'Another number.', 'other_number')
+      }
+      this.account = { ...this.account, address: request.address }
+    }
     return { relay: 'active' }
   }
 
@@ -181,6 +189,13 @@ export class FakeChatServer implements ChatApi {
     const honour = request.firstImport && this.importsHistory
     if (!request.firstImport) {
       this.importsHistory = false
+    }
+    // Chats left out on a device before the server knew them: kept as left-out rows with nothing but the JID.
+    for (const entry of request.chats) {
+      const jid = canonicalChatJid(entry.jid)
+      if (entry.leftOut === true && jid !== null && !this.chats.has(jid)) {
+        this.chats.set(jid, { id: `chat-${jid}`, chatAccountId: account.id, jid, kind: chatKindOf(jid), name: null, lastMessageAt: '2009-01-01T00:00:00.000Z', readThrough: null, archivedThrough: null, leftOut: true })
+      }
     }
     const results: RelayImportResponse['results'] = []
     const newest = new Map<string, string>()

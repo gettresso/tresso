@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
-import { LocalChatBackend, SqliteMailStore, type SyncedChatOutgoing } from '@tresso/core'
+import { ChatApiError, LocalChatBackend, SqliteMailStore, type SyncedChatOutgoing } from '@tresso/core'
 import { memorySql } from '@tresso/core/testing/sql'
 import { ACCOUNT_ID, FakeChatServer } from '@/stores/__tests__/chatServerFixture'
 import type { WhatsAppCommands } from '@/platform/whatsapp'
@@ -36,6 +36,7 @@ vi.mock('@/platform/whatsapp', async (original) => ({
 }))
 
 const { default: ChatPane } = await import('../ChatPane.vue')
+const { useChatsStore } = await import('@/stores/chats')
 
 describe('ChatPane', () => {
   let relay: ReturnType<typeof fakeRelay>
@@ -223,6 +224,47 @@ describe('ChatPane', () => {
     expect(view.get('textarea').attributes('disabled')).toBeUndefined()
   })
 
+  it('empties the field and takes back the error once an unsure reply turns out queued', async () => {
+    const server = new FakeChatServer()
+    fakes.server = server
+    await server.connect({ deviceId: 'other-device', deviceName: 'Office iMac', address: null, displayName: null, includeGroups: true, notify: false })
+    await server.relayMessages(ACCOUNT_ID, {
+      deviceId: 'other-device',
+      firstImport: false,
+      chats: [{ jid: DIRECT, name: 'Bram Visser', kind: 'direct' }],
+      messages: [{ chatJid: DIRECT, waId: 'S1', fromMe: false, sender: null, text: 'Hello', sentAt: at(-3), media: null }],
+    })
+    const original = server.queueReply.bind(server)
+    let lose = true
+    server.queueReply = async (chatId, request) => {
+      const row = await original(chatId, request)
+      if (lose) {
+        lose = false
+        throw new ChatApiError(502, 'Bad gateway')
+      }
+      return row
+    }
+    const copy = await SqliteMailStore.open(await memorySql())
+    await server.deliver(copy)
+    relay.config = { ...relay.config!, mode: 'all' }
+    relay.serverAccount = server.account
+    relay.relaysHere = false
+
+    const view = await open(`chat-${DIRECT}`, copy)
+    await view.get('textarea').setValue('On my way')
+    await view.get('form').trigger('submit')
+    await flushPromises()
+    expect(view.get('[role="alert"]').text()).toContain('it may already be queued')
+    expect((view.get('textarea').element as HTMLTextAreaElement).value).toBe('On my way')
+
+    await server.deliver(copy)
+    await useChatsStore().refresh()
+    await flushPromises()
+    expect(view.find('[role="alert"]').exists()).toBe(false)
+    expect((view.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+    expect(server.outgoing.size).toBe(1)
+  })
+
   it('cancels a waiting reply and tries a failed one again, and says the change', async () => {
     relay.relayRunning = false
     let view = await withReply({ status: 'waiting' })
@@ -380,6 +422,7 @@ describe('ChatPane', () => {
     const confirm = view.get('[role="alertdialog"]')
     expect(confirm.text()).toContain('Leave this chat out?')
     expect(confirm.text()).toContain('Tresso removes its copy and stops reading it. The chat stays in WhatsApp.')
+    expect(confirm.text()).toContain('A contact can appear as two chats in WhatsApp (by number and by hidden number). Leave both out to keep the contact out.')
     expect(document.activeElement?.textContent).toBe('Cancel')
     await confirm.findAll('button')[0]!.trigger('click')
     await flushPromises()

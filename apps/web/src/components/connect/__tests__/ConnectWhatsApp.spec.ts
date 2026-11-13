@@ -301,7 +301,8 @@ describe('ConnectWhatsApp', () => {
     expect(wrapper.get<HTMLInputElement>('input[type="radio"][value="all"]').element.checked).toBe(true)
     expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
     await primary(wrapper).trigger('click')
-    expect(connect).toHaveBeenLastCalledWith('all', { copy: true, number: false })
+    // No yes to copying was given: the store relays only the account that holds the chats already.
+    expect(connect).toHaveBeenLastCalledWith('all', { copy: false, number: false })
     wrapper.unmount()
   })
 
