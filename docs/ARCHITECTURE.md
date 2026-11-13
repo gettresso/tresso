@@ -3042,6 +3042,10 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
   `X-TRESSO-CONFERENCE-REMOVE`. A request still in the iCalendar text goes out with a write that only lacks the
   `X-TRESSO-CONFERENCE-*` properties (asking the provider for nothing); one only on the object is cleared there. The
   plain `DELETE` still removes the link.
+- A save with `conferenceUrl: null` and `conferenceProvider` X on an event that has a meeting of app X keeps it: no
+  removal, no new request, no write about the meeting (a client's copy may predate the link). Removal is both fields
+  null or `DELETE .../meeting-link`; another app replaces the link; a fresh link of the same app is `DELETE` then
+  `POST .../meeting-link`.
 
 The web and desktop clients show an event's link in the popover as the app's name (from `conference.provider`, which
 the server sets only for a link on that app's own host; anything else reads "Meeting link"), the link on one line

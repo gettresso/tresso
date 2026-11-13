@@ -319,7 +319,7 @@ final readonly class EventEditor
         self::writeTravel($event, $changes->travelMinutes);
         self::writeImportance($event, $changes->important);
         // After the description: the join line of a link Tresso knows is managed there.
-        self::writeConference($event, $changes->conferenceUrl, $calendar, self::organizes($event, $self));
+        self::writeConference($event, self::conferenceUrlFor($event, $changes), $calendar, self::organizes($event, $self));
 
         self::touch($event, self::significantState($event) !== $before);
     }
@@ -362,7 +362,7 @@ final readonly class EventEditor
             self::writeImportance($override, $changes->important);
         }
         if ($changed(static fn (VEvent $event): ?string => ConferenceDetector::detect($event)['url'] ?? null)) {
-            self::writeConference($override, $changes->conferenceUrl, $calendar, self::organizes($override, $self));
+            self::writeConference($override, self::conferenceUrlFor($override, $changes), $calendar, self::organizes($override, $self));
         }
         if (!$keepTime) {
             $override->remove('DURATION');
@@ -807,6 +807,22 @@ final readonly class EventEditor
     }
 
     /**
+     * The meeting link a save asks for. `conferenceUrl: null` with `conferenceProvider` X on an event that already has a
+     * meeting of app X keeps that meeting: a client that wrote from a copy older than the link (made by the provider
+     * after the client last looked) asks for the meeting it has, not for a second one. Removing a link takes both
+     * fields null, or DELETE .../meeting-link; another app replaces it as before.
+     */
+    private static function conferenceUrlFor(VEvent $event, EventChanges $changes): ?string
+    {
+        if (null !== $changes->conferenceUrl || null === $changes->conferenceProvider) {
+            return $changes->conferenceUrl;
+        }
+        $existing = ConferenceDetector::detect($event);
+
+        return null !== $existing && $changes->conferenceProvider === $existing['provider'] ? $existing['url'] : null;
+    }
+
+    /**
      * Whether the user organizes the event: it names no organizer, or one of the user's addresses.
      *
      * @param list<string> $self
@@ -908,7 +924,7 @@ final readonly class EventEditor
         $this->write($master, new EventChanges(
             $changes->summary, $changes->description, $changes->location, $changes->url, $newStart, $newEnd, $rule,
             $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
-            $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
+            $changes->useDefaultReminders, $changes->travelMinutes, $changes->important, $changes->conferenceProvider,
         ), $vcalendar, $calendar, true, $self);
 
         return $moved;
@@ -1008,7 +1024,7 @@ final readonly class EventEditor
         $this->write($newMaster, new EventChanges(
             $changes->summary, $changes->description, $changes->location, $changes->url, $start, $end, $rule,
             $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
-            $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
+            $changes->useDefaultReminders, $changes->travelMinutes, $changes->important, $changes->conferenceProvider,
         ), $next, $object->getCalendar(), true, $self);
         if (null !== $edited) {
             // The occurrence the user edited was changed before: its override replaces the new series' first
