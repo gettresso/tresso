@@ -388,8 +388,8 @@ the server holds; tools for mail, todos and events come later. The code is in `A
 | none | `get_me` (who, which scopes, and with `settings:read` the mail accounts), `get_server_info` |
 | `signatures:read` | `list_signatures`, `get_signature` |
 | `signatures:write` | `create_signature`, `update_signature`, `delete_signature`; with `signatures:read` and `settings:read`: `set_default_signature` (reads the mail account, so an unknown or another user's account is not found, then sets or clears its default through the signature's `defaultFor`) |
-| `settings:read` | `list_mail_accounts`, `get_mail_account` (without how the account connects), `list_smart_inboxes`, `get_smart_inbox`, `list_sender_rules`, `get_notification_settings`, `list_notification_devices`, `get_batch_delivery`, `get_daily_brief_settings`, `list_reminder_rules`, `get_reminder_rule`, `get_scheduling_preferences` |
-| `settings:write` | `update_mail_account` (name, pause and resume), `create_smart_inbox`, `update_smart_inbox`, `delete_smart_inbox`, `delete_sender_rule`, `update_notification_settings`, `update_notification_device` (name, on or off), `delete_notification_device`, `create_reminder_rule`, `delete_reminder_rule`, `update_scheduling_preferences`; with `settings:read` (they change part of what the API saves whole, or of a list): `add_smart_inbox_senders`, `remove_smart_inbox_senders`, `update_batch_delivery`, `update_daily_brief_settings`, `update_reminder_rule` |
+| `settings:read` | `list_mail_accounts`, `get_mail_account` (without how the account connects), `list_smart_inboxes`, `get_smart_inbox`, `list_sender_rules`, `get_notification_settings`, `list_notification_devices`, `get_batch_delivery`, `get_daily_brief_settings`, `list_reminder_rules`, `get_reminder_rule`, `get_scheduling_preferences`, `get_meeting_preferences` |
+| `settings:write` | `update_mail_account` (name, pause and resume), `create_smart_inbox`, `update_smart_inbox`, `delete_smart_inbox`, `delete_sender_rule`, `update_notification_settings`, `update_notification_device` (name, on or off), `delete_notification_device`, `create_reminder_rule`, `delete_reminder_rule`, `update_scheduling_preferences`, `update_meeting_preferences` (not the own link, which only Tresso's own apps change); with `settings:read` (they change part of what the API saves whole, or of a list): `add_smart_inbox_senders`, `remove_smart_inbox_senders`, `update_batch_delivery`, `update_daily_brief_settings`, `update_reminder_rule` |
 | `mail:read` | `get_smart_inbox_senders` (who sends the mail in a smart inbox) |
 | `calendar:read` | `list_calendars`, `get_calendar` |
 | `calendar:write` | `create_calendar`, `update_calendar`, `delete_calendar` |
@@ -2449,7 +2449,10 @@ attach through interfaces.
   - `reminders` (JSON list of `VALARM`s: trigger relative to start or end, or absolute, and action) and
     `conference` (JSON: provider `teams`, `meet`, `zoom`, `webex` or `other`, join URL, conference id, dial-in), read
     from RFC 7986 `CONFERENCE`, `X-MICROSOFT-*`/`X-GOOGLE-CONFERENCE`, Graph `onlineMeeting`, Google
-    `conferenceData`, or a join link in the location, URL or description.
+    `conferenceData`, Tresso's join line, or a join link in the location, URL or description; clients also get
+    `conference.removable` (false for a Teams meeting Microsoft made). `conference_request` (JSON, master rows only):
+    a meeting link asked for and not on the event yet, a copy of the object's `conference_request` without its nonce
+    (see "Online meetings").
   - `message_id`: the invitation this event came from, when it came by mail; `sync_error`: why the last change did
     not reach the provider.
 - Parsing, serializing and recurrence expansion use `sabre/vobject` (iCalendar and RRULE per RFC 5545, Windows
@@ -3066,7 +3069,8 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
   that merely lacks `X-GOOGLE-CONFERENCE` is never a reason to remove Google's meeting, and a marker on an override is
   ignored. A new request clears the marker, the provider's version drops it, and a move to a calendar that is not
   Google's leaves it behind (with a request the new calendar cannot serve).
-- A Teams meeting Graph made cannot be removed (`conference.removable` is false); the API refuses the change.
+- A Teams meeting Graph made cannot be removed (`conference.removable` is false): the API refuses its removal or a
+  swap for another app with 422; a save that asks for Teams again keeps it.
 - A link the API knows (the user's own) travels as `CONFERENCE` and as the last line of the description, "Join the
   meeting: <url>" or "Join with <App>: <url>" (`MeetingJoinLine`); Google and Microsoft keep the line, and the
   detector reads it back. Into Graph's HTML body it goes as escaped text. The line is read as the last such line
@@ -3143,6 +3147,16 @@ What the workers do with it (`apps/sync/internal/googlecal`, `graphcal`):
   a removed line stays when the description still ends with it. An own link has no meeting outcome to report, so a
   join line left in the block changes no result.
 
+Meeting preferences (`meeting_preferences`, one row per user; `GET`/`PATCH /api/v1/calendar/meeting-preferences`,
+scopes `settings:read` and `settings:write`, JSON merge patch; MCP `get_meeting_preferences` and
+`update_meeting_preferences`): `ownLink` (the room link, checked by `MeetingLinkAddress`, the rule of packages/core;
+`""` clears it, null keeps it; only Tresso's own apps change it, 403 otherwise, since every event that uses it leads
+guests to that room), `addWithGuests`, `defaults` (mail account id to `meet`, `teams`, `zoom`, `own` or `none`),
+`defaultOther`, `disabled` (`{app, mailAccountId}` for Meet on a Google account or Teams on a Microsoft one,
+switched off in Tresso only) and the read-only `apps` this server offers (`meet`, `teams`, `own` in this version).
+`defaults` and `disabled` are replaced whole, and entries of mail accounts that are gone are dropped. Not in the sync
+delta: the clients that need them read them.
+
 Settings, Meeting apps (web and desktop) reads and writes `GET`/`PATCH /api/v1/calendar/meeting-preferences` through
 the `meetingApps` store, and every control saves at once (a failed save shows the field's message under the control,
 puts the old value back and reads the preferences again). The store sends reads and changes one after the other and
@@ -3179,6 +3193,11 @@ the provider still makes after it shows from the synced copy. Both act on the se
 a meeting app keeps the editor's values in memory and opens Settings, Meeting apps, whose "Back to the event" reopens
 it. On an event someone else organizes the editor only says who added the link.
 
+Not in this version, each waiting on the server's owner (OPERATIONS.md, "Meeting links"): Zoom (its own sign-in,
+meetings made by the API) and Teams links for events on calendars that are not Microsoft 365 (a Graph online meeting
+of its own). Until then `apps` does not list `zoom`, Settings shows no card for either, and Teams is offered only on
+Microsoft 365 calendars that list it.
+
 #### AI features (interfaces with built-in and planned AI implementations)
 
 Tresso defines the interfaces and, where a deterministic version is useful on its own, implements it. The planned AI
@@ -3200,7 +3219,7 @@ the alias an AI version decorates:
 
 | Call | Purpose |
 |---|---|
-| `GET /api/v1/calendar/capabilities` | `eventDrafts`, `meetingTimes`, `attendeeAvailability`, `eventSuggestions`, `textSuggestions`, `meetingBriefs`, `briefSummaries`: what this server offers. The built-in implementations answer `false` for `eventDrafts`, `attendeeAvailability`, `textSuggestions` and `briefSummaries`. |
+| `GET /api/v1/calendar/capabilities` | `eventDrafts`, `meetingTimes`, `attendeeAvailability`, `eventSuggestions`, `textSuggestions`, `meetingBriefs`, `briefSummaries`, and `meetingRequestDrop` (the request-only drop of "Online meetings"): what this server offers. The built-in implementations answer `false` for `eventDrafts`, `attendeeAvailability`, `textSuggestions` and `briefSummaries`. |
 | `GET`/`PATCH /api/v1/calendar/scheduling-preferences` | What the finder keeps free besides the working hours: `bufferMinutes`, `travelMinutes` and `minimumNoticeMinutes` (scopes `settings:read`, `settings:write`; JSON merge patch). |
 | `POST /api/v1/calendar/meeting-times` | Proposed slots for a duration in a window (below). |
 | `POST /api/v1/calendar/event-drafts` | Free text to an event draft; 501 where `eventDrafts` is off. |
