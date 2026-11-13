@@ -108,13 +108,15 @@ that cuts the connection makes the Mac try a requested file three times before i
 Deploy the API before the sync workers. The workers report a meeting's outcome (`conferenceStatus`,
 `conferenceError`) and read the request's nonce and the word to remove Google's meeting; an older API ignores the
 fields and writes neither property, so nothing changes until it is out. Workers older than the API keep working,
-without outcome reports and without removal. Clients offer "Leave without a link" only when
+without outcome reports and without removal. `SweepMeetingRequests` runs every minute on the maintenance worker
+(`apps/api/src/Schedule.php`) and fails requests still pending after five minutes; while the maintenance worker is
+stopped, such requests stay pending on the server. Clients offer "Leave without a link" only when
 `GET /api/v1/calendar/capabilities` reports `meetingRequestDrop`, so they may go out before or after the API.
 
 What this version does without the owner: Google Meet for events on Google calendars and Microsoft Teams for events
 on Microsoft 365 work or school calendars, made by the calendar's provider with the calendar permission the account
 already has, and the user's own room link on every calendar. Two parts wait on the owner, and are not built until
-then:
+then. The names below are the planned ones: nothing in Tresso reads them yet.
 
 - **Zoom.** A Zoom Marketplace app (OAuth, user-managed) registered by the owner, with its client id and secret given
   to the API as `ZOOM_OAUTH_CLIENT_ID` and `ZOOM_OAUTH_CLIENT_SECRET`. Without them a server never lists `zoom` in
@@ -169,46 +171,79 @@ Server:
 19. A Microsoft 365 tenant: an event update or cancellation from a colleague is applied, one from outside the
     organization waits for the user.
 
-Meeting links, with real Google and Microsoft accounts (web and desktop unless named):
+Meeting links, with real Google and Microsoft accounts (web and desktop unless named). Numbers follow on from the
+list above.
 
-17. A new event on a Microsoft 365 calendar: add a guest, the row switches on with Teams; save; the popover shows
+Making and keeping a link:
+
+20. A new event on a Microsoft 365 calendar: add a guest, the row switches on with Teams; save; the popover shows
     "Making the Teams link" with a spinner, then the link. The same on a Google calendar with Meet. With "Add a meeting
-    link when I invite guests" off the row stays off. With the worker stopped the popover turns to the red "Could not
-    make the Teams link" after two minutes; Retry and "Leave without a link" in the editor.
-18. Google Workspace and consumer Gmail: Google answers the Meet request with `success` (or `pending`, reported as
+    link when I invite guests" off the row stays off.
+21. With the worker stopped the popover turns to the red "Could not make the Teams link" after two minutes. Retry in
+    the open editor, wait more than two minutes, start the worker again: the row shows the link by itself. A request
+    the worker reported pending while no meeting was made shows as failed within about six minutes, without any sync
+    (`SweepMeetingRequests`).
+22. "Leave without a link" in the editor: the request goes, guests get no mail. Against a server without
+    `meetingRequestDrop` in `/calendar/capabilities` the button is not there.
+23. Pick another app in the editor, then let the first link arrive: the row shows the arrived link with the notice,
+    and the save keeps it. Open an event, let another device add a link, save a title change: the link stays.
+24. Remove the link on a second device while the editor is open, then save a title change: no new link, no mail.
+    Move the event to another calendar on a second device while the editor is open, then save: "This event was moved
+    to another calendar meanwhile. ..." appears and nothing is sent.
+25. A recurring event edited for "This event", "This and following" and "All events", once with a link and once with a
+    failed request: "This event" never makes a new meeting.
+26. Pick "My own link", save, reopen: the link line with Copy link and Join. Remove a link, save, reopen, pick the same
+    app again: a new link is made. An own link on a Teams or Meet address: that app's item is disabled with "The
+    current link is already a ... link. Remove it first to get a new one." A Teams link pasted on a Microsoft 365
+    calendar can be removed, with "Removed" and Undo. A Teams event made by Microsoft: the switch and removal are
+    disabled, and the menu shows "Microsoft keeps ...".
+27. "Connect a meeting app" from a new event, then "Back to the event": the values are there (a reload loses them).
+    Desktop: sign out with a kept editor, sign in as another user: no editor opens. Escape in the editor's app menu
+    closes only the menu (Safari, Chrome, desktop).
+
+Providers:
+
+28. Google Workspace and consumer Gmail: Google answers the Meet request with `success` (or `pending`, reported as
     such). The status Google gives when a calendar cannot have Meet (assumed 400), and its request status values
     (`pending`, `success`, `failure`).
-19. Google: removing Meet (`PATCH` with `"conferenceData": null` and `conferenceDataVersion=1`) really removes it, and
+29. Google: removing Meet (`PATCH` with `"conferenceData": null` and `conferenceDataVersion=1`) really removes it, and
     guests get an update; asking again makes a new link. A `createRequest` that reuses an earlier request id on the
     same event makes no second meeting.
-20. Microsoft 365: a calendar without `teamsForBusiness` (or a tenant without Teams) saves the event without the
-    meeting; how often `isOnlineMeeting: true` comes back without `onlineMeeting.joinUrl` right after the write. A
-    Teams meeting Microsoft made: the switch and removal are disabled, and the menu shows "Microsoft keeps ...".
-21. Outlook, own link on an event: the body shows "Join the meeting: <url>" once as plain text, Graph gives the line
+30. Microsoft 365: a calendar without `teamsForBusiness` (or a tenant without Teams) saves the event without the
+    meeting; how often `isOnlineMeeting: true` comes back without `onlineMeeting.joinUrl` right after the write.
+31. Outlook, own link on an event: the body shows "Join the meeting: <url>" once as plain text, Graph gives the line
     back unchanged (no `<url>` suffix, no changed line breaks), and the next sync does not patch the body again. With a
     Teams join block in the body, the block stays and the line stays last.
-22. Pick "My own link", save, reopen: the link line with Copy link and Join. Open an event, let another device add a
-    link, save a title change: the link stays. "Connect a meeting app" from a new event, then "Back to the event": the
-    values are there (a reload loses them).
-23. Popover of a Teams and a Meet event, light and dark: the app's name, the link cut in the middle (hover shows it
+32. Outlook, under a Teams block: two paragraphs that each start with a join line both survive an agenda edit in
+    Tresso; a join line below other text appears once after an edit. Removing the link in Tresso while its line sits
+    in such a paragraph brings the link back (a known limit).
+33. Worker and API logs of these checks contain no `meet.google.com`, `teams.microsoft.com` or own link host.
+
+Showing and joining:
+
+34. Popover of a Teams and a Meet event, light and dark: the app's name, the link cut in the middle (hover shows it
     whole), Join with the Shift J keycap, Copy link ("Copied" for 2 s, the clipboard holds the whole link, VoiceOver says
     "Link copied" once). An invited event: "Microsoft Teams, added by {organizer}. Only the organizer can change it."
     The own link reads "My own link". Week and day view: the small camera after the title, also on short blocks.
-24. Join in the browser opens a new tab that gets no referrer, and so does Shift J; on the desktop (macOS and Windows)
+35. Join in the browser opens a new tab that gets no referrer, and so does Shift J; on the desktop (macOS and Windows)
     the system browser opens and the app window stays. An `http://` link or a lookalike host gets no Join anywhere
     (popover, agenda, mini agenda, invitation card), only the link with Copy link.
-25. Settings, Meeting apps in light and dark: cards, pills, table. Disconnect Meet, the editor greys it, Connect
-    again. Reconnect on an expired account opens the sign-in (the system browser on the desktop) and comes back on
-    Settings, Accounts. The own link: Tab away saves, `http://` is refused with nothing saved, Remove clears. A default
-    survives a reload; with the network off the old value comes back with the error. Keyboard only through the page,
-    the editor row and its menu; VoiceOver reads "Meeting app for ..." and the switch with its title and hint. With
-    reduced motion the spinner turns slowly.
-26. Phone: Join opens the provider's app or the browser for a Teams, Meet and Zoom link; Copy link says "Copied" for
-    2 s and VoiceOver and TalkBack say "Meeting link copied"; a long Teams link shows its whole host and wraps at the
-    largest text size; in Hebrew or Arabic the link reads left to right; an invitation with a place reads "Link from
-    {organizer}. Or {place}" and the place is not repeated; dark mode. A link asked for on the web shows "Making the
-    ... link" on the phone, then the link after a sync; Retry on a failed link shows "Making the ... link", and offline
-    "No connection. Try again when you are online."
-27. A reminder on the phone and the desktop for a Teams event from Outlook and a Meet event from Google names the app
-    and holds no link.
-28. Worker and API logs of these checks contain no `meet.google.com`, `teams.microsoft.com` or own link host.
+36. Settings, Meeting apps in light and dark: cards, pills, table. Disconnect Meet, the editor greys it, Connect
+    again. Reconnect on real Google and Microsoft accounts opens the sign-in (the system browser on the desktop) and
+    comes back on Settings, Accounts. The own link: Tab away saves, `http://` is refused with nothing saved, Remove
+    clears, and typing in the field then clicking Remove clears it without saving what was typed. A default survives a
+    reload; with the network off the old value comes back with the error. Keyboard only through the page, the editor
+    row and its menu; VoiceOver reads "Meeting app for ..." and the switch with its title and hint. With reduced motion
+    the spinner turns slowly.
+37. Phone: Join opens the provider's app or the browser for a Teams, Meet and Zoom link; Copy link says "Copied" for
+    2 s and VoiceOver and TalkBack say "Meeting link copied"; a long Teams link keeps its whole host and wraps at the
+    largest text size; in Hebrew or Arabic the link reads left to right, also a refused host on Android; an invitation
+    with a place reads "Link from {organizer}. Or {place}" and the place is not repeated; dark mode. A link asked for
+    on the web shows "Making the ... link" on the phone, then the link after a sync; Retry on a failed link shows
+    "Making the ... link", and in airplane mode "No connection. Try again when you are online."
+
+Reminders:
+
+38. On the phone's lock screen, a reminder for a Dutch Outlook Teams event and for a Google Meet event names the app
+    and holds no link. Leave-now for a place "Room (link)" and for a place that is only a link. One reminder by email.
+    A desktop notification for an all-day event with a meeting.
