@@ -415,10 +415,11 @@ export class ChatActions {
       }
       const refused = this.refusedRead.get(chat.id)
       if (refused !== undefined) {
-        if (refused.lastMessageAt === stored.lastMessageAt && (refused.held || this.deps.now() < refused.notBefore)) {
+        // Never before Retry-After, also not for a newer message; the same message waits until the chat is looked at again.
+        if (this.deps.now() < refused.notBefore || (refused.lastMessageAt === stored.lastMessageAt && refused.held)) {
           return false
         }
-        // A newer message came, or the chat is looked at again after its wait.
+        // A newer message came after the wait, or the chat is looked at again after it.
         this.refusedRead.delete(chat.id)
       }
       target = stored.lastMessageAt
