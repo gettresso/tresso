@@ -74,6 +74,14 @@ final class MeetingJoinLineTest extends TestCase
         self::assertNull(MeetingJoinLine::find('Please join the meeting: '.self::ROOM), 'Only a line of its own.');
     }
 
+    public function testSpacesAfterTheLinkAreNoPartOfIt(): void
+    {
+        self::assertSame(self::ROOM, MeetingJoinLine::find("Join the meeting: ".self::ROOM."  \t"));
+        self::assertSame(self::ROOM, MeetingJoinLine::find("Join the meeting: ".self::ROOM."\u{A0}"), 'A no-break space is not taken into the link.');
+        self::assertNull(MeetingJoinLine::find("Join the meeting: ".self::ROOM."\u{A0}more"), 'Text after it makes it no join line.');
+        self::assertSame('Agenda', MeetingJoinLine::strip("Agenda\n\nJoin the meeting: ".self::ROOM." \t\n"));
+    }
+
     public function testADescriptionWithoutALineStaysAsItIs(): void
     {
         self::assertSame("Agenda  \n\n", MeetingJoinLine::strip("Agenda  \n\n"));

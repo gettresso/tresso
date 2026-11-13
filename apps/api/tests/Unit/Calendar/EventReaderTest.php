@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Unit\Calendar;
 
 use App\Calendar\ICalendar\CalendarDocument;
+use App\Calendar\ICalendar\ConferenceDetector;
 use App\Calendar\ICalendar\EventReader;
 use App\Calendar\ICalendar\InvalidCalendarData;
 use App\Enum\EventStatus;
@@ -149,6 +150,49 @@ final class EventReaderTest extends TestCase
         yield 'Tresso join line with a Zoom link' => [['DESCRIPTION:Join with Zoom: https://zoom.us/j/1234567890'], 'zoom', 'https://zoom.us/j/1234567890'];
         yield 'CONFERENCE wins over the join line' => [['CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://example.zoom.us/j/123456', 'DESCRIPTION:Join the meeting: https://meet.company.example/kim'], 'zoom', 'https://example.zoom.us/j/123456'];
         yield 'the join line wins over an earlier link' => [['DESCRIPTION:Last time: https://meet.google.com/abc-defg-hij\\n\\nJoin the meeting: https://meet.company.example/kim'], 'other', 'https://meet.company.example/kim'];
+    }
+
+    /**
+     * @return iterable<string, array{list<string>, string}>
+     */
+    public static function linksOfOtherHosts(): iterable
+    {
+        yield 'a Teams link in the query of another host' => [['CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://evil.example/?next=https://teams.microsoft.com/l/meetup-join/abc'], 'https://evil.example/?next=https://teams.microsoft.com/l/meetup-join/abc'];
+        yield 'a Zoom link in the path of another host, on a join line' => [['DESCRIPTION:Join the meeting: https://evil.example/https://zoom.us/j/123'], 'https://evil.example/https://zoom.us/j/123'];
+        yield 'a host that only starts like Teams' => [['CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://teams.microsoft.com.evil.example/l/meetup-join/abc'], 'https://teams.microsoft.com.evil.example/l/meetup-join/abc'];
+        yield 'a name before the Meet host' => [['CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://meet.google.com@evil.example/abc-defg-hij'], 'https://meet.google.com@evil.example/abc-defg-hij'];
+    }
+
+    /**
+     * @param list<string> $properties
+     */
+    #[DataProvider('linksOfOtherHosts')]
+    public function testOnlyTheHostNamesTheApp(array $properties, string $url): void
+    {
+        $conference = self::read(['DTSTART:20261019T090000Z', ...$properties])->conference;
+
+        self::assertNotNull($conference);
+        self::assertSame('other', $conference['provider']);
+        self::assertSame($url, $conference['url']);
+    }
+
+    public function testAnAppsLinkInsideAnotherLinkInTheTextIsNoMeeting(): void
+    {
+        self::assertNull(self::read(['DTSTART:20261019T090000Z', 'DESCRIPTION:Read https://evil.example/?next=https://teams.microsoft.com/l/meetup-join/abc first'])->conference);
+        self::assertSame('teams', self::read(['DTSTART:20261019T090000Z', 'DESCRIPTION:Join (https://teams.microsoft.com/l/meetup-join/abc)'])->conference['provider'] ?? null);
+    }
+
+    public function testNamesTheAppByItsHost(): void
+    {
+        self::assertSame('zoom', ConferenceDetector::providerOf('https://company.zoom.us/j/1'));
+        self::assertSame('zoom', ConferenceDetector::providerOf('https://zoom.us/my/kim'));
+        self::assertSame('other', ConferenceDetector::providerOf('https://zoom.us.evil.example/j/1'));
+        self::assertSame('other', ConferenceDetector::providerOf('https://notzoom.us/j/1'));
+        self::assertSame('teams', ConferenceDetector::providerOf('https://TEAMS.microsoft.com/l/meetup-join/x'));
+        self::assertSame('other', ConferenceDetector::providerOf('http://teams.microsoft.com/l/meetup-join/x'));
+        self::assertSame('webex', ConferenceDetector::providerOf('https://company.webex.com/meet/kim'));
+        self::assertSame('other', ConferenceDetector::providerOf('https://webex.com/meet/kim'));
+        self::assertSame('meet', ConferenceDetector::providerOf('https://meet.google.com/abc-defg-hij'));
     }
 
     public function testReadsTressoChannelsTravelTimeAndTheDefaults(): void
