@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Mcp\Tools;
 
 use App\Calendar\Assistant\SchedulingRules;
-use App\Calendar\MeetingLinkAddress;
 use App\Entity\MeetingPreferences;
 use App\Enum\NotificationChannel;
 use App\Enum\RuleRole;
@@ -167,11 +166,11 @@ final readonly class CalendarTools implements ToolProvider
             name: 'update_meeting_preferences',
             title: 'Change meeting preferences',
             description: self::MEETING_PREFERENCES.' Only the fields given change; defaults and disabled replace the '
-                .'whole map or list.',
+                .'whole map or list. The own room link is not changed here: the user changes it in Settings, Meeting '
+                .'apps.',
             scopes: [Scope::SettingsWrite],
             effect: ToolEffect::Update,
             inputSchema: Schema::object([
-                'ownLink' => Schema::string('The user\'s own room link: an https link with a full web address, without a user name or password in it. Every event that uses it gets this same link, so anyone who has it can enter the room. An empty string removes it.', null, MeetingLinkAddress::MAX_LENGTH),
                 'addWithGuests' => Schema::boolean('Switch the meeting link on when the first guest is added to an event.'),
                 'defaults' => [
                     'type' => 'object',
@@ -188,7 +187,7 @@ final readonly class CalendarTools implements ToolProvider
                     'Apps switched off in Tresso for one mail account.',
                 ),
             ]),
-            run: static fn (ToolArguments $arguments, Api $api): array => $api->patch('/calendar/meeting-preferences', $arguments->only(['ownLink', 'addWithGuests', 'defaults', 'defaultOther', 'disabled'])),
+            run: static fn (ToolArguments $arguments, Api $api): array => $api->patch('/calendar/meeting-preferences', $arguments->only(['addWithGuests', 'defaults', 'defaultOther', 'disabled'])),
         );
     }
 

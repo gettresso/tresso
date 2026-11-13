@@ -266,22 +266,34 @@ final class McpSettingsToolsTest extends DatabaseTestCase
         self::assertNull($before['ownLink']);
         self::assertSame(['meet', 'teams', 'own'], $before['apps'] ?? null);
 
-        $this->call('update_meeting_preferences', ['ownLink' => 'https://meet.company.example/kim', 'defaults' => [$account => 'own'], 'defaultOther' => 'none']);
+        $this->call('update_meeting_preferences', ['defaults' => [$account => 'own'], 'defaultOther' => 'none']);
         $this->call('update_meeting_preferences', ['addWithGuests' => false]);
 
         $preferences = $this->call('get_meeting_preferences');
-        self::assertSame('https://meet.company.example/kim', $preferences['ownLink'] ?? null, 'The link left out stays.');
-        self::assertSame([$account => 'own'], $preferences['defaults'] ?? null);
+        self::assertSame([$account => 'own'], $preferences['defaults'] ?? null, 'What the second change left out stays.');
         self::assertSame('none', $preferences['defaultOther'] ?? null);
         self::assertFalse($preferences['addWithGuests'] ?? null);
-        self::assertSame(['https://meet.company.example/kim', false], array_values((array) $this->connection()->fetchAssociative('SELECT own_link, add_with_guests FROM meeting_preferences WHERE user_id = ?', [$this->kim->getId()->toRfc4122()])));
+        self::assertSame([false, 'none'], array_values((array) $this->connection()->fetchAssociative('SELECT add_with_guests, default_other FROM meeting_preferences WHERE user_id = ?', [$this->kim->getId()->toRfc4122()])));
 
-        $error = $this->mcpCallError($this->headers, $this->session, 'update_meeting_preferences', ['ownLink' => 'http://secret-room.example/kim']);
-        self::assertStringContainsString('ownLink: Use a link that starts with https://.', $error);
-        self::assertStringNotContainsString('secret-room', $error, 'A refused link is not repeated.');
         $error = $this->mcpCallError($this->headers, $this->session, 'update_meeting_preferences', ['disabled' => [['app' => 'teams', 'mailAccountId' => $account]]]);
         self::assertStringContainsString('disabled: Microsoft Teams can only be switched off for a Microsoft account.', $error);
-        self::assertSame('https://meet.company.example/kim', $this->call('get_meeting_preferences')['ownLink'] ?? null);
+    }
+
+    public function testTheOwnMeetingLinkCannotBeSetThroughMcp(): void
+    {
+        $tools = $this->mcpTools($this->headers, $this->session);
+        $update = array_values(array_filter($tools, static fn (array $tool): bool => 'update_meeting_preferences' === ($tool['name'] ?? null)))[0] ?? null;
+        self::assertIsArray($update);
+        self::assertArrayNotHasKey('ownLink', self::asArray(self::asArray($update['inputSchema'] ?? null)['properties'] ?? null));
+
+        $message = $this->mcpRequest($this->headers, $this->session, 'tools/call', ['name' => 'update_meeting_preferences', 'arguments' => [
+            'ownLink' => 'https://attacker.example/room',
+        ]]);
+
+        self::assertSame(-32602, self::asArray($message['error'] ?? null)['code'] ?? null, 'A field the tool does not name is refused before anything runs.');
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM meeting_preferences'));
+        $after = $this->call('get_meeting_preferences');
+        self::assertTrue(\array_key_exists('ownLink', $after) && null === $after['ownLink']);
     }
 
     public function testMeetingPreferencesNeedTheSettingsScopes(): void
@@ -290,7 +302,7 @@ final class McpSettingsToolsTest extends DatabaseTestCase
         $session = $this->mcpInitialize($headers);
 
         self::assertSame(['meet', 'teams', 'own'], $this->mcpCallOk($headers, $session, 'get_meeting_preferences')['apps'] ?? null);
-        self::assertStringContainsString('settings:write', $this->mcpCallError($headers, $session, 'update_meeting_preferences', ['ownLink' => 'https://meet.company.example/kim']));
+        self::assertStringContainsString('settings:write', $this->mcpCallError($headers, $session, 'update_meeting_preferences', ['addWithGuests' => false]));
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM meeting_preferences'));
     }
 
