@@ -3366,10 +3366,12 @@ chat's JID and WhatsApp id, so it never needs either readable.
   went off; nothing when a newer incoming message of the chat (by time, then id) was stored meanwhile and the oldest
   message the chat was not pushed for is younger than a minute (the newer one notifies, so a burst notifies once and a
   busy chat at least once a minute). The last push is read from the deliveries of the chat's messages, so no column is
-  needed. Then one push to the phone only (kind `whatsapp`, Android channel `whatsapp`, silent in quiet hours and busy
+  needed. A message sent before a push of its chat but stored after it (the relay lagged) gets no push of its own:
+  that push already named the chat. Then one push to the phone only (kind `whatsapp`, Android channel `whatsapp`, silent in quiet hours and busy
   events, keyed `whatsapp:{message}` so a repeat never notifies twice): title `WhatsApp`, body the chat's name opened
-  from its seal, or `New WhatsApp message` for a chat without a name or named by a phone number (the bridge names an
-  unsaved contact by its number), path `/chats/{id}`. The text, a sender and a number never leave in a push. A failed
+  from its seal, or `New WhatsApp message` for a chat without a name, or one that is or holds a phone number or another
+  run of seven digits once separators are removed (the bridge names an unsaved contact by its number, and a group
+  without a subject `Group <id>`), path `/chats/{id}`. The text, a sender and a number never leave in a push. A failed
   delivery is not tried again by a sweep (a chat push is stale within minutes).
 - **Delta.** Every write is a change in `chatAccounts`, `chats`, `chatMessages` and `chatOutgoing`; removals (a
   cancelled reply, the messages and replies of a chat left out) are tombstones. A relay batch gets a change number per
