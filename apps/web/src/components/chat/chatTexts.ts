@@ -5,6 +5,7 @@ import {
   replyErrorText,
   SENDER_COLORS,
   senderColor,
+  type ChatMediaError,
   type ChatMediaKind,
   type ChatOutgoingError,
   type ReplyLabel,
@@ -160,7 +161,12 @@ export function attachText(state: AttachState): string | null {
       return `Sending ${state.name}…`
     case 'sent':
       return `${state.name} was sent.`
+    case 'queued':
+      return `${state.name} is queued for your Mac.`
     case 'failed':
+      if (state.error === 'not_queued') {
+        return `${state.name} was not sent. ${state.detail ?? ''}`.trim()
+      }
       if (state.error === 'too_large') {
         return `${state.name} was not sent. It is larger than 100 MB, the most Tresso sends for now.`
       }
@@ -228,8 +234,55 @@ export function relayNotice(account: Pick<SyncedChatAccount, 'relayOnline' | 're
   return null
 }
 
-/** The second line of a file row in the browser: files stay on the relaying Mac for now (no download here). */
-export const MEDIA_ON_RELAY = 'Open this file on the relaying Mac.'
+const SERVER_FAILURES: Record<ChatMediaError, string> = {
+  not_found: 'Your Mac could not find this file in WhatsApp.',
+  mismatch: "WhatsApp gave your Mac another file than this message's. It was not passed on.",
+  unverified: "Your Mac could not check that this is the message's file. It was not passed on.",
+  too_large: 'This file is larger than 100 MB, the most Tresso passes on.',
+  unavailable: 'Your Mac could not get this file from WhatsApp. WhatsApp may no longer have it.',
+}
+
+/** What a file row says and offers for a file that goes through the server ("All my devices", not the relaying Mac). */
+export interface ServerMediaView {
+  line: string
+  action: 'download' | 'retry' | 'open' | 'confirm' | null
+  /** The action shows but cannot be pressed yet (asked for, being checked). */
+  pending: string | null
+  failed: boolean
+}
+
+/**
+ * A file on the server, from its message's state (the delta's `mediaState`, `mediaError`, `mediaAccess`): on the Mac
+ * (Download asks for it), asked for (waiting for the Mac while it is offline), being checked for malware, ready (Open),
+ * not checked (Download anyway, after a warning), blocked, or not brought (Try again, but not for a file too large).
+ */
+export function serverMediaView(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaState' | 'mediaError' | 'mediaAccess'>, relayOnline: boolean): ServerMediaView {
+  const kind = mediaKindLabel(message.mediaKind ?? 'document')
+  switch (message.mediaState ?? 'remote') {
+    case 'requested':
+      return { line: relayOnline ? 'Your Mac is bringing this file.' : 'Waiting for your Mac.', action: null, pending: relayOnline ? 'Downloading' : 'Waiting', failed: false }
+    case 'failed': {
+      const error = message.mediaError ?? 'unavailable'
+      return { line: SERVER_FAILURES[error], action: error === 'too_large' ? null : 'retry', pending: null, failed: true }
+    }
+    case 'stored':
+      switch (message.mediaAccess ?? 'blocked') {
+        case 'allowed':
+          return { line: 'Ready to open.', action: 'open', pending: null, failed: false }
+        case 'scanning':
+          return { line: 'Checking for malware.', action: null, pending: 'Checking', failed: false }
+        case 'confirm':
+          return { line: 'This file could not be checked for malware.', action: 'confirm', pending: null, failed: false }
+        default:
+          return { line: 'This file is blocked: it contains malware, or this server only opens checked files.', action: null, pending: null, failed: true }
+      }
+    default:
+      return { line: `${kind}, on your Mac`, action: 'download', pending: null, failed: false }
+  }
+}
+
+/** The warning before a file that could not be checked opens. */
+export const UNSCANNED_WARNING = 'This file could not be checked for malware. Open it only if you trust the sender.'
 
 /** A chat left out, opened in the browser: only the Mac that relays reads the bridge again to take it back in. */
 export const LEFT_OUT_HERE = 'You left this chat out. Take it back in on the Mac that relays WhatsApp, under Settings, WhatsApp.'

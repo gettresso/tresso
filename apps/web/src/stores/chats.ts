@@ -2,6 +2,7 @@ import { computed, ref, shallowRef, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
   CHAT_BACKFILL,
+  CHAT_MAX_FILE_BYTES,
   chatApiFailure,
   inInbox,
   LOCAL_CHAT_ACCOUNT,
@@ -23,6 +24,7 @@ import {
 import { chatNotifications } from '@/mail/chatNotifications'
 import { notifier } from '@/platform/notifier'
 import { chatsFromServer, whatsAppShell, type ChosenFile } from '@/platform/whatsapp'
+import { isDesktop, openInBrowser } from '@/platform/desktop'
 import { errorName } from '@/components/chat/whatsappTexts'
 import { useChatApi } from '@/api/chats'
 import { ChatActionError, chatActionError, localChatActions, serverChatActions, type ChatActions, type ChatStateChange } from '@/stores/chatActions'
@@ -49,15 +51,25 @@ export type MediaState =
  */
 export type MediaFailure = 'failed' | 'stopped' | 'mismatch' | 'unverified' | 'refused' | 'too_large' | 'open'
 
-/** Why an attached file did not go: a reply's error, or `too_large` (over 100 MB, refused before the bridge reads it). */
-export type AttachError = ChatOutgoingError | 'too_large'
+/**
+ * Why an attached file did not go: a reply's error, `too_large` (over 100 MB, refused before the bridge reads it), or
+ * `not_queued` ("All my devices": the upload or the queueing did not work; `detail` says why in plain words).
+ */
+export type AttachError = ChatOutgoingError | 'too_large' | 'not_queued'
 
-/** A file attached from the composer of a chat: on its way, or why it did not go. */
+/**
+ * A file attached from the composer of a chat: on its way, sent (from this Mac), queued for the relaying Mac ("All my
+ * devices": its reply shows in the chat with its state), or why it did not go.
+ */
 export type AttachState =
   | { state: 'idle' }
   | { state: 'sending'; chatId: string; name: string }
   | { state: 'sent'; chatId: string; name: string }
-  | { state: 'failed'; chatId: string; name: string; error: AttachError }
+  | { state: 'queued'; chatId: string; name: string }
+  | { state: 'failed'; chatId: string; name: string; error: AttachError; detail?: string }
+
+/** A file of a message on the server ("All my devices", not on the relaying Mac): something the last action said. */
+export type ServerMediaNote = { messageId: string; text: string }
 
 /** The chat value keeping replies whose outcome was not known, by chat (see the store's `unsure`). */
 export const UNSURE_REPLIES = 'unsure-replies'
@@ -93,7 +105,9 @@ export function baseName(path: string): string {
  * - The browser (`serverOnly`, platform/whatsapp chatsFromServer): no bridge and nothing of the relay. Chats show
  *   exactly while the copy holds the server's WhatsApp account (the user chose "All my devices" on a Mac), with no
  *   switch; they come through the delta and are written through the server's actions, as on a Mac that does not relay.
- *   Replies wait in the server's queue for the relaying Mac; files stay on that Mac for now.
+ *   Replies wait in the server's queue for the relaying Mac. A file is asked for (requestFile) and the relaying Mac
+ *   brings it to the server, where it is scanned before it opens (openServerFile); a file attached here is uploaded and
+ *   queued for that Mac (attachFile).
  *
  * Nothing of a chat (names, numbers, text) is ever logged: errors are logged by name only.
  */
@@ -150,6 +164,13 @@ export const useChatsStore = defineStore('chats', () => {
   const canReply = computed(() => enabled.value && !writesHeld.value && (relaysHere.value ? wa.linked : true))
   /** Attach is offered (disabled while replies cannot be written). */
   const canAttach = computed(() => enabled.value)
+  /**
+   * Files go through the server ("All my devices"): every file of a device other than the relaying Mac is asked for and
+   * fetched there, and a file attached anywhere in that mode is uploaded and queued for the relaying Mac. The relaying
+   * Mac still downloads its own files straight from its bridge.
+   */
+  const serverFiles = computed(() => enabled.value && (serverOnly || wa.config?.mode === 'all'))
+  const downloadsThroughServer = computed(() => serverFiles.value && !relaysHere.value)
   /** This Mac is bringing its chats in (a switch under way, or the first import of the Mac that relays). */
   const bringingIn = computed(
     () =>
@@ -157,16 +178,8 @@ export const useChatsStore = defineStore('chats', () => {
       wa.connected &&
       (wa.modeSwitch !== null || (wa.config?.mode === 'all' && wa.serverAccount === null) || (relaysHere.value && (wa.importState === 'waiting' || wa.importState === 'reading'))),
   )
-  /** Why Attach is off: files go through the server only with a later package. */
-  const attachNote = computed(() => {
-    if (!enabled.value) {
-      return null
-    }
-    if (serverOnly) {
-      return 'Files are sent from the relaying Mac for now.'
-    }
-    return wa.config?.mode === 'all' ? 'Files are sent in Only this Mac for now.' : null
-  })
+  /** Why Attach is off; null while it can be used (both modes send files now). */
+  const attachNote = computed<string | null>(() => null)
   const localActions = localChatActions(() => mail.currentStore())
   const serverActions = serverChatActions({ api, store: () => mail.currentStore(), now: () => auth.serverNow(), pulled: () => void mail.syncNow() })
   /**
@@ -213,6 +226,13 @@ export const useChatsStore = defineStore('chats', () => {
   const openChatId = ref<string | null>(null)
   const media = shallowRef<ReadonlyMap<string, MediaState>>(new Map())
   const attaching = shallowRef<AttachState>({ state: 'idle' })
+  /** The last thing a file row on the server said after the user's action (a refusal, a link that could not open). */
+  const serverMediaNote = shallowRef<ServerMediaNote | null>(null)
+  /**
+   * Files whose queueing ended without knowing whether the server took it, by chat and file: the ids it went with, so
+   * the same file attached again is the same upload and the same reply, never a second one.
+   */
+  const unsureFiles = new Map<string, { uploadId: string; replyId: string | undefined }>()
   /** What the user typed and did not send yet, per chat: kept while they look at another chat, in memory only. */
   const drafts = new Map<string, string>()
 
@@ -824,7 +844,8 @@ export const useChatsStore = defineStore('chats', () => {
    */
   async function attach(chat: SyncedChat): Promise<void> {
     const copy = store()
-    if (copy === null || !canAttach.value || attachNote.value !== null || !canReply.value || attaching.value.state === 'sending') {
+    // In "All my devices" a file goes through the server (attachFile), from a file the page reads.
+    if (copy === null || serverFiles.value || !canAttach.value || attachNote.value !== null || !canReply.value || attaching.value.state === 'sending') {
       return
     }
     let picked: ChosenFile | null
@@ -865,6 +886,110 @@ export const useChatsStore = defineStore('chats', () => {
     await refresh()
   }
 
+  /**
+   * Asks the relaying Mac for a message's file ("All my devices", a device other than that Mac). Nothing downloads
+   * without this. While writes are held (writesHeld) nothing is asked.
+   */
+  async function requestFile(message: SyncedChatMessage): Promise<void> {
+    if (!downloadsThroughServer.value || message.mediaKind === null || store() === null) {
+      return
+    }
+    serverMediaNote.value = null
+    try {
+      checkWritable()
+      await api.requestMedia(message.id)
+    } catch (cause) {
+      console.error('Asking for a WhatsApp file failed', errorName(cause))
+      serverMediaNote.value = { messageId: message.id, text: chatActionError(cause, 'change').message }
+    } finally {
+      void mail.syncNow()
+    }
+  }
+
+  /**
+   * Opens a file the server holds, through a fresh signed link: in a new tab in the browser (the server hands it out as
+   * a download that is never sniffed or run), in the user's browser from the desktop app. A file that could not be
+   * scanned opens only with `acceptUnscanned`, after the user confirmed the warning; nothing opens by itself.
+   */
+  async function openServerFile(message: SyncedChatMessage, acceptUnscanned = false): Promise<void> {
+    if (!downloadsThroughServer.value || store() === null) {
+      return
+    }
+    serverMediaNote.value = null
+    // Opened at once, in the click, so the browser does not block it; the link follows.
+    const opened = isDesktop ? null : window.open('about:blank', '_blank')
+    if (!isDesktop && opened === null) {
+      serverMediaNote.value = { messageId: message.id, text: 'The file could not be opened: the browser blocked the new tab.' }
+      return
+    }
+    if (opened !== null) {
+      opened.opener = null
+    }
+    try {
+      const answer = acceptUnscanned ? await api.unscannedMediaLink(message.id) : await api.media(message.id)
+      if (answer.url === null) {
+        opened?.close()
+        serverMediaNote.value = { messageId: message.id, text: 'This file cannot be opened yet.' }
+        return
+      }
+      if (opened === null) {
+        await openInBrowser(answer.url)
+      } else {
+        opened.location.href = answer.url
+      }
+    } catch (cause) {
+      opened?.close()
+      console.error('Opening a WhatsApp file failed', errorName(cause))
+      serverMediaNote.value = { messageId: message.id, text: chatActionError(cause, 'change').message }
+    }
+  }
+
+  /**
+   * Attach in "All my devices": the file is uploaded to the chat, then a reply that carries it is queued for the
+   * relaying Mac, which sends it in its next round. When the outcome was not known, attaching the same file again goes
+   * with the same upload and reply ids, so it is queued once. At most 100 MB.
+   */
+  async function attachFile(chat: SyncedChat, file: File): Promise<void> {
+    if (store() === null || !serverFiles.value || !canReply.value || attaching.value.state === 'sending') {
+      return
+    }
+    const name = baseName(file.name) || 'file'
+    if (file.size > CHAT_MAX_FILE_BYTES) {
+      attaching.value = { state: 'failed', chatId: chat.id, name, error: 'too_large' }
+      return
+    }
+    const key = `${chat.id}\n${name}\n${file.size}\n${file.lastModified}`
+    const earlier = unsureFiles.get(key)
+    const uploadId = earlier?.uploadId ?? uuidV7(auth.serverNow())
+    attaching.value = { state: 'sending', chatId: chat.id, name }
+    try {
+      checkWritable()
+      try {
+        await api.uploadFile(chat.id, uploadId, file)
+      } catch (cause) {
+        // Not uploaded as far as this device knows; the same file again goes under the same id.
+        unsureFiles.set(key, { uploadId, replyId: earlier?.replyId })
+        throw cause
+      }
+      await actions.value.sendFile(chat.id, { uploadId, name, size: file.size }, '', earlier?.replyId)
+      unsureFiles.delete(key)
+      attaching.value = { state: 'queued', chatId: chat.id, name }
+      void afterReply()
+    } catch (cause) {
+      console.error('Sending a WhatsApp file failed', errorName(cause))
+      if (cause instanceof ChatActionError && cause.code === 'unsure' && cause.replyId !== null) {
+        unsureFiles.set(key, { uploadId, replyId: cause.replyId })
+      } else if (cause instanceof ChatActionError && cause.code !== 'checking') {
+        // Refused: never sent again under these ids.
+        unsureFiles.delete(key)
+      }
+      attaching.value = { state: 'failed', chatId: chat.id, name, error: 'not_queued', detail: chatActionError(cause).message }
+    } finally {
+      version.value++
+      await refresh()
+    }
+  }
+
   /** The composer's attach line was read (in `chatId`'s chat, or any): it goes, unless a file is still on its way. */
   function clearAttach(chatId: string | null = null): void {
     const state = attaching.value
@@ -896,6 +1021,12 @@ export const useChatsStore = defineStore('chats', () => {
     relaysHere,
     canReply,
     canAttach,
+    serverFiles,
+    downloadsThroughServer,
+    serverMediaNote,
+    requestFile,
+    openServerFile,
+    attachFile,
     attachNote,
     bringingIn,
     account,

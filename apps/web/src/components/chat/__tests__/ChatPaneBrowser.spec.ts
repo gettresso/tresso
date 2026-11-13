@@ -138,7 +138,7 @@ describe('ChatPane in the browser', () => {
   const notice = (view: VueWrapper) => view.find('.relay-notice')
   const bubbles = (view: VueWrapper) => view.findAll('.bubbles > li.item')
 
-  it('shows the chat from the copy, names the relaying Mac under the composer and keeps Attach off with why', async () => {
+  it('shows the chat from the copy, names the relaying Mac under the composer and offers Attach', async () => {
     const view = await open(SERVER_CHAT)
     expect(view.get('h2').text()).toBe('Bram Visser')
     expect(view.get('.pill').text()).toBe('WhatsApp')
@@ -147,8 +147,8 @@ describe('ChatPane in the browser', () => {
     expect(view.find('.notice').exists()).toBe(false)
     expect(view.get('#chat-composer-note').text()).toBe('Sent on WhatsApp by Office iMac. No signature, no subject.')
     const attach = view.get('button[aria-label="Attach a file"]')
-    expect(attach.attributes('disabled')).toBeDefined()
-    expect(view.get('#chat-attach-note').text()).toBe('Files are sent from the relaying Mac for now.')
+    expect(attach.attributes('disabled')).toBeUndefined()
+    expect(view.find('#chat-attach-note').exists()).toBe(false)
     expect(view.get('textarea').attributes('disabled')).toBeUndefined()
     // Opened: read through its last message on the server, never through the read endpoints.
     expect(server.calls.map((call) => call.name)).toEqual(['updateChat'])
@@ -212,13 +212,146 @@ describe('ChatPane in the browser', () => {
     await vi.waitFor(() => expect(notice(view).exists()).toBe(false))
   })
 
-  it('shows files by kind, size or name, to be opened on the relaying Mac, with nothing to download here', async () => {
+  it('shows files by kind, size or name, on the relaying Mac until asked for, with nothing downloaded by itself', async () => {
     const view = await open(GROUP_CHAT)
     const rows = view.findAll('.media')
     expect(rows.map((row) => row.get('.title').text())).toEqual(['Photo, 180 KB', 'plan.pdf, 2.0 KB'])
-    expect(rows.map((row) => row.get('.line').text())).toEqual(['Open this file on the relaying Mac.', 'Open this file on the relaying Mac.'])
-    expect(view.findAll('.media button')).toEqual([])
+    expect(rows.map((row) => row.get('.line').text())).toEqual(['Photo, on your Mac', 'File, on your Mac'])
+    expect(rows.map((row) => row.get('button').text())).toEqual(['Download', 'Download'])
+    expect(server.calls.map((call) => call.name).filter((name) => name !== 'updateChat')).toEqual([])
     expect(fakes.shell).toEqual([])
+  })
+
+  describe('files', () => {
+    const rowOf = (view: VueWrapper, index = 0) => view.findAll('.media')[index]!
+    /** The server changes a message's file (as the relay and a scan do), and the copy gets it as a pull would. */
+    async function serverSets(view: VueWrapper, waId: string, change: { mediaState: 'requested' | 'stored' | 'failed'; mediaError?: 'too_large' | 'unavailable' | null; mediaAccess?: 'allowed' | 'confirm' | 'scanning' | null }): Promise<void> {
+      for (const [key, message] of server.messages) {
+        if (message.waId === waId) {
+          server.messages.set(key, { ...message, mediaError: null, mediaAccess: null, ...change })
+        }
+      }
+      await server.deliver(store)
+      mail.chatChanges++
+      await flushPromises()
+      await vi.waitFor(() => expect(rowOf(view).get('.line').text()).not.toBe(''))
+    }
+
+    it('asks the relaying Mac for a file only when the user presses Download, and says it waits for the Mac', async () => {
+      const view = await open(GROUP_CHAT, { relayOnline: false, relayOfflineSince: at(-30) })
+      await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+
+      expect(server.callsOf('requestMedia')).toHaveLength(1)
+      await server.deliver(store)
+      mail.chatChanges++
+      await vi.waitFor(() => expect(rowOf(view).get('.line').text()).toBe('Waiting for your Mac.'))
+      expect(rowOf(view).get('button').attributes('disabled')).toBeDefined()
+      expect(server.callsOf('requestMedia')).toHaveLength(1)
+      expect(fakes.shell).toEqual([])
+    })
+
+    it('asks nothing while the server has not confirmed who is signed in', async () => {
+      mail.confirmed = false
+      const view = await open(GROUP_CHAT)
+      expect(rowOf(view).get('button').attributes('disabled')).toBeDefined()
+      await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+      expect(server.callsOf('requestMedia')).toEqual([])
+    })
+
+    it('opens a checked file through a fresh link in a new tab, never by itself', async () => {
+      const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn<() => void>() }
+      const opened = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+      const view = await open(GROUP_CHAT)
+      await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'scanning' })
+      expect(rowOf(view).get('.line').text()).toBe('Checking for malware.')
+      expect(opened).not.toHaveBeenCalled()
+
+      await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'allowed' })
+      expect(rowOf(view).get('.line').text()).toBe('Ready to open.')
+      await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+
+      expect(opened).toHaveBeenCalledWith('about:blank', '_blank')
+      expect(tab.opener).toBeNull()
+      expect(tab.location.href).toMatch(/\/content\/chat-media\/msg-\d+$/)
+      opened.mockRestore()
+    })
+
+    it('opens a file that could not be checked only after the user accepts the warning', async () => {
+      const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn<() => void>() }
+      const opened = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      const view = await open(GROUP_CHAT)
+      await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'confirm' })
+      expect(rowOf(view).get('button').text()).toBe('Download anyway')
+
+      await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+      expect(server.callsOf('unscannedMediaLink')).toEqual([])
+      expect(opened).not.toHaveBeenCalled()
+
+      confirm.mockReturnValue(true)
+      await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+      expect(server.callsOf('unscannedMediaLink')).toHaveLength(1)
+      expect(tab.location.href).toContain('unscanned=1')
+      opened.mockRestore()
+      confirm.mockRestore()
+    })
+
+    it('says why a file did not come, and offers Try again only when it may pass', async () => {
+      const view = await open(GROUP_CHAT)
+      await serverSets(view, 'S2', { mediaState: 'failed', mediaError: 'too_large' })
+      expect(rowOf(view).get('.line').text()).toBe('This file is larger than 100 MB, the most Tresso passes on.')
+      expect(rowOf(view).find('button').exists()).toBe(false)
+
+      await serverSets(view, 'S2', { mediaState: 'failed', mediaError: 'unavailable' })
+      expect(rowOf(view).get('button').text()).toBe('Try again')
+      await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+      expect(server.callsOf('requestMedia')).toHaveLength(1)
+    })
+
+    it('uploads an attached file and queues it for the relaying Mac', async () => {
+      const view = await open(SERVER_CHAT)
+      const input = view.get('input[type="file"]')
+      const file = new File(['%PDF-1.4 plan'], 'plan.pdf', { type: 'application/pdf', lastModified: 1 })
+      Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+      await input.trigger('change')
+      await flushPromises()
+
+      const [[chatId, uploadId]] = server.callsOf('uploadFile') as [[string, string, Blob]]
+      expect(chatId).toBe(SERVER_CHAT)
+      const [[queuedIn, request]] = server.callsOf('queueReply') as [[string, { id: string; text: string; file: { uploadId: string; name: string } }]]
+      expect(queuedIn).toBe(SERVER_CHAT)
+      expect(request.text).toBe('')
+      expect(request.file).toEqual({ uploadId, name: 'plan.pdf' })
+      await vi.waitFor(() => expect(view.get('.attach-line').text()).toBe('plan.pdf is queued for your Mac.'))
+      expect(bubbles(view).some((item) => item.text().includes('File: plan.pdf'))).toBe(true)
+      expect(fakes.shell).toEqual([])
+    })
+
+    it('queues the same file again under the same ids after an unsure try', async () => {
+      const view = await open(SERVER_CHAT)
+      const input = view.get('input[type="file"]')
+      const file = new File(['%PDF-1.4 plan'], 'plan.pdf', { type: 'application/pdf', lastModified: 1 })
+      Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+      server.fail('queueReply', new TypeError('Failed to fetch'))
+      await input.trigger('change')
+      await flushPromises()
+      expect(view.get('.attach-line').text()).toContain('plan.pdf was not sent.')
+
+      await input.trigger('change')
+      await flushPromises()
+
+      const uploads = server.callsOf('uploadFile') as [string, string, Blob][]
+      const queued = server.callsOf('queueReply') as [string, { id: string }][]
+      expect(uploads.map((call) => call[1])).toEqual([uploads[0]![1], uploads[0]![1]])
+      expect(queued.map((call) => call[1].id)).toEqual([queued[0]![1].id, queued[0]![1].id])
+      expect(server.outgoing.size).toBe(1)
+    })
   })
 
   describe('replies', () => {

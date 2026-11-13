@@ -217,12 +217,11 @@ describe('ChatPane', () => {
 
     const view = await open(`chat-${DIRECT}`, copy)
     expect(metaOf(view)[1]).toMatch(/^\d{1,2}:\d\d(?: [AP]M)?, waiting for your Mac$/)
-    // The bridge here does not matter: no notice, replies can be written, no Attach.
+    // The bridge here does not matter: no notice, replies can be written, files go through the server.
     expect(view.find('.notice').exists()).toBe(false)
     expect(view.get('#chat-composer-note').text()).toBe('Sent on WhatsApp by Office iMac. No signature, no subject.')
-    expect(view.get('button.attach').attributes('disabled')).toBeDefined()
-    expect(view.get('#chat-attach-note').text()).toBe('Files are sent in Only this Mac for now.')
-    expect(view.get('button.attach').attributes('aria-describedby')).toBe('chat-attach-note')
+    expect(view.get('button.attach').attributes('disabled')).toBeUndefined()
+    expect(view.find('#chat-attach-note').exists()).toBe(false)
     expect(view.get('textarea').attributes('disabled')).toBeUndefined()
     // Leaving a chat out reaches the server and every device here.
     await view.get('[aria-haspopup="menu"]').trigger('click')
@@ -326,12 +325,12 @@ describe('ChatPane', () => {
     expect(media(0).get('.line').text()).toBe('Photo, not downloaded')
     expect(view.find('[aria-label="Play voice message"]').exists()).toBe(false)
 
-    let finish!: (file: { path: string; verified: boolean }) => void
+    let finish!: (file: { path: string; verified: boolean; sha256: string; size: number }) => void
     shell.downloadAnswer = () => new Promise((resolve) => (finish = resolve))
     await media(0).get('button').trigger('click')
     await flushPromises()
     expect(media(0).get('.line').text()).toBe('Downloading')
-    finish({ path: '/m/abc.jpg', verified: true })
+    finish({ path: '/m/abc.jpg', verified: true, sha256: 'a'.repeat(64), size: 3 })
     await flushPromises()
     expect(media(0).get('button').text()).toBe('Open')
     await media(0).get('button').trigger('click')
