@@ -106,7 +106,7 @@ describe('ChatActions', () => {
       expect(outcomeUnknown(new TypeError('Network request failed'))).toBe(true)
     })
 
-    it('reuses the id of a send without an answer after the app was closed, and forgets it once the delta has that reply', async () => {
+    it('reuses the id of a send without an answer after the app was closed', async () => {
       const store = await copyWith({ chats: [chat('c1')] })
       const before = setUp(store, { queueReply: vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(new TypeError('Network request failed'))) })
       await expect(before.actions.send(chat('c1'), 'On my way')).rejects.toThrow()
@@ -123,6 +123,33 @@ describe('ChatActions', () => {
       // The same text again on purpose: a new reply.
       const again = await after.actions.send(chat('c1'), 'On my way')
       expect(again.id).not.toBe(kept.id)
+    })
+
+    it('never swallows the same text sent on purpose after a relaunch once the delta has the reply that timed out', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const before = setUp(store, { queueReply: vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(new TypeError('Network request failed'))) })
+      await expect(before.actions.send(chat('c1'), 'ok')).rejects.toThrow()
+      const kept = JSON.parse((await store.chatMeta(UNSURE_PREFIX + 'c1')) ?? '{}') as { id: string }
+
+      // The app was killed; the delta brings the reply: it was queued and sent after all.
+      await store.putChatOutgoing([reply(kept.id, 'c1', { text: 'ok', status: 'sent', sentAt: new Date(NOW).toISOString() })])
+      const after = setUp(store, {}, NOW + 60_000)
+      const queued = await after.actions.send(chat('c1'), 'ok')
+
+      expect(queued.id).not.toBe(kept.id)
+      expect(after.api.queueReply).toHaveBeenCalledWith('c1', { id: queued.id, text: 'ok' })
+    })
+
+    it('forgets the kept send when a later run of the app sees the delta bring that reply', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const before = setUp(store, { queueReply: vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(new TypeError('Network request failed'))) })
+      await expect(before.actions.send(chat('c1'), 'ok')).rejects.toThrow()
+      const kept = JSON.parse((await store.chatMeta(UNSURE_PREFIX + 'c1')) ?? '{}') as { id: string }
+
+      const after = setUp(store, {}, NOW + 60_000)
+      after.actions.settle('c1', [reply(kept.id, 'c1', { text: 'ok' })])
+
+      await vi.waitFor(async () => expect(await store.chatMeta(UNSURE_PREFIX + 'c1')).toBeNull())
     })
 
     it('forgets a send without an answer when the delta brings that reply, so the same text later is a new reply', async () => {

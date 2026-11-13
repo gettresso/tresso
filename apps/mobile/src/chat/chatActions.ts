@@ -181,6 +181,9 @@ export class ChatActions {
     if (unsure !== undefined && byId.has(unsure.id)) {
       // It was queued after all: the same text sent again now is a new reply.
       this.forgetUnsure(chatId)
+    } else if (unsure === undefined) {
+      // One kept in the copy by an earlier run of the app, which this run has not read yet.
+      void this.settleKept(chatId, byId)
     }
     for (const [id, row] of [...this.retrying]) {
       if (row.chatId === chatId && byId.get(id)?.status !== 'failed' && !this.retryingNow.has(id)) {
@@ -210,7 +213,12 @@ export class ChatActions {
     }
     const now = this.deps.now()
     const hash = textHash(checked.text)
-    const earlier = await this.unsureOf(store, chat.id, now)
+    let earlier = await this.unsureOf(store, chat.id, now)
+    if (earlier !== null && earlier.hash === hash && (await this.copyHasReply(store, chat.id, earlier.id))) {
+      // It was queued after all (the delta brought it): the same text again is a new reply, never swallowed.
+      this.forgetUnsure(chat.id)
+      earlier = null
+    }
     const id = earlier !== null && earlier.hash === hash ? earlier.id : this.deps.newId(now)
     const waiting: SyncedChatOutgoing = {
       id,
@@ -260,6 +268,22 @@ export class ChatActions {
     return queued
   }
 
+  /** Forgets the unsure send the copy keeps for a chat when the copy has that reply now. */
+  private async settleKept(chatId: string, byId: ReadonlyMap<string, SyncedChatOutgoing>): Promise<void> {
+    const store = this.deps.store()
+    if (store === null) {
+      return
+    }
+    try {
+      const kept = readUnsure(await store.chatMeta(UNSURE_PREFIX + chatId))
+      if (kept !== null && byId.has(kept.id) && !this.unsure.has(chatId)) {
+        this.forgetUnsure(chatId)
+      }
+    } catch (error) {
+      this.deps.onError?.('Reading an unsure reply failed', error)
+    }
+  }
+
   /** The unsure send of a chat, from memory or the copy; null when there is none or it is too old to reuse. */
   private async unsureOf(store: MailStore, chatId: string, now: number): Promise<Unsure | null> {
     let unsure = this.unsure.get(chatId) ?? null
@@ -279,6 +303,16 @@ export class ChatActions {
     }
     this.unsure.set(chatId, unsure)
     return unsure
+  }
+
+  /** Whether the copy holds a reply of the chat with this id. */
+  private async copyHasReply(store: MailStore, chatId: string, id: string): Promise<boolean> {
+    try {
+      return ((await store.chatPage(chatId, { limit: 1 }))?.outgoing ?? []).some((reply) => reply.id === id)
+    } catch (error) {
+      this.deps.onError?.('Reading the replies of a chat failed', error)
+      return false
+    }
   }
 
   private async keepUnsure(store: MailStore, unsure: Unsure): Promise<void> {
