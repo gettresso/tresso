@@ -80,7 +80,13 @@ function initials(name: string | null, address: string): string {
     <p v-if="event.syncError" class="error" role="alert">Not saved at the provider: {{ event.syncError }}</p>
 
     <!-- Until the settings for meeting apps keep the own link, it reads as "Meeting link". -->
-    <MeetingLink :event="event" :own-link="null" :clock="clock" />
+    <MeetingLink
+      :key="`${event.id} ${event.conference?.url ?? ''}`"
+      :event="event"
+      :request="(occurrence.series ?? event).conferenceRequest ?? null"
+      :own-link="null"
+      :clock="clock"
+    />
     <p v-if="event.location" class="line"><AppIcon name="place" :size="15" /> {{ event.location }}</p>
     <p v-if="calendar" class="line"><AppIcon name="calendar" :size="15" /> {{ calendar.name }}</p>
 

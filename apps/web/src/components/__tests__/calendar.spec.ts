@@ -8,6 +8,7 @@ import { useCalendarStore } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
 import AgendaList from '../calendar/AgendaList.vue'
 import EventEditor from '../calendar/EventEditor.vue'
+import MiniAgenda from '../calendar/MiniAgenda.vue'
 import MonthGrid from '../calendar/MonthGrid.vue'
 import TimeGrid from '../calendar/TimeGrid.vue'
 import TodoBlockDetail from '../calendar/TodoBlockDetail.vue'
@@ -353,5 +354,37 @@ describe('editor and invitation card', () => {
     await flushPromises()
     expect(requests[1]).toMatchObject({ method: 'POST', path: '/api/v1/messages/m2/invitation/apply' })
     expect(wrapper.text()).toContain('Going?')
+  })
+
+  it.each([
+    ['javascript:alert(document.cookie)'],
+    ['http://teams.microsoft.com/l/meetup-join/1'],
+    ['https://te\u0430ms.microsoft.com/l/meetup-join/1'],
+  ])('offers no Join on an invitation with the link %s, only Copy link', async (url) => {
+    const hostile = { id: 'm4', method: 'REQUEST', kind: 'new', uid: 'x', recurrenceId: null, sequence: 0, summary: 'Call', description: '', location: '', allDay: true, start: { date: '2026-10-22' }, end: { date: '2026-10-23' }, recurrence: null, organizer: null, attendees: [], conference: { provider: 'teams', url, id: null, dialIn: null }, eventId: 'event-4', selfResponse: 'needs-action', canRespond: true, conflicts: [], canApply: false }
+    answer = () => hostile
+    const wrapper = mount(InvitationCard, { props: { messageId: 'm4' }, global: { plugins: [router()] } })
+    await flushPromises()
+    expect(wrapper.find('a[target="_blank"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Join with')
+    expect(wrapper.get('.copy-link').text()).toBe('Copy link')
+  })
+
+  it('offers no Join in the mini agenda for a link it cannot open, and Join for one it can', async () => {
+    const calendar = useCalendarStore()
+    const at = (id: string, url: string) =>
+      expandOccurrences([timed(id, '2026-10-20T10:00:00', '2026-10-20T11:00:00', { conference: { provider: 'other', url, id: null, dialIn: null } })], Date.UTC(2026, 9, 20), Date.UTC(2026, 9, 21), AMS)
+    const upcoming = vi.spyOn(calendar, 'upcoming').mockResolvedValue(at('Call', 'javascript:alert(1)'))
+    const hostile = mount(MiniAgenda, { global: { plugins: [router()] } })
+    await flushPromises()
+    expect(hostile.text()).toContain('Call')
+    expect(hostile.find('a[target="_blank"]').exists()).toBe(false)
+    expect(hostile.get('.copy-link').text()).toBe('Copy link')
+    hostile.unmount()
+    upcoming.mockResolvedValue(at('Call', 'https://video.example.org/room/7'))
+    const fine = mount(MiniAgenda, { global: { plugins: [router()] } })
+    await flushPromises()
+    expect(fine.get('a[target="_blank"]').text()).toBe('Join the meeting')
+    fine.unmount()
   })
 })
