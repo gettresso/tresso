@@ -18,8 +18,10 @@ import {
   todoBlocks as plannedTodoBlocks,
   toWall,
   type CalendarDay,
+  type ConferenceProvider,
   type EditScope,
   type EventInput,
+  type MeetingApp,
   type Occurrence,
   type ServerOccurrence,
   type SyncedCalendar,
@@ -28,8 +30,21 @@ import {
 import { errorMessage } from '@/api/errors'
 import { useAuthStore } from '@/stores/auth'
 import { useMailStore } from '@/stores/mail'
+import type { EditorTarget } from '@/components/calendar/EventEditor.vue'
+import type { EventValues } from '@/forms/calendarEvent'
 
 export type CalendarViewKind = 'day' | 'week' | 'month' | 'agenda'
+
+/**
+ * An event being written that the user left for Settings (to connect a meeting app): what the editor opened on, its
+ * values and the meeting link row's choice, to reopen it with "Back to the event". Kept in memory only.
+ */
+export interface KeptEditor {
+  target: EditorTarget
+  values: EventValues
+  link: { on: boolean; app: MeetingApp | null; touched: boolean; removed: boolean }
+  notify: boolean
+}
 
 /** How many days the agenda lists from its first day. */
 export const AGENDA_DAYS = 30
@@ -305,6 +320,46 @@ export const useCalendarStore = defineStore('calendar', () => {
     )
   }
 
+  /** One event as the server has it now, for the editor's save (the copy on this device may predate a new link). */
+  function event(id: string): Promise<SyncedCalendarEvent> {
+    return auth.api<SyncedCalendarEvent>(`/api/v1/calendar-events/${encodeURIComponent(id)}`)
+  }
+
+  /** Asks the calendar's provider again for the series' meeting link (Retry). */
+  async function requestMeetingLink(eventId: string, provider: ConferenceProvider): Promise<SyncedCalendarEvent> {
+    const saved = await auth.send<SyncedCalendarEvent>('POST', `/api/v1/calendar-events/${encodeURIComponent(eventId)}/meeting-link`, { provider })
+    await mail.syncNow()
+    return saved
+  }
+
+  /** Takes the series' meeting link off, or drops a link that was asked for (Leave without a link). */
+  async function removeMeetingLink(eventId: string): Promise<SyncedCalendarEvent> {
+    const saved = await auth.send<SyncedCalendarEvent>('DELETE', `/api/v1/calendar-events/${encodeURIComponent(eventId)}/meeting-link`)
+    await mail.syncNow()
+    return saved
+  }
+
+  const keptEditor = shallowRef<KeptEditor | undefined>(undefined)
+
+  function keepEditor(kept: KeptEditor): void {
+    keptEditor.value = kept
+  }
+
+  /** The kept editor, once: reopening it takes it out. */
+  function takeKeptEditor(): KeptEditor | undefined {
+    const kept = keptEditor.value
+    keptEditor.value = undefined
+    return kept
+  }
+
+  // Another user signed in (desktop): an event the previous one was writing does not come back.
+  watch(
+    () => auth.generation,
+    () => {
+      keptEditor.value = undefined
+    },
+  )
+
   return {
     zone,
     view,
@@ -334,5 +389,11 @@ export const useCalendarStore = defineStore('calendar', () => {
     applyInvitation,
     upcoming,
     complete,
+    event,
+    requestMeetingLink,
+    removeMeetingLink,
+    keptEditor,
+    keepEditor,
+    takeKeptEditor,
   }
 })

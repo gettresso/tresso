@@ -8,6 +8,8 @@ import { calendar as calendarRow, calendarEvent } from '@tresso/core/testing'
 import { deleteMailDatabase } from '@/mail/db'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
+import { useCalendarStore } from '@/stores/calendar'
+import { valuesFromInput } from '@/forms/calendarEvent'
 import CalendarView from '../CalendarView.vue'
 
 function page(cursor: number): ChangePage {
@@ -64,6 +66,20 @@ describe('the calendar shortcuts', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true }))
     await flushPromises()
     expect(wrapper.text()).toContain(NO_CALENDAR)
+  })
+
+  it('opens an event the user left for Settings again, with its values', async () => {
+    const calendar = useCalendarStore()
+    calendar.keepEditor({
+      target: { kind: 'new', start: Date.UTC(2026, 9, 22, 8), allDay: false },
+      values: { ...valuesFromInput({ calendarId: '', summary: 'Planning', description: '', location: '', url: null, start: { dateTime: '2026-10-22T10:00:00', timeZone: null }, end: { dateTime: '2026-10-22T11:00:00', timeZone: null }, recurrence: null, status: 'confirmed', transparency: 'busy', visibility: 'public', attendees: [], useDefaultReminders: true, reminders: [], important: false, travelMinutes: null, conferenceUrl: null, organizerMailAccountId: null }, 'UTC') },
+      link: { on: false, app: null, touched: false, removed: false },
+      notify: true,
+    })
+    const wrapper = await calendarScreen()
+    expect((wrapper.get('input[placeholder="Add a title"]').element as HTMLInputElement).value).toBe('Planning')
+    expect(calendar.keptEditor).toBeUndefined()
+    wrapper.unmount()
   })
 
   it('does not act on a key held down, or with a modal dialog open', async () => {

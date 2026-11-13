@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import {
   displayLink,
   meetingLinkError,
@@ -34,6 +34,12 @@ import { useMeetingAppsStore } from '@/stores/meetingApps'
 const accounts = useAccountsStore()
 const calendar = useCalendarStore()
 const meetingApps = useMeetingAppsStore()
+const router = useRouter()
+
+/** Back to the calendar, which opens the kept editor again. */
+function backToEvent(): void {
+  void router.push({ name: 'calendar' })
+}
 
 const loading = ref(true)
 const loadError = ref<string | null>(null)
@@ -276,6 +282,11 @@ async function toggleGuests(event: Event): Promise<void> {
       <p class="lead">The apps Tresso may create meeting links with, and which one each calendar uses.</p>
     </header>
 
+    <div v-if="calendar.keptEditor" class="kept" role="region" aria-label="Event being written">
+      <span>You were writing an event.</span>
+      <button type="button" class="button button-primary" @click="backToEvent">Back to the event</button>
+    </div>
+
     <p v-if="loading" class="state" role="status"><LogoLoader /> Loading…</p>
     <p v-else-if="loadError || !preferences" class="form-error" role="alert">{{ loadError ?? 'The meeting apps could not be loaded.' }}</p>
 
@@ -467,6 +478,17 @@ async function toggleGuests(event: Event): Promise<void> {
 .auto {
   color: var(--ink-3);
   font-size: 13px;
+}
+.kept {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--do-soft);
+  font-weight: 600;
 }
 .lead,
 .state,

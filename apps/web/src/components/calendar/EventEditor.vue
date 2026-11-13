@@ -1,25 +1,37 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
 import {
+  addedByText,
   DEFAULT_REMINDER_CHANNELS,
+  defaultMeetingApp,
   describeRule,
   editScopes,
   formatDate,
   formatDateTime,
   inputForScope,
+  inputFromEvent,
   inputFromOccurrence,
   knownTimeZones,
+  MEETING_PENDING_MS,
+  meetingChoices,
+  meetingRemovable,
+  meetingRow,
   parseWall,
   presetLabel,
   SCOPE_LABELS,
   scopeHint,
+  signInProvider,
+  startingChoice,
   toWall,
   zoneLabel,
   type AttendeeInput,
   type EditScope,
   type EventInput,
+  type MeetingApp,
+  type MeetingPreferences,
   type NotificationChannel,
   type Occurrence,
   type RepeatPreset,
@@ -32,8 +44,12 @@ import { EVENT_LOCATION_MAX, EVENT_REMINDERS_MAX, EVENT_SUMMARY_MAX, eventSchema
 import AppIcon from '@/components/AppIcon.vue'
 import { backdropClose } from '@/components/backdropClose'
 import { genie, reducedMotion } from '@/components/calendar/genie'
-import { useCalendarStore } from '@/stores/calendar'
+import MeetingLinkRow from '@/components/calendar/MeetingLinkRow.vue'
+import { useAccountsStore } from '@/stores/accounts'
+import { useAuthStore } from '@/stores/auth'
+import { useCalendarStore, type KeptEditor } from '@/stores/calendar'
 import { useMailStore } from '@/stores/mail'
+import { useMeetingAppsStore } from '@/stores/meetingApps'
 import KeyShortcut from '@/components/KeyShortcut.vue'
 
 /** A new event can start filled in, say from an email that proposes a time. */
@@ -52,6 +68,8 @@ const props = defineProps<{
   target: EditorTarget
   /** Where the saved event shows on screen, for the editor to land in (the calendar); null when it is not in view. */
   landing?: (event: SyncedCalendarEvent) => Promise<HTMLElement | null>
+  /** An editor the user left for Settings, reopened with its values ("Back to the event"). */
+  restore?: KeptEditor
 }>()
 /** Saved: `landed` when the editor already flew into the event, so it needs no closing animation of its own. */
 const emit = defineEmits<{ close: []; saved: [landed: boolean] }>()
@@ -60,6 +78,10 @@ provideRequiredFields(eventSchema)
 
 const calendar = useCalendarStore()
 const mail = useMailStore()
+const auth = useAuthStore()
+const accounts = useAccountsStore()
+const meetingApps = useMeetingAppsStore()
+const router = useRouter()
 
 const writable = computed(() => calendar.calendars.filter((entry) => entry.writable))
 const zones = knownTimeZones()
@@ -105,7 +127,7 @@ function blank(calendarId: string, start: EventInput['start'], end: EventInput['
 const before = initial()
 const { defineField, handleSubmit, errors, values, setErrors, setFieldValue, meta } = useForm<EventValues>({
   validationSchema: toTypedSchema(eventSchema),
-  initialValues: valuesFromInput(before, calendar.zone),
+  initialValues: props.restore?.values ?? valuesFromInput(before, calendar.zone),
 })
 const [summary] = defineField('summary')
 const [calendarId] = defineField('calendarId')
@@ -120,7 +142,6 @@ const [repeatEnd] = defineField('repeatEnd')
 const [repeatUntil] = defineField('repeatUntil')
 const [repeatCount] = defineField('repeatCount')
 const [location] = defineField('location')
-const [conferenceUrl] = defineField('conferenceUrl')
 const [description] = defineField('description')
 const [transparency] = defineField('transparency')
 const [visibility] = defineField('visibility')
@@ -135,7 +156,7 @@ const saving = ref(false)
 /** Saved, and flying into its place in the calendar. */
 const flying = ref(false)
 const error = ref<string | null>(null)
-const notify = ref(props.target.kind === 'new' ? (props.target.prefill?.notify ?? true) : true)
+const notify = ref(props.restore?.notify ?? (props.target.kind === 'new' ? (props.target.prefill?.notify ?? true) : true))
 
 /** A start moved keeps the event as long as it was. */
 watch(
@@ -186,6 +207,242 @@ const guests = computed(() => values.attendees ?? [])
 const needsOrganizer = computed(() => selectedCalendar.value?.mailAccountId === null && guests.value.length > 0)
 const zoneHint = computed(() => (values.allDay || values.timeZone === '' ? 'Same clock time in every zone.' : zoneLabel(values.timeZone ?? calendar.zone, Date.now())))
 const saveLabel = computed(() => (guests.value.length > 0 && notify.value ? `Save and notify ${guests.value.length} ${guests.value.length === 1 ? 'person' : 'people'}` : 'Save'))
+
+// Meeting link (build plan 5.2): the row's state comes from core's meetingRow; this keeps what the user did with it.
+const EMPTY_PREFERENCES: MeetingPreferences = { ownLink: null, addWithGuests: false, defaults: {}, defaultOther: null, disabled: [], apps: [] }
+const preferences = computed(() => meetingApps.preferences ?? EMPTY_PREFERENCES)
+const preferencesReady = computed(() => meetingApps.preferences !== null)
+const meetingError = ref<string | null>(null)
+const meetingBusy = ref(false)
+const meetingNotice = ref<string | null>(null)
+
+/**
+ * The saved event as the row shows it: its own link, and the request of its series (an override carries none). The
+ * answers of Retry and Leave without a link replace the request.
+ */
+const saved = ref<SyncedCalendarEvent | null>(
+  props.target.kind === 'edit' ? { ...props.target.occurrence.event, conferenceRequest: (props.target.occurrence.series ?? props.target.occurrence.event).conferenceRequest ?? null } : null,
+)
+const hadLink = computed(() => saved.value !== null && saved.value.conference !== null)
+/** Only the organizer changes the link; an invited event shows who added it and nothing to change. */
+const organizes = computed(() => saved.value === null || saved.value.selfResponse === null)
+
+const linkOn = ref(props.restore?.link.on ?? hadLink.value)
+/** The app the user picked in this editor, or null to follow the calendar's default. */
+const explicitApp = ref<MeetingApp | null>(props.restore?.link.app ?? null)
+/** The user used the switch: a first guest no longer switches it on. */
+const touched = ref(props.restore?.link.touched ?? false)
+/** "Remove meeting link" on a saved event with a link, not saved yet. */
+const removed = ref(props.restore?.link.removed ?? false)
+
+const meetingAccount = computed(() => mail.accounts.find((account) => account.id === selectedCalendar.value?.mailAccountId) ?? null)
+const choices = computed(() => meetingChoices(selectedCalendar.value, meetingAccount.value, preferences.value))
+const defaultApp = computed(() => defaultMeetingApp(selectedCalendar.value, meetingAccount.value, preferences.value))
+const starting = computed(() => startingChoice(choices.value, defaultApp.value))
+const chosen = computed(() => (explicitApp.value === null ? starting.value.choice : (choices.value.find((choice) => choice.app === explicitApp.value) ?? null)))
+/** A Teams meeting Microsoft keeps on its event: the server's word, or core's rule for rows from before it. */
+const locked = computed(() => {
+  const conference = saved.value?.conference ?? null
+  return conference !== null && !meetingRemovable(calendar.calendar(saved.value?.calendarId ?? '')?.source, conference)
+})
+
+// The server's clock for a link being made, read again when it turns two minutes old.
+const meetingNow = ref(auth.serverNow())
+let meetingTimer: ReturnType<typeof setTimeout> | null = null
+function watchRequestAge(): void {
+  if (meetingTimer !== null) clearTimeout(meetingTimer)
+  meetingTimer = null
+  meetingNow.value = auth.serverNow()
+  const request = saved.value?.conferenceRequest ?? null
+  if (request === null || request.status !== 'pending' || saved.value?.conference !== null) return
+  const left = Date.parse(request.requestedAt) + MEETING_PENDING_MS - meetingNow.value
+  if (Number.isFinite(left) && left >= 0) {
+    meetingTimer = setTimeout(watchRequestAge, Math.min(left, MEETING_PENDING_MS) + 250)
+  }
+}
+watch(() => saved.value?.conferenceRequest, watchRequestAge, { immediate: true })
+onBeforeUnmount(() => {
+  if (meetingTimer !== null) clearTimeout(meetingTimer)
+})
+
+const meeting = computed(() =>
+  meetingRow({
+    on: linkOn.value,
+    removed: removed.value,
+    chosen: chosen.value,
+    fellBack: explicitApp.value === null ? starting.value.fellBack : null,
+    explicit: explicitApp.value !== null,
+    choices: choices.value,
+    calendar: selectedCalendar.value,
+    account: meetingAccount.value,
+    preferences: preferences.value,
+    guests: guests.value.length,
+    event: saved.value,
+    now: meetingNow.value,
+  }),
+)
+/** The link the row shows: the event's while it keeps it, else the own link when that is the choice. */
+const shownLink = computed(() => {
+  if (meeting.value.kind === 'own') {
+    const link = preferences.value.ownLink
+    return link === null ? null : { provider: 'other' as const, url: link }
+  }
+  return meeting.value.kind === 'created' ? (saved.value?.conference ?? null) : null
+})
+const addedBy = computed(() => {
+  const conference = saved.value?.conference ?? null
+  const organizer = saved.value?.organizer ?? null
+  return conference === null || organizer === null ? null : addedByText(conference, preferences.value.ownLink, organizer.name?.trim() || organizer.address)
+})
+
+onMounted(() => {
+  meetingApps.ensureLoaded().catch((e: unknown) => (meetingError.value = `The meeting apps could not be loaded: ${errorMessage(e)}`))
+})
+
+// The first guest switches the link on with the calendar's default, unless the user used the switch.
+watch(
+  () => guests.value.length,
+  (count, previous) => {
+    if (previous === 0 && count > 0 && !touched.value && !linkOn.value && !removed.value && !hadLink.value && (saved.value?.conferenceRequest ?? null) === null && preferences.value.addWithGuests && defaultApp.value !== null && defaultApp.value !== 'none') {
+      linkOn.value = true
+    }
+  },
+)
+
+function toggleLink(): void {
+  touched.value = true
+  if (linkOn.value) {
+    linkOn.value = false
+    // Off on a saved link takes it off when saved (state 11, with Undo).
+    removed.value = hadLink.value
+    return
+  }
+  if (removed.value) {
+    removed.value = false
+    explicitApp.value = null
+  }
+  linkOn.value = true
+}
+
+function pickApp(app: MeetingApp): void {
+  explicitApp.value = app
+  removed.value = false
+  linkOn.value = true
+  touched.value = true
+}
+
+function removeLink(): void {
+  touched.value = true
+  explicitApp.value = null
+  linkOn.value = false
+  removed.value = hadLink.value
+}
+
+function undoRemove(): void {
+  removed.value = false
+  explicitApp.value = null
+  linkOn.value = true
+}
+
+/** The series the request belongs to: Retry and Leave act on it, as the API does. */
+const seriesId = computed(() => (props.target.kind === 'edit' ? props.target.occurrence.seriesId : null))
+
+async function retryLink(): Promise<void> {
+  const request = saved.value?.conferenceRequest ?? null
+  if (seriesId.value === null || request === null || (request.provider !== 'meet' && request.provider !== 'teams')) return
+  meetingBusy.value = true
+  meetingError.value = null
+  try {
+    const answer = await calendar.requestMeetingLink(seriesId.value, request.provider)
+    saved.value = { ...saved.value!, conference: saved.value!.conference ?? answer.conference, conferenceRequest: answer.conferenceRequest ?? null }
+  } catch (e) {
+    meetingError.value = errorMessage(e)
+  } finally {
+    meetingBusy.value = false
+  }
+}
+
+async function leaveWithoutLink(): Promise<void> {
+  if (seriesId.value === null) return
+  meetingBusy.value = true
+  meetingError.value = null
+  try {
+    const answer = await calendar.removeMeetingLink(seriesId.value)
+    saved.value = { ...saved.value!, conferenceRequest: answer.conferenceRequest ?? null }
+    linkOn.value = false
+    explicitApp.value = null
+  } catch (e) {
+    meetingError.value = errorMessage(e)
+  } finally {
+    meetingBusy.value = false
+  }
+}
+
+/** What the editor holds now, to come back to from Settings. */
+function keep(): void {
+  calendar.keepEditor({
+    target: props.target,
+    values: { ...(values as EventValues) },
+    link: { on: linkOn.value, app: explicitApp.value, touched: touched.value, removed: removed.value },
+    notify: notify.value,
+  })
+}
+
+/** Connect a meeting app: Settings, Meeting apps, with "Back to the event" there. */
+async function toMeetingSettings(): Promise<void> {
+  keep()
+  emit('close')
+  await router.push({ name: 'settings-meeting-apps' })
+}
+
+/** Reconnect: the account's sign-in again, with calendar access when it was never given. */
+async function reconnect(): Promise<void> {
+  const account = meetingAccount.value
+  const provider = account === null ? null : signInProvider(account)
+  if (account === null || provider === null) return
+  meetingError.value = null
+  meetingNotice.value = null
+  keep()
+  try {
+    if ((await accounts.openProviderSignIn(provider, account.id, account.calendarStatus === 'not_granted' ? ['calendar'] : undefined)) === 'browser') {
+      meetingNotice.value = 'Continue in your browser. Save the event once you are back.'
+    }
+  } catch (e) {
+    calendar.takeKeptEditor()
+    meetingError.value = errorMessage(e)
+  }
+}
+
+/**
+ * The link fields of the save. A new app the user switched on: Meet or Teams as `conferenceProvider`, the own link as
+ * `conferenceUrl`. A link the user removed: both null. Anything else keeps what the server has now, read at the save,
+ * so a link made since the editor opened is never removed by an older copy.
+ */
+async function meetingFields(target: { occurrence: Occurrence; scope: EditScope } | null): Promise<Pick<EventInput, 'conferenceUrl' | 'conferenceProvider'>> {
+  if (removed.value) {
+    return { conferenceUrl: null, conferenceProvider: null }
+  }
+  const app = chosen.value
+  if (linkOn.value && app !== null && app.ok && (explicitApp.value !== null || !hadLink.value)) {
+    if (app.app === 'meet' || app.app === 'teams') {
+      return { conferenceUrl: null, conferenceProvider: app.app }
+    }
+    if (app.app === 'own' && preferences.value.ownLink !== null) {
+      return { conferenceUrl: preferences.value.ownLink, conferenceProvider: null }
+    }
+  }
+  if (target === null) {
+    return { conferenceUrl: null, conferenceProvider: null }
+  }
+  // One occurrence keeps its own link; the series (and what follows) the series' link and request.
+  const occurrence = target.occurrence
+  const id = occurrence.recurring && target.scope !== 'this' ? occurrence.seriesId : occurrence.event.id
+  const fresh = inputFromEvent(await calendar.event(id))
+  const provider = fresh.conferenceProvider ?? null
+  return { conferenceUrl: fresh.conferenceUrl, conferenceProvider: provider !== null && selectedCalendar.value?.conferenceProviders.includes(provider) ? provider : null }
+}
+
+const meetingChanged = computed(() => touched.value || explicitApp.value !== null || removed.value)
 
 // People
 const newGuest = ref('')
@@ -274,14 +531,17 @@ const save = handleSubmit(async (current) => {
   try {
     const edited = inputFromValues(current, { status: before.status, url: before.url })
     const target = occurrence.value === null ? null : { occurrence: occurrence.value, scope: occurrence.value.recurring ? scope.value : 'all' }
-    const input = target === null ? edited : inputForScope(target.occurrence, before, edited, target.scope)
-    const saved = await calendar.save(input, target, notify.value)
+    const scoped = target === null ? edited : inputForScope(target.occurrence, before, edited, target.scope)
+    const input = { ...scoped, ...(await meetingFields(target)) }
+    const done = await calendar.save(input, target, notify.value)
     // Only a new event flies into its place: an edited one is already on screen at its old time until the copy catches up.
-    const landingAt = props.landing === undefined || props.target.kind !== 'new' || reducedMotion() ? null : await props.landing(saved)
+    const landingAt = props.landing === undefined || props.target.kind !== 'new' || reducedMotion() ? null : await props.landing(done)
     if (landingAt !== null && dialog.value !== null) {
       flying.value = true
       await genie(dialog.value, landingAt)
     }
+    // Saved: an editor kept for a sign-in that is still on its way does not come back.
+    calendar.takeKeptEditor()
     emit('saved', landingAt !== null)
   } catch (e) {
     error.value = errorMessage(e)
@@ -303,9 +563,10 @@ function close(): void {
   if (flying.value) {
     return
   }
-  if (meta.value.dirty && !window.confirm('Discard the changes to this event?')) {
+  if ((meta.value.dirty || meetingChanged.value) && !window.confirm('Discard the changes to this event?')) {
     return
   }
+  calendar.takeKeptEditor()
   emit('close')
 }
 
@@ -445,11 +706,35 @@ const repeatSummary = computed(() => {
           <input v-model="location" :maxlength="EVENT_LOCATION_MAX" placeholder="Add a place" autocomplete="off" />
           <small v-if="errors.location" class="error">{{ errors.location }}</small>
         </label>
-        <label class="field">
-          <span>Online meeting link</span>
-          <input v-model="conferenceUrl" type="url" placeholder="https://" :aria-invalid="errors.conferenceUrl ? 'true' : undefined" />
+        <div class="field">
+          <span>Meeting link</span>
+          <MeetingLinkRow
+            v-if="organizes"
+            :row="meeting"
+            :choices="choices"
+            :chosen="chosen"
+            :default-app="defaultApp"
+            :calendar-name="selectedCalendar?.name ?? ''"
+            :on="linkOn"
+            :link="shownLink"
+            :locked="locked"
+            :removable="hadLink && !locked"
+            :busy="meetingBusy || !preferencesReady"
+            :error="meetingError"
+            @toggle="toggleLink"
+            @pick="pickApp"
+            @remove="removeLink"
+            @undo="undoRemove"
+            @retry="retryLink"
+            @leave="leaveWithoutLink"
+            @reconnect="reconnect"
+            @settings="toMeetingSettings"
+          />
+          <p v-else-if="addedBy" class="hint">{{ addedBy }}</p>
+          <p v-else class="hint">No meeting link. Only the organizer can add one.</p>
+          <small v-if="meetingNotice" class="hint" role="status">{{ meetingNotice }}</small>
           <small v-if="errors.conferenceUrl" class="error">{{ errors.conferenceUrl }}</small>
-        </label>
+        </div>
 
         <fieldset class="reminders">
           <legend>Reminders</legend>
