@@ -9,6 +9,7 @@ use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\GetCollection;
 use ApiPlatform\Metadata\QueryParameter;
 use App\Calendar\ICalendar\EventData;
+use App\Entity\CalendarEvent;
 use App\Security\Scope;
 use App\State\CalendarOccurrenceProvider;
 use Symfony\Component\Validator\Constraints as Assert;
@@ -20,6 +21,7 @@ use Symfony\Component\Validator\Constraints as Assert;
  *
  * @phpstan-import-type Address from EventData
  * @phpstan-import-type Conference from EventData
+ * @phpstan-import-type PublicConferenceRequest from CalendarEvent
  */
 #[ApiResource(
     shortName: 'CalendarOccurrence',
@@ -65,6 +67,8 @@ final readonly class CalendarOccurrence
      * @param array{date: string}|array{dateTime: string} $end
      * @param Address|null                                $organizer
      * @param Conference|null                             $conference
+     * @param PublicConferenceRequest|null                $conferenceRequest the series' meeting link request (none on a
+     *                                                                       changed occurrence)
      */
     public function __construct(
         #[ApiProperty(identifier: true)]
@@ -86,6 +90,7 @@ final readonly class CalendarOccurrence
         public int $attendeeCount,
         public ?string $selfResponse,
         public ?array $conference,
+        public ?array $conferenceRequest,
     ) {
     }
 }

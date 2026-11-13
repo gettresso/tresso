@@ -604,6 +604,78 @@ final class CalendarEventApiTest extends DatabaseTestCase
         self::assertSame(['dateTime' => '2026-10-19T07:30:00+00:00'], $occurrences[0]['start']);
     }
 
+    public function testAnOwnLinkIsTheConferenceAndTheLastLineOfTheDescription(): void
+    {
+        $room = 'https://meet.company.example/kim';
+        $event = $this->create(['description' => 'Agenda', 'conferenceUrl' => $room]);
+
+        self::assertSame("Agenda\n\nJoin the meeting: ".$room, $event['description'] ?? null);
+        self::assertSame(['provider' => 'other', 'url' => $room, 'id' => null, 'dialIn' => null], $event['conference'] ?? null);
+        self::assertTrue(\array_key_exists('conferenceRequest', $event) && null === $event['conferenceRequest'], 'Nothing is asked of a provider for a link of the user\'s own.');
+        $ical = $this->storedIcal($event['uid']);
+        self::assertStringContainsString('CONFERENCE;VALUE=URI;FEATURE=VIDEO:'.$room, $ical);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$event['id'], self::event($this->calendarId, ['description' => $event['description'], 'conferenceUrl' => $room]), $this->kim);
+        self::assertResponseIsSuccessful();
+        self::assertSame("Agenda\n\nJoin the meeting: ".$room, $this->decodedResponse()['description'], 'Saving it again leaves one line.');
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$event['id'], self::event($this->calendarId, ['description' => $event['description'], 'conferenceUrl' => null]), $this->kim);
+        self::assertResponseIsSuccessful();
+        $removed = $this->decodedResponse();
+        self::assertSame('Agenda', $removed['description'], 'No meeting link: the line goes too.');
+        self::assertNull($removed['conference']);
+        self::assertStringNotContainsString("\r\nCONFERENCE", $this->storedIcal($event['uid']));
+    }
+
+    public function testAnotherLinkReplacesTheOneTheEventHad(): void
+    {
+        $event = $this->create(['description' => 'Agenda', 'conferenceUrl' => 'https://meet.company.example/kim']);
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$event['id'], self::event($this->calendarId, ['description' => $event['description'] ?? null, 'conferenceUrl' => 'https://zoom.us/j/1234567890']), $this->kim);
+
+        self::assertResponseIsSuccessful();
+        $saved = $this->decodedResponse();
+        self::assertSame("Agenda\n\nJoin with Zoom: https://zoom.us/j/1234567890", $saved['description']);
+        self::assertSame(['provider' => 'zoom', 'url' => 'https://zoom.us/j/1234567890', 'id' => null, 'dialIn' => null], $saved['conference']);
+        self::assertSame(1, substr_count($this->storedIcal($event['uid']), "\r\nCONFERENCE"));
+    }
+
+    public function testALinkOfTheWrongFormIsRefusedWithoutRepeatingIt(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($this->calendarId, ['conferenceUrl' => 'https://kim:hunter2@secret-room.example/kim']), $this->kim);
+
+        self::assertResponseStatusCodeSame(422);
+        $content = (string) $this->client->getResponse()->getContent();
+        self::assertStringContainsString('Use a link without a user name or password in it.', $content);
+        self::assertStringNotContainsString('hunter2', $content);
+        self::assertStringNotContainsString('secret-room', $content);
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM calendar_object'));
+    }
+
+    public function testTheDeltaCarriesTheMeetingLinkRequest(): void
+    {
+        $this->create(['conferenceUrl' => 'https://meet.company.example/kim']);
+
+        $events = $this->getJson('/api/v1/sync/changes?since=0', $this->kim)['calendarEvents'];
+        self::assertIsArray($events);
+        self::assertIsArray($events[0]);
+        self::assertArrayHasKey('conferenceRequest', $events[0]);
+        self::assertNull($events[0]['conferenceRequest']);
+        self::assertSame('https://meet.company.example/kim', \is_array($events[0]['conference']) ? $events[0]['conference']['url'] : null);
+    }
+
+    public function testAMeetingLinkOnTheTressoCalendarIsTheUsersOwnOrNone(): void
+    {
+        $event = $this->create();
+
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events/'.$event['id'].'/meeting-link', ['provider' => 'meet'], $this->kim);
+        self::assertResponseStatusCodeSame(422);
+        self::assertStringContainsString('This calendar cannot make Google Meet meetings.', (string) $this->client->getResponse()->getContent());
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$event['id'].'/meeting-link', server: $this->kim);
+        self::assertResponseStatusCodeSame(200);
+        self::assertNull($this->decodedResponse()['conference']);
+    }
+
     public function testAnEventMovedBeforeTheDeltaWindowLeavesTheCopies(): void
     {
         $event = $this->create();
@@ -1147,6 +1219,11 @@ final class CalendarEventApiTest extends DatabaseTestCase
             }
         }
         self::fail('No occurrence on '.$date);
+    }
+
+    private function storedIcal(string $uid): string
+    {
+        return self::string($this->connection()->fetchOne('SELECT ical FROM calendar_object WHERE uid = ?', [$uid]));
     }
 
     private function violationPath(): ?string

@@ -11,6 +11,7 @@ use App\Tests\Functional\DatabaseTestCase;
 use App\Tests\Functional\StoresMail;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
+use ZBateson\MailMimeParser\MailMimeParser;
 
 final class CalendarInvitationTest extends DatabaseTestCase
 {
@@ -420,6 +421,57 @@ final class CalendarInvitationTest extends DatabaseTestCase
         self::assertCount(2, $outgoing);
         self::assertSame('Cancelled: Planning', $outgoing[1]->getSubject());
         self::assertStringContainsString('Content-Type: text/calendar; charset=utf-8; method=CANCEL', $this->rawOutgoing($outgoing[1]));
+    }
+
+    public function testTheInvitationCarriesTheMeetingLinkOnce(): void
+    {
+        $room = 'https://meet.company.example/kim?pwd=a1&lang=en';
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($this->localCalendarId($this->kim), [
+            'summary' => 'Planning',
+            'description' => 'Agenda <b>first</b>',
+            'conferenceUrl' => $room,
+            'attendees' => [['address' => 'anna@finance.example']],
+            'organizerMailAccountId' => $this->accountId,
+        ]), $this->kim);
+        self::assertResponseStatusCodeSame(201);
+
+        $outgoing = $this->outgoing();
+        self::assertCount(1, $outgoing);
+        $message = new MailMimeParser()->parse($this->rawOutgoing($outgoing[0]), false);
+        $html = (string) $message->getHtmlContent();
+        $text = (string) $message->getTextContent();
+        self::assertSame(1, substr_count($html, 'Join the meeting:'), 'Once: not again in the description.');
+        self::assertStringContainsString('Join the meeting: <a href="https://meet.company.example/kim?pwd=a1&amp;lang=en">https://meet.company.example/kim?pwd=a1&amp;lang=en</a>', $html);
+        self::assertStringContainsString('Agenda &lt;b&gt;first&lt;/b&gt;', $html, 'The description is text, escaped.');
+        self::assertStringNotContainsString('<b>first</b>', $html);
+        self::assertSame(1, substr_count($text, 'Join the meeting:'));
+        self::assertStringContainsString('Join the meeting: '.$room, $text, 'The plain text writes the link out.');
+    }
+
+    public function testAddingOrRemovingAMeetingLinkUpdatesTheGuests(): void
+    {
+        $event = self::event($this->localCalendarId($this->kim), [
+            'summary' => 'Planning',
+            'attendees' => [['address' => 'anna@finance.example']],
+            'organizerMailAccountId' => $this->accountId,
+        ]);
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', $event, $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $eventId = $this->responseString('id');
+        self::assertCount(1, $this->outgoing());
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, [...$event, 'conferenceUrl' => 'https://meet.company.example/kim'], $this->kim);
+        self::assertResponseIsSuccessful();
+        $outgoing = $this->outgoing();
+        self::assertCount(2, $outgoing, 'A new link is news for the guests.');
+        self::assertSame('Updated invitation: Planning', $outgoing[1]->getSubject());
+        self::assertStringContainsString('Join the meeting:', (string) new MailMimeParser()->parse($this->rawOutgoing($outgoing[1]), false)->getTextContent());
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link', server: $this->kim);
+        self::assertResponseStatusCodeSame(200);
+        $outgoing = $this->outgoing();
+        self::assertCount(3, $outgoing, 'and so is a link that went.');
+        self::assertStringNotContainsString('Join the meeting:', (string) new MailMimeParser()->parse($this->rawOutgoing($outgoing[2]), false)->getTextContent());
     }
 
     public function testANewInvitationCountsOnlyFromItsOrganizer(): void

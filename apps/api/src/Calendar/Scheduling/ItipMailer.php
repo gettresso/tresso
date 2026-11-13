@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Calendar\Scheduling;
 
 use App\Calendar\ICalendar\CalendarDocument;
+use App\Calendar\ICalendar\ConferenceDetector;
 use App\Calendar\ICalendar\EventReader;
 use App\Calendar\ICalendar\Props;
+use App\Calendar\MeetingJoinLine;
 use App\Entity\MailAccount;
 use App\Entity\Message;
 use App\Entity\User;
@@ -118,12 +120,19 @@ final readonly class ItipMailer
         if (null !== $location) {
             $lines[] = '<p>'.htmlspecialchars($location).'</p>';
         }
+        $conference = ItipMethod::Request === $method ? ConferenceDetector::detect($event) : null;
+        if (null !== $conference) {
+            // The plain-text part writes the link out from this anchor ("Join the meeting: https://...").
+            $url = htmlspecialchars($conference['url']);
+            $lines[] = '<p>'.htmlspecialchars(MeetingJoinLine::prefix($conference['provider'])).' <a href="'.$url.'">'.$url.'</a></p>';
+        }
         $comment = Props::text($event, 'COMMENT');
         if (null !== $comment) {
             $lines[] = '<blockquote>'.nl2br(htmlspecialchars($comment)).'</blockquote>';
         }
-        $description = ItipMethod::Request === $method ? Props::text($event, 'DESCRIPTION') : null;
-        if (null !== $description) {
+        // Without Tresso's join line: the link has its own paragraph above.
+        $description = ItipMethod::Request === $method ? trim(MeetingJoinLine::strip(Props::text($event, 'DESCRIPTION') ?? '')) : '';
+        if ('' !== $description) {
             $lines[] = '<p>'.nl2br(htmlspecialchars($description)).'</p>';
         }
 

@@ -197,6 +197,10 @@ final readonly class CalendarSynchronizer
             $object ??= new CalendarObject($calendar, $uid, '');
             $rows = $this->store->save($object, $vcalendar, true);
             $object->stored($remote->remoteId, $remote->etag);
+            if (null !== $object->getConferenceRequest() && null !== ($rows[''] ?? null)?->getConference()) {
+                // The meeting asked for is there (Google may make it after its first answer): nothing is pending.
+                $this->store->setConferenceRequest($object, null);
+            }
             if (null !== $previous) {
                 $notes = $this->notes->lift($previous, static fn (string $key): string => $key);
                 $this->store->remove($previous, true);

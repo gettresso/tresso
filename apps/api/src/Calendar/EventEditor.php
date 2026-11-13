@@ -22,7 +22,9 @@ use App\Entity\MailAccount;
 use App\Enum\CalendarSource;
 use App\Enum\EditScope;
 use App\Enum\ParticipationStatus;
+use App\Repository\CalendarEventRepository;
 use App\Repository\CalendarObjectRepository;
+use Psr\Clock\ClockInterface;
 use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Component\VEvent;
 use Sabre\VObject\ITip\Broker;
@@ -44,10 +46,19 @@ use Symfony\Component\Uid\Uuid;
 final readonly class EventEditor
 {
     /** Properties whose change makes an update attendees must act on (RFC 5546 2.1.4). */
-    private const array SIGNIFICANT = ['DTSTART', 'DTEND', 'RRULE', 'RDATE', 'EXDATE', 'LOCATION', 'STATUS'];
+    private const array SIGNIFICANT = ['DTSTART', 'DTEND', 'RRULE', 'RDATE', 'EXDATE', 'LOCATION', 'STATUS', 'CONFERENCE'];
     private const int MAX_RECURRENCES = 100000;
     /** Asks the provider for an online meeting; the sync worker reads it (see apps/sync googlecal and graphcal). */
     public const string CONFERENCE_REQUEST = 'X-TRESSO-CONFERENCE-REQUEST';
+    /**
+     * The request's own id next to it: a new request (after a removal, a failure or a long wait) gets a new one, which
+     * the worker turns into a new provider request id, so the provider makes a new meeting instead of ignoring it.
+     */
+    public const string CONFERENCE_NONCE = 'X-TRESSO-CONFERENCE-NONCE';
+    /** A request younger than this is still on its way: asking again changes nothing. */
+    public const int CONFERENCE_PENDING_SECONDS = 120;
+    private const string TEAMS_STAYS = 'Microsoft keeps a Teams meeting on its event. Delete the event to cancel the meeting.';
+    private const string ORGANIZER_ONLY = 'Only the organizer can change the meeting link.';
 
     public function __construct(
         private CalendarStore $store,
@@ -56,6 +67,8 @@ final readonly class EventEditor
         private ItipMailer $mailer,
         private SchedulingPermission $permission,
         private EventNotes $notes,
+        private ClockInterface $clock,
+        private CalendarEventRepository $events,
     ) {
         Settings::$maxRecurrences = self::MAX_RECURRENCES;
     }
@@ -70,13 +83,14 @@ final readonly class EventEditor
         $vcalendar = CalendarDocument::create();
         /** @var VEvent $event */
         $event = $vcalendar->add('VEVENT', ['UID' => $uid, 'DTSTAMP' => $now, 'CREATED' => $now, 'SEQUENCE' => 0]);
-        $this->write($event, $changes, $vcalendar, true, $self);
+        $this->write($event, $changes, $vcalendar, $calendar, true, $self);
         self::withOrganizer($vcalendar, $calendar, $organizer);
-        self::requestConference($vcalendar, $calendar, $changes->conferenceProvider);
+        $object = new CalendarObject($calendar, $uid, '');
+        $this->requestConference($object, $vcalendar, $calendar, $changes->conferenceProvider);
         // A new event is its own first version.
         Props::set($event, 'SEQUENCE', 0);
 
-        $rows = $this->store->save(new CalendarObject($calendar, $uid, ''), $vcalendar, notify: $notify);
+        $rows = $this->store->save($object, $vcalendar, notify: $notify);
         $this->schedule($calendar, null, $vcalendar, $notify);
 
         return $rows[''];
@@ -108,15 +122,15 @@ final readonly class EventEditor
         $editedKey = '';
         $moved = null;
         if (null === $key && null !== $master && self::isSeries($master)) {
-            $moved = $this->editAll($vcalendar, $master, $changes, null, $self);
+            $moved = $this->editAll($vcalendar, $calendar, $master, $changes, null, $self);
         } elseif (null === $key) {
-            $this->write($master ?? throw new EditRejected('This event no longer exists.'), $changes, $vcalendar, true, $self);
+            $this->write($master ?? throw new EditRejected('This event no longer exists.'), $changes, $vcalendar, $calendar, true, $self);
         } elseif (EditScope::This === $scope || null === $master) {
             $occurrence = $this->occurrence($vcalendar, $master, $key);
-            $this->write($occurrence, $changes, $vcalendar, false, $self);
+            $this->write($occurrence, $changes, $vcalendar, $calendar, false, $self);
             $editedKey = $key;
         } elseif (EditScope::All === $scope || $this->isFirst($master, $key)) {
-            $moved = $this->editAll($vcalendar, $master, $changes, $key, $self);
+            $moved = $this->editAll($vcalendar, $calendar, $master, $changes, $key, $self);
         } else {
             $newObject = $this->split($object, $vcalendar, $master, $key, $changes, $self, $notify, $organizer);
             self::withOrganizer($vcalendar, $calendar, $organizer);
@@ -127,7 +141,7 @@ final readonly class EventEditor
         }
 
         self::withOrganizer($vcalendar, $calendar, $organizer);
-        self::requestConference($vcalendar, $calendar, $changes->conferenceProvider);
+        $this->requestConference($object, $vcalendar, $calendar, $changes->conferenceProvider);
         // The occurrences moved: their notes go along to the new keys.
         $notes = null === $moved ? [] : $this->notes->lift($object, static fn (string $noteKey): ?string => '' === $noteKey ? null : $moved($noteKey));
         $rows = $this->store->save($object, $vcalendar, notify: $notify);
@@ -269,7 +283,7 @@ final readonly class EventEditor
     /**
      * @param list<string> $self the owner's addresses
      */
-    private function write(VEvent $event, EventChanges $changes, VCalendar $vcalendar, bool $withRecurrence, array $self): void
+    private function write(VEvent $event, EventChanges $changes, VCalendar $vcalendar, Calendar $calendar, bool $withRecurrence, array $self): void
     {
         $before = self::significantState($event);
 
@@ -293,7 +307,8 @@ final readonly class EventEditor
         self::writeReminders($event, $changes);
         self::writeTravel($event, $changes->travelMinutes);
         self::writeImportance($event, $changes->important);
-        self::writeConference($event, $changes->conferenceUrl);
+        // After the description: the join line of a link Tresso knows is managed there.
+        self::writeConference($event, $changes->conferenceUrl, $calendar);
 
         self::touch($event, self::significantState($event) !== $before);
     }
@@ -304,15 +319,16 @@ final readonly class EventEditor
      *
      * @param list<string> $self
      */
-    private function writeEdits(VEvent $override, VEvent $oldMaster, EventChanges $changes, VCalendar $vcalendar, array $self, bool $keepTime): void
+    private function writeEdits(VEvent $override, VEvent $oldMaster, EventChanges $changes, VCalendar $vcalendar, Calendar $calendar, array $self, bool $keepTime): void
     {
         $edited = clone $oldMaster;
-        $this->write($edited, $changes, $vcalendar, false, $self);
+        $this->write($edited, $changes, $vcalendar, $calendar, false, $self);
         $changed = static fn (\Closure $state): bool => $state($oldMaster) !== $state($edited);
         $text = static fn (string $name): \Closure => static fn (VEvent $event): ?string => Props::text($event, $name);
         $before = self::significantState($override);
 
-        foreach (['SUMMARY' => $changes->summary, 'DESCRIPTION' => $changes->description, 'LOCATION' => $changes->location, 'URL' => $changes->url ?? ''] as $name => $value) {
+        // The description as the series got it: with the join line of its meeting link, if any.
+        foreach (['SUMMARY' => $changes->summary, 'DESCRIPTION' => self::rawText($edited, 'DESCRIPTION'), 'LOCATION' => $changes->location, 'URL' => $changes->url ?? ''] as $name => $value) {
             if ($changed($text($name))) {
                 self::setText($override, $name, $value);
             }
@@ -334,8 +350,8 @@ final readonly class EventEditor
         if ($changed($text('PRIORITY'))) {
             self::writeImportance($override, $changes->important);
         }
-        if ($changed(static fn (VEvent $event): array => array_map(Props::value(...), Props::all($event, 'CONFERENCE')))) {
-            self::writeConference($override, $changes->conferenceUrl);
+        if ($changed(static fn (VEvent $event): ?string => ConferenceDetector::detect($event)['url'] ?? null)) {
+            self::writeConference($override, $changes->conferenceUrl, $calendar);
         }
         if (!$keepTime) {
             $override->remove('DURATION');
@@ -542,12 +558,27 @@ final readonly class EventEditor
 
     /**
      * Asks the calendar's provider for an online meeting: the worker makes it when it writes the event, and the
-     * provider's version, with the join link and without this request, then replaces the stored one.
+     * provider's version, with the join link and without this request, then replaces the stored one. The request is
+     * kept on the object (the provider's version drops the properties) until the meeting is there or the worker
+     * reports that it could not be made.
+     *
+     * Asking again changes nothing while the event has a meeting or the same request is younger than
+     * {@see self::CONFERENCE_PENDING_SECONDS}; otherwise it is a new request with a new nonce. No provider (the user
+     * switched the link off, or chose a link of their own) drops a request that has no meeting yet.
      */
-    private static function requestConference(VCalendar $vcalendar, Calendar $calendar, ?string $provider): void
+    private function requestConference(CalendarObject $object, VCalendar $vcalendar, Calendar $calendar, ?string $provider): void
     {
         $master = CalendarDocument::master($vcalendar);
-        if (null === $provider || null === $master) {
+        if (null === $master) {
+            return;
+        }
+        $request = $object->getConferenceRequest();
+        if (null === $provider) {
+            if (null === ConferenceDetector::detect($master)) {
+                $object->setConferenceRequest(null);
+                self::dropConferenceRequest($master);
+            }
+
             return;
         }
         if (!\in_array($provider, $calendar->getConferenceProviders(), true)) {
@@ -556,27 +587,169 @@ final readonly class EventEditor
         if (null !== ConferenceDetector::detect($master)) {
             return;
         }
-        Props::set($master, self::CONFERENCE_REQUEST, $provider);
-    }
-
-    private static function writeConference(VEvent $event, ?string $url): void
-    {
-        $existing = null;
-        foreach (Props::all($event, 'CONFERENCE') as $conference) {
-            $value = trim(Props::value($conference));
-            if (str_starts_with(strtolower($value), 'https://')) {
-                $existing = $conference;
+        $now = $this->clock->now();
+        if (null !== $request && 'pending' === $request['status'] && $provider === $request['provider']
+            && new \DateTimeImmutable($request['requestedAt']) > $now->modify(\sprintf('-%d seconds', self::CONFERENCE_PENDING_SECONDS))) {
+            // Still on its way: the same request, so a write that is retried asks the provider for the same meeting
+            // (written again only when the provider's version has dropped it, so asking again changes nothing).
+            if ($provider !== Props::text($master, self::CONFERENCE_REQUEST) || $request['nonce'] !== Props::text($master, self::CONFERENCE_NONCE)) {
+                Props::set($master, self::CONFERENCE_REQUEST, $provider);
+                Props::set($master, self::CONFERENCE_NONCE, $request['nonce']);
             }
-        }
-        if (null !== $existing && $url === trim(Props::value($existing))) {
+
             return;
         }
-        if (null !== $existing) {
-            $event->remove($existing);
+        $nonce = bin2hex(random_bytes(4));
+        $object->setConferenceRequest([
+            'provider' => $provider,
+            'status' => 'pending',
+            'reason' => null,
+            'requestedAt' => $now->setTimezone(new \DateTimeZone('UTC'))->format(\DATE_ATOM),
+            'nonce' => $nonce,
+        ]);
+        Props::set($master, self::CONFERENCE_REQUEST, $provider);
+        Props::set($master, self::CONFERENCE_NONCE, $nonce);
+    }
+
+    private static function dropConferenceRequest(VEvent $master): void
+    {
+        $master->remove(self::CONFERENCE_REQUEST);
+        $master->remove(self::CONFERENCE_NONCE);
+    }
+
+    /**
+     * Makes $url the event's meeting link (null: no meeting link). The same link as the event has changes nothing but
+     * the join line's form. Another one replaces whatever made the old one: RFC 7986 CONFERENCE (also dial-in numbers),
+     * Google's and Microsoft's meeting properties and the join line; the new link is written as CONFERENCE and as the
+     * join line at the end of the description, which carries it through Google's and Microsoft's version.
+     *
+     * @throws EditRejected for a Teams meeting Microsoft made (Graph cannot take it off its event), or a link that is
+     *                      not of the form a meeting link must have
+     */
+    private static function writeConference(VEvent $event, #[\SensitiveParameter] ?string $url, Calendar $calendar): void
+    {
+        $description = self::rawText($event, 'DESCRIPTION');
+        if ($url === (ConferenceDetector::detect($event)['url'] ?? null)) {
+            // Kept: a join line the user edited or doubled is put right; an event without one is left as it is.
+            if (null !== $url && null !== MeetingJoinLine::find($description)) {
+                self::setText($event, 'DESCRIPTION', MeetingJoinLine::with($description, $url, ConferenceDetector::providerOf($url)));
+            }
+
+            return;
         }
+        if (CalendarSource::Microsoft === $calendar->getSource() && null !== Props::text($event, 'X-MICROSOFT-SKYPETEAMSMEETINGURL')) {
+            throw new EditRejected(self::TEAMS_STAYS);
+        }
+        if (null !== $url) {
+            $violation = MeetingLinkAddress::violation($url);
+            if (null !== $violation) {
+                throw new EditRejected($violation);
+            }
+        }
+        foreach (['CONFERENCE', 'X-GOOGLE-CONFERENCE', 'X-MICROSOFT-SKYPETEAMSMEETINGURL', 'X-MICROSOFT-ONLINEMEETINGCONFLINK'] as $name) {
+            $event->remove($name);
+        }
+        self::setText($event, 'DESCRIPTION', MeetingJoinLine::with($description, $url, null === $url ? 'other' : ConferenceDetector::providerOf($url)));
         if (null !== $url) {
             $event->add('CONFERENCE', $url, ['VALUE' => 'URI', 'FEATURE' => 'VIDEO']);
         }
+    }
+
+    /**
+     * Asks the calendar's provider for a meeting on the whole series, outside an editor save: Retry after a failure, or
+     * a link for a saved event. Changes nothing while the event has a meeting or the same request is still young.
+     */
+    public function requestMeeting(CalendarEvent $row, string $provider, bool $notify = true): CalendarEvent
+    {
+        $calendar = $row->getCalendar();
+        self::requireOrganizer($row);
+        self::requireWritable($calendar);
+        $object = $this->objects->lock($row->getObject());
+        $old = CalendarDocument::parse($object->getIcal());
+        $vcalendar = CalendarDocument::parse($object->getIcal());
+        $master = CalendarDocument::master($vcalendar) ?? throw new EditRejected('This event no longer exists.');
+        $requestBefore = $object->getConferenceRequest();
+
+        $this->requestConference($object, $vcalendar, $calendar, $provider);
+        if ($object->getConferenceRequest() === $requestBefore && $vcalendar->serialize() === $old->serialize()) {
+            return $this->masterRow($object, $row);
+        }
+        self::touch($master, false);
+        $rows = $this->store->save($object, $vcalendar, notify: $notify);
+        $this->schedule($calendar, $old, $vcalendar, $notify);
+
+        return $rows[''] ?? $row;
+    }
+
+    /**
+     * Takes the meeting link off the whole series, or drops a request for one that is pending or failed ("Leave
+     * without a link"). Removing nothing changes nothing.
+     *
+     * @throws EditRejected for a Teams meeting Microsoft made: Graph cannot take it off its event
+     */
+    public function removeMeeting(CalendarEvent $row, bool $notify = true): CalendarEvent
+    {
+        $calendar = $row->getCalendar();
+        self::requireOrganizer($row);
+        self::requireWritable($calendar);
+        $object = $this->objects->lock($row->getObject());
+        $old = CalendarDocument::parse($object->getIcal());
+        $vcalendar = CalendarDocument::parse($object->getIcal());
+        $master = CalendarDocument::master($vcalendar) ?? throw new EditRejected('This event no longer exists.');
+
+        // The series' link goes from every occurrence that shows it; an occurrence with a link of its own keeps that.
+        $url = ConferenceDetector::detect($master)['url'] ?? null;
+        foreach (CalendarDocument::events($vcalendar) as $event) {
+            if (null === $url || (ConferenceDetector::detect($event)['url'] ?? null) !== $url) {
+                continue;
+            }
+            $before = self::significantState($event);
+            self::writeConference($event, null, $calendar);
+            if (self::significantState($event) !== $before || $event === $master) {
+                self::touch($event, self::significantState($event) !== $before);
+            }
+        }
+        $hadRequest = null !== Props::get($master, self::CONFERENCE_REQUEST) || null !== Props::get($master, self::CONFERENCE_NONCE);
+        self::dropConferenceRequest($master);
+
+        if (null === $url && !$hadRequest) {
+            // Nothing in the event itself: only a request the worker reported on (failed) may be left to drop.
+            if (null !== $object->getConferenceRequest()) {
+                $this->store->setConferenceRequest($object, null);
+            }
+
+            return $this->masterRow($object, $row);
+        }
+        if (null === $url) {
+            self::touch($master, false);
+        }
+        $object->setConferenceRequest(null);
+        $rows = $this->store->save($object, $vcalendar, notify: $notify);
+        $this->schedule($calendar, $old, $vcalendar, $notify);
+
+        return $rows[''] ?? $row;
+    }
+
+    /** Invited events are the organizer's: their meeting link is not the user's to change. */
+    private static function requireOrganizer(CalendarEvent $row): void
+    {
+        if (null !== $row->getSelfPartstat()) {
+            throw new EditRejected(self::ORGANIZER_ONLY);
+        }
+    }
+
+    /** The master row of the resource, else the row the user acted on. */
+    private function masterRow(CalendarObject $object, CalendarEvent $row): CalendarEvent
+    {
+        return $this->events->findForObject($object)[''] ?? $row;
+    }
+
+    /** The text of a property as stored, untrimmed; '' when it is missing. */
+    private static function rawText(VEvent $event, string $name): string
+    {
+        $property = Props::get($event, $name);
+
+        return null === $property ? '' : Props::value($property);
     }
 
     /**
@@ -588,7 +761,7 @@ final readonly class EventEditor
      *
      * @return (\Closure(string): ?string)|null
      */
-    private function editAll(VCalendar $vcalendar, VEvent $master, EventChanges $changes, ?string $key, array $self): ?\Closure
+    private function editAll(VCalendar $vcalendar, Calendar $calendar, VEvent $master, EventChanges $changes, ?string $key, array $self): ?\Closure
     {
         $masterStart = EventReader::time(self::dtStart($master), $vcalendar);
         $anchor = null === $key ? $masterStart : $this->occurrenceStart($master, $key, $vcalendar);
@@ -648,7 +821,7 @@ final readonly class EventEditor
             $changes->summary, $changes->description, $changes->location, $changes->url, $newStart, $newEnd, $rule,
             $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
             $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
-        ), $vcalendar, true, $self);
+        ), $vcalendar, $calendar, true, $self);
 
         return $moved;
     }
@@ -748,13 +921,13 @@ final readonly class EventEditor
             $changes->summary, $changes->description, $changes->location, $changes->url, $start, $end, $rule,
             $changes->status, $changes->transparency, $changes->visibility, $changes->attendees, $changes->reminders, $changes->conferenceUrl,
             $changes->useDefaultReminders, $changes->travelMinutes, $changes->important,
-        ), $next, true, $self);
+        ), $next, $object->getCalendar(), true, $self);
         if (null !== $edited) {
             // The occurrence the user edited was changed before: its override replaces the new series' first
             // occurrence, so it takes the edit too, but only what the user changed. A client may send the series'
             // values for the fields left alone, which must not undo what made this occurrence its own.
             $sameLength = self::wallClockSeconds($changes->end) - self::wallClockSeconds($changes->start) === $masterLength;
-            $this->writeEdits($edited, $oldMaster, $changes, $next, $self, 0 === $shift && $sameLength);
+            $this->writeEdits($edited, $oldMaster, $changes, $next, $object->getCalendar(), $self, 0 === $shift && $sameLength);
             if (self::atItsOwnTime($edited) && self::sameAsSeries($edited, $newMaster)) {
                 // Nothing left that makes it its own: the new series' first occurrence, which a later change of the
                 // series must reach.
@@ -762,9 +935,10 @@ final readonly class EventEditor
             }
         }
         self::withOrganizer($next, $object->getCalendar(), $organizer);
-        self::requestConference($next, $object->getCalendar(), $changes->conferenceProvider);
+        $newObject = new CalendarObject($object->getCalendar(), $uid, '');
+        $this->requestConference($newObject, $next, $object->getCalendar(), $changes->conferenceProvider);
 
-        $rows = $this->store->save(new CalendarObject($object->getCalendar(), $uid, ''), $next, notify: $notify);
+        $rows = $this->store->save($newObject, $next, notify: $notify);
         $this->notes->put($notes, $rows);
         $this->schedule($object->getCalendar(), null, $next, $notify);
 
@@ -779,25 +953,26 @@ final readonly class EventEditor
         $moved = null;
         if (null !== $master) {
             if (null === $key) {
-                $this->write($master, $changes, $vcalendar, true, $self);
+                $this->write($master, $changes, $vcalendar, $object->getCalendar(), true, $self);
             } else {
-                $moved = $this->editAll($vcalendar, $master, $changes, $key, $self);
+                $moved = $this->editAll($vcalendar, $object->getCalendar(), $master, $changes, $key, $self);
             }
         } elseif (null !== $key) {
             // The occurrence the user opened takes the edit, as it would without the move.
-            $this->write($this->occurrence($vcalendar, null, $key), $changes, $vcalendar, false, $self);
+            $this->write($this->occurrence($vcalendar, null, $key), $changes, $vcalendar, $object->getCalendar(), false, $self);
         }
         if (null !== $this->objects->findOneByUid($target, $object->getUid())) {
             throw new EditRejected('The other calendar already has this event.');
         }
         self::refuseOrganizerChange($object->getCalendar(), $target, $vcalendar);
         self::withOrganizer($vcalendar, $target, $organizer);
-        self::requestConference($vcalendar, $target, $changes->conferenceProvider);
+        $movedObject = new CalendarObject($target, $object->getUid(), '');
+        $this->requestConference($movedObject, $vcalendar, $target, $changes->conferenceProvider);
         $source = $object->getCalendar();
         // Every note goes along to the new resource (removing the old one would delete them).
         $notes = $this->notes->lift($object, static fn (string $noteKey): string => '' === $noteKey ? '' : ((null === $moved ? null : $moved($noteKey)) ?? $noteKey));
         $this->store->remove($object, notify: $notify && $source->getMailAccount() !== $target->getMailAccount());
-        $rows = $this->store->save(new CalendarObject($target, $object->getUid(), ''), $vcalendar, notify: $notify);
+        $rows = $this->store->save($movedObject, $vcalendar, notify: $notify);
         $this->notes->put($notes, $rows);
         $this->schedule($source, $old, null, $notify && $source->getMailAccount() !== $target->getMailAccount());
         $this->schedule($target, $source->getMailAccount() === $target->getMailAccount() ? $old : null, $vcalendar, $notify);
