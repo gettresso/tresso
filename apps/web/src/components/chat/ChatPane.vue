@@ -33,7 +33,7 @@ import SenderAvatar from '@/components/SenderAvatar.vue'
 import ChatBubble, { type BubbleView } from '@/components/chat/ChatBubble.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatNotice from '@/components/chat/ChatNotice.vue'
-import { attachText, chatName, chatNoticeKind, clockTime, composerNote as sendNoteText, desktopReplyLabel, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, localBubbleMeta, mediaKindLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
+import { attachText, chatName, chatNoticeKind, clockTime, composerNote as sendNoteText, desktopReplyLabel, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, LEAVE_OUT_TWO_CHATS, localBubbleMeta, mediaKindLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
 import { errorName } from '@/components/chat/whatsappTexts'
 import { composing } from '@/components/chat/composition'
 
@@ -103,7 +103,25 @@ const attachLine = computed(() => {
   return state.state !== 'idle' && state.chatId === props.chatId ? attachText(state) : null
 })
 /** What was typed here before and not sent; the composer starts with it. */
-const draft = chats.draftOf(props.chatId)
+const draft = ref(chats.draftOf(props.chatId))
+/** Raised to start the composer anew (with `draft`), once a reply whose outcome was not known turned out queued. */
+const composerKey = ref(0)
+
+// A reply whose outcome was not known came in through the delta: it was queued, so the error goes and, when the field
+// still held that text, the field is emptied, so pressing Send again cannot make a second reply.
+watch(
+  () => chats.unsureArrived,
+  (arrived) => {
+    if (arrived === null || arrived.chatId !== props.chatId) {
+      return
+    }
+    sendError.value = null
+    if (chats.draftOf(props.chatId) === '') {
+      draft.value = ''
+      composerKey.value++
+    }
+  },
+)
 
 function onDraft(text: string): void {
   chats.setDraft(props.chatId, text)
@@ -695,7 +713,7 @@ onBeforeUnmount(() => {
 
       <div v-if="confirmingLeave" class="confirm" role="alertdialog" aria-labelledby="chat-leave-title" aria-describedby="chat-leave-body" @keydown.esc.prevent="cancelLeave">
         <p id="chat-leave-title"><strong>{{ LEAVE_OUT_TITLE }}</strong></p>
-        <p id="chat-leave-body">{{ LEAVE_OUT_BODY }}</p>
+        <p id="chat-leave-body">{{ LEAVE_OUT_BODY }} {{ LEAVE_OUT_TWO_CHATS }}</p>
         <div class="confirm-actions">
           <button type="button" class="button button-danger" :disabled="busy" @click="leaveOut">Leave out</button>
           <button ref="leaveCancel" type="button" class="button button-quiet" :disabled="busy" @click="cancelLeave">Cancel</button>
@@ -728,6 +746,7 @@ onBeforeUnmount(() => {
       </div>
 
       <ChatComposer
+        :key="composerKey"
         :send="send"
         :label="`Reply to ${name}`"
         :disabled="!chats.canReply"

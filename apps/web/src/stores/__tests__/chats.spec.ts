@@ -447,6 +447,46 @@ describe('the chats store', () => {
       expect([...server.outgoing.values()]).toHaveLength(2)
     })
 
+    function loseFirstAnswer(): void {
+      const original = server.queueReply.bind(server)
+      let lose = true
+      server.queueReply = async (chatId, request) => {
+        const row = await original(chatId, request)
+        if (lose) {
+          lose = false
+          throw new ChatApiError(502, 'Bad gateway')
+        }
+        return row
+      }
+    }
+
+    it('takes an unsure reply the delta brought as sent: the draft that held it goes, so Send cannot make a second', async () => {
+      loseFirstAnswer()
+      const chats = await ready()
+      chats.setDraft(SERVER_CHAT, 'On my way')
+      await expect(chats.send(SERVER_CHAT, 'On my way')).rejects.toThrow('it may already be queued')
+      expect(chats.draftOf(SERVER_CHAT)).toBe('On my way')
+
+      // The pull after the send brings the row.
+      await server.deliver(store)
+      await chats.refresh()
+      expect(chats.draftOf(SERVER_CHAT)).toBe('')
+      expect(chats.unsureArrived).toMatchObject({ chatId: SERVER_CHAT })
+      expect(server.outgoing.size).toBe(1)
+    })
+
+    it('reuses the id of an unsure reply also after the server id window, so a stored one comes back once', async () => {
+      loseFirstAnswer()
+      const chats = await ready()
+      await expect(chats.send(SERVER_CHAT, 'On my way')).rejects.toThrow('it may already be queued')
+      // Offline for 11 minutes; back online, Send is pressed before the pull lands.
+      vi.setSystemTime(NOW + 11 * 60_000)
+      await chats.send(SERVER_CHAT, 'On my way')
+      const ids = server.callsOf('queueReply').map((args) => (args[1] as { id: string }).id)
+      expect(ids[1]).toBe(ids[0])
+      expect(server.outgoing.size).toBe(1)
+    })
+
     it('marks a chat read, noted and archived on the server, and lists chats left out on any device', async () => {
       const chats = await ready()
       const chat = chats.summaries[0]!.chat

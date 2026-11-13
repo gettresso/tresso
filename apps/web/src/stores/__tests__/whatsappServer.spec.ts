@@ -17,8 +17,8 @@ const ACCOUNT = '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4aa0'
 
 describe('what the desktop keeps for "All my devices"', () => {
   it('reads a switch mark, and nothing it cannot read', () => {
-    expect(readModeSwitch(JSON.stringify({ to: 'all', accountId: null }))).toEqual({ to: 'all', accountId: null })
-    expect(readModeSwitch(JSON.stringify({ to: 'all', accountId: ACCOUNT }))).toEqual({ to: 'all', accountId: ACCOUNT })
+    expect(readModeSwitch(JSON.stringify({ to: 'all', accountId: null }))).toEqual({ to: 'all', accountId: null, copy: false })
+    expect(readModeSwitch(JSON.stringify({ to: 'all', accountId: ACCOUNT, copy: true }))).toEqual({ to: 'all', accountId: ACCOUNT, copy: true })
     expect(readModeSwitch(JSON.stringify({ to: 'local', accountId: ACCOUNT, removed: true, cleared: true }))).toEqual({ to: 'local', accountId: ACCOUNT, removed: true, cleared: true })
     // Cleared only counts once removed.
     expect(readModeSwitch(JSON.stringify({ to: 'local', accountId: ACCOUNT, removed: false, cleared: true }))).toEqual({ to: 'local', accountId: ACCOUNT, removed: false, cleared: false })

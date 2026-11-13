@@ -3,6 +3,7 @@ import { reactive, shallowReactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import {
   ChatApiError,
+  SessionEndedDuringRequestError,
   LOCAL_CHAT_ACCOUNT,
   LOCAL_CURSOR,
   SqliteMailStore,
@@ -73,7 +74,7 @@ const mail = shallowReactive({
 })
 vi.mock('@/stores/mail', () => ({ useMailStore: () => mail }))
 
-const { useWhatsAppRelayStore, HEARTBEAT_MS, OTHER_NUMBER, RELAY_ONLY, REMOVED_ELSEWHERE, SERVER_RETRY_MS: SERVER_RETRY, UNKNOWN_NUMBER } = await import('../whatsappRelay')
+const { useWhatsAppRelayStore, ACCOUNT_GONE, COPY_FIRST, HEARTBEAT_MS, OTHER_NUMBER, RELAY_ONLY, REMOVED_ELSEWHERE, SERVER_RETRY_MS: SERVER_RETRY, UNKNOWN_NUMBER } = await import('../whatsappRelay')
 
 /** A Storage in memory (the test environment's own may be missing). */
 function memoryStorage(): Storage {
@@ -201,7 +202,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(saved).toMatchObject({ mode: 'all', deviceId: request.deviceId, importSince: new Date(NOW - 30 * DAY).toISOString() })
     // The same device id for every relay call; the history goes as a first import.
     expect(batches()[0]).toMatchObject({ deviceId: request.deviceId, firstImport: true })
-    expect(statuses()[0]).toEqual({ deviceId: request.deviceId, bridge: 'running', link: 'linked', linkedAt: new Date(NOW).toISOString(), loopbackOnly: true })
+    expect(statuses()[0]).toEqual({ deviceId: request.deviceId, bridge: 'running', link: 'linked', linkedAt: new Date(NOW).toISOString(), loopbackOnly: true, address: NUMBER })
     expect(wa.relaysHere).toBe(true)
     expect(wa.relayRunning).toBe(true)
     expect(await store.chatMeta(MODE_SWITCH)).toBeNull()
@@ -259,22 +260,25 @@ describe('the WhatsApp relay store in "All my devices"', () => {
 
     shell.emit(LINKED)
     await pass()
-    expect(statuses()).toHaveLength(2)
+    // On the change of the bridge, and again once the linked number is known (the server checks it).
+    const linked = statuses().length
+    expect(linked).toBeGreaterThanOrEqual(2)
     expect(statuses()[1]).toMatchObject({ bridge: 'running', link: 'linked', deviceId: DEVICE })
+    expect(statuses()[linked - 1]).toMatchObject({ link: 'linked', address: NUMBER })
     expect(wa.relayRunning).toBe(true)
 
     await pass(HEARTBEAT_MS - 1_000)
-    expect(statuses()).toHaveLength(2)
+    expect(statuses()).toHaveLength(linked)
     await pass(1_000)
-    expect(statuses()).toHaveLength(3)
+    expect(statuses()).toHaveLength(linked + 1)
 
     shell.emit({ ...RUNNING, link: 'unlinked' })
     await pass()
-    expect(statuses()).toHaveLength(4)
-    expect(statuses()[3]).toMatchObject({ bridge: 'running', link: 'unlinked' })
+    expect(statuses()).toHaveLength(linked + 2)
+    expect(statuses()[linked + 1]).toMatchObject({ bridge: 'running', link: 'unlinked' })
     expect(wa.relayRunning).toBe(false)
     await pass(HEARTBEAT_MS)
-    expect(statuses()).toHaveLength(5)
+    expect(statuses()).toHaveLength(linked + 3)
   })
 
   it('switches from "Only this Mac": the waiting replies go to the server queue with new ids, the local rows only after the account', async () => {
@@ -293,7 +297,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     const switching = wa.switchMode('all', { copy: true })
     await pass()
     // While the server has not answered, the local rows and their reply stay.
-    expect(await store.chatMeta(MODE_SWITCH)).toBe(JSON.stringify({ to: 'all', accountId: null }))
+    expect(await store.chatMeta(MODE_SWITCH)).toBe(JSON.stringify({ to: 'all', accountId: null, copy: true }))
     expect((await store.chat(localChatId(DIRECT)))?.outgoing).toHaveLength(1)
     answer()
     expect(await switching).toBe(true)
@@ -364,7 +368,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
 
     it('marking it (the config still "Only this Mac")', async () => {
       await localRowsWithReply()
-      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: null }))
+      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: null, copy: true }))
 
       const wa = await signedIn()
       await pass()
@@ -377,7 +381,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
 
     it('the account and the config, before the local rows went', async () => {
       await localRowsWithReply()
-      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: ACCOUNT_ID }))
+      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: ACCOUNT_ID, copy: true }))
       shell.configs.set('u1', connectedConfig())
 
       const wa = await signedIn()
@@ -388,7 +392,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     })
 
     it('the local rows went: the replies noted then stay', async () => {
-      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: ACCOUNT_ID }))
+      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: ACCOUNT_ID, copy: true }))
       await store.setChatMeta(CARRIED_REPLIES, JSON.stringify([{ jid: DIRECT, text: 'On my way', id: null }]))
 
       const wa = await signedIn(connectedConfig())
@@ -398,7 +402,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     })
 
     it('marking a connect whose config was never saved: it is forgotten', async () => {
-      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: null }))
+      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: null, copy: true }))
 
       const wa = await signedIn()
       await pass()
@@ -741,7 +745,9 @@ describe('the WhatsApp relay store in "All my devices"', () => {
       await pass(3_000)
       expect(sentJids()).toContain('31622222222@s.whatsapp.net')
       expect(sentJids()).not.toContain(DIRECT)
-      expect(wa.config?.leftOut).toEqual([DIRECT])
+      // Handed to the server as a left-out chat; the config's entry went once that row was in the copy.
+      expect(server.chats.get(DIRECT)).toMatchObject({ leftOut: true, name: null })
+      expect(wa.config?.leftOut).toEqual([])
     })
 
     it('never uploads groups when this Mac left them out, and makes the server leave them out before the first batch', async () => {
@@ -998,7 +1004,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
       await wa.dispose()
       setActivePinia(createPinia())
       auth.me = null
-      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: null }))
+      await store.setChatMeta(MODE_SWITCH, JSON.stringify({ to: 'all', accountId: null, copy: true }))
       server.fail('connect', new ChatApiError(503, 'Unavailable'), true)
       const again = await signedIn()
       await pass()
@@ -1017,7 +1023,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
       const wa = await relayedHere()
       let answer!: () => void
       server.held.set('removeAccount', new Promise<void>((resolve) => (answer = resolve)))
-      server.fail('removeAccount', new TypeError('Failed to fetch'))
+      server.fail('removeAccount', new SessionEndedDuringRequestError())
       const switching = wa.switchMode('local')
       await pass()
       // Signed out while the DELETE runs: the copy (and its marks) go with the sign-out.
@@ -1061,5 +1067,184 @@ describe('the WhatsApp relay store in "All my devices"', () => {
       expect(wa.modeSwitch).toBeNull()
       expect(wa.config?.mode).toBe('local')
     })
+  })
+
+  describe('what the re-audit found', () => {
+    async function localWith(extra: Partial<WhatsAppConfig>) {
+      const wa = await signedIn(connectedConfig({ mode: 'local', ...extra }))
+      shell.emit(LINKED)
+      await pass(3_000)
+      shell.emit({ ...RUNNING, link: 'unlinked' })
+      await pass()
+      return wa
+    }
+
+    function sentJids(): string[] {
+      return batches().flatMap((batch) => batch.messages.map((message) => message.chatJid))
+    }
+
+    async function restart(config: WhatsAppConfig | null) {
+      await useWhatsAppRelayStore().dispose()
+      setActivePinia(createPinia())
+      auth.me = null
+      if (config === null) {
+        shell.configs.delete('u1')
+      }
+      const wa = await signedIn(config)
+      await mail.syncNow()
+      await pass()
+      return wa
+    }
+
+    it('never carries out later a removal that failed: switch to Only this Mac, the DELETE fails, restart', async () => {
+      const wa = await relayedHere()
+      for (const failure of [new ChatApiError(500, 'Broken'), new ChatApiError(429, 'Slow', null, 60_000), new TypeError('Failed to fetch')]) {
+        server.fail('removeAccount', failure)
+        expect(await wa.switchMode('local')).toBe(false)
+      }
+      server.fail('removeAccount', new ChatApiError(503, 'Unavailable'))
+      expect(await wa.disconnect()).toBe(false)
+      expect(localStorage.getItem('tresso.whatsapp.pendingRemoval.u1')).toBeNull()
+      const calls = server.callsOf('removeAccount').length
+
+      const again = await restart(connectedConfig())
+      expect(server.callsOf('removeAccount')).toHaveLength(calls)
+      expect(server.account).not.toBeNull()
+      expect(again.connected).toBe(true)
+      expect(again.config?.mode).toBe('all')
+    })
+
+    it('keeps a chat left out before the switch out on a second Mac that takes over with a fresh config', async () => {
+      shell.add('A1', DIRECT, 10)
+      shell.add('B1', '31622222222@s.whatsapp.net', 9)
+      const wa = await localWith({ leftOut: [DIRECT] })
+      expect(await wa.switchMode('all', { copy: true })).toBe(true)
+      shell.emit(LINKED)
+      await pass(3_000)
+      await mail.syncNow()
+      await pass()
+      expect(server.chats.get(DIRECT)).toMatchObject({ leftOut: true })
+
+      // Another Mac (its own copy, a fresh config without the left-out list) takes the relay over.
+      const second = await SqliteMailStore.open(await memorySql())
+      mail.store = second
+      await server.deliver(second)
+      const otherConfig = connectedConfig({ deviceId: '7a1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f' })
+      const other = await restart(otherConfig)
+      shell.emit(LINKED)
+      await pass()
+      expect(await other.useThisMac()).toBe(true)
+      shell.add('A2', DIRECT, 1)
+      await pass(3_000)
+      expect(sentJids()).not.toContain(DIRECT)
+      expect(sentJids()).toContain('31622222222@s.whatsapp.net')
+    })
+
+    it('keeps it out on the same Mac after a sign-out and a new connect', async () => {
+      shell.add('A1', DIRECT, 10)
+      const wa = await localWith({ leftOut: [DIRECT] })
+      expect(await wa.switchMode('all', { copy: true })).toBe(true)
+      shell.emit(LINKED)
+      await pass(3_000)
+      await mail.syncNow()
+      await pass()
+      expect(server.chats.get(DIRECT)).toMatchObject({ leftOut: true })
+
+      // Signed out (config and copy go), signed in again: the server's rows come back with the delta.
+      for (const handler of auth.handlers) {
+        handler('signedOut')
+      }
+      mail.store = await SqliteMailStore.open(await memorySql())
+      const again = await restart(null)
+      await again.chooseFolder()
+      again.riskAccepted = true
+      await again.start()
+      shell.emit(LINKED)
+      await pass()
+      expect(await again.connect('all')).toBe(true)
+      shell.add('A2', DIRECT, 1)
+      await pass(3_000)
+      const after = batches().slice(-3)
+      expect(after.flatMap((batch) => batch.messages.map((message) => message.chatJid))).not.toContain(DIRECT)
+    })
+
+    it('keeps groups out across a takeover: the account says so for every Mac', async () => {
+      shell.add('G1', GROUP, 9)
+      shell.add('A1', DIRECT, 10)
+      const wa = await localWith({ includeGroups: false })
+      expect(await wa.switchMode('all', { copy: true })).toBe(true)
+      shell.emit(LINKED)
+      await pass(3_000)
+      expect(server.account?.includeGroups).toBe(false)
+      const second = await SqliteMailStore.open(await memorySql())
+      mail.store = second
+      await server.deliver(second)
+      const other = await restart(connectedConfig({ deviceId: '7a1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f', includeGroups: true }))
+      shell.emit(LINKED)
+      await pass()
+      expect(await other.useThisMac()).toBe(true)
+      shell.add('G2', GROUP, 1)
+      await pass(3_000)
+      expect(sentJids()).not.toContain(GROUP)
+      expect(other.config?.includeGroups).toBe(false)
+    })
+
+    it('asks for the yes to copying when the account the takeover relied on went meanwhile, and removes the one made', async () => {
+      await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: NUMBER, displayName: null, includeGroups: true, notify: false })
+      await server.deliver(store)
+      const wa = await signedIn(connectedConfig())
+      await mail.syncNow()
+      shell.emit(LINKED)
+      await pass()
+      // Removed on another device; this copy has not pulled that yet.
+      server.delivering = false
+      server.removeElsewhere()
+      expect(await wa.useThisMac()).toBe(false)
+      expect(wa.error).toBe(ACCOUNT_GONE)
+      expect(server.callsOf('removeAccount')).toHaveLength(1)
+      expect(server.account).toBeNull()
+    })
+
+    it('refuses Use this Mac instead without the yes to copying when no account is in the copy', async () => {
+      const wa = await signedIn(connectedConfig())
+      await mail.syncNow()
+      shell.emit(LINKED)
+      await pass()
+      expect(await wa.useThisMac()).toBe(false)
+      expect(wa.error).toBe(COPY_FIRST)
+      expect(server.callsOf('connect')).toEqual([])
+    })
+
+    it('stops when the server says the bridge is linked to another number than the account', async () => {
+      const wa = await relayedHere()
+      shell.add('A1', DIRECT, 10)
+      shell.emit(LINKED)
+      await pass(3_000)
+      expect(wa.relayRunning).toBe(true)
+      expect(statuses()[statuses().length - 1]?.address).toBe(NUMBER)
+      // The account learned another number (a relay that took over not knowing its own).
+      server.account = { ...server.account!, address: '31600000000' }
+      await pass(HEARTBEAT_MS)
+      expect(wa.relayRunning).toBe(false)
+      expect(wa.error).toBe(OTHER_NUMBER)
+      const beats = statuses().length
+      await pass(HEARTBEAT_MS * 2)
+      expect(statuses()).toHaveLength(beats)
+    })
+
+    it('says when a switch would remove the group chats, and keeps them on when the user chose so', async () => {
+      await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: NUMBER, displayName: null, includeGroups: true, notify: false })
+      await server.deliver(store)
+      shell.add('G1', GROUP, 9)
+      const wa = await localWith({ includeGroups: false })
+      expect(wa.groupsWouldGo).toBe(true)
+      expect(await wa.switchMode('all', { copy: true, keepGroups: true })).toBe(true)
+      shell.emit(LINKED)
+      await pass(3_000)
+      expect(server.account?.includeGroups).toBe(true)
+      expect(server.callsOf('updateAccount')).toEqual([])
+      expect(sentJids()).toContain(GROUP)
+    })
+
   })
 })

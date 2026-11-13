@@ -25,6 +25,8 @@ import {
   serverClaimKey,
   serverCursorKey,
   ServerChatBackend,
+  ChatRelayOtherNumber,
+  SessionEndedDuringRequestError,
   setLocalChatAccount,
   setLocalChatState,
   uuidV7,
@@ -100,6 +102,8 @@ export type WhatsAppTask = 'folder' | 'start' | 'connect' | 'disconnect' | 'grou
 export interface RelayConsent {
   copy?: boolean
   number?: boolean
+  /** Keep group chats on rather than have them removed from the server (this Mac leaves groups out). */
+  keepGroups?: boolean
 }
 
 /** Where the chats live: "Only this Mac" or "All my devices". */
@@ -107,6 +111,12 @@ export type WhatsAppMode = WhatsAppConfig['mode']
 
 /** Errors of a request to the server that carry no status (the network, a deadline, a session that ended meanwhile). */
 const SERVER_FAILURES: ReadonlySet<string> = new Set(['AbortError', 'TimeoutError', 'SessionEndedDuringRequestError', 'SignInRenewalError', 'UnreadableAnswer'])
+
+/** Said when "All my devices" is asked for without the yes to copying the chats. */
+export const COPY_FIRST = 'Confirm that your WhatsApp chats may be copied to your Tresso server first.'
+/** Said when the account a takeover relied on went from the server meanwhile. */
+export const ACCOUNT_GONE =
+  'WhatsApp was removed from your Tresso server meanwhile, so nothing was copied. Choose All my devices again to copy your chats there.'
 
 /** Said when a step that reads the bridge's store again is asked of a Mac that does not relay. */
 export const RELAY_ONLY = 'Do this on the Mac that relays WhatsApp: only it reads its bridge again.'
@@ -302,6 +312,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   const refusedFor = shallowRef<{ accountId: string; relayDeviceId: string } | null>(null)
   /** The pull count after which the copy has caught up with the delta that brought the account (see caughtUp). */
   const seenAtPull = ref<number | null>(null)
+  /** The number the server refused this Mac's bridge for (another than the account's); null when none was refused. */
+  const numberRefused = ref<string | null>(null)
   /** The pull count when this copy was first seen in this session: a pull after it is one that worked for this copy. */
   const storePulls = ref<number | null>(null)
   let pulledStore: MailStore | null = null
@@ -434,10 +446,19 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         (id) => void userChanged(id),
         { immediate: true },
       )
-      watch([config, bridge, () => mail.synced, () => mail.currentStore(), serverAccount, modeSwitch, takingOver, refusedFor, seenAtPull, storePulls, adopted, identity, () => mail.pulls], () => {
+      watch([config, bridge, () => mail.synced, () => mail.currentStore(), serverAccount, modeSwitch, takingOver, refusedFor, numberRefused, seenAtPull, storePulls, adopted, identity, () => mail.pulls], () => {
         ensureRelay()
         ensureHeartbeat()
       })
+      // The number the bridge is linked to goes with the next heartbeat at once, so the server can check it.
+      watch(
+        () => identity.value?.number ?? null,
+        (number) => {
+          if (number !== null && heartbeat !== null) {
+            void beat()
+          }
+        },
+      )
       // The server's account and the switch marks come with the copy and its pages of the delta.
       watch([() => mail.currentStore(), () => mail.chatChanges, () => mail.pulls, () => mail.synced, configLoaded, () => config.value?.mode], () => void refreshServerState(), { immediate: true })
     })
@@ -686,7 +707,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       refusedNow(account) ||
       !caughtUp() ||
       adopted.value !== adoptionKey(account.id, current.deviceId) ||
-      otherNumber(account, identity.value)
+      otherNumber(account, identity.value) ||
+      (numberRefused.value !== null && numberRefused.value === (identity.value?.number ?? ''))
     ) {
       return null
     }
@@ -802,18 +824,18 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         return
       }
       try {
-        made = fenced(
-          new ServerChatBackend({
-            api,
-            store,
-            accountId: account.id,
-            deviceId: current.deviceId,
-            importSince: Date.parse(current.importSince),
-            onProblem: (kind) => serverProblem(mine, kind),
-          }),
+        const serverBackend = new ServerChatBackend({
+          api,
           store,
-          account.id,
-        )
+          accountId: account.id,
+          deviceId: current.deviceId,
+          importSince: Date.parse(current.importSince),
+          onProblem: (kind) => serverProblem(mine, kind),
+        })
+        made = fenced(serverBackend, store, account.id)
+        // Chats left out here that the server does not know yet go to it as left-out chats, so every device leaves them
+        // out; until their rows are in the copy, the fence keeps them here. A failure is tried again at the next start.
+        void handOverLeftOut(serverBackend, store, account.id)
       } catch (cause) {
         // A device id or import date the server would refuse in every call: nothing to relay with.
         logRelayError(cause, 'prepare')
@@ -1073,8 +1095,66 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     relayStore = null
     relayAccountId = null
     relayRunning.value = false
-    if (accountId !== null && reason instanceof ChatRelayStopped) {
+    if (accountId !== null && reason instanceof ChatRelayOtherNumber) {
+      refuseNumber()
+    } else if (accountId !== null && reason instanceof ChatRelayStopped) {
       refuse(accountId)
+    }
+  }
+
+  /**
+   * The server says the bridge here is linked to another number than the account's (409 `other_number` on a status or a
+   * batch): relay and heartbeat stay off for this number, and Settings says why. Linking another number lifts it.
+   */
+  function refuseNumber(): void {
+    numberRefused.value = identity.value?.number ?? ''
+    error.value = OTHER_NUMBER
+    void stopRelay()
+    stopHeartbeat()
+  }
+
+  /** The number the bridge is linked to as the server takes it (5 to 20 digits); null when not known. */
+  function knownNumber(who: WhatsAppIdentity | null): string | null {
+    return who !== null && /^[0-9]{5,20}$/.test(who.number) ? who.number : null
+  }
+
+  /**
+   * Hands the chats left out in the config that the server has no row for to the server as left-out chats, and lets go
+   * of a config entry once its left-out row is in the copy (then the server's row keeps it out on every device; until
+   * then the fence does, so there is never a moment where neither does).
+   */
+  async function handOverLeftOut(made: ServerChatBackend, store: MailStore, accountId: string): Promise<void> {
+    const missing: string[] = []
+    for (const jid of config.value?.leftOut ?? []) {
+      if ((await store.chatByJid(accountId, jid)) === null) {
+        missing.push(jid)
+      }
+    }
+    if (missing.length === 0) {
+      return
+    }
+    try {
+      await made.handOverLeftOut(missing)
+      void mail.syncNow()
+    } catch (cause) {
+      console.error('Handing the chats left out to the server failed; trying again at the next start', errorName(cause))
+    }
+  }
+
+  /** The config's left-out entries whose left-out row the copy holds now: the server keeps them out, the entry goes. */
+  async function releaseHandedOver(store: MailStore, id: string, accountId: string): Promise<void> {
+    const current = config.value
+    if (current === null || current.leftOut.length === 0) {
+      return
+    }
+    const held: string[] = []
+    for (const jid of current.leftOut) {
+      if ((await store.chatByJid(accountId, jid))?.leftOut === true) {
+        held.push(jid)
+      }
+    }
+    if (held.length > 0) {
+      await updateConfig(id, (latest) => ({ ...latest, leftOut: latest.leftOut.filter((jid) => !held.includes(jid)) }))
     }
   }
 
@@ -1206,6 +1286,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     await checkAccount(store, id, current)
     if (config.value?.mode === 'all') {
       await adoptSettings(store, id)
+      const account = serverAccount.value
+      if (account !== null && caughtUp()) {
+        await releaseHandedOver(store, id, account.id)
+      }
       await carryReplies(store)
       await markHistory(store)
     }
@@ -1328,8 +1412,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       await holding(async () => {
         await stopRelay()
         if (switching.to === 'all') {
-          // The user confirmed the switch (and the number) before its mark was written.
-          await stepsToAll(store, id, true)
+          // The user confirmed the number before the mark was written, and the mark keeps whether copying was confirmed.
+          await stepsToAll(store, id, true, switching.copy)
         } else {
           await stepsToLocal(store, id, switching)
         }
@@ -1352,7 +1436,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
    * must be saved already (a connect) or be the local one (a switch). Throws when the server cannot be asked; a step
    * done before stays done and the mark says so.
    */
-  async function stepsToAll(store: MailStore, id: string, numberConfirmed: boolean): Promise<void> {
+  async function stepsToAll(store: MailStore, id: string, numberConfirmed: boolean, copyConfirmed: boolean): Promise<void> {
     const current = config.value
     if (current === null) {
       return
@@ -1360,8 +1444,13 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     // Who the bridge is linked to, against the account the copy holds (if any), before anything changes.
     const who = await linkedIdentity(current.folder)
     checkNumber(serverAccount.value, who, numberConfirmed)
+    // Without the yes to copying, only the account the copy holds now may be relayed (see putAccount).
+    const expected = serverAccount.value?.id ?? null
+    if (!copyConfirmed && expected === null) {
+      throw new WhatsAppProblem(COPY_FIRST)
+    }
     if (modeSwitch.value?.to !== 'all') {
-      await writeSwitch(store, { to: 'all', accountId: null })
+      await writeSwitch(store, { to: 'all', accountId: null, copy: copyConfirmed })
     }
     if ((await store.chatAccounts()).some((account) => account.id === LOCAL_CHAT_ACCOUNT)) {
       // The local rows are there: the replies waiting in them are what goes over, whole (a repeat notes the same), and
@@ -1376,18 +1465,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
     takingOver.value = true
     try {
-      const account = await server(() =>
-        api.connect({
-          deviceId: current.deviceId,
-          deviceName: plainName(current.deviceName) ?? FALLBACK_DEVICE,
-          address: who?.number && /^[0-9]{5,20}$/.test(who.number) ? who.number : null,
-          displayName: plainName(who?.name),
-          includeGroups: current.includeGroups,
-          notify: current.notify,
-        }),
-      )
+      const account = await putAccount(current, who, expected, copyConfirmed)
       refusedFor.value = null
-      await writeSwitch(store, { to: 'all', accountId: account.id })
+      await writeSwitch(store, { to: 'all', accountId: account.id, copy: copyConfirmed })
       await store.setChatMeta(SERVER_ACCOUNT, account.id)
       // This Mac's settings and the account's are brought together before the relay starts (adoptSettings).
       await store.setChatMeta(SERVER_ADOPTED, null)
@@ -1408,6 +1488,33 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     } finally {
       takingOver.value = false
     }
+  }
+
+  /**
+   * PUT chat-accounts/whatsapp with this device. Without the yes to copying, the user agreed to relay the account the
+   * copy held (`expected`): when the server answers with another one (that account was removed meanwhile and the PUT made
+   * a new, empty one), the new one is removed again and the user is asked to choose "All my devices" with Copy.
+   */
+  async function putAccount(current: WhatsAppConfig, who: WhatsAppIdentity | null, expected: string | null, copyConfirmed: boolean): Promise<SyncedChatAccount> {
+    const account = await server(() =>
+      api.connect({
+        deviceId: current.deviceId,
+        deviceName: plainName(current.deviceName) ?? FALLBACK_DEVICE,
+        address: knownNumber(who),
+        displayName: plainName(who?.name),
+        includeGroups: current.includeGroups,
+        notify: current.notify,
+      }),
+    )
+    if (!copyConfirmed && account.id !== expected) {
+      try {
+        await removeAccountOnServer(account.id)
+      } catch (cause) {
+        console.error('Removing an account made without the yes to copying failed', errorName(cause))
+      }
+      throw new WhatsAppProblem(ACCOUNT_GONE)
+    }
+    return account
   }
 
   /** Who the bridge in `folder` is linked to; null when it cannot tell. */
@@ -1484,12 +1591,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         await updateConfig(id, (latest) => ({ ...latest, leftOut: [...new Set([...latest.leftOut, ...left])] }))
       }
       await settleClaim(store, step.accountId, current.deviceId)
-      // Kept outside the copy too: a sign-out during the removal deletes the copy, and the next sign-in finishes it.
-      notePendingRemoval(id, step.accountId)
-      await removeAccountOnServer(step.accountId)
+      await removeConfirmed(id, step.accountId)
       step = { ...step, removed: true }
       await writeSwitch(store, step)
-      notePendingRemoval(id, null)
     }
     if (!step.cleared) {
       if (config.value?.mode !== 'local') {
@@ -1525,10 +1629,31 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     try {
       await api.removeAccount(accountId)
     } catch (cause) {
+      if (cause instanceof SessionEndedDuringRequestError) {
+        throw cause
+      }
       if (chatApiFailure(cause)?.status !== 404) {
         throw chatActionError(cause, 'change')
       }
     }
+  }
+
+  /**
+   * The removal the user confirmed (Remove, Disconnect). Noted outside the copy while the request runs, so a sign-out
+   * during it (which deletes the copy and ends the request) is finished at the next sign-in of the same user. Any other
+   * failure is said and nothing more happens: the note goes, so a removal that failed is never done later unasked.
+   */
+  async function removeConfirmed(id: string, accountId: string): Promise<void> {
+    notePendingRemoval(id, accountId)
+    try {
+      await removeAccountOnServer(accountId)
+    } catch (cause) {
+      if (!(cause instanceof SessionEndedDuringRequestError) && userId.value === id) {
+        notePendingRemoval(id, null)
+      }
+      throw cause
+    }
+    notePendingRemoval(id, null)
   }
 
   /**
@@ -1723,12 +1848,18 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /**
+   * Taking the relay over would remove the account's group chats from the server for every device: this Mac leaves
+   * groups out, the account does not, and the stricter setting wins (adoptSettings). The confirmation says so.
+   */
+  const groupsWouldGo = computed(() => config.value !== null && config.value.includeGroups === false && serverAccount.value?.includeGroups === true)
+
+  /**
    * "All my devices" copies the chats to the server: refused without the user's yes to that (the Copy question), unless
    * the server holds the chats already (an account in the copy: this Mac takes the relay over).
    */
   function requireCopyConsent(consent: RelayConsent): void {
     if (consent.copy !== true && serverAccount.value === null) {
-      throw new WhatsAppProblem('Confirm that your WhatsApp chats may be copied to your Tresso server first.')
+      throw new WhatsAppProblem(COPY_FIRST)
     }
   }
 
@@ -1872,12 +2003,17 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         link: serverLink(state),
         linkedAt: config.value?.linkedAt ?? null,
         loopbackOnly: state.loopbackOnly,
+        address: knownNumber(identity.value),
       })
     } catch (cause) {
       console.error('Telling the server the WhatsApp relay is here failed', errorName(cause))
       if (cause instanceof ChatRelayStopped && heartbeat === current) {
         stopHeartbeat()
-        refuse(current.accountId)
+        if (cause instanceof ChatRelayOtherNumber) {
+          refuseNumber()
+        } else {
+          refuse(current.accountId)
+        }
       }
     }
   }
@@ -2005,7 +2141,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
           await removeLocalChats(store)
         }
         if (where === 'all' && store !== null) {
-          await writeSwitch(store, { to: 'all', accountId: null })
+          await writeSwitch(store, { to: 'all', accountId: null, copy: consent.copy === true })
         }
         const now = Date.now()
         const next: WhatsAppConfig = {
@@ -2023,7 +2159,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         await saveConfig(id, next)
         if (where === 'all' && store !== null) {
           try {
-            await stepsToAll(store, id, consent.number === true)
+            await stepsToAll(store, id, consent.number === true, consent.copy === true)
           } catch (cause) {
             if (modeSwitch.value?.to === 'all' && modeSwitch.value.accountId === null) {
               // The server took nothing: the connection is undone, so the dialog can be tried again as it was.
@@ -2055,12 +2191,15 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       }
       if (to === 'all') {
         requireCopyConsent(consent)
+        if (consent.keepGroups === true && !current.includeGroups) {
+          await updateConfig(id, (latest) => ({ ...latest, includeGroups: true }))
+        }
       }
       await holding(async () => {
         await stopRelay()
         if (to === 'all') {
           try {
-            await stepsToAll(store, id, consent.number === true)
+            await stepsToAll(store, id, consent.number === true, consent.copy === true)
           } catch (cause) {
             if (modeSwitch.value?.to === 'all' && modeSwitch.value.accountId === null) {
               // The server took nothing: still "Only this Mac", its waiting replies where they were.
@@ -2114,22 +2253,19 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       if (!linked.value) {
         throw new WhatsAppProblem('Link WhatsApp on this Mac to your phone first: only a linked bridge can relay.')
       }
+      requireCopyConsent(consent)
       const who = await linkedIdentity(current.folder)
       checkNumber(serverAccount.value, who, consent.number === true)
+      const expected = serverAccount.value?.id ?? null
+      if (consent.keepGroups === true && !current.includeGroups) {
+        // The user chose to keep group chats rather than have them removed from the server for every device.
+        await updateConfig(userId.value ?? '', (latest) => ({ ...latest, includeGroups: true }))
+      }
       await holding(async () => {
         await stopRelay()
         takingOver.value = true
         try {
-          const account = await server(() =>
-            api.connect({
-              deviceId: current.deviceId,
-              deviceName: plainName(current.deviceName) ?? FALLBACK_DEVICE,
-              address: who?.number && /^[0-9]{5,20}$/.test(who.number) ? who.number : null,
-              displayName: plainName(who?.name),
-              includeGroups: current.includeGroups,
-              notify: current.notify,
-            }),
-          )
+          const account = await putAccount(current, who, expected, consent.copy === true)
           refusedFor.value = null
           await store.setChatMeta(SERVER_ACCOUNT, account.id)
           await store.setChatMeta(serverCursorKey(account.id), null)
@@ -2191,10 +2327,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         if (accountId !== null) {
           stopHeartbeat()
           await settleClaim(store, accountId, current.deviceId)
-          // Kept outside the copy as well: a sign-out during the removal deletes the copy, the next sign-in finishes it.
-          notePendingRemoval(id, accountId)
-          await removeAccountOnServer(accountId)
-          notePendingRemoval(id, null)
+          await removeConfirmed(id, accountId)
           await removeServerState(store, accountId)
         }
         onBridge(await commands.stop())
@@ -2525,6 +2658,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     useThisMac,
     stayLocal,
     adopted,
+    groupsWouldGo,
     notCarried,
     switchFailing,
     askNumber,

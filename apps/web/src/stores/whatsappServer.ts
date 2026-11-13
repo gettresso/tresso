@@ -23,12 +23,13 @@ export function serverHistoryKey(accountId: string): string {
 /**
  * A switch between the modes, kept from its first step until its last, so a crash or a sign-out at any point leaves a
  * state the next start takes up (whatsappRelay `resumeSwitch`).
- * - `to: 'all'`: the account is made (or this Mac takes it over) with this device; `accountId` once the server answered.
+ * - `to: 'all'`: the account is made (or this Mac takes it over) with this device; `accountId` once the server answered,
+ *   `copy` when the user said yes to copying the chats (else only an account the copy held may be relayed).
  * - `to: 'local'`: the account `accountId` is removed from the server; `removed` once the server confirmed it, `cleared`
  *   once the config says `local` and what this Mac kept for the account went, after which the switch only waits for the
  *   copy to apply the removal before the relay reads the bridge's store anew.
  */
-export type ModeSwitch = { to: 'all'; accountId: string | null } | { to: 'local'; accountId: string; removed: boolean; cleared: boolean }
+export type ModeSwitch = { to: 'all'; accountId: string | null; copy: boolean } | { to: 'local'; accountId: string; removed: boolean; cleared: boolean }
 
 /** A reply that waited on this Mac at the switch to "All my devices"; `id` once one was made for the server's queue. */
 export interface CarriedReply {
@@ -87,7 +88,8 @@ export function readModeSwitch(value: string | null): ModeSwitch | null {
   }
   const accountId = typeof raw.accountId === 'string' && ID.test(raw.accountId) ? raw.accountId : null
   if (raw.to === 'all') {
-    return { to: 'all', accountId }
+    // `copy`: the user said yes to copying; without it, only the account the copy held may be relayed.
+    return { to: 'all', accountId, copy: (raw as { copy?: unknown }).copy === true }
   }
   if (raw.to === 'local' && accountId !== null) {
     const removed = raw.removed === true
