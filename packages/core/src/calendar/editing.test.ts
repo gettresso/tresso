@@ -87,6 +87,32 @@ describe('editor values', () => {
     expect(durationMinutes('P')).toBeNull()
   })
 
+  it('keeps asking for a meeting link that is being made or failed, so a save does not drop it', () => {
+    const at = '2026-11-13T09:00:00+00:00'
+    const pending = calendarEvent('p', 'cal', { conferenceRequest: { provider: 'meet', status: 'pending', reason: null, requestedAt: at } })
+    expect(inputFromEvent(pending)).toMatchObject({ conferenceUrl: null, conferenceProvider: 'meet' })
+    const failed = calendarEvent('f', 'cal', { conferenceRequest: { provider: 'teams', status: 'failed', reason: 'refused', requestedAt: at } })
+    expect(inputFromEvent(failed)).toMatchObject({ conferenceUrl: null, conferenceProvider: 'teams' })
+    const zoom = calendarEvent('z', 'cal', { conferenceRequest: { provider: 'zoom', status: 'pending', reason: null, requestedAt: at } })
+    expect(inputFromEvent(zoom)).toMatchObject({ conferenceUrl: null, conferenceProvider: null })
+    const made = calendarEvent('m', 'cal', {
+      conference: { provider: 'meet', url: 'https://meet.google.com/abc-defg-hij', id: null, dialIn: null },
+      conferenceRequest: { provider: 'meet', status: 'pending', reason: null, requestedAt: at },
+    })
+    expect(inputFromEvent(made)).toMatchObject({ conferenceUrl: 'https://meet.google.com/abc-defg-hij', conferenceProvider: null })
+    expect(inputFromEvent(calendarEvent('none', 'cal'))).toMatchObject({ conferenceUrl: null, conferenceProvider: null })
+    const old = calendarEvent('old', 'cal')
+    delete old.conferenceRequest
+    expect(inputFromEvent(old).conferenceProvider).toBeNull()
+    // Through an occurrence and a scope save as well.
+    const [occurrence] = expandOccurrences([pending], Date.UTC(2026, 9, 1), Date.UTC(2026, 10, 1), AMS)
+    const before = inputFromOccurrence(occurrence!, AMS)
+    expect(saveRequest(inputForScope(occurrence!, before, { ...before, summary: 'Renamed' }, 'all'), { occurrence: occurrence!, scope: 'all' }, true).body).toMatchObject({
+      summary: 'Renamed',
+      conferenceProvider: 'meet',
+    })
+  })
+
   it('keeps the length when the start moves', () => {
     expect(withLength({ dateTime: '2026-10-20T14:00:00', timeZone: AMS }, series.start, series.end)).toEqual({ dateTime: '2026-10-20T15:00:00', timeZone: AMS })
     expect(withLength({ date: '2026-10-22' }, { date: '2026-10-20' }, { date: '2026-10-23' })).toEqual({ date: '2026-10-25' })

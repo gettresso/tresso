@@ -49,7 +49,7 @@ export interface EventInput {
   conferenceUrl: string | null
   /**
    * Ask the calendar's provider to make this meeting with the save (with `conferenceUrl` null). Null with
-   * `conferenceUrl` null removes the meeting link.
+   * `conferenceUrl` null removes the meeting link, and drops a link that was asked for and is not made yet.
    */
   conferenceProvider?: ConferenceProvider | null
   organizerMailAccountId: string | null
@@ -203,9 +203,22 @@ export function inputFromEvent(event: SyncedCalendarEvent): EventInput {
     important: event.important,
     travelMinutes: event.travelMinutes,
     conferenceUrl: event.conference?.url ?? null,
-    conferenceProvider: null,
+    conferenceProvider: requestedProvider(event),
     organizerMailAccountId: null,
   }
+}
+
+/**
+ * The meeting a save keeps asking for: a link asked for and not made yet, pending or failed (the user wanted a link,
+ * and asking again is idempotent), so an edit while it is made does not drop it. Not Zoom: the first version does not
+ * ask for it this way.
+ */
+function requestedProvider(event: SyncedCalendarEvent): ConferenceProvider | null {
+  const request = event.conferenceRequest ?? null
+  if (event.conference !== null || request === null) {
+    return null
+  }
+  return request.provider === 'meet' || request.provider === 'teams' ? request.provider : null
 }
 
 /**
