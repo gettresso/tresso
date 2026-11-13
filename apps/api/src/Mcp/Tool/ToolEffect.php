@@ -8,7 +8,7 @@ use Mcp\Schema\ToolAnnotations;
 
 /**
  * What a tool does to the user's data, for the MCP tool annotations a client uses to decide what to confirm first.
- * Every tool acts on Tresso only, never on the open world.
+ * Every tool acts on Tresso only, except {@see self::Send}, which reaches other people.
  */
 enum ToolEffect
 {
@@ -20,6 +20,8 @@ enum ToolEffect
     case Update;
     /** Deletes or switches something off for good. */
     case Delete;
+    /** Sends something to other people in the user's name; calling it twice sends twice. */
+    case Send;
 
     public function annotations(string $title): ToolAnnotations
     {
@@ -28,6 +30,7 @@ enum ToolEffect
             self::Create => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false),
             self::Update => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false),
             self::Delete => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false),
+            self::Send => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true),
         };
     }
 }

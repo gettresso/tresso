@@ -117,15 +117,16 @@ final class McpEndpointTest extends DatabaseTestCase
             }
             $schema = self::asArray($tool['inputSchema'] ?? null);
             $annotations = self::asArray($tool['annotations'] ?? null);
-            self::assertMatchesRegularExpression('/^(get|list|create|update|delete|set|add|remove)_[a-z_]+$/', $name);
+            self::assertMatchesRegularExpression('/^(get|list|search|create|update|delete|set|add|remove|send)_[a-z_]+$/', $name);
             self::assertNotEmpty($tool['description'] ?? null, $name);
             self::assertSame('object', $schema['type'] ?? null, $name);
             self::assertFalse($schema['additionalProperties'] ?? true, $name.' refuses fields it does not name.');
             self::assertIsBool($annotations['readOnlyHint'] ?? null, $name);
             self::assertIsBool($annotations['destructiveHint'] ?? null, $name);
             self::assertIsBool($annotations['idempotentHint'] ?? null, $name);
-            self::assertSame(str_starts_with($name, 'get_') || str_starts_with($name, 'list_'), $annotations['readOnlyHint'], $name);
+            self::assertSame(str_starts_with($name, 'get_') || str_starts_with($name, 'list_') || str_starts_with($name, 'search_'), $annotations['readOnlyHint'], $name);
             self::assertSame(str_starts_with($name, 'delete_'), $annotations['destructiveHint'], $name);
+            self::assertSame(str_starts_with($name, 'send_'), $annotations['openWorldHint'] ?? null, $name.': only sending reaches other people.');
         }
     }
 
@@ -180,6 +181,11 @@ final class McpEndpointTest extends DatabaseTestCase
         $text = self::asString($contents[0]['text'] ?? null);
         self::assertStringContainsString('## signatures:write (Change signatures)', $text);
         self::assertStringContainsString('set_default_signature', $text);
+        self::assertStringContainsString("## chat:read (Read your WhatsApp chats)\n", $text);
+        self::assertStringContainsString('Tools: get_whatsapp_chat, get_whatsapp_status, list_whatsapp_chats, search_whatsapp_messages.', $text);
+        self::assertStringContainsString("## chat:send (Send WhatsApp messages as you)\n", $text);
+        self::assertStringContainsString('Tools: send_whatsapp_message.', $text);
+        self::assertStringContainsString('WhatsApp, separate from mail: an app gets it only when it names it when it registers', $text);
     }
 
     public function testWhatOnlyOurOwnAppsMayDoIsRefusedToTheSubRequestsOfATool(): void
