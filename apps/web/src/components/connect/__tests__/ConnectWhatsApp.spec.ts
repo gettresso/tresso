@@ -5,7 +5,7 @@ import { bridgeQr } from '@tresso/core'
 import { QR_SIZE_25, QR_SIZE_57 } from '@tresso/core/testing/qr'
 import type { BridgeState } from '@/platform/whatsapp'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
-import { BRIDGE_PROBLEMS, BUILD_COMMAND, RISK_CONFIRM, RISK_TEXT } from '@/components/chat/whatsappTexts'
+import { BRIDGE_PROBLEMS, BUILD_COMMAND, COPY_BODY, COPY_TITLE, PLACE_ALL_NOTE, PLACE_LOCAL_NOTE, RISK_CONFIRM, RISK_TEXT } from '@/components/chat/whatsappTexts'
 import ConnectWhatsApp from '../ConnectWhatsApp.vue'
 
 const STOPPED: BridgeState = { process: 'stopped', port: null, loopbackOnly: null, link: 'unknown', qr: null, error: null }
@@ -40,7 +40,7 @@ describe('ConnectWhatsApp', () => {
     return mount(ConnectWhatsApp, { attachTo: document.body })
   }
 
-  it('starts with every check open, the risk to confirm, and only "Only this Mac" to choose', () => {
+  it('starts with every check open, the risk to confirm, and "Only this Mac" chosen', () => {
     const wrapper = open()
 
     expect(wrapper.get('h1').text()).toBe('Connect WhatsApp')
@@ -60,9 +60,11 @@ describe('ConnectWhatsApp', () => {
     const radios = wrapper.findAll<HTMLInputElement>('input[type="radio"]')
     expect(radios.map((radio) => [radio.element.value, radio.element.checked, radio.element.disabled])).toEqual([
       ['local', true, false],
-      ['all', false, true],
+      ['all', false, false],
     ])
-    expect(wrapper.get('.places').text()).toContain('Coming in a later version.')
+    expect(wrapper.get('.places').text()).toContain(PLACE_LOCAL_NOTE)
+    expect(wrapper.get('.places').text()).toContain(PLACE_ALL_NOTE)
+    expect(wrapper.text()).not.toContain('later version')
     expect(wrapper.get('.install').attributes('href')).toBe('https://github.com/gettresso/whatsapp-mcp')
     expect(primary(wrapper).text()).toBe('Connect WhatsAppEnter')
     expect(primary(wrapper).attributes('disabled')).toBeDefined()
@@ -244,6 +246,49 @@ describe('ConnectWhatsApp', () => {
     expect(wrapper.emitted('close')).toBeUndefined()
     await wrapper.get('dialog').trigger('keydown', { key: 'Enter' })
     expect(wrapper.emitted('done')).toHaveLength(2)
+  })
+
+  it('asks before "All my devices" copies the chats to the server, and connects there only after Copy', async () => {
+    const connect = vi.spyOn(wa, 'connect').mockResolvedValue(true)
+    wa.folder = '/Users/kim/whatsapp-mcp'
+    wa.inspection = GOOD
+    wa.riskAccepted = true
+    wa.bridgeStarted = true
+    wa.bridge = { ...RUNNING, link: 'linked' }
+    const wrapper = open()
+    const radio = (value: string) => wrapper.get<HTMLInputElement>(`input[type="radio"][value="${value}"]`)
+
+    await radio('all').setValue(true)
+    await flushPromises()
+    const ask = wrapper.get('[role="alertdialog"]')
+    expect(ask.attributes('aria-labelledby')).toBe('wa-copy-title')
+    expect(ask.text()).toContain(COPY_TITLE)
+    expect(ask.text()).toContain(COPY_BODY)
+    expect(COPY_TITLE).toBe('Copy your WhatsApp chats to your Tresso server? Web and mobile will show them.')
+    // Connect waits for the answer.
+    expect(primary(wrapper).attributes('disabled')).toBeDefined()
+
+    await ask.findAll('button')[1]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+    expect(radio('local').element.checked).toBe(true)
+    expect(primary(wrapper).attributes('disabled')).toBeUndefined()
+
+    await radio('all').setValue(true)
+    await flushPromises()
+    await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
+    await flushPromises()
+    expect(radio('all').element.checked).toBe(true)
+    await primary(wrapper).trigger('click')
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(connect).toHaveBeenLastCalledWith('all')
+  })
+
+  it('opens on "All my devices" without asking when it came to take the relay over', async () => {
+    const wrapper = mount(ConnectWhatsApp, { attachTo: document.body, props: { mode: 'all' } })
+    await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('input[type="radio"][value="all"]').element.checked).toBe(true)
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
   })
 
   it('shows a failure as an alert and closes with Close or Escape', async () => {

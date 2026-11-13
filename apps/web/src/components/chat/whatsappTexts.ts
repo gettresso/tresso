@@ -1,4 +1,4 @@
-import { phoneLabel } from '@tresso/core'
+import { nameText, phoneLabel } from '@tresso/core'
 import type { BridgeFailure, BridgeInspection, BridgeState, WhatsAppIdentity } from '@/platform/whatsapp'
 
 /**
@@ -246,4 +246,60 @@ export function errorName(error: unknown): string {
     return error in SHELL_ERRORS || /^[a-z_]{1,32}$/.test(error) ? error : 'ShellError'
   }
   return error instanceof Error ? error.name : 'UnknownError'
+}
+
+// ---- Where the chats live ("Only this Mac" or "All my devices") ------------------------------------------------------
+
+/** The two places, as the connect dialog offers them; "Only this Mac" first and preselected (owner decision D3). */
+export const PLACE_LOCAL_NOTE = 'Chats never leave this computer. Web and mobile do not show WhatsApp.'
+export const PLACE_ALL_NOTE = 'This Mac passes your chats to your Tresso server, so web and mobile show them too. Replies from other devices are sent once this Mac is online.'
+/** Settings' note under "Where messages live" (the SettingsWhatsApp board). */
+export const MODE_NOTE = 'All my devices: this Mac copies chats to your Tresso server so web and mobile show them. Only this Mac: chats never leave this computer.'
+
+/** The confirmation of the switch to "All my devices" (buttons Copy, Cancel). */
+export const COPY_TITLE = 'Copy your WhatsApp chats to your Tresso server? Web and mobile will show them.'
+export const COPY_BODY =
+  'This Mac copies the WhatsApp chats Tresso brings in to your Tresso server, where they are stored sealed with your account, and sends the replies you write on any device. Choosing Only this Mac again, or disconnecting WhatsApp, removes them from the server and from your other devices.'
+/** The confirmation of the switch to "Only this Mac" (buttons Remove, Cancel). */
+export const REMOVE_TITLE = 'Remove your WhatsApp chats from your Tresso server? Web and mobile will stop showing them.'
+export const REMOVE_BODY =
+  'Tresso deletes your WhatsApp chats from your Tresso server and from your other devices, with the replies still waiting there, and brings the chats in again on this Mac from the bridge. WhatsApp and the bridge keep everything.'
+
+/** What a switch under way says (the copy keeps it until it is done, also through a restart). */
+export function switchText(to: 'all' | 'local', removed: boolean): string {
+  if (to === 'all') {
+    return 'Moving your WhatsApp chats to your Tresso server.'
+  }
+  return removed ? 'Your WhatsApp chats were removed from your Tresso server. They come in again on this Mac once its mail has caught up.' : 'Removing your WhatsApp chats from your Tresso server.'
+}
+
+/** A device name as another device named itself; `your Mac` when nothing of it can be shown. */
+export function deviceLabel(name: string | null): string {
+  return nameText(name) || 'your Mac'
+}
+
+/** The "Relaying Mac" row when another Mac relays: `Kim's MacBook Pro, online now`, or when it was last heard from. */
+export function otherRelayText(relay: { name: string; online: boolean; offlineSince: string | null }, now: number): string {
+  const name = deviceLabel(relay.name)
+  if (relay.online) {
+    return `${name}, online now`
+  }
+  return relay.offlineSince === null ? `${name}, offline` : `${name}, offline, last heard from ${relativeTime(relay.offlineSince, now)}`
+}
+
+/** Messages the server would not take and the relay passed over ("All my devices"); null when none. */
+export function serverRefusedText(count: number): string | null {
+  return count === 0 ? null : `${count.toLocaleString('en')} ${count === 1 ? 'message' : 'messages'} could not be copied to your Tresso server; ${count === 1 ? 'it stays' : 'they stay'} in the bridge on this Mac only.`
+}
+
+/** Replies that waited here at the switch: still to go to the server's queue, and those that could not. */
+export function carriedText(waiting: number, lost: number): string | null {
+  const parts: string[] = []
+  if (waiting > 0) {
+    parts.push(`${waiting.toLocaleString('en')} ${waiting === 1 ? 'reply' : 'replies'} written on this Mac before the switch ${waiting === 1 ? 'goes' : 'go'} to your Tresso server once ${waiting === 1 ? 'its chat is' : 'their chats are'} there.`)
+  }
+  if (lost > 0) {
+    parts.push(`${lost.toLocaleString('en')} ${lost === 1 ? 'reply' : 'replies'} written on this Mac before the switch could not be carried over, because ${lost === 1 ? 'its chat' : 'their chats'} did not come in or ${lost === 1 ? 'was' : 'were'} left out. Write ${lost === 1 ? 'it' : 'them'} again if needed.`)
+  }
+  return parts.length === 0 ? null : parts.join(' ')
 }
