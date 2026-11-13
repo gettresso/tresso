@@ -83,9 +83,9 @@ Built next to phase 1, each step its own pull request. See "3.13 Calendar" in th
     the meeting preferences (default app per account, the own link, a link when guests are invited), Settings, Meeting
     apps and the "Meeting link" row of the editor on web and desktop, Join and Copy link in the popover, the lists and
     on the phone, and the app named in reminders.
-  - Still to do, each waiting on the server's owner (OPERATIONS.md, "Meeting links"): Zoom (a Marketplace app and
-    `ZOOM_OAUTH_CLIENT_ID` and `ZOOM_OAUTH_CLIENT_SECRET`), and Teams links for events on calendars that are not
-    Microsoft 365 (`OnlineMeetings.ReadWrite` on the Entra app). "Leave without a link" on the phone.
+  - Still to do, each waiting on the server's owner (OPERATIONS.md, "Meeting links"): Zoom (a Marketplace app, and
+    the planned settings `ZOOM_OAUTH_CLIENT_ID` and `ZOOM_OAUTH_CLIENT_SECRET`), and Teams links for events on
+    calendars that are not Microsoft 365 (`OnlineMeetings.ReadWrite` on the Entra app, planned). "Leave without a link" on the phone.
 - [x] C6 Calendar assistant interfaces with the deterministic meeting time finder: the
   `EventDraftInterpreter`, `MeetingTimeFinder`, `EventExtractor` and `MeetingBriefWriter` interfaces with their
   capabilities; meeting times from the user's calendars within their working hours, focus blocks, buffer, travel time
