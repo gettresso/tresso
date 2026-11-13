@@ -1685,8 +1685,11 @@ come with the delta into the same copy. Chats of the Unified Inbox (core's `inIn
 time of their last message (`mergeInbox`), with a WhatsApp badge and the unread dot. A chat is read in windows of 50
 messages (`MailStore.chatPage`): the newest first, older ones as the list reaches its top, and the window again from
 its first message when the copy changes. Bubbles follow core's `timeline` (a reply the bridge stored too shows once),
-with day rows, group senders in their colour, and files as their kind and size only: the phone downloads nothing and
-says to open the file on the Mac. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
+with day rows, group senders in their colour, and files by their kind and size and where they stand (3.17, Files):
+Download asks the relaying Mac for the file, Open hands a fresh signed link to the system (which downloads it and never
+runs it), a file that could not be checked for malware opens only after a warning (`Open anyway`), and Try again asks
+again after a failure that may pass. Attach a file picks one file, uploads it as the raw body of a PUT and queues a reply
+that carries it (an unsure try goes again under the same upload and reply ids; over 100 MB is refused first). A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
 made by the server's clock (`Session.serverNow`, so a phone whose clock is off is not refused); it shows as waiting at
 once (held in memory, not in the copy, so a closed app leaves no reply the server never got), the server's answer is
 stored, and a refusal takes it back and puts the text back in the box. A request without an answer, a 408 or a 5xx may
@@ -2153,9 +2156,14 @@ for Mac connects WhatsApp. With it:
   drafts and guards. Taking a chat back in stays on the relaying Mac, which alone reads its bridge again.
 - A notice above the chat and above the WhatsApp list when the relaying Mac is offline (`Your Mac is offline since
   08:40.`, from `relayOfflineSince`), its link went or its bridge stopped, from the chat account's row; the composer
-  says `Sent on WhatsApp by <Mac>. No signature, no subject.`; Attach is shown disabled (`Files are sent from the
-  relaying Mac for now.`), and a file row shows its kind, name and size with `Open this file on the relaying Mac.` and
-  nothing to download, until files go through the server.
+  says `Sent on WhatsApp by <Mac>. No signature, no subject.`. A file row shows its kind, name and size and where the
+  file stands (3.17, Files): `Download` asks the relaying Mac for it (nothing else does), then `Waiting for your Mac.`
+  while that Mac is offline, `Checking for malware.`, `Open` (a fresh signed link in a new tab, opened in the click so
+  the browser does not block it), `Download anyway` after a warning for a file that could not be checked, or why it did
+  not come with `Try again` where it may pass. Attach reads the file in the page (an `<input type="file">`), uploads it
+  and queues a reply that carries it; an unsure try goes again under the same upload and reply ids. Asking and attaching
+  wait while writes are held (`chats.writesHeld`). A desktop that does not relay works the same way; the relaying Mac
+  downloads its own files from its bridge and sends files attached on it through the server's queue too.
 - Settings, WhatsApp (`SettingsWhatsAppBrowserView.vue`) shows the account read only: the relaying Mac and whether it is
   online, the bridge and the link as it last reported them, which chats come in, and the chats left out (with why they
   are taken back in on the Mac). Notify me, a setting the server keeps, is the one setting (`PATCH` of the account).
@@ -3448,7 +3456,7 @@ master keys (DATA_KEYS, environment)
 #### Objects
 
 - **Names.** Every object is stored under its owner: `<kind>/<owner user id>/<fp[0:2]>/<fp>`, with kind one of
-  `raw`, `attachments`, `uploads`, `outgoing`, `drafts` and `quarantine`. `fp`, the content fingerprint, is
+  `raw`, `attachments`, `uploads`, `outgoing`, `drafts`, `chatmedia` (WhatsApp files, 3.17) and `quarantine`. `fp`, the content fingerprint, is
   `hex(HMAC-SHA256(user index key, SHA-256(content)))`. The same file stored twice by one user is still stored once,
   but the same file at two users gets unrelated names and unrelated ciphertexts, so object storage (or a database dump)
   cannot show that two users have the same file. Attachment rows keep the fingerprint where they kept the SHA-256.
@@ -3764,6 +3772,35 @@ chat's JID and WhatsApp id, so it never needs either readable.
   run of seven digits once separators are removed (the bridge names an unsaved contact by its number, and a group
   without a subject `Group <id>`), path `/chats/{id}`. The text, a sender and a number never leave in a push. A failed
   delivery is not tried again by a sweep (a chat push is stale within minutes).
+- **Files.** A file stays on the relaying Mac until the user asks for it on another device; nothing downloads without
+  that. `POST /api/v1/chat-messages/{id}/media/request` (`CHAT_MANAGE`, so our own apps only) moves a message's file from
+  `remote` (or `failed`) to `requested`. The relay takes the oldest request of its account
+  (`relay/media/claim`: message id, JID, WhatsApp id, kind, the store's size and the server's limit; handed out again
+  after 15 minutes without an answer), lets its shell download the file and check it against the SHA-256 the bridge's
+  store holds, and uploads it (`PUT relay/media/{messageId}`, the file as the raw body, the device in `X-Device-Id`, the
+  SHA-256 in `X-Content-SHA256`, both required; a body that does not match is 422), or says why not
+  (`relay/media/{messageId}/failed`: `not_found`, `mismatch`, `unverified` when the store holds no hash, `too_large`,
+  `unavailable`). A file is at most `CHAT_MAX_FILE_BYTES` (100 MB; 413 `too_large`, checked from the length before
+  the body is read, and while it is read). It is stored as `chatmedia` under the owner and its content fingerprint, sealed
+  with the owner's key, written before the relay's lock is taken and under a lock on its key, and scanned like a mail
+  attachment (`ScanTarget::Chat`; the verdict, quarantine and the sweep of pending scans cover it). The delta's message
+  carries `mediaState`, `mediaError` and, once stored, `mediaAccess` (`allowed`, `scanning`, `confirm`, `blocked`).
+  `GET /api/v1/chat-messages/{id}/media` (`CHAT_READ`) says where it stands and gives a signed link valid for an hour
+  once it is clean (`/content/chat-media/{id}`, served as attachments are: a download under the last part of WhatsApp's
+  name, never sniffed, sandboxed); `POST .../media/unscanned-link` gives one for a file that could not be scanned, to our
+  own apps after the user confirmed, never on a server that requires scans. A file for a reply is uploaded first,
+  `PUT /api/v1/chats/{chatId}/uploads/{id}` under an id the client makes (`CHAT_SEND` and our own apps; the same content
+  again is 200, other content 409 `id_taken`; at most 20 waiting per chat), then queued with
+  `"file": {"uploadId", "name"}` (the text may then be empty; the name loses any folder and is sealed as
+  `tresso:chat-outgoing-file-name:<id>`); a caller that is not one of our apps cannot attach (403). The claim gives the
+  relay the file's name, size and a signed link valid only while the reply is being sent (`/content/chat-files/{id}`); the
+  relay stages the file with its shell and sends it, and a file it cannot fetch fails the reply as `file_unavailable`
+  without sending anything. The delta's reply carries `file` (`name`, `size`). Files go when nothing needs them
+  (`App\Chat\ChatMediaCollector`, after the commit, only once no message, reply or upload refers to the object): a
+  reply's once it went out (its name and size stay) or is cancelled, an upload nobody queued after an hour
+  (`SweepChatMedia`, every ten minutes), and every file of a chat left out, of group chats taken off the server and of a
+  removed account; a removed user's objects go with the user. Key rotation writes the files again (`chatMedia` step of
+  `Reencryption`).
 - **Delta.** Every write is a change in `chatAccounts`, `chats`, `chatMessages` and `chatOutgoing`; removals (a
   cancelled reply, the messages and replies of a chat left out) are tombstones. A relay batch gets a change number per
   megabyte of text, and a chat message counts as one row of a delta page per 4 KB of its sealed text, so a page of long
