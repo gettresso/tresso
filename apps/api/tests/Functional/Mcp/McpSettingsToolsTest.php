@@ -258,6 +258,42 @@ final class McpSettingsToolsTest extends DatabaseTestCase
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM calendar WHERE id = :value', ['value' => $calendar]));
     }
 
+    public function testMeetingPreferencesChangeOnlyWhatIsGiven(): void
+    {
+        $account = $this->createAccount('kim@company.example');
+        $before = $this->call('get_meeting_preferences');
+        self::assertArrayHasKey('ownLink', $before);
+        self::assertNull($before['ownLink']);
+        self::assertSame(['meet', 'teams', 'own'], $before['apps'] ?? null);
+
+        $this->call('update_meeting_preferences', ['ownLink' => 'https://meet.company.example/kim', 'defaults' => [$account => 'own'], 'defaultOther' => 'none']);
+        $this->call('update_meeting_preferences', ['addWithGuests' => false]);
+
+        $preferences = $this->call('get_meeting_preferences');
+        self::assertSame('https://meet.company.example/kim', $preferences['ownLink'] ?? null, 'The link left out stays.');
+        self::assertSame([$account => 'own'], $preferences['defaults'] ?? null);
+        self::assertSame('none', $preferences['defaultOther'] ?? null);
+        self::assertFalse($preferences['addWithGuests'] ?? null);
+        self::assertSame(['https://meet.company.example/kim', false], array_values((array) $this->connection()->fetchAssociative('SELECT own_link, add_with_guests FROM meeting_preferences WHERE user_id = ?', [$this->kim->getId()->toRfc4122()])));
+
+        $error = $this->mcpCallError($this->headers, $this->session, 'update_meeting_preferences', ['ownLink' => 'http://secret-room.example/kim']);
+        self::assertStringContainsString('ownLink: Use a link that starts with https://.', $error);
+        self::assertStringNotContainsString('secret-room', $error, 'A refused link is not repeated.');
+        $error = $this->mcpCallError($this->headers, $this->session, 'update_meeting_preferences', ['disabled' => [['app' => 'teams', 'mailAccountId' => $account]]]);
+        self::assertStringContainsString('disabled: Microsoft Teams can only be switched off for a Microsoft account.', $error);
+        self::assertSame('https://meet.company.example/kim', $this->call('get_meeting_preferences')['ownLink'] ?? null);
+    }
+
+    public function testMeetingPreferencesNeedTheSettingsScopes(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);
+        $session = $this->mcpInitialize($headers);
+
+        self::assertSame(['meet', 'teams', 'own'], $this->mcpCallOk($headers, $session, 'get_meeting_preferences')['apps'] ?? null);
+        self::assertStringContainsString('settings:write', $this->mcpCallError($headers, $session, 'update_meeting_preferences', ['ownLink' => 'https://meet.company.example/kim']));
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM meeting_preferences'));
+    }
+
     public function testAnotherUsersSettingsAreOutOfReach(): void
     {
         $account = $this->createAccount('kim@company.example');
