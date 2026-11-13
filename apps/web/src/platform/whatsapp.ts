@@ -88,6 +88,11 @@ export interface SenderName {
 
 export type SendResult = { ok: true; message: 'sent' } | { ok: false; message: 'bridge_stopped' | 'not_linked' | 'refused' | 'unconfirmed' }
 
+export interface ChosenFile {
+  path: string
+  size: number
+}
+
 export interface DownloadedFile {
   path: string
   /** Its SHA-256 matches the store's; false only when the store holds no hash. */
@@ -129,13 +134,13 @@ export function whatsAppShell(shell: WhatsAppShell = tauriShell) {
     /** At most 500 rows after `afterRowid`; rejects with `busy` while the bridge writes (skip the round). */
     read: (folder: string, afterRowid: number, limit: number) => shell.invoke<BridgeRows>('whatsapp_read', { folder, afterRowid, limit }),
     names: (folder: string, ids: string[]) => shell.invoke<Record<string, SenderName>>('whatsapp_names', { folder, ids }),
-    /** `mediaPath` must be a file `chooseFile` returned, of at most 2 GB; a larger one rejects with `too_large`. */
+    /** `mediaPath` must be a file `chooseFile` returned, of at most 100 MB for now; a larger one rejects with `too_large`. */
     send: (recipient: string, text: string, mediaPath: string | null = null) => shell.invoke<SendResult>('whatsapp_send', { recipient, text, mediaPath }),
     download: (folder: string, messageId: string, chatJid: string) => shell.invoke<DownloadedFile>('whatsapp_download', { folder, messageId, chatJid }),
     /** Opens a file `download` returned with its default app. */
     openFile: (path: string) => shell.invoke<void>('whatsapp_open_file', { path }),
-    /** The file dialog for Attach; null when cancelled. */
-    chooseFile: () => shell.invoke<string | null>('whatsapp_choose_file'),
+    /** The file dialog for Attach: the file's path and size in bytes; null when cancelled. */
+    chooseFile: () => shell.invoke<ChosenFile | null>('whatsapp_choose_file'),
     /** Calls `handle` with the bridge's state on every change; returns the function that stops listening. */
     onState: (handle: (state: BridgeState) => void) => shell.listen(WHATSAPP_EVENT, ({ payload }) => handle(payload as BridgeState)),
   }

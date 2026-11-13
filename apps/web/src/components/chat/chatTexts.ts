@@ -134,7 +134,7 @@ export function attachText(state: AttachState): string | null {
       return `${state.name} was sent.`
     case 'failed':
       if (state.error === 'too_large') {
-        return `${state.name} was not sent. It is larger than 2 GB, the most Tresso sends.`
+        return `${state.name} was not sent. It is larger than 100 MB, the most Tresso sends for now.`
       }
       return state.error === 'unconfirmed' ? `${state.name}: ${replyErrorText('unconfirmed')}` : `${state.name || 'The file'} was not sent. ${replyErrorText(state.error)}`
     default:

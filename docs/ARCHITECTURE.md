@@ -1881,9 +1881,14 @@ Notify me on: one per chat per read, the chat's name and the start of its newest
 history being read in, never for the chat open in a focused window; a click opens `/chats/<id>`. Replies on this Mac say
 `waiting for the bridge` and `Not sent, click to retry` (core's labels keep the board's words for other devices). What
 was typed into a chat is kept per chat in memory until it is sent, the chat goes or the session ends. A file the
-desktop sent matches the bridge's later copy of it (a history sync stores the own message with no text, a made-up name
-and the kind the bridge sent it as) instead of showing twice; the bridge stores nothing when it sends. Attach refuses a
-file over 2 GB in the shell, before the bridge reads it whole into memory.
+desktop sent is marked on its reply (`file`: name and size in bytes, which the shell's picker gives) and matches the
+bridge's later copy of it (a history sync stores the own message with no text, a made-up name, the kind the bridge sent
+it as and its length) only by kind and equal size, so a photo sent from the phone a minute later never hides it; with a
+size unknown on either side both show. The bridge stores nothing when it sends. Attach refuses a file over 100 MB in
+the shell for now, before the bridge reads it whole into memory (to be raised once the bridge was measured). The
+re-read after a chat was taken back in counts from the start of the last read the relay stored, and writes its mark
+before it clears the cursor. An open, focused chat says incoming messages in a polite live region (one: the sender and
+the start of the text; several: how many).
 
 `ServerChatBackend` (`packages/core/src/chat/serverBackend.ts`) is the backend for "All my devices", over `ChatApi`
 (`packages/core/src/chat/api.ts`: the request and answer types of the chat endpoints of 3.17, one method per endpoint;

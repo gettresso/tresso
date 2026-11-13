@@ -24,7 +24,7 @@ import {
 } from '@tresso/core'
 import { chatNotifications } from '@/mail/chatNotifications'
 import { notifier } from '@/platform/notifier'
-import { whatsAppShell } from '@/platform/whatsapp'
+import { whatsAppShell, type ChosenFile } from '@/platform/whatsapp'
 import { errorName } from '@/components/chat/whatsappTexts'
 import { useMailStore } from '@/stores/mail'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
@@ -47,7 +47,7 @@ export type MediaState =
  */
 export type MediaFailure = 'failed' | 'stopped' | 'mismatch' | 'unverified' | 'refused' | 'too_large' | 'open'
 
-/** Why an attached file did not go: a reply's error, or `too_large` (over what Attach sends, refused before the bridge). */
+/** Why an attached file did not go: a reply's error, or `too_large` (over 100 MB, refused before the bridge reads it). */
 export type AttachError = ChatOutgoingError | 'too_large'
 
 /** A file attached from the composer of a chat: on its way, or why it did not go. */
@@ -401,17 +401,18 @@ export const useChatsStore = defineStore('chats', () => {
     if (copy === null || !canReply.value || attaching.value.state === 'sending') {
       return
     }
-    let path: string | null
+    let picked: ChosenFile | null
     try {
-      path = await commands.chooseFile()
+      picked = await commands.chooseFile()
     } catch (cause) {
       console.error('Choosing a file to attach failed', errorName(cause))
       attaching.value = { state: 'failed', chatId: chat.id, name: '', error: 'refused' }
       return
     }
-    if (path === null) {
+    if (picked === null) {
       return
     }
+    const { path, size } = picked
     const name = baseName(path)
     attaching.value = { state: 'sending', chatId: chat.id, name }
     let error: AttachError | null = null
@@ -429,7 +430,7 @@ export const useChatsStore = defineStore('chats', () => {
       return
     }
     try {
-      await recordLocalAttachment(copy, chat.id, name, uuidV7(), Date.now())
+      await recordLocalAttachment(copy, chat.id, { name, size }, uuidV7(), Date.now())
     } catch (cause) {
       console.error('Recording a sent WhatsApp file failed', errorName(cause))
     }

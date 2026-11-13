@@ -64,7 +64,7 @@ export function fakeShell() {
   return {
     downloadAnswer: (): Promise<DownloadedFile> => Promise.resolve({ path: '/Users/kim/Library/Application Support/app.tresso.desktop/whatsapp-media/abc.jpg', verified: true }),
     sendAnswer: (): Promise<SendResult> => Promise.resolve({ ok: true, message: 'sent' }),
-    chosen: '/Users/kim/Documents/plan.pdf' as string | null,
+    chosen: { path: '/Users/kim/Documents/plan.pdf', size: 4096 } as { path: string; size: number } | null,
     calls: [] as string[],
     sent: [] as { recipient: string; text: string; mediaPath: string | null }[],
   }

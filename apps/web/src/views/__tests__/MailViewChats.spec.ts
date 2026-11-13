@@ -118,6 +118,16 @@ describe('MailView with chats', () => {
     expect(document.activeElement).toBe(view.get('.scroll').element)
   })
 
+  it('leaves the focus alone when a mail conversation is opened from the open chat', async () => {
+    const view = await show(`/chats/${encodeURIComponent(DIRECT_ID)}`)
+    await view.get('.scroll a[href="/inbox/t1"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/inbox/t1')
+    expect(view.find('.chat-pane').exists()).toBe(false)
+    // Not moved to a row or the list by the chat's closing.
+    expect(document.activeElement?.closest('.scroll')).toBeNull()
+  })
+
   it('clears the selection of mail when another channel tab is chosen', async () => {
     const view = await show('/')
     const selection = useSelectionStore()

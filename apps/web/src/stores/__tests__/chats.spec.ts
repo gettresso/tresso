@@ -194,7 +194,7 @@ describe('the chats store', () => {
     await chats.attach(bram)
     expect(shell.sent).toEqual([{ recipient: DIRECT, text: '', mediaPath: '/Users/kim/Documents/plan.pdf' }])
     expect(chats.attaching).toEqual({ state: 'sent', chatId: DIRECT_ID, name: 'plan.pdf' })
-    expect((await store.chat(DIRECT_ID))!.outgoing).toEqual([expect.objectContaining({ status: 'sent', text: 'File: plan.pdf' })])
+    expect((await store.chat(DIRECT_ID))!.outgoing).toEqual([expect.objectContaining({ status: 'sent', text: 'File: plan.pdf', file: { name: 'plan.pdf', size: 4096 } })])
 
     for (const error of ['bridge_stopped', 'not_linked', 'refused', 'unconfirmed'] as const) {
       shell.sendAnswer = () => Promise.resolve({ ok: false, message: error })

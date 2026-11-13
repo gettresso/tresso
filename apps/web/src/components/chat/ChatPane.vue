@@ -4,10 +4,13 @@ import { RouterLink, useRouter, type RouteLocationRaw } from 'vue-router'
 import {
   chatMessageKey,
   chatSubtitle,
+  compareChatMessageKeys,
+  labelText,
   nameText,
   replyLabel,
   timeline,
   TODO_TITLE_MAX_LENGTH,
+  type ChatMessageKey,
   type ChatPage,
   type SyncedChat,
   type SyncedChatMessage,
@@ -30,7 +33,7 @@ import SenderAvatar from '@/components/SenderAvatar.vue'
 import ChatBubble, { type BubbleView } from '@/components/chat/ChatBubble.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatNotice from '@/components/chat/ChatNotice.vue'
-import { attachText, chatName, chatNoticeKind, clockTime, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, localBubbleMeta, localReplyLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
+import { attachText, chatName, chatNoticeKind, clockTime, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, localBubbleMeta, localReplyLabel, mediaKindLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
 import { composing } from '@/components/chat/composition'
 
 /**
@@ -43,6 +46,8 @@ const props = defineProps<{ chatId: string; backTo: RouteLocationRaw }>()
 
 /** Messages read at a time. */
 const PAGE = 50
+/** The most of a new message's text the live region says. */
+const INCOMING_MAX = 120
 /** Within this many pixels of the top, older messages are read; of the bottom, the timeline follows new ones. */
 const EDGE = 160
 
@@ -62,6 +67,8 @@ const loadingOlder = ref(false)
 const busy = ref(false)
 const sendError = ref<string | null>(null)
 const announcement = ref('')
+/** The live region for incoming messages (announceIncoming). */
+const incoming = ref('')
 const confirmingLeave = ref(false)
 const todoTitle = ref<string | null>(null)
 const todoStatus = ref('')
@@ -308,20 +315,53 @@ async function reload(): Promise<void> {
     chat.value = null
     return
   }
+  const newest = messages.value[messages.value.length - 1]
   take(page)
+  announceIncoming(newest === undefined ? null : chatMessageKey(newest), page.messages)
   await nextTick()
   if (follow) {
     toBottom()
   }
   markReadIfSeen()
+  if (olderAgain && !loadingOlder.value) {
+    olderAgain = false
+    void loadOlder(true)
+  }
+}
+
+/**
+ * Says incoming messages that landed at the newest end of the window in a read after the first one: the sender and the
+ * start of the text for one, how many for several. Own messages, history read in older pages and the first load say
+ * nothing.
+ */
+function announceIncoming(before: ChatMessageKey | null, list: readonly SyncedChatMessage[]): void {
+  const fresh = list.filter((message) => !message.fromMe && (before === null || compareChatMessageKeys(chatMessageKey(message), before) > 0))
+  if (fresh.length === 0) {
+    return
+  }
+  if (fresh.length > 1) {
+    incoming.value = `${fresh.length} new messages`
+    return
+  }
+  const message = chats.named(fresh[0]!)
+  const sender = isGroup.value ? senderLabel(message) : name.value
+  const text = labelText(message.text) || (message.mediaKind === null ? '' : mediaKindLabel(message.mediaKind))
+  const characters = [...text]
+  const start = characters.length > INCOMING_MAX ? `${characters.slice(0, INCOMING_MAX - 1).join('').trimEnd()}…` : text
+  incoming.value = start === '' ? sender : `${sender}: ${start}`
 }
 
 /** Older messages before the first one, keeping what is on screen where it is. */
-async function loadOlder(): Promise<void> {
+/** Older messages were overtaken by a reload that started while they were read: read them again once it landed. */
+let olderAgain = false
+
+/** Older messages before the first one (`retried`: the read once more after an overtaken one, which is not repeated). */
+async function loadOlder(retried = false): Promise<void> {
   const first = messages.value[0]
   if (!hasOlder.value || loadingOlder.value || first === undefined) {
     return
   }
+  let overtaken = false
   loadingOlder.value = true
   // A reload under way when this lands would replace the window with one from before: it is overtaken (and runs again).
   const mine = ++loads
@@ -330,7 +370,11 @@ async function loadOlder(): Promise<void> {
   }
   try {
     const page = await chats.page(props.chatId, { limit: PAGE, before: chatMessageKey(first) })
-    if (unmounted || mine !== loads || page === null) {
+    if (unmounted || page === null) {
+      return
+    }
+    if (mine !== loads) {
+      overtaken = !retried
       return
     }
     const element = scroller.value
@@ -349,6 +393,13 @@ async function loadOlder(): Promise<void> {
     if (reloadAgain && reloading === 0 && !unmounted) {
       reloadAgain = false
       void reload()
+    } else if (overtaken && !unmounted) {
+      // The reload that overtook it is still under way: it reads them again when it landed; else now, once.
+      if (reloading > 0) {
+        olderAgain = true
+      } else {
+        void loadOlder(true)
+      }
     }
   }
 }
@@ -572,6 +623,7 @@ onBeforeUnmount(() => {
         <button type="button" class="button button-quiet" @click="closeTodo">Cancel</button>
       </form>
       <p class="visually-hidden" role="status">{{ todoStatus }}</p>
+      <p class="visually-hidden incoming" aria-live="polite">{{ incoming }}</p>
 
       <div v-if="confirmingLeave" class="confirm" role="alertdialog" aria-labelledby="chat-leave-title" aria-describedby="chat-leave-body" @keydown.esc.prevent="cancelLeave">
         <p id="chat-leave-title"><strong>{{ LEAVE_OUT_TITLE }}</strong></p>
@@ -586,7 +638,7 @@ onBeforeUnmount(() => {
 
       <!-- A region, not a log: a log would read out the history as it loads; changes of a reply are said by the composer. -->
       <div ref="scroller" class="timeline" role="region" tabindex="0" aria-label="Messages" @scroll.passive="onScroll">
-        <button v-if="hasOlder" type="button" class="button button-quiet older" :disabled="loadingOlder" @click="loadOlder">
+        <button v-if="hasOlder" type="button" class="button button-quiet older" :disabled="loadingOlder" @click="loadOlder()">
           {{ loadingOlder ? 'Loading older messages…' : 'Show older messages' }}
         </button>
         <ol class="bubbles">
