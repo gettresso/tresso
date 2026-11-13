@@ -5,6 +5,7 @@ import {
   chatOutgoingFromDelta,
   type ChatApi,
   type ChatMediaResponse,
+  type ChatUploadOptions,
   type ChatUploadResponse,
   type RelayClaimFile,
   type RelayClaimResponse,
@@ -26,8 +27,8 @@ import { useAuthStore, type RequestOptions } from '@/stores/auth'
 export interface ChatTransport {
   get<T>(path: string): Promise<T>
   send<T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown, options?: RequestOptions): Promise<T>
-  /** PUT of a file as `application/octet-stream`, with extra headers; the JSON answer. */
-  putFile<T>(path: string, body: Blob, headers: Record<string, string>): Promise<T>
+  /** PUT of a file as `application/octet-stream`, with extra headers, followed and cancelled through `options`; the JSON answer. */
+  putFile<T>(path: string, body: Blob, headers: Record<string, string>, options?: ChatUploadOptions): Promise<T>
   /** The content behind a signed link of the API; rejects with an error that has the status for an answer other than 2xx. */
   fetchFile(url: string): Promise<Blob>
 }
@@ -231,8 +232,8 @@ export function createChatApi(transport: ChatTransport): ChatApi {
     async unscannedMediaLink(messageId) {
       return media(await call(() => transport.send<unknown>('POST', `${BASE}/chat-messages/${segment(messageId)}/media/unscanned-link`, { confirmed: true })))
     },
-    uploadFile(chatId, uploadId, body) {
-      return call(() => transport.putFile<ChatUploadResponse>(`${BASE}/chats/${segment(chatId)}/uploads/${segment(uploadId)}`, body, {}))
+    uploadFile(chatId, uploadId, body, options) {
+      return call(() => transport.putFile<ChatUploadResponse>(`${BASE}/chats/${segment(chatId)}/uploads/${segment(uploadId)}`, body, {}, options))
     },
   }
 }
@@ -243,7 +244,7 @@ export function useChatApi(): ChatApi {
   return createChatApi({
     get: (path) => auth.api(path),
     send: (method, path, body, options) => auth.send(method, path, body, options),
-    putFile: (path, body, headers) => auth.api(path, { method: 'PUT', body, headers: { 'Content-Type': 'application/octet-stream', ...headers } }),
+    putFile: (path, body, headers, options) => auth.upload(path, body, headers, options),
     async fetchFile(url) {
       // A signed link of the API: no token goes along, and nothing is followed elsewhere. Given up well within the claim's
       // lease for a reply with a file (30 minutes), so the reply fails as file_unavailable before it could be unconfirmed.

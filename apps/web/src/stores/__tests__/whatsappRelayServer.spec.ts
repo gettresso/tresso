@@ -556,6 +556,37 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(shell.discarded).toEqual(['/outbox/1/plan.pdf'])
   })
 
+  it('fails a reply whose file cannot be fetched without sending anything, and reports a file the shell will not read as too large', async () => {
+    await relayedHere()
+    shell.add('A1', DIRECT, 10, { mediaType: 'document', filename: 'huge.pdf', fileLength: 3, text: '' })
+    shell.emit(LINKED)
+    await pass(3_000)
+    server.outgoing.set('reply-file', {
+      id: 'reply-file',
+      chatId: `chat-${DIRECT}`,
+      chatAccountId: ACCOUNT_ID,
+      text: '',
+      status: 'waiting',
+      error: null,
+      createdAt: new Date().toISOString(),
+      claimedAt: null,
+      sentAt: null,
+      file: { name: 'plan.pdf', size: 4 },
+    })
+    server.fail('replyFile', new TypeError('Failed to fetch'))
+    const huge = [...server.messages.values()].find((message) => message.waId === 'A1')!
+    await server.requestMedia(huge.id)
+    shell.failures.file = 'too_large'
+
+    await pass(3_000)
+
+    expect(server.outgoing.get('reply-file')).toMatchObject({ status: 'failed', error: 'file_unavailable' })
+    expect(shell.sent, 'Nothing went out.').toEqual([])
+    expect(shell.staged.size).toBe(0)
+    expect(server.callsOf('failMedia').map((call) => (call[2] as { error: string }).error)).toEqual(['too_large'])
+    expect(server.callsOf('uploadMedia')).toEqual([])
+  })
+
   it('stops when a relay call says another device relays, and stays off until the copy says who', async () => {
     const wa = await relayedHere()
     shell.add('A1', DIRECT, 10)

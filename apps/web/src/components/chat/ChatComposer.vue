@@ -26,6 +26,10 @@ const props = defineProps<{
   attaching: boolean
   /** The line about a file being sent or not sent. */
   attachLine?: string | null
+  /** An upload under way, 0 to 1 (null when its size is not known); null when none is: a progress bar and Cancel. */
+  uploadProgress?: number | null
+  /** The upload can be cancelled (it is on its way). */
+  canCancelUpload?: boolean
   /** The latest change of a reply's state, for screen readers. */
   announcement: string
   /** Why the last send failed, in plain words. */
@@ -35,7 +39,7 @@ const props = defineProps<{
   /** What was typed into this chat before and not sent (chats.draftOf); the field starts with it. */
   draft?: string
 }>()
-const emit = defineEmits<{ attach: []; 'update:draft': [text: string] }>()
+const emit = defineEmits<{ attach: []; cancelUpload: []; 'update:draft': [text: string] }>()
 
 const MAX_LINES = 6
 const LINE_HEIGHT = 22
@@ -126,6 +130,10 @@ defineExpose({ focus: () => field.value?.focus() })
     <span v-if="showCounter" id="chat-composer-counter" class="counter" :class="{ over: tooLong }">{{ counter }}</span>
     <span v-if="checked.ok === false && checked.problem === 'control'" class="problem">The reply cannot contain control characters.</span>
     <span class="attach-line" role="status">{{ attachLine ?? '' }}</span>
+    <span v-if="canCancelUpload" class="upload">
+      <progress class="upload-bar" max="1" :value="uploadProgress ?? undefined" aria-label="Upload of the file" />
+      <button type="button" class="button button-quiet upload-cancel" @click="emit('cancelUpload')">Cancel</button>
+    </span>
     <span v-if="error" class="problem" role="alert">{{ error }}</span>
     <span v-if="canAttach && attachNote" id="chat-attach-note" class="note">{{ attachNote }}</span>
     <span id="chat-composer-note" class="note">{{ disabled && note ? note : (sendNote ?? COMPOSER_NOTE) }}</span>
@@ -201,6 +209,21 @@ defineExpose({ focus: () => field.value?.focus() })
 }
 .counter,
 .note,
+.upload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.upload-bar {
+  flex: 1;
+  height: 6px;
+  accent-color: var(--know);
+}
+.upload-cancel {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
 .attach-line {
   font-size: 12px;
   color: var(--ink-2);

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
-import { ChatApiError, replyErrorText, SqliteMailStore, type SyncedChatAccount, type SyncedChatOutgoing } from '@tresso/core'
+import { ChatApiError, replyErrorText, SqliteMailStore, type SyncedChatAccount, type SyncedChatMessage, type SyncedChatOutgoing } from '@tresso/core'
 import { memorySql } from '@tresso/core/testing/sql'
 import type { WhatsAppCommands } from '@/platform/whatsapp'
 import { useAuthStore } from '@/stores/auth'
@@ -225,7 +225,7 @@ describe('ChatPane in the browser', () => {
   describe('files', () => {
     const rowOf = (view: VueWrapper, index = 0) => view.findAll('.media')[index]!
     /** The server changes a message's file (as the relay and a scan do), and the copy gets it as a pull would. */
-    async function serverSets(view: VueWrapper, waId: string, change: { mediaState: 'requested' | 'stored' | 'failed'; mediaError?: 'too_large' | 'unavailable' | null; mediaAccess?: 'allowed' | 'confirm' | 'scanning' | null }): Promise<void> {
+    async function serverSets(view: VueWrapper, waId: string, change: Pick<SyncedChatMessage, 'mediaState' | 'mediaError' | 'mediaAccess'>): Promise<void> {
       for (const [key, message] of server.messages) {
         if (message.waId === waId) {
           server.messages.set(key, { ...message, mediaError: null, mediaAccess: null, ...change })
@@ -279,26 +279,66 @@ describe('ChatPane in the browser', () => {
       opened.mockRestore()
     })
 
-    it('opens a file that could not be checked only after the user accepts the warning', async () => {
+    it('opens a file that could not be checked only after the user accepts the warning in the row', async () => {
       const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn<() => void>() }
       const opened = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
-      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      const confirm = vi.spyOn(window, 'confirm')
       const view = await open(GROUP_CHAT)
       await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'confirm' })
       expect(rowOf(view).get('button').text()).toBe('Download anyway')
 
       await rowOf(view).get('button').trigger('click')
       await flushPromises()
+      const dialog = view.get('[role="alertdialog"]')
+      expect(dialog.text()).toContain('could not be checked for malware')
+      expect(document.activeElement?.textContent).toBe('Cancel')
+      await dialog.trigger('keydown', { key: 'Escape' })
+      await flushPromises()
+      expect(view.find('[role="alertdialog"]').exists()).toBe(false)
+      expect(document.activeElement?.textContent?.trim()).toBe('Download anyway')
       expect(server.callsOf('unscannedMediaLink')).toEqual([])
-      expect(opened).not.toHaveBeenCalled()
 
-      confirm.mockReturnValue(true)
       await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+      await view.get('[role="alertdialog"] .button-danger').trigger('click')
       await flushPromises()
       expect(server.callsOf('unscannedMediaLink')).toHaveLength(1)
       expect(tab.location.href).toContain('unscanned=1')
+      expect(confirm, 'Never the browser\'s own confirm.').not.toHaveBeenCalled()
       opened.mockRestore()
       confirm.mockRestore()
+    })
+
+    it('says when the browser blocked the new tab, and asks nothing then', async () => {
+      const opened = vi.spyOn(window, 'open').mockReturnValue(null)
+      const view = await open(GROUP_CHAT)
+      await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'allowed' })
+
+      await rowOf(view).get('button').trigger('click')
+      await flushPromises()
+
+      expect(rowOf(view).get('.line').text()).toBe('The file could not be opened: the browser blocked the new tab.')
+      expect(server.callsOf('media')).toEqual([])
+      opened.mockRestore()
+    })
+
+    it('says a blocked file and the other reasons a file did not come', async () => {
+      const view = await open(GROUP_CHAT)
+      await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'blocked' })
+      expect(rowOf(view).get('.line').text()).toBe('This file is blocked: it contains malware, or this server only opens checked files.')
+      expect(rowOf(view).get('.line').attributes('role')).toBe('alert')
+      expect(rowOf(view).find('button').exists()).toBe(false)
+      for (const [error, text] of [
+        ['not_found', 'Your Mac could not find this file in WhatsApp.'],
+        ['mismatch', "WhatsApp gave your Mac another file than this message's. It was not passed on."],
+        ['unverified', "Your Mac could not check that this is the message's file. It was not passed on."],
+      ] as const) {
+        await serverSets(view, 'S2', { mediaState: 'failed', mediaError: error })
+        expect(rowOf(view).get('.line').text()).toBe(text)
+        expect(rowOf(view).get('button').text()).toBe('Try again')
+      }
+      await serverSets(view, 'S2', { mediaState: 'stored', mediaAccess: 'scanning' })
+      expect(rowOf(view).get('.line').attributes('aria-live'), 'A new state is said politely.').toBe('polite')
     })
 
     it('says why a file did not come, and offers Try again only when it may pass', async () => {
@@ -331,6 +371,169 @@ describe('ChatPane in the browser', () => {
       await vi.waitFor(() => expect(view.get('.attach-line').text()).toBe('plan.pdf is queued for your Mac.'))
       expect(bubbles(view).some((item) => item.text().includes('File: plan.pdf'))).toBe(true)
       expect(fakes.shell).toEqual([])
+    })
+
+    /** Picks a file in the pane's own file input. */
+    async function pick(view: VueWrapper, file: File): Promise<void> {
+      const input = view.get('input[type="file"]')
+      Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+      await input.trigger('change')
+    }
+    const plan = (content = '%PDF-1.4 plan', name = 'plan.pdf') => new File([content], name, { type: 'application/pdf', lastModified: 1 })
+
+    it('shows the upload with its progress and Cancel, and cancelled while uploading nothing is queued', async () => {
+      let release!: () => void
+      server.held.set('uploadFile', new Promise<void>((resolve) => (release = resolve)))
+      const view = await open(SERVER_CHAT)
+      await pick(view, plan())
+      await flushPromises()
+
+      expect(view.get('.attach-line').text()).toBe('Uploading plan.pdf, 50%…')
+      expect(view.get('progress').attributes('value')).toBe('0.5')
+      await view.get('.upload-cancel').trigger('click')
+      await flushPromises()
+      release()
+      await flushPromises()
+
+      expect(server.callsOf('queueReply')).toEqual([])
+      expect(view.get('.attach-line').text()).toBe('plan.pdf was not sent.')
+      expect(view.find('.upload-cancel').exists()).toBe(false)
+    })
+
+    it('cancels on the server a reply that was being queued when the user cancelled', async () => {
+      let release!: () => void
+      server.held.set('queueReply', new Promise<void>((resolve) => (release = resolve)))
+      const view = await open(SERVER_CHAT)
+      await pick(view, plan())
+      await flushPromises()
+      expect(view.get('.attach-line').text()).toBe('Queueing plan.pdf for your Mac…')
+
+      await view.get('.upload-cancel').trigger('click')
+      release()
+      await flushPromises()
+
+      const queued = (server.callsOf('queueReply')[0]![1] as { id: string }).id
+      expect(server.callsOf('cancelReply')).toEqual([[queued]])
+      expect(server.outgoing.has(queued), 'The server cancel went out after the queueing.').toBe(false)
+      expect(view.get('.attach-line').text()).toBe('plan.pdf was not sent.')
+    })
+
+    it('stops an upload when the user leaves the chat, and queues nothing', async () => {
+      server.held.set('uploadFile', new Promise<void>(() => {}))
+      const view = await open(SERVER_CHAT)
+      await pick(view, plan())
+      await flushPromises()
+
+      view.unmount()
+      wrapper = null
+      await flushPromises()
+
+      expect(server.callsOf('queueReply')).toEqual([])
+      expect(useChatsStore().attachStateOf(SERVER_CHAT).state).toBe('cancelled')
+    })
+
+    it('stops every upload when the copy goes (a sign-out), and queues nothing', async () => {
+      server.held.set('uploadFile', new Promise<void>(() => {}))
+      const view = await open(SERVER_CHAT)
+      await pick(view, plan())
+      await flushPromises()
+
+      mail.currentStore = () => null
+      await useChatsStore().refresh()
+      await flushPromises()
+
+      expect(server.callsOf('queueReply')).toEqual([])
+      expect(view.find('.upload-cancel').exists()).toBe(false)
+    })
+
+    it('takes one file at a time in a chat, and another chat may send at the same time', async () => {
+      server.held.set('uploadFile', new Promise<void>(() => {}))
+      const view = await open(SERVER_CHAT)
+      await pick(view, plan())
+      await flushPromises()
+      await pick(view, plan('another', 'other.pdf'))
+      await flushPromises()
+      expect(server.callsOf('uploadFile')).toHaveLength(1)
+
+      const chats = useChatsStore()
+      const family = (await store.chatPage(GROUP_CHAT, { limit: 1 }))!.chat
+      void chats.attachFile(family, plan('for the family', 'family.pdf'))
+      await flushPromises()
+      expect(server.callsOf('uploadFile')).toHaveLength(2)
+      expect(chats.attachStateOf(GROUP_CHAT).state).toBe('sending')
+    })
+
+    it('refuses a file over 100 MB before anything is uploaded', async () => {
+      const view = await open(SERVER_CHAT)
+      const huge = plan()
+      Object.defineProperty(huge, 'size', { value: 100 * 1024 * 1024 + 1 })
+      await pick(view, huge)
+      await flushPromises()
+
+      expect(server.callsOf('uploadFile')).toEqual([])
+      expect(view.get('.attach-line').text()).toBe('plan.pdf was not sent. It is larger than 100 MB, the most Tresso sends for now.')
+    })
+
+    it('waits while the server has not confirmed who is signed in', async () => {
+      const view = await open(SERVER_CHAT)
+      mail.confirmed = false
+      await flushPromises()
+      await useChatsStore().attachFile((await store.chatPage(SERVER_CHAT, { limit: 1 }))!.chat, plan())
+      await flushPromises()
+
+      expect(server.callsOf('uploadFile')).toEqual([])
+      expect(view.get('textarea').attributes('disabled')).toBeDefined()
+    })
+
+    it('says plainly why the server refused an upload, and the next try gets new ids', async () => {
+      const view = await open(SERVER_CHAT)
+      for (const [error, text] of [
+        [new ChatApiError(413, 'Too much.', 'too_much_waiting'), 'Files waiting for your Mac take up too much space. Wait until they are sent, or cancel some, then attach this one again.'],
+        [new ChatApiError(429, 'Slow down.', null, 60_000), 'Too many files sent at once. Wait a few minutes, then attach it again.'],
+        [new ChatApiError(413, 'Too large.', 'too_large'), 'The file is larger than 100 MB, the most Tresso sends.'],
+        [new ChatApiError(409, 'Taken.', 'id_taken'), 'Your Tresso server did not take this change.'],
+      ] as const) {
+        server.fail('uploadFile', error)
+        await pick(view, plan())
+        await flushPromises()
+        expect(view.get('.attach-line').text()).toBe(`plan.pdf was not sent. ${text}`)
+      }
+      const ids = server.callsOf('uploadFile').map((call) => call[1])
+      expect(new Set(ids).size, 'A refusal is final: new ids each time.').toBe(ids.length)
+      expect(server.callsOf('queueReply')).toEqual([])
+    })
+
+    it('uploads again under the same id when the upload itself got no answer', async () => {
+      const view = await open(SERVER_CHAT)
+      server.fail('uploadFile', new TypeError('Failed to fetch'))
+      await pick(view, plan())
+      await flushPromises()
+      expect(view.get('.attach-line').text()).toBe('plan.pdf was not sent. Tresso could not reach your Tresso server. Try again.')
+
+      await pick(view, plan())
+      await flushPromises()
+
+      const ids = server.callsOf('uploadFile').map((call) => call[1])
+      expect(ids).toEqual([ids[0], ids[0]])
+      expect(server.callsOf('queueReply')).toHaveLength(1)
+    })
+
+    it('makes new ids once the copy has the reply an unsure try queued', async () => {
+      const view = await open(SERVER_CHAT)
+      server.fail('queueReply', new TypeError('Failed to fetch'))
+      server.held.set('queueReply', Promise.resolve())
+      await pick(view, plan())
+      await flushPromises()
+      // The server took it after all, and the delta brings it.
+      const first = server.callsOf('queueReply')[0]![1] as { id: string }
+      server.outgoing.set(first.id, { id: first.id, chatId: SERVER_CHAT, chatAccountId: ACCOUNT_ID, text: '', status: 'waiting', error: null, createdAt: at(0), claimedAt: null, sentAt: null, file: { name: 'plan.pdf', size: 13 } })
+      await server.deliver(store)
+
+      await pick(view, plan())
+      await flushPromises()
+
+      const second = server.callsOf('queueReply')[1]![1] as { id: string }
+      expect(second.id, 'A deliberate second attach is a new reply.').not.toBe(first.id)
     })
 
     it('queues the same file again under the same ids after an unsure try', async () => {

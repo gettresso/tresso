@@ -158,7 +158,12 @@ export function mediaStateText(message: Pick<SyncedChatMessage, 'mediaKind'>, st
 export function attachText(state: AttachState): string | null {
   switch (state.state) {
     case 'sending':
-      return `Sending ${state.name}…`
+      if (state.phase === 'uploading') {
+        return state.progress === null || state.progress === undefined ? `Uploading ${state.name}…` : `Uploading ${state.name}, ${Math.round(state.progress * 100)}%…`
+      }
+      return state.phase === 'queueing' ? `Queueing ${state.name} for your Mac…` : `Sending ${state.name}…`
+    case 'cancelled':
+      return `${state.name} was not sent.`
     case 'sent':
       return `${state.name} was sent.`
     case 'queued':

@@ -23,7 +23,19 @@ export const QUEUE_REPLY_MAX_TEXT = 4096
 export const CHAT_MAX_FILE_BYTES = 100 * 1024 * 1024
 
 /** The `code` of a refusal of the chat endpoints (ChatProblem in the API). All are 409 but `too_large` (413). */
-export type ChatProblemCode = 'not_the_relay' | 'already_going_out' | 'id_taken' | 'result_final' | 'not_failed' | 'cancelled' | 'too_large' | 'other_number' | 'not_requested' | 'not_stored'
+export type ChatProblemCode =
+  | 'not_the_relay'
+  | 'already_going_out'
+  | 'id_taken'
+  | 'result_final'
+  | 'not_failed'
+  | 'cancelled'
+  | 'too_large'
+  | 'other_number'
+  | 'not_requested'
+  | 'not_stored'
+  | 'still_sending'
+  | 'too_much_waiting'
 
 /**
  * A failed chat request as a ChatApi implementation rejects with it: the HTTP status, the problem's `code` when the
@@ -276,6 +288,12 @@ export interface ChatMediaResponse {
   url: string | null
 }
 
+/** How an upload is followed and cancelled: an AbortSignal, and the bytes sent of all as they go. */
+export interface ChatUploadOptions {
+  signal?: AbortSignal
+  onProgress?: (sent: number, total: number) => void
+}
+
 /** PUT /api/v1/chats/{chatId}/uploads/{id}: the answer (ChatUploadResource). */
 export interface ChatUploadResponse {
   id: string
@@ -361,5 +379,5 @@ export interface ChatApi {
   /** POST /api/v1/chat-messages/{id}/media/unscanned-link: the link for a file that could not be scanned (our own apps). */
   unscannedMediaLink(messageId: string): Promise<ChatMediaResponse>
   /** PUT /api/v1/chats/{chatId}/uploads/{uploadId}: a file for a reply, before it is queued (our own apps). */
-  uploadFile(chatId: string, uploadId: string, body: Blob): Promise<ChatUploadResponse>
+  uploadFile(chatId: string, uploadId: string, body: Blob, options?: ChatUploadOptions): Promise<ChatUploadResponse>
 }

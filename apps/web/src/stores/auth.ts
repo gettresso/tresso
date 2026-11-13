@@ -762,6 +762,69 @@ export const useAuthStore = defineStore('auth', () => {
     return (await response.json()) as T
   }
 
+  /**
+   * A PUT of a file as the raw body (`application/octet-stream`), with the bytes sent reported as they go and a signal
+   * that cancels it: an XMLHttpRequest, since fetch tells nothing of an upload's progress. No deadline: a large file may
+   * rightly take long. A refused token is renewed and the upload sent once more, as `api` does; the session ending
+   * meanwhile is SessionEndedDuringRequestError, a cancel an AbortError.
+   */
+  async function upload<T>(path: string, body: Blob, headers: Record<string, string>, options: { signal?: AbortSignal; onProgress?: (sent: number, total: number) => void } = {}): Promise<T> {
+    const session = generation.value
+    const put = (token: string) =>
+      new Promise<Response>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('PUT', `${config.apiUrl}${path}`)
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+        xhr.setRequestHeader('Accept', 'application/json')
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+        for (const [name, value] of Object.entries(headers)) {
+          xhr.setRequestHeader(name, value)
+        }
+        xhr.upload.onprogress = (event) => options.onProgress?.(event.loaded, event.lengthComputable ? event.total : body.size)
+        const abort = () => xhr.abort()
+        xhr.onload = () => {
+          options.signal?.removeEventListener('abort', abort)
+          const answer = new Headers()
+          for (const name of ['Content-Type', 'Retry-After', 'Date']) {
+            const value = xhr.getResponseHeader(name)
+            if (value !== null) {
+              answer.set(name, value)
+            }
+          }
+          resolve(new Response(xhr.status === 204 ? null : xhr.responseText, { status: xhr.status, headers: answer }))
+        }
+        xhr.onerror = () => {
+          options.signal?.removeEventListener('abort', abort)
+          reject(new TypeError('The upload did not reach the server.'))
+        }
+        xhr.onabort = () => reject(new DOMException('The upload was cancelled.', 'AbortError'))
+        if (options.signal?.aborted) {
+          reject(new DOMException('The upload was cancelled.', 'AbortError'))
+          return
+        }
+        options.signal?.addEventListener('abort', abort, { once: true })
+        xhr.send(body)
+      })
+    const sent = await accessToken()
+    let response = await put(sent)
+    if (response.status === 401 && session === generation.value) {
+      response = await put(await accessTokenAfterRejection(sent))
+      if (response.status === 401) {
+        if (session === generation.value) {
+          void endSession('expired')
+        }
+        throw new ApiError(401, EXPIRED)
+      }
+    }
+    if (session !== generation.value) {
+      throw new SessionEndedDuringRequestError()
+    }
+    if (!response.ok) {
+      throw await ApiError.fromResponse(path, response)
+    }
+    return (response.status === 204 ? undefined : await response.json()) as T
+  }
+
   /** POST, PUT, PATCH (as JSON merge patch) or DELETE. */
   function send<T>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
     return api<T>(path, jsonRequest(method, body), options)
@@ -846,6 +909,7 @@ export const useAuthStore = defineStore('auth', () => {
     loadMe,
     api,
     send,
+    upload,
     serverNow: () => clock.now(),
   }
 })
