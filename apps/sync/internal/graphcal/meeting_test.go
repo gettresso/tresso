@@ -401,7 +401,6 @@ func TestAJoinLineExchangeRewroteIsTakenOffTheBlockToo(t *testing.T) {
 		{"as Tresso wrote it", `<div>Join the meeting: https://rooms.example.com/kim?x=1&amp;y=2</div>`},
 		{"with attributes", `<div class="x" style="font-family:Calibri">Join the meeting: https://rooms.example.com/kim</div>`},
 		{"with the link made an anchor", `<div><span>Join the meeting: <a href="https://rooms.example.com/kim">https://rooms.example.com/kim</a></span></div>`},
-		{"twice, from the bug this fixes", `<div>Join the meeting: https://rooms.example.com/kim</div>` + "\r\n" + `<div>Join the meeting: https://rooms.example.com/old</div>`},
 		{"with the text typed below it", `<div>Join the meeting: https://rooms.example.com/kim<br>See you there<br>Bring the slides</div>`},
 		{"with a line break at its end", `<div>Join the meeting: https://rooms.example.com/kim<BR/></div>`},
 		{"as a paragraph", `<p class="MsoNormal">Join the meeting: https://rooms.example.com/kim</p>`},
@@ -415,6 +414,11 @@ func TestAJoinLineExchangeRewroteIsTakenOffTheBlockToo(t *testing.T) {
 				t.Errorf("withoutJoinLines = %s", got)
 			}
 		})
+	}
+	// One element with text at most: the one above it is not Tresso's (the description would not give it back).
+	upper := `<div>Join the meeting: https://rooms.example.com/kim</div>` + "\r\n"
+	if got, _ := withoutJoinLines(block + upper + `<div>Join the meeting: https://rooms.example.com/old</div>`); got != block+upper {
+		t.Errorf("two join elements: %s", got)
 	}
 	if _, below := withoutJoinLines(block + `<div>Join the meeting: https://rooms.example.com/kim<br>See you there<br>Bring  the slides</div>`); below != "See you there\nBring  the slides" {
 		t.Errorf("below = %q", below)
@@ -587,6 +591,66 @@ func TestATeamsMeetingGraphRefusesStillSavesTheEvent(t *testing.T) {
 			}
 			if !c.create && writes[1].Body["subject"] != "Lunch at noon" {
 				t.Errorf("the change is saved: %+v", writes[1].Body)
+			}
+		})
+	}
+}
+
+// teamsBodyWith is an event body with a Teams join block, and extra after it.
+func teamsBodyWith(extra string) string {
+	return `<html><body><div>Agenda</div><div>________________<br>Microsoft Teams meeting<br><a href="https://teams.microsoft.com/l/meetup-join/abc">Join the meeting now</a></div>` + extra + `</body></html>`
+}
+
+func TestWhatOthersWroteAfterATeamsBlockIsNeitherLostNorDoubled(t *testing.T) {
+	cases := []struct {
+		name, extra string
+		once        []string
+	}{
+		{
+			name:  "two paragraphs that start with a join line, notes under each",
+			extra: `<p>Join with Zoom: https://zoom.us/j/1<br>NOTES-A backup room</p><p>Join the meeting: https://m.example.com/2<br>NOTES-B</p>`,
+			once:  []string{"Join with Zoom: https://zoom.us/j/1", "NOTES-A backup room", "Join the meeting: https://m.example.com/2", "NOTES-B"},
+		},
+		{
+			name:  "a join line below other text in its paragraph",
+			extra: `<p>BACKUP ROOM<br>Join with Zoom: https://zoom.us/j/1</p>`,
+			once:  []string{"BACKUP ROOM", "Join with Zoom: https://zoom.us/j/1"},
+		},
+		{
+			name:  "a join paragraph above a plain one",
+			extra: `<p>Join with Zoom: https://zoom.us/j/1</p><p>KEEP-ME</p>`,
+			once:  []string{"Join with Zoom: https://zoom.us/j/1", "KEEP-ME"},
+		},
+		{
+			name:  "a plain paragraph above a join one",
+			extra: `<p>KEEP-ME</p><p>Join with Zoom: https://zoom.us/j/1</p>`,
+			once:  []string{"KEEP-ME", "Join with Zoom: https://zoom.us/j/1"},
+		},
+		{
+			name:  "a line below the join line that reads like one",
+			extra: `<div>Join the meeting: https://rooms.example.com/kim<br>Join with Zoom: https://zoom.us/j/9</div>`,
+			once:  []string{"Join the meeting: https://rooms.example.com/kim", "Join with Zoom: https://zoom.us/j/9"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			graph := newFakeGraph(t)
+			pasted := single("ev-pasted", "Planning")
+			pasted.Body = &itemBody{ContentType: "html", Content: teamsBodyWith(c.extra)}
+			graph.put(pasted)
+			for step, edit := range []func(string) string{
+				func(d string) string { return strings.Replace(d, "Agenda", "Agenda v2", 1) },
+				func(d string) string { return strings.Replace(d, "Agenda v2", "Agenda v3", 1) },
+			} {
+				description, _ := setDescription(t, graph, "ev-pasted", edit)
+				for _, text := range append(c.once, "Microsoft Teams meeting") {
+					if got := strings.Count(description, text); got != 1 {
+						t.Fatalf("edit %d: %q appears %d times in %q", step+1, text, got, description)
+					}
+				}
+			}
+			if _, writes := setDescription(t, graph, "ev-pasted", func(d string) string { return d }); writes != 0 {
+				t.Errorf("an unchanged event is written again (%d writes)", writes)
 			}
 		})
 	}

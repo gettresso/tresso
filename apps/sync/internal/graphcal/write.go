@@ -501,10 +501,18 @@ func (w *writer) htmlBody(ctx context.Context, id, text string) (itemBody, error
 		return textAsHTML(normal, ""), nil
 	}
 	// The block's text is replaced by the block itself. Tresso's join line after it stays after it, and so does what
-	// the user wrote below that line.
+	// the user wrote below that line. A join line the block itself still carries (one Tresso did not write as a
+	// paragraph of its own: below other text, above a paragraph without one, or above the one the cleanup took) is the
+	// block's: it is not written again. So the tail starts at the first join line after the block's text that the
+	// block does not carry, and when every one is the block's, nothing more is written.
 	tail := ""
 	if line > i {
-		tail = normal[line:]
+		for _, found := range joinLines(normal[i:]) {
+			if !carries(block, found.link) {
+				tail = normal[i+found.start:]
+				break
+			}
+		}
 	} else {
 		// The join line was taken out: what the user wrote below it (Tresso wrote it after the block) stays, when the
 		// description still ends with it.
@@ -565,6 +573,20 @@ func joinLine(text string) (string, int) {
 	return text[last[2]:last[3]], last[0]
 }
 
+type foundLine struct {
+	link  string
+	start int
+}
+
+// joinLines is every join line of text (whose line ends must be "\n"), in order.
+func joinLines(text string) []foundLine {
+	var out []foundLine
+	for _, m := range joinLinePattern.FindAllStringSubmatchIndex(text, -1) {
+		out = append(out, foundLine{link: text[m[2]:m[3]], start: m[0]})
+	}
+	return out
+}
+
 // isJoinLine: text is one join line and nothing else.
 func isJoinLine(text string) bool {
 	where := joinLinePattern.FindStringIndex(text)
@@ -583,11 +605,12 @@ var (
 	closersOnly = regexp.MustCompile(`(?i)^(?:\s*</(?:div|p)\s*>)*\s*$`)
 )
 
-// withoutJoinLines is a join block without the join lines Tresso put after it on an earlier write. Tresso writes the
+// withoutJoinLines is a join block without the join line Tresso put after it on an earlier write. Tresso writes the
 // line (and the text the user typed below it) as one div at the end; Exchange may rewrite it with attributes, as a
 // paragraph, around a link or inside another div. So, from the end: the last div or paragraph, when only end tags of
 // its wrappers follow it, is dropped when its first line is a join line (the description gives the line and what
-// follows it again), and so are the wrappers it leaves empty. The block's own first element is never taken.
+// follows it again), and so are the wrappers it leaves empty. One element with text at most: what stands above it is
+// not Tresso's, and the description would not give it back. The block's own first element is never taken.
 //
 // below is the text after the join line in the last element taken (what the user wrote below the line), "" when none.
 func withoutJoinLines(block string) (string, string) {
@@ -620,7 +643,7 @@ func withoutJoinLines(block string) (string, string) {
 		text := html.UnescapeString(htmlTag.ReplaceAllString(lineBreak.ReplaceAllString(trimmed[contentStart:contentStart+closeAt], "\n"), ""))
 		first, rest, _ := strings.Cut(strings.TrimLeft(lines(text), " \t\n"), "\n")
 		empty := strings.TrimSpace(text) == ""
-		if !(empty && took) && !isJoinLine(strings.TrimRight(first, " \t")) {
+		if took && !empty || !took && !isJoinLine(strings.TrimRight(first, " \t")) {
 			return block, below
 		}
 		if !took {
@@ -630,6 +653,23 @@ func withoutJoinLines(block string) (string, string) {
 		block = trimmed[:start] + trimmed[end:]
 	}
 }
+
+// carries: the block's text has a join line with link (after its first element or in it): the line is the block's.
+func carries(block, link string) bool {
+	if link == "" {
+		return false
+	}
+	text := html.UnescapeString(htmlTag.ReplaceAllString(blockEnd.ReplaceAllString(block, "\n"), ""))
+	for _, l := range strings.Split(lines(text), "\n") {
+		if found, start := joinLine(strings.TrimSpace(l)); start >= 0 && found == link {
+			return true
+		}
+	}
+	return false
+}
+
+// blockEnd is a line break or the end of a div or paragraph: a line end in the block's text.
+var blockEnd = regexp.MustCompile(`(?i)<br\s*/?>|</(?:div|p)\s*>`)
 
 // endingWith is the last lines of text when they are below (compared with runs of spaces and tabs as one, as Exchange
 // gives text back), else "".
