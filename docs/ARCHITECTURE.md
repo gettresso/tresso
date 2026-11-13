@@ -2795,10 +2795,19 @@ after. Everything lives in `apps/api/src/Notification`.
   - A reminder's text is the event's time ("Thursday 22 October, 10:00 to 11:00") and its place after a comma. For
     an event with an online meeting it names the app instead, by the link's host alone (`ConferenceDetector::providerOf`):
     "..., on Microsoft Teams." (Google Meet, Zoom, Webex), or "..., online." for a link of no known app, then
-    "Or in <place>." when the event has a place too. The link never goes into a reminder: links are taken out of
-    the place, and a place that only names the app ("Microsoft Teams Meeting") is left out. A link that
-    `MeetingLinkAddress` refuses (a user name in it, no real host) is not called a meeting; the text then reads as
-    for an event without one. Every channel (phone, desktop, email) gets this one text.
+    "Or in <place>." when the event has a place too. A place that only says the event is online is left out: the app's
+    name or its last word, or "online", with at most one more word ("Microsoft Teams Meeting", "Teams",
+    "Microsoft Teams-vergadering", "Online"). A link that `MeetingLinkAddress` refuses (a user name in it, no real
+    host) is not called a meeting; the text then reads as for an event without one. Every channel (phone, desktop,
+    email) gets this one text.
+  - No notification holds a link, and the geocoder never gets one: every text that shows the place (reminders with
+    or without a meeting, leave-now) and the travel estimate use the place without links
+    (`NotificationPlanner::placeWithoutLinks`). Every word with `://` in it (also app schemes such as `msteams://`
+    and a link glued to a word), starting with `www.`, or with a host name followed by a slash goes as a whole, and
+    with it brackets left empty and separators left over. A place that is only a link is no place: no leave-now
+    for it, and no estimate. Known limits, decided: a meeting id or passcode typed as plain text in the place
+    ("Zoom ID 123 456 7890 Passcode 4321") cannot be told from a place and is shown; the title is the user's own
+    subject and is shown as it is.
   - **Leave now** (switched off as a whole with `leaveNow` in the settings): for timed events with a place. With a
     travel time set on the event (`travelMinutes`, stored as `X-TRESSO-TRAVEL-MINUTES`; Apple Calendar's
     `X-APPLE-TRAVEL-DURATION` is read too) it fires at start minus travel minus the user's extra time (0, 5 or 10
