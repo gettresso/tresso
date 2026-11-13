@@ -334,6 +334,17 @@ describe('a link shown as text', () => {
     expect(full.text()).toContain('\ufffd')
   })
 
+  it('shows a long link it can join whole to copy by hand', async () => {
+    vi.stubGlobal('navigator', { ...navigator, clipboard: undefined })
+    const long = `https://teams.microsoft.com/l/meetup-join/${'a'.repeat(400 - 42)}`
+    expect(long).toHaveLength(400)
+    const wrapper = popover(event({ conference: conference('teams', long) }))
+    await wrapper.get('.copy-link').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.full-link').text()).toBe(long)
+    expect(wrapper.get('.url').attributes('title')).toBe(displayLink(long))
+  })
+
   it('shows a refused link in a list the same way', () => {
     const url = 'https://evil.example/\u202emoc.smaet'
     const wrapper = mount(JoinLink, { props: { conference: conference('other', url) } })

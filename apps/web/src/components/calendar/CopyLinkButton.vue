@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref } from 'vue'
-import { displayLink } from '@tresso/core'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { canJoin, displayLink } from '@tresso/core'
 import AppIcon from '@/components/AppIcon.vue'
 
 /**
@@ -13,6 +13,12 @@ const props = defineProps<{
   /** 30 px high, for a row in a list. */
   compact?: boolean
 }>()
+
+/**
+ * The link to copy by hand: whole when it passes canJoin (plain ASCII, nothing hidden; the box scrolls), so a long real
+ * link is never cut; any other link as core's displayLink shows it.
+ */
+const byHand = computed(() => (canJoin({ url: props.url }) ? props.url : displayLink(props.url)))
 
 const copied = ref(false)
 const failed = ref(false)
@@ -64,7 +70,7 @@ onBeforeUnmount(() => {
   <span class="visually-hidden" role="status" aria-live="polite">{{ announcement }}</span>
   <p v-if="failed" class="copy-failed" role="alert">
     The link could not be copied. Select it and copy it by hand.
-    <span class="full-link" dir="ltr">{{ displayLink(url) }}</span>
+    <span class="full-link" dir="ltr">{{ byHand }}</span>
   </p>
 </template>
 
