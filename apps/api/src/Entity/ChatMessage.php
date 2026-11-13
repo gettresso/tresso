@@ -24,6 +24,7 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Entity(repositoryClass: ChatMessageRepository::class)]
 #[ORM\Index(columns: ['chat_account_id', 'change_seq'])]
 #[ORM\Index(columns: ['chat_id', 'sent_at'])]
+#[ORM\Index(name: 'chat_message_account_sent', columns: ['chat_account_id', 'sent_at'])]
 #[ORM\UniqueConstraint(columns: ['chat_id', 'wa_fingerprint'])]
 class ChatMessage implements TracksChanges
 {

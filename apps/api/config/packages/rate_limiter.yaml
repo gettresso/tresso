@@ -46,6 +46,14 @@ framework:
             limit: 100
             interval: '10 minutes'
             cache_pool: cache.rate_limiter_shared
+        # WhatsApp searches per user (App\Chat\ChatReader::search(), GET /api/v1/chat-messages/search). Chat text is
+        # sealed, so each search opens up to 2,000 messages: 60 searches in 10 minutes is far above a person or a tool
+        # paging through results, and keeps a loop from opening a user's whole history over and over.
+        chat_search:
+            policy: sliding_window
+            limit: 60
+            interval: '10 minutes'
+            cache_pool: cache.rate_limiter_shared
         # Batches a WhatsApp relay imports per chat account (App\State\ChatRelayProcessor). A first import of 30 days of
         # a busy WhatsApp is some tens of thousands of messages, 200 a batch: a burst of 1200 batches (240,000 messages)
         # takes it whole, and 2 batches a second after that are far above what arrives live. It stops a relay that
@@ -85,6 +93,12 @@ when@test:
             chat_reply:
                 policy: sliding_window
                 limit: 8
+                interval: '10 minutes'
+                cache_pool: cache.rate_limiter_shared
+            # Low enough for a test to reach; every test user is new.
+            chat_search:
+                policy: sliding_window
+                limit: 12
                 interval: '10 minutes'
                 cache_pool: cache.rate_limiter_shared
             # Every test account is new; the limit test sends one batch more than this.
