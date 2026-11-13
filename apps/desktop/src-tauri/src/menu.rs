@@ -453,17 +453,24 @@ impl<T: Toggle> MenuItems<T> {
   /// Enables each item as the state says ([`enabled_in`]) and names the items whose titles follow it: Hide Sidebar or
   /// Show Sidebar, Mark as Unread or Mark as Read, Unflag or Flag (with no conversation open, the titles it starts with).
   /// Nothing where the app has no menu bar.
+  ///
+  /// An item that cannot be changed does not stop the others: each is changed, and what failed is said at the end (so
+  /// the web client takes the state as not applied, and sends it again).
   pub fn apply(&self, state: &MenuState) -> Result<(), String> {
+    let mut failed = Vec::new();
     for (id, action, item) in self.0.lock().map_err(|error| error.to_string())?.iter() {
-      item.set_enabled(enabled_in(*action, state))?;
-      match *id {
-        TOGGLE_SIDEBAR => item.set_text(sidebar_label(state.sidebar_shown))?,
-        TOGGLE_READ => item.set_text(read_label(state.message.is_none_or(|message| message.read)))?,
-        TOGGLE_FLAG => item.set_text(flag_label(state.message.is_some_and(|message| message.flagged)))?,
-        _ => {}
+      let title = match *id {
+        TOGGLE_SIDEBAR => Some(sidebar_label(state.sidebar_shown)),
+        TOGGLE_READ => Some(read_label(state.message.is_none_or(|message| message.read))),
+        TOGGLE_FLAG => Some(flag_label(state.message.is_some_and(|message| message.flagged))),
+        _ => None,
+      };
+      let changed = item.set_enabled(enabled_in(*action, state)).and_then(|()| title.map_or(Ok(()), |title| item.set_text(title)));
+      if let Err(error) = changed {
+        failed.push(format!("{id}: {error}"));
       }
     }
-    Ok(())
+    if failed.is_empty() { Ok(()) } else { Err(format!("Menu items could not follow the app's state: {}", failed.join("; "))) }
   }
 
   #[cfg(test)]
@@ -482,15 +489,17 @@ impl<T: Toggle> MenuItems<T> {
 pub fn menu_state<R: tauri::Runtime>(app: tauri::AppHandle<R>, signed_in: bool, sidebar_shown: bool, editing: bool, outbox: bool, message: Option<OpenMessage>) -> Result<(), String> {
   let state = MenuState { signed_in, sidebar_shown, editing, outbox, message };
   let handle = app.clone();
+  // The outcome comes back from the main thread, so a state the menu could not follow is refused (the web client sends
+  // it again) rather than taken as applied. On the main thread the task runs at once, so this never waits on itself.
+  let (outcome, applied) = std::sync::mpsc::channel();
   app
     .run_on_main_thread(move || {
       use tauri::Manager;
 
-      if let Err(error) = handle.state::<MenuItems<tauri::menu::MenuItem<R>>>().apply(&state) {
-        log::error!("The menu could not follow the app's state: {error}");
-      }
+      let _ = outcome.send(handle.state::<MenuItems<tauri::menu::MenuItem<R>>>().apply(&state));
     })
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+  applied.recv().map_err(|error| error.to_string())?
 }
 
 /// The bar's items of our own, in its order, each enabled as it starts: the items that act in the web client wait for
@@ -905,11 +914,12 @@ mod tests {
   }
 
   /// A menu item of a test, which remembers whether it is enabled and its title.
-  struct FakeItem(std::cell::Cell<bool>, std::cell::RefCell<String>);
+  /// Enabled, title, and whether changing it fails.
+  struct FakeItem(std::cell::Cell<bool>, std::cell::RefCell<String>, bool);
 
   impl FakeItem {
     fn new() -> Self {
-      Self(std::cell::Cell::new(false), std::cell::RefCell::new(String::new()))
+      Self(std::cell::Cell::new(false), std::cell::RefCell::new(String::new()), false)
     }
   }
 
@@ -918,6 +928,9 @@ mod tests {
 
   impl Toggle for FakeItem {
     fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+      if self.2 {
+        return Err("gone".to_string());
+      }
       self.0.set(enabled);
       Ok(())
     }
@@ -1138,6 +1151,28 @@ mod tests {
     assert!(enabled_in(make, &state));
     assert!(!enabled_in(make, &MenuState { message: Some(OpenMessage { has_todo: true, ..open }), ..state }));
     assert!(enabled_in(action_of("settle-do").unwrap(), &MenuState { message: Some(OpenMessage { has_todo: true, ..open }), ..state }));
+  }
+
+  /// An item that cannot be changed does not stop the others, and the state is refused, so the web client sends it again.
+  #[test]
+  fn apply_changes_every_item_it_can_and_says_which_it_could_not() {
+    let items = MenuItems::<FakeItem>::default();
+    items
+      .fill(vec![
+        ("new-message", Action::Web("new-message"), FakeItem::new()),
+        ("reply", action_of("reply").unwrap(), FakeItem(std::cell::Cell::new(false), std::cell::RefCell::new(String::new()), true)),
+        (TOGGLE_FLAG, action_of(TOGGLE_FLAG).unwrap(), FakeItem::new()),
+      ])
+      .unwrap();
+    let state = MenuState { signed_in: true, sidebar_shown: true, editing: false, outbox: false, message: Some(OpenMessage { read: true, flagged: true, has_todo: false }) };
+
+    let error = items.apply(&state).unwrap_err();
+
+    assert!(error.contains("reply: gone"), "{error}");
+    let lock = items.0.lock().unwrap();
+    assert!(lock[0].2.0.get(), "the item before the failing one");
+    assert!(lock[2].2.0.get(), "the item after the failing one");
+    assert_eq!(*lock[2].2.1.borrow(), "Unflag");
   }
 
   #[test]
