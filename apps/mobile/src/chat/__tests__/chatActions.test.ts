@@ -324,6 +324,23 @@ describe('ChatActions', () => {
       expect(updateChat).toHaveBeenCalledTimes(2)
     })
 
+    it('waits for Retry-After also when a newer message came meanwhile', async () => {
+      const unread = chat('c1')
+      const store = await copyWith({ chats: [unread] })
+      const updateChat = vi.fn(async (): Promise<SyncedChat> => Promise.reject(new ApiError(429, 'Too many requests.', {}, 60_000)))
+      const { actions, later } = setUp(store, { updateChat })
+
+      await actions.markRead(unread)
+      later(5_000)
+      await store.putChats([{ ...unread, lastMessageAt: '2026-11-13T10:20:00.000Z' }])
+      await actions.markRead(unread)
+      expect(updateChat).toHaveBeenCalledTimes(1)
+
+      later(55_000)
+      await actions.markRead(unread)
+      expect(updateChat, 'A newer message is read once the wait passed.').toHaveBeenCalledTimes(2)
+    })
+
     it('asks nothing for a chat that is read through already, left out, or not on the phone', async () => {
       const read = chat('c1', { readThrough: '2026-11-13T10:14:00.000Z' })
       const leftOut = chat('c2', { jid: '31600000002@s.whatsapp.net', leftOut: true })
