@@ -38,7 +38,8 @@ export interface FileUpload {
 /**
  * Why a file did not go. `phase` says how far it got: `upload` (nothing reached the server's queue; the file may have
  * been uploaded, which is harmless) or `queue` (the reply was refused, or with `unsure` its queueing got no answer, so
- * it may be queued: the same file again goes as the same reply). `cancelled`: the user cancelled it.
+ * it may be queued: the same file again goes as the same reply). `cancelled`: the user cancelled it; with `maybeSent`
+ * the server did not confirm that cancel, so the reply may still be queued (and sent: the chat shows it then).
  */
 export class FileNotSent extends Error {
   constructor(
@@ -46,20 +47,55 @@ export class FileNotSent extends Error {
     readonly reason: unknown,
     readonly unsure: boolean = false,
     readonly cancelled: boolean = false,
+    readonly maybeSent: boolean = false,
   ) {
     super(cancelled ? 'The file was not sent.' : 'The file did not go.')
     this.name = 'FileNotSent'
   }
 }
 
-/** Before the chat id in the chat value that holds its unsure file (see UnsureFile). */
+/**
+ * A reply the user cancelled while it was being queued, and the server kept that cancel (it refused the queueing as
+ * `cancelled`): what they asked for, so the screen says nothing and puts no text back.
+ */
+export class ReplyCancelled extends Error {
+  constructor(readonly replyId: string) {
+    super('The reply was cancelled.')
+    this.name = 'ReplyCancelled'
+  }
+}
+
+/** Whether the server refused a queueing because the reply was cancelled first (409 `cancelled`). */
+function refusedAsCancelled(error: unknown): boolean {
+  const failure = chatApiFailure(error)
+  return failure?.status === 409 && failure.code === 'cancelled'
+}
+
+/** How long Attach waits after the server said too many files without a Retry-After. */
+const ATTACH_HOLD_MS = 60_000
+
+/**
+ * Before the chat id and the file's fingerprint (`<prefix><chat id>:<fingerprint>`) in the chat value that holds an
+ * unsure file (see UnsureFile): one per file, so another file sent in the chat meanwhile leaves it alone.
+ */
 export const UNSURE_FILE_PREFIX = 'phone-unsure-file:'
+
+/** The chat value of an unsure file. */
+export function unsureFileKey(chatId: string, fingerprint: string): string {
+  return `${UNSURE_FILE_PREFIX}${chatId}:${fingerprint}`
+}
 
 /**
  * A file whose sending ended without an answer: the ids it went under, the fingerprint of the file (core's
  * fileFingerprint, never its name) and when the first try was made (the server's time), so the same file again in the
  * same chat goes as the same upload and reply, also after the app was closed.
  */
+/** What Attach says while the server asked to wait (a 429 on an upload, until its Retry-After). */
+export const ATTACH_HELD = 'Too many files sent at once. Wait a few minutes, then attach it again.'
+
+/** A file on its way, with how to stop it and the cancel sent while its reply was being queued. */
+type Upload = FileUpload & { controller: AbortController; abandoned: boolean; cancelling: Promise<boolean> | null }
+
 interface UnsureFile {
   fingerprint: string
   uploadId: string
@@ -166,12 +202,16 @@ export class ChatActions {
   private readonly landed = new Set<string>()
   /** The chat of each hidden reply. */
   private readonly hiddenIn = new Map<string, string>()
+  /** Replies the user cancelled while they were being queued, until the queueing answered (see send). */
+  private readonly cancelledQueueing = new Set<string>()
   /** Cancels and retries whose request is under way. */
   private readonly cancelling = new Set<string>()
   private readonly retryingNow = new Set<string>()
 
   /** Files on their way, by reply id. */
-  private readonly uploads = new Map<string, FileUpload & { controller: AbortController; abandoned: boolean }>()
+  private readonly uploads = new Map<string, Upload>()
+  /** Until when (the server's time) Attach waits after the server said too many files; null when it does not. */
+  private attachHeldUntil: number | null = null
 
   constructor(private readonly deps: ChatActionsDeps) {}
 
@@ -220,7 +260,9 @@ export class ChatActions {
     }
     for (const id of [...this.hidden]) {
       const row = byId.get(id)
-      if (this.hiddenIn.get(id) === chatId && (row === undefined || row.status === 'cancelled') && !this.cancelling.has(id)) {
+      // Gone or cancelled in the copy: hidden by the copy itself now. Sent after all (a cancel the relay overtook, which
+      // the server turns into sent): shown again as sent.
+      if (this.hiddenIn.get(id) === chatId && (row === undefined || row.status === 'cancelled' || row.status === 'sent') && !this.cancelling.has(id)) {
         this.hidden.delete(id)
         this.hiddenIn.delete(id)
         changed = true
@@ -286,11 +328,18 @@ export class ChatActions {
     try {
       queued = await this.deps.api.queueReply(chat.id, { id, text: checked.text })
     } catch (error) {
+      const cancelledHere = this.cancelledQueueing.delete(id)
       const left = (this.pending.get(chat.id) ?? []).filter((reply) => reply.id !== id)
       if (left.length === 0) {
         this.pending.delete(chat.id)
       } else {
         this.pending.set(chat.id, left)
+      }
+      if (refusedAsCancelled(error) && cancelledHere) {
+        // The user's Cancel overtook the queueing and the server kept it: cancelled, as they asked.
+        this.forgetUnsure(chat.id)
+        this.emit()
+        throw new ReplyCancelled(id)
       }
       if (outcomeUnknown(error)) {
         await this.keepUnsure(store, { id, chatId: chat.id, hash, at: earlier?.id === id ? earlier.at : now })
@@ -300,6 +349,7 @@ export class ChatActions {
       this.emit()
       throw error
     }
+    this.cancelledQueueing.delete(id)
     this.forgetUnsure(chat.id)
     // Shown as the server has it until the copy has it too (see settle; the delta brings the same row).
     this.landed.add(id)
@@ -326,10 +376,12 @@ export class ChatActions {
   /**
    * Sends a file: uploads it to the chat (read from the phone as it goes, with its progress), then queues a reply that
    * carries it for the relaying Mac. Its bubble shows it as uploading, never as waiting for the Mac, until the reply is
-   * queued. Cancel while it uploads stops the upload and queues nothing; Cancel while it is being queued cancels the reply
-   * on the server once the queueing answered. When the outcome is not known, the same file in the same chat goes again
-   * under the same upload and reply ids within REUSE_ID_MS (kept in the copy by fingerprint, dropped once the copy has
-   * that reply), so it is queued once. At most CHAT_MAX_FILE_BYTES.
+   * queued. Cancel while it uploads stops the upload and queues nothing. Cancel while it is being queued cancels the reply
+   * on the server at once (the server keeps that also before it saw the reply, and then refuses the queueing) and again
+   * once the queueing answered; when no cancel was confirmed, it may still be sent (FileNotSent `maybeSent`), and the
+   * queued reply stays in the chat. When the outcome is not known, the same file in the same chat goes again under the
+   * same upload and reply ids within REUSE_ID_MS (kept in the copy by chat and fingerprint, dropped once the copy has
+   * that reply), so it is queued once. At most CHAT_MAX_FILE_BYTES; nothing while the server asked to wait (attachHeld).
    *
    * @throws FileNotSent with how far it got
    */
@@ -342,8 +394,12 @@ export class ChatActions {
       throw new FileNotSent('upload', new Error(`${file.name} is larger than 100 MB, the most Tresso sends.`))
     }
     const now = this.deps.now()
+    if (this.attachHeld() !== null) {
+      throw new FileNotSent('upload', new Error(ATTACH_HELD))
+    }
     const fingerprint = fileFingerprint(file.name, file.size, file.lastModified)
-    const earlier = await this.unsureFileOf(store, chat.id, fingerprint, now)
+    const key = unsureFileKey(chat.id, fingerprint)
+    const earlier = await this.unsureFileOf(store, chat.id, key, now)
     const uploadId = earlier?.uploadId ?? this.deps.newId(now)
     const id = earlier?.replyId ?? this.deps.newId(now)
     const at = earlier?.at ?? now
@@ -359,7 +415,7 @@ export class ChatActions {
       sentAt: null,
       file: { name: file.name, size: file.size },
     }
-    const upload: FileUpload & { controller: AbortController; abandoned: boolean } = { phase: 'uploading', progress: 0, controller: new AbortController(), abandoned: false }
+    const upload: Upload = { phase: 'uploading', progress: 0, controller: new AbortController(), abandoned: false, cancelling: null }
     this.uploads.set(id, upload)
     this.pending.set(chat.id, [...(this.pending.get(chat.id) ?? []).filter((reply) => reply.id !== id), waiting])
     this.emit()
@@ -371,6 +427,8 @@ export class ChatActions {
         this.pending.set(chat.id, left)
       }
     }
+    /** Cancelled while being queued: whether the server confirmed a cancel (the one sent at once, or one sent now). */
+    const confirmCancel = async (): Promise<boolean> => (upload.cancelling !== null && (await upload.cancelling)) || (await this.cancelOnServer(id))
     let queued: SyncedChatOutgoing
     try {
       try {
@@ -382,6 +440,9 @@ export class ChatActions {
           },
         })
       } catch (error) {
+        if (!upload.abandoned && chatApiFailure(error)?.status === 429) {
+          this.holdAttach(chatApiFailure(error)?.retryAfterMs ?? null)
+        }
         throw new FileNotSent('upload', error, false, upload.abandoned)
       }
       if (upload.abandoned) {
@@ -395,14 +456,17 @@ export class ChatActions {
       } catch (error) {
         const unsure = outcomeUnknown(error)
         if (upload.abandoned) {
-          await this.cancelAbandoned(id)
-          await this.forgetUnsureFile(chat.id)
-        } else if (unsure) {
-          await this.keepUnsureFile(store, chat.id, { fingerprint, uploadId, replyId: id, at })
-        } else {
-          await this.forgetUnsureFile(chat.id)
+          // A refusal as `cancelled` is the user's cancel having worked; after any other answer it is cancelled again.
+          const confirmed = refusedAsCancelled(error) || (await confirmCancel())
+          await this.forgetUnsureFile(key)
+          throw new FileNotSent('queue', error, false, true, !confirmed)
         }
-        throw new FileNotSent('queue', error, unsure && !upload.abandoned, upload.abandoned)
+        if (unsure) {
+          await this.keepUnsureFile(store, key, { fingerprint, uploadId, replyId: id, at })
+        } else {
+          await this.forgetUnsureFile(key)
+        }
+        throw new FileNotSent('queue', error, unsure, false)
       }
     } catch (error) {
       drop()
@@ -411,14 +475,14 @@ export class ChatActions {
       throw error
     }
     this.uploads.delete(id)
-    await this.forgetUnsureFile(chat.id)
-    if (upload.abandoned) {
-      // Cancelled while it was being queued: the reply is cancelled now that the queueing answered, so it never goes.
+    await this.forgetUnsureFile(key)
+    if (upload.abandoned && (await confirmCancel())) {
+      // Cancelled while it was being queued, and the server took the cancel: it never goes.
       drop()
-      await this.cancelAbandoned(id)
       this.emit()
       throw new FileNotSent('queue', new Error('Cancelled.'), false, true)
     }
+    // Queued; a cancel that was not confirmed leaves it so (it may still be sent): the chat shows it as it is.
     this.landed.add(id)
     this.pending.set(chat.id, (this.pending.get(chat.id) ?? []).map((reply) => (reply.id === id ? queued : reply)))
     this.emit()
@@ -430,7 +494,31 @@ export class ChatActions {
     } catch (error) {
       this.deps.onError?.('Keeping a queued reply on this phone failed', error)
     }
+    if (upload.abandoned) {
+      throw new FileNotSent('queue', new Error('Not cancelled.'), false, true, true)
+    }
     return queued
+  }
+
+  /**
+   * How long (ms) Attach still waits because the server said too many files (until its Retry-After, on the server's
+   * clock); null when it does not wait.
+   */
+  attachHeld(): number | null {
+    if (this.attachHeldUntil === null) {
+      return null
+    }
+    const left = this.attachHeldUntil - this.deps.now()
+    if (left <= 0) {
+      this.attachHeldUntil = null
+      return null
+    }
+    return left
+  }
+
+  private holdAttach(retryAfterMs: number | null): void {
+    this.attachHeldUntil = this.deps.now() + (retryAfterMs ?? ATTACH_HOLD_MS)
+    this.emit()
   }
 
   /** Stops the files on their way (all, or those of one chat): uploads stop, and nothing more is queued. */
@@ -438,27 +526,42 @@ export class ChatActions {
     for (const [id, upload] of this.uploads) {
       const reply = [...this.pending.values()].flat().find((row) => row.id === id)
       if (chatId === null || reply?.chatId === chatId) {
-        upload.abandoned = true
-        upload.controller.abort()
+        this.abandon(id, upload)
       }
     }
   }
 
-  private async cancelAbandoned(id: string): Promise<void> {
+  /** Stops one file: its upload, or, while its reply is being queued, the reply (cancelled on the server at once). */
+  private abandon(id: string, upload: Upload): void {
+    if (upload.abandoned) {
+      return
+    }
+    upload.abandoned = true
+    upload.controller.abort()
+    if (upload.phase === 'queueing') {
+      upload.cancelling = this.cancelOnServer(id)
+    }
+  }
+
+  /** Cancels a reply on the server; whether the server confirmed it (an answer, or 404: it is not there to send). */
+  private async cancelOnServer(id: string): Promise<boolean> {
     try {
       await this.deps.api.cancelReply(id)
+      return true
     } catch (error) {
-      if (chatApiFailure(error)?.status !== 404) {
-        this.deps.onError?.('Cancelling a file that was cancelled while it was queued failed', error)
+      if (chatApiFailure(error)?.status === 404) {
+        return true
       }
+      this.deps.onError?.('Cancelling a file that was cancelled while it was queued failed', error)
+      return false
     }
   }
 
-  /** The unsure file of a chat when it is this file, recent enough and not in the copy yet; an outdated one is forgotten. */
-  private async unsureFileOf(store: MailStore, chatId: string, fingerprint: string, now: number): Promise<UnsureFile | null> {
+  /** The unsure file under `key` (this file in this chat) when recent enough and not in the copy yet; else it is forgotten. */
+  private async unsureFileOf(store: MailStore, chatId: string, key: string, now: number): Promise<UnsureFile | null> {
     let kept: UnsureFile | null = null
     try {
-      const raw = await store.chatMeta(UNSURE_FILE_PREFIX + chatId)
+      const raw = await store.chatMeta(key)
       const parsed = raw === null ? null : (JSON.parse(raw) as Partial<UnsureFile>)
       if (parsed !== null && typeof parsed.fingerprint === 'string' && typeof parsed.uploadId === 'string' && typeof parsed.replyId === 'string' && typeof parsed.at === 'number') {
         kept = { fingerprint: parsed.fingerprint, uploadId: parsed.uploadId, replyId: parsed.replyId, at: parsed.at }
@@ -470,24 +573,24 @@ export class ChatActions {
       return null
     }
     if (!(now - kept.at < REUSE_ID_MS && now >= kept.at) || (await this.copyHasReply(store, chatId, kept.replyId))) {
-      await this.forgetUnsureFile(chatId)
+      await this.forgetUnsureFile(key)
       return null
     }
-    return kept.fingerprint === fingerprint ? kept : null
+    return kept
   }
 
-  private async keepUnsureFile(store: MailStore, chatId: string, unsure: UnsureFile): Promise<void> {
+  private async keepUnsureFile(store: MailStore, key: string, unsure: UnsureFile): Promise<void> {
     try {
-      await store.setChatMeta(UNSURE_FILE_PREFIX + chatId, JSON.stringify(unsure))
+      await store.setChatMeta(key, JSON.stringify(unsure))
     } catch (error) {
       this.deps.onError?.('Keeping an unsure file failed', error)
     }
   }
 
-  private async forgetUnsureFile(chatId: string): Promise<void> {
+  private async forgetUnsureFile(key: string): Promise<void> {
     const store = this.deps.store()
     if (store !== null) {
-      await store.setChatMeta(UNSURE_FILE_PREFIX + chatId, null).catch((error: unknown) => this.deps.onError?.('Forgetting an unsure file failed', error))
+      await store.setChatMeta(key, null).catch((error: unknown) => this.deps.onError?.('Forgetting an unsure file failed', error))
     }
   }
 
@@ -577,9 +680,8 @@ export class ChatActions {
   async cancel(reply: SyncedChatOutgoing): Promise<void> {
     const upload = this.uploads.get(reply.id)
     if (upload !== undefined) {
-      // A file on its way: it stops here (sendFile queues nothing, or cancels a reply being queued once it answered).
-      upload.abandoned = true
-      upload.controller.abort()
+      // A file on its way: it stops here (sendFile queues nothing, or cancels the reply being queued, see sendFile).
+      this.abandon(reply.id, upload)
       this.emit()
       return
     }
@@ -590,6 +692,10 @@ export class ChatActions {
     this.cancelling.add(reply.id)
     this.hidden.add(reply.id)
     this.hiddenIn.set(reply.id, reply.chatId)
+    const queueing = (this.pending.get(reply.chatId) ?? []).some((row) => row.id === reply.id && !this.landed.has(row.id))
+    if (queueing) {
+      this.cancelledQueueing.add(reply.id)
+    }
     this.emit()
     try {
       try {
@@ -607,6 +713,7 @@ export class ChatActions {
     } catch (error) {
       this.hidden.delete(reply.id)
       this.hiddenIn.delete(reply.id)
+      this.cancelledQueueing.delete(reply.id)
       throw error
     } finally {
       this.cancelling.delete(reply.id)
@@ -715,10 +822,12 @@ export class ChatActions {
   clear(): void {
     this.abandonUploads()
     this.uploads.clear()
+    this.attachHeldUntil = null
     this.refusedRead.clear()
     this.pending.clear()
     this.hidden.clear()
     this.hiddenIn.clear()
+    this.cancelledQueueing.clear()
     this.retrying.clear()
     this.unsure.clear()
     this.landed.clear()

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { SqliteMailStore, SyncedChat, SyncedChatOutgoing, UpdateChatRequest } from '@tresso/core'
+import { fileFingerprint, type SqliteMailStore, type SyncedChat, type SyncedChatOutgoing, type UpdateChatRequest } from '@tresso/core'
 import { ApiError } from '@/auth/session'
-import { ChatActions, outcomeUnknown, REUSE_ID_MS, UNSURE_FILE_PREFIX, UNSURE_PREFIX } from '@/chat/chatActions'
+import { ChatActions, outcomeUnknown, ReplyCancelled, REUSE_ID_MS, UNSURE_FILE_PREFIX, UNSURE_PREFIX, unsureFileKey } from '@/chat/chatActions'
 import type { PhoneChatApi } from '@/chat/chatApi'
 import { chat, copyWith, deferred, reply } from './fixtures'
 
@@ -183,6 +183,31 @@ describe('ChatActions', () => {
       expect(ids[1]).not.toBe(ids[0])
     })
 
+    it('takes a reply the user cancelled before its queueing answered as cancelled, which the server kept', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const answer = deferred<SyncedChatOutgoing>()
+      const { actions, api } = setUp(store, { queueReply: vi.fn(() => answer.promise) })
+
+      const sending = actions.send(chat('c1'), 'On my way')
+      await vi.waitFor(() => expect(actions.shown('c1', [])).toHaveLength(1))
+      const shown = actions.shown('c1', [])[0]!
+      await actions.cancel(shown)
+      expect(api.cancelReply).toHaveBeenCalledWith(shown.id)
+      answer.reject(new ApiError(409, 'This reply was cancelled.', {}, null, 'cancelled'))
+
+      await expect(sending).rejects.toBeInstanceOf(ReplyCancelled)
+      expect(actions.shown('c1', [])).toEqual([])
+      expect(await store.chatMeta(UNSURE_PREFIX + 'c1'), 'Nothing to send again.').toBeNull()
+    })
+
+    it('never takes a refusal as cancelled for a reply the user did not cancel', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const refusal = new ApiError(409, 'This reply was cancelled.', {}, null, 'cancelled')
+      const { actions } = setUp(store, { queueReply: vi.fn(async () => Promise.reject(refusal)) })
+
+      await expect(actions.send(chat('c1'), 'On my way')).rejects.toBe(refusal)
+    })
+
     it('never sends a text core refuses', async () => {
       const store = await copyWith({ chats: [chat('c1')] })
       const { actions, api } = setUp(store)
@@ -223,6 +248,21 @@ describe('ChatActions', () => {
 
       expect(actions.shown('c1', [waiting])).toEqual([waiting])
       expect((await outgoingOf(store, 'c1'))[0]?.status).toBe('waiting')
+    })
+
+    it('shows a hidden reply again when the copy has it as sent (a cancel the relay overtook)', async () => {
+      const waiting = reply('r1', 'c1')
+      const store = await copyWith({ chats: [chat('c1')], outgoing: [waiting] })
+      const answer = deferred<void>()
+      const { actions } = setUp(store, { cancelReply: vi.fn(() => answer.promise) })
+
+      const cancelling = actions.cancel(waiting)
+      answer.resolve()
+      await cancelling
+      const sent = reply('r1', 'c1', { status: 'sent', sentAt: new Date(NOW).toISOString() })
+      actions.settle('c1', [sent])
+
+      expect(actions.shown('c1', [sent])).toEqual([sent])
     })
 
     it('counts a reply the server no longer has as gone', async () => {
@@ -431,7 +471,7 @@ describe('ChatActions', () => {
       expect(actions.shown('c1', [])).toEqual([])
     })
 
-    it('cancels on the server a reply that was being queued when Cancel came, after the queueing answered', async () => {
+    it('cancels on the server at once a reply that was being queued when Cancel came', async () => {
       const store = await copyWith({ chats: [chat('c1')] })
       const answer = deferred<SyncedChatOutgoing>()
       const { actions, api } = setUp(store, { queueReply: vi.fn(() => answer.promise) })
@@ -440,12 +480,91 @@ describe('ChatActions', () => {
       await vi.waitFor(() => expect(api.queueReply).toHaveBeenCalled())
       const shown = actions.shown('c1', [])[0]!
       await actions.cancel(shown)
-      expect(api.cancelReply).not.toHaveBeenCalled()
+      expect(api.cancelReply, 'Before the queueing answered.').toHaveBeenCalledWith(shown.id)
       answer.resolve(reply(shown.id, 'c1', { text: '' }))
 
-      await expect(sending).rejects.toMatchObject({ cancelled: true })
-      expect(api.cancelReply).toHaveBeenCalledWith(shown.id)
+      await expect(sending).rejects.toMatchObject({ cancelled: true, maybeSent: false })
+      expect(api.cancelReply).toHaveBeenCalledTimes(1)
       expect(actions.shown('c1', [])).toEqual([])
+    })
+
+    it('takes a queueing refused as cancelled after the cancel as the cancel having worked', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const answer = deferred<SyncedChatOutgoing>()
+      const { actions, api } = setUp(store, { queueReply: vi.fn(() => answer.promise) })
+
+      const sending = actions.sendFile(chat('c1'), PLAN)
+      await vi.waitFor(() => expect(api.queueReply).toHaveBeenCalled())
+      await actions.cancel(actions.shown('c1', [])[0]!)
+      answer.reject(new ApiError(409, 'This reply was cancelled.', {}, null, 'cancelled'))
+
+      await expect(sending).rejects.toMatchObject({ cancelled: true, maybeSent: false })
+      expect(api.cancelReply).toHaveBeenCalledTimes(1)
+    })
+
+    it('cancels again once the queueing answered when the first cancel got no answer, also after an unsure queueing', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const answer = deferred<SyncedChatOutgoing>()
+      const cancelReply = vi.fn<PhoneChatApi['cancelReply']>().mockRejectedValueOnce(new TypeError('Network request failed')).mockResolvedValue(undefined)
+      const { actions, api } = setUp(store, { queueReply: vi.fn(() => answer.promise), cancelReply })
+
+      const sending = actions.sendFile(chat('c1'), PLAN)
+      await vi.waitFor(() => expect(api.queueReply).toHaveBeenCalled())
+      const shown = actions.shown('c1', [])[0]!
+      await actions.cancel(shown)
+      answer.reject(new TypeError('Network request failed'))
+
+      await expect(sending).rejects.toMatchObject({ cancelled: true, maybeSent: false })
+      expect(cancelReply.mock.calls).toEqual([[shown.id], [shown.id]])
+      expect(await store.chatMeta(unsureFileKey('c1', fileFingerprint(PLAN.name, PLAN.size, PLAN.lastModified))), 'Nothing kept to send again.').toBeNull()
+    })
+
+    it('says a file may still be sent when no cancel was confirmed, and keeps the queued reply in the chat', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const answer = deferred<SyncedChatOutgoing>()
+      const { actions, api } = setUp(store, { queueReply: vi.fn(() => answer.promise), cancelReply: vi.fn(async () => Promise.reject(new TypeError('Network request failed'))) })
+
+      const sending = actions.sendFile(chat('c1'), PLAN)
+      await vi.waitFor(() => expect(api.queueReply).toHaveBeenCalled())
+      const shown = actions.shown('c1', [])[0]!
+      await actions.cancel(shown)
+      answer.resolve(reply(shown.id, 'c1', { text: '', file: { name: 'plan.pdf', size: 31 } }))
+
+      await expect(sending).rejects.toMatchObject({ cancelled: true, maybeSent: true })
+      expect(actions.shown('c1', []).map((row) => [row.id, row.status])).toEqual([[shown.id, 'waiting']])
+      expect((await outgoingOf(store, 'c1')).map((row) => row.id)).toEqual([shown.id])
+    })
+
+    it('holds Attach after too many files until the server\'s Retry-After passed', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const uploadFile = vi.fn<PhoneChatApi['uploadFile']>().mockRejectedValueOnce(new ApiError(429, 'Too many files.', {}, 30_000))
+      uploadFile.mockImplementation(async (chatId, uploadId) => ({ id: uploadId, chatId, size: 31 }))
+      const { actions, later } = setUp(store, { uploadFile })
+
+      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toMatchObject({ phase: 'upload' })
+      expect(actions.attachHeld()).toBe(30_000)
+      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toMatchObject({ phase: 'upload' })
+      expect(uploadFile, 'Nothing is asked while held.').toHaveBeenCalledTimes(1)
+
+      later(30_000)
+      expect(actions.attachHeld()).toBeNull()
+      await actions.sendFile(chat('c1'), PLAN)
+      expect(uploadFile).toHaveBeenCalledTimes(2)
+    })
+
+    it('keeps an unsure file per chat and file, so another file sent meanwhile leaves it alone', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const queueReply = vi.fn<PhoneChatApi['queueReply']>(async () => Promise.reject(new ApiError(502, 'Bad Gateway')))
+      const { actions } = setUp(store, { queueReply })
+      const other = { ...PLAN, uri: 'file:///cache/other.pdf', name: 'other.pdf', lastModified: 2 }
+
+      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toMatchObject({ unsure: true })
+      await expect(actions.sendFile(chat('c1'), other)).rejects.toMatchObject({ unsure: true })
+      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toThrow()
+
+      const replies = queueReply.mock.calls.map((call) => call[1].id)
+      expect(replies[2], 'The first file again is the first reply.').toBe(replies[0])
+      expect(replies[1]).not.toBe(replies[0])
     })
 
     it('stops every file on its way at sign-out', async () => {
@@ -468,8 +587,9 @@ describe('ChatActions', () => {
 
       await expect(first.actions.sendFile(chat('c1'), PLAN)).rejects.toMatchObject({ phase: 'queue', unsure: true })
       expect(first.actions.shown('c1', [])).toEqual([])
-      const kept = await store.chatMeta(UNSURE_FILE_PREFIX + 'c1')
+      const kept = await store.chatMeta(unsureFileKey('c1', fileFingerprint(PLAN.name, PLAN.size, PLAN.lastModified)))
       expect(kept).not.toBeNull()
+      expect(unsureFileKey('c1', 'f').startsWith(UNSURE_FILE_PREFIX + 'c1:')).toBe(true)
       expect(kept, 'Never the file name.').not.toContain('plan.pdf')
 
       const again = setUp(store, { queueReply })

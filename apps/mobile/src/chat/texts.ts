@@ -129,9 +129,10 @@ export function uploadText(upload: { phase: 'uploading' | 'queueing'; progress: 
  * (reading or uploading the file, or a refusal), maybe queued when the queueing got no answer (the same file again goes
  * as the same reply), and nothing at all when the user cancelled it.
  */
-export function fileFailureText(name: string, phase: 'upload' | 'queue', reason: unknown, unsure: boolean, cancelled: boolean): string {
+export function fileFailureText(name: string, phase: 'upload' | 'queue', reason: unknown, unsure: boolean, cancelled: boolean, maybeSent = false): string {
   if (cancelled) {
-    return `${name} was not sent.`
+    // A cancel the server did not confirm: the reply may be queued, and then it goes (the chat shows it).
+    return maybeSent ? `${name} may still be sent. Check the chat.` : `${name} was not sent.`
   }
   if (unsure) {
     return `${name} may have been queued. ${requestFailure(reason)} Attaching the same file again in the next minutes sends it once.`
