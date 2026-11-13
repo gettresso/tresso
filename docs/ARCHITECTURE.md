@@ -3042,6 +3042,12 @@ Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOp
 - Deploy order: the API before the workers. The workers send `conferenceStatus` and `conferenceError` and read the
   nonce and the removal word; an API without them ignores the fields and writes neither property, so nothing changes
   until it is out. Workers older than the API keep working, without the outcome reports and without removal.
+- "Leave without a link" is `DELETE /api/v1/calendar-events/{id}/meeting-link?only=request`: it drops the series'
+  pending or failed request and nothing else. When the series has a link (it arrived after the client last looked)
+  it answers 409 and changes nothing; it never removes a link, never notifies guests and never writes
+  `X-TRESSO-CONFERENCE-REMOVE`. A request still in the iCalendar text goes out with a write that only lacks the
+  `X-TRESSO-CONFERENCE-*` properties (asking the provider for nothing); one only on the object is cleared there. The
+  plain `DELETE` still removes the link.
 
 The web and desktop clients show an event's link in the popover as the app's name (from `conference.provider`, which
 the server sets only for a link on that app's own host; anything else reads "Meeting link"), the link on one line

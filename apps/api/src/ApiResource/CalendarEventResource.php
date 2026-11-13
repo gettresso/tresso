@@ -33,9 +33,10 @@ use Symfony\Component\Validator\Constraints as Assert;
  * `conferenceRequest` is a meeting link asked of the calendar's provider (`conferenceProvider` on a save, or
  * `POST /calendar-events/{id}/meeting-link`) that is not on the event yet: `pending`, or `failed` with a reason
  * (`refused`, `not_supported`, `unreachable`). `DELETE /calendar-events/{id}/meeting-link` takes the link off the
- * series or drops the request. Both act on the whole series and only for events the user organizes. A save that
- * sends the provider of a request that is still pending changes nothing about it; one that sends the provider of a
- * failed request asks again. `conference.provider` and `conferenceRequest.provider` are plain strings (`other` for a
+ * series or drops the request; with `?only=request` it drops only a pending or failed request, never a link (409 when
+ * the series has one, which arrived meanwhile), tells nobody and asks the provider for nothing. Both act on the whole
+ * series and only for events the user organizes. A save that sends the provider of a request that is still pending
+ * changes nothing about it; one that sends the provider of a failed request asks again. `conference.provider` and `conferenceRequest.provider` are plain strings (`other` for a
  * link of no known app): a client shows a name it does not know as a meeting link. `conference.removable` is false
  * for a Teams meeting Microsoft made on its calendar's event, which cannot be taken off it (rows stored before the
  * field existed lack it until the event changes).
@@ -144,7 +145,14 @@ use Symfony\Component\Validator\Constraints as Assert;
             provider: CalendarEventProvider::class,
             processor: MeetingLinkProcessor::class,
             name: 'calendar_event_meeting_link_remove',
-            parameters: ['notify' => new QueryParameter(schema: ['type' => 'boolean', 'default' => true], description: 'Send updates to attendees.', constraints: [new Assert\Regex('/^(true|false|1|0)?$/')])],
+            parameters: [
+                'notify' => new QueryParameter(schema: ['type' => 'boolean', 'default' => true], description: 'Send updates to attendees.', constraints: [new Assert\Regex('/^(true|false|1|0)?$/')]),
+                'only' => new QueryParameter(
+                    schema: ['type' => 'string', 'enum' => ['request']],
+                    description: '"request": drop only the pending or failed request ("Leave without a link"). Never removes a link: 409 when the series has one. Nobody is told.',
+                    constraints: [new Assert\Choice(choices: ['request'])],
+                ),
+            ],
         ),
     ],
 )]

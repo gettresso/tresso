@@ -423,6 +423,25 @@ final class CalendarInvitationTest extends DatabaseTestCase
         self::assertStringContainsString('Content-Type: text/calendar; charset=utf-8; method=CANCEL', $this->rawOutgoing($outgoing[1]));
     }
 
+    public function testLeavingWithoutALinkNeverTakesTheLinkOffNorWritesToTheGuests(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/calendar-events', self::event($this->localCalendarId($this->kim), [
+            'summary' => 'Planning',
+            'conferenceUrl' => 'https://meet.company.example/kim',
+            'attendees' => [['address' => 'anna@finance.example']],
+            'organizerMailAccountId' => $this->accountId,
+        ]), $this->kim);
+        self::assertResponseStatusCodeSame(201);
+        $eventId = $this->responseString('id');
+        self::assertCount(1, $this->outgoing());
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link?only=request', server: $this->kim);
+
+        self::assertResponseStatusCodeSame(409);
+        self::assertSame('https://meet.company.example/kim', \is_array($this->getJson('/api/v1/calendar-events/'.$eventId, $this->kim)['conference'] ?? null) ? $this->getJson('/api/v1/calendar-events/'.$eventId, $this->kim)['conference']['url'] : null);
+        self::assertCount(1, $this->outgoing(), 'No update goes to Anna.');
+    }
+
     public function testTheInvitationCarriesTheMeetingLinkOnce(): void
     {
         $room = 'https://meet.company.example/kim?pwd=a1&lang=en';

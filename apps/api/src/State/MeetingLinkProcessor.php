@@ -11,6 +11,7 @@ use App\ApiResource\CalendarEventResource;
 use App\ApiResource\Input\Calendar\MeetingLinkInput;
 use App\Calendar\EditRejected;
 use App\Calendar\EventEditor;
+use App\Calendar\MeetingLinkPresent;
 use App\Calendar\ICalendar\InvalidCalendarData;
 use App\Calendar\Scheduling\SchedulingFailed;
 use App\Entity\CalendarEvent;
@@ -18,13 +19,15 @@ use App\Repository\CalendarEventRepository;
 use App\Security\CurrentUser;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 /**
  * POST and DELETE /calendar-events/{id}/meeting-link: asks the calendar's provider for a meeting on the whole series
- * (Retry), or takes the link off it and drops a pending or failed request (Leave without a link). Only for events the
- * user organizes; `notify=false` keeps updates from going to the guests.
+ * (Retry), or takes the link off it and drops a pending or failed request. `DELETE ...?only=request` drops only the
+ * request (Leave without a link) and answers 409 when the series has a link. Only for events the user organizes;
+ * `notify=false` keeps updates from going to the guests.
  *
  * @implements ProcessorInterface<MeetingLinkInput|CalendarEventResource, CalendarEventResource>
  */
@@ -46,14 +49,20 @@ final readonly class MeetingLinkProcessor implements ProcessorInterface
         if (null === $event) {
             throw new NotFoundHttpException('Event not found.');
         }
-        $notify = !\in_array($this->requests->getCurrentRequest()?->query->get('notify'), ['false', '0'], true);
+        $query = $this->requests->getCurrentRequest()?->query;
+        $notify = !\in_array($query?->get('notify'), ['false', '0'], true);
+        $requestOnly = 'request' === $query?->get('only');
 
         try {
             return CalendarEventResource::fromEntity($this->entityManager->wrapInTransaction(
-                fn (): CalendarEvent => $operation instanceof DeleteOperationInterface || !$data instanceof MeetingLinkInput
-                    ? $this->editor->removeMeeting($event, $notify)
-                    : $this->editor->requestMeeting($event, $data->provider, $notify),
+                fn (): CalendarEvent => match (true) {
+                    $data instanceof MeetingLinkInput && !$operation instanceof DeleteOperationInterface => $this->editor->requestMeeting($event, $data->provider, $notify),
+                    $requestOnly => $this->editor->dropMeetingRequest($event),
+                    default => $this->editor->removeMeeting($event, $notify),
+                },
             ));
+        } catch (MeetingLinkPresent $e) {
+            throw new ConflictHttpException($e->getMessage(), $e);
         } catch (EditRejected|SchedulingFailed|InvalidCalendarData $e) {
             throw new UnprocessableEntityHttpException($e->getMessage(), $e);
         }
