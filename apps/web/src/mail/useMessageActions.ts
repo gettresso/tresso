@@ -113,3 +113,12 @@ export function shortcutAllowed(event: KeyboardEvent, composing: boolean): boole
   const inMenu = target?.closest('[role="menu"]') != null
   return !(typing || composing || inDialog || inMenu || event.repeat || event.isComposing || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey)
 }
+
+/**
+ * Whether a modal layer is open anywhere on the page: a modal `<dialog>`, an alert dialog (a question that waits for an
+ * answer), or an element that says it is a dialog and does not say it is not modal. The compose window is not counted:
+ * whether it holds the user's attention is the compose store's to say (open and not minimized).
+ */
+export function modalOpen(doc: Document = document): boolean {
+  return doc.querySelector('dialog[open], [role="alertdialog"], [role="dialog"]:not([aria-modal="false"]):not([data-compose-window])') !== null
+}

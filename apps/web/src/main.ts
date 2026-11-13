@@ -14,8 +14,8 @@ import { config } from './config'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { isDesktop, onDeepLinks } from './platform/desktop'
-import { startMenuBridge } from './platform/menu'
-import { followEditing } from './platform/editing'
+import { followPageVisibility, startMenuBridge } from './platform/menu'
+import { followEditing, recheckEditingOnNavigation } from './platform/editing'
 import { openConversation } from './mail/openConversation'
 import { followReducedTransparency, vibrant } from './platform/vibrancy'
 import { followSelectionAccent, framed } from './platform/frame'
@@ -60,6 +60,8 @@ if (isDesktop) {
   // while a conversation is open). It does not hold up the first screen; when it cannot start, the items that act in
   // the app stay disabled.
   const editing = followEditing(document)
+  recheckEditingOnNavigation(router)
+  const page = followPageVisibility(document)
   startMenuBridge(
     {
       router,
@@ -71,6 +73,8 @@ if (isDesktop) {
       getNewMail: () => useMailStore().syncNow(),
       conversation: openConversation,
       editing: () => editing.editing.value,
+      outboxWaiting: () => useMailStore().outbox.length > 0,
+      onScreen: () => page.visible.value,
     },
     { listen, invoke },
   ).catch((error: unknown) => console.error('The menu bar could not be connected to the app', error))

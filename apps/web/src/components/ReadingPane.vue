@@ -4,8 +4,9 @@ import { RouterLink, useRouter } from 'vue-router'
 import { classificationReasonText, dueLabel, triagePlacement, unsubscribeOffer, todoSourceMessage, type MessageAction, type SyncedMessage, type SyncedThread, type Todo, handOverStatus, openHandOversOf } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import type { AppliedAction } from '@tresso/core'
-import { shortcutAllowed, useMessageActions } from '@/mail/useMessageActions'
+import { modalOpen, shortcutAllowed, useMessageActions } from '@/mail/useMessageActions'
 import { useConversationCommands } from '@/mail/openConversation'
+import { focusMoved } from '@/platform/editing'
 import { shortDue, senderName } from '@/mail/format'
 import { useComposeStore } from '@/stores/compose'
 import { useHandOversStore } from '@/stores/handOvers'
@@ -156,13 +157,16 @@ async function run(messageIds: string[], action: MessageAction): Promise<Applied
   return applied
 }
 
+/** Marks the newest message unread and goes back to the list; inside {@link exclusive}. */
+async function unreadAndBack(): Promise<void> {
+  const newest = messages.value[messages.value.length - 1]
+  if (newest && (await run([newest.id], 'markUnread')) !== null) {
+    await router.push(props.backTo)
+  }
+}
+
 function markUnread(): Promise<void> {
-  return exclusive(async () => {
-    const newest = messages.value[messages.value.length - 1]
-    if (newest && (await run([newest.id], 'markUnread')) !== null) {
-      await router.push(props.backTo)
-    }
-  })
+  return exclusive(unreadAndBack)
 }
 
 function toggleFlag(): Promise<void> {
@@ -181,12 +185,16 @@ function toggleFlag(): Promise<void> {
   })
 }
 
-/** Marks it unread as U does (and goes back to the list), or reads what is unread. */
+/**
+ * Marks it unread as U does (and goes back to the list), or reads what is unread. Which of the two is decided once the
+ * actions before it are done (reading the conversation on open), so right after opening an unread one it is U.
+ */
 function toggleRead(): Promise<void> {
-  if (read.value) {
-    return markUnread()
-  }
   return exclusive(async () => {
+    if (read.value) {
+      await unreadAndBack()
+      return
+    }
     await run(
       messages.value.filter((message) => !message.flags.seen).map((message) => message.id),
       'markRead',
@@ -256,11 +264,22 @@ function settleKnow(): Promise<void> {
   })
 }
 
+/**
+ * Whether the conversation has the user's attention, for its keys and the menu bar's Message items alike (one check, so
+ * they cannot drift apart): it is loaded, nothing is being written in the compose window (open and not minimized), no
+ * modal dialog and not the folder menu is open, no conversations are selected in the list, no hand-over is written.
+ */
+function attentive(): boolean {
+  // The open dialogs are read from the page, which is not reactive: the focus a dialog takes and gives back is.
+  focusMoved()
+  return thread.value !== null && !(compose.draft !== null && !compose.minimized) && !modalOpen() && moveMenu.value?.open !== true && !selection.active && handOvers.handingOver === null
+}
+
 // D settles as Do, H hands over, K settles as Noted (as in triage); E archives, # trashes, U marks unread, S flags,
-// T makes a todo: only when the conversation has the user's attention, not while
-// they type, write in the compose window, hold the key down, or have conversations selected in the list.
+// T makes a todo: only when the conversation has the user's attention, and not while they type, hold the key down or
+// use a modifier.
 function shortcut(event: KeyboardEvent): void {
-  if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized) || thread.value === null || moveMenu.value?.open === true || selection.active || handOvers.handingOver !== null) {
+  if (!shortcutAllowed(event, compose.draft !== null && !compose.minimized) || !attentive()) {
     return
   }
   const action = { d: settleDo, h: handOver, k: settleKnow, e: () => relocate('archive'), '#': () => relocate('trash'), u: markUnread, s: toggleFlag, t: makeTodo }[event.key.toLowerCase()]
@@ -272,11 +291,12 @@ function shortcut(event: KeyboardEvent): void {
 onMounted(() => window.addEventListener('keydown', shortcut))
 
 // The desktop app's Message menu (platform/menu.ts) runs the same actions as the buttons and keys above, and waits when
-// they do: while the conversation loads, conversations are selected in the list, or a hand-over is being written.
+// they do (attentive).
 useConversationCommands({
-  ready: () => thread.value !== null && !selection.active && handOvers.handingOver === null,
+  ready: attentive,
   read: () => read.value,
   flagged: () => flagged.value,
+  hasTodo: () => todos.value.length > 0,
   reply,
   archive: () => relocate('archive'),
   trash: () => relocate('trash'),
@@ -285,6 +305,10 @@ useConversationCommands({
   },
   toggleRead,
   toggleFlag,
+  settleDo,
+  handOver,
+  settleNoted: settleKnow,
+  makeTodo,
 })
 
 onBeforeUnmount(() => {

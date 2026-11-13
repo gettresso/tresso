@@ -4,7 +4,8 @@ import { nextTick, reactive } from 'vue'
 import type { Draft } from '@/mail/db'
 import type { ConversationCommands } from '@/mail/openConversation'
 import ComposeWindow from '@/components/ComposeWindow.vue'
-import { COMPOSE_WINDOW_ATTRIBUTE, followEditing, isEditingText, recheckEditing } from '../editing'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import { COMPOSE_WINDOW_ATTRIBUTE, followEditing, isEditingText, recheckEditing, recheckEditingOnNavigation } from '../editing'
 import { runMenuAction, startMenuBridge, type MenuShell } from '../menu'
 
 const draft: Draft = { id: 'd1', mailAccountId: 'work', to: [], cc: [], bcc: [], subject: 'Hello', html: '<p>Hi</p>', signatureId: null, quoteHtml: '', inReplyToMessageId: null, kind: 'new', version: 0, pendingSave: false, remoteVersion: null, outgoingId: null, noticedStatus: null, updatedAt: 1, attachments: [] }
@@ -91,7 +92,7 @@ describe('editing text', () => {
     const elsewhere = add(document.createElement('button'))
     const follower = followEditing(document)
     const trash = vi.fn<() => Promise<void>>(async () => undefined)
-    const open = { ready: () => true, read: () => true, flagged: () => false, reply: vi.fn<ConversationCommands['reply']>(), archive: vi.fn<() => Promise<void>>(), trash, chooseFolder: vi.fn<() => Promise<void>>(), toggleRead: vi.fn<() => Promise<void>>(), toggleFlag: vi.fn<() => Promise<void>>() }
+    const open = { ready: () => true, read: () => true, flagged: () => false, hasTodo: () => false, settleDo: vi.fn<() => Promise<void>>(), handOver: vi.fn<() => Promise<void>>(), settleNoted: vi.fn<() => Promise<void>>(), makeTodo: vi.fn<() => Promise<void>>(), reply: vi.fn<ConversationCommands['reply']>(), archive: vi.fn<() => Promise<void>>(), trash, chooseFolder: vi.fn<() => Promise<void>>(), toggleRead: vi.fn<() => Promise<void>>(), toggleFlag: vi.fn<() => Promise<void>>() }
     const targets = {
       router: { push: vi.fn<(to: { name: string }) => Promise<undefined>>(async () => undefined) },
       newMessage: vi.fn<() => void>(),
@@ -102,6 +103,8 @@ describe('editing text', () => {
       getNewMail: vi.fn<() => Promise<void>>(async () => undefined),
       conversation: () => open,
       editing: () => follower.editing.value,
+      outboxWaiting: () => false,
+      onScreen: () => true,
     }
     const invoke = vi.fn<MenuShell['invoke']>(async () => undefined)
     const stop = await startMenuBridge(targets, { listen: async () => () => {}, invoke })
@@ -125,6 +128,25 @@ describe('editing text', () => {
     expect(editingSent()).toBe(false)
     await runMenuAction('move-to-trash', targets)
     expect(trash).toHaveBeenCalledOnce()
+    stop()
+    follower.stop()
+  })
+
+  it('reads the focus again after a navigation, so a field that left with its screen does not keep editing on', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }, { path: '/inbox', component: { template: '<div />' } }] })
+    await router.push('/')
+    const follower = followEditing(document)
+    const stop = recheckEditingOnNavigation(router)
+    const search = add(input('search'))
+    search.focus()
+    expect(follower.editing.value).toBe(true)
+
+    // The screen goes, and its field with it, without a focus event.
+    search.remove()
+    expect(follower.editing.value, 'no focus event came').toBe(true)
+    await router.push('/inbox')
+    await nextTick()
+    expect(follower.editing.value).toBe(false)
     stop()
     follower.stop()
   })

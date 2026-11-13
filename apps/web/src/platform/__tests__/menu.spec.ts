@@ -18,6 +18,11 @@ function conversation() {
     chooseFolder: vi.fn<() => Promise<void>>(async () => undefined),
     toggleRead: vi.fn<() => Promise<void>>(async () => undefined),
     toggleFlag: vi.fn<() => Promise<void>>(async () => undefined),
+    hasTodo: () => false,
+    settleDo: vi.fn<() => Promise<void>>(async () => undefined),
+    handOver: vi.fn<() => Promise<void>>(async () => undefined),
+    settleNoted: vi.fn<() => Promise<void>>(async () => undefined),
+    makeTodo: vi.fn<() => Promise<void>>(async () => undefined),
   }
   return { readState: read, flaggedState: flagged, commands }
 }
@@ -29,11 +34,15 @@ function targets(signedIn = true) {
   const sidebar = ref(true)
   const open = shallowRef<OpenConversation | null>(null)
   const typing = ref(false)
+  const outbox = ref(false)
+  const visible = ref(true)
   return {
     state,
     sidebar,
     open,
     typing,
+    outbox,
+    visible,
     router: { push: vi.fn<(to: { name: string }) => Promise<undefined>>(async () => undefined) },
     newMessage: vi.fn<() => void>(),
     reload: vi.fn<() => Promise<void>>(async () => undefined),
@@ -45,13 +54,15 @@ function targets(signedIn = true) {
     getNewMail: vi.fn<() => Promise<void>>(async () => undefined),
     conversation: () => open.value,
     editing: () => typing.value,
+    outboxWaiting: () => outbox.value,
+    onScreen: () => visible.value,
   }
 }
 
 /** Every call a conversation's commands took, by name. */
 function callsOf(commands: OpenConversation): Record<string, unknown[][]> {
   return Object.fromEntries(
-    (['reply', 'archive', 'trash', 'chooseFolder', 'toggleRead', 'toggleFlag'] as const).map((name) => [name, commands[name].mock.calls]).filter(([, calls]) => (calls as unknown[][]).length > 0),
+    (['reply', 'archive', 'trash', 'chooseFolder', 'toggleRead', 'toggleFlag', 'settleDo', 'handOver', 'settleNoted', 'makeTodo'] as const).map((name) => [name, commands[name].mock.calls]).filter(([, calls]) => (calls as unknown[][]).length > 0),
   )
 }
 
@@ -74,6 +85,7 @@ function shell() {
 describe('the menu bar bridge', () => {
   afterEach(() => {
     forgetViewRequests()
+    document.body.innerHTML = ''
   })
 
   it('takes every action of the menu bar to its route or store action', async () => {
@@ -82,6 +94,7 @@ describe('the menu bar bridge', () => {
       ['go-waiting', 'waiting'],
       ['go-drafts', 'drafts'],
       ['go-cleanup', 'cleanup'],
+      ['go-outbox', 'outbox'],
       ['go-batches', 'batches'],
       ['settings', 'settings-accounts'],
       ['view-inbox', 'unified'],
@@ -127,6 +140,10 @@ describe('the menu bar bridge', () => {
       ['move-to', { chooseFolder: [[]] }],
       ['toggle-read', { toggleRead: [[]] }],
       ['toggle-flag', { toggleFlag: [[]] }],
+      ['settle-do', { settleDo: [[]] }],
+      ['hand-over', { handOver: [[]] }],
+      ['settle-noted', { settleNoted: [[]] }],
+      ['make-todo', { makeTodo: [[]] }],
     ]
     for (const [action, calls] of expected) {
       const to = targets()
@@ -157,12 +174,13 @@ describe('the menu bar bridge', () => {
     expect(callsOf(commands)).toEqual({})
   })
 
-  it('leaves Move to Trash (⌘⌫) and Mark as Unread (⇧⌘U) to the text while text is edited; the rest still acts', async () => {
+  it('leaves Move to Trash (⌘⌫) and Mark as Unread (⇧⌘U) to the text while the focus is in text when they arrive', async () => {
     expect(TEXT_KEY_ACTIONS).toEqual(['move-to-trash', 'toggle-read'])
     const to = targets()
     const { commands } = conversation()
     to.open.value = commands
-    to.typing.value = true
+    const field = document.body.appendChild(document.createElement('input'))
+    field.focus()
 
     for (const action of MESSAGE_ACTIONS) {
       await runMenuAction(action, to)
@@ -173,9 +191,71 @@ describe('the menu bar bridge', () => {
     expect(commands.toggleFlag).toHaveBeenCalledOnce()
     expect(commands.reply).toHaveBeenCalledTimes(3)
 
-    to.typing.value = false
+    // The focus is read when the action arrives, not as followed: a followed state that lags (here: still "editing")
+    // does not keep the item from acting once the field is gone.
+    to.typing.value = true
+    field.remove()
     await runMenuAction('move-to-trash', to)
     expect(commands.trash).toHaveBeenCalledOnce()
+  })
+
+  it('fires no Message action while the window is not on screen (closed or minimized), and says none is open', async () => {
+    const to = targets()
+    const { commands } = conversation()
+    to.open.value = commands
+    to.visible.value = false
+    const desktop = shell()
+    const stop = await startMenuBridge(to, desktop)
+
+    for (const action of MESSAGE_ACTIONS) {
+      await runMenuAction(action, to)
+    }
+    expect(callsOf(commands)).toEqual({})
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', expect.objectContaining({ message: null }))
+
+    to.visible.value = true
+    await nextTick()
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', expect.objectContaining({ message: { read: true, flagged: false, hasTodo: false } }))
+    stop()
+  })
+
+  it('enables Mailbox > Outbox while mail waits in it, as the sidebar lists it then', async () => {
+    const to = targets()
+    const desktop = shell()
+    const stop = await startMenuBridge(to, desktop)
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', expect.objectContaining({ outbox: false }))
+
+    to.outbox.value = true
+    await nextTick()
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', expect.objectContaining({ outbox: true }))
+    to.state.value = false
+    await nextTick()
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', expect.objectContaining({ signedIn: false, outbox: false }))
+    stop()
+  })
+
+  it('counts a state as sent only once the shell took it: one refusal is sent again, and after two the next change sends it all', async () => {
+    const to = targets()
+    const desktop = shell()
+    const errors: unknown[] = []
+    vi.mocked(desktop.invoke).mockRejectedValueOnce(new Error('busy'))
+    const stop = await startMenuBridge(to, desktop, (error) => errors.push(error))
+    await vi.waitFor(() => expect(desktop.invoke).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(desktop.invoke).mock.calls[1]).toEqual(vi.mocked(desktop.invoke).mock.calls[0])
+    expect(errors).toEqual([])
+
+    // Refused twice: said, and the state is not taken as sent.
+    vi.mocked(desktop.invoke).mockRejectedValueOnce(new Error('busy')).mockRejectedValueOnce(new Error('still busy'))
+    to.sidebar.value = false
+    await vi.waitFor(() => expect(errors).toHaveLength(1))
+    expect(desktop.invoke).toHaveBeenCalledTimes(4)
+    to.sidebar.value = true
+    to.sidebar.value = false
+    await nextTick()
+    // Back where the refused state was: sent again, since the shell never took it.
+    await vi.waitFor(() => expect(desktop.invoke).toHaveBeenCalledTimes(5))
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', expect.objectContaining({ sidebarShown: false }))
+    stop()
   })
 
   it('asks the calendar for a new event and the to-dos for their quick add, once they are on screen', async () => {
@@ -244,17 +324,17 @@ describe('the menu bar bridge', () => {
     const to = targets(false)
     const desktop = shell()
     const stop = await startMenuBridge(to, desktop)
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false, sidebarShown: true, editing: false, message: null })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false, sidebarShown: true, editing: false, outbox: false, message: null })
 
     to.state.value = true
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, message: null })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, outbox: false, message: null })
 
     // A request still waiting for its view is dropped at the sign-out.
     await runMenuAction('new-event', to)
     to.state.value = false
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false, sidebarShown: true, editing: false, message: null })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false, sidebarShown: true, editing: false, outbox: false, message: null })
     const newEvent = vi.fn<() => void>()
     onViewRequest('newEvent', newEvent)()
     expect(newEvent).not.toHaveBeenCalled()
@@ -265,17 +345,17 @@ describe('the menu bar bridge', () => {
     const to = targets()
     const desktop = shell()
     const stop = await startMenuBridge(to, desktop)
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, message: null })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, outbox: false, message: null })
 
     desktop.send('toggle-sidebar')
     await nextTick()
     expect(to.toggleSidebar).toHaveBeenCalledOnce()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: false, editing: false, message: null })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: false, editing: false, outbox: false, message: null })
 
     // The toggle in the window changes it too; the menu follows.
     to.sidebar.value = true
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, message: null })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, outbox: false, message: null })
     stop()
   })
 
@@ -287,27 +367,27 @@ describe('the menu bar bridge', () => {
 
     to.open.value = open.commands
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, message: { read: true, flagged: false } })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, outbox: false, message: { read: true, flagged: false, hasTodo: false } })
 
     open.flaggedState.value = true
     open.readState.value = false
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, message: { read: false, flagged: true } })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: false, outbox: false, message: { read: false, flagged: true, hasTodo: false } })
 
     // Text is edited: the shell disables Move to Trash and Mark as Unread.
     to.typing.value = true
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: true, message: { read: false, flagged: true } })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: true, outbox: false, message: { read: false, flagged: true, hasTodo: false } })
 
     to.open.value = null
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: true, message: null })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: true, sidebarShown: true, editing: true, outbox: false, message: null })
 
     // Signed out, an open conversation says nothing.
     to.open.value = open.commands
     to.state.value = false
     await nextTick()
-    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false, sidebarShown: true, editing: true, message: null })
+    expect(desktop.invoke).toHaveBeenLastCalledWith('menu_state', { signedIn: false, sidebarShown: true, editing: true, outbox: false, message: null })
     stop()
   })
 

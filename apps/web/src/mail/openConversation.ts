@@ -7,14 +7,16 @@ import { onBeforeUnmount, onMounted, shallowRef } from 'vue'
  */
 export interface ConversationCommands {
   /**
-   * Whether the conversation is on screen and has the user's attention: loaded, no conversations selected in the list,
-   * no hand-over dialog open. The pane's own keys wait otherwise, and so does the menu.
+   * Whether the conversation is on screen and has the user's attention: the same check the pane's own keys make
+   * (ReadingPane's attentive), so the menu waits exactly when they do.
    */
   ready(): boolean
   /** All its messages are read: the menu offers Mark as Unread. */
   read(): boolean
   /** One of its messages is flagged: the menu offers Unflag. */
   flagged(): boolean
+  /** A to-do was made from it: the pane shows no Make todo button, and the menu disables Make To-do. */
+  hasTodo(): boolean
   /** Opens a reply, reply to all or forward of its newest message, as that message's own buttons do. */
   reply(kind: 'reply' | 'replyAll' | 'forward'): Promise<void>
   archive(): Promise<void>
@@ -25,6 +27,14 @@ export interface ConversationCommands {
   toggleRead(): Promise<void>
   /** Flags it, or takes its flags off (as S does). */
   toggleFlag(): Promise<void>
+  /** Do, as D does: the do verdict and a to-do. */
+  settleDo(): Promise<void>
+  /** Opens the hand-over, as H does. */
+  handOver(): Promise<void>
+  /** Noted, as K does: read and archived. */
+  settleNoted(): Promise<void>
+  /** Makes a to-do and keeps the verdict, as T does. */
+  makeTodo(): Promise<void>
 }
 
 /** The panes that offer their commands, oldest first; the newest one mounted is the one on screen. */
