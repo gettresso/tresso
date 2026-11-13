@@ -79,7 +79,8 @@ export const useMeetingAppsStore = defineStore('meetingApps', () => {
         return saved
       } catch (error) {
         try {
-          take(await auth.api<MeetingPreferences>(PATH), generation)
+          // Not for another user who signed in meanwhile: the read would go out with their token, for nothing.
+          if (generation === auth.generation) take(await auth.api<MeetingPreferences>(PATH), generation)
         } catch {
           // The read failed too (offline): the save's own error says what happened, and the next read tries again.
         }

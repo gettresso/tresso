@@ -461,4 +461,83 @@ describe('Settings, Meeting apps', () => {
     await settle()
     expect(card(wrapper, 'Google Meet').get('.error').text()).toBe('Google sign-in is not available on this server.')
   })
+
+  it('reads once for a return to the tab, however many events it fires', async () => {
+    let sent = 0
+    const reads = () => sent
+    await page()
+    const before = reads()
+    let release: () => void = () => undefined
+    hold = new Promise<void>((resolve) => (release = resolve))
+    // The mock holds only changes: hold the reads here, counting them as they leave.
+    const fetch = globalThis.fetch as ReturnType<typeof vi.fn<typeof globalThis.fetch>>
+    const answer = fetch.getMockImplementation()!
+    fetch.mockImplementation(async (input, init) => {
+      if ((init?.method ?? 'GET') === 'GET' && new URL(String(input)).pathname === '/api/v1/calendar/meeting-preferences') {
+        sent++
+        if (hold !== null) await hold
+      }
+      return answer(input, init)
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+    for (let i = 0; i < 10; i++) window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(reads() - before).toBe(1)
+    hold = null
+    release()
+    await settle()
+    window.dispatchEvent(new Event('focus'))
+    await settle()
+    expect(reads() - before).toBe(2)
+  })
+
+  it('shows the picked value while its save waits, also when a read lands first', async () => {
+    const wrapper = await page()
+    let release: () => void = () => undefined
+    hold = new Promise<void>((resolve) => (release = resolve))
+    const select = wrapper.get('#default-work')
+    await select.setValue('none')
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect((select.element as HTMLSelectElement).value).toBe('none')
+    const toggle = wrapper.get('input[role="switch"]')
+    await toggle.setValue(false)
+    await flushPromises()
+    expect((toggle.element as HTMLInputElement).checked).toBe(false)
+    hold = null
+    release()
+    await settle()
+    expect((select.element as HTMLSelectElement).value).toBe('none')
+    expect((toggle.element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('saves a typed link after a press on Remove that was not a click', async () => {
+    stored = preferences({ ownLink: 'https://meet.example.com/kim' })
+    const wrapper = await page()
+    const remove = wrapper.get('button[aria-label="Remove your room link"]')
+    await remove.trigger('pointerdown')
+    await remove.trigger('pointercancel')
+    const input = wrapper.get('#own-link')
+    await input.setValue('https://meet.example.com/other')
+    await input.trigger('blur')
+    await settle()
+    expect(patches()).toEqual([{ ownLink: 'https://meet.example.com/other' }])
+  })
+
+  it('sends a link typed again while the first one is on its way', async () => {
+    const wrapper = await page()
+    let release: () => void = () => undefined
+    hold = new Promise<void>((resolve) => (release = resolve))
+    const input = wrapper.get('#own-link')
+    await input.setValue('https://meet.example.com/one')
+    await input.trigger('blur')
+    await input.trigger('blur')
+    await input.setValue('https://meet.example.com/two')
+    await input.trigger('blur')
+    hold = null
+    release()
+    await settle()
+    expect(patches()).toEqual([{ ownLink: 'https://meet.example.com/one' }, { ownLink: 'https://meet.example.com/two' }])
+    expect((input.element as HTMLInputElement).value).toBe('https://meet.example.com/two')
+  })
 })
