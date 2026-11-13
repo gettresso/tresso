@@ -2053,7 +2053,18 @@ off, so it never goes twice). It keeps every point above:
   and before the relay starts, the number the bridge is linked to is compared with the account's: another number is
   refused (`This Mac is linked to another WhatsApp number...`), an unknown one is asked about first (`{ number: true }`).
   The server refuses it too: a `PUT` with another number for an account that holds chats is 409 `other_number`, and a
-  `PUT` without a number keeps the stored one.
+  `PUT` without a number keeps the stored one. The heartbeat names the linked number once it is known; another than the
+  account's is 409 `other_number` there too (an account without one learns it), and the relay stops. Without the yes to
+  copying, a takeover relies on the account the copy holds: when the `PUT` answers with another (that one went
+  meanwhile), the new empty account is removed again and the user is asked to choose "All my devices" with Copy.
+- **Chats left out before the server knew them.** At each relay start the relay hands every JID the config leaves
+  out and the copy holds no server chat for to the server as a left-out chat (`RelayChat.leftOut` on
+  `relay/messages`: the JID sealed, no name, no messages; a chat the server holds is left as it is), and the config's
+  entry goes once that row is in the copy; until then the relay's fence keeps it out, so there is never a moment where
+  neither does. From then on every Mac that relays, also after a sign-out and a new connect, leaves it out. The Copy
+  confirmation and the left-out list say so ("Chats you left out stay out on every device: Tresso keeps only their
+  WhatsApp address on your server, sealed, to recognise them."). A takeover that would remove the account's group
+  chats (this Mac leaves groups out) says so first and offers to keep groups on instead.
 - **What this Mac holds back.** Before the relay starts after a connect, switch or takeover, the stricter of this Mac's
   config and the account (groups off, notify off) is PATCHed to the server and saved in the config (`server-adopted`);
   from then on the account is the one source and the config follows it, and Settings shows the account's values. The
@@ -2078,8 +2089,9 @@ off, so it never goes twice). It keeps every point above:
   before); it is counted apart, as are cancelled ones and those whose chat never comes (given up after the first import
   and a pull after it). The counts stay in the copy until the user dismisses them; waiting ones can be cancelled, and the
   replies that were not sent here are not carried (the confirmation says how many). To "Only this Mac": mark, stop, report a kept claim,
-  `DELETE` the account (noted outside the copy too, per user, so a sign-out during it is finished at the next sign-in
-  of the same user; another user's sign-in drops the note without touching that account), save the config (the chats
+  `DELETE` the account (noted outside the copy too, per user, while the request runs: a sign-out during it is finished
+  at the next sign-in of the same user, any other failure drops the note, so a removal that failed and was said is
+  never done later unasked; another user's sign-in drops the note without touching that account), save the config (the chats
   left out on the server join the config's), remove what was kept for the account, then wait until the copy applied the
   account's tombstone before the local relay reads the bridge's store from 0. A switch the server refused before it took
   anything is undone and said; after a crash it is tried again every 30 seconds. Disconnect reports a kept claim and
@@ -2098,7 +2110,10 @@ off, so it never goes twice). It keeps every point above:
   reached, field by field to what the server last confirmed (so a later refused change never restores an earlier one),
   unless the delta changed that field meanwhile; errors are said in plain words. A reply whose outcome is not known (no
   answer, 408, 5xx) keeps its id per chat in the copy (`unsure-replies`): sending the same text again reuses it, so the
-  server queues it once; it is let go once sent, refused, brought by the delta or older than the server's id window. The server actions need only a
+  server queues it once, also after the server's id window (a queued id comes back, a cancelled one is 409, one never
+  queued is 422 and ends as "may already be queued"). When the delta brings that id the reply counts as sent: the
+  draft that still holds its text goes, and the pane takes back its error, so pressing Send again cannot make a second.
+  It is also let go when the server refused it. The server actions need only a
   `ChatApi` and a copy, not the relay, so the browser can use them as they are. On the relaying Mac a waiting reply says
   `waiting for the bridge`; on another Mac `waiting for your Mac` (or `sending` while the relaying Mac is online), and the
   composer names the Mac that sends. Attach stays "Only this Mac" until files go through the server (shown, disabled,
@@ -3499,7 +3514,14 @@ chat's JID and WhatsApp id, so it never needs either readable.
   the user's Try again. Cancelling deletes a waiting or failed reply (a tombstone); a reply being sent or sent is 409
   `already_going_out`.
 - **Left out.** Leaving a chat out removes its messages and replies (tombstones) and keeps the chat row with its sealed
-  JID and name, which is no longer renamed: the relay must know to leave it out, and the user can take it in again.
+  JID and name, which is no longer renamed: the relay must know to leave it out, and the user can take it in again. A
+  chat the user left out on a desktop before the server knew it comes as a chat entry with `"leftOut": true` in
+  `relay/messages` (no messages needed, the same limits, validation and import limit as any batch): the server makes a
+  left-out row with the JID sealed, no name and no messages (its last message time the earliest the server takes, so
+  messages taken in later set it), and leaves a chat it holds as it is (it may have been taken in again); a repeat
+  changes nothing, and messages of the chat in the same call are `left_out`. `relay/status` takes the linked number
+  (`address`, 5 to 20 digits, optional): another than the account's is 409 `other_number`; an account without one
+  stores it.
 - **Sweep.** `SweepChatRelays` runs every minute on `scheduler_default` (the `maintenance` worker), and by hand as
   `bin/console app:chat:sweep-relays`: a relay not heard from for 3 minutes goes offline from when it was last heard
   from (its next call brings it back), and a reply still `sending` 5 minutes after its claim fails with `unconfirmed`,
