@@ -20,7 +20,7 @@ function account(id: string, provider: string, emailAddress: string, displayName
     imap: null,
     smtp: null,
     calendarUrl: null,
-    calendarStatus: 'ok',
+    calendarStatus: 'active',
     calendarStatusDetail: null,
     lastSyncedAt: null,
     createdAt: '2026-01-01T00:00:00+00:00',
