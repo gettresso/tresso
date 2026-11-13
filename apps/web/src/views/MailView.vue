@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { RouterLink, useRoute, type RouteLocationRaw } from 'vue-router'
 import { unsubscribeOffer, type UnsubscribeOffer } from '@tresso/core'
 import { useBatchesStore } from '@/stores/batches'
+import { useChatsStore } from '@/stores/chats'
 import { useMailStore } from '@/stores/mail'
 import { useSelectionStore } from '@/stores/selection'
 import CleanupPanel from '@/components/CleanupPanel.vue'
 import ConversationList from '@/components/ConversationList.vue'
 import ReadingPane from '@/components/ReadingPane.vue'
+import ChatPane from '@/components/chat/ChatPane.vue'
 import SmartInboxManage from '@/components/SmartInboxManage.vue'
 import UnsubscribeAction from '@/components/UnsubscribeAction.vue'
 import MiniAgenda from '@/components/calendar/MiniAgenda.vue'
@@ -15,14 +17,46 @@ import MiniAgenda from '@/components/calendar/MiniAgenda.vue'
 const mail = useMailStore()
 const route = useRoute()
 const batches = useBatchesStore()
+const chats = useChatsStore()
 
 const accountId = computed(() => (typeof route.params.accountId === 'string' ? route.params.accountId : null))
 const smartInboxId = computed(() => (typeof route.params.smartInboxId === 'string' ? route.params.smartInboxId : null))
 /** A screen that takes the list's and the reading pane's place: a smart inbox's senders, or the cleanup suggestions. */
 const wide = computed(() => (route.name === 'smart-inbox-manage' || route.name === 'cleanup' ? route.name : null))
 const threadId = computed(() => (typeof route.params.threadId === 'string' ? route.params.threadId : null))
+/** The chat on screen (WhatsApp, the plan's WP6): in the Unified Inbox or in the WhatsApp list. */
+const chatId = computed(() => (typeof route.params.chatId === 'string' && chats.enabled ? route.params.chatId : null))
+/** The WhatsApp list: its chats only, under its own title, without the channel tabs. */
+const inWhatsApp = computed(() => route.name === 'whatsapp' || route.name === 'whatsapp-chat')
+/** The Unified Inbox (not one account's, nor a smart inbox or the batches): chats show in it, with the channel tabs. */
+const unified = computed(() => accountId.value === null && smartInboxId.value === null && !inBatches.value && !inWhatsApp.value)
+const channel = computed(() => (unified.value && chats.enabled ? chats.channel : null))
+/**
+ * The chat rows of the list. In the Unified Inbox only those in it (not archived through their last message), and while
+ * older mail is still to be shown, only chats newer than the last conversation on screen: an older chat comes in its
+ * place once that mail is shown, so the list never skips mail it has not read yet.
+ */
+const chatRows = computed(() => {
+  if (!chats.enabled) {
+    return []
+  }
+  if (inWhatsApp.value) {
+    return chats.summaries
+  }
+  if (!unified.value || chats.channel === 'mail') {
+    return []
+  }
+  const last = mail.conversations[mail.conversations.length - 1]
+  const showsMail = chats.channel === 'all'
+  return chats.inboxSummaries.filter((summary) => !showsMail || !mail.hasMore || last === undefined || summary.lastMessageAt >= last.lastMessageAt)
+})
+const conversations = computed(() => (inWhatsApp.value || (channel.value === 'whatsapp') ? [] : mail.conversations))
+const list = ref<InstanceType<typeof ConversationList> | null>(null)
 const inBatches = computed(() => route.name === 'batches' || route.name === 'batches-thread')
 const title = computed(() => {
+  if (inWhatsApp.value) {
+    return 'WhatsApp'
+  }
   if (inBatches.value) {
     return 'Batches'
   }
@@ -33,6 +67,9 @@ const title = computed(() => {
   return accountId.value === null ? 'Unified Inbox' : (mail.accounts.find((a) => a.id === accountId.value)?.displayName ?? 'Inbox')
 })
 const backTo = computed(() => {
+  if (inWhatsApp.value) {
+    return '/whatsapp'
+  }
   if (inBatches.value) {
     return '/batches'
   }
@@ -44,6 +81,9 @@ const backTo = computed(() => {
 })
 
 const emptyText = computed(() => {
+  if (inWhatsApp.value || channel.value === 'whatsapp') {
+    return 'No chats yet.'
+  }
   if (inBatches.value) {
     return 'No batch delivered yet.'
   }
@@ -62,6 +102,17 @@ function linkTo(id: string): RouteLocationRaw {
   return accountId.value === null
     ? { name: 'unified-thread', params: { threadId: id } }
     : { name: 'account-thread', params: { accountId: accountId.value, threadId: id } }
+}
+
+function chatLinkTo(id: string): RouteLocationRaw {
+  return inWhatsApp.value ? { name: 'whatsapp-chat', params: { chatId: id } } : { name: 'unified-chat', params: { chatId: id } }
+}
+
+/** A chat was left out: the pane went back to the list, and focus goes to the list's first row (or the list). */
+async function chatLeft(): Promise<void> {
+  await nextTick()
+  const element = list.value?.$el as HTMLElement | undefined
+  element?.querySelector<HTMLElement>('.scroll a')?.focus()
 }
 
 const selection = useSelectionStore()
@@ -107,25 +158,32 @@ watch(
 </script>
 
 <template>
-  <div class="shell" :class="{ reading: threadId !== null }">
+  <div class="shell" :class="{ reading: threadId !== null || chatId !== null }">
 
     <SmartInboxManage v-if="wide === 'smart-inbox-manage' && smartInboxId" class="wide" :smart-inbox-id="smartInboxId" />
     <CleanupPanel v-else-if="wide === 'cleanup'" class="wide" />
     <template v-else>
       <ConversationList
+        ref="list"
         class="conversations"
         :title="title"
-        :list-key="mail.listKey"
-        :conversations="mail.conversations"
+        :list-key="inWhatsApp ? 'whatsapp' : mail.listKey"
+        :conversations="conversations"
         :selected-thread-id="threadId"
-        :has-more="mail.hasMore"
-        :loading="!mail.ready || mail.syncState === 'syncing'"
-        :has-accounts="mail.accounts.length > 0"
+        :has-more="!inWhatsApp && channel !== 'whatsapp' && mail.hasMore"
+        :loading="inWhatsApp ? !mail.ready : !mail.ready || mail.syncState === 'syncing'"
+        :has-accounts="inWhatsApp || channel === 'whatsapp' || mail.accounts.length > 0"
         :empty-text="emptyText"
         :link-to="linkTo"
         :group-by="inBatches ? 'batch' : 'day'"
         :manage-to="smartInboxId === null ? undefined : { name: 'smart-inbox-manage', params: { smartInboxId } }"
+        :chat-rows="chatRows"
+        :selected-chat-id="chatId"
+        :chat-link-to="chatLinkTo"
+        :named-message="chats.named"
+        :channel="channel"
         @show-more="mail.showMore()"
+        @update:channel="chats.channel = $event"
       >
         <template v-if="inBatches" #aside>
           <p class="next-batch">
@@ -138,7 +196,8 @@ watch(
         </template>
       </ConversationList>
 
-      <ReadingPane v-if="threadId" :key="threadId" class="reading-pane" :thread-id="threadId" :back-to="backTo" />
+      <ChatPane v-if="chatId" :key="chatId" class="reading-pane" :chat-id="chatId" :back-to="backTo" @left="chatLeft" />
+      <ReadingPane v-else-if="threadId" :key="threadId" class="reading-pane" :thread-id="threadId" :back-to="backTo" />
       <div v-else class="reading-pane placeholder">
         <MiniAgenda />
       </div>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
-import { batchTimeLabel } from '@tresso/core'
+import { batchTimeLabel, mergeInbox, type ChatSummary, type SyncedChatMessage } from '@tresso/core'
 import type { Conversation } from '@/mail/db'
 import { dayLabel, senderName, shortTime } from '@/mail/format'
 import { useMailStore } from '@/stores/mail'
@@ -18,6 +18,9 @@ import SyncNotice from '@/components/SyncNotice.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import { collapseLeave, expandEnter } from '@/components/listMotion'
 import LogoLoader from '@/components/LogoLoader.vue'
+import SegmentedControl from '@/components/SegmentedControl.vue'
+import ChatListRow from '@/components/chat/ChatListRow.vue'
+import type { InboxChannel } from '@/stores/chats'
 
 const props = defineProps<{
   title: string
@@ -34,6 +37,14 @@ const props = defineProps<{
   groupBy?: 'day' | 'batch'
   /** Where the list's senders are managed in bulk (a smart inbox's). */
   manageTo?: RouteLocationRaw
+  /** Chats placed among the conversations by time, newest first (the Unified Inbox, the WhatsApp list). */
+  chatRows?: ChatSummary[]
+  selectedChatId?: string | null
+  chatLinkTo?: (chatId: string) => RouteLocationRaw
+  /** The newest message of a chat with its sender's name as known now (chats.named). */
+  namedMessage?: (message: SyncedChatMessage) => SyncedChatMessage
+  /** The Unified Inbox's `Channels` tabs, when they show; null or left out shows none. */
+  channel?: InboxChannel | null
 }>()
 defineSlots<{
   /** Under the title, e.g. when the next batch comes. */
@@ -41,7 +52,13 @@ defineSlots<{
   /** Under a row, e.g. its unsubscribe button. */
   extra?: (props: { conversation: Conversation }) => unknown
 }>()
-const emit = defineEmits<{ showMore: [] }>()
+const emit = defineEmits<{ showMore: []; 'update:channel': [channel: InboxChannel] }>()
+
+const CHANNELS: { value: InboxChannel; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'mail', label: 'Mail' },
+  { value: 'whatsapp', label: 'WhatsApp' },
+]
 
 const mail = useMailStore()
 const selection = useSelectionStore()
@@ -87,24 +104,34 @@ async function selectOlderThan(age: string): Promise<void> {
   selection.set(await mail.threadsBefore(Date.now() - Number(age)))
 }
 
-function groupOf(conversation: Conversation): { key: string; label: string } {
-  if (props.groupBy === 'batch' && conversation.batchedAt !== null) {
-    return { key: `batch-${conversation.batchedAt}`, label: `Delivered at ${batchTimeLabel(conversation.batchedAt)}` }
+/** A row of the list: a conversation of mail, or a chat. */
+type ListItem = { kind: 'mail'; key: string; conversation: Conversation; lastMessageAt: number } | { kind: 'chat'; key: string; summary: ChatSummary; lastMessageAt: number }
+
+function groupOf(item: ListItem): { key: string; label: string } {
+  if (item.kind === 'mail' && props.groupBy === 'batch' && item.conversation.batchedAt !== null) {
+    return { key: `batch-${item.conversation.batchedAt}`, label: `Delivered at ${batchTimeLabel(item.conversation.batchedAt)}` }
   }
-  const label = dayLabel(conversation.lastMessageAt)
+  const label = dayLabel(item.lastMessageAt)
 
   return { key: label, label }
 }
 
+/** Mail and chats in one list by time, in the same day groups (mergeInbox); a chat has no checkbox. */
+const items = computed<ListItem[]>(() => {
+  const mail: ListItem[] = props.conversations.map((conversation) => ({ kind: 'mail', key: conversation.threadId, conversation, lastMessageAt: conversation.lastMessageAt }))
+  const chats: ListItem[] = (props.chatRows ?? []).map((summary) => ({ kind: 'chat', key: `chat:${summary.chat.id}`, summary, lastMessageAt: summary.lastMessageAt }))
+  return chats.length === 0 ? mail : mergeInbox(mail, chats, mail.length + chats.length)
+})
+
 const days = computed(() => {
-  const groups: { key: string; label: string; conversations: Conversation[] }[] = []
-  for (const conversation of props.conversations) {
-    const { key, label } = groupOf(conversation)
+  const groups: { key: string; label: string; items: ListItem[] }[] = []
+  for (const item of items.value) {
+    const { key, label } = groupOf(item)
     const last = groups[groups.length - 1]
     if (last?.key === key) {
-      last.conversations.push(conversation)
+      last.items.push(item)
     } else {
-      groups.push({ key, label, conversations: [conversation] })
+      groups.push({ key, label, items: [item] })
     }
   }
 
@@ -125,6 +152,7 @@ const days = computed(() => {
         </span>
       </div>
       <slot name="aside" />
+      <SegmentedControl v-if="channel" class="channels" label="Channels" :options="CHANNELS" :selected="channel" @choose="emit('update:channel', $event)" />
       <SyncNotice />
       <SearchField />
     </header>
@@ -137,62 +165,70 @@ const days = computed(() => {
       <section v-for="day in days" :key="day.key" :aria-label="day.label">
         <h2 class="day">{{ day.label }}</h2>
         <TransitionGroup :css="false" @enter="expandEnter" @leave="collapseLeave">
+        <template v-for="item in day.items" :key="item.key">
+        <ChatListRow
+          v-if="item.kind === 'chat'"
+          :summary="item.summary"
+          :selected="item.summary.chat.id === selectedChatId"
+          :to="chatLinkTo ? chatLinkTo(item.summary.chat.id) : '/'"
+          :named="namedMessage"
+        />
         <div
-          v-for="conversation in day.conversations"
-          :key="conversation.threadId"
+          v-else
           class="row"
-          :class="{ unread: conversation.unreadCount > 0, checked: selection.has(conversation.threadId), selected: conversation.threadId === selectedThreadId }"
+          :class="{ unread: item.conversation.unreadCount > 0, checked: selection.has(item.conversation.threadId), selected: item.conversation.threadId === selectedThreadId }"
         >
           <button
             type="button"
             class="check"
             role="checkbox"
-            :aria-checked="selection.has(conversation.threadId)"
-            :aria-label="`Select ${conversation.subject || '(no subject)'}, from ${senderName(conversation.senders[0] ?? { name: null, address: '?' })}, ${shortTime(conversation.lastMessageAt)}`"
+            :aria-checked="selection.has(item.conversation.threadId)"
+            :aria-label="`Select ${item.conversation.subject || '(no subject)'}, from ${senderName(item.conversation.senders[0] ?? { name: null, address: '?' })}, ${shortTime(item.conversation.lastMessageAt)}`"
             :disabled="selection.busy"
-            @click="check($event, conversation.threadId)"
-            @keydown.shift.space.prevent="rangeByKey(conversation.threadId)"
-            @keyup.space="spaceReleased(conversation.threadId)"
+            @click="check($event, item.conversation.threadId)"
+            @keydown.shift.space.prevent="rangeByKey(item.conversation.threadId)"
+            @keyup.space="spaceReleased(item.conversation.threadId)"
           >
             <span class="box" aria-hidden="true" />
           </button>
-          <RouterLink :to="linkTo(conversation.threadId)" class="link" :aria-current="conversation.threadId === selectedThreadId ? 'true' : undefined">
+          <RouterLink :to="linkTo(item.conversation.threadId)" class="link" :aria-current="item.conversation.threadId === selectedThreadId ? 'true' : undefined">
             <!-- The dot is colour only; a screen reader hears "Unread" as part of the link. -->
-            <span v-if="conversation.unreadCount > 0" class="visually-hidden">Unread. </span>
+            <span v-if="item.conversation.unreadCount > 0" class="visually-hidden">Unread. </span>
             <span class="dot" aria-hidden="true" />
-            <SenderAvatar :sender="conversation.senders[0] ?? { name: null, address: '?' }" />
+            <SenderAvatar :sender="item.conversation.senders[0] ?? { name: null, address: '?' }" />
             <span class="body">
               <span class="top">
-                <span class="senders">{{ conversation.senders.map(senderName).join(', ') }}</span>
-                <span v-if="conversation.messageCount > 1" class="count">{{ conversation.messageCount }}</span>
-                <span class="time">{{ shortTime(conversation.lastMessageAt) }}</span>
+                <span class="senders">{{ item.conversation.senders.map(senderName).join(', ') }}</span>
+                <span v-if="item.conversation.messageCount > 1" class="count">{{ item.conversation.messageCount }}</span>
+                <span class="time">{{ shortTime(item.conversation.lastMessageAt) }}</span>
               </span>
               <span class="subject">
-                <AppIcon v-if="conversation.flagged" name="flag" :size="14" label="Flagged" />
-                <AppIcon v-if="conversation.attachmentsBlocked" name="shieldAlert" :size="14" label="Attachment blocked: contains malware" class="blocked" />
-                <AppIcon v-else-if="conversation.hasAttachments" name="attachment" :size="14" label="Has attachments" />
-                {{ conversation.subject || '(no subject)' }}
+                <AppIcon v-if="item.conversation.flagged" name="flag" :size="14" label="Flagged" />
+                <AppIcon v-if="item.conversation.attachmentsBlocked" name="shieldAlert" :size="14" label="Attachment blocked: contains malware" class="blocked" />
+                <AppIcon v-else-if="item.conversation.hasAttachments" name="attachment" :size="14" label="Has attachments" />
+                {{ item.conversation.subject || '(no subject)' }}
               </span>
-              <span class="snippet">{{ conversation.snippet }}</span>
+              <span class="snippet">{{ item.conversation.snippet }}</span>
             </span>
           </RouterLink>
           <ClassificationMenu
             class="classification"
-            :thread-id="conversation.threadId"
-            :subject="conversation.subject"
-            :smart-inbox-id="conversation.smartInboxId || null"
-            :verdict="conversation.verdict ?? null"
+            :thread-id="item.conversation.threadId"
+            :subject="item.conversation.subject"
+            :smart-inbox-id="item.conversation.smartInboxId || null"
+            :verdict="item.conversation.verdict ?? null"
           />
-          <div v-if="$slots.extra" class="extra"><slot name="extra" :conversation="conversation" /></div>
+          <div v-if="$slots.extra" class="extra"><slot name="extra" :conversation="item.conversation" /></div>
         </div>
+        </template>
         </TransitionGroup>
       </section>
 
-      <p v-if="conversations.length === 0 && !loading && !hasAccounts" class="empty">
+      <p v-if="items.length === 0 && !loading && !hasAccounts" class="empty">
         Connect a mail account to see your mail here. <RouterLink :to="{ name: 'settings-accounts-new' }">Add account</RouterLink>
       </p>
-      <p v-else-if="conversations.length === 0 && !loading" class="empty">{{ emptyText ?? 'Nothing in this inbox.' }}</p>
-      <p v-if="conversations.length === 0 && loading" class="empty" role="status"><LogoLoader /> Loading your mail…</p>
+      <p v-else-if="items.length === 0 && !loading" class="empty">{{ emptyText ?? 'Nothing in this inbox.' }}</p>
+      <p v-if="items.length === 0 && loading" class="empty" role="status"><LogoLoader /> Loading your mail…</p>
       <button v-if="hasMore" type="button" class="button button-quiet more" @click="emit('showMore')">Show older mail</button>
     </div>
   </section>

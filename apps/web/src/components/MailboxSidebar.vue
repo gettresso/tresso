@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { handOverStatus, type SyncedMailAccount, type SyncedSmartInbox } from '@tresso/core'
+import { accountSubtitle, handOverStatus, type SyncedMailAccount, type SyncedSmartInbox } from '@tresso/core'
 import AppIcon from '@/components/AppIcon.vue'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import SmartInboxMark from '@/components/SmartInboxMark.vue'
 import { briefProgress } from '@tresso/core'
 import { useAuthStore } from '@/stores/auth'
 import { useBriefStore } from '@/stores/brief'
+import { useChatsStore } from '@/stores/chats'
+import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
 import { useTodosStore } from '@/stores/todos'
@@ -33,6 +35,8 @@ const props = defineProps<{
   nextBatch: string | null
   /** A page of its own on screen instead of a list of mail. */
   page?: SidebarPage
+  /** The WhatsApp list (or a chat in it) is on screen. */
+  whatsapp?: boolean
 }>()
 const emit = defineEmits<{ signOut: [] }>()
 
@@ -57,7 +61,28 @@ const briefLeft = computed(() => {
 })
 const briefIsNew = computed(() => mail.latestBrief !== null && briefLeft.value > 0 && mail.latestBrief.brief.id !== brief.seenBriefId)
 
-const totalUnread = computed(() => [...props.unreadCounts.values()].reduce((sum, count) => sum + count, 0))
+const chats = useChatsStore()
+const wa = useWhatsAppRelayStore()
+/** The WhatsApp row (the Sidebar board's account row): only where WhatsApp is on and connected. */
+const whatsappRow = computed(() => {
+  const config = wa.config
+  if (!chats.enabled || config === null) {
+    return null
+  }
+  const address = chats.account?.address ?? wa.identity?.number ?? null
+  return { subtitle: accountSubtitle({ address, relayDeviceId: config.deviceId, relayDeviceName: config.deviceName }, config.deviceId), unread: chats.unread }
+})
+const whatsappRows = computed(() => (whatsappRow.value === null ? [] : [whatsappRow.value]))
+const profileDetail = computed(() => {
+  const count = props.accounts.length
+  if (whatsappRow.value === null) {
+    return count === 1 ? '1 account' : `${count} accounts`
+  }
+  return `${count === 1 ? '1 mail account' : `${count} mail accounts`}, WhatsApp`
+})
+
+/** Unread mail of every account, and the chats in the Unified Inbox with unread messages. */
+const totalUnread = computed(() => [...props.unreadCounts.values()].reduce((sum, count) => sum + count, 0) + (whatsappRow.value?.unread ?? 0))
 
 const statusText: Record<SyncedMailAccount['status'], string | null> = {
   active: null,
@@ -80,7 +105,7 @@ function failed(account: SyncedMailAccount): boolean {
         <SenderAvatar :sender="{ name: displayName, address: email }" :size="28" />
         <span class="profile-text">
           <span class="profile-name">{{ displayName }}</span>
-          <span class="profile-detail">{{ accounts.length === 1 ? '1 account' : `${accounts.length} accounts` }}</span>
+          <span class="profile-detail">{{ profileDetail }}</span>
         </span>
         <button type="button" class="button button-quiet sign-out" :disabled="auth.signingOut" :aria-busy="auth.signingOut" @click="emit('signOut')">
           {{ auth.signingOut ? 'Signing out…' : 'Sign out' }}
@@ -90,7 +115,7 @@ function failed(account: SyncedMailAccount): boolean {
       <button type="button" class="button button-primary compose" @click="compose.openNew()">Compose <KeyShortcut keys="C" /></button>
 
       <div class="group">
-        <RouterLink :to="{ name: 'unified' }" class="item" :aria-current="inList && mailbox === null && smartInbox === null && !batches ? 'page' : undefined">
+        <RouterLink :to="{ name: 'unified' }" class="item" :aria-current="inList && mailbox === null && smartInbox === null && !batches && !whatsapp ? 'page' : undefined">
           <AppIcon name="inbox" />
           <span class="label">Unified Inbox</span>
           <span v-if="totalUnread > 0" class="count"><TickCount :value="totalUnread" /><span class="visually-hidden"> unread</span></span>
@@ -175,6 +200,15 @@ function failed(account: SyncedMailAccount): boolean {
           <!-- A link of its own beside the row (a link cannot hold another): where a failed account is fixed. -->
           <RouterLink v-if="failed(account)" :to="{ name: 'settings-accounts' }" class="fix" :aria-label="`Fix ${account.displayName}`">Fix</RouterLink>
         </div>
+        <!-- A list of one or none: an empty list leaves no node at all, so the browser's markup stays as it was. -->
+        <RouterLink v-for="whatsappRow in whatsappRows" :key="whatsappRow.subtitle" :to="{ name: 'whatsapp' }" class="item account whatsapp" :aria-current="inList && whatsapp ? 'page' : undefined">
+          <span class="wa-mark" aria-hidden="true">WA</span>
+          <span class="account-text">
+            <span class="account-name">WhatsApp</span>
+            <span class="account-address">{{ whatsappRow.subtitle }}</span>
+          </span>
+          <span v-if="whatsappRow.unread > 0" class="count"><TickCount :value="whatsappRow.unread" /><span class="visually-hidden"> unread</span></span>
+        </RouterLink>
         <RouterLink :to="{ name: 'settings-accounts-new' }" class="add">+ Add account</RouterLink>
       </div>
 
@@ -316,6 +350,19 @@ function failed(account: SyncedMailAccount): boolean {
     min-height: 44px;
     padding: 0 12px;
   }
+}
+.wa-mark {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--whatsapp);
+  color: var(--whatsapp-text);
+  font-size: 10px;
+  font-weight: 700;
 }
 .account-text {
   display: flex;
