@@ -90,6 +90,90 @@ final class NotificationPlanningTest extends DatabaseTestCase
         self::assertSame(['2026-10-22T13:45:00+00:00'], $this->fireTimes(), 'One notification, at the new time.');
     }
 
+    public function testAReminderNamesTheMeetingAppAndThePlaceButNeverTheLink(): void
+    {
+        $this->store('teams@test', self::meeting('teams@test', '20261022T100000', ['CONFERENCE;VALUE=URI:https://teams.microsoft.com/l/meetup-join/19%3ameeting', 'LOCATION:Room 3.2\\, Herengracht office']));
+        $this->store('meet@test', self::meeting('meet@test', '20261022T120000', ['X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij']));
+        $this->store('other@test', self::meeting('other@test', '20261022T140000', ['CONFERENCE;VALUE=URI:https://video.example.com/room', 'LOCATION:Room 1']));
+        $this->store('room@test', self::meeting('room@test', '20261022T160000', ['LOCATION:Room 1']));
+        // Outlook writes the app in the place and the link in the description.
+        $this->store('outlook@test', self::meeting('outlook@test', '20261023T100000', ['LOCATION:Microsoft Teams Meeting', 'DESCRIPTION:Join: https://teams.microsoft.com/l/meetup-join/19%3aoutlook']));
+        // The link only in the place: it is the meeting, and not a place to name.
+        $this->store('linkplace@test', self::meeting('linkplace@test', '20261023T120000', ['LOCATION:Room 2 (https://teams.microsoft.com/l/meetup-join/19%3aplace)']));
+        // A host that only carries an app's link in its path is no app's meeting.
+        $this->store('lookalike@test', self::meeting('lookalike@test', '20261023T140000', ['CONFERENCE;VALUE=URI:https://example.com/redirect/teams.microsoft.com/l/meetup-join/1']));
+        // A link with a user name in it is not offered as a meeting at all.
+        $this->store('unsafe@test', self::meeting('unsafe@test', '20261023T160000', ['CONFERENCE;VALUE=URI:https://meet.google.com@video.example.com/room', 'LOCATION:Room 4']));
+
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'teams@test: Thursday 22 October, 10:00 to 11:00, on Microsoft Teams. Or in Room 3.2, Herengracht office.',
+            'meet@test: Thursday 22 October, 12:00 to 13:00, on Google Meet.',
+            'other@test: Thursday 22 October, 14:00 to 15:00, online. Or in Room 1.',
+            'room@test: Thursday 22 October, 16:00 to 17:00, Room 1',
+            'outlook@test: Friday 23 October, 10:00 to 11:00, on Microsoft Teams.',
+            'linkplace@test: Friday 23 October, 12:00 to 13:00, on Microsoft Teams. Or in Room 2.',
+            'lookalike@test: Friday 23 October, 14:00 to 15:00, online.',
+            'unsafe@test: Friday 23 October, 16:00 to 17:00, Room 4',
+        ], $this->bodies());
+        foreach ($this->bodies() as $body) {
+            self::assertStringNotContainsString('http', $body, 'No link in a reminder.');
+        }
+    }
+
+    public function testAnOccurrenceAndAnEditWithoutTheMeetingDropTheApp(): void
+    {
+        $this->store('sync@test', self::syncSeries(['X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij']));
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'sync@test: Wednesday 21 October, 10:00 to 10:30, on Google Meet.',
+            'sync@test: Friday 23 October, 10:00 to 10:30, Room 1',
+            'sync@test: Sunday 25 October, 10:00 to 10:30, on Google Meet.',
+        ], $this->bodies());
+
+        // The meeting is taken off the series before its reminders came.
+        $this->store('sync@test', self::syncSeries([]));
+        $this->planAt(self::NOW);
+
+        self::assertSame([
+            'sync@test: Wednesday 21 October, 10:00 to 10:30',
+            'sync@test: Friday 23 October, 10:00 to 10:30, Room 1',
+            'sync@test: Sunday 25 October, 10:00 to 10:30',
+        ], $this->bodies());
+    }
+
+    /**
+     * A one hour meeting with the given extra lines.
+     *
+     * @param list<string> $lines
+     *
+     * @return list<string>
+     */
+    private static function meeting(string $uid, string $start, array $lines): array
+    {
+        return ['BEGIN:VEVENT', 'UID:'.$uid, 'DTSTAMP:20261019T080000Z', 'DTSTART;TZID=Europe/Amsterdam:'.$start, 'DURATION:PT1H', 'SUMMARY:Meeting', ...$lines, 'END:VEVENT'];
+    }
+
+    /**
+     * A series every other day from Wednesday 21 October, three times, with the given extra lines; its occurrence on
+     * Friday 23 October is held in a room, without a meeting.
+     *
+     * @param list<string> $lines
+     *
+     * @return list<string>
+     */
+    private static function syncSeries(array $lines): array
+    {
+        return [
+            'BEGIN:VEVENT', 'UID:sync@test', 'DTSTAMP:20261019T080000Z', 'DTSTART;TZID=Europe/Amsterdam:20261021T100000', 'DURATION:PT30M',
+            'RRULE:FREQ=DAILY;INTERVAL=2;COUNT=3', 'SUMMARY:Sync', ...$lines, 'END:VEVENT',
+            'BEGIN:VEVENT', 'UID:sync@test', 'DTSTAMP:20261019T080000Z', 'RECURRENCE-ID;TZID=Europe/Amsterdam:20261023T100000',
+            'DTSTART;TZID=Europe/Amsterdam:20261023T100000', 'DURATION:PT30M', 'SUMMARY:Sync', 'LOCATION:Room 1', 'END:VEVENT',
+        ];
+    }
+
     /**
      * Stores an event the way a provider sync would (saving it queues a plan at the real time, which planAt() then
      * redoes at the fixed one).
@@ -122,6 +206,19 @@ final class NotificationPlanningTest extends DatabaseTestCase
         );
 
         return array_values(array_unique($times));
+    }
+
+    /**
+     * The planned notifications in the order they come, each as its event's UID and its body.
+     *
+     * @return list<string>
+     */
+    private function bodies(): array
+    {
+        return array_map(
+            static fn (ScheduledNotification $n): string => ($n->getEvent()?->getObject()->getUid() ?? '(no event)').': '.$n->getBody(),
+            $this->entityManager()->getRepository(ScheduledNotification::class)->findBy([], ['fireAt' => 'ASC']),
+        );
     }
 
     private function calendar(): Calendar
