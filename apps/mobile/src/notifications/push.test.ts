@@ -124,6 +124,12 @@ describe('tappedRoute', () => {
     expect(tappedRoute({ path: '/todos' })).toBe('/todos')
   })
 
+  it('opens the chat of a WhatsApp notification', () => {
+    expect(tappedRoute({ kind: 'whatsapp', path: '/chats/0199-c1', chatId: '0199-c1' })).toBe('/chats/0199-c1')
+    expect(tappedRoute({ kind: 'whatsapp', path: '/chats/0199-c1/more' })).toBeNull()
+    expect(tappedRoute({ kind: 'whatsapp', path: '/chats/' })).toBeNull()
+  })
+
   it('opens Waiting on for a hand-over past its due date', () => {
     expect(tappedRoute({ kind: 'hand_over', path: '/waiting?nudge=0199-h1' })).toBe('/waiting?nudge=0199-h1')
     expect(tappedRoute({ path: '/waiting' })).toBe('/waiting')
@@ -142,6 +148,10 @@ describe('tappedRoute', () => {
 describe('foregroundBehavior', () => {
   it('puts mail in the list only while the app is open', () => {
     expect(foregroundBehavior({ kind: 'mail', silent: false })).toEqual({ shouldShowBanner: false, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false })
+  })
+
+  it('puts a WhatsApp message in the list only while the app is open', () => {
+    expect(foregroundBehavior({ kind: 'whatsapp', silent: false })).toEqual({ shouldShowBanner: false, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false })
   })
 
   it('shows reminders as a banner with sound, unless they came silently', () => {
