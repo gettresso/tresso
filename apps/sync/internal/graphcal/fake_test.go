@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -138,8 +139,12 @@ func inZone(t *dateTimeTimeZone, zoneName string) *dateTimeTimeZone {
 	return &dateTimeTimeZone{DateTime: wall.In(fakeZone(zoneName)).Format("2006-01-02T15:04:05") + ".0000000", TimeZone: zoneName}
 }
 
-// htmlText is an HTML body as Graph gives it as text.
+// htmlText is an HTML body as Graph gives it as text, as far as Exchange's conversion is known: line breaks and
+// block ends become line ends, a line break in the HTML source is a space, a link is its text followed by its address
+// in angle brackets ("text<url>"), and runs of spaces and tabs collapse into one.
 func htmlText(body string) string {
+	body = anchor.ReplaceAllString(body, "$2\x00$1\x01")
+	body = strings.NewReplacer("\r\n", " ", "\n", " ").Replace(body)
 	body = strings.NewReplacer("<br>", "\n", "</div>", "\n", "</p>", "\n").Replace(body)
 	var out strings.Builder
 	inTag := false
@@ -153,8 +158,14 @@ func htmlText(body string) string {
 			out.WriteRune(r)
 		}
 	}
-	return strings.TrimSpace(html.UnescapeString(out.String()))
+	text := strings.NewReplacer("\x00", "<", "\x01", ">").Replace(html.UnescapeString(out.String()))
+	return strings.TrimSpace(spaces.ReplaceAllString(text, " "))
 }
+
+var (
+	anchor = regexp.MustCompile(`(?is)<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
+	spaces = regexp.MustCompile(`[ \t]+`)
+)
 
 func (f *fakeGraph) remove(id string) {
 	f.mu.Lock()
