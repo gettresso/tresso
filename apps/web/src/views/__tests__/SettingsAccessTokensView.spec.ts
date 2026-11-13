@@ -130,6 +130,41 @@ describe('SettingsAccessTokensView', () => {
     expect(wrapper.findAll('.token')[0]!.text()).toContain('Calendar export')
   })
 
+  it('sets the WhatsApp permissions apart, unticked, and sends them only when ticked', async () => {
+    const wrapper = await mountView()
+
+    await wrapper.get('button.new').trigger('click')
+    await settle()
+    const dialog = wrapper.get('dialog')
+    const group = dialog.get('fieldset.whatsapp')
+    expect(group.get('legend').text()).toBe('WhatsApp')
+    expect(group.text()).toContain('Separate from mail. Reaches messages other people sent you. Leave off unless this token is for WhatsApp.')
+    expect(group.findAll('input[type="checkbox"]').map((box) => (box.element as HTMLInputElement).value)).toEqual(['chat:read', 'chat:send'])
+    expect(group.findAll('input[type="checkbox"]').every((box) => !(box.element as HTMLInputElement).checked)).toBe(true)
+    expect(dialog.find('fieldset.group > .scopes input[value="chat:read"]').exists()).toBe(false)
+    expect(group.find('input[value="mail:read"]').exists()).toBe(false)
+
+    await dialog.get('input:not([type])').setValue('Claude')
+    await dialog.get('input[value="mail:read"]').setValue(true)
+    await dialog.get('form').trigger('submit')
+    await settle()
+    expect(requests[requests.length - 1]!.body).toEqual({ name: 'Claude', scopes: ['mail:read'], expiresInDays: 90 })
+  })
+
+  it('sends a WhatsApp permission that is ticked', async () => {
+    const wrapper = await mountView()
+
+    await wrapper.get('button.new').trigger('click')
+    await settle()
+    const dialog = wrapper.get('dialog')
+    await dialog.get('input:not([type])').setValue('Claude')
+    await dialog.get('fieldset.whatsapp input[value="chat:read"]').setValue(true)
+    await dialog.get('form').trigger('submit')
+    await settle()
+
+    expect(requests[requests.length - 1]!.body).toEqual({ name: 'Claude', scopes: ['chat:read'], expiresInDays: 90 })
+  })
+
   it('asks for a name and at least one permission before sending anything', async () => {
     const wrapper = await mountView()
 
