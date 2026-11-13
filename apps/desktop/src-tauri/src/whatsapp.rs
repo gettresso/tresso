@@ -2042,6 +2042,10 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) {
 /// The app quits: the bridge it started stops with it.
 pub fn stop_on_exit<R: Runtime>(app: &AppHandle<R>) {
   app.state::<Bridge>().stop();
+  // Files staged for replies are not sent after a quit: they go now, not only at the next launch.
+  if let Ok(dir) = data_dir(app) {
+    let _ = fs::remove_dir_all(dir.join(OUTBOX_DIR));
+  }
 }
 
 /// The user signed out (or the sign-in ended): the bridge started for them stops. Off the caller's thread, since a
@@ -2375,11 +2379,18 @@ fn percent_decoded(value: &str) -> Result<String, String> {
   String::from_utf8(out).map_err(|_| code("refused"))
 }
 
-/// The name a staged file gets: the last part of the given one, without control characters or leading dots, at most
-/// 200 bytes (cut at a character); `file` when nothing is left. It is the name WhatsApp shows the recipient.
+/// The name a staged file gets: the last part of the given one, without control characters, direction overrides (as the
+/// server strips them from every name) or leading dots, at most 200 bytes (cut at a character); `file` when nothing is
+/// left. It is the name WhatsApp shows the recipient.
 fn staged_name(name: &str) -> String {
   let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
-  let clean: String = last.chars().filter(|c| !c.is_control()).collect::<String>().trim().trim_start_matches('.').to_string();
+  let clean: String = last
+    .chars()
+    .filter(|c| !c.is_control() && !matches!(*c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+    .collect::<String>()
+    .trim()
+    .trim_start_matches('.')
+    .to_string();
   let mut cut = String::new();
   for c in clean.chars() {
     if cut.len() + c.len_utf8() > 200 {
@@ -3136,6 +3147,8 @@ mod tests {
       ("..", "file"),
       ("  .hidden\u{7}", "hidden"),
       ("", "file"),
+      ("invoice\u{202E}fdp.exe", "invoicefdp.exe"),
+      ("\u{2066}report\u{2069}.pdf", "report.pdf"),
     ] {
       assert_eq!(staged_name(given), kept, "{given:?}");
     }
