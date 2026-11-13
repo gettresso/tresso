@@ -70,7 +70,7 @@ final readonly class ChatQueue
     /**
      * How long a reply cancelled while its sending was unconfirmed is kept (counted from its claim), so its relay's late
      * `sent: true` can still show that it went out. Its removal (the tombstone) stays after it, so its id stays refused;
-     * an answer after this is not found, and the relay lets it go ({@see purgeCancelled()}).
+     * an answer after this is not found, and the relay lets it go ({@see purgeCancelled()}, once a day).
      */
     public const string KEEP_CANCELLED = 'P30D';
 
