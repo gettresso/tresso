@@ -78,9 +78,10 @@ const MAX_IDS: usize = 500;
 const MAX_TEXT_BYTES: usize = 65_536;
 const MAX_LEFT_OUT: usize = 10_000;
 const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// The largest file Attach sends: the download limit. The bridge reads a file whole into memory before it uploads it, and
-/// neither whatsapp-mcp nor its fork states a limit of its own; WhatsApp refuses larger files anyway.
-const MAX_SEND_BYTES: u64 = MAX_DOWNLOAD_BYTES;
+/// The largest file Attach sends, for now: the bridge reads a file whole into memory before it uploads it, neither
+/// whatsapp-mcp nor its fork states a limit, and WhatsApp's own limits for media are far lower. Raise it only after the
+/// bridge was measured with large files (the hand-check list).
+const MAX_SEND_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_ANSWER_BYTES: u64 = 1024 * 1024;
 /// A longer line of the bridge's output is dropped (a message can be long; no line Tresso reads is).
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -2270,7 +2271,7 @@ pub fn whatsapp_open_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridg
 }
 
 #[tauri::command(async)]
-pub fn whatsapp_choose_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>) -> Result<Option<String>, String> {
+pub fn whatsapp_choose_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>) -> Result<Option<ChosenFile>, String> {
   use tauri_plugin_dialog::DialogExt;
   bridge.enabled()?;
   let Some(picked) = app.dialog().file().set_title("Attach a file").blocking_pick_file() else {
@@ -2280,9 +2281,22 @@ pub fn whatsapp_choose_file<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bri
   if !file.is_file() {
     return Err(code("Only a file can be attached."));
   }
-  let text = file.to_str().ok_or_else(|| code("The file's name cannot be used."))?.to_string();
+  let chosen = chosen_file(&file)?;
   lock(&bridge.0.chosen_files).insert(file);
-  Ok(Some(text))
+  Ok(Some(chosen))
+}
+
+/// A file picked for Attach: its path and its size in bytes, so the sent reply can be matched to the bridge's later copy.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct ChosenFile {
+  path: String,
+  size: u64,
+}
+
+fn chosen_file(file: &Path) -> Result<ChosenFile, String> {
+  let path = file.to_str().ok_or_else(|| code("The file's name cannot be used."))?.to_string();
+  let size = fs::metadata(file).map_err(|error| format!("The file cannot be used: {error}"))?.len();
+  Ok(ChosenFile { path, size })
 }
 
 #[cfg(test)]
@@ -2986,6 +3000,8 @@ mod tests {
     assert_eq!(checked_message(&chosen, "31612345678", "", Some(picked.to_str().unwrap())), Ok(Some(picked.canonicalize().unwrap())));
     assert!(checked_message(&chosen, "31612345678", "", Some(other.to_str().unwrap())).is_err());
     assert!(checked_message(&chosen, "31612345678", "", Some(root.to_str().unwrap())).is_err());
+    // The picker hands back the path and the size.
+    assert_eq!(chosen_file(&picked.canonicalize().unwrap()), Ok(ChosenFile { path: picked.canonicalize().unwrap().to_str().unwrap().to_string(), size: fs::metadata(&picked).unwrap().len() }));
     // A file over the limit is refused before the bridge reads it (a sparse file: nothing is written).
     File::create(&picked).unwrap().set_len(MAX_SEND_BYTES + 1).unwrap();
     assert_eq!(checked_message(&chosen, "31612345678", "", Some(picked.to_str().unwrap())), Err("too_large".to_string()));
