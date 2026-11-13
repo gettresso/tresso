@@ -1,0 +1,460 @@
+{
+  "description": "Meeting links and whether Tresso takes them: ownLink, saved as the user's own room link; join, opened by a Join button (a link from someone else, see canJoin); problem, the reason code when ownLink is false. packages/core/src/calendar/meeting.test.ts reads these cases against meetingLinkProblem and canJoin; the API's own link validation (meeting preferences) must read the same file so client and server agree.",
+  "cases": [
+    {
+      "name": "own room link",
+      "link": "https://meet.company.example/kim",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "Teams link of 250 characters",
+      "link": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_N2Q4ZTk5YjAtYzE2Mi00N2Q4ZTk5YjAtYzE2Mi00N2Q4ZTk5YjAtYzE2Mi00N2Q4ZTk5YjAtYzE2Mi00N2Q4ZTk5YjAtYzE2Mi00N2Q4ZTk5YjAtYzE2Mi00N2Q4ZTk5YjAtYzE2Mi00N2Q4ZTk5YjAtYzE2Mi00%40thread.v2/0?context=%7b%22Tid%22%3a%22d3b1%22%2c%22Oid%22%3a%22a1b2%22%7d",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "Zoom with passcode",
+      "link": "https://zoom.us/j/123?pwd=abc",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "Whereby room",
+      "link": "https://whereby.com/kim",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "port and fragment",
+      "link": "https://meet.example.com:8443/room#x",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "punycode host",
+      "link": "https://xn--bcher-kva.example/",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "trailing dot",
+      "link": "https://example.com.",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "digits inside the last label",
+      "link": "https://example.com1/",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "IP-like first labels of a named host",
+      "link": "https://1.2.3.4.example/",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "long host within the limit",
+      "link": "https://a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.x",
+      "ownLink": true,
+      "join": true,
+      "problem": null
+    },
+    {
+      "name": "international host name",
+      "link": "https://b\u00fccher.example/raum",
+      "ownLink": true,
+      "join": false,
+      "problem": null
+    },
+    {
+      "name": "Cyrillic letter imitating a host",
+      "link": "https://te\u0430ms.microsoft.com/l/meetup-join/1",
+      "ownLink": true,
+      "join": false,
+      "problem": null
+    },
+    {
+      "name": "empty",
+      "link": "",
+      "ownLink": false,
+      "join": false,
+      "problem": "empty"
+    },
+    {
+      "name": "over 2048 characters",
+      "link": "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ownLink": false,
+      "join": false,
+      "problem": "too_long"
+    },
+    {
+      "name": "leading space",
+      "link": " https://example.com/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "whitespace"
+    },
+    {
+      "name": "trailing space",
+      "link": "https://example.com/room ",
+      "ownLink": false,
+      "join": false,
+      "problem": "whitespace"
+    },
+    {
+      "name": "trailing line break",
+      "link": "https://example.com/room\n",
+      "ownLink": false,
+      "join": false,
+      "problem": "whitespace"
+    },
+    {
+      "name": "space inside",
+      "link": "https://example.com/a room",
+      "ownLink": false,
+      "join": false,
+      "problem": "whitespace"
+    },
+    {
+      "name": "no-break space",
+      "link": "https://example.com/\u00a0room",
+      "ownLink": false,
+      "join": false,
+      "problem": "whitespace"
+    },
+    {
+      "name": "line separator",
+      "link": "https://example.com/\u2028",
+      "ownLink": false,
+      "join": false,
+      "problem": "whitespace"
+    },
+    {
+      "name": "byte order mark",
+      "link": "\ufeffhttps://example.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "whitespace"
+    },
+    {
+      "name": "NUL",
+      "link": "https://example.com/\u0000",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "DEL",
+      "link": "https://example.com/\u007f",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "next line (C1)",
+      "link": "https://example.com/\u0085",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "zero width space in host",
+      "link": "https://exa\u200bmple.com/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "right-to-left override",
+      "link": "https://example.com/\u202emoc.live",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "left-to-right isolate",
+      "link": "https://example.com/\u2066x",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "Mongolian vowel separator",
+      "link": "https://example.com/\u180e",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "soft hyphen",
+      "link": "https://example.com/\u00adroom",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "Hangul filler in host",
+      "link": "https://exa\u3164mple.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "Hangul choseong filler in host",
+      "link": "https://exa\u115fmple.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "Hangul jungseong filler in host",
+      "link": "https://exa\u1160mple.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "halfwidth Hangul filler in host",
+      "link": "https://exa\uffa0mple.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "control"
+    },
+    {
+      "name": "http",
+      "link": "http://example.com/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "upper case scheme",
+      "link": "HTTPS://example.com/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "javascript with https in a comment",
+      "link": "javascript:alert(1)//https://example.com",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "javascript mixed case",
+      "link": "JavaScript:alert(document.cookie)",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "data URL",
+      "link": "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "file URL",
+      "link": "file:///etc/passwd",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "scheme relative",
+      "link": "//example.com/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "no scheme",
+      "link": "example.com/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "https without slashes",
+      "link": "https:example.com",
+      "ownLink": false,
+      "join": false,
+      "problem": "not_https"
+    },
+    {
+      "name": "user and password",
+      "link": "https://kim:secret@example.com/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "credentials"
+    },
+    {
+      "name": "user",
+      "link": "https://kim@example.com/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "credentials"
+    },
+    {
+      "name": "host before an at sign",
+      "link": "https://example.com@evil.example/",
+      "ownLink": false,
+      "join": false,
+      "problem": "credentials"
+    },
+    {
+      "name": "localhost",
+      "link": "https://localhost/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "empty host with path",
+      "link": "https:///room",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "scheme only",
+      "link": "https://",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "IPv6",
+      "link": "https://[::1]/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "IPv4 loopback",
+      "link": "https://127.0.0.1/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "IPv4 private with port",
+      "link": "https://192.168.1.10:8443/room",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "short IPv4",
+      "link": "https://127.1/",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "hex IPv4",
+      "link": "https://0x7f.1/",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "digits as last label",
+      "link": "https://example.123/",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "hex as last label",
+      "link": "https://example.0x1f/",
+      "ownLink": false,
+      "join": false,
+      "problem": "no_host"
+    },
+    {
+      "name": "backslash before an at sign",
+      "link": "https://example.com\\@evil.example/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "port 0",
+      "link": "https://example.com:0/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "port too high",
+      "link": "https://example.com:99999/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "empty port",
+      "link": "https://example.com:/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "two colons",
+      "link": "https://a:b:c/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "underscore in host",
+      "link": "https://exa_mple.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "label starting with a hyphen",
+      "link": "https://-example.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "empty label",
+      "link": "https://example..com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "label too long",
+      "link": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    },
+    {
+      "name": "markup in host",
+      "link": "https://<script>.com/",
+      "ownLink": false,
+      "join": false,
+      "problem": "invalid"
+    }
+  ]
+}

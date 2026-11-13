@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { calendar, calendarEvent } from '../store/contract'
+import linkFixture from './meeting-links.json'
 import {
   addedByText,
   appLabel,
   canJoin,
+  cannotRemoveMeeting,
   conferenceLabel,
   CREATING_HINT,
   defaultMeetingApp,
@@ -19,6 +21,7 @@ import {
   requestState,
   requestTitle,
   startingChoice,
+  TEAMS_MEETING_KEPT,
   type MeetingAccount,
   type MeetingChoice,
   type MeetingLinkProblem,
@@ -101,9 +104,10 @@ describe('app names', () => {
 })
 
 describe('link text', () => {
-  it('drops the scheme and keeps a short link whole', () => {
+  it('drops only a leading https:// and keeps a short link whole', () => {
     expect(linkText('https://meet.google.com/abc-defg-hij')).toBe('meet.google.com/abc-defg-hij')
-    expect(linkText('http://example.com/x')).toBe('example.com/x')
+    expect(linkText('http://example.com/x')).toBe('http://example.com/x')
+    expect(linkText('javascript:alert(1)')).toBe('javascript:alert(1)')
   })
 
   it('cuts a 250 character Teams link in the middle to the given length', () => {
@@ -124,58 +128,30 @@ describe('link text', () => {
 })
 
 describe('meeting link check', () => {
-  it('takes plain https links', () => {
-    for (const link of [OWN, TEAMS_URL, 'https://zoom.us/j/123?pwd=abc', 'https://whereby.com/kim', 'https://meet.example.com:8443/room#x', 'https://b\u00fccher.example/raum', 'https://xn--bcher-kva.example/', 'https://example.com.']) {
-      expect(meetingLinkProblem(link), link).toBeNull()
+  interface LinkCase {
+    name: string
+    link: string
+    ownLink: boolean
+    join: boolean
+    problem: MeetingLinkProblem | null
+  }
+  const cases = (linkFixture as { cases: LinkCase[] }).cases
+
+  it('has cases of every kind in the shared file', () => {
+    expect(cases.length).toBeGreaterThan(50)
+    const problems = new Set(cases.map((item) => item.problem))
+    for (const problem of ['empty', 'too_long', 'whitespace', 'control', 'not_https', 'credentials', 'no_host', 'invalid', null]) {
+      expect(problems.has(problem as MeetingLinkProblem | null), String(problem)).toBe(true)
+    }
+    expect(cases.some((item) => item.ownLink && !item.join)).toBe(true)
+    for (const item of cases) {
+      expect(item.ownLink, item.name).toBe(item.problem === null)
     }
   })
 
-  const refused: [string, MeetingLinkProblem][] = [
-    ['', 'empty'],
-    [`https://example.com/${'a'.repeat(2048)}`, 'too_long'],
-    [' https://example.com/room', 'whitespace'],
-    ['https://example.com/room ', 'whitespace'],
-    ['https://example.com/room\n', 'whitespace'],
-    ['https://example.com/a room', 'whitespace'],
-    ['https://example.com/\u00a0room', 'whitespace'],
-    ['https://example.com/\u2028', 'whitespace'],
-    ['https://example.com/\u0000', 'control'],
-    ['https://example.com/\u007f', 'control'],
-    ['https://example.com/\u0085', 'control'],
-    ['https://exa\u200bmple.com/room', 'control'],
-    ['https://example.com/\u202emoc.live', 'control'],
-    ['https://example.com/\u2066x', 'control'],
-    ['\ufeffhttps://example.com/', 'whitespace'],
-    ['https://example.com/\u180e', 'control'],
-    ['https://example.com/\u00adroom', 'control'],
-    ['http://example.com/room', 'not_https'],
-    ['HTTPS://example.com/room', 'not_https'],
-    ['javascript:alert(1)//https://example.com', 'not_https'],
-    ['JavaScript:alert(document.cookie)', 'not_https'],
-    ['data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==', 'not_https'],
-    ['file:///etc/passwd', 'not_https'],
-    ['//example.com/room', 'not_https'],
-    ['example.com/room', 'not_https'],
-    ['https:example.com', 'not_https'],
-    ['https://kim:secret@example.com/room', 'credentials'],
-    ['https://kim@example.com/room', 'credentials'],
-    ['https://example.com@evil.example/', 'credentials'],
-    ['https://localhost/room', 'no_host'],
-    ['https:///room', 'no_host'],
-    ['https://', 'no_host'],
-    ['https://[::1]/room', 'no_host'],
-    ['https://example.com\\@evil.example/', 'invalid'],
-    ['https://example.com:0/', 'invalid'],
-    ['https://example.com:99999/', 'invalid'],
-    ['https://example.com:/', 'invalid'],
-    ['https://a:b:c/', 'invalid'],
-    ['https://exa_mple.com/', 'invalid'],
-    ['https://-example.com/', 'invalid'],
-    ['https://example..com/', 'invalid'],
-    ['https://<script>.com/', 'invalid'],
-  ]
-  it.each(refused)('refuses %j as %s', (link, problem) => {
-    expect(meetingLinkProblem(link)).toBe(problem)
+  it.each(cases.map((item) => [item.name, item] as const))('%s', (_name, item) => {
+    expect(meetingLinkProblem(item.link)).toBe(item.problem)
+    expect(canJoin(conference('other', item.link))).toBe(item.join)
   })
 
   it('answers very long input at once without reading it all', () => {
@@ -183,8 +159,6 @@ describe('meeting link check', () => {
     const started = performance.now()
     expect(meetingLinkProblem(huge)).toBe('too_long')
     expect(performance.now() - started).toBeLessThan(50)
-    expect(meetingLinkProblem(`https://${'a.'.repeat(1000)}x`)).toBe(null)
-    expect(meetingLinkProblem(`https://${'a'.repeat(64)}.example/`)).toBe('invalid')
   })
 
   it('explains each problem without repeating the link', () => {
@@ -197,16 +171,35 @@ describe('meeting link check', () => {
       'Use a link that starts with https://.',
       'Use a link without a user name or password in it.',
       'Use a link with a full web address, such as https://meet.example.com/room.',
-      'Use a link that starts with https://.',
+      'This link does not look right. Check it and paste it again.',
     ])
   })
 
-  it('lets Join open only plain https links', () => {
+  it('refuses the invisible Hangul fillers a browser drops from a host', () => {
+    for (const filler of ['\u3164', '\u115f', '\u1160', '\uffa0']) {
+      expect(meetingLinkProblem(`https://exa${filler}mple.com/`)).toBe('control')
+    }
+  })
+
+  it('refuses hosts a browser reads as an IP address', () => {
+    for (const link of ['https://127.0.0.1/room', 'https://192.168.1.10:8443/room', 'https://127.1/', 'https://0x7f.1/', 'https://example.123/', 'https://example.0X1F/']) {
+      expect(meetingLinkProblem(link), link).toBe('no_host')
+    }
+    expect(meetingLinkProblem('https://example.com1/')).toBeNull()
+  })
+
+  it('lets Join open only plain https links with an ASCII host', () => {
     expect(canJoin(conference('teams', TEAMS_URL))).toBe(true)
     expect(canJoin(conference('other', 'javascript:alert(1)'))).toBe(false)
     expect(canJoin(conference('other', 'data:text/html,<b>x</b>'))).toBe(false)
     expect(canJoin(conference('other', 'tel:+31201234567'))).toBe(false)
     expect(canJoin(conference('other', 'https://kim:pw@example.com/'))).toBe(false)
+    // A Cyrillic letter in the host: refused for Join, accepted as the user's own link; its punycode is fine.
+    const homograph = 'https://te\u0430ms.microsoft.com/l/meetup-join/1'
+    expect(canJoin(conference('teams', homograph))).toBe(false)
+    expect(meetingLinkProblem(homograph)).toBeNull()
+    expect(canJoin(conference('other', 'https://b\u00fccher.example/'))).toBe(false)
+    expect(canJoin(conference('other', 'https://xn--bcher-kva.example/'))).toBe(true)
   })
 })
 
@@ -390,6 +383,19 @@ describe('state of a requested link', () => {
     expect(requestTitle(request({ status: 'failed', reason: 'refused' }), NOW)).toBe('Could not make the Teams link')
   })
 
+  it('uses neutral words for an app a newer server names', () => {
+    const unknown = request({ provider: 'webex' as ConferenceRequest['provider'] })
+    expect(requestTitle(unknown, NOW)).toBe('Making the meeting link')
+    expect(requestTitle({ ...unknown, status: 'failed', reason: 'refused' }, NOW)).toBe('Could not make the meeting link')
+    expect(failureHint({ ...unknown, status: 'failed', reason: 'refused' }, NOW)).toBe('The event is saved without a link. The meeting app refused to make it.')
+    expect(failureHint({ ...unknown, status: 'failed', reason: 'unreachable' }, NOW)).toBe('The event is saved without a link. The meeting app did not answer in time.')
+    expect(failureHint({ ...unknown, status: 'failed', reason: 'not_supported' }, NOW)).toBe('The event is saved without a link. The meeting app is not available for this calendar.')
+    expect(appLabel('webex' as MeetingChoice['app'])).toBe('Meeting link')
+    expect(appLabel('constructor' as MeetingChoice['app'])).toBe('Meeting link')
+    const event = calendarEvent('e9', microsoft.id, { conferenceRequest: { ...unknown, status: 'failed', reason: 'refused' } })
+    expect(meetingRow(rowInput(microsoft, work, { event }))).toMatchObject({ kind: 'failed', title: 'Could not make the meeting link' })
+  })
+
   it('says why it failed', () => {
     expect(failureHint(request({ requestedAt: at(121_000) }), NOW)).toBe('The event is saved without a link. Microsoft did not answer in time.')
     expect(failureHint(request({ status: 'failed', reason: 'unreachable', provider: 'meet' }), NOW)).toBe('The event is saved without a link. Google did not answer in time.')
@@ -415,6 +421,8 @@ describe('the meeting link row', () => {
     expect(meetingRow(rowInput(microsoft, work, { on: false, guests: 2 })).hint).toBe('No meeting link. People meet at the location.')
     expect(meetingRow(rowInput(microsoft, work, { on: false }, preferences({ addWithGuests: false }))).hint).toBe('No meeting link. People meet at the location.')
     expect(meetingRow(rowInput(microsoft, work, { on: false }, preferences({ defaults: { work: 'none' } }))).hint).toBe('No meeting link. People meet at the location.')
+    // No app could make the link, so a guest would not switch it on.
+    expect(meetingRow(rowInput(caldav, dav, { on: false }, preferences({ ownLink: null, defaultOther: 'own' }))).hint).toBe('No meeting link. People meet at the location.')
   })
 
   it('2: no app connected yet, with Zoom only when the server offers it', () => {
@@ -482,6 +490,18 @@ describe('the meeting link row', () => {
     const pasted = calendarEvent('e2', local.id, { conference: conference('other', 'https://jitsi.example/room') })
     expect(meetingRow(rowInput(local, null, { event: pasted, guests: 1 })).hint).toBe('It is in the invitation.')
     expect(meetingRow(rowInput(local, null, { event: pasted })).hint).toBe('It is saved with the event.')
+    const meet = calendarEvent('e3', google.id, { conference: conference('meet', 'https://meet.google.com/abc-defg-hij') })
+    expect(meetingRow(rowInput(google, gmail, { event: meet })).hint).toBe('Made with kim@gmail.example.')
+  })
+
+  it('6: does not say the account made a link it did not make', () => {
+    const zoomOnGoogle = calendarEvent('e4', google.id, { conference: conference('zoom', 'https://zoom.us/j/1') })
+    expect(meetingRow(rowInput(google, gmail, { event: zoomOnGoogle, guests: 2 })).hint).toBe('It is in the invitation.')
+    expect(meetingRow(rowInput(google, gmail, { event: zoomOnGoogle })).hint).toBe('It is saved with the event.')
+    const teamsOnGoogle = calendarEvent('e5', google.id, { conference: conference('teams', TEAMS_URL) })
+    expect(meetingRow(rowInput(google, gmail, { event: teamsOnGoogle })).hint).toBe('It is saved with the event.')
+    const meetOnDav = calendarEvent('e6', caldav.id, { conference: conference('meet', 'https://meet.google.com/abc-defg-hij') })
+    expect(meetingRow(rowInput(caldav, dav, { event: meetOnDav, guests: 1 })).hint).toBe('It is in the invitation.')
   })
 
   it('7: could not create, per reason and after waiting too long', () => {
@@ -561,14 +581,29 @@ describe('the meeting link row', () => {
   })
 
   it('11: removed, per guests', () => {
-    const event = saved({ conference: conference('teams', TEAMS_URL) })
-    expect(meetingRow(rowInput(microsoft, work, { event, removed: true, on: false, guests: 2 }))).toEqual({
+    const event = calendarEvent('e7', google.id, { conference: conference('meet', 'https://meet.google.com/abc-defg-hij') })
+    expect(meetingRow(rowInput(google, gmail, { event, removed: true, on: false, guests: 2 }))).toEqual({
       kind: 'removed',
       title: 'Meeting link',
       hint: 'Removed. When you save, guests get an update without the link.',
       tone: 'plain',
       icon: 'camera',
     })
-    expect(meetingRow(rowInput(microsoft, work, { event, removed: true, on: false })).hint).toBe('Removed. The link goes when you save.')
+    expect(meetingRow(rowInput(google, gmail, { event, removed: true, on: false })).hint).toBe('Removed. The link goes when you save.')
+  })
+
+  it('never offers or confirms removing a Teams meeting from a Microsoft 365 event', () => {
+    expect(cannotRemoveMeeting('microsoft', conference('teams', TEAMS_URL))).toBe(true)
+    expect(cannotRemoveMeeting('microsoft', conference('other', OWN))).toBe(false)
+    expect(cannotRemoveMeeting('microsoft', null)).toBe(false)
+    expect(cannotRemoveMeeting('google', conference('teams', TEAMS_URL))).toBe(false)
+    expect(cannotRemoveMeeting(undefined, conference('teams', TEAMS_URL))).toBe(false)
+    expect(TEAMS_MEETING_KEPT).toBe('Microsoft keeps a Teams meeting on its event. To meet elsewhere, delete this event and make a new one.')
+    const event = saved({ conference: conference('teams', TEAMS_URL) })
+    const kept = { kind: 'created', title: 'Meeting link', hint: 'Made with kim@company.example.', tone: 'plain', icon: 'camera' }
+    expect(meetingRow(rowInput(microsoft, work, { event, removed: true, on: false }))).toEqual(kept)
+    expect(meetingRow(rowInput(microsoft, work, { event, on: false }))).toEqual(kept)
+    const input = rowInput(microsoft, work, { event })
+    expect(meetingRow({ ...input, explicit: true, chosen: pick(input.choices, 'own') })).toEqual(kept)
   })
 })
