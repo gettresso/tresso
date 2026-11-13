@@ -441,7 +441,9 @@ final class CalendarInvitationTest extends DatabaseTestCase
         $html = (string) $message->getHtmlContent();
         $text = (string) $message->getTextContent();
         self::assertSame(1, substr_count($html, 'Join the meeting:'), 'Once: not again in the description.');
-        self::assertStringContainsString('Join the meeting: <a href="https://meet.company.example/kim?pwd=a1&amp;lang=en">https://meet.company.example/kim?pwd=a1&amp;lang=en</a>', $html);
+        // The outgoing sanitizer writes the link's characters as entities; read back, it is the link.
+        self::assertStringContainsString('Join the meeting: <a href="'.$room.'">'.$room.'</a>', html_entity_decode($html, \ENT_QUOTES | \ENT_HTML5));
+        self::assertStringNotContainsString('&lang', str_replace('&amp;lang', '', $html), 'The ampersand is escaped.');
         self::assertStringContainsString('Agenda &lt;b&gt;first&lt;/b&gt;', $html, 'The description is text, escaped.');
         self::assertStringNotContainsString('<b>first</b>', $html);
         self::assertSame(1, substr_count($text, 'Join the meeting:'));

@@ -120,6 +120,7 @@ final class CalendarBusyTimesTest extends TestCase
             $attendeeCount,
             $selfResponse,
             null,
+            null,
         );
     }
 }
