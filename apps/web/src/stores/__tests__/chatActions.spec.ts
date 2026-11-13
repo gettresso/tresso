@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { ChatApiError, SqliteMailStore, type SyncedChatOutgoing } from '@tresso/core'
+import { ChatApiError, SqliteMailStore, type ChangePage, type SyncedChatOutgoing } from '@tresso/core'
 import { memorySql } from '@tresso/core/testing/sql'
-import { ChatActionError, serverChatActions, type ChatActions } from '@/stores/chatActions'
+import { ChatActionError, serverChatActions, type ServerChatActions } from '@/stores/chatActions'
 import { ACCOUNT_ID, FakeChatServer } from './chatServerFixture'
 import { DIRECT, NOW } from './chatFixtures'
 
@@ -11,7 +11,7 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 describe('the server chat actions ("All my devices")', () => {
   let server: FakeChatServer
   let store: SqliteMailStore
-  let actions: ChatActions
+  let actions: ServerChatActions
   let pulls: number
 
   async function reply(id: string): Promise<SyncedChatOutgoing | undefined> {
@@ -82,6 +82,21 @@ describe('the server chat actions ("All my devices")', () => {
     server.fail('cancelReply', new ChatApiError(404, 'Not found'))
     await actions.cancel(CHAT_ID, other.id)
     expect(await reply(other.id)).toMatchObject({ status: 'cancelled' })
+  })
+
+  it('keeps a cancel until the delta removed the reply, then lets it go', async () => {
+    const queued = await actions.send(CHAT_ID, 'On my way')
+    await actions.cancel(CHAT_ID, queued.id)
+    expect(actions.cancelsKept()).toBe(1)
+    await actions.send(CHAT_ID, 'Second')
+    expect(actions.cancelsKept(), 'The copy still holds it (cancelled) until the delta says.').toBe(1)
+
+    const empty = { hasMore: false, mailAccounts: [], folders: [], threads: [], messages: [], outgoingMessages: [], signatures: [], drafts: [], smartInboxes: [], calendars: [], calendarEvents: [], notifications: [], eventNotes: [], todos: [], mailNotifications: [], handOvers: [], dailyBriefs: [] }
+    await store.apply({ ...empty, cursor: 99, deleted: [{ type: 'chatOutgoing', id: queued.id }] } as unknown as ChangePage)
+    expect(await reply(queued.id)).toBeUndefined()
+    await actions.send(CHAT_ID, 'Third')
+
+    expect(actions.cancelsKept()).toBe(0)
   })
 
   it('never cancels a reply going out, and asks nothing for it', async () => {

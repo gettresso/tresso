@@ -184,6 +184,11 @@ export function localChatActions(store: () => MailStore | null, now: () => numbe
   }
 }
 
+/** The server's actions, with how many cancels they still keep (for the tests: the delta lets them go). */
+export interface ServerChatActions extends ChatActions {
+  cancelsKept(): number
+}
+
 export interface ServerChatActionsOptions {
   api: ChatApi
   /** The copy; null while none is open. */
@@ -206,7 +211,7 @@ function later(next: string, current: string | null): boolean {
  * a request repeated by the network never makes two. What the server answers replaces the shown row, unless the delta
  * brought a newer one meanwhile. Errors are ChatActionError, in plain words.
  */
-export function serverChatActions(options: ServerChatActionsOptions): ChatActions {
+export function serverChatActions(options: ServerChatActionsOptions): ServerChatActions {
   const { api } = options
   const now = options.now ?? Date.now
 
@@ -267,6 +272,7 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
   /** Shows a reply at once and queues it on the server; see `send`. */
   async function queue(chatId: string, text: string, file: { uploadId: string; name: string; size: number } | null, again: string | undefined): Promise<SyncedChatOutgoing> {
     const store = copy()
+    await pruneCancelled(store, again)
     const { chat } = await page(store, chatId)
     if (chat.leftOut) {
       throw new ChatActionError('left_out')
@@ -285,6 +291,7 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
       ...(file === null ? {} : { file: { name: file.name, size: file.size } }),
     }
     await store.putChatOutgoing([shown])
+    queueing.add(shown.id)
     try {
       const queued = await api.queueReply(chatId, file === null ? { id: shown.id, text } : { id: shown.id, text, file: { uploadId: file.uploadId, name: file.name } })
       await replaceReply(store, shown, queued)
@@ -308,17 +315,38 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
       }
       throw chatActionError(error)
     } finally {
+      queueing.delete(shown.id)
       pulled()
     }
   }
 
-  /** Replies the user cancelled here, so a queueing refused as `cancelled` afterwards is known as their own doing. */
-  const cancelledHere = new Set<string>()
+  /**
+   * Replies the user cancelled here (with their chat), so a queueing refused as `cancelled` afterwards is known as their
+   * own doing: also a queueing sent again under the same id after an unsure answer. Kept until the delta settled the
+   * reply (its removal took it out of the copy) and no queueing of it is under way (pruneCancelled).
+   */
+  const cancelledHere = new Map<string, string>()
+  /** Replies whose queueing is under way. */
+  const queueing = new Set<string>()
+
+  /**
+   * Lets go of the cancels the delta settled: the copy no longer holds the reply, and nothing queues it now (`keep`: the
+   * id about to be queued again).
+   */
+  async function pruneCancelled(store: MailStore, keep?: string): Promise<void> {
+    for (const [id, chatId] of cancelledHere) {
+      if (id !== keep && !queueing.has(id) && (await outgoingRow(store, chatId, id)) === null) {
+        cancelledHere.delete(id)
+      }
+    }
+  }
 
   /** Per chat with changes under way: what the server last confirmed of it, to put a refused change back to. */
   const confirmed = new Map<string, { row: SyncedChat; pending: number }>()
 
   return {
+    cancelsKept: () => cancelledHere.size,
+
     async send(chatId, text, again) {
       const checked = replyText(text)
       if (!checked.ok) {
@@ -351,7 +379,8 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
         return
       }
       const shown: SyncedChatOutgoing = { ...row, status: 'cancelled' }
-      cancelledHere.add(id)
+      await pruneCancelled(store)
+      cancelledHere.set(id, chatId)
       await store.putChatOutgoing([shown])
       try {
         await api.cancelReply(id)
