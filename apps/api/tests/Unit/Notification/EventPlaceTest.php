@@ -58,6 +58,8 @@ final class EventPlaceTest extends TestCase
         yield 'countries' => ['U.S./Canada room', 'U.S./Canada room'];
         yield 'a lower case abbreviation' => ['a.s.r./Utrecht', 'a.s.r./Utrecht'];
         yield 'a bare host stays' => ['zoom.us', 'zoom.us'];
+        yield 'an unknown host with a capital stays' => ['Jitsi.example.org/room', 'Jitsi.example.org/room'];
+        yield 'a lower case place written like a host loses that word' => ['kamer 2.og/3', 'kamer'];
         yield 'an IPv4 address with a path' => ['192.168.1.5/room?pwd=1', ''];
         yield 'an IPv4 address with a port' => ['Room 10.0.0.1:8443/join', 'Room'];
         yield 'an IPv6 address' => ['[2001:db8::1]/room', ''];
@@ -66,7 +68,21 @@ final class EventPlaceTest extends TestCase
         yield 'a host with a port' => ['meet.example.com:8443', ''];
         yield 'a host with a query' => ['zoom.us?pwd=abc', ''];
         yield 'a host with a fragment' => ['meet.google.com#abc', ''];
-        yield 'a link before a comma without a space' => ['https://a.example/x,Room 1', 'Room 1'];
+        // Commas and semicolons belong to links, so a word with a link goes whole, also what was glued to it.
+        yield 'a link before a comma without a space' => ['https://a.example/x,Room 1', '1'];
+        yield 'a semicolon in a query' => ['https://zoom.us/j/1?pwd=a;tk=SECRET', ''];
+        yield 'a Teams context' => ['https://teams.microsoft.com/l/meetup-join/19%3ax/0?context={"Tid":"t-1","Oid":"o-2"}', ''];
+        yield 'a map position' => ['Dam 1 https://www.google.com/maps/place/Dam/@52.3730796,4.8924534,17z/data=!3m1!4b1', 'Dam 1'];
+        yield 'a map query' => ['https://maps.google.com/?q=52.37,4.89', ''];
+        yield 'a semicolon in a path' => ['Room 1; https://x.example/a;b', 'Room 1'];
+        yield 'a link without a scheme after a comma' => ['Room 1,zoom.us/j/1', 'Room 1'];
+        yield 'a capital Zoom host' => ['Zoom.us/j/123456789?pwd=abc', ''];
+        yield 'a capital Teams host' => ['Teams.Microsoft.com/l/meetup-join/x', ''];
+        yield 'a capital Meet host' => ['Meet.google.com/abc-defg-hij', ''];
+        yield 'an upper case Meet host' => ['MEET.GOOGLE.COM/abc-defg-hij', ''];
+        yield 'a capital Webex host' => ['Room 1 Acme.webex.com/meet/kim', 'Room 1'];
+        yield 'a label in brackets in the middle' => ['(see https://a.example/x) x', 'x'];
+        yield 'two labels in brackets' => ['Room (see https://a.example/x) and (see https://b.example/y) hall', 'Room and hall'];
         yield 'a label in brackets with the link' => ['Room (see https://a.example/x)', 'Room'];
         yield 'a label with a colon in brackets' => ['Room 3 [link: https://a.example/x ]', 'Room 3'];
         yield 'a colon before the link' => ['Room 1: https://a.example/x', 'Room 1'];
@@ -90,6 +106,8 @@ final class EventPlaceTest extends TestCase
         self::assertSame('', EventPlace::withoutLinks(str_repeat('(', 100000)));
         self::assertSame('', EventPlace::withoutLinks(str_repeat(')', 100000)));
         self::assertSame('', EventPlace::withoutLinks(str_repeat('( https://a.example/x ', 5000)));
+        self::assertSame('', EventPlace::withoutLinks(str_repeat('Zoom.', 30000).'us/j/1'));
+        self::assertSame(str_repeat('a.zoom.', 20000), EventPlace::withoutLinks(str_repeat('a.zoom.', 20000)));
         self::assertLessThan(1.0, microtime(true) - $started, 'No runaway backtracking.');
     }
 
@@ -106,6 +124,10 @@ final class EventPlaceTest extends TestCase
         yield 'online meeting' => ['Online meeting', true];
         yield 'Zoom meeting' => ['Zoom Meeting', true];
         yield 'a call' => ['Webex call', true];
+        yield 'with a period' => ['Microsoft Teams Meeting.', true];
+        yield 'the word first' => ['Réunion Teams', true];
+        yield 'the word first in Dutch' => ['Vergadering Teams', true];
+        yield 'a meeting room' => ['Meeting Room', false];
         yield 'a Zoom room' => ['Zoom Room', false];
         yield 'a Webex room' => ['Webex Room', false];
         yield 'a Teams room' => ['Teams room', false];

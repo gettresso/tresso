@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Notification;
 
+use App\Calendar\ICalendar\ConferenceDetector;
+
 /**
  * An event's place as notifications show it, rules read it and travel is estimated to: without links, since a meeting
  * link is often written there and is a capability (anyone with it may join), and the geocoder must never get one.
@@ -23,32 +25,49 @@ final class EventPlace
      * A link written without its scheme: a host followed by a path, query, fragment or port. Its host is in lower case
      * (as a typed host practically always is), so place names with a dot and a slash ("St.Pauli/Hamburg",
      * "Dept.Sales/HR", "U.S./Canada room") are not taken for one. Also an IPv4 address with a path or port, and an IPv6
-     * address in brackets.
+     * address in brackets. The hosts of the known meeting apps are matched in any case on top of this
+     * ({@see self::meetingHosts()}), since phones capitalise the first letter of a typed "Zoom.us/j/...".
      */
-    private const string BARE_LINK = '~(?<![\p{L}\p{N}.\-])(?:[\p{Ll}\p{N}\-]+\.)+(?:xn--[a-z0-9\-]+|\p{Ll}{2,})(?::\d+)?[/?#]'
-        .'|(?<![\p{L}\p{N}.\-])(?:[\p{Ll}\p{N}\-]+\.)+(?:xn--[a-z0-9\-]+|\p{Ll}{2,}):\d+(?!\p{L})'
+    private const string BARE_LINK = '~(?<![\p{L}\p{N}.\-])[\p{Ll}\p{N}\-][\p{Ll}\p{N}.\-]*\.(?:xn--[a-z0-9\-]+|\p{Ll}{2,})(?::\d+)?[/?#]'
+        .'|(?<![\p{L}\p{N}.\-])[\p{Ll}\p{N}\-][\p{Ll}\p{N}.\-]*\.(?:xn--[a-z0-9\-]+|\p{Ll}{2,}):\d+(?!\p{L})'
         .'|(?<![\p{N}.])(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?[/?#:]'
         .'|\[[0-9a-fA-F]*:[0-9a-fA-F]*:[0-9a-fA-F:]*\]~u';
 
-    /** The names of the apps, and the words their places are written with ("Microsoft Teams Meeting"). */
-    private const string ONLY_A_MEETING = '/^(?:microsoft teams|teams|google meet|meet|zoom|webex|online)(?:[ \-](?:meeting|vergadering|besprechung|réunion|reunión|call|link))?$/iu';
+    /**
+     * The names of the apps, alone or with a word a meeting is written with, before or after it ("Microsoft Teams
+     * Meeting", "Réunion Teams"), and a period at the end.
+     */
+    private const string ONLY_A_MEETING = '/^(?:(?:microsoft teams|teams|google meet|meet|zoom|webex|online)(?:[ \-](?:meeting|vergadering|besprechung|réunion|reunión|call|link))?|(?:meeting|vergadering|besprechung|réunion|reunión|call|link)[ \-](?:microsoft teams|teams|google meet|meet|zoom|webex|online))\.?$/iu';
+
+    /** {@see self::meetingHosts()}, built once. */
+    private static ?string $meetingHosts = null;
 
     /**
-     * The place without links. Words are split at whitespace, commas and semicolons; every word that holds a link goes
-     * as a whole. What the links stood in goes too: a bracket group with at most a label word beside the link ("(see
-     * <link>)", "[link: <link>]"), brackets left empty, separators left doubled or at either end, a colon at the end, a
-     * bracket left open at the end or closed at the start. A place without any letter or digit left is no place: "".
+     * The place without links. Words are split at whitespace; a word that holds a link with a scheme or "www." goes as a
+     * whole (commas and semicolons belong to links: a query, a map position, a Teams context). Any other word is split
+     * at commas and semicolons, and each part that is a link without a scheme goes. What the links stood in goes too: a
+     * bracket group with at most a label word beside the link ("(see <link>)", "[link: <link>]"), brackets left empty,
+     * separators left doubled or at either end, a colon at the end, a bracket left open at the end or closed at the
+     * start; whitespace inside is collapsed to one space. A place without any letter or digit left is no place: "".
      */
     public static function withoutLinks(string $location): string
     {
-        $pieces = preg_split('/(\s+|[,;])/u', mb_scrub(str_replace(self::MARK, '', $location), 'UTF-8'), -1, \PREG_SPLIT_DELIM_CAPTURE | \PREG_SPLIT_NO_EMPTY);
+        $words = preg_split('/(\s+)/u', mb_scrub(str_replace(self::MARK, '', $location), 'UTF-8'), -1, \PREG_SPLIT_DELIM_CAPTURE | \PREG_SPLIT_NO_EMPTY);
         $place = '';
-        foreach (\is_array($pieces) ? $pieces : [] as $piece) {
-            $place .= 1 === preg_match(self::LINK, $piece) || 1 === preg_match(self::BARE_LINK, $piece) ? self::MARK : $piece;
+        foreach (\is_array($words) ? $words : [] as $word) {
+            if (self::holds(self::LINK, $word)) {
+                $place .= self::MARK;
+                continue;
+            }
+            $parts = preg_split('/([,;])/u', $word, -1, \PREG_SPLIT_DELIM_CAPTURE | \PREG_SPLIT_NO_EMPTY);
+            foreach (\is_array($parts) ? $parts : [] as $part) {
+                $place .= self::isBareLink($part) ? self::MARK : $part;
+            }
         }
         $place = (string) preg_replace(
             [
-                '/[(\[<（]\s*(?:\p{L}+:?\s+)?'.self::MARK.'[\s,;:.]*(?:[)\]>）]|$)/u',
+                // The link often swallowed the closing bracket: it may be gone.
+                '/[(\[<（]\s*(?:\p{L}+:?\s+)?'.self::MARK.'[\s,;:.]*[)\]>）]?/u',
                 '/'.self::MARK.'/u',
                 '/\s+/u',
                 '/\(\s*\)|\[\s*\]|<\s*>|（\s*）/u',
@@ -61,6 +80,36 @@ final class EventPlace
         $place = 1 === preg_match('/^.*[^\s,;|:\-(\[<（]/su', $place, $match) ? $match[0] : '';
 
         return 1 === preg_match('/[\p{L}\p{N}]/u', $place) ? $place : '';
+    }
+
+    private static function isBareLink(string $part): bool
+    {
+        return self::holds(self::BARE_LINK, $part) || self::holds(self::meetingHosts(), $part);
+    }
+
+    /** Whether the pattern is found; a word the pattern cannot be run on to the end counts as a link and goes. */
+    private static function holds(string $pattern, string $word): bool
+    {
+        return 0 !== preg_match($pattern, $word);
+    }
+
+    /**
+     * A host of a known meeting app ({@see ConferenceDetector::HOSTS}) or a name under it, in any case, followed by a
+     * path, query, fragment or port: "Zoom.us/j/123", "MEET.GOOGLE.COM/abc-defg-hij".
+     */
+    private static function meetingHosts(): string
+    {
+        if (null === self::$meetingHosts) {
+            $hosts = [];
+            foreach (ConferenceDetector::HOSTS as $names) {
+                foreach ($names as $name) {
+                    $hosts[] = preg_quote(ltrim($name, '.'), '~');
+                }
+            }
+            self::$meetingHosts = '~(?<![\p{L}\p{N}.\-])(?:[a-z0-9.\-]*\.)?(?:'.implode('|', array_unique($hosts)).')(?::\d+)?[/?#]~iu';
+        }
+
+        return self::$meetingHosts;
     }
 
     /**
