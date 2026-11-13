@@ -93,6 +93,10 @@ describe('editor values', () => {
     expect(inputFromEvent(pending)).toMatchObject({ conferenceUrl: null, conferenceProvider: 'meet' })
     const failed = calendarEvent('f', 'cal', { conferenceRequest: { provider: 'teams', status: 'failed', reason: 'refused', requestedAt: at } })
     expect(inputFromEvent(failed)).toMatchObject({ conferenceUrl: null, conferenceProvider: 'teams' })
+    const unsupported = calendarEvent('u', 'cal', { conferenceRequest: { provider: 'teams', status: 'failed', reason: 'not_supported', requestedAt: at } })
+    expect(inputFromEvent(unsupported)).toMatchObject({ conferenceUrl: null, conferenceProvider: null })
+    const unreachable = calendarEvent('r', 'cal', { conferenceRequest: { provider: 'meet', status: 'failed', reason: 'unreachable', requestedAt: at } })
+    expect(inputFromEvent(unreachable).conferenceProvider).toBe('meet')
     const zoom = calendarEvent('z', 'cal', { conferenceRequest: { provider: 'zoom', status: 'pending', reason: null, requestedAt: at } })
     expect(inputFromEvent(zoom)).toMatchObject({ conferenceUrl: null, conferenceProvider: null })
     const made = calendarEvent('m', 'cal', {

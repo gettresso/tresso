@@ -220,6 +220,11 @@ function checkLink(value: string): { problem: MeetingLinkProblem; host: null } |
   if (/^\d+$/.test(last) || /^0x[0-9a-f]*$/i.test(last)) {
     return problem('no_host')
   }
+  // A browser maps wide and other digits and letters to ASCII first (127.0.0.<fullwidth 1>, 1.0<fullwidth x>7f), so a
+  // last label with any character outside ASCII and any number in it is not taken either.
+  if (/[^\x00-\x7f]/.test(last) && /\p{N}/u.test(last)) {
+    return problem('no_host')
+  }
   if (!labels.every((label) => label.length <= 63 && LABEL.test(label))) {
     return problem('invalid')
   }
