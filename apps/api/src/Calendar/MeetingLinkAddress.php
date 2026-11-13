@@ -14,8 +14,9 @@ namespace App\Calendar;
  *   direction marks, overrides and isolates, Hangul fillers);
  * - it starts with "https://" exactly (an upper case scheme is refused, as on the clients);
  * - no backslash, no user name or password, a port from 1 to 65535 if any;
- * - a named host of two or more labels: no localhost, no IP address, no last label that reads as a number (digits, or
- *   0x and hex digits); labels of letters, digits and inner hyphens (no underscore), at most 63 characters each.
+ * - a named host of two or more labels: no localhost, no IP address, no last label that reads as a number (digits,
+ *   0x and hex digits, or any character outside ASCII together with a number, which browsers map to ASCII); labels of
+ *   letters, digits and inner hyphens (no underscore), at most 63 characters each.
  *
  * A link is a capability, so the messages name what is wrong and never repeat the link.
  */
@@ -84,6 +85,12 @@ final class MeetingLinkAddress
         if ('' === $host || \count($labels) < 2 || 1 === preg_match('/^(?:[0-9]+|0[xX][0-9a-fA-F]*)$/', $labels[\count($labels) - 1])) {
             return self::NO_HOST;
         }
+        // A browser maps wide and other digits and letters to ASCII first (127.0.0.<fullwidth 1>, 1.0<fullwidth x>7f), so
+        // a last label with any character outside ASCII and any number in it is not taken either.
+        $last = $labels[\count($labels) - 1];
+        if (1 === preg_match('/[^\x00-\x7F]/', $last) && 1 === preg_match('/\p{N}/u', $last)) {
+            return self::NO_HOST;
+        }
         foreach ($labels as $label) {
             if (self::length($label) > 63 || 1 !== preg_match(self::LABEL_PATTERN, $label)) {
                 return self::INVALID;
@@ -112,6 +119,7 @@ final class MeetingLinkAddress
             self::WHITESPACE, self::CONTROL => 'Use a link without spaces, line breaks or hidden characters.',
             self::CREDENTIALS => 'Use a link without a user name or password in it.',
             self::NO_HOST => 'Use a link with a full web address, such as https://meet.example.com/room.',
+            self::INVALID => 'This link does not look right. Check it and paste it again.',
             default => 'Use a link that starts with https://.',
         };
     }
