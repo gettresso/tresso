@@ -110,6 +110,15 @@ final readonly class ChatIngestor
 
         foreach ($named as $jid => $input) {
             $chat = $known[$jid] ?? null;
+            if (null === $chat && $input->leftOut) {
+                // Left out on a device before the server knew it: kept as a left-out row, with nothing but its JID.
+                $address = ChatJid::parse($jid) ?? throw new \LogicException('Named chats parse.');
+                $chat = $this->fields->newChat($account, $jid, null, $address->kind, new \DateTimeImmutable(ChatTime::EARLIEST));
+                $chat->setLeftOut(true);
+                $this->entityManager->persist($chat);
+                $known[$jid] = $chat;
+                continue;
+            }
             if (null !== $chat && !$chat->isLeftOut() && $this->taken($account, $chat->getKind())) {
                 $this->fields->rename($chat, self::label($input->name));
             }

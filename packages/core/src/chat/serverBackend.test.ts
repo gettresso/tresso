@@ -33,6 +33,7 @@ import {
 } from './relay'
 import {
   ChatRelayImportStuck,
+  ChatRelayOtherNumber,
   RELAY_MAX_REFUSED,
   RELAY_MIN_BATCH_BYTES,
   ServerChatBackend,
@@ -948,6 +949,35 @@ describe('ServerChatBackend', () => {
 
       api.relayDevice = OTHER_DEVICE
       await expect(backend.reportStatus({ bridge: 'stopped', link: 'unknown', linkedAt: null, loopbackOnly: null })).rejects.toBeInstanceOf(ChatRelayStopped)
+    })
+
+    it('names the linked number when it knows it, and stops when the server says it is another', async () => {
+      await backend.reportStatus({ bridge: 'running', link: 'linked', linkedAt: null, loopbackOnly: true, address: '31698765432' })
+      await backend.reportStatus({ bridge: 'running', link: 'linked', linkedAt: null, loopbackOnly: true, address: null })
+      expect(api.calls.map((call) => (call.kind === 'status' ? call.request.address : null))).toEqual(['31698765432', undefined])
+
+      api.relayStatus = () => Promise.reject(new ChatApiError(409, 'Another number', 'other_number'))
+      const error = await backend.reportStatus({ bridge: 'running', link: 'linked', linkedAt: null, loopbackOnly: true, address: '31611112222' }).catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(ChatRelayOtherNumber)
+      expect(error).toBeInstanceOf(ChatRelayStopped)
+    })
+  })
+
+  describe('chats left out before the server knew them', () => {
+    it('hands them over as left-out chats without names or messages, in the server form, inside the first import', async () => {
+      const many = Array.from({ length: 250 }, (_, i) => `316${String(10_000_000 + i)}@s.whatsapp.net`)
+      await backend.handOverLeftOut(['31612345678:3@S.whatsapp.net', 'not a jid', ...many, many[0]!])
+
+      const calls = api.messageCalls()
+      expect(calls.map((call) => [call.chats.length, call.messages.length])).toEqual([
+        [200, 0],
+        [51, 0],
+      ])
+      expect(calls[0]!.chats[0]).toEqual({ jid: '31612345678@s.whatsapp.net', name: null, kind: 'direct', leftOut: true })
+      expect(calls.every((call) => call.firstImport)).toBe(true)
+
+      api.relayDevice = OTHER_DEVICE
+      await expect(backend.handOverLeftOut(['31612345678@s.whatsapp.net'])).rejects.toBeInstanceOf(ChatRelayStopped)
     })
   })
 

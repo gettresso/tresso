@@ -28,4 +28,12 @@ final class RelayStatus extends RelayRequest
 
     /** Whether the bridge listens on loopback only; null when the relay could not check. */
     public ?bool $loopbackOnly = null;
+
+    /**
+     * The number the bridge is linked to, digits only; null when the relay does not know it. Another number than the
+     * account's is 409 `other_number`: the relay stops (it took over not knowing its number, and has learned it since).
+     */
+    #[Assert\NotBlank(allowNull: true)]
+    #[Assert\Regex('/^[0-9]{5,20}$/D', message: 'The number is 5 to 20 digits, without a plus or spaces.')]
+    public ?string $address = null;
 }

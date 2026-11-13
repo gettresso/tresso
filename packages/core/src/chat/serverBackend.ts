@@ -14,6 +14,7 @@ import {
   type RelayResultRequest,
   type RelayStatusRequest,
 } from './api'
+import { canonicalChatJid, chatKindOf } from './format'
 import { readRelayCursor } from './localBackend'
 import {
   ChatRelayRetryLater,
@@ -82,6 +83,17 @@ export class ChatRelayImportStuck extends Error {
   ) {
     super(reason === 'too_many_refused' ? 'The import is stuck: more messages were refused than one bad row explains.' : 'The import is stuck: the server refused a chat its messages need.')
     this.name = 'ChatRelayImportStuck'
+  }
+}
+
+/**
+ * The server says the bridge here is linked to another WhatsApp number than the account's (409 `other_number`): the relay
+ * stops (a ChatRelayStopped) and the UI says why.
+ */
+export class ChatRelayOtherNumber extends ChatRelayStopped {
+  constructor() {
+    super('The bridge is linked to another WhatsApp number than the account.')
+    this.name = 'ChatRelayOtherNumber'
   }
 }
 
@@ -322,10 +334,38 @@ export class ServerChatBackend implements ChatBackend {
    * relays now or the account is gone, ChatRelayRetryLater on 429 and 403.
    */
   async reportStatus(status: Omit<RelayStatusRequest, 'deviceId'>): Promise<void> {
+    const request: RelayStatusRequest = { deviceId: this.deviceId, bridge: status.bridge, link: status.link, linkedAt: status.linkedAt, loopbackOnly: status.loopbackOnly }
+    if (status.address !== undefined && status.address !== null) {
+      request.address = status.address
+    }
     try {
-      await this.api.relayStatus(this.accountId, { deviceId: this.deviceId, bridge: status.bridge, link: status.link, linkedAt: status.linkedAt, loopbackOnly: status.loopbackOnly })
+      await this.api.relayStatus(this.accountId, request)
     } catch (error) {
       throw relayError(error)
+    }
+  }
+
+  /**
+   * Hands chats the user left out on this device to the server as left-out chats (no name, no messages), at most
+   * RELAY_MAX_CHATS a call, so every relay leaves them out (RelayChat `leftOut`). Idempotent: one the server holds is
+   * left as it is. JIDs go in the one form the server stores. Rejects as the other relay calls do.
+   */
+  async handOverLeftOut(jids: readonly string[]): Promise<void> {
+    const chats: RelayChat[] = []
+    for (const jid of new Set(jids)) {
+      const canonical = canonicalChatJid(jid)
+      if (canonical !== null) {
+        chats.push({ jid: canonical, name: null, kind: chatKindOf(canonical), leftOut: true })
+      }
+    }
+    for (let start = 0; start < chats.length; start += RELAY_MAX_CHATS) {
+      try {
+        // As part of the first import: a batch without it would end the server's history import (and the history would
+        // arrive unread); with no messages it marks nothing read.
+        await this.api.relayMessages(this.accountId, { deviceId: this.deviceId, firstImport: true, chats: chats.slice(start, start + RELAY_MAX_CHATS), messages: [] })
+      } catch (error) {
+        throw relayError(error)
+      }
     }
   }
 
@@ -629,6 +669,9 @@ function relayError(error: unknown): unknown {
   }
   if (failure.status === 409 && failure.code === 'not_the_relay') {
     return new ChatRelayStopped('Another device relays WhatsApp now.')
+  }
+  if (failure.status === 409 && failure.code === 'other_number') {
+    return new ChatRelayOtherNumber()
   }
   if (failure.status === 404) {
     return new ChatRelayStopped('The WhatsApp account is no longer on the server.')

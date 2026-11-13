@@ -10,6 +10,7 @@ use App\ApiResource\ChatOutgoingResource;
 use App\ApiResource\Input\Chat\RelayClaim;
 use App\ApiResource\Input\Chat\RelayMessages;
 use App\ApiResource\Input\Chat\RelayResult;
+use App\ApiResource\ChatProblem;
 use App\ApiResource\Input\Chat\RelayStatus;
 use App\ApiResource\Output\Chat\RelayClaimOutput;
 use App\ApiResource\Output\Chat\RelayImportOutput;
@@ -101,6 +102,16 @@ final readonly class ChatRelayProcessor implements ProcessorInterface
                 );
             }
 
+            if (null !== $data->address) {
+                $stored = $this->fields->accountAddress($account);
+                if (null !== $stored && $stored !== $data->address) {
+                    throw ChatProblem::otherNumber();
+                }
+                if (null === $stored) {
+                    // Learned now: from here on the account knows its number, for the next takeover's check.
+                    $this->fields->setAccountIdentity($account, $data->address, $this->fields->accountDisplayName($account));
+                }
+            }
             $account->reportBridge(
                 $data->bridge ?? throw new \LogicException('Validation guarantees a bridge state.'),
                 $data->link ?? throw new \LogicException('Validation guarantees a link state.'),

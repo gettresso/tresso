@@ -18,7 +18,7 @@ export const RELAY_MAX_FIELD = 65_536
 export const QUEUE_REPLY_MAX_TEXT = 4096
 
 /** The `code` of a refusal of the chat endpoints (ChatProblem in the API). All are 409 but `too_large` (413). */
-export type ChatProblemCode = 'not_the_relay' | 'already_going_out' | 'id_taken' | 'result_final' | 'not_failed' | 'cancelled' | 'too_large'
+export type ChatProblemCode = 'not_the_relay' | 'already_going_out' | 'id_taken' | 'result_final' | 'not_failed' | 'cancelled' | 'too_large' | 'other_number'
 
 /**
  * A failed chat request as a ChatApi implementation rejects with it: the HTTP status, the problem's `code` when the
@@ -112,6 +112,11 @@ export interface RelayStatusRequest extends RelayRequest {
   linkedAt: string | null
   /** Whether the bridge listens on loopback only; null when the relay could not check. */
   loopbackOnly: boolean | null
+  /**
+   * The number the bridge is linked to, 5 to 20 digits; null or absent when the relay does not know it. Another number
+   * than the account's is 409 `other_number`, and the relay stops.
+   */
+  address?: string | null
 }
 
 /** The answer to the heartbeat (RelayStatusOutput): this desktop relays the account. */
@@ -127,6 +132,11 @@ export interface RelayChat {
   name: string | null
   /** The kind the JID says (chatKindOf); another one is 422. */
   kind: ChatKind
+  /**
+   * The user left this chat out before the server knew it: the server keeps a left-out row for it (its JID sealed, no
+   * name, no messages), so every relay leaves it out; a chat the server holds already is left as it is. Absent: false.
+   */
+  leftOut?: boolean
 }
 
 /** A group sender (RelaySender). */
