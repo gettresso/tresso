@@ -236,6 +236,14 @@ notifications, batches, the daily brief, reminder rules, calendars and more. A c
 only gets the permissions you allow; every tool does exactly what the API allows with that permission. Mail, todos and
 events are coming next.
 
+**WhatsApp.** With WhatsApp set to "All my devices", a client can also read, search and answer your WhatsApp chats.
+That needs permissions of their own, separate from mail: "Read your WhatsApp chats" (`chat:read`) and "Send WhatsApp
+messages as you" (`chat:send`); no other permission includes them. The easiest way is a personal access token with
+those ticked (below). An app that signs in itself only gets them when it names them when it registers, and you see
+them listed apart on the consent screen. Answers are queued and sent by the Mac that relays WhatsApp, only into chats
+you already have, never to a new number. Messages come from other people, so treat what an AI app does with them with
+care.
+
 **Tresso Cloud.** In Claude Code:
 
 ```bash
