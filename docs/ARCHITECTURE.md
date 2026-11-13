@@ -1799,7 +1799,7 @@ Both stores keep WhatsApp chats next to the mail (`chatAccounts`, `chats`, `chat
 shape of the delta's chat lists, `packages/core/src/chat/types.ts`): a list of chats newest first with each chat's
 newest message and unread count (incoming messages after `readThrough`), the Unified Inbox's part of it (not archived,
 not left out), one chat with its messages and replies, the replies waiting to be sent, and a few values the relay keeps
-(`chatMeta`, in `meta` under `chat:`). The list is one query and the unread badge one statement, through an index on
+(`chatMeta`, in `meta` under `chat:`), and an account's chats left out (`leftOutChats`, for taking one back in). The list is one query and the unread badge one statement, through an index on
 chat, sender side and time. A page's chat rows each stand on their own, so a message that arrives before its chat is
 kept and shows once the chat does, and a page given twice stores nothing twice; a removed chat account takes its chats,
 messages and replies (also a message whose chat never arrived, or that came in the same page as the removal), a removed
@@ -1904,7 +1904,8 @@ the shell's rows as an SVG that stays dark on white in both themes, and Connect 
 and `importSince` (the connect moment less 30 days), which nothing changes afterwards. The dialog then shows the first
 import in counts (messages and chats so far, chats when done, a stuck import with what could not be stored); Done leads
 to the WhatsApp list. Closing it while the bridge starts waits
-for the start and then stops the bridge. "Only this Mac" is the only mode; "All my devices" shows as coming later.
+for the start and then stops the bridge. Where the chats live is chosen there too: "Only this Mac" first and chosen,
+"All my devices" only after the user confirmed that the chats are copied to the Tresso server (described below).
 Notify me is off by default; WhatsApp gets no classification, no
 search index and no smart inbox. Settings, WhatsApp shows the relaying Mac, the
 folder (Change folder: picked and checked first, the chats stay, a new store is read from the start), the bridge (each
@@ -1928,7 +1929,8 @@ sender id, in memory only, with `lookUpNames` for the senders of messages stored
 the name once it is; the stored rows are not rewritten).
 
 The chat screens (`apps/web/src/stores/chats.ts`, `apps/web/src/components/chat/`) show the chats of the "Only this
-Mac" account only where WhatsApp is on and connected; in the browser and with the switch off nothing of them renders.
+Mac" account, or in "All my devices" those of the server's account (read again on every delta page with chat rows),
+only where WhatsApp is on and connected on the desktop; in the browser and with the switch off nothing of them renders.
 The sidebar has a WhatsApp row (unread chats in the Unified Inbox, which its count includes) and says `N mail accounts,
 WhatsApp`; the Unified Inbox places chats among the mail by time (`mergeInbox`, no checkbox, never in a bulk selection,
 and while older mail is still to be shown only chats newer than the last conversation on screen) with `Channels` tabs
@@ -2030,6 +2032,55 @@ What the wiring (the WhatsApp UI package) must respect:
   only from 0, as `known` for what the server has.
 - Words for `unconfirmed` must say that the reply may have been sent.
 - Send the heartbeat (`reportStatus`) on connect, on every bridge change and every 60 seconds.
+
+The desktop wiring of "All my devices" is in the same store (`apps/web/src/stores/whatsappRelay.ts`, mode `all` in the
+config), with the web client's `ChatApi` (`apps/web/src/api/chats.ts`: the auth store's requests, each body exactly
+`JSON.stringify(request)`; failures as `ChatApiError` with the status, the problem's `code` (which `ApiError` now
+reads), `Retry-After` and the violation paths only; the claim is sent with the client's retry after a refused token
+off, so it never goes twice). It keeps every point above:
+
+- **Who relays.** The server's chat account comes to the copy through the delta; the mail store raises `chatChanges`
+  for every page with chat rows or chat tombstones, and the store reads the account again on it. The relay
+  (`ServerChatBackend`) starts only while the bridge is linked, the account names this desktop's device id (the RFC 4122
+  v4 UUID of the config, the one `PUT chat-accounts/whatsapp` sent), and a pull ended after the account arrived. When the
+  account names another device, the relay and the heartbeat stop, a claim this Mac kept is reported first (`prepare` of a
+  backend for the account: a former relay may still report `sent`), and only then the cursor and the claim go. A relay
+  call answered 409 `not_the_relay` (or 404) stops the relay and pulls at once; it stays off until the copy names a
+  relay again. After this Mac's own `PUT` the device is not compared until the pull after it ended.
+- **Heartbeat** at once, on every change of the bridge (process, link, port exposure) and every 60 seconds while this
+  Mac relays, also while the bridge is stopped or unlinked (that is what it reports).
+- **Use this Mac instead.** On a Mac in "All my devices" that does not relay: `PUT` with this device, the cursor from 0
+  (the server honours a first import again for a relay that takes over), a kept claim stays to be reported. On a Mac in
+  "Only this Mac" it is the switch below; on one without WhatsApp it opens the connect dialog with "All my devices"
+  chosen. The Mac that relayed stops at its next call or pull.
+- **Switching.** Each switch is marked in the copy (`mode-switch`) from its first step to its last, so a crash, a quit
+  or a sign-out between two steps leaves a state the next start takes up, each step safe to repeat (the store's comment
+  lists the steps and what each crash point leaves; `whatsappRelayServer.spec.ts` starts from each). To "All my
+  devices": mark, note the replies waiting in the local rows (`carried-replies`, noted again whole while the rows
+  exist), `PUT`, save the config, remove the `wa:` rows (only now), clear the server cursor (a first import from 0 with
+  the same `importSince`), unmark. The noted replies are queued on the server once their chat came through the delta,
+  each with a new UUIDv7 kept before it is sent (the server takes ids at most 10 minutes old; a repeat of a queued id gets
+  the same reply back, and a 422 on `id` means it was never queued); one whose chat never comes is given up after the
+  first import and a pull after it, and counted in Settings. To "Only this Mac": mark, stop, report a kept claim,
+  `DELETE` the account, save the config, remove what was kept for the account, then wait until the copy applied the
+  account's tombstone before the local relay reads the bridge's store from 0. A switch the server refused before it took
+  anything is undone and said; after a crash it is tried again every 30 seconds. Disconnect reports a kept claim and
+  deletes the account first; an account found gone from the copy is checked with the server, and gone there too,
+  WhatsApp is disconnected on this Mac as well and Settings says so.
+- **Re-reads.** Taking a chat back in, or turning groups on, against the server never sends a first-import batch after a
+  live one: with the relay stopped the cursor goes back to rowid 0 keeping its store and its first import, a mark
+  (`server-history:<account id>`) notes the moment and the chats it is about (and the rowid it began from), and the
+  history is marked read through that moment by a chat state change: in the same `PATCH` as `leftOut: false` for a chat
+  taken back in, and for group chats as they come in through the delta. The mark goes once the relay read past where it
+  began and a pull after that found nothing more to mark. Both are offered only on the relaying Mac, which reads the
+  bridge's store.
+- **Chat actions.** The chat screens write through `ChatActions` (`apps/web/src/stores/chatActions.ts`): the local ones
+  in "Only this Mac", the server ones in "All my devices" (queue a reply with a UUIDv7, cancel, try again, read through,
+  archive, leave out, take back in). Each shows at once in the copy and is put back when the server refuses or cannot be
+  reached, unless the delta changed that row meanwhile; errors are said in plain words. The server actions need only a
+  `ChatApi` and a copy, not the relay, so the browser can use them as they are. On the relaying Mac a waiting reply says
+  `waiting for the bridge`; on another Mac `waiting for your Mac` (or `sending` while the relaying Mac is online), and the
+  composer names the Mac that sends. Attach stays "Only this Mac" until files go through the server.
 
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
 whether the conversation is in an inbox or junk folder, and date (`ListScope`: an inbox or a smart inbox).
