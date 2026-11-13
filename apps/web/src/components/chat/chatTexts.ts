@@ -20,6 +20,19 @@ import type { AttachState, MediaFailure, MediaState } from '@/stores/chats'
  */
 export type LocalReplyLabel = 'Sending' | 'Sent' | 'Waiting for the bridge' | 'Not sent, click to retry'
 
+/**
+ * A reply's label on the desktop: on the Mac that sends it (localReplyLabel), or on another Mac in "All my devices",
+ * where a waiting reply waits for the relaying Mac (core's `Waiting for your Mac`) and a failed one is still clicked.
+ */
+export type DesktopReplyLabel = LocalReplyLabel | 'Waiting for your Mac'
+
+export function desktopReplyLabel(label: ReplyLabel | null, relaysHere: boolean): DesktopReplyLabel | null {
+  if (relaysHere) {
+    return localReplyLabel(label)
+  }
+  return label === 'Not sent, tap to retry' ? 'Not sent, click to retry' : label
+}
+
 export function localReplyLabel(label: ReplyLabel | null): LocalReplyLabel | null {
   switch (label) {
     case 'Waiting for your Mac':
@@ -32,7 +45,7 @@ export function localReplyLabel(label: ReplyLabel | null): LocalReplyLabel | nul
 }
 
 /** `10:02`, `10:02, sent`, `10:02, waiting for the bridge`; the failed label stands alone (as core's bubbleMeta). */
-export function localBubbleMeta(time: string, label: LocalReplyLabel | null): string {
+export function localBubbleMeta(time: string, label: DesktopReplyLabel | null): string {
   if (label === null) {
     return time
   }
@@ -50,6 +63,15 @@ export function localBubbleMeta(time: string, label: LocalReplyLabel | null): st
 
 /** Under the composer on the Mac that sends (the relaying Mac). */
 export const COMPOSER_NOTE = 'Sent on WhatsApp from this Mac. No signature, no subject.'
+
+/** Under the composer: from this Mac, or (another Mac in "All my devices") by the relaying one, named as it named itself. */
+export function composerNote(relaysHere: boolean, relayName: string | null): string {
+  if (relaysHere) {
+    return COMPOSER_NOTE
+  }
+  const name = nameText(relayName)
+  return `Sent on WhatsApp by ${name === '' ? 'your Mac' : name}. No signature, no subject.`
+}
 /** The confirmation of "Leave this chat out". */
 export const LEAVE_OUT_TITLE = 'Leave this chat out?'
 export const LEAVE_OUT_BODY = 'Tresso removes its copy and stops reading it. The chat stays in WhatsApp.'
@@ -143,14 +165,14 @@ export function attachText(state: AttachState): string | null {
 }
 
 /** What a reply's state change says to a screen reader (the composer's live region). */
-export function replyAnnouncement(status: 'waiting' | 'sending' | 'sent' | 'failed', error: ChatOutgoingError | null, relayOnline: boolean): string {
+export function replyAnnouncement(status: 'waiting' | 'sending' | 'sent' | 'failed', error: ChatOutgoingError | null, relayOnline: boolean, relaysHere = true): string {
   switch (status) {
     case 'sending':
       return 'Sending.'
     case 'sent':
       return 'Sent.'
     case 'waiting':
-      return relayOnline ? 'Sending.' : 'Waiting for the bridge.'
+      return relayOnline ? 'Sending.' : relaysHere ? 'Waiting for the bridge.' : 'Waiting for your Mac.'
     default:
       return error === 'unconfirmed' ? replyErrorText('unconfirmed') : `Not sent. ${error === null ? '' : replyErrorText(error)}`.trim()
   }

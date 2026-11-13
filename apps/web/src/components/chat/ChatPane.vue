@@ -33,7 +33,7 @@ import SenderAvatar from '@/components/SenderAvatar.vue'
 import ChatBubble, { type BubbleView } from '@/components/chat/ChatBubble.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatNotice from '@/components/chat/ChatNotice.vue'
-import { attachText, chatName, chatNoticeKind, clockTime, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, localBubbleMeta, localReplyLabel, mediaKindLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
+import { attachText, chatName, chatNoticeKind, clockTime, composerNote as sendNoteText, desktopReplyLabel, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, localBubbleMeta, mediaKindLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
 import { errorName } from '@/components/chat/whatsappTexts'
 import { composing } from '@/components/chat/composition'
 
@@ -88,9 +88,15 @@ let replyStates = new Map<string, string>()
 const name = computed(() => (chat.value === null ? '' : chatName(chat.value)))
 const subtitle = computed(() => (chat.value === null ? '' : chatSubtitle(chat.value)))
 const isGroup = computed(() => chat.value?.kind === 'group')
-const notice = computed(() => (chats.enabled ? chatNoticeKind(wa.bridge) : null))
-const relayOnline = computed(() => wa.relayRunning)
-const composerNote = computed(() => (notice.value !== null ? null : wa.linked ? null : 'Replies can be written once the bridge is linked.'))
+/** The bridge's notice, on the Mac that sends only: on another Mac in "All my devices" replies wait in the server's queue. */
+const notice = computed(() => (chats.enabled && chats.relaysHere ? chatNoticeKind(wa.bridge) : null))
+/**
+ * A waiting reply is as good as being sent: this Mac's relay runs, or (another Mac in "All my devices") the relaying Mac
+ * is online as the server last heard.
+ */
+const relayOnline = computed(() => (chats.relaysHere ? wa.relayRunning : chats.account?.relayOnline === true))
+const composerNote = computed(() => (notice.value !== null || !chats.relaysHere ? null : wa.linked ? null : 'Replies can be written once the bridge is linked.'))
+const sendNote = computed(() => sendNoteText(chats.relaysHere, chats.account?.relayDeviceName ?? null))
 /** The line about a file attached in this chat; one attached in another chat says nothing here. */
 const attachLine = computed(() => {
   const state = chats.attaching
@@ -172,7 +178,7 @@ function view(entry: TimelineEntry): BubbleView {
   }
   const reply = entry.outgoing
   const unconfirmed = reply.status === 'failed' && reply.error === 'unconfirmed'
-  const label = localReplyLabel(replyLabel(reply, relayOnline.value))
+  const label = desktopReplyLabel(replyLabel(reply, relayOnline.value), chats.relaysHere)
   const meta = unconfirmed ? `${time}, not confirmed` : localBubbleMeta(time, label)
   const state = unconfirmed ? 'unconfirmed' : reply.status === 'cancelled' ? 'none' : reply.status === 'waiting' && relayOnline.value ? 'sending' : reply.status
   return {
@@ -244,7 +250,7 @@ function announceReplies(rows: readonly SyncedChatOutgoing[]): void {
     next.set(row.id, state)
     const before = replyStates.get(row.id)
     if (loaded.value && before !== state) {
-      said = replyAnnouncement(row.status, row.error, relayOnline.value)
+      said = replyAnnouncement(row.status, row.error, relayOnline.value, chats.relaysHere)
     }
   }
   replyStates = next
@@ -726,7 +732,8 @@ onBeforeUnmount(() => {
         :label="`Reply to ${name}`"
         :disabled="!chats.canReply"
         :note="composerNote"
-        :can-attach="true"
+        :send-note="sendNote"
+        :can-attach="chats.canAttach"
         :attaching="chats.attaching.state === 'sending'"
         :attach-line="attachLine"
         :announcement="announcement"

@@ -1,16 +1,11 @@
 import { computed, ref, shallowRef, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
-  cancelLocalReply,
-  chatOnlyHere,
   inInbox,
   LOCAL_CHAT_ACCOUNT,
   LocalChatError,
   nameText,
-  queueLocalReply,
   recordLocalAttachment,
-  retryLocalReply,
-  setLocalChatState,
   uuidV7,
   type ChatMessageKey,
   type ChatOutgoingError,
@@ -26,6 +21,8 @@ import { chatNotifications } from '@/mail/chatNotifications'
 import { notifier } from '@/platform/notifier'
 import { whatsAppShell, type ChosenFile } from '@/platform/whatsapp'
 import { errorName } from '@/components/chat/whatsappTexts'
+import { useChatApi } from '@/api/chats'
+import { localChatActions, serverChatActions, type ChatActions, type ChatStateChange } from '@/stores/chatActions'
 import { useMailStore } from '@/stores/mail'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 
@@ -70,10 +67,14 @@ export function baseName(path: string): string {
 }
 
 /**
- * Chats on screen (the WhatsApp plan's WP6): the list rows, the chat pane's windows of a chat, and what the user does
- * in a chat. Only the desktop app on macOS with WhatsApp connected "Only this Mac" has any: everywhere else `enabled`
- * is false and nothing is read. Every write goes through the "Only this Mac" actions of packages/core/src/chat
- * (queueLocalReply and its siblings), after which the relay is asked for a round (whatsappRelay.pollNow).
+ * Chats on screen (the WhatsApp plan's WP6 and WP10): the list rows, the chat pane's windows of a chat, and what the
+ * user does in a chat. Only the desktop app on macOS with WhatsApp connected has any: everywhere else `enabled` is false
+ * and nothing is read. Which chats and which actions (ChatActions):
+ * - "Only this Mac": the `wa:` chats, written through core's local actions (queueLocalReply and its siblings), after
+ *   which the relay is asked for a round (whatsappRelay.pollNow).
+ * - "All my devices": the server account's chats, which come through the delta (read again on every page that carries
+ *   chat rows, mail.chatChanges), written through the server's actions (chatActions.ts): shown at once, put back when
+ *   the server refuses. On the relaying Mac a queued reply is sent by its relay; on another Mac it waits for that one.
  *
  * Nothing of a chat (names, numbers, text) is ever logged: errors are logged by name only.
  */
@@ -82,10 +83,23 @@ export const useChatsStore = defineStore('chats', () => {
   const wa = useWhatsAppRelayStore()
   const commands = whatsAppShell()
 
-  /** Chats can show: WhatsApp is on here and connected in the "Only this Mac" mode. */
-  const enabled = computed(() => wa.available && wa.connected && wa.config?.mode === 'local')
-  /** A reply can be written: the bridge runs and is linked (else the pane says why, ChatNotice). */
-  const canReply = computed(() => enabled.value && wa.linked)
+  /** Chats can show: WhatsApp is on here and connected, and in "All my devices" the server's account is in the copy. */
+  const enabled = computed(() => wa.available && wa.connected && (wa.config?.mode === 'local' || (wa.config?.mode === 'all' && wa.serverAccount !== null)))
+  /** The chat account whose chats show: `wa:account`, or the server's. */
+  const accountId = computed(() => (!enabled.value ? null : wa.config?.mode === 'all' ? (wa.serverAccount?.id ?? null) : LOCAL_CHAT_ACCOUNT))
+  /** This Mac sends the replies itself: "Only this Mac", or it relays the server's account. */
+  const relaysHere = computed(() => enabled.value && (wa.config?.mode === 'local' || wa.relaysHere))
+  /**
+   * A reply can be written: on the Mac that sends, while its bridge runs and is linked (else the pane says why,
+   * ChatNotice); on another Mac in "All my devices" always (it waits in the server's queue for the relaying Mac).
+   */
+  const canReply = computed(() => enabled.value && (relaysHere.value ? wa.linked : true))
+  /** Attach is offered (disabled while replies cannot be written): "Only this Mac" only (files reach the server later). */
+  const canAttach = computed(() => enabled.value && wa.config?.mode === 'local')
+  const localActions = localChatActions(() => mail.currentStore())
+  const serverActions = serverChatActions({ api: useChatApi(), store: () => mail.currentStore(), pulled: () => void mail.syncNow() })
+  /** The side every write goes to now. */
+  const actions = computed<ChatActions>(() => (wa.config?.mode === 'all' ? serverActions : localActions))
   const account = shallowRef<SyncedChatAccount | null>(null)
   /** Every chat of this Mac that is not left out, newest first. */
   const summaries = shallowRef<ChatSummary[]>([])
@@ -102,7 +116,13 @@ export const useChatsStore = defineStore('chats', () => {
    * import runs, those before the re-read began while one runs (the relay store's `liveFrom`), none once the import is
    * done. Notifications and the open chat's live region say nothing for history.
    */
-  const historyThrough = computed(() => (wa.importState === 'done' ? null : (wa.liveFrom ?? Number.POSITIVE_INFINITY)))
+  const historyThrough = computed(() => {
+    if (!relaysHere.value) {
+      // Another Mac reads the store in: its history arrives read and old, which notifies nothing anyway.
+      return null
+    }
+    return wa.importState === 'done' && wa.liveFrom === null ? null : (wa.liveFrom ?? Number.POSITIVE_INFINITY)
+  })
   /** Read again after every change of the chats; a chat pane reloads its window on it. */
   const version = ref(0)
   /** The chat a pane shows now, for notifications (none for the chat the user looks at). */
@@ -156,9 +176,10 @@ export const useChatsStore = defineStore('chats', () => {
       return
     }
     try {
+      const shownAccount = accountId.value
       const [accounts, all] = await Promise.all([copy.chatAccounts(), copy.chats()])
-      const local = all.filter((summary) => chatOnlyHere(summary.chat.chatAccountId))
-      account.value = accounts.find((row) => row.id === LOCAL_CHAT_ACCOUNT) ?? null
+      const local = all.filter((summary) => summary.chat.chatAccountId === shownAccount)
+      account.value = accounts.find((row) => row.id === shownAccount) ?? null
       summaries.value = local
       // A chat that went (left out, removed with groups or the account) takes what was typed into it along.
       const shown = new Set(local.map((summary) => summary.chat.id))
@@ -167,7 +188,11 @@ export const useChatsStore = defineStore('chats', () => {
           drafts.delete(chatId)
         }
       }
-      leftOut.value = (await Promise.all((wa.config?.leftOut ?? []).map((jid) => copy.chatByJid(LOCAL_CHAT_ACCOUNT, jid)))).filter((chat): chat is SyncedChat => chat !== null)
+      leftOut.value =
+        shownAccount === LOCAL_CHAT_ACCOUNT || shownAccount === null
+          ? (await Promise.all((wa.config?.leftOut ?? []).map((jid) => copy.chatByJid(LOCAL_CHAT_ACCOUNT, jid)))).filter((chat): chat is SyncedChat => chat !== null)
+          : // Left out on any device: the server's rows say it.
+            await copy.leftOutChats(shownAccount)
       version.value++
       notify(local)
     } catch (cause) {
@@ -204,31 +229,38 @@ export const useChatsStore = defineStore('chats', () => {
     return known === undefined ? message : { ...message, sender: { ...sender, name: known } }
   }
 
-  watch([enabled, () => mail.synced, () => mail.ready, () => wa.config?.leftOut], () => void refresh(), { immediate: true })
+  watch([enabled, accountId, () => mail.synced, () => mail.ready, () => wa.config?.leftOut], () => void refresh(), { immediate: true })
 
   /*
-   * The relay stored something or reported a reply. While the store is read in it stores a page at a time, so the chats
-   * are read again at most once a second then (the last change always gets its read).
+   * The relay stored something or reported a reply, or a page of the delta carried chat rows (every chat row of "All my
+   * devices" comes that way). While the store is read in it stores a page at a time, so the chats are read again at
+   * most once a second then (the last change always gets its read).
    */
   let lastRead = 0
   let pending: ReturnType<typeof setTimeout> | null = null
+  function changed(): void {
+    if (wa.importState === 'done' || !relaysHere.value) {
+      lastRead = Date.now()
+      void refresh()
+      return
+    }
+    if (pending !== null) {
+      return
+    }
+    const wait = Math.max(0, lastRead + IMPORT_REFRESH_MS - Date.now())
+    pending = setTimeout(() => {
+      pending = null
+      lastRead = Date.now()
+      void refresh()
+    }, wait)
+  }
+  watch(() => wa.revision, changed)
   watch(
-    () => wa.revision,
+    () => mail.chatChanges,
     () => {
-      if (wa.importState === 'done') {
-        lastRead = Date.now()
-        void refresh()
-        return
+      if (wa.config?.mode === 'all') {
+        changed()
       }
-      if (pending !== null) {
-        return
-      }
-      const wait = Math.max(0, lastRead + IMPORT_REFRESH_MS - Date.now())
-      pending = setTimeout(() => {
-        pending = null
-        lastRead = Date.now()
-        void refresh()
-      }, wait)
     },
   )
 
@@ -251,14 +283,16 @@ export const useChatsStore = defineStore('chats', () => {
     return copy === null ? null : copy.chatPage(chatId, options)
   }
 
-  /** Tresso's own state of a chat, then the lists read again. */
-  async function setState(chatId: string, change: Parameters<typeof setLocalChatState>[2]): Promise<void> {
-    const copy = store()
-    if (copy === null) {
+  /** Tresso's own state of a chat, then the lists read again (also after the server refused it and it was put back). */
+  async function setState(chatId: string, change: ChatStateChange): Promise<void> {
+    if (store() === null) {
       return
     }
-    await setLocalChatState(copy, chatId, change)
-    await refresh()
+    try {
+      await actions.value.setState(chatId, change)
+    } finally {
+      await refresh()
+    }
   }
 
   /** The chat was read in Tresso up to its last message (never in WhatsApp: the phone keeps its own unread state). */
@@ -279,45 +313,67 @@ export const useChatsStore = defineStore('chats', () => {
     return setState(chat.id, { archivedThrough: chat.lastMessageAt })
   }
 
-  /** After a reply changed: the lists, then a relay round, then the lists again (the reply's state moved). */
+  /**
+   * After a reply changed: the lists, then a relay round when this Mac sends (the server's queue reaches the relay through
+   * the delta, so "All my devices" pulls first), then the lists again (the reply's state moved).
+   */
   async function afterReply(): Promise<void> {
     version.value++
     await refresh()
-    await wa.pollNow()
-    await refresh()
+    if (relaysHere.value) {
+      if (wa.config?.mode === 'all') {
+        await mail.syncNow()
+      }
+      await wa.pollNow()
+      await refresh()
+    }
   }
 
   /**
    * Queues a reply (checked and trimmed by replyText) and asks the relay to send it now.
    *
-   * @throws LocalChatError when the text cannot be sent or the chat is not here
+   * @throws LocalChatError or ChatActionError when the text cannot be sent, the chat is not here, or the server refused
+   *   it (the composer keeps the text then)
    */
   async function send(chatId: string, text: string): Promise<SyncedChatOutgoing> {
-    const copy = store()
-    if (copy === null) {
+    if (store() === null) {
       throw new LocalChatError('no_chat')
     }
-    const row = await queueLocalReply(copy, chatId, text, uuidV7(), Date.now())
+    let row: SyncedChatOutgoing
+    try {
+      row = await actions.value.send(chatId, text)
+    } catch (cause) {
+      // A reply shown at once and put back: the pane shows the chat as it is again.
+      version.value++
+      throw cause
+    }
     drafts.delete(chatId)
     void afterReply()
     return row
   }
 
-  /** Cancels a reply that waits or was not sent; one being sent cannot be (LocalChatError `already_going_out`). */
+  /** Cancels a reply that waits or was not sent; one being sent cannot be (`already_going_out`). */
   async function cancel(chatId: string, id: string): Promise<void> {
-    const copy = store()
-    if (copy !== null) {
-      await cancelLocalReply(copy, chatId, id)
-      version.value++
-      await refresh()
+    if (store() !== null) {
+      try {
+        await actions.value.cancel(chatId, id)
+      } finally {
+        version.value++
+        await refresh()
+      }
     }
   }
 
   /** The user's Try again: the only way a reply that was not sent, or whose sending is unconfirmed, goes out again. */
   async function retry(chatId: string, id: string): Promise<void> {
-    const copy = store()
-    if (copy !== null) {
-      await retryLocalReply(copy, chatId, id)
+    if (store() !== null) {
+      try {
+        await actions.value.retry(chatId, id)
+      } catch (cause) {
+        version.value++
+        await refresh()
+        throw cause
+      }
       void afterReply()
     }
   }
@@ -404,7 +460,7 @@ export const useChatsStore = defineStore('chats', () => {
    */
   async function attach(chat: SyncedChat): Promise<void> {
     const copy = store()
-    if (copy === null || !canReply.value || attaching.value.state === 'sending') {
+    if (copy === null || !canAttach.value || !canReply.value || attaching.value.state === 'sending') {
       return
     }
     let picked: ChosenFile | null
@@ -462,7 +518,10 @@ export const useChatsStore = defineStore('chats', () => {
     draftOf,
     setDraft,
     enabled,
+    accountId,
+    relaysHere,
     canReply,
+    canAttach,
     account,
     summaries,
     inboxSummaries,

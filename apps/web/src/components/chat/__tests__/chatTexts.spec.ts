@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SENDER_COLORS, senderColor } from '@tresso/core'
 import type { BridgeState } from '@/platform/whatsapp'
-import { attachText, localBubbleMeta, localReplyLabel, chatName, chatNoticeKind, mediaRetry, mediaStateText, mediaTitle, replyAnnouncement, senderLabel, senderTone } from '../chatTexts'
+import { attachText, composerNote, COMPOSER_NOTE, desktopReplyLabel, localBubbleMeta, localReplyLabel, chatName, chatNoticeKind, mediaRetry, mediaStateText, mediaTitle, replyAnnouncement, senderLabel, senderTone } from '../chatTexts'
 
 const OWNED: BridgeState = { process: 'owned', port: 8741, loopbackOnly: true, link: 'linked', qr: null, error: null }
 
@@ -86,5 +86,24 @@ describe('chat texts', () => {
     expect(chatNoticeKind({ ...OWNED, process: 'stopped', port: null, link: 'unknown' })).toBe('stopped')
     expect(chatNoticeKind({ ...OWNED, process: 'stopped', port: null, link: 'unlinked' })).toBe('unlinked')
     expect(chatNoticeKind({ ...OWNED, process: 'stopped', port: null, link: 'unlinked', error: 'exited' })).toBe('stopped')
+  })
+
+  it('says on the relaying Mac that a reply waits for the bridge, and on another Mac that it waits for your Mac', () => {
+    expect(desktopReplyLabel('Waiting for your Mac', true)).toBe('Waiting for the bridge')
+    expect(desktopReplyLabel('Waiting for your Mac', false)).toBe('Waiting for your Mac')
+    expect(desktopReplyLabel('Not sent, tap to retry', false)).toBe('Not sent, click to retry')
+    expect(desktopReplyLabel('Sent', false)).toBe('Sent')
+    expect(desktopReplyLabel(null, false)).toBeNull()
+    expect(localBubbleMeta('10:02', desktopReplyLabel('Waiting for your Mac', false))).toBe('10:02, waiting for your Mac')
+    expect(localBubbleMeta('10:02', desktopReplyLabel('Waiting for your Mac', true))).toBe('10:02, waiting for the bridge')
+    expect(replyAnnouncement('waiting', null, false, false)).toBe('Waiting for your Mac.')
+    expect(replyAnnouncement('waiting', null, true, false)).toBe('Sending.')
+  })
+
+  it('says under the composer who sends the reply', () => {
+    expect(composerNote(true, 'Office iMac')).toBe(COMPOSER_NOTE)
+    expect(composerNote(false, 'Office iMac')).toBe('Sent on WhatsApp by Office iMac. No signature, no subject.')
+    expect(composerNote(false, '\u202eevil')).toBe('Sent on WhatsApp by evil. No signature, no subject.')
+    expect(composerNote(false, null)).toBe('Sent on WhatsApp by your Mac. No signature, no subject.')
   })
 })
