@@ -126,6 +126,9 @@ by its owner's name and is removed together with them.
  └─────────────────────────────────────────────────────────────┘
 ```
 
+WhatsApp is not a sync worker: the desktop app on a Mac reaches the user's own whatsapp-mcp bridge on 127.0.0.1 and,
+with "All my devices", relays its chats to the API, which keeps them sealed for the browser and the phone (3.17).
+
 ## 3. Components
 
 ### 3.1 API (`apps/api`)
@@ -3565,6 +3568,14 @@ master keys (DATA_KEYS, environment)
   after it was delivered or dropped, or for one still waiting 7 days after its fire time, when it can no longer be
   delivered), an hourly job clears its title and body; the row stays, because it is what makes a message notify at most
   once.
+- WhatsApp (3.17) seals everything a chat says and who it is with, each value bound to its column and row
+  (`App\Chat\ChatField`, context `tresso:<field>:<row id>`): `chat_account.sealed_address` and `sealed_display_name`
+  (`chat-account-address`, `chat-account-name`), `chat.sealed_jid` and `sealed_name` (`chat-jid`, `chat-name`),
+  `chat_message.sealed_wa_id`, `sealed_sender`, `sealed_text` and `sealed_media_name` (`chat-message-wa-id`,
+  `chat-message-sender`, `chat-message-text`, `chat-message-media`) and `chat_outgoing.sealed_text` and
+  `sealed_file_name` (`chat-outgoing-text`, `chat-outgoing-file-name`). Chats and messages are found by fingerprints
+  under the user's index key (`jid_fingerprint`, `wa_fingerprint`). Readable are kinds, times, counts, sizes, states
+  and a file's SHA-256. Key rotation reseals every column of that list (`chatFields` step of `Reencryption`).
 - **Plaintext on purpose:** subject, sender and recipient addresses and names, dates, flags, sizes, folder and thread
   structure, attachment names and types. The server queries them: threading matches the normalized subject and the
   participants, sender rules and smart inboxes match addresses, recipient suggestions and the meeting brief search
@@ -3714,9 +3725,65 @@ it and encrypts in place.
   fails cuts the download off with an error. A tampered first frame (which covers any file up to 64 KiB) fails before
   anything is sent.
 
-### 3.17 WhatsApp relay and reply queue
+### 3.17 WhatsApp
 
-With "All my devices" one of the user's desktops relays their WhatsApp to the server: it reads the bridge's store and
+WhatsApp is a channel next to mail, experimental and off by default. Tresso never talks to WhatsApp itself: the
+desktop app for macOS starts the Go bridge of whatsapp-mcp, which signs in as a linked device of the user's phone
+through WhatsApp's unofficial web protocol (WhatsApp may limit or ban an account that uses it; the connect dialog says
+so before anything starts). This section starts with the whole picture and where each part is described; the rest of
+it is the server.
+
+- **Turning it on.** A Mac shows nothing of WhatsApp until it is switched on there (`defaults write
+  app.tresso.desktop EnableWhatsApp -bool YES`, or `TRESSO_ENABLE_WHATSAPP=1`); the desktop shell enforces the
+  switch for every command (3.10, "Only this Mac"). Only Tresso for Mac connects WhatsApp; the browser and the phone
+  show what the server holds.
+- **The bridge.** Tresso uses only a bridge built from its fork (gettresso/whatsapp-mcp), which listens on 127.0.0.1
+  only and checks the host, a per-process token and the content type; upstream's bridge, open to the network without
+  a password, is stopped and reported as not protected ([the bridge contract](whatsapp-bridge.md)). Tresso reads the
+  bridge's SQLite store read only and sends through its REST API; it deletes nothing in the user's whatsapp-mcp
+  folder.
+- **"Only this Mac"** (the default): the desktop reads the bridge's store into its own copy (`wa:` ids) and sends
+  replies itself (`ChatRelay` with the local backend, `packages/core/src/chat`; 3.10). Nothing of WhatsApp reaches the
+  server, the browser or the phone.
+- **"All my devices"**, after the user agreed that the chats are copied to the Tresso server: one Mac relays. It
+  passes the messages on (`relay/messages`), says every minute and on each change that it is there and how its bridge
+  and link stand (`relay/status`; 3 minutes without a word and every device shows the Mac offline since it was last
+  heard from), claims and sends the replies written anywhere, and brings files the user asks for. Everything is
+  sealed with the owner's field key (3.16); the server looks chats and messages up by fingerprints, so it never needs a
+  JID or a WhatsApp id readable. Nothing moves while that Mac is off or asleep: replies wait for it.
+- **Takeover.** Another Mac of the user takes the relay over with "Use this Mac instead"
+  (`PUT /api/v1/chat-accounts/whatsapp`): the former relay gets 409 `not_the_relay` from then on, may still report the
+  claim it was sending, and stops; a Mac linked to another number than the account's may not take over an account
+  that holds chats. Switching between the modes, removing WhatsApp from the server and disconnecting are confirmed
+  first and finish after a crash (3.10, "All my devices").
+- **Left out.** A chat the user leaves out loses its messages, replies and files on the server and on every device;
+  only its row with the sealed JID and name stays, so the relay keeps leaving it out. Taking it back in happens on the relaying Mac. Groups
+  can be left out as a whole.
+- **Replies.** A reply is queued under an id the client made (a UUIDv7 of the server's clock) and sent by the
+  relaying Mac. Nothing ever sends a reply again by itself: a send that may have gone out ends as `unconfirmed`, and
+  only the user's Try again sends it once more. A request that got no answer is sent again under the same id, which
+  the server answers with the reply it has. A cancelled reply stays cancelled: its id is refused for good (also an id
+  cancelled before the server saw it), and a reply cancelled while its sending was unconfirmed shows again, as sent,
+  only when its own claim reports that it went out. A claim lasts 5 minutes, 30 for a reply with a file (Reply queue
+  and Sweep, below).
+- **Browser and other Macs.** The web client shows the chats the server holds, reads them in Tresso (never in
+  WhatsApp), answers, attaches and downloads files, and shows the relaying Mac's state; Settings there is read only,
+  apart from Notify me and removing WhatsApp from the server (3.10).
+- **Phone.** The same chats among the mail, replies, files, and push: with Notify me on, one push per chat burst, to
+  the phone only, naming the chat and never its text, a sender or a number (Push, below; 3.10).
+- **MCP and tokens.** Tokens and third-party apps reach WhatsApp only with the scopes `chat:read` and `chat:send`,
+  which no other scope implies and an app only gets when it names them; the MCP tools read, search and queue replies
+  within the caps of the read endpoints and the reply queue, and never get a link to a file (3.2).
+- **Files.** A file stays on the relaying Mac until the user asks for it on another device; the server keeps it
+  sealed, scans it before anyone downloads it, and removes it once nothing needs it (Files, below).
+- **What is off in the first release.** Smart inboxes and classification (rules work on mail headers; AI would read
+  private text), the Meilisearch index (chat text is searched by opening it on the server, bounded, Search below),
+  webhooks, hand over, the daily brief, batches and unsubscribe (no step of the mail pipeline sees chats), notifications
+  in the browser (pushes go to the phone; the desktop app notifies from its own copy), scanning files that go out (they are the user's own). Notify me is off until the user turns it on. Do (Make todo on the
+  phone) makes a todo titled `Reply to <chat>`, which the user sees and may change first; no text of the chat goes in. Windows and Linux have no
+  WhatsApp, and pictures are not shown inline nor voice messages played: files are downloaded and opened by the system.
+
+The server, in detail. With "All my devices" one of the user's desktops relays their WhatsApp to the server: it reads the bridge's store and
 passes the messages on, and it sends the replies written on other devices. Chat accounts, chats, messages and replies
 are their own entities (`chat_account`, `chat`, `chat_message`, `chat_outgoing`), sealed with the owner's field key
 (`App\Chat\ChatFields`); the server finds a chat by the fingerprint of its JID and a message by the fingerprint of its
@@ -3833,7 +3900,8 @@ chat's JID and WhatsApp id, so it never needs either readable.
   with the change number update and with the key locks of `UserKeys`, and not with the KEY SHARE of an insert that
   refers to the user. Claims, imports, cancels and the sweep of one user therefore take turns (tested on two real
   connections); the sweep skips an owner whose row is busy.
-- **Push.** With the account's `notify` on (Notify me, off by default; no client sets it on the server yet), a relay
+- **Push.** With the account's `notify` on (Notify me, off by default; the relaying Mac's Settings and the browser's set
+  it with `PATCH /api/v1/chat-accounts/{id}`), a relay
   batch hands each chat's newest incoming message it stored to `App\Chat\ChatNotifier`, never for a batch the server
   honoured as part of the first import, a message of the user's own or one older than 15 minutes. After the commit and
   10 seconds later (`NotifyChatMessage` on the `push` queue) it decides: nothing for a message sent before the chat's
@@ -3915,9 +3983,9 @@ apps/
   web/        Vue 3 web client
   desktop/    Tauri 2 shell around apps/web
   mobile/     Expo app
+  website/    The marketing site (Astro)
 packages/
-  core/       Shared TS domain types and logic
-  api-client/ Generated TS API client
+  core/       Shared TS domain types and logic (mail, calendar, WhatsApp chats in src/chat)
 docker/       Dockerfiles and config for local services
 docs/         Architecture, roadmap, decisions
 compose.yaml  Local development stack

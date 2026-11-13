@@ -91,6 +91,21 @@ bin/console app:chat:sweep-relays
 It prints how many relays went offline and how many replies could not be confirmed. A reply that carries a file gets
 30 minutes before it counts as not confirmed.
 
+The other WhatsApp jobs of the `maintenance` worker:
+
+- `SweepChatMedia`, every 10 minutes: files uploaded for a reply that no reply took within an hour go, with their
+  objects once nothing else refers to them, and so do temporary upload files (`tresso-chat-*`) older than an hour that
+  a killed worker left. The API removes those temporary files itself too, so they also go where the API and the
+  worker do not share a temporary directory.
+- `PurgeCancelledReplies`, once a day at 03:59: replies cancelled while their sending was not confirmed are removed 30
+  days after the relay took them. Their removal stays in the delta, so their ids stay refused.
+- `SweepPendingScans` (every 5 minutes) and `SweepReencryption` (every hour) cover WhatsApp files and sealed chat
+  columns like mail.
+
+Removing a file that nothing needs any more (`CollectChatMedia`) runs on the `async` worker, and a WhatsApp push
+(`NotifyChatMessage`) on the `push` worker. While the `maintenance` worker is down, relays are not shown offline,
+unconfirmed replies stay `sending`, and unqueued uploads count toward the user's waiting bytes until it is back.
+
 ## WhatsApp files and a proxy in front of the API
 
 With WhatsApp set to "All my devices", files go to the API as the raw body of a PUT: the relaying Mac's
@@ -102,6 +117,24 @@ front of it may: allow request bodies of at least 100 MB on those two paths (for
 and a request time of a few minutes. A proxy that refuses a body answers 413, which the apps show as "too large"; one
 that cuts the connection makes the Mac try a requested file three times before it reports it as not brought.
 `CHAT_MAX_WAITING_BYTES` (1 GB by default) bounds what one user's files waiting for the Mac take up.
+
+## WhatsApp: deploy order and what an operator decides
+
+Deploy the API first: it migrates the chat tables, and every WhatsApp endpoint the apps call is there before they
+call it. Then the web client, then the desktop and phone apps. The browser's CORS rules allow `X-Device-Id` and
+`X-Content-SHA256` (the relaying Mac's file upload). Settings:
+
+- `CHAT_MAX_FILE_BYTES` (100 MB, the default and the most): the largest WhatsApp file, both ways. The API refuses to
+  start with a value that is not a whole number from 1 to 100 MB.
+- `CHAT_MAX_WAITING_BYTES` (1 GB): what one user's files waiting for the Mac (uploads and the files of replies not sent
+  yet) may take up together.
+- A proxy in front of the API: the body limit and request time above.
+- `ATTACHMENTS_REQUIRE_SCAN=1` (a server that only serves checked files): a WhatsApp file that could not be scanned
+  is then never linked; with the default the apps open it only after the user accepted a warning.
+
+What is not the operator's to decide: WhatsApp is switched on per Mac by its user (`defaults write
+app.tresso.desktop EnableWhatsApp -bool YES`), the bridge is the user's own build of the fork
+([the bridge](whatsapp-bridge.md)), and a server holds chats only for users who chose "All my devices" on a Mac.
 
 ## Meeting links
 
@@ -247,3 +280,88 @@ Reminders:
 38. On the phone's lock screen, a reminder for a Dutch Outlook Teams event and for a Google Meet event names the app
     and holds no link. Leave-now for a place "Room (link)" and for a place that is only a link. One reminder by email.
     A desktop notification for an all-day event with a meeting.
+
+WhatsApp, with a real WhatsApp account and phone, two Macs (Mac A relays, Mac B does not), a browser and the phone
+app. Numbers follow on from the list above. Each check says what to expect.
+
+Connecting on a Mac:
+
+39. With `EnableWhatsApp` deleted (`defaults delete app.tresso.desktop EnableWhatsApp`) nothing of WhatsApp shows on
+    the Mac and no bridge starts; with it set, the Accounts card appears.
+40. A fresh clone of the fork, built with the command the dialog shows, links today. A bridge built from upstream, or
+    one already running in a Terminal window, is refused as not protected, in plain words; Settings says `Port in use`
+    or `open to your network on port ...` for it. From a second computer, the Mac's address on the fork's port 8741
+    answers nothing.
+41. The QR code scans from the phone, renews about every 20 seconds, and `Show a new code` works after 3 minutes.
+    `Linked as <name>` shows the right name and number, and the first import's count roughly matches 30 days on the
+    phone; that history arrives read.
+42. Unlink the Mac on the phone: within a minute Tresso says WhatsApp is not linked, a reply fails with that reason,
+    `Show how` gives a new code, and after scanning messages flow again.
+
+Only this Mac:
+
+43. Send to a person and to a group: each arrives once and shows `Sending`, then `Sent`. A reply sent from Tresso that
+    the bridge stores as well (now, after a restart, after linking again) shows once.
+44. A busy group: names above the bubbles are right, members without a saved contact show their WhatsApp name, members
+    known only by a hidden number show something sensible, and a name that becomes known later appears on its own.
+45. Stop the bridge for ten minutes while messages arrive, then start it: see whether they arrive after all, and that
+    the bridge check in Settings says what happened.
+46. Close the window (the app stays in the Dock) for an hour while messages arrive: they are there at once when it
+    opens, and notifications came meanwhile with Notify me on, none with it off, and none for the chat open in a
+    focused window.
+47. Download a picture, a video, a document and a voice message, old and new; in a chat with many pictures each file
+    is the right one, or Tresso refuses with the mismatch text. Attach a jpg, a pdf and an ogg: they arrive as a
+    picture, a document and a voice message.
+48. Leave a chat out and take it back in from Settings: its old messages come back read, a message sent after that
+    arrives unread. Change folder keeps the chats. Disconnect leaves the bridge's store in the whatsapp-mcp folder, and
+    reading in Tresso leaves the phone's unread badge as it was.
+49. Dark mode: the chat pane, bubbles, notices, the connect dialog and the QR code read well.
+
+All my devices:
+
+50. On Mac A connect with "All my devices": copying is asked first, the last 30 days arrive read, Settings names Mac A
+    as the relaying Mac. In the database `chat_message.sealed_text` starts with `f1.`; no text is readable.
+51. A message from the phone reaches Mac A, Mac B, the browser and the phone app as unread.
+52. Reply on Mac B, in the browser and on the phone while Mac A is online: `sending`, then `sent`. Quit Mac A, or let it
+    sleep: within about 3 minutes every device says `Your Mac is offline since ...`, and a reply shows `waiting for your
+    Mac`; start or wake Mac A: the replies go out once, in order, and turn `sent`.
+53. Quit the bridge on Mac A: within a minute Mac B's Relaying Mac row shows the bridge's state.
+54. Cancel a waiting reply: it never goes out. Kill Tresso on Mac A in the middle of a send (try with the network off):
+    the reply ends as not sent with the "could not confirm" text, and is sent again only with Try again.
+55. On Mac B, `Use this Mac instead`: Mac A stops relaying and its Settings names Mac B, no chat or message is doubled.
+    Take over while Mac A is sending a reply: it ends `sent` everywhere, never `not confirmed`, and goes once.
+56. Switch Mac A from "Only this Mac" to "All my devices" with a reply waiting (bridge unlinked): after linking again
+    it goes out exactly once. Switch back: Remove is asked, the chats go from Mac B, the browser and the phone, and Mac
+    A reads them in again, read. Quit Tresso in the middle of a switch, both ways, and start it: the switch finishes.
+57. Leave a chat out on Mac B, take it back in on Mac A: old messages come back read, new ones unread. Groups off on
+    Mac A: groups go from every device; on again: they come back read.
+58. Disconnect on Mac B: the chats go from both Macs, the browser and the phone, and Mac A says WhatsApp was
+    disconnected from the server. Remove WhatsApp from the server in the browser: the same.
+59. Push with Notify me on (set in the browser or on Mac A): one push per chat burst on the phone, named after the chat,
+    never the text or a number (a contact without a name says `New WhatsApp message`); a tap opens the chat. Expect a
+    notification from WhatsApp itself as well.
+60. Console.app on both Macs and the API and worker logs show no message text, names or numbers.
+
+Files through the server:
+
+61. In the browser and on the phone, ask for a photo and a PDF while Mac A relays: both arrive, show `Checking for
+    malware.`, then open (the photo inline in a tab, the PDF as a download). With Mac A offline the row says it waits
+    for the Mac.
+62. A file over 100 MB, and an old message whose file WhatsApp no longer has: the row says why, and Try again is offered
+    only where it may pass.
+63. A file of nearly 100 MB on a slow line (a throttled network), asked for and attached: it arrives with its progress,
+    behind the real proxy in front of the API (the body limit and request time in "WhatsApp files and a proxy").
+64. Attach a file in the browser and on the phone: Mac A sends it, the recipient sees its name, and the staged copy in
+    the app's `whatsapp-outbox` folder is gone after.
+65. Cancel an attach halfway through the upload, and again while the reply is being queued (browser and phone):
+    nothing reaches the chat. Cut the network right after Cancel: the line says the file may still be sent. Send the
+    phone app to the background mid upload: nothing is sent.
+66. Send yourself the EICAR test file on WhatsApp and ask for it: it is blocked and never opens on any device.
+67. Leave a chat out after downloading one of its files: the object is gone from storage.
+
+Tokens and MCP:
+
+68. A personal access token with every scope except the two WhatsApp ones, and an MCP client without them: neither
+    sees any WhatsApp list or endpoint. With `chat:read`, a token and an MCP client list, read and search the chats and
+    see a file's kind, name and size, but never get a link to it; with `chat:send` alone, a reply is queued and nothing
+    is read. A third-party app that did not name the WhatsApp scopes never gets them.
