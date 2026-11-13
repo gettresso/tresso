@@ -1,0 +1,132 @@
+[
+  {
+    "name": "the line alone",
+    "description": "Join the meeting: https://meet.company.example/kim",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "after the text",
+    "description": "Agenda\n\nJoin the meeting: https://meet.company.example/kim",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "an app's line",
+    "description": "Agenda\nJoin with Zoom: https://zoom.us/j/1?pwd=x",
+    "link": "https://zoom.us/j/1?pwd=x"
+  },
+  {
+    "name": "the last of two",
+    "description": "Join the meeting: https://a.example/1\nText\nJoin with Zoom: https://zoom.us/j/2",
+    "link": "https://zoom.us/j/2"
+  },
+  {
+    "name": "text typed below the line",
+    "description": "Agenda\n\nJoin the meeting: https://meet.company.example/kim\nSee you there",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "windows line ends",
+    "description": "Agenda\r\n\r\nJoin the meeting: https://meet.company.example/kim\r\n",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "old mac line ends",
+    "description": "Agenda\rJoin the meeting: https://meet.company.example/kim\r",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "spaces and tabs after the link",
+    "description": "Join the meeting: https://meet.company.example/kim  \t",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "a no-break space after the link",
+    "description": "Join the meeting: https://meet.company.example/kim\u00a0",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "text after a no-break space",
+    "description": "Join the meeting: https://meet.company.example/kim\u00a0more",
+    "link": null
+  },
+  {
+    "name": "text after the link",
+    "description": "Join the meeting: https://meet.company.example/kim and more",
+    "link": null
+  },
+  {
+    "name": "only https",
+    "description": "Join the meeting: http://meet.company.example/kim",
+    "link": null
+  },
+  {
+    "name": "not a line of its own",
+    "description": "Please join the meeting: https://meet.company.example/kim",
+    "link": null
+  },
+  {
+    "name": "a link in the text",
+    "description": "Agenda: https://meet.google.com/abc-defg-hij",
+    "link": null
+  },
+  {
+    "name": "an app name of 40 characters",
+    "description": "Join with xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: https://meet.company.example/kim",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "an app name of 41 characters",
+    "description": "Join with xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: https://meet.company.example/kim",
+    "link": null
+  },
+  {
+    "name": "an app name with a colon",
+    "description": "Join with A:B: https://meet.company.example/kim",
+    "link": null
+  },
+  {
+    "name": "a vertical tab ends the link",
+    "description": "Join the meeting: https://meet.company.example/kim\u000bmore",
+    "link": null
+  },
+  {
+    "name": "a next-line character ends the link",
+    "description": "Join the meeting: https://meet.company.example/kim\u0085more",
+    "link": null
+  },
+  {
+    "name": "a zero-width space ends the link",
+    "description": "Join the meeting: https://meet.company.example/kim\u200bmore",
+    "link": null
+  },
+  {
+    "name": "the link again in angle brackets, as Exchange writes a linked address",
+    "description": "Agenda\n\nJoin the meeting: https://meet.company.example/kim <https://meet.company.example/kim>",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "the link in angle brackets right after it",
+    "description": "Join the meeting: https://meet.company.example/kim<https://meet.company.example/kim>",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "collapsed or extra spaces after the colon",
+    "description": "Join the meeting:   https://meet.company.example/kim",
+    "link": "https://meet.company.example/kim"
+  },
+  {
+    "name": "a query with comma, semicolon and ampersand",
+    "description": "Join the meeting: https://rooms.example.com/kim?pwd=a,b;c&x=1",
+    "link": "https://rooms.example.com/kim?pwd=a,b;c&x=1"
+  },
+  {
+    "name": "a Teams block's own words are no join line",
+    "description": "________________\nMicrosoft Teams meeting\nJoin the meeting now<https://teams.microsoft.com/l/meetup-join/abc>",
+    "link": null
+  },
+  {
+    "name": "no description",
+    "description": "",
+    "link": null
+  }
+]
