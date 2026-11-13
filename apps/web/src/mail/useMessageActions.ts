@@ -3,6 +3,7 @@ import { PartialActionError, undoPlan, type AppliedAction, type MessageAction, t
 import { errorMessage } from '@/api/errors'
 import { useComposeStore } from '@/stores/compose'
 import { useMailStore } from '@/stores/mail'
+import { COMPOSE_WINDOW_ATTRIBUTE, MODAL_SELECTOR } from '@/platform/editing'
 
 /**
  * Message actions as screens use them: errors become notices, one action runs at a time, and archiving, trashing or
@@ -116,9 +117,10 @@ export function shortcutAllowed(event: KeyboardEvent, composing: boolean): boole
 
 /**
  * Whether a modal layer is open anywhere on the page: a modal `<dialog>`, an alert dialog (a question that waits for an
- * answer), or an element that says it is a dialog and does not say it is not modal. The compose window is not counted:
- * whether it holds the user's attention is the compose store's to say (open and not minimized).
+ * answer), or an element that says it is a dialog and does not say it is not modal. Nothing in the compose window
+ * counts: whether it holds the user's attention is the compose store's to say (open and not minimized), and a question
+ * it asks stays in the page, hidden, while it is minimized.
  */
 export function modalOpen(doc: Document = document): boolean {
-  return doc.querySelector('dialog[open], [role="alertdialog"], [role="dialog"]:not([aria-modal="false"]):not([data-compose-window])') !== null
+  return [...doc.querySelectorAll(MODAL_SELECTOR)].some((element) => element.closest(`[${COMPOSE_WINDOW_ATTRIBUTE}]`) === null)
 }

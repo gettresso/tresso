@@ -7,7 +7,9 @@ import type { ChangePage, SyncedMessage, SyncedUnsubscription, SyncedHandOver } 
 import { todo } from '@tresso/core/testing'
 import { deleteMailDatabase } from '@/mail/db'
 import { openConversation } from '@/mail/openConversation'
-import { runMenuAction, type MenuAction } from '@/platform/menu'
+import { runMenuAction, startMenuBridge, type MenuAction, type MenuShell } from '@/platform/menu'
+import { COMPOSE_WINDOW_ATTRIBUTE, followEditing } from '@/platform/editing'
+import { nextTick } from 'vue'
 import { useComposeStore } from '@/stores/compose'
 import { useHandOversStore } from '@/stores/handOvers'
 import { useMailStore } from '@/stores/mail'
@@ -630,6 +632,64 @@ describe('ReadingPane actions', () => {
       expect(openConversation()).toBeNull()
       alert.remove()
       expect(openConversation()).not.toBeNull()
+    })
+
+    it('acts again with the compose window minimized, also while it holds an unanswered question of its own', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+      const compose = useComposeStore()
+      compose.openNew()
+      await vi.waitFor(() => expect(compose.draft).not.toBeNull())
+      compose.minimized = true
+      // The minimized window keeps its form in the page, hidden, with the question it asks (send an unscanned file?).
+      const composeWindow = document.body.appendChild(document.createElement('section'))
+      composeWindow.setAttribute(COMPOSE_WINDOW_ATTRIBUTE, '')
+      composeWindow.setAttribute('role', 'dialog')
+      const question = composeWindow.appendChild(document.createElement('div'))
+      question.setAttribute('role', 'alertdialog')
+
+      expect(openConversation()).not.toBeNull()
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))
+      await vi.waitFor(() => expect(actions).toEqual([{ messageIds: ['m2'], action: 'flag' }]))
+      await menu('archive')
+      expect(actions[1]).toEqual({ messageIds: ['m1', 'm2'], action: 'archive' })
+      composeWindow.remove()
+    })
+
+    it('enables the Message menu again once a modal question goes without moving the focus', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      const follower = followEditing(document)
+      const invoke = vi.fn<MenuShell['invoke']>(async () => undefined)
+      const stop = await startMenuBridge(
+        {
+          router,
+          newMessage: vi.fn<() => void>(),
+          reload: vi.fn<() => Promise<void>>(async () => undefined),
+          signedIn: () => true,
+          toggleSidebar: vi.fn<() => void>(),
+          sidebarShown: () => true,
+          getNewMail: vi.fn<() => Promise<void>>(async () => undefined),
+          conversation: openConversation,
+          editing: () => follower.editing.value,
+          outboxWaiting: () => false,
+          onScreen: () => true,
+        },
+        { listen: async () => () => {}, invoke },
+      )
+      const message = () => invoke.mock.lastCall?.[1].message
+      expect(message()).not.toBeNull()
+
+      // The sign-out question opens and is cancelled; neither moves the focus.
+      const question = document.body.appendChild(document.createElement('dialog'))
+      question.setAttribute('open', '')
+      await vi.waitFor(() => expect(message()).toBeNull())
+      question.remove()
+      await vi.waitFor(() => expect(message()).not.toBeNull())
+      await nextTick()
+      stop()
+      follower.stop()
     })
 
     it('waits while the folder menu is open', async () => {

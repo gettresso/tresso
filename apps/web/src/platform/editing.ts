@@ -4,6 +4,9 @@ import type { Router } from 'vue-router'
 /** Input types that take no typed text: a key such as ⌘⌫ means nothing there. */
 const NOT_TEXT = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'])
 
+/** What counts as a modal layer (useMessageActions' modalOpen); the followers watch these come and go. */
+export const MODAL_SELECTOR = 'dialog[open], [role="alertdialog"], [role="dialog"]:not([aria-modal="false"])'
+
 /** The compose window carries this attribute (ComposeWindow.vue): while the focus is anywhere in it, text is edited. */
 export const COMPOSE_WINDOW_ATTRIBUTE = 'data-compose-window'
 
@@ -68,6 +71,16 @@ export function followEditing(doc: Document): { editing: Readonly<Ref<boolean>>;
   }
   doc.addEventListener('focusout', left)
   doc.addEventListener('focusin', entered)
+  // A modal layer that opens or goes without moving the focus (one removed with its screen, a question answered by a
+  // click that leaves the focus on the body) still has the checks that read the page run again.
+  const modals = new MutationObserver((records) => {
+    if (records.some(touchesModal)) {
+      recheck()
+    }
+  })
+  if (doc.body !== null) {
+    modals.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['open', 'role'] })
+  }
   followers.add(recheck)
   return {
     editing: readonly(editing),
@@ -75,9 +88,19 @@ export function followEditing(doc: Document): { editing: Readonly<Ref<boolean>>;
     stop: () => {
       doc.removeEventListener('focusout', left)
       doc.removeEventListener('focusin', entered)
+      modals.disconnect()
       followers.delete(recheck)
     },
   }
+}
+
+/** Whether a change of the page adds, removes, opens or closes a modal layer. */
+function touchesModal(record: MutationRecord): boolean {
+  if (record.type === 'attributes') {
+    return record.target instanceof Element && (record.target.tagName === 'DIALOG' || record.attributeName === 'role')
+  }
+  const isModal = (node: Node) => node instanceof Element && (node.matches(MODAL_SELECTOR) || node.querySelector(MODAL_SELECTOR) !== null)
+  return [...record.addedNodes].some(isModal) || [...record.removedNodes].some(isModal)
 }
 
 /**
