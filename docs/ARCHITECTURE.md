@@ -2792,6 +2792,13 @@ after. Everything lives in `apps/api/src/Notification`.
     events a time on the day before, and switches leave-now, the brief (minutes before) and the follow-up for the
     events it matches. New users start with 10 minutes before timed events and 09:00 the day before all-day events,
     both on the phone and the desktop.
+  - A reminder's text is the event's time ("Thursday 22 October, 10:00 to 11:00") and its place after a comma. For
+    an event with an online meeting it names the app instead, by the link's host alone (`ConferenceDetector::providerOf`):
+    "..., on Microsoft Teams." (Google Meet, Zoom, Webex), or "..., online." for a link of no known app, then
+    "Or in <place>." when the event has a place too. The link never goes into a reminder: links are taken out of
+    the place, and a place that only names the app ("Microsoft Teams Meeting") is left out. A link that
+    `MeetingLinkAddress` refuses (a user name in it, no real host) is not called a meeting; the text then reads as
+    for an event without one. Every channel (phone, desktop, email) gets this one text.
   - **Leave now** (switched off as a whole with `leaveNow` in the settings): for timed events with a place. With a
     travel time set on the event (`travelMinutes`, stored as `X-TRESSO-TRAVEL-MINUTES`; Apple Calendar's
     `X-APPLE-TRAVEL-DURATION` is read too) it fires at start minus travel minus the user's extra time (0, 5 or 10
