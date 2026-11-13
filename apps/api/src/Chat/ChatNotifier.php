@@ -24,8 +24,9 @@ use Symfony\Component\Uid\Uuid;
 /**
  * Pushes a new WhatsApp message to the user's phone, only while the account's Notify me is on (off by default: the
  * phone already notifies through WhatsApp). The push names the chat and nothing else: title `WhatsApp`, body the chat's
- * name opened from its seal, or `New WhatsApp message` for a chat without one and for a chat whose name is a phone
- * number (the bridge names a chat with an unsaved contact by its number); never the text, a sender or a number.
+ * name opened from its seal, or `New WhatsApp message` for a chat without one and for a name that is or holds a phone
+ * number or another long run of digits (the bridge names a chat with an unsaved contact by its number, and a group
+ * without a subject `Group <id>`); never the text, a sender or a number.
  *
  * The relay's batch hands over each chat's newest incoming message it stored ({@see stored()}), in the batch's
  * transaction, unless the server took the batch as part of a first import (the history the relay found). The push is
@@ -52,6 +53,14 @@ final readonly class ChatNotifier
     public const string NO_NAME = 'New WhatsApp message';
     /** A name that is a phone number as the bridge or a contact list writes one. */
     private const string NUMBER = '/^\+?[\d\s().\-]{5,}$/D';
+    /** Separators a number is written with, removed before looking for a long run of digits. */
+    private const string SEPARATORS = '/[\s().\-+]/';
+    /**
+     * Seven digits in a row once separators are gone: a number inside a name ("+31 6 1234 5678 (work)", a JID), or the
+     * bridge's own fallback names (whatsapp-bridge main.go GetChatName: `Group <jid user>` for a group without a subject,
+     * the sender or `<jid user>` for a contact it has no name for).
+     */
+    private const string DIGIT_RUN = '/\d{7,}/';
     /** How long push services keep trying. */
     private const string EXPIRES = '+1 hour';
 
@@ -151,7 +160,11 @@ final readonly class ChatNotifier
     {
         $name = trim((string) $name);
 
-        return '' === $name || 1 === preg_match(self::NUMBER, $name) ? self::NO_NAME : $name;
+        if ('' === $name || 1 === preg_match(self::NUMBER, $name) || 1 === preg_match(self::DIGIT_RUN, (string) preg_replace(self::SEPARATORS, '', $name))) {
+            return self::NO_NAME;
+        }
+
+        return $name;
     }
 
     /** An incoming message of the chat after this one: a later time, or the same second and a later id. */

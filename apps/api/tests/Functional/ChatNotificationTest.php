@@ -101,6 +101,14 @@ final class ChatNotificationTest extends DatabaseTestCase
         self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor('31612345678'));
         self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor('+31 6 12345678'));
         self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor('(020) 123-4567'));
+        self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor('+31 6 1234 5678 (work)'));
+        self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor('31612345678@s.whatsapp.net'));
+        // The bridge's fallback names (whatsapp-bridge main.go GetChatName): a group without a subject, old and new ids,
+        // and a contact it has no name for (its number, or its hidden number).
+        self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor('Group 31612345678-1500000000'));
+        self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor('Group 120363025246125486'));
+        self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor('123456789012345'));
+        self::assertSame('Bus 1234', ChatNotifier::bodyFor('Bus 1234'));
         self::assertSame(ChatNotifier::NO_NAME, ChatNotifier::bodyFor(null));
     }
 
