@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { daysFrom, expandOccurrences, type Conference, type ConferenceRequest, type SyncedCalendarEvent } from '@tresso/core'
+import { daysFrom, displayLink, expandOccurrences, type Conference, type ConferenceRequest, type SyncedCalendarEvent } from '@tresso/core'
 import { calendar as calendarRow, calendarEvent } from '@tresso/core/testing'
 import { openMeeting } from '@/calendar/join'
 import AgendaList from '../calendar/AgendaList.vue'
+import EventDetail from '../calendar/EventDetail.vue'
 import JoinLink from '../calendar/JoinLink.vue'
 import MeetingLink from '../calendar/MeetingLink.vue'
 
@@ -44,7 +45,7 @@ let clockNow = NOW
 const clock = () => clockNow
 
 function popover(value: SyncedCalendarEvent, ownLink: string | null = null) {
-  return mount(MeetingLink, { props: { event: value, ownLink, clock }, attachTo: document.body })
+  return mount(MeetingLink, { props: { event: value, request: value.conferenceRequest ?? null, ownLink, clock }, attachTo: document.body })
 }
 
 beforeEach(() => {
@@ -65,7 +66,7 @@ describe('the meeting link in the popover', () => {
     const wrapper = popover(event({ conference: conference('teams', TEAMS, '+31201234567') }))
     expect(wrapper.get('.app').text()).toBe('Microsoft Teams')
     const url = wrapper.get('.url')
-    expect(url.text()).toBe('teams.microsoft.com/l/…id%22%3a%22c2f1%22%7d')
+    expect(url.text()).toBe('teams.microsoft.com/l/meetup-jo…22c2f1%22%7d')
     expect(url.attributes('title')).toBe(TEAMS)
     const join = wrapper.get('a.button-primary')
     expect(join.text()).toContain('Join')
@@ -204,11 +205,17 @@ describe('the meeting link in the popover', () => {
     ['an intranet host', 'https://meet/room'],
     ['a host that imitates another', 'https://teаms.microsoft.com/l/meetup-join/1'],
     ['a user name before the host', 'https://teams.microsoft.com@evil.example/x'],
+    ['a user name and password', 'https://user:pass@teams.microsoft.com/l/meetup-join/1'],
+    ['a file', 'file:///etc/passwd'],
+    ['localhost', 'https://localhost/room'],
+    ['a reversed text', 'https://evil.example/\u202emoc.tfosorcim.smaet'],
   ])('offers no Join for %s, but shows it with Copy link', async (_name, url) => {
     const wrapper = popover(event({ conference: conference('teams', url) }))
     expect(wrapper.find('a').exists()).toBe(false)
     expect(wrapper.find(`[href]`).exists()).toBe(false)
-    expect(wrapper.get('.url').attributes('title')).toBe(url)
+    expect(wrapper.get('.url').attributes('title')).toBe(displayLink(url))
+    expect(wrapper.get('.url').attributes('dir')).toBe('ltr')
+    expect(wrapper.get('.url').text()).not.toMatch(/[\u202a-\u202e\u2066-\u2069]/)
     expect(wrapper.get('.copy-link').text()).toBe('Copy link')
     expect(wrapper.text()).toContain('Tresso does not open this link. Check where it leads before you use it.')
     // Nor does the key or any other way to join open it.
@@ -219,6 +226,121 @@ describe('the meeting link in the popover', () => {
     await expect(openMeeting(url)).resolves.toBe(false)
     expect(window.open).not.toHaveBeenCalled()
     expect(desktop.opened).toEqual([])
+  })
+})
+
+describe('the popover around the link', () => {
+  const AMS = 'Europe/Amsterdam'
+  const work = calendarRow('work', 'work', { name: 'Work' })
+
+  function detail(occurrence: ReturnType<typeof expandOccurrences>[number]) {
+    setActivePinia(createPinia())
+    return mount(EventDetail, { props: { occurrence, calendar: work, zone: AMS, now: NOW, busy: false, error: null, clock }, attachTo: document.body })
+  }
+
+  it('reads the request from the series for a moved occurrence', () => {
+    const series = calendarEvent('series', 'work', { summary: 'Standup', recurrence: 'FREQ=DAILY;COUNT=3', conferenceRequest: request() })
+    const moved = calendarEvent('moved', 'work', {
+      summary: 'Standup',
+      uid: series.uid,
+      recurrenceId: '20261021T080000Z',
+      start: { dateTime: '2026-10-21T11:00:00', timeZone: AMS },
+      end: { dateTime: '2026-10-21T12:00:00', timeZone: AMS },
+      conferenceRequest: null,
+    })
+    const occurrences = expandOccurrences([series, moved], Date.UTC(2026, 9, 19), Date.UTC(2026, 9, 25), AMS)
+    const override = occurrences.find((item) => item.event.id === 'moved')!
+    expect(override.series?.id).toBe('series')
+    expect(detail(override).text()).toContain('Making the Teams link')
+    const failed = expandOccurrences([{ ...series, conferenceRequest: request({ status: 'failed', reason: 'refused' }) }, moved], Date.UTC(2026, 9, 19), Date.UTC(2026, 9, 25), AMS)
+    expect(detail(failed.find((item) => item.event.id === 'moved')!).text()).toContain('Could not make the Teams link')
+  })
+
+  it('starts over for another event: a failed copy does not follow', async () => {
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: vi.fn<(text: string) => Promise<void>>(async () => Promise.reject(new Error('denied'))) } })
+    const [a] = expandOccurrences([calendarEvent('a', 'work', { conference: conference('teams', TEAMS) })], Date.UTC(2026, 9, 19), Date.UTC(2026, 9, 25), AMS)
+    const [b] = expandOccurrences([calendarEvent('b', 'work', { conference: conference('meet', MEET) })], Date.UTC(2026, 9, 19), Date.UTC(2026, 9, 25), AMS)
+    const wrapper = detail(a!)
+    await wrapper.get('.copy-link').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.copy-failed').exists()).toBe(true)
+    await wrapper.setProps({ occurrence: b! })
+    expect(wrapper.find('.copy-failed').exists()).toBe(false)
+    expect(wrapper.get('.app').text()).toBe('Google Meet')
+  })
+})
+
+describe('timers', () => {
+  it('waits at most two minutes for a request time far in the future, without a loop', async () => {
+    vi.useFakeTimers()
+    const delays: number[] = []
+    const real = globalThis.setTimeout
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, delay?: number) => {
+      delays.push(delay ?? 0)
+      return real(handler, delay)
+    }) as typeof setTimeout)
+    const wrapper = popover(event({ conferenceRequest: request({ requestedAt: '2027-11-13T09:00:00+00:00' }) }))
+    expect(wrapper.text()).toContain('Making the Teams link')
+    const armed = delays.length
+    expect(Math.max(...delays)).toBeLessThanOrEqual(120_250)
+    vi.advanceTimersByTime(1_000)
+    await flushPromises()
+    expect(delays.length).toBe(armed)
+    wrapper.unmount()
+  })
+
+  it('clears the request timer and the copy timer on unmount', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: vi.fn<(text: string) => Promise<void>>(async () => undefined) } })
+    const making = popover(event({ conferenceRequest: request() }))
+    expect(vi.getTimerCount()).toBe(1)
+    making.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    const made = popover(event({ conference: conference('teams', TEAMS) }))
+    await made.get('.copy-link').trigger('click')
+    await flushPromises()
+    expect(made.get('.copy-link').text()).toBe('Copied')
+    expect(vi.getTimerCount()).toBe(1)
+    made.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('sets no timer when the clipboard answers after the button is gone', async () => {
+    vi.useFakeTimers()
+    let answer: () => void = () => undefined
+    const writeText = vi.fn<(text: string) => Promise<void>>(() => new Promise<void>((resolve) => (answer = resolve)))
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    const wrapper = popover(event({ conference: conference('teams', TEAMS) }))
+    await wrapper.get('.copy-link').trigger('click')
+    expect(writeText).toHaveBeenCalled()
+    wrapper.unmount()
+    answer()
+    await flushPromises()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('a link shown as text', () => {
+  it('shows a refused link with its hidden characters visible, capped, left to right', async () => {
+    vi.stubGlobal('navigator', { ...navigator, clipboard: undefined })
+    const long = `https://evil.example/\u202e${'a'.repeat(5000)}`
+    const wrapper = popover(event({ conference: conference('other', long) }))
+    await wrapper.get('.copy-link').trigger('click')
+    await flushPromises()
+    const full = wrapper.get('.full-link')
+    expect(full.attributes('dir')).toBe('ltr')
+    expect(full.text()).toBe(displayLink(long))
+    expect(Array.from(full.text())).toHaveLength(300)
+    expect(full.text()).toContain('\ufffd')
+  })
+
+  it('shows a refused link in a list the same way', () => {
+    const url = 'https://evil.example/\u202emoc.smaet'
+    const wrapper = mount(JoinLink, { props: { conference: conference('other', url) } })
+    const text = wrapper.get('.link')
+    expect(text.attributes('dir')).toBe('ltr')
+    expect(text.attributes('title')).toBe(displayLink(url))
+    expect(text.text()).toBe('evil.example/\ufffdmoc.smaet')
   })
 })
 
@@ -295,7 +417,7 @@ describe('Join in the lists', () => {
     expect(joins.every((anchor) => anchor.attributes('referrerpolicy') === 'no-referrer' && anchor.attributes('rel') === 'noopener noreferrer')).toBe(true)
     const rows = wrapper.findAll('.row')
     expect(rows[2]!.find('a').exists()).toBe(false)
-    expect(rows[2]!.get('.link-text').text()).toBe('javascript:alert(1)')
+    expect(rows[2]!.get('.link').text()).toBe('javascript:alert(1)')
     expect(rows[2]!.get('.copy-link').text()).toBe('Copy link')
     expect(rows[3]!.find('.join-link').exists()).toBe(false)
   })

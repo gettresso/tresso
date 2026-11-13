@@ -5,11 +5,13 @@ import {
   canJoin,
   conferenceLabel,
   CREATING_HINT,
+  displayLink,
   failureHint,
   linkText,
   MEETING_PENDING_MS,
   requestState,
   requestTitle,
+  type ConferenceRequest,
   type SyncedCalendarEvent,
 } from '@tresso/core'
 import AppIcon from '@/components/AppIcon.vue'
@@ -25,6 +27,11 @@ import JoinLink from '@/components/calendar/JoinLink.vue'
  */
 const props = defineProps<{
   event: SyncedCalendarEvent
+  /**
+   * The link asked for on the series: the master row carries it, also when `event` is an occurrence that was moved
+   * (an override row, whose own `conferenceRequest` is always null).
+   */
+  request: ConferenceRequest | null
   /** The user's saved own link, which reads "My own link"; null until the settings know it. */
   ownLink: string | null
   /** The server's time as the client knows it, in epoch ms: `requestedAt` is the server's. */
@@ -50,8 +57,8 @@ const addedBy = computed(() => {
 const now = ref(props.clock())
 let timer: ReturnType<typeof setTimeout> | null = null
 
-const state = computed(() => requestState(props.event, now.value))
-const request = computed(() => props.event.conferenceRequest ?? null)
+const request = computed(() => props.request)
+const state = computed(() => requestState({ conference: props.event.conference, conferenceRequest: request.value }, now.value))
 
 function stopTimer(): void {
   if (timer !== null) {
@@ -67,11 +74,13 @@ function watchAge(): void {
   if (pending === null || state.value !== 'creating') {
     return
   }
+  // At most two minutes ahead: a requestedAt far in the future (a clock that is off) would overflow setTimeout, which
+  // then fires at once and again and again.
   const left = Date.parse(pending.requestedAt) + MEETING_PENDING_MS - now.value
-  timer = setTimeout(watchAge, Math.max(0, left) + 250)
+  timer = setTimeout(watchAge, Math.min(Math.max(0, left), MEETING_PENDING_MS) + 250)
 }
 
-watch(() => [props.event.conference, props.event.conferenceRequest], watchAge, { immediate: true })
+watch(() => [props.event.conference, props.request], watchAge, { immediate: true })
 onBeforeUnmount(stopTimer)
 </script>
 
@@ -81,7 +90,7 @@ onBeforeUnmount(stopTimer)
       <AppIcon :name="joinable ? 'video' : 'link'" :size="18" />
       <span class="names">
         <span class="app">{{ conferenceLabel(conference, ownLink) }}</span>
-        <span class="url" :title="conference.url">{{ linkText(conference.url) }}</span>
+        <span class="url" dir="ltr" :title="displayLink(conference.url)">{{ linkText(conference.url) }}</span>
       </span>
     </div>
     <div class="actions">
@@ -143,6 +152,7 @@ p {
   font-weight: 600;
 }
 .url {
+  unicode-bidi: isolate;
   overflow: hidden;
   color: var(--ink-2);
   font: 400 12px var(--font-mono);

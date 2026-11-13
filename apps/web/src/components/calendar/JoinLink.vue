@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { canJoin, joinLabel, linkText, type Conference } from '@tresso/core'
+import { canJoin, displayLink, joinLabel, linkText, type Conference } from '@tresso/core'
 import { JOIN_FAILED, openMeeting } from '@/calendar/join'
 import { isDesktop } from '@/platform/desktop'
 import AppIcon from '@/components/AppIcon.vue'
@@ -61,7 +61,7 @@ function join(event: MouseEvent): void {
       <template v-else>{{ label }}</template>
     </a>
     <template v-else>
-      <span class="link-text" :title="conference.url"><AppIcon name="link" :size="14" /> {{ linkText(conference.url, 32) }}</span>
+      <span class="link-text"><AppIcon name="link" :size="14" /> <span class="link" dir="ltr" :title="displayLink(conference.url)">{{ linkText(conference.url, 32) }}</span></span>
       <CopyLinkButton :url="conference.url" :compact="compact" />
     </template>
     <span v-if="failed" class="join-failed" role="alert">{{ JOIN_FAILED }}</span>
@@ -92,6 +92,9 @@ function join(event: MouseEvent): void {
   color: var(--ink-2);
   font: 400 12px var(--font-mono);
   white-space: nowrap;
+}
+.link {
+  unicode-bidi: isolate;
 }
 .join-failed {
   flex-basis: 100%;
