@@ -2775,8 +2775,8 @@ reads the address from `calendarStatusDetail`.
   (the host whole, read left to right, wrapping rather than cut again at large text sizes) with "Copy link"
   (expo-clipboard, so the app needs a development and store build that has it), who the link is from and the place
   as the other way to meet, and a link that is being made or could not be made in core's words. On a failed link the
-  organizer has "Retry" (POST `/api/v1/calendar-events/{id}/meeting-link`, Meet and Teams) and "Leave without a
-  link" (DELETE), on the series.
+  organizer has "Retry" (POST `/api/v1/calendar-events/{id}/meeting-link`, Meet and Teams), on the series; the
+  phone has no "Leave without a link" yet.
 - Reminders are scheduled and sent by the server (next section), so they reach every device, also when no app is
   open.
 

@@ -10,7 +10,7 @@ const START = Date.parse('2026-10-23T08:00:00Z')
 const { state, clipboard, mail } = vi.hoisted(() => ({
   state: { occurrences: [] as unknown[], calendars: new Map(), now: 0 },
   clipboard: { setStringAsync: vi.fn() },
-  mail: { respond: () => Promise.resolve(), serverNow: (): number => 0, requestMeetingLink: vi.fn(), removeMeetingLink: vi.fn() },
+  mail: { respond: () => Promise.resolve(), serverNow: (): number => 0, requestMeetingLink: vi.fn() },
 }))
 vi.mock('expo-router', () => ({ Stack: { Screen: () => null }, useLocalSearchParams: () => ({ key: 'e1', start: String(START) }) }))
 vi.mock('expo-clipboard', () => clipboard)
@@ -73,7 +73,7 @@ function event(overrides: Partial<SyncedCalendarEvent> = {}): SyncedCalendarEven
   }
 }
 
-function show(row: SyncedCalendarEvent, series: SyncedCalendarEvent | null = null) {
+function show(row: SyncedCalendarEvent, series: SyncedCalendarEvent | null = null, extra: Partial<Occurrence> = {}) {
   const occurrence: Occurrence = {
     key: 'e1',
     event: row,
@@ -89,6 +89,7 @@ function show(row: SyncedCalendarEvent, series: SyncedCalendarEvent | null = nul
     endDate: null,
     timeZone: 'Europe/Amsterdam',
     fromServer: false,
+    ...extra,
   }
   state.occurrences = [occurrence]
   return render(<EventScreen />)
@@ -111,7 +112,6 @@ describe('the meeting link on the event screen', () => {
     clipboard.setStringAsync.mockReset()
     mail.serverNow = () => state.now
     mail.requestMeetingLink.mockReset().mockResolvedValue(undefined)
-    mail.removeMeetingLink.mockReset().mockResolvedValue(undefined)
     openURL = vi.spyOn(Linking, 'openURL').mockResolvedValue(undefined)
     announce = vi.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => {})
   })
@@ -170,7 +170,7 @@ describe('the meeting link on the event screen', () => {
       'http://teams.microsoft.com/l/meetup-join/1',
       'https://user:pass@teams.microsoft.com/x',
       'https://localhost/room',
-      'https://tеams.microsoft.com/l/meetup-join/1',
+      'https://t\u0435ams.microsoft.com/l/meetup-join/1',
     ]
     for (const url of hostile) {
       const view = show(event({ conference: { provider: 'teams', url, id: null, dialIn: null } }))
@@ -274,7 +274,7 @@ describe('the meeting link on the event screen', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
-  it('shows why a link could not be made, with core texts, Retry and Leave without a link', () => {
+  it('shows why a link could not be made, with core texts and Retry, and no removal', () => {
     const cases: [ConferenceRequest, string, string][] = [
       [request({ status: 'failed', reason: 'refused' }), 'Could not make the Teams link', 'The event is saved without a link. Microsoft refused to make it.'],
       [request({ provider: 'meet', status: 'failed', reason: 'not_supported' }), 'Could not make the Google Meet link', 'The event is saved without a link. Google Meet is not available for this calendar.'],
@@ -285,7 +285,7 @@ describe('the meeting link on the event screen', () => {
       expect(screen.getByText(title)).toBeTruthy()
       expect(screen.getByText(hint)).toBeTruthy()
       expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
-      expect(screen.getByRole('button', { name: 'Leave without a link' })).toBeTruthy()
+      expect(screen.queryByText('Leave without a link')).toBeNull()
       view.unmount()
     }
   })
@@ -390,7 +390,7 @@ describe('the meeting link on the event screen', () => {
 
   it('keeps a link whose host is in Hebrew or Arabic letters left to right on screen, and copies it without the mark', async () => {
     clipboard.setStringAsync.mockResolvedValue(true)
-    for (const url of ['https://שלום.example/room', 'https://مثال.example/room']) {
+    for (const url of ['https://\u05e9\u05dc\u05d5\u05dd.example/room', 'https://\u0645\u062b\u0627\u0644.example/room']) {
       const view = show(event({ conference: { provider: 'other', url, id: null, dialIn: null } }))
       expect(screen.queryByRole('link'), url).toBeNull()
       expect(screen.getByText(LTR_MARK + url.slice('https://'.length))).toBeTruthy()
@@ -440,9 +440,7 @@ describe('the meeting link on the event screen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     fireEvent.click(screen.getByRole('button', { name: 'Retrying' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Leave without a link' }))
     expect(mail.requestMeetingLink).toHaveBeenCalledExactlyOnceWith('s1', 'teams')
-    expect(mail.removeMeetingLink).not.toHaveBeenCalled()
 
     await act(async () => {
       done()
@@ -451,24 +449,14 @@ describe('the meeting link on the event screen', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
-  it('leaves the event without a link and says so', async () => {
-    show(event({ conferenceRequest: request({ provider: 'meet', status: 'failed', reason: 'not_supported' }) }))
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Leave without a link' }))
-    })
-
-    expect(mail.removeMeetingLink).toHaveBeenCalledExactlyOnceWith('e1')
-    expect(mail.requestMeetingLink).not.toHaveBeenCalled()
-    expect(announce).toHaveBeenCalledExactlyOnceWith('The event stays without a link.')
-  })
-
-  it('says in plain words why Retry or Leave did not go through', async () => {
+  it('says in plain words why Retry did not go through', async () => {
     const refusal = Object.assign(new Error('Microsoft keeps a Teams meeting on its event.'), { name: 'ApiError', status: 422 })
     const cases: [unknown, string][] = [
       [new TypeError('Network request failed'), 'No connection. Try again when you are online.'],
       [refusal, 'Microsoft keeps a Teams meeting on its event.'],
       [Object.assign(new Error('Internal'), { status: 500 }), 'The server could not do this now. Try again later.'],
+      [Object.assign(new Error('Expired'), { status: 401 }), 'Your sign-in ended. Sign in again and try again.'],
+      [Object.assign(new Error('Forbidden'), { status: 403 }), 'This sign-in may not change your calendar. Sign in again and allow calendar access.'],
     ]
     for (const [error, text] of cases) {
       mail.requestMeetingLink.mockRejectedValueOnce(error)
@@ -485,15 +473,21 @@ describe('the meeting link on the event screen', () => {
 
   it('offers Retry only for an app the provider makes, and nothing on a calendar the user cannot write', () => {
     const zoom = show(event({ conferenceRequest: request({ provider: 'zoom', status: 'failed', reason: 'refused' }) }))
+    expect(screen.getByText('Could not make the Zoom link')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Leave without a link' })).toBeTruthy()
     zoom.unmount()
 
     state.calendars = new Map([['cal', { ...calendar, writable: false }]])
     show(event({ conferenceRequest: request({ status: 'failed', reason: 'refused' }) }))
     expect(screen.getByText('Could not make the Teams link')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
+  })
+
+  it('offers no Retry for an occurrence read from the server, whose series is not on the phone', () => {
+    show(event({ conferenceRequest: request({ status: 'failed', reason: 'refused' }) }), null, { fromServer: true })
+
+    expect(screen.getByText('Could not make the Teams link')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   })
 
   it('shows the link of an occurrence that has its own, not the series request', () => {
