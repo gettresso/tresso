@@ -681,11 +681,22 @@ export const useChatsStore = defineStore('chats', () => {
     // The same text after an unsure try is that reply again; any other text is a new one.
     const again = earlier !== undefined && checked.ok && checked.text === earlier.text ? earlier.id : undefined
     let row: SyncedChatOutgoing
+    sendingIn.set(chatId, (sendingIn.get(chatId) ?? 0) + 1)
     try {
       row = await actions.value.send(chatId, text, again)
     } catch (cause) {
       if (cause instanceof ChatActionError && cause.code === 'cancelled' && cause.replyId !== null) {
         // The user cancelled it while it was being queued, and the server kept that: it is cancelled, as they asked.
+        if (earlier !== undefined) {
+          await keepUnsure(copy, chatId, null)
+        }
+        drafts.delete(chatId)
+        version.value++
+        return { ...(await cancelledRow(copy, chatId, cause.replyId)) }
+      }
+      if (cause instanceof ChatActionError && cause.code === 'unsure' && cause.replyId !== null && userCancelled.has(cause.replyId)) {
+        // No answer, but the user cancelled it meanwhile (its cancel went to the server, which keeps it also for a reply
+        // it had not seen): it is cancelled, never sent again under that id, and the next send of the text is new.
         if (earlier !== undefined) {
           await keepUnsure(copy, chatId, null)
         }
@@ -702,6 +713,18 @@ export const useChatsStore = defineStore('chats', () => {
       // A reply shown at once and put back: the pane shows the chat as it is again.
       version.value++
       throw cause
+    } finally {
+      const left = (sendingIn.get(chatId) ?? 1) - 1
+      if (left > 0) {
+        sendingIn.set(chatId, left)
+      } else {
+        sendingIn.delete(chatId)
+        for (const [id, cancelledIn] of userCancelled) {
+          if (cancelledIn === chatId) {
+            userCancelled.delete(id)
+          }
+        }
+      }
     }
     if (earlier !== undefined) {
       await keepUnsure(copy, chatId, null)
@@ -728,16 +751,33 @@ export const useChatsStore = defineStore('chats', () => {
       cancelAttach(chatId)
       return
     }
-    if (store() !== null) {
+    const copy = store()
+    if (copy !== null) {
       checkWritable()
       try {
         await actions.value.cancel(chatId, id)
+        // The unsure try of this reply is cancelled now: the same text sent again is a new reply under a new id, not
+        // this one, which the server refuses for good. One whose queueing is still under way is caught in send.
+        if (unsure.get(chatId)?.id === id) {
+          await keepUnsure(copy, chatId, null)
+        }
+        if (sendingIn.has(chatId)) {
+          userCancelled.set(id, chatId)
+        }
       } finally {
         version.value++
         await refresh()
       }
     }
   }
+
+  /** Text replies sent in a chat whose queueing is under way, by chat. */
+  const sendingIn = new Map<string, number>()
+  /**
+   * Replies the user cancelled (with their chat) while a send in that chat was under way, so a send whose answer was lost
+   * meanwhile knows it was cancelled (send); kept until no send is under way in that chat.
+   */
+  const userCancelled = new Map<string, string>()
 
   /** The user's Try again: the only way a reply that was not sent, or whose sending is unconfirmed, goes out again. */
   async function retry(chatId: string, id: string): Promise<void> {
@@ -1186,7 +1226,12 @@ export const useChatsStore = defineStore('chats', () => {
           await forget()
         }
         console.error('Sending a WhatsApp file failed', errorName(cause))
-        setUpload(chat.id, { state: 'failed', chatId: chat.id, name, error: 'not_queued', detail: chatActionError(cause, 'upload').message })
+        // Too many replies at once: Attach waits as after too many uploads, and says how long.
+        const tooMany = cause instanceof ChatActionError && cause.code === 'too_many'
+        if (tooMany) {
+          holdAttach(cause.retryAfterMs)
+        }
+        setUpload(chat.id, { state: 'failed', chatId: chat.id, name, error: 'not_queued', detail: tooMany ? attachHeldText(attachHeldFor.value) : chatActionError(cause, 'upload').message })
         return
       }
       if (!run.abandoned) {

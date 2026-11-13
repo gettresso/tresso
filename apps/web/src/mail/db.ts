@@ -1204,6 +1204,12 @@ export class IndexedDbMailStore implements MailStore {
   async setChatMeta(key: string, value: string | null): Promise<void> {
     await (value === null ? this.db.delete('meta', CHAT_META + key) : this.db.put('meta', value, CHAT_META + key))
   }
+
+  async removeChatMetaStartingWith(prefix: string): Promise<void> {
+    // Keys are strings, and every key that starts with `start` sorts from it up to it followed by the highest code unit.
+    const start = CHAT_META + prefix
+    await this.db.delete('meta', IDBKeyRange.bound(start, `${start}\uffff`))
+  }
 }
 
 type ConversationStore = ReturnType<IDBPTransaction<MailSchema, ['conversations'], 'readonly'>['objectStore']>

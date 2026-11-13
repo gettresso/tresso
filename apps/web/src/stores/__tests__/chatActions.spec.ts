@@ -56,7 +56,7 @@ describe('the server chat actions ("All my devices")', () => {
     server.fail('queueReply', new ChatApiError(429, 'Slow down', null, 60_000))
     const error = await actions.send(CHAT_ID, 'On my way').catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(ChatActionError)
-    expect((error as Error).message).toBe('Too many WhatsApp replies at once. Wait a few minutes, then try again.')
+    expect((error as Error).message, 'The real wait, rounded up.').toBe('Too many WhatsApp replies at once. Wait a minute, then try again.')
     const rows = (await store.chatPage(CHAT_ID, { limit: 1 }))!.outgoing
     expect(rows.map((row) => row.status)).toEqual(['cancelled'])
 

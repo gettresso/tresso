@@ -1,4 +1,5 @@
 import {
+  attachHeldText,
   cancelLocalReply,
   chatApiFailure,
   queueLocalReply,
@@ -6,6 +7,7 @@ import {
   retryLocalReply,
   setLocalChatState,
   uuidV7,
+  waitText,
   type ChatApi,
   type ChatPage,
   type MailStore,
@@ -97,6 +99,21 @@ const TEXTS: Record<ChatActionErrorCode, string> = {
   too_many_files: 'Too many files sent at once. Wait a few minutes, then attach it again.',
 }
 
+/** The too-many texts with the wait the server asked for (Retry-After), rounded up; null for the others or without one. */
+function waitingText(code: ChatActionErrorCode, retryAfterMs: number | null): string | null {
+  if (retryAfterMs === null || !Number.isFinite(retryAfterMs)) {
+    return null
+  }
+  switch (code) {
+    case 'too_many':
+      return `Too many WhatsApp replies at once. Wait ${waitText(retryAfterMs)}, then try again.`
+    case 'too_many_files':
+      return attachHeldText(retryAfterMs)
+    default:
+      return null
+  }
+}
+
 /**
  * A chat action that did not happen (or was put back); its message is plain words, never a chat's text or name. An
  * `unsure` reply carries the id it was sent with (`replyId`), to send it again under that id; a refusal carries the
@@ -108,7 +125,7 @@ export class ChatActionError extends Error {
     readonly replyId: string | null = null,
     readonly retryAfterMs: number | null = null,
   ) {
-    super(TEXTS[code])
+    super(waitingText(code, retryAfterMs) ?? TEXTS[code])
     this.name = 'ChatActionError'
   }
 }
