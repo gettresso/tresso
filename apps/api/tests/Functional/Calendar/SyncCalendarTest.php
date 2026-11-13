@@ -222,6 +222,7 @@ final class SyncCalendarTest extends DatabaseTestCase
             self::service($container, \App\Calendar\EventNotes::class),
             new NullLogger(),
             false,
+            new \Symfony\Component\Clock\Clock(),
         ));
 
         $this->client->jsonRequest('POST', $this->base().'/calendars', ['workerId' => 'w1', 'serverUrl' => 'http://caldav.company.example/dav/', 'calendars' => [['remoteId' => self::HOME, 'name' => 'Home']]], $this->worker);

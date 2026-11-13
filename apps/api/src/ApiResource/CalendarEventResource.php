@@ -41,7 +41,9 @@ use Symfony\Component\Validator\Constraints as Assert;
  * field existed lack it until the event changes).
  *
  * A save replaces the meeting link with `conferenceUrl`: a client that keeps the link sends `conference.url` back as
- * it got it. Without it the link is removed (and a Microsoft event with a Teams meeting answers 422).
+ * it got it. Without it the link is removed (and a Microsoft event with a Teams meeting answers 422). A client must
+ * not send `conferenceUrl: null` from a copy that may predate the link (it would remove a link made since); it sends
+ * null only when the user removed the link in that client.
  *
  * @phpstan-import-type Address from EventData
  * @phpstan-import-type Attendee from EventData

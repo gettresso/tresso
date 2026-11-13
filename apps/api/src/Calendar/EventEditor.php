@@ -655,8 +655,9 @@ final readonly class EventEditor
         if (!ConferenceDetector::removable($event, $calendar->getSource())) {
             throw new EditRejected(self::TEAMS_STAYS);
         }
-        if (CalendarSource::Google === $calendar->getSource() && null !== Props::get($event, 'X-GOOGLE-CONFERENCE')) {
-            // Google's meeting goes: the worker removes it only on this explicit word.
+        if (CalendarSource::Google === $calendar->getSource() && null !== Props::get($event, 'X-GOOGLE-CONFERENCE') && $organizes && null === Props::get($event, 'RECURRENCE-ID')) {
+            // Google's meeting goes: the worker removes it only on this explicit word, on the master of an event the
+            // user organizes (Google keeps one meeting for the whole series).
             Props::set($event, self::CONFERENCE_REMOVE, 'meet');
         }
         if (null !== $url) {
@@ -730,6 +731,8 @@ final readonly class EventEditor
 
         // The series' link goes from every occurrence that shows it; an occurrence with a link of its own keeps that.
         $url = ConferenceDetector::detect($master)['url'] ?? null;
+        // Tresso can only remove what is its or the provider's: a property or the join line, not the event's own text.
+        $removable = self::hasProviderMeeting($master) || null !== Props::get($master, 'CONFERENCE') || null !== MeetingJoinLine::find(self::rawText($master, 'DESCRIPTION'));
         foreach (CalendarDocument::events($vcalendar) as $event) {
             if (null === $url || (ConferenceDetector::detect($event)['url'] ?? null) !== $url) {
                 continue;
@@ -740,9 +743,9 @@ final readonly class EventEditor
                 self::touch($event, self::significantState($event) !== $before);
             }
         }
-        $left = ConferenceDetector::detect($master);
-        if (null !== $url && null !== $left && $left['url'] === $url) {
-            // Found in the event's own text (its place, link or description): only the user can take it out there.
+        if (null !== $url && !$removable) {
+            // Found in the event's own text alone (its place, link or description): only the user can take it out there.
+            // A meeting that also has its link in the text is removed; the text stays as the user wrote it.
             throw new EditRejected(self::TEXT_LINK);
         }
         $hadRequest = null !== Props::get($master, self::CONFERENCE_REQUEST) || null !== Props::get($master, self::CONFERENCE_NONCE);
@@ -1016,6 +1019,19 @@ final readonly class EventEditor
         self::withOrganizer($vcalendar, $target, $organizer);
         $movedObject = new CalendarObject($target, $object->getUid(), '');
         $this->requestConference($movedObject, $vcalendar, $target, $changes->conferenceProvider);
+        // What only the old calendar's provider could act on does not go along: the word to remove Google's meeting, and
+        // a request the new calendar cannot serve.
+        $movedMaster = CalendarDocument::master($vcalendar);
+        if (null !== $movedMaster) {
+            if (CalendarSource::Google !== $target->getSource()) {
+                $movedMaster->remove(self::CONFERENCE_REMOVE);
+            }
+            $asked = Props::text($movedMaster, self::CONFERENCE_REQUEST);
+            if (null !== $asked && !\in_array($asked, $target->getConferenceProviders(), true)) {
+                self::dropConferenceRequest($movedMaster);
+                $movedObject->setConferenceRequest(null);
+            }
+        }
         $source = $object->getCalendar();
         // Every note goes along to the new resource (removing the old one would delete them).
         $notes = $this->notes->lift($object, static fn (string $noteKey): string => '' === $noteKey ? '' : ((null === $moved ? null : $moved($noteKey)) ?? $noteKey));

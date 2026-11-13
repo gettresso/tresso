@@ -21,6 +21,7 @@ use App\Repository\CalendarObjectRepository;
 use App\Repository\CalendarOperationRepository;
 use App\Repository\CalendarRepository;
 use Doctrine\ORM\EntityManagerInterface;
+use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
@@ -42,6 +43,7 @@ final readonly class CalendarSynchronizer
         private LoggerInterface $logger,
         #[Autowire(env: 'bool:MAIL_ALLOW_UNSAFE_SERVERS')]
         private bool $allowUnsafe,
+        private ClockInterface $clock,
     ) {
     }
 
@@ -208,7 +210,7 @@ final readonly class CalendarSynchronizer
                 // The meeting asked for is there (Google may make it after its first answer): nothing is pending.
                 $this->store->setConferenceRequest($object, null);
             } elseif ($settleStale && null !== $request && 'pending' === $request['status']
-                && new \DateTimeImmutable($request['requestedAt']) < new \DateTimeImmutable()->sub(new \DateInterval(self::STALE_REQUEST))) {
+                && new \DateTimeImmutable($request['requestedAt']) < $this->clock->now()->sub(new \DateInterval(self::STALE_REQUEST))) {
                 // No write waits (that returned above): the provider has had its chance, and made no meeting.
                 $this->store->setConferenceRequest($object, ['status' => 'failed', 'reason' => 'refused'] + $request);
             }

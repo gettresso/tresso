@@ -430,11 +430,7 @@ final class ProviderCalendarTest extends DatabaseTestCase
         $this->storeObject($primary, 'trabc', 'e2', self::providerVersion($ical));
         self::assertSame('pending', $this->conferenceRequest($eventId)['status'] ?? null, 'A young request waits.');
 
-        $stored = json_decode(self::string($this->connection()->fetchOne('SELECT conference_request FROM calendar_object WHERE remote_id = ?', ['trabc'])), true, flags: \JSON_THROW_ON_ERROR);
-        self::assertIsArray($stored);
-        $stored['requestedAt'] = new \DateTimeImmutable('-6 minutes')->format(\DATE_ATOM);
-        $this->connection()->executeStatement('UPDATE calendar_object SET conference_request = ? WHERE remote_id = ?', [json_encode($stored, \JSON_THROW_ON_ERROR), 'trabc']);
-        static::getContainer()->get(\Doctrine\ORM\EntityManagerInterface::class)->clear();
+        self::mockTime(new \DateTimeImmutable('+6 minutes'));
 
         $this->storeObject($primary, 'trabc', 'e3', self::providerVersion($ical));
 
@@ -580,6 +576,71 @@ final class ProviderCalendarTest extends DatabaseTestCase
 
         self::assertResponseIsSuccessful();
         self::assertStringNotContainsString('X-TRESSO-CONFERENCE-REMOVE', self::string($this->claim()[0]['ical']), 'A Meet with only a phone entry is no reason to remove anything.');
+    }
+
+    public function testRemovingMeetFromOneOccurrenceNeverMarksGooglesMeeting(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $this->storeObject($primary, 'standup', '"1"', self::meetSeries());
+        $occurrence = $this->occurrences($this->user, '2026-10-20T00:00:00+00:00', '2026-10-21T00:00:00+00:00')[0];
+
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.self::string($occurrence['eventId']).'?scope=this&recurrenceId='.self::string($occurrence['recurrenceId']), self::event($primary, [
+            'summary' => 'Standup',
+            'start' => ['dateTime' => '2026-10-20T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-20T09:15:00', 'timeZone' => 'Europe/Amsterdam'],
+            'conferenceUrl' => null,
+        ]), $this->user);
+
+        self::assertResponseIsSuccessful();
+        self::assertNull($this->decodedResponse()['conference'], 'The occurrence has no link,');
+        $ical = self::string($this->claim()[0]['ical']);
+        self::assertStringNotContainsString('X-TRESSO-CONFERENCE-REMOVE', $ical, 'but Google\'s meeting of the series is not to be removed.');
+        self::assertStringContainsString('X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', $ical);
+    }
+
+    public function testRemovingMeetLeavesTheSameLinkInTheText(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $this->storeObject($primary, 'review', '"1"', implode("\r\n", [
+            'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Tresso//Calendar sync//EN', 'BEGIN:VEVENT', 'UID:review@google.com', 'DTSTAMP:20261018T080000Z',
+            'DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTEND;TZID=Europe/Amsterdam:20261019T093000', 'SUMMARY:Review',
+            'DESCRIPTION:Meet here: https://meet.google.com/abc-defg-hij',
+            'X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'END:VEVENT', 'END:VCALENDAR', '',
+        ]));
+        $eventId = self::string($this->occurrences($this->user, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0]['eventId']);
+
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link', server: $this->user);
+
+        self::assertResponseStatusCodeSame(200, 'Google\'s meeting goes; the user\'s text stays as written.');
+        self::assertSame('Meet here: https://meet.google.com/abc-defg-hij', $this->decodedResponse()['description']);
+        $ical = self::string($this->claim()[0]['ical']);
+        self::assertStringContainsString("\r\nX-TRESSO-CONFERENCE-REMOVE:meet\r\n", $ical);
+        self::assertStringNotContainsString('X-GOOGLE-CONFERENCE', $ical);
+    }
+
+    public function testMovingAwayFromGoogleLeavesTheRemovalWordBehind(): void
+    {
+        $primary = $this->reportCalendars()[0]['id'];
+        $this->storeObject($primary, 'review', '"1"', implode("\r\n", [
+            'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Tresso//Calendar sync//EN', 'BEGIN:VEVENT', 'UID:review@google.com', 'DTSTAMP:20261018T080000Z',
+            'DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTEND;TZID=Europe/Amsterdam:20261019T093000', 'SUMMARY:Review',
+            'X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'END:VEVENT', 'END:VCALENDAR', '',
+        ]));
+        $eventId = self::string($this->occurrences($this->user, '2026-10-19T00:00:00+00:00', '2026-10-20T00:00:00+00:00')[0]['eventId']);
+        $this->client->request('DELETE', '/api/v1/calendar-events/'.$eventId.'/meeting-link', server: $this->user);
+        self::assertResponseStatusCodeSame(200);
+        self::assertStringContainsString('X-TRESSO-CONFERENCE-REMOVE', self::string($this->connection()->fetchOne('SELECT ical FROM calendar_object WHERE remote_id = ?', ['review'])));
+
+        $local = $this->localCalendarId($this->user);
+        $this->client->jsonRequest('PUT', '/api/v1/calendar-events/'.$eventId, self::event($local, [
+            'summary' => 'Review',
+            'start' => ['dateTime' => '2026-10-19T09:00:00', 'timeZone' => 'Europe/Amsterdam'],
+            'end' => ['dateTime' => '2026-10-19T09:30:00', 'timeZone' => 'Europe/Amsterdam'],
+        ]), $this->user);
+
+        self::assertResponseIsSuccessful();
+        $moved = $this->connection()->fetchOne('SELECT o.ical FROM calendar_object o WHERE o.calendar_id = ? AND o.uid = ?', [$local, 'review@google.com']);
+        self::assertStringNotContainsString('X-TRESSO-CONFERENCE', self::string($moved), 'A Tresso calendar has no Google meeting to remove.');
     }
 
     public function testATeamsMeetingMicrosoftMadeCannotBeRemoved(): void
@@ -844,6 +905,17 @@ final class ProviderCalendarTest extends DatabaseTestCase
         self::assertIsArray($request);
 
         return self::string($request['nonce'] ?? null);
+    }
+
+    /** A daily series of three at 09:00 with the Meet meeting Google made for it. */
+    private static function meetSeries(): string
+    {
+        return implode("\r\n", [
+            'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Tresso//Calendar sync//EN', 'BEGIN:VEVENT', 'UID:standup@google.com', 'DTSTAMP:20261018T080000Z',
+            'DTSTART;TZID=Europe/Amsterdam:20261019T090000', 'DTEND;TZID=Europe/Amsterdam:20261019T091500', 'RRULE:FREQ=DAILY;COUNT=3', 'SUMMARY:Standup',
+            'CONFERENCE;VALUE=URI;FEATURE=VIDEO:https://meet.google.com/abc-defg-hij',
+            'X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij', 'END:VEVENT', 'END:VCALENDAR', '',
+        ]);
     }
 
     /**
