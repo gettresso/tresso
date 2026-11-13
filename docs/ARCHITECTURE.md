@@ -1357,7 +1357,8 @@ which of the two is decided once the read on opening is done; Flag and Unflag ar
 To-do are D, H, K and T (Make To-do is disabled once the conversation has a to-do). The items and the pane's keys share
 one check of the user's attention (ReadingPane's `attentive`): the conversation is loaded, nothing is being written in
 the compose window (open and not minimized), no modal dialog (a modal `<dialog>`, an alert dialog, a modal element with
-the dialog role) and not the folder menu is open, no conversations are selected in the list, and no hand-over is being
+the dialog role, none of them inside the compose window, whose own questions stay in the page while it is minimized;
+the page is read again whenever one comes or goes, also without a focus move) and not the folder menu is open, no conversations are selected in the list, and no hand-over is being
 written. So the whole Message menu is disabled while composing. It is also disabled while the window is closed (hidden)
 or minimized (the page is not visible), and a Message item chosen then only brings the window back (`delivery` in
 menu.rs): the conversation the window held is never acted on unseen. `menu_state` names Mark as Read or Unread and Flag or
@@ -1373,7 +1374,9 @@ still reach the menu, the web client reads the focus again when the action arriv
 text. A menu test keeps every other shortcut off the text keys. The web client sends `menu_state` once per change of
 what it says, never per key or per scroll: changes in one tick go together, a change that ends where it began (the focus
 moving between fields, a sync reloading the open conversation) sends nothing, and a state counts as sent once the shell
-took it (one refusal is retried once). The shell changes all items in one task on the main thread. Not in the menus,
+took it (a refusal is tried again at once, then once more after a few seconds, so the last state of a quiet moment is not
+lost). The shell changes all items in one task on the main thread, goes on past an item it cannot change, and refuses a
+state it could not follow in full, so the web client sends it again. Not in the menus,
 because the web client has no such action: Snooze, Mark All as Read, Next and Previous Message, and Sent, Archive and
 Trash as places. Reload acts signed out too, and only after the draft is
 saved and nothing is on its way, as before a restart for an update (one at a time: a second Reload while one waits is
