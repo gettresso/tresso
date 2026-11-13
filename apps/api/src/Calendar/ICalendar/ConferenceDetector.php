@@ -28,8 +28,11 @@ final class ConferenceDetector
         'webex' => '~(?<![^\s<>"\'(\[])https://[a-z0-9-]+\.webex\.com/(?:meet|join|[a-z0-9-]+/j\.php)[^\s<>"\')\]]*~i',
     ];
 
-    /** The hosts of each app: exactly these, or (with a leading dot) any name under them. */
-    private const array HOSTS = [
+    /**
+     * The hosts of each app: exactly these, or (with a leading dot) any name under them. Also what
+     * {@see \App\Notification\EventPlace} takes out of a place when written without a scheme, in any case.
+     */
+    public const array HOSTS = [
         'teams' => ['teams.microsoft.com', 'teams.live.com'],
         'meet' => ['meet.google.com'],
         'zoom' => ['zoom.us', '.zoom.us'],

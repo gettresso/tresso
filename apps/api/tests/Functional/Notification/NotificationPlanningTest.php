@@ -213,11 +213,15 @@ final class NotificationPlanningTest extends DatabaseTestCase
 
     public function testWhatALinkStoodInGoesWithItAndAPlaceKeepsItsOwnPunctuation(): void
     {
-        $this->store('comma@test', self::meeting('comma@test', '20261022T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:https://a.example/x\,Room 1']));
+        $this->store('comma@test', self::meeting('comma@test', '20261022T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:https://zoom.us/j/1?pwd=a\;tk=SECRET\, Room 1']));
         $this->store('see@test', self::meeting('see@test', '20261022T120000', ['LOCATION:Room 2 (see https://a.example/x)']));
         $this->store('label@test', self::meeting('label@test', '20261022T140000', ['LOCATION:Room 3 [link: https://a.example/x ]']));
         $this->store('colon@test', self::meeting('colon@test', '20261022T160000', ['LOCATION:Room 4: https://a.example/x']));
         $this->store('bang@test', self::meeting('bang@test', '20261023T100000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Room 5!']));
+        // A phone capitalises the first letter of a typed link.
+        $this->store('capital@test', self::meeting('capital@test', '20261023T120000', ['LOCATION:Room 9 Zoom.us/j/123?pwd=abc']));
+        $this->store('period@test', self::meeting('period@test', '20261023T140000', ['CONFERENCE;VALUE=URI:'.self::TEAMS, 'LOCATION:Microsoft Teams Meeting.']));
+        $this->store('middle@test', self::meeting('middle@test', '20261023T160000', ['LOCATION:Room (see https://a.example/x) and (see https://b.example/y) hall']));
 
         $this->planAt(self::NOW);
 
@@ -227,6 +231,9 @@ final class NotificationPlanningTest extends DatabaseTestCase
             'label@test: Thursday 22 October, 14:00 to 15:00, Room 3',
             'colon@test: Thursday 22 October, 16:00 to 17:00, Room 4',
             'bang@test: Friday 23 October, 10:00 to 11:00, on Microsoft Teams. Or in Room 5!',
+            'capital@test: Friday 23 October, 12:00 to 13:00, Room 9',
+            'period@test: Friday 23 October, 14:00 to 15:00, on Microsoft Teams.',
+            'middle@test: Friday 23 October, 16:00 to 17:00, Room and hall',
         ], $this->bodies());
         $this->assertNoLinks();
     }
