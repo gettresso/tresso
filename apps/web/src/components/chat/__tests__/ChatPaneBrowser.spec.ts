@@ -651,6 +651,17 @@ describe('ChatPane in the browser', () => {
       expect(server.callsOf('queueReply')).toEqual([])
     })
 
+    it('holds Attach after too many replies on the queueing of a file, and says the real wait', async () => {
+      const view = await open(SERVER_CHAT)
+      server.fail('queueReply', new ChatApiError(429, 'Too many WhatsApp replies at once.', null, 90_000))
+      await pick(view, plan())
+      await flushPromises()
+
+      await vi.waitFor(() => expect(view.get('.attach-line').text()).toBe('plan.pdf was not sent. Too many files sent at once. Wait 2 minutes, then attach it again.'))
+      expect(view.get('button[aria-label="Attach a file"]').attributes('disabled')).toBeDefined()
+      expect(view.get('#chat-attach-note').text()).toBe('Too many files sent at once. Wait 2 minutes, then attach it again.')
+    })
+
     it('holds Attach after too many files until the server\'s Retry-After passed', async () => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
       vi.setSystemTime(NOW)
@@ -816,6 +827,35 @@ describe('ChatPane in the browser', () => {
       expect((await store.chatPage(SERVER_CHAT, { limit: 1 }))!.outgoing.find((row) => row.id === id)?.status, 'The copy takes the server row over the cancelled one.').toBe('sent')
       mail.chatChanges++
       await vi.waitFor(() => expect(metaOf(view)[0]).toMatch(new RegExp(`^${TIME.source}, sent$`)))
+    })
+
+    it('takes a cancelled reply whose queueing got no answer as cancelled, and the same text again as a new reply', async () => {
+      let release!: () => void
+      server.held.set('queueReply', new Promise<void>((resolve) => (release = resolve)))
+      server.fail('queueReply', new TypeError('Failed to fetch'))
+      const view = await open(SERVER_CHAT, { relayOnline: false, relayOfflineSince: at(-30) })
+      const field = view.get<HTMLTextAreaElement>('textarea')
+      await field.setValue('On my way')
+      void view.get('form.composer').trigger('submit')
+      await flushPromises()
+      mail.chatChanges++
+      await vi.waitFor(() => expect(view.findAll('.mine .under button').map((button) => button.text())).toEqual(['Cancel']))
+      await view.get('.mine .under button').trigger('click')
+      await flushPromises()
+      server.held.delete('queueReply')
+      release()
+      await flushPromises()
+      expect(view.find('.composer [role="alert"]').exists(), 'Cancelled as asked, not "may already be queued".').toBe(false)
+
+      await field.setValue('On my way')
+      await view.get('form.composer').trigger('submit')
+      await flushPromises()
+
+      const ids = server.callsOf('queueReply').map((args) => (args[1] as { id: string }).id)
+      expect(ids).toHaveLength(2)
+      expect(ids[1], 'Never the cancelled id, which the server refuses for good.').not.toBe(ids[0])
+      expect(server.outgoing.has(ids[1]!)).toBe(true)
+      expect(view.find('.composer [role="alert"]').exists()).toBe(false)
     })
 
     it('takes a reply the user cancelled before its queueing answered as cancelled, not as an error', async () => {
