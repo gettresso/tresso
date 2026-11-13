@@ -27,8 +27,11 @@ export interface ChatStateChange {
  * the delta). The chat screens call these and never care which side they are on.
  */
 export interface ChatActions {
-  /** Queues a reply (checked and trimmed by core's replyText). */
-  send(chatId: string, text: string): Promise<SyncedChatOutgoing>
+  /**
+   * Queues a reply (checked and trimmed by core's replyText). `id`: the id of an earlier try whose outcome was not known
+   * (ChatActionError `unsure`), so the same reply is queued once whatever became of that try; a new UUIDv7 otherwise.
+   */
+  send(chatId: string, text: string, id?: string): Promise<SyncedChatOutgoing>
   /** Cancels a reply that waits or was not sent; one going out cannot be. */
   cancel(chatId: string, id: string): Promise<void>
   /** Try again: a reply that was not sent waits again. */
@@ -51,6 +54,10 @@ export type ChatActionErrorCode =
   | 'refused'
   | 'offline'
   | 'failed'
+  | 'unsure'
+  | 'maybe_queued'
+  | 'wait'
+  | 'other_number'
 
 const TEXTS: Record<ChatActionErrorCode, string> = {
   empty: 'The reply is empty.',
@@ -67,18 +74,41 @@ const TEXTS: Record<ChatActionErrorCode, string> = {
   refused: 'Your Tresso server did not take this change.',
   offline: 'Tresso could not reach your Tresso server. Try again.',
   failed: 'Your Tresso server could not take this change just now. Try again.',
+  unsure: 'Tresso could not tell whether your Tresso server took this reply; it may already be queued. Sending it again sends it once.',
+  maybe_queued: 'This reply may already be queued or cancelled. Check the chat before you write it again.',
+  wait: 'Your Tresso server asked Tresso to wait. Try again in a few minutes.',
+  other_number:
+    'This Mac is linked to another WhatsApp number than your Tresso server holds. Disconnect WhatsApp on the server first, or link this Mac to the same number.',
 }
 
-/** A chat action that did not happen (or was put back); its message is plain words, never a chat's text or name. */
+/**
+ * A chat action that did not happen (or was put back); its message is plain words, never a chat's text or name. An
+ * `unsure` reply carries the id it was sent with (`replyId`), to send it again under that id.
+ */
 export class ChatActionError extends Error {
-  constructor(readonly code: ChatActionErrorCode) {
+  constructor(
+    readonly code: ChatActionErrorCode,
+    readonly replyId: string | null = null,
+  ) {
     super(TEXTS[code])
     this.name = 'ChatActionError'
   }
 }
 
-/** What a failed server request means for the user. */
-export function chatActionError(error: unknown): ChatActionError {
+/**
+ * Whether a failed request may have been done by the server all the same: no answer (no network, a deadline, the session
+ * ended while it ran), a 408, or a 5xx (a proxy's 502 after the API stored it). Sending it again with the same id is safe.
+ */
+export function unsureOutcome(error: unknown): boolean {
+  const failure = chatApiFailure(error)
+  return failure === null ? !(error instanceof ChatActionError) : failure.status === 408 || failure.status >= 500
+}
+
+/**
+ * What a failed server request means for the user. `about`: a reply (a 429 is the reply limit) or any other change of
+ * WhatsApp on the server (a 429 asks to wait).
+ */
+export function chatActionError(error: unknown, about: 'reply' | 'change' = 'reply'): ChatActionError {
   if (error instanceof ChatActionError) {
     return error
   }
@@ -92,11 +122,21 @@ export function chatActionError(error: unknown): ChatActionError {
     case 404:
       return new ChatActionError('not_found')
     case 409:
-      return new ChatActionError(failure.code === 'already_going_out' ? 'already_going_out' : failure.code === 'not_failed' ? 'not_failed' : failure.code === 'cancelled' ? 'cancelled' : 'refused')
+      return new ChatActionError(
+        failure.code === 'already_going_out'
+          ? 'already_going_out'
+          : failure.code === 'not_failed'
+            ? 'not_failed'
+            : failure.code === 'cancelled'
+              ? 'cancelled'
+              : failure.code === 'other_number'
+                ? 'other_number'
+                : 'refused',
+      )
     case 422:
       return new ChatActionError('refused')
     case 429:
-      return new ChatActionError('too_many')
+      return new ChatActionError(about === 'reply' ? 'too_many' : 'wait')
     default:
       return new ChatActionError('failed')
   }
@@ -112,7 +152,7 @@ export function localChatActions(store: () => MailStore | null, now: () => numbe
     return current
   }
   return {
-    send: (chatId, text) => queueLocalReply(copy(), chatId, text, uuidV7(now()), now()),
+    send: (chatId, text, id) => queueLocalReply(copy(), chatId, text, id ?? uuidV7(now()), now()),
     async cancel(chatId, id) {
       await cancelLocalReply(copy(), chatId, id)
     },
@@ -127,6 +167,7 @@ export interface ServerChatActionsOptions {
   api: ChatApi
   /** The copy; null while none is open. */
   store: () => MailStore | null
+  /** Epoch ms now, for reply ids: the server's clock (auth.serverNow), since it takes ids at most 10 minutes old. */
   now?: () => number
   /** After every request, worked or not: a pull, so the copy gets the server's word (the mail store's syncNow). */
   pulled?: () => void
@@ -168,27 +209,45 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
     return (await store.chatPage(chatId, { limit: 1 }))?.outgoing.find((row) => row.id === id) ?? null
   }
 
-  /** `next` in place of `shown`, when the copy still holds `shown` (the delta did not move it meanwhile). */
-  async function replaceReply(store: MailStore, shown: SyncedChatOutgoing, next: SyncedChatOutgoing): Promise<void> {
-    const current = await outgoingRow(store, shown.chatId, shown.id)
-    if (current !== null && JSON.stringify(current) === JSON.stringify(shown)) {
-      await store.putChatOutgoing([next])
-    }
+  /**
+   * Each read and write back of a row runs alone, so two answers arriving together never write over each other (one
+   * putting a field back while the other writes the whole row as it read it before).
+   */
+  let writes: Promise<unknown> = Promise.resolve()
+  function serial<T>(work: () => Promise<T>): Promise<T> {
+    const result = writes.then(work, work)
+    writes = result.catch(() => undefined)
+    return result
   }
 
-  async function replaceChat(store: MailStore, shown: SyncedChat, next: SyncedChat): Promise<void> {
-    const current = (await store.chatPage(shown.id, { limit: 1 }))?.chat ?? null
-    if (current !== null && JSON.stringify(current) === JSON.stringify(shown)) {
-      await store.putChats([next])
-    }
+  /** `next` in place of `shown`, when the copy still holds `shown` (the delta did not move it meanwhile). */
+  function replaceReply(store: MailStore, shown: SyncedChatOutgoing, next: SyncedChatOutgoing): Promise<void> {
+    return serial(async () => {
+      const current = await outgoingRow(store, shown.chatId, shown.id)
+      if (current !== null && JSON.stringify(current) === JSON.stringify(shown)) {
+        await store.putChatOutgoing([next])
+      }
+    })
+  }
+
+  function replaceChat(store: MailStore, shown: SyncedChat, next: SyncedChat): Promise<void> {
+    return serial(async () => {
+      const current = (await store.chatPage(shown.id, { limit: 1 }))?.chat ?? null
+      if (current !== null && JSON.stringify(current) === JSON.stringify(shown)) {
+        await store.putChats([next])
+      }
+    })
   }
 
   function pulled(): void {
     options.pulled?.()
   }
 
+  /** Per chat with changes under way: what the server last confirmed of it, to put a refused change back to. */
+  const confirmed = new Map<string, { row: SyncedChat; pending: number }>()
+
   return {
-    async send(chatId, text) {
+    async send(chatId, text, again) {
       const store = copy()
       const checked = replyText(text)
       if (!checked.ok) {
@@ -200,7 +259,7 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
       }
       const at = now()
       const shown: SyncedChatOutgoing = {
-        id: uuidV7(at),
+        id: again ?? uuidV7(at),
         chatId,
         chatAccountId: chat.chatAccountId,
         text: checked.text,
@@ -216,8 +275,18 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
         await replaceReply(store, shown, queued)
         return queued
       } catch (error) {
-        // Not queued: the reply goes from the chat (a cancelled row is never shown); the composer keeps the text.
+        // Not queued as far as this device knows: the reply goes from the chat (a cancelled row is never shown) and the
+        // composer keeps the text. When the server may have taken it all the same, the delta brings it back, and the
+        // error carries its id: sent again, it is the same reply, never a second one.
         await replaceReply(store, shown, { ...shown, status: 'cancelled' })
+        if (unsureOutcome(error)) {
+          throw new ChatActionError('unsure', shown.id)
+        }
+        const failure = chatApiFailure(error)
+        if (again !== undefined && failure?.status === 422 && failure.violationPaths.includes('id')) {
+          // Too old to be queued now, and maybe queued (or cancelled) before: never under a new id by itself.
+          throw new ChatActionError('maybe_queued')
+        }
         throw chatActionError(error)
       } finally {
         pulled()
@@ -293,15 +362,42 @@ export function serverChatActions(options: ServerChatActionsOptions): ChatAction
       if (Object.keys(request).length === 0) {
         return chat
       }
+      // What the server last confirmed of this chat: the copy's row before the first change still under way.
+      const base = confirmed.get(chatId) ?? { row: chat, pending: 0 }
+      base.pending++
+      confirmed.set(chatId, base)
       await store.putChats([shown])
       try {
         const answered = await api.updateChat(chatId, request)
+        base.row = answered
         await replaceChat(store, shown, answered)
         return answered
       } catch (error) {
-        await replaceChat(store, shown, chat)
-        throw chatActionError(error)
+        // Field by field, back to what the server last confirmed, and only where the copy still shows this change: a
+        // later change still under way, or the delta, keeps what it set.
+        await serial(async () => {
+          const current = (await store.chatPage(chatId, { limit: 1 }))?.chat ?? null
+          if (current === null) {
+            return
+          }
+          const back: SyncedChat = { ...current }
+          let changed = false
+          for (const field of Object.keys(request) as (keyof ChatStateChange)[]) {
+            if (current[field] === shown[field] && current[field] !== base.row[field]) {
+              ;(back as Record<keyof ChatStateChange, unknown>)[field] = base.row[field]
+              changed = true
+            }
+          }
+          if (changed) {
+            await store.putChats([back])
+          }
+        })
+        throw chatActionError(error, 'change')
       } finally {
+        base.pending--
+        if (base.pending === 0 && confirmed.get(chatId) === base) {
+          confirmed.delete(chatId)
+        }
         pulled()
       }
     },

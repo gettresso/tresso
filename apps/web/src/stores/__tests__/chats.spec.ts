@@ -29,7 +29,7 @@ vi.mock('@/platform/whatsapp', async (original) => ({
   },
 }))
 
-const { useChatsStore } = await import('../chats')
+const { useChatsStore, UNSURE_REPLIES } = await import('../chats')
 
 describe('the chats store', () => {
   let relay: ReturnType<typeof fakeRelay>
@@ -376,7 +376,8 @@ describe('the chats store', () => {
       // Another Mac relays: replies can be queued whatever this Mac's bridge does; no Attach.
       expect(chats.relaysHere).toBe(false)
       expect(chats.canReply).toBe(true)
-      expect(chats.canAttach).toBe(false)
+      expect(chats.canAttach).toBe(true)
+      expect(chats.attachNote).toBe('Files are sent in Only this Mac for now.')
 
       await server.relayMessages(ACCOUNT_ID, {
         deviceId: 'other-device',
@@ -414,6 +415,36 @@ describe('the chats store', () => {
       await expect(chats.send(SERVER_CHAT, 'On my way')).rejects.toThrow('The chat or reply is no longer on your Tresso server.')
       expect(chats.draftOf(SERVER_CHAT)).toBe('On my way')
       expect((await store.chatPage(SERVER_CHAT, { limit: 1 }))?.outgoing.map((reply) => reply.status)).toEqual(['cancelled'])
+    })
+
+    it('sends a reply whose outcome was not known once, also after a reload, and a deliberate second one as a second', async () => {
+      // The first try is stored, but its answer is lost (a proxy's 502).
+      const original = server.queueReply.bind(server)
+      let lose = true
+      server.queueReply = async (chatId, request) => {
+        const row = await original(chatId, request)
+        if (lose) {
+          lose = false
+          throw new ChatApiError(502, 'Bad gateway')
+        }
+        return row
+      }
+      let chats = await ready()
+      await expect(chats.send(SERVER_CHAT, 'On my way')).rejects.toThrow('it may already be queued')
+
+      // The page is reloaded: the same text goes again under the same id.
+      setActivePinia(createPinia())
+      chats = await ready()
+      await chats.send(SERVER_CHAT, ' On my way ')
+      const ids = server.callsOf('queueReply').map((args) => (args[1] as { id: string }).id)
+      expect(ids).toHaveLength(2)
+      expect(ids[1]).toBe(ids[0])
+      expect([...server.outgoing.values()]).toHaveLength(1)
+      expect(await store.chatMeta(UNSURE_REPLIES)).toBeNull()
+
+      // Confirmed: the same text written again is a new reply.
+      await chats.send(SERVER_CHAT, 'On my way')
+      expect([...server.outgoing.values()]).toHaveLength(2)
     })
 
     it('marks a chat read, noted and archived on the server, and lists chats left out on any device', async () => {

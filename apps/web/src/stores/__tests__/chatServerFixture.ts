@@ -127,9 +127,18 @@ export class FakeChatServer implements ChatApi {
             includeGroups: request.includeGroups,
             notify: request.notify,
           }
-        : { ...this.account, relayDeviceId: request.deviceId, relayDeviceName: request.deviceName }
+        : this.otherNumber(request.address)
+          ? (() => {
+              throw new ChatApiError(409, 'Another number.', 'other_number')
+            })()
+          : { ...this.account, relayDeviceId: request.deviceId, relayDeviceName: request.deviceName, address: request.address ?? this.account.address }
     this.importsHistory = true
     return this.account
+  }
+
+  /** As the API: another number may not take over an account that holds chats. */
+  private otherNumber(address: string | null): boolean {
+    return address !== null && this.account?.address != null && address !== this.account.address && this.chats.size > 0
   }
 
   async updateAccount(id: string, request: Parameters<ChatApi['updateAccount']>[1]): Promise<SyncedChatAccount> {

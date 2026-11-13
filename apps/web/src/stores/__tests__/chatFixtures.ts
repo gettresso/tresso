@@ -49,6 +49,7 @@ export function fakeRelay() {
     /** "All my devices": the server's account in the copy, and whether this Mac relays it. */
     serverAccount: null as SyncedChatAccount | null,
     relaysHere: false,
+    modeSwitch: null as unknown,
     pollNow: async () => undefined,
     leaveOut: async (_jid: string) => true,
     takeBackIn: async (_jid: string) => true,

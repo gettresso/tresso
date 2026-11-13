@@ -734,6 +734,7 @@ onBeforeUnmount(() => {
         :note="composerNote"
         :send-note="sendNote"
         :can-attach="chats.canAttach"
+        :attach-note="chats.attachNote"
         :attaching="chats.attaching.state === 'sending'"
         :attach-line="attachLine"
         :announcement="announcement"
