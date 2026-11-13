@@ -1635,15 +1635,35 @@ written in tiptap, as on the web, running in a web view: `apps/mobile/editor/edi
 (`editorProtocol.ts`); its page has a Content-Security-Policy that allows no connection, and links may only be web
 and mail addresses. Leaving the screen keeps the draft; Cancel asks whether to keep or delete one with content.
 
+WhatsApp on the phone (`apps/mobile/src/chat`, the chat screen `apps/mobile/src/app/chats/[id].tsx`): the phone shows
+only the chats the server holds, so only while the user's WhatsApp is set to "All my devices" and a Mac relays it
+(3.17); without a WhatsApp chat account in the copy (none, or "Only this Mac") it shows nothing of WhatsApp. The chats
+come with the delta into the same copy. Chats of the Unified Inbox (core's `inInbox`) are rows among the mail by the
+time of their last message (`mergeInbox`), with a WhatsApp badge and the unread dot. A chat is read in windows of 50
+messages (`MailStore.chatPage`): the newest first, older ones as the list reaches its top, and the window again from
+its first message when the copy changes. Bubbles follow core's `timeline` (a reply the bridge stored too shows once),
+with day rows, group senders in their colour, and files as their kind and size only: the phone downloads nothing and
+says to open the file on the Mac. A reply is queued with `POST /api/v1/chats/{id}/outgoing` under a UUIDv7 the phone
+made; it shows as waiting at once (held in memory, not in the copy, so a closed app leaves no reply the server never
+got), the server's answer is stored, and a refusal takes it back and puts the text back in the box. A request without
+an answer may have been queued: the same text sent again within 9 minutes goes under the same id, which the server
+answers with the reply it has. A long press cancels a waiting reply or deletes one that was not sent (after a
+question); a tap on one that was not sent tries it again; one the Mac could not confirm (`unconfirmed`) is sent again
+only by its own Try again. Nothing resends by itself. Opening a chat while the app is in front reads it in Tresso
+through its last message (in the copy first, then `PATCH /api/v1/chats/{id}`; the copy goes back when the server does
+not take it). A banner says when the relaying Mac is offline (`relayOnline`), WhatsApp is not linked or the bridge
+does not run, from the chat account's row. Drafts of replies stay in memory per chat while the app runs. Nothing of a
+chat is logged.
+
 Push on the phone (`apps/mobile/src/notifications`): at every launch the app creates the Android channels the API's
-pushes name (`reminders`, `mail` and their `_silent` twins). Once signed in, it asks the user for permission and
+pushes name (`reminders`, `mail`, `whatsapp` and their `_silent` twins). Once signed in, it asks the user for permission and
 registers its Expo push token as an `expo` device, again when the token changes; the token needs the EAS project id
 in the build (`extra.eas.projectId`, which `eas init` writes to `app.json`), and without it the app says that this
 phone cannot get notifications. A sign-out removes the device first, so the user's notifications stop coming; when the
 server cannot be told, the app signs out anyway and says so (the next sign-in on the phone takes the device over). A
 tapped notification opens the screen its path names when the phone has it (`tappedRoute`: a conversation
-`/thread/{id}`, the daily brief `/brief`, the todos `/todos`); other paths (a calendar event) open the app as it is. While the app is open, mail goes to the list without
-a banner or sound (the user is in their mail already), and reminders show as a banner unless they came silently. A
+`/thread/{id}`, a WhatsApp chat `/chats/{id}`, the daily brief `/brief`, the todos `/todos`); other paths (a calendar event) open the app as it is. While the app is open, mail and WhatsApp messages go to the list without
+a banner or sound (the user is in the app already), and reminders show as a banner unless they came silently. A
 conversation opened from a notification before the delta brought it shows as loading, pulls once, and says it is
 gone only after a pull that completed; when that pull fails (offline) it says it could not be loaded, with Try again
 (the web client does the same).
@@ -3335,6 +3355,15 @@ chat's JID and WhatsApp id, so it never needs either readable.
   with the change number update and with the key locks of `UserKeys`, and not with the KEY SHARE of an insert that
   refers to the user. Claims, imports, cancels and the sweep of one user therefore take turns (tested on two real
   connections); the sweep skips an owner whose row is busy.
+- **Push.** With the account's `notify` on (Notify me, off by default), a relay batch hands each chat's newest incoming
+  message it stored to `App\Chat\ChatNotifier`, never for a batch with `firstImport`, a message of the user's own or
+  one older than 15 minutes. After the commit and 10 seconds later (`NotifyChatMessage` on the `push` queue) it decides:
+  nothing when a newer incoming message of the chat was stored meanwhile (that one notifies, so a burst notifies once),
+  when the chat was read through it on another device, was left out, or Notify me went off. Then one push to the phone
+  only (kind `whatsapp`, Android channel `whatsapp`, silent in quiet hours and busy events, keyed `whatsapp:{message}`
+  so a repeat never notifies twice): title `WhatsApp`, body the chat's name opened from its seal (`New WhatsApp
+  message` for a chat without one), path `/chats/{id}`. The text, a sender and a number never leave in a push. A failed
+  delivery is not tried again by a sweep (a chat push is stale within minutes).
 - **Delta.** Every write is a change in `chatAccounts`, `chats`, `chatMessages` and `chatOutgoing`; removals (a
   cancelled reply, the messages and replies of a chat left out) are tombstones. A relay batch gets a change number per
   megabyte of text, and a chat message counts as one row of a delta page per 4 KB of its sealed text, so a page of long
