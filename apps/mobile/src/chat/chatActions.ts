@@ -221,8 +221,11 @@ export class ChatActions {
   private readonly landed = new Set<string>()
   /** The chat of each hidden reply. */
   private readonly hiddenIn = new Map<string, string>()
-  /** Replies the user cancelled while they were being queued, until the queueing answered (see send). */
-  private readonly cancelledQueueing = new Set<string>()
+  /**
+   * Replies the user cancelled while they were being queued, until the queueing answered (see send), with whether the
+   * server confirmed the cancel once its request is done (an answer, or 404).
+   */
+  private readonly cancelledQueueing = new Map<string, Promise<boolean>>()
   /** Cancels and retries whose request is under way. */
   private readonly cancelling = new Set<string>()
   private readonly retryingNow = new Set<string>()
@@ -356,17 +359,19 @@ export class ChatActions {
     try {
       queued = await this.deps.api.queueReply(chat.id, { id, text: checked.text })
     } catch (error) {
-      const cancelledHere = this.cancelledQueueing.delete(id)
+      const cancelling = this.cancelledQueueing.get(id)
+      this.cancelledQueueing.delete(id)
       const left = (this.pending.get(chat.id) ?? []).filter((reply) => reply.id !== id)
       if (left.length === 0) {
         this.pending.delete(chat.id)
       } else {
         this.pending.set(chat.id, left)
       }
-      if (cancelledHere && (refusedAsCancelled(error) || outcomeUnknown(error))) {
-        // The user's Cancel overtook the queueing and the server kept it, or the queueing got no answer after the user
-        // cancelled it (the server keeps that cancel also for a reply it had not seen): cancelled, as they asked, and the
-        // same text sent again is a new reply under a new id.
+      // The user's Cancel overtook the queueing and the server kept it (it refused the queueing as cancelled), or the
+      // queueing got no answer and the server confirmed the cancel (it keeps one also for a reply it had not seen):
+      // cancelled, as they asked, and the same text sent again is a new reply under a new id. A cancel that was not
+      // confirmed leaves the reply unsure: the text goes back, and the screen says it may have been sent.
+      if (cancelling !== undefined && (refusedAsCancelled(error) || (outcomeUnknown(error) && (await cancelling)))) {
         this.forgetUnsure(chat.id)
         this.emit()
         throw new ReplyCancelled(id)
@@ -757,15 +762,20 @@ export class ChatActions {
     this.hidden.add(reply.id)
     this.hiddenIn.set(reply.id, reply.chatId)
     const queueing = (this.pending.get(reply.chatId) ?? []).some((row) => row.id === reply.id && !this.landed.has(row.id))
+    // While its queueing runs, send() waits for whether the server confirmed this cancel (an answer, or 404).
+    let confirm: (confirmed: boolean) => void = () => undefined
     if (queueing) {
-      this.cancelledQueueing.add(reply.id)
+      this.cancelledQueueing.set(reply.id, new Promise<boolean>((resolve) => (confirm = resolve)))
     }
     this.emit()
     try {
       try {
         await this.deps.api.cancelReply(reply.id)
+        confirm(true)
       } catch (error) {
-        if (chatApiFailure(error)?.status !== 404) {
+        const gone = chatApiFailure(error)?.status === 404
+        confirm(gone)
+        if (!gone) {
           throw error
         }
       }
@@ -783,7 +793,6 @@ export class ChatActions {
     } catch (error) {
       this.hidden.delete(reply.id)
       this.hiddenIn.delete(reply.id)
-      this.cancelledQueueing.delete(reply.id)
       throw error
     } finally {
       this.cancelling.delete(reply.id)

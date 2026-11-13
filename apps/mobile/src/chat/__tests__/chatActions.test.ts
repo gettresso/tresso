@@ -219,6 +219,57 @@ describe('ChatActions', () => {
       expect(again.id).not.toBe(queueReply.mock.calls[0]![1].id)
     })
 
+    describe('a text reply cancelled while its queueing runs, when the queueing gets no answer', () => {
+      /** Sends `On my way` with the queueing and the cancel each waiting for the test; the user cancels meanwhile. */
+      async function cancelWhileQueueing() {
+        const store = await copyWith({ chats: [chat('c1')] })
+        const queueing = deferred<SyncedChatOutgoing>()
+        const cancelling = deferred<void>()
+        const queueReply = vi.fn<PhoneChatApi['queueReply']>(() => queueing.promise)
+        const { actions } = setUp(store, { queueReply, cancelReply: vi.fn(() => cancelling.promise) })
+        const sending = actions.send(chat('c1'), 'On my way').catch((error: unknown) => error)
+        await vi.waitFor(() => expect(actions.shown('c1', [])).toHaveLength(1))
+        const cancel = actions.cancel(actions.shown('c1', [])[0]!).catch((error: unknown) => error)
+        const id = queueReply.mock.calls[0]![1].id
+        return { store, queueing, cancelling, sending, cancel, id }
+      }
+      const unsureId = async (store: SqliteMailStore) => (JSON.parse((await store.chatMeta(UNSURE_PREFIX + 'c1')) ?? '{}') as { id?: string }).id
+
+      it('keeps it unsure when both fail, the queueing first: the text goes back and it may have been sent', async () => {
+        const { store, queueing, cancelling, sending, cancel, id } = await cancelWhileQueueing()
+        queueing.reject(new TypeError('Network request failed'))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        cancelling.reject(new TypeError('Network request failed'))
+
+        const sent = await sending
+        expect(sent, 'Not taken as cancelled before the cancel was confirmed.').not.toBeInstanceOf(ReplyCancelled)
+        expect(outcomeUnknown(sent)).toBe(true)
+        expect(await cancel).toBeInstanceOf(TypeError)
+        expect(await unsureId(store), 'The same text again is the same reply, sent once.').toBe(id)
+      })
+
+      it('keeps it unsure when both fail, the cancel first', async () => {
+        const { store, queueing, cancelling, sending, cancel, id } = await cancelWhileQueueing()
+        cancelling.reject(new TypeError('Network request failed'))
+        expect(await cancel).toBeInstanceOf(TypeError)
+        queueing.reject(new TypeError('Network request failed'))
+
+        expect(await sending).not.toBeInstanceOf(ReplyCancelled)
+        expect(await unsureId(store)).toBe(id)
+      })
+
+      it('takes it as cancelled once the server confirms the cancel after the queueing failed', async () => {
+        const { store, queueing, cancelling, sending, cancel } = await cancelWhileQueueing()
+        queueing.reject(new TypeError('Network request failed'))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        cancelling.resolve()
+
+        expect(await sending).toBeInstanceOf(ReplyCancelled)
+        expect(await cancel).toBeUndefined()
+        expect(await store.chatMeta(UNSURE_PREFIX + 'c1')).toBeNull()
+      })
+    })
+
     it('forgets the unsure send of a reply the user cancels, so the same text is a new reply', async () => {
       const store = await copyWith({ chats: [chat('c1')] })
       const { actions, api } = setUp(store, { queueReply: vi.fn(async (): Promise<SyncedChatOutgoing> => Promise.reject(new TypeError('Network request failed'))) })
