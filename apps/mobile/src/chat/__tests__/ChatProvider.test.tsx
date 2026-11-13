@@ -10,6 +10,8 @@ const env = vi.hoisted(() => ({
   requests: [] as { path: string; body: unknown }[],
 }))
 
+// The phone's uploader is native (expo-file-system); no file goes anywhere in these tests.
+vi.mock('@/chat/fileUpload', () => ({ uploadByUri: () => async () => new Response(null, { status: 204 }) }))
 vi.mock('@/auth/AuthProvider', () => {
   const session = {
     serverNow: () => env.serverNow,

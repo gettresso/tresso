@@ -4,9 +4,10 @@ import * as DocumentPicker from 'expo-document-picker'
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { CHAT_MAX_FILE_BYTES, replyText, TODO_TITLE_MAX_LENGTH, type ChatPage, type SyncedChatMessage, type SyncedChatOutgoing } from '@tresso/core'
-import { outcomeUnknown } from '@/chat/chatActions'
+import { FileNotSent, outcomeUnknown, type FileUpload } from '@/chat/chatActions'
+import { fileSizeOf, removeCachedCopy } from '@/chat/fileUpload'
 import { useChats } from '@/chat/ChatProvider'
-import { CHAT_MISSING, cancelFailureText, chatInitials, chatName, COUNTER_FROM, counterText, relayBanner, replyProblemText, retryFailureText, sendFailureText, UNSCANNED_WARNING } from '@/chat/texts'
+import { CHAT_MISSING, cancelFailureText, chatInitials, chatName, COUNTER_FROM, counterText, relayBanner, replyProblemText, retryFailureText, sendFailureText, FILE_NOT_OPENED, fileFailureText, mediaTitle, mediaView, UNSCANNED_WARNING } from '@/chat/texts'
 import { timelineRows, windowReplies, type BubbleRow, type TimelineRow } from '@/chat/timelineRows'
 import { useChatWindow } from '@/chat/useChatWindow'
 import { ChatBubble } from '@/components/ChatBubble'
@@ -93,9 +94,21 @@ export default function ChatScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [actions, id, win.messages, win.outgoing, win.hasOlder, revision],
   )
+  // Files on their way from this phone, by reply id (`revision` changes with their progress).
+  const uploads = useMemo(() => {
+    const found = new Map<string, FileUpload>()
+    for (const reply of replies) {
+      const upload = actions.uploadOf(reply.id)
+      if (upload !== null) {
+        found.set(reply.id, upload)
+      }
+    }
+    return found
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actions, replies, revision])
   const rows = useMemo(
-    () => (chat === null ? [] : timelineRows(win.messages, replies, { group: chat.kind === 'group', name, relayOnline })),
-    [chat, win.messages, replies, name, relayOnline],
+    () => (chat === null ? [] : timelineRows(win.messages, replies, { group: chat.kind === 'group', name, relayOnline, uploads })),
+    [chat, win.messages, replies, name, relayOnline, uploads],
   )
   // Newest first: the list is inverted, so it opens at the newest message and grows upwards with older ones.
   const newestFirst = useMemo(() => [...rows].reverse(), [rows])
@@ -112,10 +125,19 @@ export default function ChatScreen() {
     const next = new Map<string, string>()
     let said: string | null = null
     for (const row of rows) {
-      if (row.kind === 'bubble' && row.reply !== null) {
+      if (row.kind === 'bubble' && row.reply !== null && row.state !== 'uploading') {
         next.set(row.key, row.state)
         if (states.current !== null && states.current.get(row.key) !== row.state) {
           said = stateAnnouncement(row)
+        }
+      }
+      // A file's state too (asked for, checked, ready, not brought), once it changes.
+      if (row.kind === 'bubble' && row.media !== null) {
+        const line = mediaView(row.media, relayOnline).line
+        const key = `file-${row.key}`
+        next.set(key, line)
+        if (states.current !== null && states.current.has(key) && states.current.get(key) !== line) {
+          said = `${mediaTitle(row.media)}: ${line}`
         }
       }
     }
@@ -123,7 +145,7 @@ export default function ChatScreen() {
     if (said !== null) {
       AccessibilityInfo.announceForAccessibility(said)
     }
-  }, [rows, win.loaded])
+  }, [rows, win.loaded, relayOnline])
 
   // Read in Tresso while the chat is on screen and the app in front: on opening, on coming back, on new messages.
   const [active, setActive] = useState(AppState.currentState === 'active')
@@ -225,24 +247,47 @@ export default function ChatScreen() {
     if (asset === null) {
       return
     }
-    if ((asset.size ?? 0) > CHAT_MAX_FILE_BYTES) {
-      setSendError(`${asset.name} is larger than 100 MB, the most Tresso sends.`)
-      return
-    }
     setAttachingFile(true)
     setSendError(null)
     try {
-      await actions.sendFile(forChat, { uri: asset.uri, name: asset.name, size: asset.size ?? 0 })
+      // The picker does not always say the size: it is read from the file then, and a file whose size is not known is
+      // not sent (it could be larger than what Tresso sends).
+      const size = typeof asset.size === 'number' && asset.size > 0 ? asset.size : await fileSizeOf(asset.uri)
+      if (size === null) {
+        setSendError(`${asset.name} was not sent. Tresso could not tell how large it is.`)
+        return
+      }
+      if (size > CHAT_MAX_FILE_BYTES) {
+        setSendError(`${asset.name} is larger than 100 MB, the most Tresso sends.`)
+        return
+      }
+      await actions.sendFile(forChat, { uri: asset.uri, name: asset.name, size, lastModified: asset.lastModified ?? null })
     } catch (error) {
       if (mounted.current && onScreen.current === forChat.id) {
-        setSendError(`${asset.name}: ${sendFailureText(error, outcomeUnknown(error))}`)
+        setSendError(error instanceof FileNotSent ? fileFailureText(asset.name, error.phase, error.reason, error.unsure, error.cancelled) : `${asset.name} was not sent.`)
       }
     } finally {
+      // The picker's copy in the cache goes, whatever came of it: a new pick makes a new one.
+      await removeCachedCopy(asset.uri)
       if (mounted.current) {
         setAttachingFile(false)
       }
     }
   }
+
+  // Leaving the chat, or the app going to the background, stops a file on its way: nothing more is queued.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'background') {
+        actions.abandonUploads()
+      }
+    })
+    return () => {
+      subscription.remove()
+      actions.abandonUploads(id)
+    }
+  }, [actions, id])
+  const onCancelUpload = useCallback((reply: SyncedChatOutgoing) => void actions.cancel(reply), [actions])
 
   /** What the last action on a file said, by message (a refusal, a link that could not open). */
   const [mediaNote, setMediaNote] = useState<{ messageId: string; text: string } | null>(null)
@@ -254,7 +299,14 @@ export default function ChatScreen() {
           setMediaNote({ messageId: message.id, text: 'This file cannot be opened yet.' })
           return
         }
-        await Linking.openURL(link)
+        try {
+          await Linking.openURL(link)
+        } catch (error) {
+          console.error('Handing a WhatsApp file to an app failed', error instanceof Error ? error.name : typeof error)
+          if (mounted.current) {
+            setMediaNote({ messageId: message.id, text: FILE_NOT_OPENED })
+          }
+        }
       }
       const fail = (error: unknown) => {
         console.error('A WhatsApp file action failed', error instanceof Error ? error.name : typeof error)
@@ -359,10 +411,11 @@ export default function ChatScreen() {
           relayOnline={relayOnline}
           mediaNote={item.media !== null && mediaNote?.messageId === item.media.id ? mediaNote.text : null}
           onMedia={onMedia}
+          onCancelUpload={onCancelUpload}
         />
       )
     },
-    [styles, busyReply, onRetry, relayOnline, mediaNote, onMedia],
+    [styles, busyReply, onRetry, relayOnline, mediaNote, onMedia, onCancelUpload],
   )
 
   const menuWaiting = menuFor?.status === 'waiting'

@@ -3,6 +3,7 @@ import {
   chatOutgoingFromDelta,
   type ChatApi,
   type ChatMediaResponse,
+  type ChatUploadOptions,
   type ChatUploadResponse,
   type QueueReplyRequest,
   type SyncedChat,
@@ -17,7 +18,13 @@ import type { Api } from '@/mail/todoApi'
  * uploading a file for a reply. The account comes with the delta; the phone never relays, connects or changes it: that
  * stays with the desktop app.
  */
-export type PhoneChatApi = Pick<ChatApi, 'queueReply' | 'cancelReply' | 'retryReply' | 'updateChat' | 'requestMedia' | 'media' | 'unscannedMediaLink' | 'uploadFile'>
+export type PhoneChatApi = Pick<ChatApi, 'queueReply' | 'cancelReply' | 'retryReply' | 'updateChat' | 'requestMedia' | 'media' | 'unscannedMediaLink'> & {
+  /** PUT /api/v1/chats/{chatId}/uploads/{uploadId}: the file at `uri` on the phone, streamed from there. */
+  uploadFile(chatId: string, uploadId: string, file: { uri: string }, options?: ChatUploadOptions): Promise<ChatUploadResponse>
+}
+
+/** Sends a request whose body the platform's uploader reads from a file (AuthSession.upload with fileUpload's uploadByUri). */
+export type FileUploader = <T>(path: string, uri: string, options?: ChatUploadOptions) => Promise<T>
 
 /**
  * The chat endpoints over the signed-in session (`AuthSession.api`), whose ApiError carries the status, the problem's
@@ -25,7 +32,7 @@ export type PhoneChatApi = Pick<ChatApi, 'queueReply' | 'cancelReply' | 'retryRe
  * readers of core, so a row the phone stores at once is the same as the one the delta brings later; an answer that
  * cannot be read rejects (it is not what the server sends).
  */
-export function phoneChatApi(api: Api): PhoneChatApi {
+export function phoneChatApi(api: Api, upload: FileUploader): PhoneChatApi {
   const json = (method: string, body: unknown, contentType = 'application/json'): RequestInit => ({ method, headers: { 'Content-Type': contentType }, body: JSON.stringify(body) })
 
   return {
@@ -39,9 +46,9 @@ export function phoneChatApi(api: Api): PhoneChatApi {
     requestMedia: async (messageId: string) => media(await api<unknown>(`/api/v1/chat-messages/${encodeURIComponent(messageId)}/media/request`, json('POST', {}))),
     media: async (messageId: string) => media(await api<unknown>(`/api/v1/chat-messages/${encodeURIComponent(messageId)}/media`)),
     unscannedMediaLink: async (messageId: string) => media(await api<unknown>(`/api/v1/chat-messages/${encodeURIComponent(messageId)}/media/unscanned-link`, json('POST', { confirmed: true }))),
-    // The file as the raw body: React Native sends a Blob from the device without holding it in JavaScript.
-    uploadFile: (chatId: string, uploadId: string, body: Blob) =>
-      api<ChatUploadResponse>(`/api/v1/chats/${encodeURIComponent(chatId)}/uploads/${encodeURIComponent(uploadId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body }),
+    // The file as the raw body, read from the phone as it goes: never whole in memory.
+    uploadFile: (chatId: string, uploadId: string, file: { uri: string }, options?: ChatUploadOptions) =>
+      upload<ChatUploadResponse>(`/api/v1/chats/${encodeURIComponent(chatId)}/uploads/${encodeURIComponent(uploadId)}`, file.uri, options),
   }
 }
 

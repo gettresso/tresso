@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { SqliteMailStore, SyncedChat, SyncedChatOutgoing, UpdateChatRequest } from '@tresso/core'
 import { ApiError } from '@/auth/session'
-import { ChatActions, outcomeUnknown, REUSE_ID_MS, UNSURE_PREFIX } from '@/chat/chatActions'
+import { ChatActions, outcomeUnknown, REUSE_ID_MS, UNSURE_FILE_PREFIX, UNSURE_PREFIX } from '@/chat/chatActions'
 import type { PhoneChatApi } from '@/chat/chatApi'
 import { chat, copyWith, deferred, reply } from './fixtures'
 
@@ -21,7 +21,7 @@ function setUp(store: SqliteMailStore, api: Partial<PhoneChatApi> = {}, start = 
     requestMedia: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'requested' as const, error: null, access: null, url: null })),
     media: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'stored' as const, error: null, access: 'allowed' as const, url: `https://api.test/content/chat-media/${messageId}` })),
     unscannedMediaLink: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'stored' as const, error: null, access: 'confirm' as const, url: `https://api.test/content/chat-media/${messageId}?unscanned=1` })),
-    uploadFile: vi.fn(async (chatId: string, uploadId: string, body: Blob) => ({ id: uploadId, chatId, size: body.size })),
+    uploadFile: vi.fn(async (chatId: string, uploadId: string) => ({ id: uploadId, chatId, size: 31 })),
     ...api,
   }
   const actions = new ChatActions({
@@ -31,7 +31,6 @@ function setUp(store: SqliteMailStore, api: Partial<PhoneChatApi> = {}, start = 
     newId: () => `0193a1c2-0000-7000-8000-${String(++ids).padStart(12, '0')}`,
     changed,
     onError: (what) => errors.push(what),
-    readFile: async (uri) => new Blob([`content of ${uri}`]),
   })
   return { actions, api: full, changed, errors, later: (ms: number) => (now += ms) }
 }
@@ -380,50 +379,144 @@ describe('ChatActions', () => {
   })
 
   describe('files', () => {
-    const PLAN = { uri: 'file:///cache/plan.pdf', name: 'plan.pdf', size: 31 }
+    const PLAN = { uri: 'file:///cache/plan.pdf', name: 'plan.pdf', size: 31, lastModified: 1 }
+    type Upload = PhoneChatApi['uploadFile']
 
-    it('uploads the file, then queues a reply that carries it, shown at once as waiting', async () => {
+    /** An upload that waits until released, and stops when its signal is aborted, as the phone's uploader does. */
+    function heldUpload(): { upload: Upload; release: () => void } {
+      let release!: () => void
+      const held = new Promise<void>((resolve) => (release = resolve))
+      const upload: Upload = vi.fn(async (chatId, uploadId, _file, options) => {
+        await Promise.race([
+          held,
+          new Promise<never>((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new DOMException('Cancelled.', 'AbortError')), { once: true })),
+        ])
+        return { id: uploadId, chatId, size: 31 }
+      })
+      return { upload, release }
+    }
+
+    it('uploads the file from its place on the phone, shows it as uploading, then queues a reply that carries it', async () => {
       const store = await copyWith({ chats: [chat('c1')] })
-      const { actions, api } = setUp(store)
+      const { upload, release } = heldUpload()
+      const { actions, api } = setUp(store, { uploadFile: upload })
 
-      const queued = await actions.sendFile(chat('c1'), PLAN)
+      const sending = actions.sendFile(chat('c1'), PLAN)
+      await vi.waitFor(() => expect(actions.shown('c1', [])).toHaveLength(1))
+      const shown = actions.shown('c1', [])[0]!
+      expect(actions.uploadOf(shown.id)).toEqual({ phase: 'uploading', progress: 0 })
+      expect(api.queueReply).not.toHaveBeenCalled()
+      release()
+      const queued = await sending
 
-      const [[chatId, uploadId, body]] = vi.mocked(api.uploadFile).mock.calls
-      expect(chatId).toBe('c1')
-      expect(await (body as Blob).text()).toBe('content of file:///cache/plan.pdf')
+      const [[chatId, uploadId, file]] = vi.mocked(upload).mock.calls
+      expect([chatId, file]).toEqual(['c1', { uri: 'file:///cache/plan.pdf' }])
       expect(api.queueReply).toHaveBeenCalledWith('c1', { id: queued.id, text: '', file: { uploadId, name: 'plan.pdf' } })
+      expect(actions.uploadOf(queued.id)).toBeNull()
       expect((await outgoingOf(store, 'c1')).map((row) => row.id)).toEqual([queued.id])
     })
 
-    it('sends the same file again under the same ids when the outcome was not known, and new ones after a refusal', async () => {
+    it('stops an upload on Cancel and queues nothing', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const { upload } = heldUpload()
+      const { actions, api } = setUp(store, { uploadFile: upload })
+
+      const sending = actions.sendFile(chat('c1'), PLAN)
+      await vi.waitFor(() => expect(actions.shown('c1', [])).toHaveLength(1))
+      await actions.cancel(actions.shown('c1', [])[0]!)
+
+      await expect(sending).rejects.toMatchObject({ name: 'FileNotSent', cancelled: true, phase: 'upload' })
+      expect(api.queueReply).not.toHaveBeenCalled()
+      expect(api.cancelReply, 'Nothing reached the server to cancel.').not.toHaveBeenCalled()
+      expect(actions.shown('c1', [])).toEqual([])
+    })
+
+    it('cancels on the server a reply that was being queued when Cancel came, after the queueing answered', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const answer = deferred<SyncedChatOutgoing>()
+      const { actions, api } = setUp(store, { queueReply: vi.fn(() => answer.promise) })
+
+      const sending = actions.sendFile(chat('c1'), PLAN)
+      await vi.waitFor(() => expect(api.queueReply).toHaveBeenCalled())
+      const shown = actions.shown('c1', [])[0]!
+      await actions.cancel(shown)
+      expect(api.cancelReply).not.toHaveBeenCalled()
+      answer.resolve(reply(shown.id, 'c1', { text: '' }))
+
+      await expect(sending).rejects.toMatchObject({ cancelled: true })
+      expect(api.cancelReply).toHaveBeenCalledWith(shown.id)
+      expect(actions.shown('c1', [])).toEqual([])
+    })
+
+    it('stops every file on its way at sign-out', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const { upload } = heldUpload()
+      const { actions, api } = setUp(store, { uploadFile: upload })
+
+      const sending = actions.sendFile(chat('c1'), PLAN)
+      await vi.waitFor(() => expect(actions.shown('c1', [])).toHaveLength(1))
+      actions.clear()
+
+      await expect(sending).rejects.toMatchObject({ cancelled: true })
+      expect(api.queueReply).not.toHaveBeenCalled()
+    })
+
+    it('sends the same file again under the same ids when the queueing got no answer, also after the app was closed', async () => {
       const store = await copyWith({ chats: [chat('c1')] })
       const queueReply = vi.fn<PhoneChatApi['queueReply']>(async () => Promise.reject(new ApiError(502, 'Bad Gateway')))
-      const { actions, api } = setUp(store, { queueReply })
+      const first = setUp(store, { queueReply })
 
-      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toThrow()
-      expect(actions.shown('c1', [])).toEqual([])
-      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toThrow()
-      const uploads = vi.mocked(api.uploadFile).mock.calls.map((call) => call[1])
+      await expect(first.actions.sendFile(chat('c1'), PLAN)).rejects.toMatchObject({ phase: 'queue', unsure: true })
+      expect(first.actions.shown('c1', [])).toEqual([])
+      const kept = await store.chatMeta(UNSURE_FILE_PREFIX + 'c1')
+      expect(kept).not.toBeNull()
+      expect(kept, 'Never the file name.').not.toContain('plan.pdf')
+
+      const again = setUp(store, { queueReply })
+      await expect(again.actions.sendFile(chat('c1'), PLAN)).rejects.toThrow()
+      const uploads = [...vi.mocked(first.api.uploadFile).mock.calls, ...vi.mocked(again.api.uploadFile).mock.calls].map((call) => call[1])
       const replies = queueReply.mock.calls.map((call) => call[1].id)
       expect(uploads[1]).toBe(uploads[0])
       expect(replies[1]).toBe(replies[0])
 
+      // Another file (or the same one changed) is another reply.
+      await expect(again.actions.sendFile(chat('c1'), { ...PLAN, lastModified: 2 })).rejects.toThrow()
+      expect(queueReply.mock.calls[2]![1].id).not.toBe(replies[0])
+    })
+
+    it('makes new ids once the copy has the reply, or after a refusal', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const queueReply = vi.fn<PhoneChatApi['queueReply']>(async () => Promise.reject(new ApiError(502, 'Bad Gateway')))
+      const { actions } = setUp(store, { queueReply })
+      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toThrow()
+      const firstId = queueReply.mock.calls[0]![1].id
+      await store.putChatOutgoing([reply(firstId, 'c1', { text: '' })])
+
       queueReply.mockImplementation(async () => Promise.reject(new ApiError(422, 'Upload it again.', { 'file.uploadId': 'Upload it again.' })))
+      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toMatchObject({ phase: 'queue', unsure: false })
+      const secondId = queueReply.mock.calls[1]![1].id
+      expect(secondId, 'The copy has the first: this is a new reply.').not.toBe(firstId)
       await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toThrow()
-      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toThrow()
-      const after = queueReply.mock.calls.map((call) => call[1].id)
-      expect(after[3]).not.toBe(after[2])
+      expect(queueReply.mock.calls[2]![1].id, 'A refusal is final.').not.toBe(secondId)
+    })
+
+    it('says an upload that failed queued nothing', async () => {
+      const store = await copyWith({ chats: [chat('c1')] })
+      const { actions, api } = setUp(store, { uploadFile: vi.fn(async () => Promise.reject(new ApiError(413, 'Files waiting for your Mac take up more than 1024 MB.', {}, null, 'too_much_waiting'))) })
+
+      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toMatchObject({ phase: 'upload', unsure: false, cancelled: false })
+      expect(api.queueReply).not.toHaveBeenCalled()
     })
 
     it('refuses a file larger than 100 MB before anything is uploaded', async () => {
       const store = await copyWith({ chats: [chat('c1')] })
       const { actions, api } = setUp(store)
 
-      await expect(actions.sendFile(chat('c1'), { ...PLAN, size: 100 * 1024 * 1024 + 1 })).rejects.toThrow('larger than 100 MB')
+      await expect(actions.sendFile(chat('c1'), { ...PLAN, size: 100 * 1024 * 1024 + 1 })).rejects.toMatchObject({ phase: 'upload' })
       expect(api.uploadFile).not.toHaveBeenCalled()
     })
 
-    it('asks the Mac for a file, and gives a checked one\'s link or an unchecked one\'s only when accepted', async () => {
+    it("asks the Mac for a file, and gives a checked one's link or an unchecked one's only when accepted", async () => {
       const store = await copyWith({ chats: [chat('c1')] })
       const { actions, api } = setUp(store)
 

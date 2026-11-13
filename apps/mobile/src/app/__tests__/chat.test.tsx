@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { Alert, Linking } from 'react-native'
+import { AccessibilityInfo, Alert, Linking } from 'react-native'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SqliteMailStore, SyncedChat, SyncedChatAccount, SyncedChatOutgoing, UpdateChatRequest } from '@tresso/core'
 import { ApiError } from '@/auth/session'
@@ -46,6 +46,11 @@ vi.mock('expo-router', async () => {
 })
 const picker = vi.hoisted(() => ({ result: { canceled: true, assets: null } as unknown }))
 vi.mock('expo-document-picker', () => ({ getDocumentAsync: vi.fn(async () => picker.result) }))
+const files = vi.hoisted(() => ({ size: null as number | null, removed: [] as string[] }))
+vi.mock('@/chat/fileUpload', () => ({
+  fileSizeOf: async () => files.size,
+  removeCachedCopy: async (uri: string) => void files.removed.push(uri),
+}))
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }))
 vi.mock('@/components/Notices', () => ({ useNotices: () => ({ notify: env.notify }) }))
 vi.mock('@/components/Icon', () => ({ Icon: () => null }))
@@ -108,7 +113,7 @@ function fakeApi(overrides: Partial<PhoneChatApi> = {}): PhoneChatApi {
     requestMedia: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'requested' as const, error: null, access: null, url: null })),
     media: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'stored' as const, error: null, access: 'allowed' as const, url: `https://api.test/content/chat-media/${messageId}` })),
     unscannedMediaLink: vi.fn(async (messageId: string) => ({ messageId, kind: 'image' as const, name: null, size: null, state: 'stored' as const, error: null, access: 'confirm' as const, url: `https://api.test/content/chat-media/${messageId}?unscanned=1` })),
-    uploadFile: vi.fn(async (chatId: string, uploadId: string, body: Blob) => ({ id: uploadId, chatId, size: body.size })),
+    uploadFile: vi.fn(async (chatId: string, uploadId: string) => ({ id: uploadId, chatId, size: 31 })),
     ...overrides,
   }
 }
@@ -128,7 +133,6 @@ async function open(rows: { account?: SyncedChatAccount | null; chats?: SyncedCh
       now: () => Date.now(),
       newId: () => `0193a1c2-0000-7000-8000-${String(++ids).padStart(12, '0')}`,
       changed: () => env.bump(),
-      readFile: async (uri) => new Blob([`content of ${uri}`]),
     }),
   }
   render(<ChatScreen />)
@@ -348,7 +352,85 @@ describe('the chat screen', () => {
       await waitFor(() => expect(api.queueReply).toHaveBeenCalledTimes(1))
       const [[, uploadId]] = vi.mocked(api.uploadFile).mock.calls
       expect(vi.mocked(api.queueReply).mock.calls[0]![1]).toMatchObject({ text: '', file: { uploadId, name: 'plan.pdf' } })
+      await waitFor(() => expect(files.removed).toEqual(['file:///cache/plan.pdf']))
       picker.result = { canceled: true, assets: null }
+    })
+
+    it('reads the size when the picker gives none, and sends nothing whose size is not known', async () => {
+      files.removed = []
+      picker.result = { canceled: false, assets: [{ uri: 'file:///cache/notes.txt', name: 'notes.txt', size: undefined, mimeType: 'text/plain' }] }
+      files.size = null
+      const { api } = await open()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Attach a file' }))
+
+      expect(await screen.findByText('notes.txt was not sent. Tresso could not tell how large it is.')).toBeTruthy()
+      expect(api.uploadFile).not.toHaveBeenCalled()
+      await waitFor(() => expect(files.removed).toEqual(['file:///cache/notes.txt']), { timeout: 1000 })
+
+      files.size = 101 * 1024 * 1024
+      fireEvent.click(screen.getByRole('button', { name: 'Attach a file' }))
+      expect(await screen.findByText('notes.txt is larger than 100 MB, the most Tresso sends.')).toBeTruthy()
+      expect(api.uploadFile).not.toHaveBeenCalled()
+      files.size = null
+      picker.result = { canceled: true, assets: null }
+    })
+
+    it('shows a file on its way as uploading with Cancel, and Cancel queues nothing', async () => {
+      picker.result = { canceled: false, assets: [{ uri: 'file:///cache/plan.pdf', name: 'plan.pdf', size: 31, mimeType: 'application/pdf' }] }
+      const api = fakeApi({
+        uploadFile: vi.fn(
+          (_chatId: string, _uploadId: string, _file: { uri: string }, options?: { signal?: AbortSignal }) =>
+            new Promise<never>((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new DOMException('Cancelled.', 'AbortError')), { once: true })),
+        ),
+      })
+      await open({}, api)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Attach a file' }))
+      expect(await screen.findByText(/uploading, 0%$/)).toBeTruthy()
+      expect(screen.queryByText(/waiting for your Mac/)).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+      expect(await screen.findByText('plan.pdf was not sent.')).toBeTruthy()
+      expect(api.queueReply).not.toHaveBeenCalled()
+      expect(api.cancelReply).not.toHaveBeenCalled()
+      picker.result = { canceled: true, assets: null }
+    })
+
+    it('says an upload that failed was not sent, never that it may have been', async () => {
+      picker.result = { canceled: false, assets: [{ uri: 'file:///cache/plan.pdf', name: 'plan.pdf', size: 31, mimeType: 'application/pdf' }] }
+      const api = fakeApi({ uploadFile: vi.fn(async () => Promise.reject(new ApiError(429, 'Too many files uploaded at once. Wait a few minutes, then attach it again.', {}, 60_000))) })
+      await open({}, api)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Attach a file' }))
+
+      expect(await screen.findByText('plan.pdf was not sent. Too many files uploaded at once. Wait a few minutes, then attach it again.')).toBeTruthy()
+      expect(api.queueReply).not.toHaveBeenCalled()
+      picker.result = { canceled: true, assets: null }
+    })
+
+    it('gives screen readers the file action on the bubble, and says a new file state', async () => {
+      const announce = vi.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined)
+      const { store } = await open()
+      expect(await screen.findByText('Photo, on your Mac')).toBeTruthy()
+
+      await store.putChatMessages([message('m4', 'c1', minutes(15), { text: '', mediaKind: 'image', mediaName: 'image_1.jpg', mediaSize: 184_320, mediaState: 'requested', mediaError: null, mediaAccess: null })])
+      act(() => env.bump())
+
+      await waitFor(() => expect(announce).toHaveBeenCalledWith('Photo, 180 KB: Your Mac is bringing this file.'))
+      announce.mockRestore()
+    })
+
+    it('says when the phone could not hand a file to an app', async () => {
+      const opened = vi.spyOn(Linking, 'openURL').mockRejectedValue(new Error('No app'))
+      const store = await copyWith({ chats: [BRAM], messages: [message('m4', 'c1', minutes(15), { text: '', mediaKind: 'image', mediaName: null, mediaSize: 10, mediaState: 'stored', mediaError: null, mediaAccess: 'allowed' })] })
+      env.chats = { account: account(), store, drafts: new Map(), createTodo: vi.fn(), actions: new ChatActions({ store: () => store, api: fakeApi(), now: Date.now, newId: () => 'x', changed: () => env.bump() }) }
+      render(<ChatScreen />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Open, Photo, 10 B' }))
+
+      expect(await screen.findByText('This phone could not open the file.')).toBeTruthy()
+      opened.mockRestore()
     })
   })
 })
