@@ -3018,6 +3018,25 @@ desktop shell logs a failed open with the link's scheme only. `conference.remova
 off (false for a Teams meeting Microsoft made); core's `meetingRemovable` falls back to its own rule for rows stored
 before the server sent it.
 
+What the workers do with it (`apps/sync/internal/googlecal`, `graphcal`):
+
+- The request, the nonce and the removal word are read on the master only; the same properties on an occurrence are
+  ignored, and a guest's copy is only ever answered (response and reminders), never given or relieved of a meeting.
+- Google: the `createRequest.requestId` is derived from the UID and the nonce (from the UID alone without a nonce). A
+  request on an event that already has a meeting sends nothing. A write Google answers with 400 while it carries the
+  request is sent once more without it: the event is saved and the result says `not_supported`. A refused removal is
+  sent again without it as well; Google's meeting then stays and its version shows it.
+- Graph: a Teams meeting is asked for with `isOnlineMeeting` and `onlineMeetingProvider` on create, or on a patch of
+  the organizer's master that is not an online meeting yet. A calendar without Teams gets the event without the
+  meeting, reported as `not_supported`. Nothing ever sets `isOnlineMeeting` back.
+- The result of a done write whose master asked for a meeting the provider's version lacks: `pending` when Google's
+  request status is `pending`, when Graph has the event as an online meeting without a join link yet, or when the
+  version could not be read back; else `failed` with `not_supported` or `refused`. Only these codes are reported:
+  never provider text, never a link. Meeting links are never logged.
+- Graph's body: a description whose last line is the join line is written as HTML of escaped text (line breaks as
+  `<br>`); when the body has a Teams join block, the user's text goes before it and the join line after it, so it
+  stays the description's last line.
+
 #### AI features (interfaces with built-in and planned AI implementations)
 
 Tresso defines the interfaces and, where a deterministic version is useful on its own, implements it. The planned AI
