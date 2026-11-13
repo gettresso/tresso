@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Mcp\Security;
 
 use App\Security\OAuth\ProtectedResources;
+use App\Security\OAuth\ThirdPartyClients;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Response;
@@ -15,7 +16,8 @@ use Symfony\Component\HttpKernel\Event\ResponseEvent;
  * token, or one that stopped working, finds this authorization server and signs in by itself:
  * `WWW-Authenticate: Bearer resource_metadata="<MCP_PUBLIC_URL>/.well-known/oauth-protected-resource/mcp"` (on the API
  * host, while /mcp still answers there, the API address instead), with `error="invalid_token"` (RFC 6750 3.1) when the
- * request carried a bearer token that was refused.
+ * request carried a bearer token that was refused, and `scope` naming the scopes to ask for: all an app may have except
+ * the WhatsApp ones, so a client that follows the challenge does not ask for chats by default.
  *
  * The firewall answers those 401s (its entry point when there is no token, the authenticator when the token is
  * refused), each with a bare `Bearer` challenge; this replaces the header on the way out.
@@ -46,6 +48,9 @@ final readonly class McpAuthenticationChallenge
         if (str_starts_with((string) $request->headers->get('Authorization', ''), 'Bearer ')) {
             $challenge .= ', error="invalid_token", error_description="The access token is unknown, revoked or expired."';
         }
+        // The scopes to ask for when signing in (RFC 6750 3; the MCP authorization spec has clients prefer this over
+        // scopes_supported): every scope but WhatsApp's, which an app asks for only when it means to.
+        $challenge .= \sprintf(', scope="%s"', implode(' ', ThirdPartyClients::defaultScopeValues()));
 
         $event->getResponse()->headers->set('WWW-Authenticate', $challenge);
     }

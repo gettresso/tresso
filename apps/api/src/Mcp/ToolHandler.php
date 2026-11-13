@@ -30,11 +30,17 @@ final readonly class ToolHandler implements ToolHandlerInterface
     {
         $missing = $this->access->missingScopes($this->tool);
         if ([] !== $missing) {
+            $names = implode(' and ', array_map(static fn (Scope $scope): string => $scope->value, $missing));
+            $chat = [] !== array_filter($missing, static fn (Scope $scope): bool => $scope->isChat());
+
             return self::error(\sprintf(
-                'Not allowed: %s needs the scope%s %s, which this connection was not given. Connect again and allow it to use this tool.',
+                'Not allowed: %s needs the scope%s %s, which this connection was not given. %s',
                 $this->tool->name,
                 \count($missing) > 1 ? 's' : '',
-                implode(' and ', array_map(static fn (Scope $scope): string => $scope->value, $missing)),
+                $names,
+                $chat
+                    ? \sprintf('WhatsApp is a permission of its own: the app has to register again naming %s and the user has to tick it when allowing the app, or the connection can use a personal access token with %s ticked.', $names, $names)
+                    : 'Connect again and allow it to use this tool.',
             ));
         }
 

@@ -270,12 +270,40 @@ body {
 }
 
 .chat-scopes {
-  margin: 16px 0 0;
+  min-width: 0;
+  margin: 8px 0 16px;
   padding: 12px 0 0;
+  border: 0;
   border-top: 1px solid var(--line);
 }
 
+.chat-scopes legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+}
+
+.chat-scope {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.chat-scope input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+
+.chat-scope > span {
+  display: flex;
+  flex-direction: column;
+}
+
 .chat-scopes-note {
+  clear: both;
   margin: 0 0 8px;
   color: var(--ink-2);
   font-size: 13px;

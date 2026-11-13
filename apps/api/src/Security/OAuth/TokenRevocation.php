@@ -56,6 +56,21 @@ final readonly class TokenRevocation
     }
 
     /**
+     * Ends every access token the client holds for the user, as when a scope it was given is taken back. Refresh tokens
+     * stay: what a refresh issues is checked against the consent again ({@see TokensNeedConsent}).
+     */
+    public function revokeAccessTokensOf(string $userIdentifier, string $clientId): void
+    {
+        $this->revokeAccessTokens(array_values(array_filter(array_map(
+            static fn (mixed $id): ?string => \is_string($id) ? $id : null,
+            $this->connection->fetchFirstColumn(
+                'SELECT identifier FROM oauth2_access_token WHERE client = :client AND user_identifier = :user AND revoked = false',
+                ['client' => $clientId, 'user' => $userIdentifier],
+            ),
+        ))));
+    }
+
+    /**
      * Revokes these refresh tokens, the access tokens issued with them, and whatever they rotated into just now.
      *
      * @param list<string> $ids

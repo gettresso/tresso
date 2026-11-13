@@ -20,7 +20,10 @@ enum ToolEffect
     case Update;
     /** Deletes or switches something off for good. */
     case Delete;
-    /** Sends something to other people in the user's name; calling it twice sends twice. */
+    /**
+     * Sends something to other people in the user's name; calling it twice sends twice. Marked destructive, since it
+     * cannot be taken back, so a client that asks before such tools asks the user.
+     */
     case Send;
 
     public function annotations(string $title): ToolAnnotations
@@ -30,7 +33,7 @@ enum ToolEffect
             self::Create => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false),
             self::Update => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false),
             self::Delete => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false),
-            self::Send => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true),
+            self::Send => new ToolAnnotations($title, readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true),
         };
     }
 }
