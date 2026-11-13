@@ -16,6 +16,7 @@ import {
   meetingChoices,
   meetingLinkError,
   meetingLinkProblem,
+  meetingRemovable,
   meetingRow,
   needsReconnect,
   requestState,
@@ -605,5 +606,19 @@ describe('the meeting link row', () => {
     expect(meetingRow(rowInput(microsoft, work, { event, on: false }))).toEqual(kept)
     const input = rowInput(microsoft, work, { event })
     expect(meetingRow({ ...input, explicit: true, chosen: pick(input.choices, 'own') })).toEqual(kept)
+  })
+
+  it("takes the server's word on removal, and core's rule for rows stored before it", () => {
+    const teams = conference('teams', TEAMS_URL)
+    // The server's flag wins both ways: a Teams link pasted into a Microsoft event can go, a Graph meeting cannot.
+    expect(meetingRemovable('microsoft', { ...teams, removable: true })).toBe(true)
+    expect(meetingRemovable('microsoft', { ...teams, removable: false })).toBe(false)
+    expect(meetingRemovable('google', { ...conference('meet', 'https://meet.google.com/abc-defg-hij'), removable: false })).toBe(false)
+    // Without the flag: core's rule.
+    expect(meetingRemovable('microsoft', teams)).toBe(false)
+    expect(meetingRemovable('google', teams)).toBe(true)
+    expect(meetingRemovable(undefined, conference('other', OWN))).toBe(true)
+    // Nothing to remove.
+    expect(meetingRemovable('google', null)).toBe(false)
   })
 })

@@ -272,6 +272,20 @@ export function cannotRemoveMeeting(source: CalendarSource | undefined, conferen
   return source === 'microsoft' && conference !== null && conference.provider === 'teams'
 }
 
+/**
+ * Whether an event's meeting link can be taken off: the server's `removable` when it sent one, else the opposite of
+ * {@link cannotRemoveMeeting} (rows stored before the server sent the flag lack it). False when there is no link.
+ */
+export function meetingRemovable(source: CalendarSource | undefined, conference: Pick<Conference, 'provider' | 'removable'> | null): boolean {
+  if (conference === null) {
+    return false
+  }
+  if (typeof conference.removable === 'boolean') {
+    return conference.removable
+  }
+  return !cannotRemoveMeeting(source, conference)
+}
+
 /** What the editor's app menu says on such an event, under its heading. */
 export const TEAMS_MEETING_KEPT = 'Microsoft keeps a Teams meeting on its event. To meet elsewhere, delete this event and make a new one.'
 
