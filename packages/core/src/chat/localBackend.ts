@@ -1,5 +1,5 @@
 import type { MailStore } from '../store/mailStore'
-import { CHAT_REPLY_MAX, chatKindOf, replyText } from './format'
+import { CHAT_REPLY_MAX, chatKindOf, nameText, replyText } from './format'
 import { chatInstant } from './rows'
 import { ChatRelayStopped, type ChatBackend, type ClaimedReply, type FirstImport, type IncomingChat, type IncomingMessage, type IngestCounts, type RelayCursor, type RelaySettings, type ReplyResult } from './relay'
 import { LOCAL_CHAT_PREFIX, type SyncedChat, type SyncedChatAccount, type SyncedChatMessage, type SyncedChatOutgoing } from './types'
@@ -399,6 +399,48 @@ export function queueLocalReply(store: MailStore, chatId: string, text: string, 
       sentAt: null,
     }
     await store.putChatOutgoing([row])
+    return row
+  })
+}
+
+/**
+ * Records a file the user attached and the bridge took (sent at once by the desktop, never through the reply queue):
+ * a reply `sent`, its text `File: <name>`, and the chat's `lastMessageAt` moved to it. Only a file that went out is
+ * recorded: a reply of the queue that was not sent goes out again as text on Try again, which a file must not. `id`
+ * is a UUIDv7 the caller made; recording the same id again returns the reply as stored.
+ *
+ * @throws LocalChatError `no_chat`, `left_out`, `empty` (a name with nothing to show)
+ */
+export function recordLocalAttachment(store: MailStore, chatId: string, fileName: string, id: string, now: number): Promise<SyncedChatOutgoing> {
+  return serialized(store, async () => {
+    const chat = await localChat(store, chatId)
+    if (chat.leftOut) {
+      throw new LocalChatError('left_out')
+    }
+    const name = nameText(fileName)
+    if (name === '') {
+      throw new LocalChatError('empty')
+    }
+    const stored = await outgoingRow(store, chatId, id)
+    if (stored !== null) {
+      return stored
+    }
+    const at = new Date(now).toISOString()
+    const row: SyncedChatOutgoing = {
+      id,
+      chatId,
+      chatAccountId: LOCAL_CHAT_ACCOUNT,
+      text: `File: ${name}`,
+      status: 'sent',
+      error: null,
+      createdAt: at,
+      claimedAt: at,
+      sentAt: at,
+    }
+    await store.putChatOutgoing([row])
+    if (timeOf(chat.lastMessageAt) < now) {
+      await store.putChats([{ ...chat, lastMessageAt: at }])
+    }
     return row
   })
 }

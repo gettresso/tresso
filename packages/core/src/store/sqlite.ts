@@ -3,8 +3,8 @@ import { compareBriefs } from '../brief'
 import type { Verdict } from '../domain'
 import { compareHandOvers } from '../handOvers'
 import { sortCalendars, touchesCalendars } from '../calendar/calendars'
-import { chatAccountFromDelta, chatFromDelta, chatInstant, chatMessageFromDelta, chatOnlyHere, chatOutgoingFromDelta, compareChatMessages, compareChatOutgoing, deltaInstant, optionalInstant } from '../chat/rows'
-import { LOCAL_CHAT_PREFIX, type ChatSummary, type SyncedChat, type SyncedChatAccount, type SyncedChatMessage, type SyncedChatOutgoing } from '../chat/types'
+import { chatAccountFromDelta, chatFromDelta, chatInstant, chatMessageFromDelta, chatMessageKey, chatOnlyHere, chatOutgoingFromDelta, compareChatMessages, compareChatOutgoing, deltaInstant, optionalInstant } from '../chat/rows'
+import { LOCAL_CHAT_PREFIX, type ChatMessageKey, type ChatPage, type ChatSummary, type SyncedChat, type SyncedChatAccount, type SyncedChatMessage, type SyncedChatOutgoing } from '../chat/types'
 import { eventSpan } from '../calendar/occurrences'
 import type { SyncedCalendar, SyncedCalendarEvent } from '../calendar/types'
 import { sortSmartInboxes } from '../smartInboxes'
@@ -935,6 +935,36 @@ export class SqliteMailStore implements MailStore {
     const messages = (await this.reader.all<JsonRow>('SELECT json FROM chat_messages WHERE chat_id = ?', [id])).map((m) => parse<SyncedChatMessage>(m))
     const outgoing = (await this.reader.all<JsonRow>('SELECT json FROM chat_outgoing WHERE chat_id = ?', [id])).map((o) => parse<SyncedChatOutgoing>(o))
     return { chat: parse<SyncedChat>(row), messages: messages.sort(compareChatMessages), outgoing: outgoing.sort(compareChatOutgoing) }
+  }
+
+  async chatPage(id: string, options: { limit: number; before?: ChatMessageKey | null; from?: ChatMessageKey | null }): Promise<ChatPage | null> {
+    const row = await this.reader.first<JsonRow>('SELECT json FROM chats WHERE id = ?', [id])
+    if (row === null) {
+      return null
+    }
+    const limit = Math.max(1, Math.floor(options.limit))
+    const where = ['chat_id = ?']
+    const params: SqlValue[] = [id]
+    if (options.before != null) {
+      where.push('(sent_at < ? OR (sent_at = ? AND id < ?))')
+      params.push(options.before.sentAt, options.before.sentAt, options.before.id)
+    }
+    if (options.from != null) {
+      where.push('(sent_at > ? OR (sent_at = ? AND id >= ?))')
+      params.push(options.from.sentAt, options.from.sentAt, options.from.id)
+    }
+    // One more than asked: it tells whether older messages exist, and is not handed out.
+    const rows = await this.reader.all<JsonRow>(`SELECT json FROM chat_messages WHERE ${where.join(' AND ')} ORDER BY sent_at DESC, id DESC LIMIT ?`, [...params, limit + 1])
+    const newestFirst = rows.map((m) => parse<SyncedChatMessage>(m))
+    const messages = newestFirst.slice(0, limit).reverse()
+    // Older than the window: past its limit, or before its first message (or its bounds when it is empty).
+    const first = messages[0] === undefined ? (options.from ?? options.before ?? null) : chatMessageKey(messages[0])
+    const hasOlder =
+      newestFirst.length > limit ||
+      (first !== null &&
+        (await this.reader.first<{ one: number }>('SELECT 1 AS one FROM chat_messages WHERE chat_id = ? AND (sent_at < ? OR (sent_at = ? AND id < ?)) LIMIT 1', [id, first.sentAt, first.sentAt, first.id])) !== null)
+    const outgoing = (await this.reader.all<JsonRow>('SELECT json FROM chat_outgoing WHERE chat_id = ?', [id])).map((o) => parse<SyncedChatOutgoing>(o))
+    return { chat: parse<SyncedChat>(row), messages, outgoing: outgoing.sort(compareChatOutgoing), hasOlder }
   }
 
   async chatByJid(chatAccountId: string, jid: string): Promise<SyncedChat | null> {

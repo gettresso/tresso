@@ -109,6 +109,26 @@ export interface ChatSummary {
 }
 
 /**
+ * Where a message sits in its chat's order, as both stores keep it: its time in epoch ms (0 when `sentAt` does not
+ * parse, see deltaInstant) and its id. See chatMessageKey.
+ */
+export interface ChatMessageKey {
+  sentAt: number
+  id: string
+}
+
+/** Part of a chat, as a chat screen reads it (MailStore.chatPage): a window of its messages and all its replies. */
+export interface ChatPage {
+  chat: SyncedChat
+  /** Oldest first, in the stores' order (compareChatMessageKeys). */
+  messages: SyncedChatMessage[]
+  /** Every reply of the chat, oldest first (compareChatOutgoing): a chat has few, and their state changes. */
+  outgoing: SyncedChatOutgoing[]
+  /** Messages older than the first one here exist. */
+  hasOlder: boolean
+}
+
+/**
  * Ids of chat accounts that exist only on this device start with this (`wa:account` in the "Only this Mac" mode);
  * the server's ids are UUIDs and never do.
  */

@@ -9,6 +9,7 @@ import {
   chatOnlyHere,
   chatOutgoingFromDelta,
   deltaInstant,
+  compareChatMessageKeys,
   compareChatMessages,
   compareChatOutgoing,
   CopyClosingError,
@@ -35,6 +36,8 @@ import {
   syncedDraft,
   type AppliedAction,
   type ChangePage,
+  type ChatMessageKey,
+  type ChatPage,
   type ChatSummary,
   type Contact,
   type ConversationSummary,
@@ -1071,6 +1074,47 @@ export class IndexedDbMailStore implements MailStore {
     const outgoing = await tx.objectStore('chatOutgoing').index('byChat').getAll(id)
     await tx.done
     return { chat: stored.chat, messages: messages.sort(compareChatMessages), outgoing: outgoing.sort(compareChatOutgoing) }
+  }
+
+  async chatPage(id: string, options: { limit: number; before?: ChatMessageKey | null; from?: ChatMessageKey | null }): Promise<ChatPage | null> {
+    const limit = Math.max(1, Math.floor(options.limit))
+    const before = options.before ?? null
+    const from = options.from ?? null
+    const tx = this.db.transaction(['chats', 'chatMessages', 'chatOutgoing'])
+    const stored = await tx.objectStore('chats').get(id)
+    if (stored === undefined) {
+      await tx.done
+      return null
+    }
+    const index = tx.objectStore('chatMessages').index('byChat')
+    const range = IDBKeyRange.bound([id, from?.sentAt ?? -Infinity], [id, before?.sentAt ?? Infinity])
+    // Newest first; equal times come in descending id (the primary key), as the SQLite store orders them. One more
+    // than asked tells whether older messages exist.
+    const newestFirst: SyncedChatMessage[] = []
+    let older = false
+    for (let cursor = await index.openCursor(range, 'prev'); cursor !== null; cursor = await cursor.continue()) {
+      const key = { sentAt: cursor.value.sentAt, id: cursor.value.id }
+      if (before !== null && compareChatMessageKeys(key, before) >= 0) {
+        continue
+      }
+      if (from !== null && compareChatMessageKeys(key, from) < 0) {
+        older = true
+        break
+      }
+      if (newestFirst.length === limit) {
+        older = true
+        break
+      }
+      newestFirst.push(cursor.value.message)
+    }
+    const messages = newestFirst.reverse()
+    if (!older && from !== null) {
+      // The range ended at `from`'s time (same time, smaller id was seen above): an earlier time is older too.
+      older = (await index.openKeyCursor(IDBKeyRange.bound([id, -Infinity], [id, from.sentAt], false, true))) !== null
+    }
+    const outgoing = await tx.objectStore('chatOutgoing').index('byChat').getAll(id)
+    await tx.done
+    return { chat: stored.chat, messages, outgoing: outgoing.sort(compareChatOutgoing), hasOlder: older }
   }
 
   async chatByJid(chatAccountId: string, jid: string): Promise<SyncedChat | null> {

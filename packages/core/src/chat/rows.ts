@@ -3,6 +3,7 @@ import {
   LOCAL_CHAT_PREFIX,
   type BridgeState,
   type ChatKind,
+  type ChatMessageKey,
   type ChatMediaKind,
   type ChatOutgoingError,
   type ChatOutgoingStatus,
@@ -45,6 +46,16 @@ export function chatInstant(value: string, field: string): number {
     throw new ChatTimeError(field)
   }
   return at
+}
+
+/** A message's place in its chat's order, as the stores keep it (deltaInstant: a time that does not parse is 0). */
+export function chatMessageKey(message: Pick<SyncedChatMessage, 'sentAt' | 'id'>): ChatMessageKey {
+  return { sentAt: deltaInstant(message.sentAt), id: message.id }
+}
+
+/** Keys oldest first: by time, equal times by id (compared as the stores compare text). */
+export function compareChatMessageKeys(a: ChatMessageKey, b: ChatMessageKey): number {
+  return a.sentAt - b.sentAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 }
 
 /** Messages oldest first; equal times by id. */

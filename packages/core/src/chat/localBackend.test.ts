@@ -11,6 +11,7 @@ import {
   cancelLocalReply,
   localChatId,
   queueLocalReply,
+  recordLocalAttachment,
   removeLocalChats,
   removeLocalGroupChats,
   resetLocalCursor,
@@ -350,5 +351,24 @@ describe('LocalChatBackend', () => {
 
     await resetLocalCursor(store)
     expect(await backend.cursor()).toBeNull()
+  })
+
+  it('records a file that went out as a sent reply, once per id, never for a chat left out', async () => {
+    await backend.ingest([direct], [incoming('A1', DIRECT, -10)], false)
+    const id = '0193a000-0000-7000-8000-0000000000f1'
+
+    const row = await recordLocalAttachment(store, localChatId(DIRECT), ' plan\u202E.pdf ', id, NOW)
+    expect(row).toMatchObject({ id, status: 'sent', text: 'File: plan.pdf', sentAt: iso(0), createdAt: iso(0), error: null })
+    expect(await recordLocalAttachment(store, localChatId(DIRECT), 'other.pdf', id, NOW + 60_000)).toEqual(row)
+    const stored = (await store.chat(localChatId(DIRECT)))!
+    expect(stored.outgoing).toEqual([row])
+    expect(stored.chat.lastMessageAt).toBe(iso(0))
+    // Nothing the relay sends: it is no waiting reply.
+    expect(await backend.claimNext()).toBeNull()
+
+    await expect(recordLocalAttachment(store, localChatId(DIRECT), '\u200B', 'x2', NOW)).rejects.toMatchObject({ code: 'empty' })
+    await setLocalChatState(store, localChatId(DIRECT), { leftOut: true })
+    await expect(recordLocalAttachment(store, localChatId(DIRECT), 'a.pdf', 'x3', NOW)).rejects.toMatchObject({ code: 'left_out' })
+    await expect(recordLocalAttachment(store, localChatId(GROUP), 'a.pdf', 'x4', NOW)).rejects.toMatchObject({ code: 'no_chat' })
   })
 })

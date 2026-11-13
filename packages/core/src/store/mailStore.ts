@@ -1,6 +1,6 @@
 import type { AppliedAction, MessageAction } from '../actions'
 import type { SyncedCalendar, SyncedCalendarEvent } from '../calendar/types'
-import type { ChatSummary, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from '../chat/types'
+import type { ChatMessageKey, ChatPage, ChatSummary, SyncedChat, SyncedChatAccount, SyncedChatMessage, SyncedChatOutgoing } from '../chat/types'
 import type { Verdict } from '../domain'
 import type { ConversationSummary, ListScope } from '../sync/conversation'
 import type { SyncStore } from '../sync/engine'
@@ -224,6 +224,12 @@ export interface MailStore extends SyncStore {
   chats(options?: { inboxOnly?: boolean; limit?: number }): Promise<ChatSummary[]>
   /** A chat with its messages oldest first and its replies oldest first (see compareChatOutgoing), or null. */
   chat(id: string): Promise<{ chat: SyncedChat; messages: SyncedChatMessage[]; outgoing: SyncedChatOutgoing[] } | null>
+  /**
+   * A window of a chat for a chat screen, so a long chat is never read whole: the newest `limit` messages (at least 1)
+   * that come before `before` (all when null) and not before `from` (all when null), oldest first, in the order of
+   * chatMessageKey; every reply of the chat; whether older messages exist. Null when the chat does not exist.
+   */
+  chatPage(id: string, options: { limit: number; before?: ChatMessageKey | null; from?: ChatMessageKey | null }): Promise<ChatPage | null>
   /** The chat of an account with this JID, also one left out; null when there is none. */
   chatByJid(chatAccountId: string, jid: string): Promise<SyncedChat | null>
   /** Chats in the Unified Inbox (see inInbox) with at least one unread incoming message. */
