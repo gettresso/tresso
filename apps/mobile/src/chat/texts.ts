@@ -1,4 +1,5 @@
 import {
+  attachHeldText,
   CHAT_REPLY_MAX,
   chatApiFailure,
   replyErrorText,
@@ -45,6 +46,14 @@ export function uploadText(upload: { phase: 'uploading' | 'queueing'; progress: 
   return upload.progress === null ? 'Uploading' : `Uploading, ${Math.round(upload.progress * 100)}%`
 }
 
+/** Attach waits: the server said too many files or replies at once; says how long (its Retry-After, rounded up). */
+export class AttachHeld extends Error {
+  constructor(readonly waitMs: number) {
+    super(attachHeldText(waitMs))
+    this.name = 'AttachHeld'
+  }
+}
+
 /**
  * The line under the reply box after a file did not go (FileNotSent): nothing queued when it failed before the reply was
  * (reading or uploading the file, or a refusal), maybe queued when the queueing got no answer (the same file again goes
@@ -54,6 +63,9 @@ export function fileFailureText(name: string, phase: 'upload' | 'queue', reason:
   if (cancelled) {
     // A cancel the server did not confirm: the reply may be queued, and then it goes (the chat shows it).
     return maybeSent ? `${name} may still be sent. Check the chat.` : `${name} was not sent.`
+  }
+  if (reason instanceof AttachHeld) {
+    return `${name} was not sent. ${reason.message}`
   }
   if (unsure) {
     return `${name} may have been queued. ${requestFailure(reason)} Attaching the same file again in the next minutes sends it once.`

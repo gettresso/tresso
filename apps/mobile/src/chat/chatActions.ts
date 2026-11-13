@@ -1,6 +1,6 @@
-import { attachHeldText, CHAT_MAX_FILE_BYTES, chatApiFailure, fileFingerprint, replyText, UNSURE_FILE_MS, type MailStore, type SyncedChat, type SyncedChatOutgoing } from '@tresso/core'
+import { CHAT_MAX_FILE_BYTES, chatApiFailure, fileFingerprint, replyText, UNSURE_FILE_MS, type MailStore, type SyncedChat, type SyncedChatOutgoing } from '@tresso/core'
 import type { PhoneChatApi } from '@/chat/chatApi'
-import { replyProblemText } from '@/chat/texts'
+import { AttachHeld, replyProblemText } from '@/chat/texts'
 
 /**
  * How long a reply id whose request got no answer is used again for the same text: the server takes an id made at most
@@ -80,6 +80,9 @@ const ATTACH_HOLD_MS = 60_000
  * reply the copy has) are all found and removed (pruneUnsureFiles).
  */
 export const UNSURE_FILES = 'phone-unsure-files'
+
+/** Before the per-file values an earlier build kept (`phone-unsure-file:<chat>` and `<chat>:<fingerprint>`); see UNSURE_FILES. */
+export const OLD_UNSURE_FILE_PREFIX = 'phone-unsure-file:'
 
 /** Where a file's entry is in UNSURE_FILES. */
 export function unsureFileKey(chatId: string, fingerprint: string): string {
@@ -226,6 +229,8 @@ export class ChatActions {
 
   /** Files on their way, by reply id. */
   private readonly uploads = new Map<string, Upload>()
+  /** The copy whose old per-file unsure values went (unsureFilesOf). */
+  private oldUnsureFilesGoneFrom: MailStore | null = null
   /** The last change of the unsure files (changeUnsureFiles), which the next waits for. */
   private unsureFileWrites: Promise<void> = Promise.resolve()
   /** Until when (the server's time) Attach waits after the server said too many files; null when it does not. */
@@ -358,8 +363,10 @@ export class ChatActions {
       } else {
         this.pending.set(chat.id, left)
       }
-      if (refusedAsCancelled(error) && cancelledHere) {
-        // The user's Cancel overtook the queueing and the server kept it: cancelled, as they asked.
+      if (cancelledHere && (refusedAsCancelled(error) || outcomeUnknown(error))) {
+        // The user's Cancel overtook the queueing and the server kept it, or the queueing got no answer after the user
+        // cancelled it (the server keeps that cancel also for a reply it had not seen): cancelled, as they asked, and the
+        // same text sent again is a new reply under a new id.
         this.forgetUnsure(chat.id)
         this.emit()
         throw new ReplyCancelled(id)
@@ -419,7 +426,7 @@ export class ChatActions {
     const now = this.deps.now()
     const held = this.attachHeld()
     if (held !== null) {
-      throw new FileNotSent('upload', new Error(attachHeldText(held)))
+      throw new FileNotSent('upload', new AttachHeld(held))
     }
     const key = unsureFileKey(chat.id, fileFingerprint(file.name, file.size, file.lastModified))
     const earlier = await this.unsureFileOf(store, chat.id, key, now)
@@ -464,7 +471,7 @@ export class ChatActions {
         })
       } catch (error) {
         if (!upload.abandoned && chatApiFailure(error)?.status === 429) {
-          this.holdAttach(chatApiFailure(error)?.retryAfterMs ?? null)
+          throw new FileNotSent('upload', this.holdAttach(chatApiFailure(error)?.retryAfterMs ?? null))
         }
         throw new FileNotSent('upload', error, false, upload.abandoned)
       }
@@ -488,6 +495,10 @@ export class ChatActions {
           await this.keepUnsureFile(store, key, { chatId: chat.id, uploadId, replyId: id, at })
         } else {
           await this.forgetUnsureFile(key)
+        }
+        if (chatApiFailure(error)?.status === 429) {
+          // Too many replies at once: Attach waits as after too many uploads, and says how long.
+          throw new FileNotSent('queue', this.holdAttach(chatApiFailure(error)?.retryAfterMs ?? null))
         }
         throw new FileNotSent('queue', error, unsure, false)
       }
@@ -539,9 +550,12 @@ export class ChatActions {
     return left
   }
 
-  private holdAttach(retryAfterMs: number | null): void {
-    this.attachHeldUntil = this.deps.now() + (retryAfterMs ?? ATTACH_HOLD_MS)
+  /** Attach waits until the server's Retry-After (or a minute without one); returns what to tell the user. */
+  private holdAttach(retryAfterMs: number | null): AttachHeld {
+    const wait = retryAfterMs !== null && Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : ATTACH_HOLD_MS
+    this.attachHeldUntil = this.deps.now() + wait
     this.emit()
+    return new AttachHeld(wait)
   }
 
   /** Stops the files on their way (all, or those of one chat): uploads stop, and nothing more is queued. */
@@ -587,6 +601,11 @@ export class ChatActions {
   }
 
   private async unsureFilesOf(store: MailStore): Promise<Map<string, UnsureFile>> {
+    if (this.oldUnsureFilesGoneFrom !== store) {
+      // The values an earlier build kept one per file go the first time this copy's are read: nothing reads them now.
+      this.oldUnsureFilesGoneFrom = store
+      await store.removeChatMetaStartingWith(OLD_UNSURE_FILE_PREFIX).catch((error: unknown) => this.deps.onError?.('Removing old unsure files failed', error))
+    }
     try {
       return readUnsureFiles(await store.chatMeta(UNSURE_FILES))
     } catch (error) {
@@ -754,6 +773,12 @@ export class ChatActions {
       if (store !== null && this.deps.store() === store) {
         await store.putChatOutgoing([{ ...reply, status: 'cancelled' }])
         this.deps.changed()
+        // The unsure send of this reply is cancelled now: the same text sent again is a new reply under a new id, not
+        // this one, which the server refuses for good.
+        const kept = this.unsure.get(reply.chatId) ?? readUnsure(await store.chatMeta(UNSURE_PREFIX + reply.chatId))
+        if (kept?.id === reply.id) {
+          this.forgetUnsure(reply.chatId)
+        }
       }
     } catch (error) {
       this.hidden.delete(reply.id)
