@@ -79,12 +79,23 @@ final class MeetingJoinLine
     /** "Join with Microsoft Teams:" and so on, or "Join the meeting:" for a link of no known app. */
     public static function prefix(string $provider): string
     {
+        $app = self::appName($provider);
+
+        return null === $app ? 'Join the meeting:' : 'Join with '.$app.':';
+    }
+
+    /**
+     * The name people know an app by, for a provider as {@see \App\Calendar\ICalendar\ConferenceDetector::providerOf()}
+     * names it, or null for a link of no known app.
+     */
+    public static function appName(string $provider): ?string
+    {
         return match ($provider) {
-            'teams' => 'Join with Microsoft Teams:',
-            'meet' => 'Join with Google Meet:',
-            'zoom' => 'Join with Zoom:',
-            'webex' => 'Join with Webex:',
-            default => 'Join the meeting:',
+            'teams' => 'Microsoft Teams',
+            'meet' => 'Google Meet',
+            'zoom' => 'Zoom',
+            'webex' => 'Webex',
+            default => null,
         };
     }
 

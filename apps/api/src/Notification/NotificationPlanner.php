@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace App\Notification;
 
 use App\Calendar\ICalendar\CalendarDocument;
+use App\Calendar\ICalendar\ConferenceDetector;
 use App\Calendar\ICalendar\InvalidCalendarData;
 use App\Calendar\ICalendar\Occurrences;
 use App\Calendar\ICalendar\RecurrenceKey;
+use App\Calendar\MeetingJoinLine;
+use App\Calendar\MeetingLinkAddress;
 use App\Calendar\SelfAddresses;
 use App\Entity\CalendarEvent;
 use App\Entity\CalendarObject;
@@ -324,14 +327,50 @@ final readonly class NotificationPlanner
         return $negative ? $base->sub($interval) : $base->add($interval);
     }
 
+    /**
+     * "Thursday 22 October, 10:00 to 11:00", then where: the place after a comma, or for an event with an online
+     * meeting "on Microsoft Teams." (or "online." for a link of no known app) and "Or in <place>." when it has one too.
+     * The app is named by the link's host alone, and the link itself never goes into the text (anyone with it may
+     * join), also not when the place holds it. A link that is not a plain https address (a user name in it, no real
+     * host) is not offered as a meeting, so the text then reads as for an event without one.
+     */
     private static function reminderBody(CalendarEvent $row, \DateTimeImmutable $start, \DateTimeImmutable $end, \DateTimeZone $zone): string
     {
         $when = $row->isAllDay()
             ? $start->setTimezone($zone)->format('l j F').' (all day)'
             : $start->setTimezone($zone)->format('l j F, H:i').' to '.$end->setTimezone($zone)->format('H:i');
         $location = trim($row->getLocation());
+        $conference = $row->getConference();
+        if (null === $conference) {
+            return '' === $location ? $when : $when.', '.$location;
+        }
 
-        return '' === $location ? $when : $when.', '.$location;
+        $place = self::placeBesideMeeting($location);
+        if (null !== MeetingLinkAddress::problem($conference['url'])) {
+            return '' === $place ? $when : $when.', '.$place;
+        }
+        $app = MeetingJoinLine::appName(ConferenceDetector::providerOf($conference['url']));
+        $body = null === $app ? $when.', online.' : $when.', on '.$app.'.';
+        // A place that only names the app ("Microsoft Teams Meeting", as Outlook writes it) says nothing more.
+        if ('' === $place || (null !== $app && \in_array(mb_strtolower($place), [mb_strtolower($app), mb_strtolower($app.' meeting')], true))) {
+            return $body;
+        }
+
+        return $body.' Or in '.rtrim($place, '.').'.';
+    }
+
+    /**
+     * The place of an event with an online meeting, without any web link in it: the meeting link is often written
+     * there, and no link goes into a reminder. What is left is trimmed of the separators the link stood between.
+     */
+    private static function placeBesideMeeting(string $location): string
+    {
+        $place = (string) preg_replace('~\bhttps?://\S+~iu', ' ', $location);
+        $place = (string) preg_replace('/\s+/u', ' ', $place);
+        // What the link stood in: brackets left empty, and separators left doubled.
+        $place = (string) preg_replace(['/\(\s*\)|\[\s*\]|<\s*>/u', '/\s*([,;|])(?:\s*[,;|])+/u'], ['', '$1'], $place);
+
+        return trim($place, " \t,;|()[]<>-");
     }
 
     /** When to leave: the travel time and the user's extra time before the start. */
