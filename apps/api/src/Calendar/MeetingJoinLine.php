@@ -15,10 +15,20 @@ namespace App\Calendar;
 final class MeetingJoinLine
 {
     /**
-     * One line of its own: the link runs up to the first whitespace (also a no-break or other Unicode space), and spaces
-     * or tabs may follow it before the line ends.
+     * One line of its own: "Join the meeting:" or "Join with <App>:", spaces, then the link up to the first whitespace
+     * (also a no-break or other Unicode space) or angle bracket. As Exchange gives a linked address back in a text body
+     * ("<url> <<url>>"), the link may follow once more in angle brackets. Spaces or tabs may end the line.
+     *
+     * The sync workers read the line by the same rule (apps/sync/internal/graphcal); both are tested against
+     * tests/Fixtures/meeting-join-lines.json.
      */
-    public const string PATTERN = '/^Join (?:the meeting|with [^:\r\n]{1,40}): (https:\/\/[^\s\x{A0}\x{1680}\x{2000}-\x{200B}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]+)[ \t\x{A0}]*$/mu';
+    public const string PATTERN = '/^Join (?:the meeting|with [^:\r\n]{1,40}):[ \t\x{A0}]+(https:\/\/'.self::LINK_CHARS.'+)(?:[ \t\x{A0}]*<https:\/\/'.self::LINK_CHARS.'+>)?[ \t\x{A0}]*$/mu';
+
+    /**
+     * What a link is made of: anything but whitespace (named outright, so the rule does not hang on Unicode mode) and
+     * angle brackets.
+     */
+    private const string LINK_CHARS = '[^\s<>\x{0B}\x{85}\x{A0}\x{1680}\x{2000}-\x{200B}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]';
 
     /** The link of the last join line in the description, or null when it has none. */
     public static function find(string $description): ?string

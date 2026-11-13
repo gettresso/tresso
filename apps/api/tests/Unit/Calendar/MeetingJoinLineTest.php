@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Unit\Calendar;
 
 use App\Calendar\MeetingJoinLine;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -13,6 +14,38 @@ use PHPUnit\Framework\TestCase;
 final class MeetingJoinLineTest extends TestCase
 {
     private const string ROOM = 'https://meet.company.example/kim';
+    /** Shared with the sync workers, which read the line by the same rule (apps/sync/internal/graphcal). */
+    private const string FIXTURE = __DIR__.'/../../Fixtures/meeting-join-lines.json';
+
+    /**
+     * @return iterable<string, array{string, ?string}>
+     */
+    public static function sharedCases(): iterable
+    {
+        $cases = json_decode((string) file_get_contents(self::FIXTURE), true, flags: \JSON_THROW_ON_ERROR);
+        self::assertIsArray($cases);
+        foreach ($cases as $case) {
+            self::assertIsArray($case);
+            self::assertIsString($case['name']);
+            self::assertIsString($case['description']);
+            self::assertTrue(null === $case['link'] || \is_string($case['link']));
+            yield $case['name'] => [$case['description'], $case['link']];
+        }
+    }
+
+    #[DataProvider('sharedCases')]
+    public function testTheLinkIsFoundByTheRuleTheWorkersShare(string $description, ?string $link): void
+    {
+        self::assertSame($link, MeetingJoinLine::find($description));
+    }
+
+    public function testALineAsExchangeGivesItBackIsReplacedByOneClean(): void
+    {
+        $returned = "Agenda\n\nJoin the meeting: ".self::ROOM.' <'.self::ROOM.'>';
+
+        self::assertSame("Agenda\n\nJoin the meeting: ".self::ROOM, MeetingJoinLine::with($returned, self::ROOM, 'other'));
+        self::assertSame('Agenda', MeetingJoinLine::strip($returned));
+    }
 
     public function testTheLineGoesAfterAnEmptyLineAtTheEnd(): void
     {
