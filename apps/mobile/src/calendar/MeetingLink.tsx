@@ -54,30 +54,38 @@ interface Props {
   clock: () => number
   /** Retry: asks the calendar's provider for the link again (POST .../meeting-link). Null when the user cannot. */
   onRetry: ((provider: RetryProvider) => Promise<void>) | null
+  /**
+   * Leave without a link: drops only the request (DELETE .../meeting-link/request). Null when the user cannot or the
+   * server does not offer it. `arrived`: a link arrived meanwhile and nothing was changed.
+   */
+  onLeave: (() => Promise<'dropped' | 'arrived'>) | null
+  /** Pulls the copy, so a link that arrived meanwhile shows. */
+  onSync: () => Promise<void>
 }
 
 /**
  * An event's meeting link on the phone: Join (only for a link core's canJoin passes), the link as text with Copy link,
- * and the line under it; or the link that is being made, or that could not be made, with Retry for the organizer.
- * There is no "Leave without a link" yet: the API's removal would also take off a link that arrived after the phone's
- * copy. Nothing when the event has no link and none was asked for. The link itself is never logged or put into an
- * error. Give it the link as its `key`, so a new link (the sync brought one) starts without the old one's messages.
+ * and the line under it; or the link that is being made, or that could not be made, with Retry and "Leave without a
+ * link" for the organizer. Leave drops only the request, never a link (the API answers 409 when one arrived
+ * meanwhile, and the phone then syncs to show it). Nothing when the event has no link and none was asked for. The link
+ * itself is never logged or put into an error. Give it the link as its `key`, so a new link (the sync brought one)
+ * starts without the old one's messages.
  */
-export function MeetingLink({ conference, request, organizes, line, clock, onRetry }: Props) {
+export function MeetingLink({ conference, request, organizes, line, clock, onRetry, onLeave, onSync }: Props) {
   const theme = useTheme()
   const styles = useMemo(() => makeStyles(theme), [theme])
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
   const [openFailed, setOpenFailed] = useState(false)
-  const [retrying, setRetrying] = useState(false)
+  const [acting, setActing] = useState<'retry' | 'leave' | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  // The request Retry was taken for: "Asked for the link again." stays on screen until the request changes (the sync
-  // brings the new one), also when that sync fails.
-  const [askedFor, setAskedFor] = useState<string | null>(null)
+  // What Retry or Leave did, for the request it acted on: the line stays on screen until the request changes (the sync
+  // brings the new state), also when that sync fails.
+  const [done, setDone] = useState<{ request: string | null; text: string } | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Answers that come after the screen closed (or the link changed) set nothing, as on the web's CopyLinkButton.
   const alive = useRef(true)
-  // A second tap before the first one's answer does nothing: one openURL, one Retry.
+  // A second tap before the first one's answer does nothing: one openURL, one Retry or Leave.
   const opening = useRef(false)
   const busy = useRef(false)
   // Renders again when a link that is being made has waited too long, so it then reads as failed.
@@ -165,19 +173,19 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
     }, COPIED_MS)
   }
 
-  async function retry(run: () => Promise<void>) {
+  /** Retry or Leave: one at a time, the other button disabled meanwhile; the outcome said and shown. */
+  async function act(kind: 'retry' | 'leave', run: () => Promise<string | null>) {
     if (busy.current) {
       return
     }
-    const asked = requestKey
+    const actedOn = requestKey
     busy.current = true
-    setRetrying(true)
+    setActing(kind)
     setActionError(null)
     try {
-      await run()
-      if (alive.current) {
-        setAskedFor(asked)
-        AccessibilityInfo.announceForAccessibility(ASKED)
+      const text = await run()
+      if (alive.current && text !== null) {
+        setDone({ request: actedOn, text })
       }
     } catch (error) {
       if (alive.current) {
@@ -188,9 +196,35 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
     } finally {
       busy.current = false
       if (alive.current) {
-        setRetrying(false)
+        setActing(null)
       }
     }
+  }
+
+  async function retry(ask: (provider: RetryProvider) => Promise<void>, provider: RetryProvider): Promise<string | null> {
+    await ask(provider)
+    if (alive.current) {
+      AccessibilityInfo.announceForAccessibility(ASKED)
+    }
+    return ASKED
+  }
+
+  async function leave(drop: () => Promise<'dropped' | 'arrived'>): Promise<string | null> {
+    const outcome = await drop()
+    const text = outcome === 'arrived' ? ARRIVED : LEFT
+    if (alive.current) {
+      AccessibilityInfo.announceForAccessibility(text)
+    }
+    if (outcome === 'arrived') {
+      // Said before the sync: the link it brings replaces this block. A failed sync leaves the line to say why the
+      // request is still here; the session shows its own sync error.
+      if (alive.current) {
+        setDone({ request: requestKey, text })
+      }
+      await onSync()
+      return null
+    }
+    return text
   }
 
   if (conference !== null) {
@@ -250,20 +284,33 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
           <Text style={styles.failedTitle}>{requestTitle(request, now)}</Text>
           <Text style={styles.hint}>{failureHint(request, now)}</Text>
         </View>
-        {ask !== null && canRetry(provider) && (
+        {(ask !== null || onLeave !== null) && (
           <View style={styles.actions}>
-            <Pressable
-              style={styles.action}
-              onPress={() => void retry(() => ask(provider))}
-              disabled={retrying}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: retrying, busy: retrying }}
-            >
-              <Text style={styles.actionLabel}>{retrying ? 'Retrying' : 'Retry'}</Text>
-            </Pressable>
+            {ask !== null && canRetry(provider) && (
+              <Pressable
+                style={styles.action}
+                onPress={() => void act('retry', () => retry(ask, provider))}
+                disabled={acting !== null}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: acting !== null, busy: acting === 'retry' }}
+              >
+                <Text style={styles.actionLabel}>{acting === 'retry' ? 'Retrying' : 'Retry'}</Text>
+              </Pressable>
+            )}
+            {onLeave !== null && (
+              <Pressable
+                style={styles.action}
+                onPress={() => void act('leave', () => leave(onLeave))}
+                disabled={acting !== null}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: acting !== null, busy: acting === 'leave' }}
+              >
+                <Text style={styles.actionLabel}>Leave without a link</Text>
+              </Pressable>
+            )}
           </View>
         )}
-        {askedFor !== null && askedFor === requestKey && <Text style={styles.hint}>{ASKED}</Text>}
+        {done !== null && done.request === requestKey && <Text style={styles.hint}>{done.text}</Text>}
         {actionError !== null && <Text style={styles.error}>{actionError}</Text>}
       </View>
     )
@@ -272,6 +319,8 @@ export function MeetingLink({ conference, request, organizes, line, clock, onRet
 }
 
 const ASKED = 'Asked for the link again.'
+const LEFT = 'The event stays without a link.'
+const ARRIVED = 'The meeting link arrived meanwhile. Nothing was changed.'
 
 const OPEN_FAILED = 'The meeting could not be opened on this phone. Copy the link instead.'
 

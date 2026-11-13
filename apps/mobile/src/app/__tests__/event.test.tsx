@@ -10,7 +10,7 @@ const START = Date.parse('2026-10-23T08:00:00Z')
 const { state, clipboard, mail } = vi.hoisted(() => ({
   state: { occurrences: [] as unknown[], calendars: new Map(), now: 0 },
   clipboard: { setStringAsync: vi.fn() },
-  mail: { respond: () => Promise.resolve(), serverNow: (): number => 0, requestMeetingLink: vi.fn() },
+  mail: { respond: () => Promise.resolve(), serverNow: (): number => 0, requestMeetingLink: vi.fn(), dropMeetingRequest: vi.fn(), meetingRequestDrop: vi.fn(), syncNow: vi.fn() },
 }))
 vi.mock('expo-router', () => ({ Stack: { Screen: () => null }, useLocalSearchParams: () => ({ key: 'e1', start: String(START) }) }))
 vi.mock('expo-clipboard', () => clipboard)
@@ -112,13 +112,18 @@ describe('the meeting link on the event screen', () => {
     clipboard.setStringAsync.mockReset()
     mail.serverNow = () => state.now
     mail.requestMeetingLink.mockReset().mockResolvedValue(undefined)
+    mail.dropMeetingRequest.mockReset().mockResolvedValue('dropped')
+    // An older server: no "Leave without a link" unless a test says the server has it.
+    mail.meetingRequestDrop.mockReset().mockResolvedValue(false)
+    mail.syncNow.mockReset().mockResolvedValue(undefined)
     openURL = vi.spyOn(Linking, 'openURL').mockResolvedValue(undefined)
     announce = vi.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => {})
   })
 
   afterEach(() => {
-    vi.useRealTimers()
+    // Spies first: a spy on a faked setTimeout would otherwise be restored to the fake after the real timers return.
     vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   it('joins a made link with the app named, shows the link cut short, and copies the whole link', async () => {
@@ -274,7 +279,7 @@ describe('the meeting link on the event screen', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
-  it('shows why a link could not be made, with core texts and Retry, and no removal', () => {
+  it('shows why a link could not be made, with core texts and Retry, and no Leave on a server without the drop', () => {
     const cases: [ConferenceRequest, string, string][] = [
       [request({ status: 'failed', reason: 'refused' }), 'Could not make the Teams link', 'The event is saved without a link. Microsoft refused to make it.'],
       [request({ provider: 'meet', status: 'failed', reason: 'not_supported' }), 'Could not make the Google Meet link', 'The event is saved without a link. Google Meet is not available for this calendar.'],
@@ -502,11 +507,14 @@ describe('the meeting link on the event screen', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   })
 
-  it('offers no Retry for an occurrence read from the server, whose series is not on the phone', () => {
+  it('offers no Retry and no Leave for an occurrence read from the server, whose series is not on the phone', async () => {
+    mail.meetingRequestDrop.mockResolvedValue(true)
     show(event({ conferenceRequest: request({ status: 'failed', reason: 'refused' }) }), null, { fromServer: true })
+    await act(async () => {})
 
     expect(screen.getByText('Could not make the Teams link')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
   })
 
   it('shows the link of an occurrence that has its own, not the series request', () => {
@@ -534,6 +542,122 @@ describe('the meeting link on the event screen', () => {
     })
 
     expect(screen.getByText(url)).toBeTruthy()
+  })
+
+  describe('Leave without a link', () => {
+    const failed = () => event({ conferenceRequest: request({ status: 'failed', reason: 'refused' }) })
+
+    /** Puts a new version of the event on the screen, as a sync does. */
+    function synced(view: ReturnType<typeof show>, row: SyncedCalendarEvent) {
+      const [shown] = state.occurrences as Occurrence[]
+      state.occurrences = [{ ...shown!, event: row }]
+      view.rerender(<EventScreen />)
+    }
+
+    it('is not offered when the server does not say it has the drop, or that read failed', async () => {
+      const older = show(failed())
+      await act(async () => {})
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
+      older.unmount()
+
+      mail.meetingRequestDrop.mockRejectedValue(new TypeError('Network request failed'))
+      show(failed())
+      await act(async () => {})
+      expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
+    })
+
+    it('drops the request once for a double tap, with Retry disabled meanwhile, on the series, and says so', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      let answer: (outcome: 'dropped') => void = () => {}
+      mail.dropMeetingRequest.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+      const series = event({ id: 's1', recurrence: 'FREQ=WEEKLY;BYDAY=TH', conferenceRequest: request({ status: 'failed', reason: 'refused' }) })
+      show(event({ id: 'o1', recurrenceId: '20261023T080000Z', conferenceRequest: undefined }), series)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Leave without a link' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Leave without a link' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(mail.dropMeetingRequest).toHaveBeenCalledExactlyOnceWith('s1')
+      expect(mail.requestMeetingLink).not.toHaveBeenCalled()
+
+      await act(async () => {
+        answer('dropped')
+      })
+      expect(announce).toHaveBeenCalledExactlyOnceWith('The event stays without a link.')
+    })
+
+    it('keeps saying it left the event without a link until the request changes, also when the sync failed', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      const view = show(failed())
+
+      const leave = await screen.findByRole('button', { name: 'Leave without a link' })
+      await act(async () => {
+        fireEvent.click(leave)
+      })
+      expect(screen.getByText('The event stays without a link.')).toBeTruthy()
+
+      // The next sync brings the series without its request: the block goes.
+      synced(view, event({ conferenceRequest: null }))
+      expect(screen.queryByText('Could not make the Teams link')).toBeNull()
+      expect(screen.queryByText('The event stays without a link.')).toBeNull()
+    })
+
+    it('shows a link that arrived meanwhile (409): said, synced, then on screen', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      mail.dropMeetingRequest.mockResolvedValue('arrived')
+      const view = show(failed())
+
+      const leave = await screen.findByRole('button', { name: 'Leave without a link' })
+      await act(async () => {
+        fireEvent.click(leave)
+      })
+      expect(announce).toHaveBeenCalledExactlyOnceWith('The meeting link arrived meanwhile. Nothing was changed.')
+      expect(mail.syncNow).toHaveBeenCalledOnce()
+      // Until the sync's copy is on screen the line says why the block is still here.
+      expect(screen.getByText('The meeting link arrived meanwhile. Nothing was changed.')).toBeTruthy()
+
+      synced(view, event({ conference: teams, conferenceRequest: null }))
+      expect(screen.getByLabelText('Join with Microsoft Teams')).toBeTruthy()
+      expect(screen.queryByText('Could not make the Teams link')).toBeNull()
+    })
+
+    it('shows a link the provider still made after the request was dropped, without an error', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      const view = show(failed())
+      const leave = await screen.findByRole('button', { name: 'Leave without a link' })
+      await act(async () => {
+        fireEvent.click(leave)
+      })
+
+      synced(view, event({ conference: teams, conferenceRequest: null }))
+
+      expect(screen.getByLabelText('Join with Microsoft Teams')).toBeTruthy()
+      expect(screen.queryByText(/did not work|could not/i)).toBeNull()
+    })
+
+    it('says in plain words why it did not go through', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      mail.dropMeetingRequest.mockRejectedValue(Object.assign(new Error('Only the organizer can change the meeting link.'), { name: 'ApiError', status: 422 }))
+      show(failed())
+
+      const leave = await screen.findByRole('button', { name: 'Leave without a link' })
+      await act(async () => {
+        fireEvent.click(leave)
+      })
+
+      expect(screen.getByText('Only the organizer can change the meeting link.')).toBeTruthy()
+      expect(announce).toHaveBeenLastCalledWith('Only the organizer can change the meeting link.')
+      expect(screen.getByRole('button', { name: 'Leave without a link' })).toBeTruthy()
+    })
+
+    it('is not offered to a guest or on a calendar the user cannot write', async () => {
+      mail.meetingRequestDrop.mockResolvedValue(true)
+      state.calendars = new Map([['cal', { ...calendar, writable: false }]])
+      show(failed())
+      await act(async () => {})
+
+      expect(screen.queryByRole('button', { name: 'Leave without a link' })).toBeNull()
+    })
   })
 })
 
