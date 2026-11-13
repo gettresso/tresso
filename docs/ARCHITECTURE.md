@@ -3000,9 +3000,13 @@ What the workers do with it (`apps/sync/internal/googlecal`, `graphcal`):
   body has a Teams join block, the user's text goes before the block, and the join line (with what the user wrote
   below it) after it. What Tresso put after the block before is no part of the block: from the end, the last div or
   paragraph (also with attributes, a link inside or wrapped in another div, as Exchange may rewrite it) is dropped
-  when its first line is a join line, and so are the wrappers it leaves empty; the block's own first element is never
-  touched. So the line and the text below it are never doubled, and a changed or removed link leaves nothing behind;
-  the text below a removed line stays when the description still ends with it.
+  when its first line is a join line, and so are the wrappers it leaves empty. One element with text at most, and
+  never the block's own first element: what stands above it is someone else's and stays. A join line the block still
+  carries (below other text in its paragraph, or above a paragraph without one) is the block's and is not written
+  again; the tail starts at the first join line after the block's text that the block does not carry. So nothing is
+  doubled and nothing someone else wrote is lost, and a changed or removed link leaves nothing behind; the text below
+  a removed line stays when the description still ends with it. An own link has no meeting outcome to report, so a
+  join line left in the block changes no result.
 
 #### AI features (interfaces with built-in and planned AI implementations)
 
