@@ -679,6 +679,29 @@ final class ChatQueueTest extends DatabaseTestCase
         self::assertSame(8, $this->countRows('SELECT COUNT(*) FROM chat_outgoing'));
     }
 
+    public function testACancelledRepeatIsRefusedAsCancelledAndCountsAgainstNoLimit(): void
+    {
+        // The test limit is 8 replies in 10 minutes: one cancelled, then the limit filled.
+        $cancelled = self::newReplyId();
+        $this->queueReply($this->chatId, 'Never mind', $cancelled);
+        self::assertResponseStatusCodeSame(201);
+        $this->client->request('DELETE', '/api/v1/chat-outgoing/'.$cancelled, server: $this->web);
+        self::assertResponseStatusCodeSame(204);
+        for ($i = 2; $i <= 8; ++$i) {
+            $this->queueReply($this->chatId, 'Reply '.$i);
+            self::assertResponseStatusCodeSame(201);
+        }
+
+        // Looked up before any limit: the answer is "cancelled", not "too many", and nothing is counted.
+        for ($i = 0; $i < 3; ++$i) {
+            $this->queueReply($this->chatId, 'Never mind', $cancelled);
+            self::assertResponseStatusCodeSame(409);
+            self::assertSame('cancelled', $this->decodedResponse()['code'] ?? null);
+        }
+        $this->queueReply($this->chatId, 'Reply 9');
+        self::assertResponseStatusCodeSame(429);
+    }
+
     /** The id of a reply Kim queued. */
     private function queuedId(string $text): string
     {
