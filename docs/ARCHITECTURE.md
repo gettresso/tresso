@@ -2795,19 +2795,29 @@ after. Everything lives in `apps/api/src/Notification`.
   - A reminder's text is the event's time ("Thursday 22 October, 10:00 to 11:00") and its place after a comma. For
     an event with an online meeting it names the app instead, by the link's host alone (`ConferenceDetector::providerOf`):
     "..., on Microsoft Teams." (Google Meet, Zoom, Webex), or "..., online." for a link of no known app, then
-    "Or in <place>." when the event has a place too. A place that only says the event is online is left out: the app's
-    name or its last word, or "online", with at most one more word ("Microsoft Teams Meeting", "Teams",
-    "Microsoft Teams-vergadering", "Online"). A link that `MeetingLinkAddress` refuses (a user name in it, no real
-    host) is not called a meeting; the text then reads as for an event without one. Every channel (phone, desktop,
-    email) gets this one text.
-  - No notification holds a link, and the geocoder never gets one: every text that shows the place (reminders with
-    or without a meeting, leave-now) and the travel estimate use the place without links
-    (`NotificationPlanner::placeWithoutLinks`). Every word with `://` in it (also app schemes such as `msteams://`
-    and a link glued to a word), starting with `www.`, or with a host name followed by a slash goes as a whole, and
-    with it brackets left empty and separators left over. A place that is only a link is no place: no leave-now
-    for it, and no estimate. Known limits, decided: a meeting id or passcode typed as plain text in the place
-    ("Zoom ID 123 456 7890 Passcode 4321") cannot be told from a place and is shown; the title is the user's own
-    subject and is shown as it is.
+    "Or in <place>." when the event has a place too (no second period after a place that ends in one, "!" or "?").
+    A place that only says the event is online is left out: an app's name or its last word, or "online", alone or
+    with one of the words a meeting is written with (meeting, vergadering, besprechung, réunion, reunión, call, link):
+    "Microsoft Teams Meeting", "Teams", "Online". "Zoom Room" or "Teams-kamer" is a place. A link that
+    `MeetingLinkAddress` refuses (a user name in it, no real host) is not called a meeting; the text then reads as
+    for an event without one. Every channel (phone, desktop, email) gets this one text.
+  - No notification holds a link, and the geocoder never gets one (`App\Notification\EventPlace`): every text that
+    shows the place (reminders with or without a meeting, leave-now) uses the place without links, and the travel
+    estimate, leave-now and the "with a place" condition of rules use it too, without a place that only says the
+    event is online. Words are split at whitespace, commas and semicolons, and a word goes as a whole when it holds
+    `://` (also app schemes such as `msteams://` and a link glued to a word), starts with `www.`, or is a host in
+    lower case followed by a path, query, fragment or port (also an IP address); a place name with a dot and a slash
+    in capitals ("St.Pauli/Hamburg", "U.S./Canada") stays. A bracket group left with only a label ("(see <link>)"),
+    empty brackets, left over separators and a colon at the end go with it. A place that is only a link, or only says
+    "online", gets no leave-now and no estimate. Every step is linear in the length of the place, since a place can
+    be any length and is read for every occurrence. Known limits, decided:
+    - A meeting id or passcode typed as plain text in the place ("Zoom ID 123 456 7890 Passcode 4321") cannot be
+      told from a place and is shown.
+    - A bare host without a path, query, fragment or port ("zoom.us") is shown, as is a host typed with capitals.
+    - `localhost` and other hosts without a dot are not recognised as links and are shown.
+    - The tail of a link broken by a space, comma or semicolon is a word of its own and is shown.
+    - E-mail addresses and `tel:` numbers are not links and are shown.
+    - The title is the user's own subject and is shown as it is.
   - **Leave now** (switched off as a whole with `leaveNow` in the settings): for timed events with a place. With a
     travel time set on the event (`travelMinutes`, stored as `X-TRESSO-TRAVEL-MINUTES`; Apple Calendar's
     `X-APPLE-TRAVEL-DURATION` is read too) it fires at start minus travel minus the user's extra time (0, 5 or 10
