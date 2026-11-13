@@ -14,19 +14,21 @@ final readonly class PushMessage
     public const string REMINDERS = 'reminders';
     /** The Android channel of mail notifications. */
     public const string MAIL = 'mail';
+    /** The Android channel of new WhatsApp messages (the chat's name only). */
+    public const string WHATSAPP = 'whatsapp';
     /**
-     * Silent deliveries (quiet hours, focus) go to the channel's silent twin, "reminders_silent" or "mail_silent": on
-     * Android the channel, not the message, decides sound and banner.
+     * Silent deliveries (quiet hours, focus) go to the channel's silent twin, "reminders_silent", "mail_silent" or
+     * "whatsapp_silent": on Android the channel, not the message, decides sound and banner.
      */
     public const string SILENT_SUFFIX = '_silent';
 
     /**
-     * @param string|null           $path a path in the app (/calendar/events/{id}?occurrence=..., /thread/{id}), or
-     *                                    null to open the app as it is
+     * @param string|null           $path a path in the app (/calendar/events/{id}?occurrence=..., /thread/{id},
+     *                                    /chats/{id}), or null to open the app as it is
      * @param array<string, string> $data           more for the client to read, next to the fixed keys
      * @param string                $androidChannel the Android notification channel the phone shows it in; the phone
-     *                                              creates "reminders" (calendar) and "mail", and their silent
-     *                                              twins
+     *                                              creates "reminders" (calendar), "mail" and "whatsapp", and their
+     *                                              silent twins
      */
     public function __construct(
         public string $id,

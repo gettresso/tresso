@@ -11,6 +11,7 @@ use App\ApiResource\Input\Chat\RelayMessages;
 use App\ApiResource\Output\Chat\RelayImportOutput;
 use App\Entity\Chat;
 use App\Entity\ChatAccount;
+use App\Entity\ChatMessage;
 use App\Enum\ChatKind;
 use App\Repository\ChatRepository;
 use Doctrine\DBAL\Connection;
@@ -47,6 +48,8 @@ use Symfony\Component\Validator\ConstraintViolationList;
  *   space, and they are cut to {@see MAX_NAME} characters.
  * - The messages get a change number per {@see CHANGE_BYTES} of text, so a page of the delta, which never splits a
  *   change number, stays bounded however large the batch.
+ * - Each chat's newest incoming message stored goes to {@see ChatNotifier} for a push (only with Notify me on, never
+ *   for a batch of a first import).
  */
 final readonly class ChatIngestor
 {
@@ -63,6 +66,7 @@ final readonly class ChatIngestor
         private Connection $connection,
         private ChatRepository $chats,
         private ChatFields $fields,
+        private ChatNotifier $notifier,
     ) {
     }
 
@@ -129,6 +133,8 @@ final readonly class ChatIngestor
         $made = [];
         /** @var array<string, array{Chat, \DateTimeImmutable}> $newest */
         $newest = [];
+        /** @var array<string, ChatMessage> $newestIncoming the newest incoming message stored per chat, for a push */
+        $newestIncoming = [];
         $bytes = 0;
         foreach ($batch->messages as $i => $message) {
             $address = $addresses[$i] ?? null;
@@ -160,7 +166,7 @@ final readonly class ChatIngestor
                 $this->entityManager->persist($chat);
                 $nothingUnread[$jid] = true;
             }
-            $this->entityManager->persist($this->fields->newMessage(
+            $row = $this->fields->newMessage(
                 $chat,
                 $message->waId,
                 $message->fromMe,
@@ -170,7 +176,11 @@ final readonly class ChatIngestor
                 $message->media?->kind,
                 null === $message->media ? null : self::label($message->media->name),
                 $message->media?->size,
-            ));
+            );
+            $this->entityManager->persist($row);
+            if (!$message->fromMe && (!isset($newestIncoming[$jid]) || $newestIncoming[$jid]->getSentAt() <= $sentAt)) {
+                $newestIncoming[$jid] = $row;
+            }
             $stored[$fingerprints[$i]] = true;
             $newest[$jid] = [$chat, ChatTime::later($newest[$jid][1] ?? null, $sentAt)];
             $results[] = RelayImportOutput::STORED;
@@ -183,6 +193,7 @@ final readonly class ChatIngestor
             }
         }
         $this->entityManager->flush();
+        $this->notifier->stored($account, array_values($newestIncoming), $batch->firstImport, $now);
 
         $counts = array_count_values($results);
 

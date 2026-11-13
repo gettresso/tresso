@@ -78,6 +78,7 @@ framework:
             App\Notification\FireNotification: push
             App\Notification\SendMailNotification: push
             App\HandOver\NotifyOverdueHandOver: push
+            App\Chat\NotifyChatMessage: push
             App\Bulk\RunBulkAction: bulk
             App\Brief\DeliverDailyBrief: push
             App\Storage\ReencryptUserData: reencrypt

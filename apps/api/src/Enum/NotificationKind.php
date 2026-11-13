@@ -8,8 +8,8 @@ use App\Brief\DailyBriefDelivery;
 use App\Notification\NotificationChannelChoice;
 
 /**
- * The kinds of notification: the calendar's, and new mail that needs the user. The dispatcher and the per-kind channel
- * preferences take any kind name.
+ * The kinds of notification: the calendar's, new mail that needs the user, hand-overs and new WhatsApp messages. The
+ * dispatcher and the per-kind channel preferences take any kind name.
  */
 enum NotificationKind: string
 {
@@ -25,6 +25,12 @@ enum NotificationKind: string
     case Mail = 'mail';
     /** Nobody replied to a hand-over by its due date (not a calendar notification; sent by the hand-overs). */
     case HandOver = 'hand_over';
+    /**
+     * A new WhatsApp message, while the chat account's Notify me is on ({@see \App\Chat\ChatNotifier}). The phone only:
+     * the desktop that relays notifies itself, and an email would carry the chat's name off the server. Not among the
+     * kinds with chosen channels: Notify me is its switch.
+     */
+    case WhatsApp = 'whatsapp';
 
     /**
      * The kinds whose channels the user chooses per kind (channelsByKind). Reminders carry their own channels, so they
@@ -42,7 +48,7 @@ enum NotificationKind: string
     {
         return match ($this) {
             self::Reminder, self::Mail, self::HandOver => new NotificationChannelChoice(NotificationChannel::Phone, NotificationChannel::Desktop),
-            self::LeaveNow => new NotificationChannelChoice(NotificationChannel::Phone),
+            self::LeaveNow, self::WhatsApp => new NotificationChannelChoice(NotificationChannel::Phone),
             self::Brief, self::FollowUp => new NotificationChannelChoice(NotificationChannel::Desktop),
         };
     }
