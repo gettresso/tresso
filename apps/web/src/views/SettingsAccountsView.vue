@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { providerSignInOutcome, signedInAgainNotice } from '@tresso/core'
+import { accountSubtitle, providerSignInOutcome, signedInAgainNotice } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { useAccountsStore } from '@/stores/accounts'
+import { useChatsStore } from '@/stores/chats'
 import { useMailStore } from '@/stores/mail'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import { phoneNumber } from '@/components/chat/whatsappTexts'
@@ -20,6 +21,9 @@ const props = withDefaults(defineProps<{ finishesSignIn?: boolean }>(), { finish
 const accounts = useAccountsStore()
 const mail = useMailStore()
 const whatsapp = useWhatsAppRelayStore()
+const chats = useChatsStore()
+/** In the browser: the server's WhatsApp account, while the copy holds one (a Mac relays it); null otherwise. */
+const serverWhatsApp = computed(() => (chats.serverOnly && chats.enabled ? chats.serverAccount : null))
 /** The WhatsApp card's second line: the linked number when known, and where the chats live. */
 const whatsappLine = computed(() => {
   const number = whatsapp.identity?.number
@@ -106,8 +110,16 @@ watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.
 
     <AccountCard v-for="account in accounts.accounts" :key="account.id" :account="account" />
 
-    <!-- WhatsApp: the desktop app on macOS once it is turned on there; nothing of it shows elsewhere. -->
-    <section v-if="whatsapp.available" class="whatsapp" aria-label="WhatsApp">
+    <!-- WhatsApp: the desktop app on macOS once it is turned on there, and the browser while a Mac relays the chats. -->
+    <section v-if="serverWhatsApp" class="whatsapp" aria-label="WhatsApp">
+      <span class="wa-mark" aria-hidden="true">WA</span>
+      <span class="wa-who">
+        <span class="wa-name">WhatsApp</span>
+        <span class="wa-line" dir="auto">{{ accountSubtitle(serverWhatsApp, '') }}</span>
+      </span>
+      <RouterLink :to="{ name: 'settings-whatsapp' }" class="button button-quiet wa-open">Settings</RouterLink>
+    </section>
+    <section v-else-if="whatsapp.available" class="whatsapp" aria-label="WhatsApp">
       <span class="wa-mark" aria-hidden="true">WA</span>
       <span class="wa-who">
         <span class="wa-name">WhatsApp</span>

@@ -13,6 +13,9 @@ import { defineComponent, h } from 'vue'
 import { openConversation, useConversationCommands } from '@/mail/openConversation'
 import MailView from '../MailView.vue'
 
+// The desktop app's chats: these tests turn WhatsApp on for a Mac (the browser's are in the *Browser specs).
+vi.mock('@/platform/whatsapp', async (original) => ({ ...(await original<typeof import('@/platform/whatsapp')>()), chatsFromServer: false }))
+
 function conversation(threadId: string, lastMessageAt: number): Conversation {
   return {
     threadId,

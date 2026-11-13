@@ -83,12 +83,14 @@ const TEXTS: Record<ChatActionErrorCode, string> = {
 
 /**
  * A chat action that did not happen (or was put back); its message is plain words, never a chat's text or name. An
- * `unsure` reply carries the id it was sent with (`replyId`), to send it again under that id.
+ * `unsure` reply carries the id it was sent with (`replyId`), to send it again under that id; a refusal carries the
+ * server's Retry-After (`retryAfterMs`) when it gave one.
  */
 export class ChatActionError extends Error {
   constructor(
     readonly code: ChatActionErrorCode,
     readonly replyId: string | null = null,
+    readonly retryAfterMs: number | null = null,
   ) {
     super(TEXTS[code])
     this.name = 'ChatActionError'
@@ -116,11 +118,12 @@ export function chatActionError(error: unknown, about: 'reply' | 'change' = 'rep
   if (failure === null) {
     return new ChatActionError('offline')
   }
+  const wait = failure.retryAfterMs
   switch (failure.status) {
     case 403:
-      return new ChatActionError('no_access')
+      return new ChatActionError('no_access', null, wait)
     case 404:
-      return new ChatActionError('not_found')
+      return new ChatActionError('not_found', null, wait)
     case 409:
       return new ChatActionError(
         failure.code === 'already_going_out'
@@ -132,13 +135,15 @@ export function chatActionError(error: unknown, about: 'reply' | 'change' = 'rep
               : failure.code === 'other_number'
                 ? 'other_number'
                 : 'refused',
+        null,
+        wait,
       )
     case 422:
-      return new ChatActionError('refused')
+      return new ChatActionError('refused', null, wait)
     case 429:
-      return new ChatActionError(about === 'reply' ? 'too_many' : 'wait')
+      return new ChatActionError(about === 'reply' ? 'too_many' : 'wait', null, wait)
     default:
-      return new ChatActionError('failed')
+      return new ChatActionError('failed', null, wait)
   }
 }
 

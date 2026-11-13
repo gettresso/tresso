@@ -63,8 +63,15 @@ const briefIsNew = computed(() => mail.latestBrief !== null && briefLeft.value >
 
 const chats = useChatsStore()
 const wa = useWhatsAppRelayStore()
-/** The WhatsApp row (the Sidebar board's account row): only where WhatsApp is on and connected. */
+/**
+ * The WhatsApp row (the Sidebar board's account row): only where WhatsApp is on and connected; in the browser while the
+ * server holds the chats, named by the Mac that relays them (`+31612345678, via Kim's MacBook Pro`).
+ */
 const whatsappRow = computed(() => {
+  if (chats.serverOnly) {
+    const account = chats.serverAccount
+    return chats.enabled && account !== null ? { subtitle: accountSubtitle(account, ''), unread: chats.unread } : null
+  }
   const config = wa.config
   if (!chats.enabled || config === null) {
     return null

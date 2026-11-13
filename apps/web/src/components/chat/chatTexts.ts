@@ -9,8 +9,10 @@ import {
   type ChatOutgoingError,
   type ReplyLabel,
   type SyncedChat,
+  type SyncedChatAccount,
   type SyncedChatMessage,
 } from '@tresso/core'
+import { shortTime } from '@/mail/format'
 import type { BridgeState } from '@/platform/whatsapp'
 import type { AttachState, MediaFailure, MediaState } from '@/stores/chats'
 
@@ -191,6 +193,46 @@ export function chatNoticeKind(bridge: BridgeState): ChatNoticeKind | null {
   // A code nobody scanned for three minutes stopped the bridge: what is missing is the link.
   return bridge.link === 'unlinked' && bridge.error === null ? 'unlinked' : 'stopped'
 }
+
+/** A notice without an action: what the relaying Mac's state means for the chats here (relayNotice). */
+export interface RelayNotice {
+  title: string
+  body: string
+}
+
+/**
+ * In the browser, above a chat and the WhatsApp list: what keeps the relaying Mac from bringing messages in or sending
+ * replies, from the chat account's row (the WhatsAppStates board's banner when the Mac is offline; the phone's words
+ * for a bridge that stopped or a link that went). Null while it relays and WhatsApp works. The time the Mac went
+ * offline is shown as `shortTime` shows times: the time today, else the date.
+ */
+export function relayNotice(account: Pick<SyncedChatAccount, 'relayOnline' | 'relayOfflineSince' | 'bridge' | 'link'> | null, now = new Date()): RelayNotice | null {
+  if (account === null) {
+    return null
+  }
+  if (!account.relayOnline) {
+    const since = account.relayOfflineSince === null ? Number.NaN : Date.parse(account.relayOfflineSince)
+    return {
+      title: Number.isNaN(since) ? 'Your Mac is offline.' : `Your Mac is offline since ${shortTime(since, now)}.`,
+      body: 'New WhatsApp messages show up here once it is back. Replies wait until then.',
+    }
+  }
+  if (account.link === 'unlinked') {
+    return { title: 'WhatsApp is not linked on your Mac.', body: 'Nothing comes in or goes out until it is linked again there.' }
+  }
+  if (account.bridge === 'stopped') {
+    return { title: 'The bridge on your Mac is not running.', body: 'New messages are not picked up, and replies wait until it runs again.' }
+  }
+  return null
+}
+
+/** The second line of a file row in the browser: files stay on the relaying Mac for now (no download here). */
+export const MEDIA_ON_RELAY = 'Open this file on the relaying Mac.'
+
+/** A chat left out, opened in the browser: only the Mac that relays reads the bridge again to take it back in. */
+export const LEFT_OUT_HERE = 'You left this chat out. Take it back in on the Mac that relays WhatsApp, under Settings, WhatsApp.'
+/** Next to "Leave this chat out" in the browser. */
+export const LEAVE_OUT_RELAY_ONLY = 'Only the Mac that relays WhatsApp can take it back in.'
 
 export const NOTICES: Record<ChatNoticeKind, { title: string; body: string; action: string }> = {
   unlinked: { title: 'WhatsApp is not linked.', body: 'Until it is linked again nothing comes in or goes out.', action: 'Show how' },

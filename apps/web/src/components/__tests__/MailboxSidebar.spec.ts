@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { describeSync, type SyncFacts } from '@tresso/core'
@@ -6,6 +6,9 @@ import { useMailStore } from '@/stores/mail'
 import { useChatsStore } from '@/stores/chats'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import MailboxSidebar from '../MailboxSidebar.vue'
+
+// The desktop app's chats: these tests turn WhatsApp on for a Mac (the browser's are in the *Browser specs).
+vi.mock('@/platform/whatsapp', async (original) => ({ ...(await original<typeof import('@/platform/whatsapp')>()), chatsFromServer: false }))
 
 const NOW = Date.UTC(2026, 10, 12, 14, 30)
 const time = (at: number) => new Date(at).toISOString().slice(11, 16)

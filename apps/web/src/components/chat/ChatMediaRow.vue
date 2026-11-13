@@ -3,21 +3,21 @@ import { computed } from 'vue'
 import type { SyncedChatMessage } from '@tresso/core'
 import type { MediaState } from '@/stores/chats'
 import AppIcon from '@/components/AppIcon.vue'
-import { mediaRetry, mediaStateText, mediaTitle } from '@/components/chat/chatTexts'
+import { MEDIA_ON_RELAY, mediaRetry, mediaStateText, mediaTitle } from '@/components/chat/chatTexts'
 
 /**
  * The file a message carries (the WhatsAppInbox board's picture row, plan 6.7): an icon by kind (there is no thumbnail
  * before a download), the kind and size or a document's name, and what can be done: Download, Open once Tresso has
  * its own checked copy, Try again after a failure that may pass. A voice message gets no play control and no length.
+ * `remote` (the browser): the file stays on the relaying Mac for now, so the row says so and offers nothing.
  */
-const props = defineProps<{ message: SyncedChatMessage; state: MediaState }>()
+const props = defineProps<{ message: SyncedChatMessage; state: MediaState; remote?: boolean }>()
 const emit = defineEmits<{ download: []; open: [] }>()
 
 const icon = computed(() => (props.message.mediaKind === 'image' ? 'image' : props.message.mediaKind === 'video' ? 'video' : props.message.mediaKind === 'audio' ? 'know' : 'attachment'))
 const title = computed(() => mediaTitle(props.message))
-const line = computed(() => mediaStateText(props.message, props.state))
-const failed = computed(() => props.state.state === 'failed')
-
+const line = computed(() => (props.remote ? MEDIA_ON_RELAY : mediaStateText(props.message, props.state)))
+const failed = computed(() => !props.remote && props.state.state === 'failed')
 </script>
 
 <template>
@@ -33,12 +33,14 @@ const failed = computed(() => props.state.state === 'failed')
       <span class="title" dir="auto">{{ title }}</span>
       <span class="line" :role="failed ? 'alert' : undefined">{{ line }}</span>
     </span>
-    <button v-if="state.state === 'idle'" type="button" class="button button-quiet action" @click="emit('download')"><AppIcon name="download" :size="14" /> Download</button>
-    <button v-else-if="state.state === 'downloading'" type="button" class="button button-quiet action" disabled aria-busy="true">Downloading</button>
-    <button v-else-if="state.state === 'done'" type="button" class="button button-quiet action" @click="emit('open')">Open</button>
-    <button v-else-if="state.state === 'failed' && mediaRetry(state.reason)" type="button" class="button button-quiet action" @click="emit('download')">
-      Try again
-    </button>
+    <template v-if="!remote">
+      <button v-if="state.state === 'idle'" type="button" class="button button-quiet action" @click="emit('download')"><AppIcon name="download" :size="14" /> Download</button>
+      <button v-else-if="state.state === 'downloading'" type="button" class="button button-quiet action" disabled aria-busy="true">Downloading</button>
+      <button v-else-if="state.state === 'done'" type="button" class="button button-quiet action" @click="emit('open')">Open</button>
+      <button v-else-if="state.state === 'failed' && mediaRetry(state.reason)" type="button" class="button button-quiet action" @click="emit('download')">
+        Try again
+      </button>
+    </template>
   </span>
 </template>
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
-import { RouterLink, useRoute, type RouteLocationRaw } from 'vue-router'
+import { RouterLink, useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import { unsubscribeOffer, type UnsubscribeOffer } from '@tresso/core'
 import { useBatchesStore } from '@/stores/batches'
 import { useChatsStore } from '@/stores/chats'
@@ -10,12 +10,15 @@ import CleanupPanel from '@/components/CleanupPanel.vue'
 import ConversationList from '@/components/ConversationList.vue'
 import ReadingPane from '@/components/ReadingPane.vue'
 import ChatPane from '@/components/chat/ChatPane.vue'
+import ChatRelayNotice from '@/components/chat/ChatRelayNotice.vue'
+import { relayNotice } from '@/components/chat/chatTexts'
 import SmartInboxManage from '@/components/SmartInboxManage.vue'
 import UnsubscribeAction from '@/components/UnsubscribeAction.vue'
 import MiniAgenda from '@/components/calendar/MiniAgenda.vue'
 
 const mail = useMailStore()
 const route = useRoute()
+const router = useRouter()
 const batches = useBatchesStore()
 const chats = useChatsStore()
 
@@ -50,6 +53,25 @@ const chatRows = computed(() => {
   const showsMail = chats.channel === 'all'
   return chats.inboxSummaries.filter((summary) => !showsMail || !mail.hasMore || last === undefined || summary.lastMessageAt >= last.lastMessageAt)
 })
+/**
+ * In the browser, above the WhatsApp list (and the Unified Inbox's WhatsApp tab): what the relaying Mac's state means
+ * for the chats, as the chat pane says it.
+ */
+const listNotice = computed(() => (chats.enabled && chats.serverOnly && (inWhatsApp.value || channel.value === 'whatsapp') ? relayNotice(chats.account) : null))
+/*
+ * In the browser the server's WhatsApp account can go while a WhatsApp address is open (disconnected on the Mac, or
+ * "Only this Mac" chosen there), or the copy says only after the address opened that it holds none: nothing of WhatsApp
+ * shows then, so the address leads to the Unified Inbox, as it would have when opened.
+ */
+watch(
+  () => chats.serverOnly && chats.serverChecked && !chats.enabled && (inWhatsApp.value || route.name === 'unified-chat'),
+  (gone) => {
+    if (gone) {
+      void router.replace({ name: 'unified' })
+    }
+  },
+  { immediate: true },
+)
 const conversations = computed(() => (inWhatsApp.value || (channel.value === 'whatsapp') ? [] : mail.conversations))
 const list = ref<InstanceType<typeof ConversationList> | null>(null)
 const inBatches = computed(() => route.name === 'batches' || route.name === 'batches-thread')
@@ -240,6 +262,9 @@ watch(
             <RouterLink :to="{ name: 'settings-batches' }">Change batch times</RouterLink>
           </p>
         </template>
+        <template v-else-if="listNotice" #aside>
+          <ChatRelayNotice class="list-notice" :notice="listNotice" />
+        </template>
         <template v-if="inBatches" #extra="{ conversation }">
           <UnsubscribeAction :offer="offers.get(conversation.threadId) ?? null" />
         </template>
@@ -273,6 +298,9 @@ watch(
   margin: -4px 0 0;
   font-size: 13px;
   color: var(--ink-2);
+}
+.list-notice {
+  border-radius: var(--radius-card);
 }
 .next-batch a {
   font-weight: 600;
