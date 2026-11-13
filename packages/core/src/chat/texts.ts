@@ -96,10 +96,11 @@ export function serverFileView(message: Pick<SyncedChatMessage, 'mediaKind' | 'm
 
 /**
  * `a minute`, `4 minutes`, `2 hours`: a wait the server asked for (Retry-After), rounded up, so the user never tries
- * again too early.
+ * again too early. No wait, a negative one or one that is not a number is `a minute`.
  */
 export function waitText(ms: number): string {
-  const minutes = Math.max(1, Math.ceil(ms / 60_000))
+  // A wait that is not a number (a missing or broken Retry-After) is said as the shortest.
+  const minutes = Number.isFinite(ms) ? Math.max(1, Math.ceil(ms / 60_000)) : 1
   if (minutes === 1) {
     return 'a minute'
   }

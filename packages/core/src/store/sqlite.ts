@@ -1051,6 +1051,12 @@ export class SqliteMailStore implements MailStore {
     )
   }
 
+  removeChatMetaStartingWith(prefix: string): Promise<void> {
+    // Compared as text (substr), not with LIKE, whose `_` and `%` the prefix may hold.
+    const start = CHAT_META + prefix
+    return this.write(() => this.sql.run('DELETE FROM meta WHERE substr(key, 1, ?) = ?', [start.length, start]))
+  }
+
 }
 
 /** The steps from one version to a later one, in order; null when one is missing or the copy is of a newer version. */
