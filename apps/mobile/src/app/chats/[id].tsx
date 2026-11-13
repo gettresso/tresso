@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AccessibilityInfo, AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import { AccessibilityInfo, Alert, AppState, FlatList, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import * as DocumentPicker from 'expo-document-picker'
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { replyText, TODO_TITLE_MAX_LENGTH, type ChatPage, type SyncedChatOutgoing } from '@tresso/core'
+import { CHAT_MAX_FILE_BYTES, replyText, TODO_TITLE_MAX_LENGTH, type ChatPage, type SyncedChatMessage, type SyncedChatOutgoing } from '@tresso/core'
 import { outcomeUnknown } from '@/chat/chatActions'
 import { useChats } from '@/chat/ChatProvider'
-import { CHAT_MISSING, cancelFailureText, chatInitials, chatName, COUNTER_FROM, counterText, relayBanner, replyProblemText, retryFailureText, sendFailureText } from '@/chat/texts'
+import { CHAT_MISSING, cancelFailureText, chatInitials, chatName, COUNTER_FROM, counterText, relayBanner, replyProblemText, retryFailureText, sendFailureText, UNSCANNED_WARNING } from '@/chat/texts'
 import { timelineRows, windowReplies, type BubbleRow, type TimelineRow } from '@/chat/timelineRows'
 import { useChatWindow } from '@/chat/useChatWindow'
 import { ChatBubble } from '@/components/ChatBubble'
@@ -38,8 +39,10 @@ function stateAnnouncement(bubble: BubbleRow): string | null {
 /**
  * A WhatsApp chat on the phone (the MobileWhatsAppChat board, with the WhatsApp plan's corrections): the header with
  * Back, the chat's name, `WhatsApp` and Make todo; a banner while the Mac that relays is offline or cannot send; the
- * messages in windows (newest first, older ones as the list reaches its top, day rows between days); and the reply box.
- * A reply goes through the server's queue and waits there for the Mac. Opening the chat while the app is in front reads
+ * messages in windows (newest first, older ones as the list reaches its top, day rows between days); and the reply box
+ * with Attach a file. A reply (and a file, uploaded first) goes through the server's queue and waits there for the Mac.
+ * A message's file is asked for from the Mac only on Download, and opened by the system from a fresh signed link once
+ * the server checked it. Opening the chat while the app is in front reads
  * it in Tresso (never in WhatsApp).
  */
 export default function ChatScreen() {
@@ -204,6 +207,79 @@ export default function ChatScreen() {
     }
   }
 
+  /** Attach a file: one picked from the device, uploaded and queued for the Mac. */
+  const [attachingFile, setAttachingFile] = useState(false)
+  async function attach() {
+    if (chat === null || attachingFile) {
+      return
+    }
+    const forChat = chat
+    let picked: DocumentPicker.DocumentPickerResult
+    try {
+      picked = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true })
+    } catch (error) {
+      console.error('Choosing a file to attach failed', error instanceof Error ? error.name : typeof error)
+      return
+    }
+    const asset = picked.canceled ? null : (picked.assets[0] ?? null)
+    if (asset === null) {
+      return
+    }
+    if ((asset.size ?? 0) > CHAT_MAX_FILE_BYTES) {
+      setSendError(`${asset.name} is larger than 100 MB, the most Tresso sends.`)
+      return
+    }
+    setAttachingFile(true)
+    setSendError(null)
+    try {
+      await actions.sendFile(forChat, { uri: asset.uri, name: asset.name, size: asset.size ?? 0 })
+    } catch (error) {
+      if (mounted.current && onScreen.current === forChat.id) {
+        setSendError(`${asset.name}: ${sendFailureText(error, outcomeUnknown(error))}`)
+      }
+    } finally {
+      if (mounted.current) {
+        setAttachingFile(false)
+      }
+    }
+  }
+
+  /** What the last action on a file said, by message (a refusal, a link that could not open). */
+  const [mediaNote, setMediaNote] = useState<{ messageId: string; text: string } | null>(null)
+  const onMedia = useCallback(
+    (message: SyncedChatMessage, action: 'download' | 'open' | 'confirm') => {
+      const open = async (acceptUnscanned: boolean) => {
+        const link = await actions.fileLink(message.id, acceptUnscanned)
+        if (link === null) {
+          setMediaNote({ messageId: message.id, text: 'This file cannot be opened yet.' })
+          return
+        }
+        await Linking.openURL(link)
+      }
+      const fail = (error: unknown) => {
+        console.error('A WhatsApp file action failed', error instanceof Error ? error.name : typeof error)
+        if (mounted.current) {
+          setMediaNote({ messageId: message.id, text: outcomeUnknown(error) ? 'Tresso could not reach your Tresso server. Try again.' : 'Your Tresso server did not take this.' })
+        }
+      }
+      setMediaNote(null)
+      if (action === 'download') {
+        actions
+          .requestFile(message.id)
+          .then(() => syncNow())
+          .catch(fail)
+      } else if (action === 'open') {
+        open(false).catch(fail)
+      } else {
+        Alert.alert('Not checked for malware', UNSCANNED_WARNING, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open anyway', style: 'destructive', onPress: () => void open(true).catch(fail) },
+        ])
+      }
+    },
+    [actions, syncNow],
+  )
+
   // Cancel, Delete and Try again, one at a time per reply.
   const [busyReply, setBusyReply] = useState<string | null>(null)
   const busyNow = useRef<string | null>(null)
@@ -274,9 +350,19 @@ export default function ChatScreen() {
           </View>
         )
       }
-      return <ChatBubble bubble={item} busy={item.reply !== null && busyReply === item.reply.id} onRetry={onRetry} onMenu={setMenuFor} />
+      return (
+        <ChatBubble
+          bubble={item}
+          busy={item.reply !== null && busyReply === item.reply.id}
+          onRetry={onRetry}
+          onMenu={setMenuFor}
+          relayOnline={relayOnline}
+          mediaNote={item.media !== null && mediaNote?.messageId === item.media.id ? mediaNote.text : null}
+          onMedia={onMedia}
+        />
+      )
     },
-    [styles, busyReply, onRetry],
+    [styles, busyReply, onRetry, relayOnline, mediaNote, onMedia],
   )
 
   const menuWaiting = menuFor?.status === 'waiting'
@@ -389,6 +475,16 @@ export default function ChatScreen() {
               </Text>
             )}
             <View style={styles.composerRow}>
+              <Pressable
+                style={({ pressed }) => [styles.attach, (pressed || attachingFile) && styles.pressed]}
+                onPress={() => void attach()}
+                disabled={attachingFile}
+                accessibilityRole="button"
+                accessibilityLabel="Attach a file"
+                accessibilityState={{ disabled: attachingFile, busy: attachingFile }}
+              >
+                <Icon name="attach" size={20} color={theme.ink} />
+              </Pressable>
               <TextInput
                 style={styles.field}
                 value={text}
@@ -461,6 +557,7 @@ function makeStyles(theme: Theme) {
     older: { alignSelf: 'center', minHeight: 44, justifyContent: 'center', paddingHorizontal: 14 },
     composer: { gap: 6, paddingTop: 10, paddingHorizontal: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.line, backgroundColor: theme.surface },
     composerRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+    attach: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
     field: { flex: 1, minHeight: 44, maxHeight: 140, paddingHorizontal: 14, paddingTop: 11, paddingBottom: 11, borderWidth: 1, borderColor: theme.lineStrong, borderRadius: 22, color: theme.ink, fontSize: 15 },
     send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.ink },
     note: { color: theme.ink2, fontSize: 12 },

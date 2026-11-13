@@ -46,12 +46,19 @@ describe('timelineRows', () => {
     expect(rows[2]?.label.startsWith('Unknown sender, ')).toBe(true)
   })
 
-  it('shows a file as its kind and size, and that it opens on the Mac', () => {
+  it('shows a file as its kind and size, and where it stands', () => {
     const [photo] = bubbles(timelineRows([message('m1', 'c1', '2026-11-13T10:14:00.000Z', { text: '', mediaKind: 'image', mediaName: 'image_1.jpg', mediaSize: 184_320 })], [], { group: false, name: 'Bram', relayOnline: true, now: NOW }))
 
     expect(photo?.media?.id).toBe('m1')
     expect(photo?.text).toBe('')
-    expect(photo?.label).toBe(`Bram, ${at('2026-11-13T10:14:00.000Z')}, Photo, 180 KB. Open this file on your Mac.`)
+    expect(photo?.label).toBe(`Bram, ${at('2026-11-13T10:14:00.000Z')}, Photo, 180 KB. Photo, on your Mac`)
+  })
+
+  it('shows a file queued from a device by its name', () => {
+    const [sent] = bubbles(timelineRows([], [{ id: 'r1', chatId: 'c1', chatAccountId: 'a1', text: '', status: 'waiting', error: null, createdAt: '2026-11-13T10:14:00.000Z', claimedAt: null, sentAt: null, file: { name: 'plan.pdf', size: 31 } }], { group: false, name: 'Bram', relayOnline: false, now: NOW }))
+
+    expect(sent?.text).toBe('File: plan.pdf')
+    expect(sent?.label).toContain('File: plan.pdf')
   })
 
   it('puts a day row before each new day', () => {

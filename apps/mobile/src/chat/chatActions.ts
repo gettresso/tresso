@@ -1,4 +1,4 @@
-import { chatApiFailure, replyText, type MailStore, type SyncedChat, type SyncedChatOutgoing } from '@tresso/core'
+import { CHAT_MAX_FILE_BYTES, chatApiFailure, replyText, type MailStore, type SyncedChat, type SyncedChatOutgoing } from '@tresso/core'
 import type { PhoneChatApi } from '@/chat/chatApi'
 import { replyProblemText } from '@/chat/texts'
 
@@ -19,6 +19,15 @@ export interface ChatActionsDeps {
   changed(): void
   /** Something went wrong that the user sees only by its effect (a chat that shows unread again); by name, no content. */
   onError?(what: string, error: unknown): void
+  /** The content of a file the user picked, by its URI on the device (a fetch of it, which React Native backs natively). */
+  readFile?(uri: string): Promise<Blob>
+}
+
+/** A file the user picked to send: where it is on the device, its name and its size in bytes. */
+export interface PickedFile {
+  uri: string
+  name: string
+  size: number
 }
 
 /**
@@ -73,6 +82,11 @@ export function outcomeUnknown(error: unknown): boolean {
   return failure === null || failure.status === 408 || failure.status >= 500
 }
 
+/** A file on the device as a Blob, read by React Native's fetch of its URI. */
+async function readDeviceFile(uri: string): Promise<Blob> {
+  return (await fetch(uri)).blob()
+}
+
 function readUnsure(value: string | null): Unsure | null {
   if (value === null) {
     return null
@@ -123,6 +137,9 @@ export class ChatActions {
   /** Cancels and retries whose request is under way. */
   private readonly cancelling = new Set<string>()
   private readonly retryingNow = new Set<string>()
+
+  /** Files whose sending ended without an answer, by chat and file: the ids they went with, to go again under. */
+  private readonly unsureFiles = new Map<string, { uploadId: string; replyId: string; at: number }>()
 
   constructor(private readonly deps: ChatActionsDeps) {}
 
@@ -266,6 +283,90 @@ export class ChatActions {
       this.deps.onError?.('Keeping a queued reply on this phone failed', error)
     }
     return queued
+  }
+
+  /**
+   * Sends a file: uploads it to the chat, then queues a reply that carries it for the relaying Mac. When the outcome is
+   * not known, the same file in the same chat goes again under the same upload and reply ids within REUSE_ID_MS, so it
+   * is queued once. At most CHAT_MAX_FILE_BYTES.
+   *
+   * @throws Error with what to tell the user, or the server's refusal or a network error as it came
+   */
+  async sendFile(chat: SyncedChat, file: PickedFile): Promise<SyncedChatOutgoing> {
+    const store = this.deps.store()
+    if (store === null) {
+      throw new Error('The chat is not on this phone.')
+    }
+    if (file.size > CHAT_MAX_FILE_BYTES) {
+      throw new Error(`${file.name} is larger than 100 MB, the most Tresso sends.`)
+    }
+    const now = this.deps.now()
+    const key = `${chat.id}\n${file.name}\n${file.size}`
+    const kept = this.unsureFiles.get(key)
+    const earlier = kept !== undefined && now - kept.at < REUSE_ID_MS && now >= kept.at ? kept : null
+    const uploadId = earlier?.uploadId ?? this.deps.newId(now)
+    const id = earlier?.replyId ?? this.deps.newId(now)
+    const waiting: SyncedChatOutgoing = {
+      id,
+      chatId: chat.id,
+      chatAccountId: chat.chatAccountId,
+      text: '',
+      status: 'waiting',
+      error: null,
+      createdAt: new Date(now).toISOString(),
+      claimedAt: null,
+      sentAt: null,
+      file: { name: file.name, size: file.size },
+    }
+    this.pending.set(chat.id, [...(this.pending.get(chat.id) ?? []).filter((reply) => reply.id !== id), waiting])
+    this.emit()
+    let queued: SyncedChatOutgoing
+    try {
+      const content = await (this.deps.readFile ?? readDeviceFile)(file.uri)
+      await this.deps.api.uploadFile(chat.id, uploadId, content)
+      queued = await this.deps.api.queueReply(chat.id, { id, text: '', file: { uploadId, name: file.name } })
+    } catch (error) {
+      const left = (this.pending.get(chat.id) ?? []).filter((reply) => reply.id !== id)
+      if (left.length === 0) {
+        this.pending.delete(chat.id)
+      } else {
+        this.pending.set(chat.id, left)
+      }
+      if (outcomeUnknown(error)) {
+        this.unsureFiles.set(key, { uploadId, replyId: id, at: earlier?.at ?? now })
+      } else {
+        this.unsureFiles.delete(key)
+      }
+      this.emit()
+      throw error
+    }
+    this.unsureFiles.delete(key)
+    this.landed.add(id)
+    this.pending.set(chat.id, (this.pending.get(chat.id) ?? []).map((reply) => (reply.id === id ? queued : reply)))
+    this.emit()
+    try {
+      if (this.deps.store() === store) {
+        await store.putChatOutgoing([queued])
+        this.deps.changed()
+      }
+    } catch (error) {
+      this.deps.onError?.('Keeping a queued reply on this phone failed', error)
+    }
+    return queued
+  }
+
+  /** Asks the relaying Mac for a message's file; nothing downloads without this. */
+  async requestFile(messageId: string): Promise<void> {
+    await this.deps.api.requestMedia(messageId)
+  }
+
+  /**
+   * A fresh signed link to a file the server holds, to hand to the system (which downloads it, never runs it); with
+   * `acceptUnscanned`, for a file that could not be checked, once the user accepted that. Null when it may not open yet.
+   */
+  async fileLink(messageId: string, acceptUnscanned = false): Promise<string | null> {
+    const answer = acceptUnscanned ? await this.deps.api.unscannedMediaLink(messageId) : await this.deps.api.media(messageId)
+    return answer.url
   }
 
   /** Forgets the unsure send the copy keeps for a chat when the copy has that reply now. */

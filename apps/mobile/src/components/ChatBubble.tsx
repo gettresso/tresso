@@ -1,8 +1,8 @@
 import { memo, useMemo } from 'react'
 import { Pressable, StyleSheet, Text, View, type AccessibilityActionEvent } from 'react-native'
-import type { SyncedChatOutgoing } from '@tresso/core'
+import type { SyncedChatMessage, SyncedChatOutgoing } from '@tresso/core'
 import type { BubbleRow } from '@/chat/timelineRows'
-import { MEDIA_ON_MAC, mediaTitle } from '@/chat/texts'
+import { mediaTitle, mediaView } from '@/chat/texts'
 import { useTheme, type Theme } from '@/theme'
 
 interface Props {
@@ -13,16 +13,23 @@ interface Props {
   onRetry(reply: SyncedChatOutgoing): void
   /** Long press on a reply that waits (Cancel) or was not sent (Delete): asks first. */
   onMenu(reply: SyncedChatOutgoing): void
+  /** The relaying Mac is online: a file asked for is on its way rather than waiting. */
+  relayOnline: boolean
+  /** What the last action on this message's file said (a refusal); null for nothing. */
+  mediaNote: string | null
+  /** The file's action: Download and Try again ask the Mac, Open opens a checked file, Open anyway one not checked. */
+  onMedia(message: SyncedChatMessage, action: 'download' | 'open' | 'confirm'): void
 }
 
 /**
  * A bubble of a chat (the MobileWhatsAppChat board): someone else's on the left (white, with an edge), the user's on the
  * right (green), a group sender's name above in their colour, the time and a reply's state under the text. A file shows
- * its kind and size only; the phone does not download it. A reply that waits can be cancelled with a long press, one
+ * its kind and size, where it stands and what can be done: it is asked for from the relaying Mac only on Download, and
+ * opened from the server once it was checked for malware (one that could not be checked only after a warning). A reply that waits can be cancelled with a long press, one
  * that was not sent is sent again with a tap (or deleted with a long press); one whose sending the Mac could not confirm
  * is sent again only by its own Try again, never by a tap on the bubble. Screen readers get the same as actions.
  */
-export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retryReply, onMenu: openMenu }: Props) {
+export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retryReply, onMenu: openMenu, relayOnline, mediaNote, onMedia }: Props) {
   const theme = useTheme()
   const styles = useMemo(() => makeStyles(theme), [theme])
   const waiting = bubble.state === 'waiting'
@@ -72,12 +79,7 @@ export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retr
       >
         {bubble.sender !== null && <Text style={[styles.sender, { color: theme.senders[bubble.sender.tone] ?? theme.ink2 }]}>{bubble.sender.label}</Text>}
         {bubble.media !== null && (
-          <View style={styles.media}>
-            <Text style={styles.mediaTitle} numberOfLines={1}>
-              {mediaTitle(bubble.media)}
-            </Text>
-            <Text style={styles.mediaLine}>{MEDIA_ON_MAC}</Text>
-          </View>
+          <MediaRow message={bubble.media} relayOnline={relayOnline} note={mediaNote} onMedia={onMedia} styles={styles} />
         )}
         {bubble.text !== '' && <Text style={styles.text}>{bubble.text}</Text>}
         <Text style={[styles.meta, waiting && styles.waiting, (failed || unconfirmed) && styles.failed]}>{bubble.meta}</Text>
@@ -92,6 +94,31 @@ export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retr
   )
 })
 
+const ACTION_LABELS = { download: 'Download', retry: 'Try again', open: 'Open', confirm: 'Open anyway' } as const
+
+function MediaRow({ message, relayOnline, note, onMedia, styles }: { message: SyncedChatMessage; relayOnline: boolean; note: string | null; onMedia: Props['onMedia']; styles: ReturnType<typeof makeStyles> }) {
+  const view = mediaView(message, relayOnline)
+  const action = view.action
+  return (
+    <View style={styles.media}>
+      <Text style={styles.mediaTitle} numberOfLines={1}>
+        {mediaTitle(message)}
+      </Text>
+      <Text style={[styles.mediaLine, (view.failed || note !== null) && styles.mediaFailed]}>{note ?? view.line}</Text>
+      {action !== null && (
+        <Pressable
+          style={({ pressed }) => [styles.mediaAction, pressed && styles.pressed]}
+          onPress={() => onMedia(message, action === 'retry' ? 'download' : action)}
+          accessibilityRole="button"
+          accessibilityLabel={`${ACTION_LABELS[action]}, ${mediaTitle(message)}`}
+        >
+          <Text style={styles.mediaActionLabel}>{ACTION_LABELS[action]}</Text>
+        </Pressable>
+      )}
+    </View>
+  )
+}
+
 function makeStyles(theme: Theme) {
   return StyleSheet.create({
     item: { alignItems: 'flex-start', marginTop: 8 },
@@ -105,6 +132,9 @@ function makeStyles(theme: Theme) {
     media: { gap: 2, padding: 10, borderRadius: 8, backgroundColor: theme.ground },
     mediaTitle: { color: theme.ink, fontSize: 13, fontWeight: '600' },
     mediaLine: { color: theme.bubbleMeta, fontSize: 12 },
+    mediaFailed: { color: theme.danger },
+    mediaAction: { alignSelf: 'flex-start', marginTop: 4, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, borderColor: theme.ink2 },
+    mediaActionLabel: { color: theme.ink, fontSize: 12, fontWeight: '600' },
     text: { color: theme.ink, fontSize: 15, lineHeight: 21 },
     meta: { alignSelf: 'flex-end', color: theme.bubbleMeta, fontSize: 11 },
     waiting: { color: theme.delegate, fontWeight: '600' },
