@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { linkText, meetingChoices, type MeetingAccount, type MeetingChoice, type MeetingPreferences, type MeetingRow } from '@tresso/core'
 import { calendar } from '@tresso/core/testing'
 import MeetingLinkRow from '../calendar/MeetingLinkRow.vue'
@@ -166,5 +166,34 @@ describe('the meeting link row', () => {
     const removed = mountRow({ row: row('removed'), on: false })
     await removed.get('.actions button').trigger('click')
     expect(removed.emitted('undo')).toHaveLength(1)
+  })
+
+  it('announces its state politely and keeps the focus in the row when a button goes away', async () => {
+    const wrapper = mountRow({ row: row('failed', { title: 'Could not make the Teams link', tone: 'error', icon: 'error' }), on: false })
+    expect(wrapper.get('.text').attributes('aria-live')).toBe('polite')
+    const retry = wrapper.get('.actions .button-primary')
+    ;(retry.element as HTMLButtonElement).focus()
+    await retry.trigger('click')
+    await wrapper.setProps({ row: row('creating', { title: 'Making the Teams link', icon: 'spinner' }) })
+    await flushPromises()
+    expect(document.activeElement).toBe(wrapper.get('.meeting-row').element)
+
+    const removed = mountRow({ row: row('removed'), on: false })
+    const undo = removed.get('.actions button')
+    ;(undo.element as HTMLButtonElement).focus()
+    await undo.trigger('click')
+    await removed.setProps({ row: row('created'), on: true, link: { provider: 'teams', url: TEAMS_URL } })
+    await flushPromises()
+    expect(document.activeElement).toBe(removed.get('button[aria-haspopup="menu"]').element)
+  })
+
+  it('ties the line Microsoft keeps to the items it disables', async () => {
+    const wrapper = mountRow({ row: row('created'), link: { provider: 'teams', url: TEAMS_URL }, locked: true })
+    await wrapper.get('button[aria-haspopup="menu"]').trigger('click')
+    const id = wrapper.get('.kept').attributes('id')
+    for (const item of wrapper.findAll('[role="menuitemradio"]')) {
+      expect(item.attributes('aria-describedby')).toBe(id)
+    }
+    expect(wrapper.findAll('[role="menuitem"]')[0]!.attributes('aria-describedby')).toBe(id)
   })
 })

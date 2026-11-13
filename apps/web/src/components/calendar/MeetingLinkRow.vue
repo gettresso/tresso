@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { displayLink, linkText, TEAMS_MEETING_KEPT, type Conference, type MeetingApp, type MeetingChoice, type MeetingDefault, type MeetingRow } from '@tresso/core'
 import AppIcon from '@/components/AppIcon.vue'
 import CopyLinkButton from '@/components/calendar/CopyLinkButton.vue'
@@ -42,6 +42,7 @@ const emit = defineEmits<{
 const id = useId()
 const titleId = `${id}-title`
 const hintId = `${id}-hint`
+const keptId = `${id}-kept`
 
 const firstOk = computed(() => props.choices.find((choice) => choice.ok) ?? null)
 const own = computed(() => props.choices.find((choice) => choice.app === 'own' && choice.ok) ?? null)
@@ -108,8 +109,34 @@ function onMenuKey(event: KeyboardEvent): void {
 function choose(choice: MeetingChoice): void {
   if (!choice.ok || props.locked) return
   closeMenu()
+  refocusAfter()
   emit('pick', choice.app)
 }
+
+/**
+ * A button that changes the row's state goes away with it (Retry, Leave without a link, Use ..., Undo, a pick from
+ * "Use another app"): the focus then moves to the row's first control, or to the row itself, never to the page.
+ */
+let refocus = false
+function refocusAfter(): void {
+  refocus = true
+}
+function act<T extends unknown[]>(event: (...args: T) => void, ...args: T): void {
+  refocusAfter()
+  event(...args)
+}
+watch(
+  () => [props.row.kind, props.row.title, props.busy, props.on],
+  async () => {
+    if (!refocus || props.busy) return
+    await nextTick()
+    refocus = false
+    const active = document.activeElement
+    if (root.value === null || (active !== null && active !== document.body && root.value.contains(active) && (active as HTMLButtonElement).disabled !== true)) return
+    const target = root.value.querySelector<HTMLElement>('button:not(:disabled), a[href], [role="switch"]:not(:disabled)') ?? root.value
+    target.focus()
+  },
+)
 
 function removeLink(): void {
   if (props.locked || !(props.on || props.removable)) return
@@ -134,7 +161,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
 </script>
 
 <template>
-  <div ref="root" class="meeting-row" :class="row.tone" role="group" :aria-labelledby="titleId">
+  <div ref="root" class="meeting-row" :class="row.tone" role="group" tabindex="-1" :aria-labelledby="titleId">
     <div class="top">
       <span class="icon" aria-hidden="true">
         <svg v-if="row.icon === 'spinner'" class="spinner" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round">
@@ -145,7 +172,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
         <AppIcon v-else-if="row.icon === 'error'" name="error" :size="18" />
         <AppIcon v-else name="video" :size="18" />
       </span>
-      <span class="text">
+      <span class="text" aria-live="polite">
         <span :id="titleId" class="title">{{ row.title }}</span>{{ ' ' }}<span :id="hintId" class="hint">{{ row.hint }}</span>
       </span>
       <button
@@ -185,30 +212,30 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
       <button type="button" class="button button-primary" @click="emit('settings')">Connect a meeting app</button>
     </div>
     <div v-else-if="row.kind === 'failed'" class="actions">
-      <button type="button" class="button button-primary" :disabled="busy" @click="emit('retry')">Retry</button>
+      <button type="button" class="button button-primary" :disabled="busy" @click="act(() => emit('retry'))">Retry</button>
       <button type="button" class="button" aria-haspopup="menu" :aria-expanded="open" :disabled="busy" @click="openMenu($event)">Use another app</button>
-      <button type="button" class="button button-quiet" :disabled="busy" @click="emit('leave')">Leave without a link</button>
+      <button type="button" class="button button-quiet" :disabled="busy" @click="act(() => emit('leave'))">Leave without a link</button>
     </div>
     <div v-else-if="row.kind === 'reconnect'" class="actions">
       <button type="button" class="button button-primary" @click="emit('reconnect')">Reconnect</button>
       <button type="button" class="button" aria-haspopup="menu" :aria-expanded="open" @click="openMenu($event)">Use another app</button>
     </div>
     <div v-else-if="row.kind === 'wrong_calendar'" class="actions">
-      <button v-if="firstOk" type="button" class="button button-primary" @click="emit('pick', firstOk.app)">Use {{ firstOk.label }}</button>
-      <button v-if="own && own.app !== firstOk?.app" type="button" class="button" @click="emit('pick', 'own')">Use my own link</button>
+      <button v-if="firstOk" type="button" class="button button-primary" @click="act((app: MeetingApp) => emit('pick', app), firstOk.app)">Use {{ firstOk.label }}</button>
+      <button v-if="own && own.app !== firstOk?.app" type="button" class="button" @click="act(() => emit('pick', 'own'))">Use my own link</button>
     </div>
     <div v-else-if="row.kind === 'wrong_account'" class="actions">
-      <button v-if="own" type="button" class="button button-primary" @click="emit('pick', 'own')">Use my own link</button>
+      <button v-if="own" type="button" class="button button-primary" @click="act(() => emit('pick', 'own'))">Use my own link</button>
       <button type="button" class="button" @click="emit('settings')">Connect another app</button>
     </div>
     <div v-else-if="row.kind === 'removed'" class="actions">
-      <button type="button" class="button button-quiet" @click="emit('undo')">Undo</button>
+      <button type="button" class="button button-quiet" @click="act(() => emit('undo'))">Undo</button>
     </div>
     <p v-if="error" class="row-error" role="alert">{{ error }}</p>
 
     <div v-if="open" ref="menu" class="menu" role="menu" aria-label="Meeting app" @keydown="onMenuKey">
       <p class="heading" aria-hidden="true">Make the link with</p>
-      <p v-if="locked" class="kept">{{ TEAMS_MEETING_KEPT }}</p>
+      <p v-if="locked" :id="keptId" class="kept">{{ TEAMS_MEETING_KEPT }}</p>
       <button
         v-for="choice in choices"
         :key="choice.app"
@@ -218,6 +245,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
         class="item"
         :aria-checked="chosen?.app === choice.app && on"
         :aria-disabled="!choice.ok || locked ? 'true' : undefined"
+        :aria-describedby="locked ? keptId : undefined"
         @click="choose(choice)"
       >
         <span class="mark" aria-hidden="true"><AppIcon v-if="chosen?.app === choice.app && on" name="check" :size="14" /></span>
@@ -227,7 +255,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
         </span>
       </button>
       <hr aria-hidden="true" />
-      <button type="button" role="menuitem" tabindex="-1" class="item danger" :aria-disabled="locked || !(on || removable) ? 'true' : undefined" @click="removeLink">Remove meeting link</button>
+      <button type="button" role="menuitem" tabindex="-1" class="item danger" :aria-disabled="locked || !(on || removable) ? 'true' : undefined" :aria-describedby="locked ? keptId : undefined" @click="removeLink">Remove meeting link</button>
       <button type="button" role="menuitem" tabindex="-1" class="item" @click="toSettings">Connect another app in Settings</button>
     </div>
   </div>

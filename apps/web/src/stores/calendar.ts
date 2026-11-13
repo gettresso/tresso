@@ -332,9 +332,12 @@ export const useCalendarStore = defineStore('calendar', () => {
     return saved
   }
 
-  /** Takes the series' meeting link off, or drops a link that was asked for (Leave without a link). */
-  async function removeMeetingLink(eventId: string): Promise<SyncedCalendarEvent> {
-    const saved = await auth.send<SyncedCalendarEvent>('DELETE', `/api/v1/calendar-events/${encodeURIComponent(eventId)}/meeting-link`)
+  /**
+   * Drops a link that was asked for and leaves any link alone (Leave without a link): the API answers 409, and
+   * changes nothing, when the link arrived meanwhile. Guests are never mailed.
+   */
+  async function dropMeetingRequest(eventId: string): Promise<SyncedCalendarEvent> {
+    const saved = await auth.send<SyncedCalendarEvent>('DELETE', `/api/v1/calendar-events/${encodeURIComponent(eventId)}/meeting-link?only=request`)
     await mail.syncNow()
     return saved
   }
@@ -391,7 +394,7 @@ export const useCalendarStore = defineStore('calendar', () => {
     complete,
     event,
     requestMeetingLink,
-    removeMeetingLink,
+    dropMeetingRequest,
     keptEditor,
     keepEditor,
     takeKeptEditor,
