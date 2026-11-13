@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fileFingerprint, type SqliteMailStore, type SyncedChat, type SyncedChatOutgoing, type UpdateChatRequest } from '@tresso/core'
 import { ApiError } from '@/auth/session'
-import { ChatActions, outcomeUnknown, ReplyCancelled, REUSE_ID_MS, UNSURE_FILE_PREFIX, UNSURE_PREFIX, unsureFileKey } from '@/chat/chatActions'
+import { ChatActions, outcomeUnknown, ReplyCancelled, REUSE_ID_MS, UNSURE_FILES, UNSURE_PREFIX, unsureFileKey } from '@/chat/chatActions'
 import type { PhoneChatApi } from '@/chat/chatApi'
 import { chat, copyWith, deferred, reply } from './fixtures'
 
@@ -516,7 +516,7 @@ describe('ChatActions', () => {
 
       await expect(sending).rejects.toMatchObject({ cancelled: true, maybeSent: false })
       expect(cancelReply.mock.calls).toEqual([[shown.id], [shown.id]])
-      expect(await store.chatMeta(unsureFileKey('c1', fileFingerprint(PLAN.name, PLAN.size, PLAN.lastModified))), 'Nothing kept to send again.').toBeNull()
+      expect(await store.chatMeta(UNSURE_FILES), 'Nothing kept to send again.').toBeNull()
     })
 
     it('says a file may still be sent when no cancel was confirmed, and keeps the queued reply in the chat', async () => {
@@ -587,9 +587,8 @@ describe('ChatActions', () => {
 
       await expect(first.actions.sendFile(chat('c1'), PLAN)).rejects.toMatchObject({ phase: 'queue', unsure: true })
       expect(first.actions.shown('c1', [])).toEqual([])
-      const kept = await store.chatMeta(unsureFileKey('c1', fileFingerprint(PLAN.name, PLAN.size, PLAN.lastModified)))
-      expect(kept).not.toBeNull()
-      expect(unsureFileKey('c1', 'f').startsWith(UNSURE_FILE_PREFIX + 'c1:')).toBe(true)
+      const kept = await store.chatMeta(UNSURE_FILES)
+      expect(Object.keys(JSON.parse(kept ?? '{}') as object)).toEqual([unsureFileKey('c1', fileFingerprint(PLAN.name, PLAN.size, PLAN.lastModified))])
       expect(kept, 'Never the file name.').not.toContain('plan.pdf')
 
       const again = setUp(store, { queueReply })
@@ -602,6 +601,28 @@ describe('ChatActions', () => {
       // Another file (or the same one changed) is another reply.
       await expect(again.actions.sendFile(chat('c1'), { ...PLAN, lastModified: 2 })).rejects.toThrow()
       expect(queueReply.mock.calls[2]![1].id).not.toBe(replies[0])
+    })
+
+    it('removes unsure files once the delta has their reply or their time passed, also those of other files', async () => {
+      const store = await copyWith({ chats: [chat('c1'), chat('c2', { jid: '31600000002@s.whatsapp.net' })] })
+      const queueReply = vi.fn<PhoneChatApi['queueReply']>(async () => Promise.reject(new ApiError(502, 'Bad Gateway')))
+      const { actions, later } = setUp(store, { queueReply })
+      const other = { ...PLAN, name: 'other.pdf', lastModified: 2 }
+      await expect(actions.sendFile(chat('c1'), PLAN)).rejects.toThrow()
+      await expect(actions.sendFile(chat('c1'), other)).rejects.toThrow()
+      await expect(actions.sendFile(chat('c2', { jid: '31600000002@s.whatsapp.net' }), PLAN)).rejects.toThrow()
+      const kept = async () => Object.keys(JSON.parse((await store.chatMeta(UNSURE_FILES)) ?? '{}') as object).sort()
+      expect(await kept()).toHaveLength(3)
+
+      // The delta brings the reply of the first: its entry goes, the others stay.
+      const first = queueReply.mock.calls[0]![1].id
+      actions.settle('c1', [reply(first, 'c1', { text: '' })])
+      await vi.waitFor(async () => expect(await kept()).toEqual([unsureFileKey('c1', fileFingerprint(other.name, other.size, other.lastModified)), unsureFileKey('c2', fileFingerprint(PLAN.name, PLAN.size, PLAN.lastModified))].sort()))
+
+      // Their time passed: every one goes, whichever chat is read.
+      later(10 * 60 * 1000)
+      actions.settle('c1', [])
+      await vi.waitFor(async () => expect(await store.chatMeta(UNSURE_FILES)).toBeNull())
     })
 
     it('makes new ids once the copy has the reply, or after a refusal', async () => {

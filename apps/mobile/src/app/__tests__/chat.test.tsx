@@ -472,7 +472,7 @@ describe('the chat screen', () => {
       expect(api.queueReply).not.toHaveBeenCalled()
       await waitFor(() => expect(files.removed, 'The picker\'s copy goes after a failure.').toContain('file:///cache/plan.pdf'))
       // Attach waits until the server's Retry-After, and says why.
-      expect(screen.getByText('Too many files sent at once. Wait a few minutes, then attach it again.')).toBeTruthy()
+      expect(screen.getByText('Too many files sent at once. Wait a minute, then attach it again.'), 'The real wait, rounded up.').toBeTruthy()
       expect(screen.getByRole('button', { name: 'Attach a file' }).getAttribute('aria-disabled')).toBe('true')
       picker.result = { canceled: true, assets: null }
     })
