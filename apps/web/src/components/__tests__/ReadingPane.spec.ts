@@ -458,6 +458,8 @@ describe('ReadingPane actions', () => {
         getNewMail: vi.fn<() => Promise<void>>(async () => undefined),
         conversation: openConversation,
         editing: () => false,
+        outboxWaiting: () => false,
+        onScreen: () => true,
       })
     }
 
@@ -581,6 +583,112 @@ describe('ReadingPane actions', () => {
       await menu('toggle-flag')
       await settle()
       expect(actions).toEqual([])
+    })
+
+    it('waits while the compose window is open, so Reply cannot swap the draft away and ⌘⌫ cannot trash what is behind it', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+      const openReply = vi.spyOn(useComposeStore(), 'openReply').mockResolvedValue()
+      const compose = useComposeStore()
+      compose.openNew()
+      await vi.waitFor(() => expect(compose.draft).not.toBeNull())
+
+      expect(openConversation()).toBeNull()
+      await menu('reply')
+      await menu('move-to-trash')
+      await menu('archive')
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e' }))
+      await settle()
+      expect(openReply).not.toHaveBeenCalled()
+      expect(actions).toEqual([])
+
+      // Minimized, the conversation has the attention again.
+      compose.minimized = true
+      expect(openConversation()).not.toBeNull()
+      await menu('reply')
+      expect(openReply).toHaveBeenCalledOnce()
+    })
+
+    it('waits while a modal dialog is open (the unsaved drafts question at a sign-out), for the menu and the keys alike', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+      const question = document.body.appendChild(document.createElement('dialog'))
+      question.setAttribute('open', '')
+      question.setAttribute('role', 'alertdialog')
+
+      expect(openConversation()).toBeNull()
+      await menu('archive')
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e' }))
+      await settle()
+      expect(actions).toEqual([])
+
+      question.remove()
+      const alert = document.body.appendChild(document.createElement('div'))
+      alert.setAttribute('role', 'alertdialog')
+      expect(openConversation()).toBeNull()
+      alert.remove()
+      expect(openConversation()).not.toBeNull()
+    })
+
+    it('waits while the folder menu is open', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      actions.length = 0
+
+      await wrapper.get('button[aria-haspopup="menu"]').trigger('click')
+      expect(openConversation()).toBeNull()
+      await menu('archive')
+      await settle()
+      expect(actions).toEqual([])
+    })
+
+    it('is U right after opening an unread conversation: it waits for the read on opening, then marks it unread', async () => {
+      // The read on opening is held before it changes anything, so the conversation is still unread when the item comes.
+      const mail = useMailStore()
+      const act = mail.act
+      let release = () => {}
+      const held = new Promise<void>((resolve) => (release = resolve))
+      vi.spyOn(mail, 'act').mockImplementationOnce(async (...args) => {
+        await held
+        return act(...args)
+      })
+      const wrapper = mountPane()
+      await vi.waitFor(() => expect(wrapper.find('.subject').exists()).toBe(true))
+      expect(openConversation()?.read()).toBe(false)
+
+      const toggled = menu('toggle-read')
+      await settle()
+      expect(actions, 'it waits for the read').toEqual([])
+      release()
+      await toggled
+
+      expect(actions.map((a) => a.action)).toEqual(['markRead', 'markUnread'])
+      await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/'))
+    })
+
+    it('settles as Noted, hands over, settles as Do and makes a to-do as K, H, D and T do', async () => {
+      const wrapper = mountPane()
+      await opened(wrapper)
+      useMailStore().smartInboxes = [{ id: 'todo', builtin: 'todo', name: 'To do', instructions: '', includeSenders: [], excludeSenders: [], verdict: 'do', autoCreateTodo: false, position: 0 }]
+      const classify = vi.spyOn(useMailStore(), 'classifyThread').mockResolvedValue({ threadId: 't1', smartInboxId: 'todo', verdict: 'do', reason: 'user', senderRule: null, placementId: 'p1' })
+      const make = vi.spyOn(useTodosStore(), 'makeFromMessage').mockResolvedValue({ ...todo('td1'), made: true })
+      expect(openConversation()?.hasTodo()).toBe(false)
+
+      await menu('make-todo')
+      expect(make).toHaveBeenCalledWith('m2')
+      await menu('settle-do')
+      expect(classify).toHaveBeenCalledWith('t1', 'todo', 'do', { remember: false })
+
+      await menu('hand-over')
+      await vi.waitFor(() => expect(useHandOversStore().handingOver?.id).toBe('m2'))
+      useHandOversStore().close()
+
+      actions.length = 0
+      await menu('settle-noted')
+      expect(actions).toEqual([{ messageIds: ['m1', 'm2'], action: 'archive' }])
+      expect(useComposeStore().notices.find((n) => n.text === 'Marked read and archived.')?.action?.label).toBe('Undo')
     })
   })
 

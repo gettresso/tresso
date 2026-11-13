@@ -1,19 +1,22 @@
-import { watch } from 'vue'
+import { readonly, ref, watch, type Ref } from 'vue'
 import type { Router } from 'vue-router'
 import { askView, forgetViewRequests } from '@/components/viewRequests'
 import type { ConversationCommands } from '@/mail/openConversation'
+import { isEditingText } from '@/platform/editing'
 
 /**
  * The Message menu's actions. They act on the conversation open in the reading pane, through its own actions, and on
  * nothing while none is open (the shell disables them then too).
  */
-export const MESSAGE_ACTIONS = ['reply', 'reply-all', 'forward', 'archive', 'move-to-trash', 'move-to', 'toggle-read', 'toggle-flag'] as const
+export const MESSAGE_ACTIONS = ['reply', 'reply-all', 'forward', 'archive', 'move-to-trash', 'move-to', 'toggle-read', 'toggle-flag', 'settle-do', 'hand-over', 'settle-noted', 'make-todo'] as const
 
 export type MessageMenuAction = (typeof MESSAGE_ACTIONS)[number]
 
 /**
  * The Message menu's actions whose shortcut also edits text (⌘⌫ deletes to the start of the line, ⇧⌘U underlines in
- * the composer): the shell disables them while text is edited (`Typing::Waits` in menu.rs), and they do nothing then.
+ * the composer). Whether the menu or the page sees a key first is not relied on (`Typing` in menu.rs): the shell
+ * disables these while text is edited, and should one still arrive, it does nothing while the focus, read again when it
+ * arrives, is in text.
  */
 export const TEXT_KEY_ACTIONS: readonly MessageMenuAction[] = ['move-to-trash', 'toggle-read']
 
@@ -39,6 +42,7 @@ export const MENU_ACTIONS = [
   'go-waiting',
   'go-drafts',
   'go-cleanup',
+  'go-outbox',
   'go-batches',
   ...MESSAGE_ACTIONS,
 ] as const
@@ -57,11 +61,12 @@ function isMessageAction(action: MenuAction): action is MessageMenuAction {
 }
 
 /** Mailbox's places, by the route each opens: the sidebar's fixed places that View does not list. */
-const PLACES: Record<'go-brief' | 'go-waiting' | 'go-drafts' | 'go-cleanup' | 'go-batches', string> = {
+const PLACES: Record<'go-brief' | 'go-waiting' | 'go-drafts' | 'go-cleanup' | 'go-outbox' | 'go-batches', string> = {
   'go-brief': 'brief',
   'go-waiting': 'waiting',
   'go-drafts': 'drafts',
   'go-cleanup': 'cleanup',
+  'go-outbox': 'outbox',
   'go-batches': 'batches',
 }
 
@@ -82,8 +87,12 @@ export interface MenuTargets {
   getNewMail(): Promise<void>
   /** The conversation open in the reading pane while it has the user's attention (openConversation); null otherwise. */
   conversation(): ConversationCommands | null
-  /** Whether a text field or the compose window has the focus (platform/editing.ts). */
+  /** Whether a text field or the compose window has the focus, as followed (platform/editing.ts): for the menu's state. */
   editing(): boolean
+  /** Whether mail waits in the Outbox, so the sidebar lists it (Mailbox > Outbox follows). */
+  outboxWaiting(): boolean
+  /** Whether the window is on screen (the page is visible: not closed, minimized or hidden); the Message menu waits otherwise. */
+  onScreen(): boolean
 }
 
 /**
@@ -150,6 +159,7 @@ export async function runMenuAction(action: MenuAction, targets: MenuTargets): P
     case 'go-waiting':
     case 'go-drafts':
     case 'go-cleanup':
+    case 'go-outbox':
     case 'go-batches':
       await targets.router.push({ name: PLACES[action] })
       return
@@ -158,8 +168,9 @@ export async function runMenuAction(action: MenuAction, targets: MenuTargets): P
 
 /** The Message menu: the open conversation's own actions, as its buttons and keys run them. */
 async function runMessageAction(action: MessageMenuAction, targets: MenuTargets): Promise<void> {
-  const open = targets.conversation()
-  if (open === null || (TEXT_KEY_ACTIONS.includes(action) && targets.editing())) {
+  const open = targets.onScreen() ? targets.conversation() : null
+  // The focus is read now, not as followed: a followed state can lag behind a field that left the page.
+  if (open === null || (TEXT_KEY_ACTIONS.includes(action) && isEditingText(document.activeElement))) {
     return
   }
   switch (action) {
@@ -187,6 +198,18 @@ async function runMessageAction(action: MessageMenuAction, targets: MenuTargets)
     case 'toggle-flag':
       await open.toggleFlag()
       return
+    case 'settle-do':
+      await open.settleDo()
+      return
+    case 'hand-over':
+      await open.handOver()
+      return
+    case 'settle-noted':
+      await open.settleNoted()
+      return
+    case 'make-todo':
+      await open.makeTodo()
+      return
   }
 }
 
@@ -195,20 +218,32 @@ export type MenuState = {
   signedIn: boolean
   sidebarShown: boolean
   editing: boolean
-  /** The open conversation, as the Message menu's titles need it; null while none is open (or nobody is signed in). */
-  message: { read: boolean; flagged: boolean } | null
+  outbox: boolean
+  /** The open conversation, as the Message menu needs it; null while none has the user's attention on screen. */
+  message: { read: boolean; flagged: boolean; hasTodo: boolean } | null
 }
 
 /** The state the menu's items follow, read from the targets (reactive where they are). */
 export function menuState(targets: MenuTargets): MenuState {
   const signedIn = targets.signedIn()
-  const open = signedIn ? targets.conversation() : null
+  const open = signedIn && targets.onScreen() ? targets.conversation() : null
   return {
     signedIn,
     sidebarShown: targets.sidebarShown(),
     editing: targets.editing(),
-    message: open === null ? null : { read: open.read(), flagged: open.flagged() },
+    outbox: signedIn && targets.outboxWaiting(),
+    message: open === null ? null : { read: open.read(), flagged: open.flagged(), hasTodo: open.hasTodo() },
   }
+}
+
+/** Follows whether the page is visible: hidden while the window is closed (hidden) or minimized. */
+export function followPageVisibility(doc: Document): { visible: Readonly<Ref<boolean>>; stop(): void } {
+  const visible = ref(doc.visibilityState === 'visible')
+  const changed = () => {
+    visible.value = doc.visibilityState === 'visible'
+  }
+  doc.addEventListener('visibilitychange', changed)
+  return { visible: readonly(visible), stop: () => doc.removeEventListener('visibilitychange', changed) }
 }
 
 /** The shell's side: hearing its events and telling it whether the items may act. */
@@ -222,7 +257,9 @@ export interface MenuShell {
  * client while someone is signed in (the Message menu's while a conversation is open), and names the items whose
  * titles follow the state, through the one command `menu_state`. The command goes once per change of what it says:
  * changes in one tick go together, and a change that ends where it began (a conversation reloaded by a sync, the focus
- * moving from one field to the next) sends nothing. Returns the function that stops it.
+ * moving from one field to the next) sends nothing. A state counts as sent once the shell took it; one it refused is
+ * sent once more, and after a second refusal the next change sends the whole state again. Returns the function that
+ * stops it.
  */
 export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, onError: (error: unknown) => void = (error) => console.error('A menu action failed', error)): Promise<() => void> {
   const unlisten = await shell.listen(MENU_EVENT, ({ payload }) => {
@@ -230,7 +267,34 @@ export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, on
       runMenuAction(payload, targets).catch(onError)
     }
   })
-  let sent: string | null = null
+  /** The state the shell took last; null when not known (none yet, or the last one was refused). */
+  let taken: string | null = null
+  /** The state on its way to the shell. */
+  let underway: string | null = null
+  const send = (state: MenuState, key: string, again: boolean): void => {
+    underway = key
+    shell.invoke('menu_state', state).then(
+      () => {
+        if (underway === key) {
+          underway = null
+          taken = key
+        }
+      },
+      (error: unknown) => {
+        // A newer state is on its way, and says everything.
+        if (underway !== key) {
+          return
+        }
+        if (again) {
+          send(state, key, false)
+          return
+        }
+        underway = null
+        taken = null
+        onError(error)
+      },
+    )
+  }
   let signedInBefore: boolean | null = null
   const stopWatching = watch(
     () => menuState(targets),
@@ -241,11 +305,10 @@ export async function startMenuBridge(targets: MenuTargets, shell: MenuShell, on
       }
       signedInBefore = state.signedIn
       const key = JSON.stringify(state)
-      if (key === sent) {
+      if (key === underway || (underway === null && key === taken)) {
         return
       }
-      sent = key
-      shell.invoke('menu_state', state).catch(onError)
+      send(state, key, true)
     },
     { immediate: true },
   )
