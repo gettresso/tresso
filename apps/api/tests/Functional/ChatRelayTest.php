@@ -157,7 +157,7 @@ final class ChatRelayTest extends DatabaseTestCase
         $body = (string) $this->client->getResponse()->getContent();
         self::assertStringNotContainsString('31687654321', $body, 'Nothing the relay sends about a chat is echoed back.');
         self::assertStringNotContainsString('secret', $body);
-        self::assertSame(['chat_account' => 1, 'chat' => 0, 'chat_message' => 0, 'chat_outgoing' => 0], $this->chatRowCounts());
+        self::assertSame(['chat_account' => 1, 'chat' => 0, 'chat_message' => 0, 'chat_outgoing' => 0, 'chat_upload' => 0], $this->chatRowCounts());
     }
 
     public function testABatchIsStoredWholeOrNotAtAll(): void
@@ -168,7 +168,7 @@ final class ChatRelayTest extends DatabaseTestCase
         ]);
 
         self::assertResponseStatusCodeSame(422);
-        self::assertSame(['chat_account' => 1, 'chat' => 0, 'chat_message' => 0, 'chat_outgoing' => 0], $this->chatRowCounts());
+        self::assertSame(['chat_account' => 1, 'chat' => 0, 'chat_message' => 0, 'chat_outgoing' => 0, 'chat_upload' => 0], $this->chatRowCounts());
     }
 
     public function testALeftOutChatAndAnExcludedGroupAreCountedNotStored(): void

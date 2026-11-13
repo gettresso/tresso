@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Scan;
 
+use App\Chat\ChatOwnerLock;
 use App\Enum\ScanStatus;
 use App\Realtime\AfterCommitDispatcher;
 use App\Sync\Change\ChangeSequencer;
@@ -12,8 +13,8 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
 
 /**
- * Records a verdict for a piece of content on every attachment that holds it, received or attached to a draft, and
- * keeps what depends on it in step.
+ * Records a verdict for a piece of content on every attachment that holds it, received or attached to a draft, and on
+ * every WhatsApp file with it ({@see \App\Entity\ChatMessage}), and keeps what depends on it in step.
  *
  * Writes are bulk SQL under a lock per content, so concurrent jobs for the same file see each other's results, and
  * only rows whose verdict actually changes are written: a first scan (or a cached verdict) only settles attachments
@@ -30,6 +31,7 @@ final readonly class AttachmentScans
         private Connection $connection,
         private ChangeSequencer $sequencer,
         private AfterCommitDispatcher $afterCommit,
+        private ChatOwnerLock $chatOwnerLock,
     ) {
     }
 
@@ -102,12 +104,49 @@ final readonly class AttachmentScans
                 $this->sequencer->touchMessages(Uuid::fromString($ownerId), $ids);
             }
 
+            $this->recordChatFiles($values, $replaceable);
+
             $infected = ScanStatus::Infected === $outcome->status;
             if ($outcome->isDefinitive() && ($infected || $wasInfected)) {
                 $this->afterCommit->dispatch(new PlaceContent($sha256));
             }
         });
         $this->entityManager->clear();
+    }
+
+    /**
+     * The verdict on the WhatsApp files with this content. Chat rows are written after the owner's row is taken, as
+     * every chat write does ({@see ChatOwnerLock}); mail rows above come first and take the owner's change counter only
+     * after their own rows, so no two writers wait on each other in a circle. A file's content is named by its owner's
+     * fingerprint, so its rows belong to one owner.
+     *
+     * @param array<string, mixed> $values
+     */
+    private function recordChatFiles(array $values, string $replaceable): void
+    {
+        $replaceable = str_replace('scan_status', 'media_scan_status', $replaceable);
+        $changed = $replaceable.' AND (media_scan_status, media_scan_failure) IS DISTINCT FROM (:status, CAST(:failure AS VARCHAR))';
+        /** @var list<array{id: string, owner_id: string}> $rows */
+        $rows = $this->connection->fetchAllAssociative(
+            'SELECT m.id, a.owner_id FROM chat_message m JOIN chat_account a ON a.id = m.chat_account_id WHERE m.media_sha256 = :sha AND '.$changed,
+            ['sha' => $values['sha'], 'status' => $values['status'], 'failure' => $values['failure']],
+        );
+        $byOwner = [];
+        foreach ($rows as $row) {
+            $byOwner[$row['owner_id']][] = $row['id'];
+        }
+        ksort($byOwner, \SORT_STRING);
+        foreach ($byOwner as $ownerId => $ids) {
+            $owner = Uuid::fromString((string) $ownerId);
+            $this->chatOwnerLock->lock($owner);
+            /** @var list<string> $updated */
+            $updated = $this->connection->fetchFirstColumn(
+                'UPDATE chat_message SET media_scan_status = :status, media_scan_failure = :failure
+                 WHERE media_sha256 = :sha AND id = ANY(CAST(:ids AS UUID[])) AND '.$changed.' RETURNING id',
+                ['sha' => $values['sha'], 'status' => $values['status'], 'failure' => $values['failure'], 'ids' => self::array(self::sorted($ids))],
+            );
+            $this->sequencer->touchChatMessages($owner, $updated);
+        }
     }
 
     private function cache(ScanCacheKey $key, ScanOutcome $outcome, string $engine): void
@@ -130,7 +169,8 @@ final readonly class AttachmentScans
     {
         return (bool) $this->connection->fetchOne(
             "SELECT EXISTS (SELECT 1 FROM attachment WHERE sha256 = :sha AND scan_status = 'infected')
-                 OR EXISTS (SELECT 1 FROM draft_attachment WHERE sha256 = :sha AND scan_status = 'infected')",
+                 OR EXISTS (SELECT 1 FROM draft_attachment WHERE sha256 = :sha AND scan_status = 'infected')
+                 OR EXISTS (SELECT 1 FROM chat_message WHERE media_sha256 = :sha AND media_scan_status = 'infected')",
             ['sha' => $sha256],
         );
     }

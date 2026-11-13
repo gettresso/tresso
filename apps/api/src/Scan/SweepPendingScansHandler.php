@@ -35,9 +35,9 @@ final readonly class SweepPendingScansHandler
         $now = new \DateTimeImmutable();
         $stale = $now->sub(new \DateInterval(self::STALE_AFTER));
 
-        foreach (['attachment' => ScanTarget::Received, 'draft_attachment' => ScanTarget::Draft] as $table => $target) {
+        foreach (['attachment' => ScanTarget::Received, 'draft_attachment' => ScanTarget::Draft, 'chat_message' => ScanTarget::Chat] as $table => $target) {
             // Each claim follows the (scan_status, scan_requested_at) index: never queued first, then oldest first.
-            foreach (['scan_requested_at IS NULL', 'scan_requested_at < :stale'] as $condition) {
+            foreach (['IS NULL', '< :stale'] as $condition) {
                 do {
                     $claimed = $this->claim($table, $condition, $now, $stale);
                     foreach (array_column($claimed, 'id', 'sha256') as $id) {
@@ -53,12 +53,17 @@ final readonly class SweepPendingScansHandler
      */
     private function claim(string $table, string $condition, \DateTimeImmutable $now, \DateTimeImmutable $stale): array
     {
+        // A WhatsApp file keeps its scan in columns of its message, named for the file.
+        [$status, $requested, $sha] = 'chat_message' === $table
+            ? ['media_scan_status', 'media_scan_requested_at', 'media_sha256']
+            : ['scan_status', 'scan_requested_at', 'sha256'];
+
         /** @var list<array{id: string, sha256: string}> */
         return $this->connection->fetchAllAssociative(
-            "UPDATE {$table} SET scan_requested_at = :now WHERE id IN (
-                SELECT id FROM {$table} WHERE scan_status = 'pending' AND {$condition}
-                ORDER BY scan_requested_at LIMIT :batch FOR UPDATE SKIP LOCKED
-             ) RETURNING id, sha256",
+            "UPDATE {$table} SET {$requested} = :now WHERE id IN (
+                SELECT id FROM {$table} WHERE {$status} = 'pending' AND {$requested} {$condition}
+                ORDER BY {$requested} LIMIT :batch FOR UPDATE SKIP LOCKED
+             ) RETURNING id, {$sha} AS sha256",
             ['now' => $now->format('Y-m-d H:i:s'), 'batch' => self::BATCH] + (str_contains($condition, ':stale') ? ['stale' => $stale->format('Y-m-d H:i:s')] : []),
         );
     }

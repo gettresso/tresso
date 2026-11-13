@@ -69,6 +69,7 @@ framework:
             App\Scan\ScanAttachment: scan
             App\Scan\PlaceContent: scan
             App\Outbox\CollectUpload: async
+            App\Chat\CollectChatMedia: async
             App\Account\PurgeDeletedUser: async
             App\Classification\ClassifyNewMail: classify
             App\Classification\ReclassifyMail: classify

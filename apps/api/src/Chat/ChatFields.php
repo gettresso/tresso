@@ -8,6 +8,7 @@ use App\Entity\Chat;
 use App\Entity\ChatAccount;
 use App\Entity\ChatMessage;
 use App\Entity\ChatOutgoing;
+use App\Entity\ChatUpload;
 use App\Enum\ChatKind;
 use App\Enum\ChatMediaKind;
 use App\Security\Crypto\FieldVault;
@@ -19,7 +20,7 @@ use Symfony\Component\Uid\Uuid;
  * row ({@see ChatField}). Mail keeps addresses and names readable because the server queries them; for chats the
  * server only asks "do I have this one", which a fingerprint under the owner's index key answers. So the own number and
  * name, every JID, chat name, WhatsApp id, sender, text and file name is sealed, and what stays readable is kinds,
- * times, counts, sizes and states.
+ * times, counts, sizes and states. The files themselves are sealed objects ({@see \App\Storage\BlobKind::ChatMedia}).
  */
 final readonly class ChatFields
 {
@@ -160,6 +161,18 @@ final readonly class ChatFields
     public function newOutgoing(Uuid $id, Chat $chat, #[\SensitiveParameter] string $text, \DateTimeImmutable $now): ChatOutgoing
     {
         return new ChatOutgoing($id, $chat, $this->seal(self::ownerOf($chat->getChatAccount()), ChatField::OutgoingText, $id, $text), $now);
+    }
+
+    /** The reply takes over the uploaded file, named $name. */
+    public function attachFile(ChatOutgoing $outgoing, #[\SensitiveParameter] string $name, ChatUpload $upload): void
+    {
+        $outgoing->attachFile($this->seal(self::ownerOf($outgoing->getChatAccount()), ChatField::OutgoingFileName, $outgoing->getId(), $name), $upload);
+    }
+
+    /** The name of the file a reply carries; null for a text reply. */
+    public function outgoingFileName(ChatOutgoing $outgoing): ?string
+    {
+        return $this->open(self::ownerOf($outgoing->getChatAccount()), ChatField::OutgoingFileName, $outgoing->getId(), $outgoing->getSealedFileName());
     }
 
     public function outgoingText(ChatOutgoing $outgoing): string

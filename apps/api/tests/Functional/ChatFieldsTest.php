@@ -17,6 +17,7 @@ use App\Repository\ChatOutgoingRepository;
 use App\Repository\ChatRepository;
 use App\Security\Crypto\CryptoException;
 use App\Security\Crypto\UserKeys;
+use App\Storage\BlobVault;
 use App\Storage\Reencryption;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Symfony\Bundle\FrameworkBundle\Console\Application;
@@ -54,7 +55,7 @@ final class ChatFieldsTest extends DatabaseTestCase
             'sender' => ['id' => '31612345678', 'name' => 'Anna'],
             'media' => [ChatMediaKind::Document, 'tickets-amsterdam.pdf', 48_213],
         ]]);
-        $this->outgoing = $this->storeChatOutgoing($this->chat, 'On my way');
+        $this->outgoing = $this->storeChatOutgoing($this->chat, 'On my way', ['menu-for-saturday.pdf', '%PDF-1.4 menu']);
         $this->chatEntityManager()->clear();
     }
 
@@ -80,6 +81,7 @@ final class ChatFieldsTest extends DatabaseTestCase
         self::assertSame(ChatMediaKind::Document, $message->getMediaKind());
         self::assertSame(48_213, $message->getMediaSize());
         self::assertSame('On my way', $fields->outgoingText($outgoing));
+        self::assertSame('menu-for-saturday.pdf', $fields->outgoingFileName($outgoing));
     }
 
     public function testEmptyAndMissingValuesStaySo(): void
@@ -166,7 +168,7 @@ final class ChatFieldsTest extends DatabaseTestCase
             $this->connection()->fetchAllAssociative('SELECT * FROM chat_outgoing'),
         ], \JSON_THROW_ON_ERROR);
 
-        foreach (['31698765432', 'Kim Visser', '31612345678', 'whatsapp.net', 'Anna', self::WA_ID, 'station', 'tickets-amsterdam', 'On my way'] as $plaintext) {
+        foreach (['31698765432', 'Kim Visser', '31612345678', 'whatsapp.net', 'Anna', self::WA_ID, 'station', 'tickets-amsterdam', 'On my way', 'menu-for-saturday'] as $plaintext) {
             self::assertStringNotContainsString($plaintext, $rows);
         }
         self::assertStringNotContainsString(hash('sha256', self::JID), $rows, 'The fingerprint is keyed, not a plain hash anyone can recompute from a number.');
@@ -237,8 +239,9 @@ final class ChatFieldsTest extends DatabaseTestCase
         static::getContainer()->get(UserKeys::class)->reset();
         $reencryption = static::getContainer()->get(Reencryption::class);
 
-        // Account: number and name; chat: JID and name; message: id, sender, text, file name; reply: text.
-        self::assertSame(9, $reencryption->remaining($this->kim->getId())['chatFields']);
+        // Account: number and name; chat: JID and name; message: id, sender, text, file name; reply: text, file name.
+        self::assertSame(10, $reencryption->remaining($this->kim->getId())['chatFields']);
+        self::assertSame(1, $reencryption->remaining($this->kim->getId())['chatMedia'], 'The file the reply carries.');
 
         $result = $reencryption->run($this->kim->getId(), 2, static function (): void {});
 
@@ -261,6 +264,12 @@ final class ChatFieldsTest extends DatabaseTestCase
         self::assertSame('See you at the station at nine', $this->chatFields()->text($message));
         self::assertSame(['id' => '31612345678', 'name' => 'Anna'], $this->chatFields()->sender($message));
         self::assertSame('Kim Visser', $this->chatFields()->accountDisplayName($chat->getChatAccount()));
+        $outgoing = $this->chatEntityManager()->find(ChatOutgoing::class, $this->outgoing->getId());
+        self::assertInstanceOf(ChatOutgoing::class, $outgoing);
+        self::assertSame(2, $outgoing->getFileKeyVersion(), 'The file is written again with the new key.');
+        $key = $outgoing->getFileObjectKey();
+        self::assertIsString($key);
+        self::assertSame('%PDF-1.4 menu', static::getContainer()->get(BlobVault::class)->read($this->kim->getId(), $key));
         self::assertSame($this->chat->getJidFingerprint(), $this->chatFields()->jidFingerprint($this->kim->getId(), self::JID), 'Fingerprints do not depend on the key version.');
     }
 }

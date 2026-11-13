@@ -8,15 +8,22 @@ use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\ApiResource\ChatOutgoingResource;
 use App\ApiResource\Input\Chat\RelayClaim;
+use App\ApiResource\Input\Chat\RelayMediaClaim;
+use App\ApiResource\Input\Chat\RelayMediaFailed;
 use App\ApiResource\Input\Chat\RelayMessages;
 use App\ApiResource\Input\Chat\RelayResult;
 use App\ApiResource\ChatProblem;
 use App\ApiResource\Input\Chat\RelayStatus;
 use App\ApiResource\Output\Chat\RelayClaimOutput;
 use App\ApiResource\Output\Chat\RelayImportOutput;
+use App\ApiResource\Output\Chat\RelayMediaClaimOutput;
+use App\ApiResource\Output\Chat\RelayMediaOutput;
 use App\ApiResource\Output\Chat\RelayStatusOutput;
 use App\Chat\ChatFields;
 use App\Chat\ChatIngestor;
+use App\Chat\ChatMedia;
+use App\Chat\ChatMediaLimits;
+use App\Chat\ChatMediaUrls;
 use App\Chat\ChatQueue;
 use App\Chat\ChatRelayGuard;
 use App\Chat\ChatRequestBody;
@@ -36,7 +43,7 @@ use Symfony\Component\RateLimiter\RateLimiterFactoryInterface;
  * A batch is read here (not by API Platform), so its size is checked before anything of it is decoded; batches are
  * limited per account (`chat_relay_import`).
  *
- * @implements ProcessorInterface<RelayStatus|RelayMessages|RelayClaim|RelayResult|null, RelayStatusOutput|RelayImportOutput|RelayClaimOutput|ChatOutgoingResource|Response>
+ * @implements ProcessorInterface<RelayStatus|RelayMessages|RelayClaim|RelayResult|RelayMediaClaim|RelayMediaFailed|null, RelayStatusOutput|RelayImportOutput|RelayClaimOutput|ChatOutgoingResource|RelayMediaClaimOutput|RelayMediaOutput|Response>
  */
 final readonly class ChatRelayProcessor implements ProcessorInterface
 {
@@ -51,10 +58,13 @@ final readonly class ChatRelayProcessor implements ProcessorInterface
         private ChatRequestBody $body,
         #[Autowire(service: 'limiter.chat_relay_import')]
         private RateLimiterFactoryInterface $importLimiter,
+        private ChatMedia $media,
+        private ChatMediaUrls $urls,
+        private ChatMediaLimits $limits,
     ) {
     }
 
-    public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = []): RelayStatusOutput|RelayImportOutput|RelayClaimOutput|ChatOutgoingResource|Response
+    public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = []): RelayStatusOutput|RelayImportOutput|RelayClaimOutput|ChatOutgoingResource|RelayMediaClaimOutput|RelayMediaOutput|Response
     {
         $user = $this->currentUser->get();
         $now = ChatTime::stored(new \DateTimeImmutable());
@@ -69,7 +79,7 @@ final readonly class ChatRelayProcessor implements ProcessorInterface
             throw new \LogicException(\sprintf('No input for %s.', $operation->getName()));
         }
 
-        $result = $this->entityManager->wrapInTransaction(function () use ($data, $uriVariables, $user, $now): RelayStatusOutput|RelayImportOutput|RelayClaimOutput|ChatOutgoingResource|Response {
+        $result = $this->entityManager->wrapInTransaction(function () use ($data, $uriVariables, $user, $now): RelayStatusOutput|RelayImportOutput|RelayClaimOutput|ChatOutgoingResource|RelayMediaClaimOutput|RelayMediaOutput|Response {
             if ($data instanceof RelayResult) {
                 [$account, $fromRelay] = $this->guard->reportingAccount($user, $uriVariables['accountId'] ?? null, $data->deviceId, $now);
 
@@ -92,6 +102,8 @@ final readonly class ChatRelayProcessor implements ProcessorInterface
                     return new Response(null, Response::HTTP_NO_CONTENT);
                 }
                 [$outgoing, $token] = $claim;
+                $fileName = $this->fields->outgoingFileName($outgoing);
+                $fileUrl = $this->urls->forReply($outgoing);
 
                 return new RelayClaimOutput(
                     $outgoing->getId()->toRfc4122(),
@@ -99,7 +111,28 @@ final readonly class ChatRelayProcessor implements ProcessorInterface
                     $this->fields->jid($outgoing->getChat()),
                     $this->fields->outgoingText($outgoing),
                     $token,
+                    null === $fileName || null === $fileUrl ? null : ['name' => $fileName, 'size' => $outgoing->getFileSize() ?? 0, 'url' => $fileUrl],
                 );
+            }
+            if ($data instanceof RelayMediaClaim) {
+                $message = $this->media->claim($account, $now);
+                if (null === $message) {
+                    return new Response(null, Response::HTTP_NO_CONTENT);
+                }
+
+                return new RelayMediaClaimOutput(
+                    $message->getId()->toRfc4122(),
+                    $this->fields->jid($message->getChat()),
+                    $this->fields->waId($message),
+                    $message->getMediaKind()->value ?? throw new \LogicException('A requested file has a kind.'),
+                    $message->getMediaSize(),
+                    $this->limits->maxFileBytes,
+                );
+            }
+            if ($data instanceof RelayMediaFailed) {
+                $message = $this->media->fail($account, $uriVariables['messageId'] ?? null, $data->error ?? throw new \LogicException('Validation guarantees an error.'));
+
+                return new RelayMediaOutput($message->getId()->toRfc4122(), $message->getMediaState()->value ?? '', $message->getMediaError()?->value);
             }
 
             if (null !== $data->address) {

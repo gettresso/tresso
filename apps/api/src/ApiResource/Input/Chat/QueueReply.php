@@ -7,6 +7,7 @@ namespace App\ApiResource\Input\Chat;
 use Symfony\Component\Uid\Uuid;
 use Symfony\Component\Uid\UuidV7;
 use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\Context\ExecutionContextInterface;
 use Symfony\Component\Validator\ConstraintViolation;
 use Symfony\Component\Validator\ConstraintViolationList;
 
@@ -35,11 +36,25 @@ final class QueueReply
     #[Assert\Uuid(versions: [Assert\Uuid::V7_MONOTONIC])]
     public string $id = '';
 
-    /** Trimmed before it is stored. Line breaks and tabs are fine; other control characters are not. */
-    #[Assert\NotBlank(normalizer: 'trim', message: 'Write a reply.')]
+    /**
+     * Trimmed before it is stored. Line breaks and tabs are fine; other control characters are not. Empty only with a
+     * file (then it is the file's caption).
+     */
     #[Assert\Length(max: self::MAX_TEXT, normalizer: 'trim')]
     #[Assert\Regex('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', message: 'The reply cannot contain control characters.', match: false)]
     public string $text = '';
+
+    /** A file the client uploaded to the chat before; null for a text reply. */
+    #[Assert\Valid]
+    public ?QueueReplyFile $file = null;
+
+    #[Assert\Callback]
+    public function validateContent(ExecutionContextInterface $context): void
+    {
+        if (null === $this->file && '' === trim($this->text)) {
+            $context->buildViolation('Write a reply.')->atPath('text')->addViolation();
+        }
+    }
 
     /**
      * The id was made within the last 10 minutes (5 minutes of clock skew ahead are fine). Checked only for a reply that

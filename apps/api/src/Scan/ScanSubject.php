@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Scan;
 
 use App\Entity\Attachment;
+use App\Entity\ChatMessage;
 use App\Entity\DraftAttachment;
 use App\Enum\ScanStatus;
 use Symfony\Component\Uid\Uuid;
@@ -32,6 +33,20 @@ final readonly class ScanSubject
     public static function ofAttachment(Attachment $attachment): self
     {
         return new self($attachment->getSha256(), $attachment->getMailAccount()->getOwner()->getId(), null !== $attachment->getKeyVersion(), $attachment->getSize(), $attachment->getScanStatus(), [$attachment->getObjectKey(), $attachment->getQuarantineKey()]);
+    }
+
+    /** Null while the message's file is not stored. */
+    public static function ofChatMessage(ChatMessage $message): ?self
+    {
+        $fingerprint = $message->getMediaSha256();
+        $key = $message->getMediaObjectKey();
+        $status = $message->getMediaScanStatus();
+        if (null === $fingerprint || null === $key || null === $status) {
+            return null;
+        }
+        $owner = $message->getChatAccount()->getOwner()->getId();
+
+        return new self($fingerprint, $owner, true, $message->getMediaStoredSize() ?? 0, $status, [$key, Attachment::quarantineKey($fingerprint, $owner)]);
     }
 
     public static function ofDraftAttachment(DraftAttachment $attachment): self

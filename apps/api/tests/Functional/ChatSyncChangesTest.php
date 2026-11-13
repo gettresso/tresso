@@ -316,14 +316,14 @@ final class ChatSyncChangesTest extends DatabaseTestCase
     {
         $kim = $this->connection()->fetchOne("SELECT id FROM app_user WHERE email = 'kim@example.test'");
         self::assertIsString($kim);
-        self::assertSame(['chat_account' => 1, 'chat' => 2, 'chat_message' => 3, 'chat_outgoing' => 2], $this->chatRowCounts());
+        self::assertSame(['chat_account' => 1, 'chat' => 2, 'chat_message' => 3, 'chat_outgoing' => 2, 'chat_upload' => 0], $this->chatRowCounts());
 
         $tester = new CommandTester(new Application($this->client->getKernel())->find('app:users:delete'));
         $tester->execute(['email' => 'kim@example.test', '--force' => true]);
 
         $tester->assertCommandIsSuccessful();
         self::assertNull(static::getContainer()->get(EntityManagerInterface::class)->find(User::class, Uuid::fromString($kim)));
-        self::assertSame(['chat_account' => 0, 'chat' => 0, 'chat_message' => 0, 'chat_outgoing' => 0], $this->chatRowCounts());
+        self::assertSame(['chat_account' => 0, 'chat' => 0, 'chat_message' => 0, 'chat_outgoing' => 0, 'chat_upload' => 0], $this->chatRowCounts());
     }
 
     private function chatInManager(): Chat

@@ -174,7 +174,7 @@ final class ChatQueueTest extends DatabaseTestCase
         $token = $this->tokenOf($first);
         self::assertIsString($token);
         self::assertSame(32, \strlen($token));
-        self::assertSame(['id' => $first, 'chatId' => $this->chatId, 'chatJid' => self::JID, 'text' => 'One', 'claimToken' => $token], $this->decodedResponse());
+        self::assertSame(['id' => $first, 'chatId' => $this->chatId, 'chatJid' => self::JID, 'text' => 'One', 'claimToken' => $token, 'file' => null], $this->decodedResponse());
         $this->relay('outgoing/claim');
         self::assertResponseStatusCodeSame(200);
         self::assertSame($second, $this->decodedResponse()['id'] ?? null, 'A claimed reply is not handed out again.');

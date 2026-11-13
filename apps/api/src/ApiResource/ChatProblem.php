@@ -9,6 +9,7 @@ use ApiPlatform\Metadata\ApiProperty;
 use ApiPlatform\Metadata\Error as ErrorOperation;
 use ApiPlatform\Metadata\ErrorResource;
 use ApiPlatform\Metadata\Exception\ProblemExceptionInterface;
+use App\Outbox\AttachmentLimits;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\Serializer\Attribute\Groups;
 use Symfony\Component\Serializer\Attribute\SerializedName;
@@ -25,10 +26,13 @@ use Symfony\Component\WebLink\Link;
  * - `cancelled`: a reply with this id was cancelled or removed; it is never queued again.
  * - `other_number`: a desktop linked to another WhatsApp number than the account's tried to relay an account that holds
  *   chats; its chats would land in the wrong account and the waiting replies would go out from the wrong number.
+ * - `not_requested`: the relay sent a file nobody asked for (any more), or reported on one that is stored already.
+ * - `not_stored`: the file of this message is not on the server; ask for it first.
  *
  * 413:
  *
  * - `too_large`: the relay's batch is larger than {@see \App\ApiResource\Input\Chat\RelayMessages::MAX_BYTES}; send fewer messages at once.
+ *   For a file: it is larger than {@see \App\Chat\ChatMediaLimits}.
  */
 #[ErrorResource(
     uriTemplate: '/chat_problems/{id}',
@@ -78,6 +82,8 @@ final class ChatProblem extends \RuntimeException implements ProblemExceptionInt
     public const string CANCELLED = 'cancelled';
     public const string TOO_LARGE = 'too_large';
     public const string OTHER_NUMBER = 'other_number';
+    public const string NOT_REQUESTED = 'not_requested';
+    public const string NOT_STORED = 'not_stored';
 
     private function __construct(private readonly string $reason, string $detail, private readonly int $status = 409)
     {
@@ -92,6 +98,21 @@ final class ChatProblem extends \RuntimeException implements ProblemExceptionInt
     public static function tooLarge(int $maxBytes): self
     {
         return new self(self::TOO_LARGE, \sprintf('The batch is larger than %d bytes; send fewer messages at once.', $maxBytes), 413);
+    }
+
+    public static function fileTooLarge(int $maxBytes): self
+    {
+        return new self(self::TOO_LARGE, \sprintf('The file is larger than %s.', AttachmentLimits::describe($maxBytes)), 413);
+    }
+
+    public static function notRequested(): self
+    {
+        return new self(self::NOT_REQUESTED, 'Nobody asked for this file, or it is stored already.');
+    }
+
+    public static function notStored(): self
+    {
+        return new self(self::NOT_STORED, 'This file is not on the server. Ask for it first.');
     }
 
     public static function otherNumber(): self
