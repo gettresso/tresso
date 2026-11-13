@@ -6,6 +6,7 @@ import { AccessibilityInfo, Linking, Platform, Pressable, StyleSheet, Text, View
 import * as Clipboard from 'expo-clipboard'
 import {
   canJoin,
+  displayLink,
   conferenceLabel,
   CREATING_HINT,
   failureHint,
@@ -162,7 +163,7 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
           <View style={styles.fallback}>
             <Text style={styles.error}>Could not copy the link. Press and hold it here to copy it.</Text>
             <Text style={styles.fullLink} selectable>
-              {conference.url}
+              {byHand(conference)}
             </Text>
           </View>
         )}
@@ -194,6 +195,14 @@ export function MeetingLink({ conference, request, organizes, line, clock }: Pro
   return null
 }
 
+/**
+ * The link to copy by hand when Copy failed, as on the web: a link canJoin passes is shown whole (it has nothing hidden
+ * in it and is no longer than core allows), any other link as core's displayLink shows it.
+ */
+function byHand(conference: Conference): string {
+  return canJoin(conference) ? conference.url : displayLink(conference.url)
+}
+
 const MONO = Platform.select({ ios: 'Menlo', default: 'monospace' })
 
 function makeStyles(theme: Theme) {
@@ -203,11 +212,12 @@ function makeStyles(theme: Theme) {
     joinLabel: { fontSize: 16, fontWeight: '600', color: theme.surface },
     app: { fontSize: 13, fontWeight: '600', color: theme.ink },
     linkBox: { paddingTop: 10, paddingHorizontal: LINK_PADDING, borderRadius: 12, backgroundColor: theme.ground },
-    link: { fontFamily: MONO, fontSize: LINK_FONT_SIZE, lineHeight: 16, color: theme.ink },
+    // Left to right whatever the phone's language, so a host never reads turned around.
+    link: { fontFamily: MONO, fontSize: LINK_FONT_SIZE, lineHeight: 16, color: theme.ink, writingDirection: 'ltr', textAlign: 'left' },
     copy: { alignSelf: 'flex-end', height: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2 },
     copyLabel: { fontSize: 14, fontWeight: '600', color: theme.ink },
     fallback: { gap: 4 },
-    fullLink: { fontFamily: MONO, fontSize: 12, color: theme.ink },
+    fullLink: { fontFamily: MONO, fontSize: 12, color: theme.ink, writingDirection: 'ltr', textAlign: 'left' },
     line: { fontSize: 12, color: theme.ink2, textAlign: 'center' },
     error: { fontSize: 13, color: theme.danger },
     status: { gap: 4 },
