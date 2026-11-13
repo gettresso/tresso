@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional;
 
+use App\Chat\PurgeCancelledReplies;
+use App\Chat\PurgeCancelledRepliesHandler;
 use App\Chat\SweepChatMedia;
 use App\Chat\SweepChatMediaHandler;
 use App\Entity\Chat;
@@ -500,6 +502,8 @@ final class ChatQueueTest extends DatabaseTestCase
         $tombstones = $this->countRows("SELECT COUNT(*) FROM sync_tombstone WHERE entity_type = 'chatOutgoing'");
 
         static::getContainer()->get(SweepChatMediaHandler::class)(new SweepChatMedia());
+        self::assertCount(2, $this->connection()->fetchFirstColumn('SELECT id FROM chat_outgoing'), 'Not by the sweep every ten minutes.');
+        static::getContainer()->get(PurgeCancelledRepliesHandler::class)(new PurgeCancelledReplies());
 
         self::assertSame([$recent], $this->connection()->fetchFirstColumn('SELECT id FROM chat_outgoing'), 'Its text and claim are gone; the recent one stays.');
         self::assertSame($tombstones, $this->countRows("SELECT COUNT(*) FROM sync_tombstone WHERE entity_type = 'chatOutgoing'"), 'Its removal stays.');

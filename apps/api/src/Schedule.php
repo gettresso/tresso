@@ -6,6 +6,7 @@ namespace App;
 
 use App\Billing\ReconcileSubscriptions;
 use App\Bulk\SweepBulkActions;
+use App\Chat\PurgeCancelledReplies;
 use App\Chat\SweepChatMedia;
 use App\Chat\SweepChatRelays;
 use App\Scan\SweepPendingScans;
@@ -47,6 +48,7 @@ final readonly class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::cron('17 3 * * *', new ReconcileSubscriptions()))
             ->add(RecurringMessage::cron('41 3 * * *', new PurgeOldPersonalAccessTokens()))
             ->add(RecurringMessage::cron('47 3 * * *', new PurgeUnusedRegisteredClients()))
-            ->add(RecurringMessage::cron('53 3 * * *', new PurgeExpiredOAuthTokens()));
+            ->add(RecurringMessage::cron('53 3 * * *', new PurgeExpiredOAuthTokens()))
+            ->add(RecurringMessage::cron('59 3 * * *', new PurgeCancelledReplies()));
     }
 }
