@@ -160,6 +160,8 @@ describe('the meeting link row', () => {
   })
 
   it('asks to connect an app, and undoes a removal', async () => {
+    // State 2 shows the switch off, also when the first guest switched the row on.
+    expect(mountRow({ row: row('no_app'), on: true, chosen: null }).get('[role="switch"]').attributes('aria-checked')).toBe('false')
     const none = mountRow({ row: row('no_app'), on: false, chosen: null })
     await none.get('.actions button').trigger('click')
     expect(none.emitted('settings')).toHaveLength(1)

@@ -281,7 +281,8 @@ describe('the meeting link in the event editor', () => {
 
     const back = await editor(kept!.target, kept)
     expect((back.get('input[placeholder="Add a title"]').element as HTMLInputElement).value).toBe('Planning')
-    expect(toggle(back).attributes('aria-checked')).toBe('true')
+    // Still state 2, as it was left: the row asks to connect an app.
+    expect(hint(back)).toBe('No meeting app connected yet. Connect Google Meet, Microsoft Teams or your own link once.')
   })
 
   it('shows a link that arrives while the editor is open', async () => {
@@ -462,5 +463,120 @@ describe('the meeting link in the event editor', () => {
     useAuthStore().generation++
     await flushPromises()
     expect(calendarStore.keptEditor).toBeUndefined()
+  })
+
+  function followSync() {
+    const mail = useMailStore()
+    vi.spyOn(mail, 'currentStore').mockReturnValue({ calendarEvent: async (id: string) => server.get(id) ?? null, calendarEvents: async () => [...server.values()] } as unknown as ReturnType<typeof mail.currentStore>)
+    return async () => {
+      mail.calendarRevision++
+      await flushPromises()
+    }
+  }
+  const teamsLink = { provider: 'teams' as const, url: TEAMS_URL, id: null, dialIn: null, removable: false }
+
+  it('does not make a link again when it was taken off elsewhere', async () => {
+    const own = event('gone', { conference: { provider: 'other', url: OWN, id: null, dialIn: null, removable: true } })
+    server.set('gone', own)
+    const sync = followSync()
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(own)[0]! })
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('true')
+    server.set('gone', { ...own, conference: null })
+    await sync()
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('false')
+    expect(await save(wrapper)).toMatchObject({ conferenceUrl: null, conferenceProvider: null })
+  })
+
+  it('shows a link that arrives after a pick, and saves that link', async () => {
+    const failed = event('picked', { conferenceRequest: { provider: 'teams', status: 'failed', reason: 'unreachable', requestedAt: new Date(NOW - 600_000).toISOString() } })
+    server.set('picked', failed)
+    const sync = followSync()
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(failed)[0]! })
+    await wrapper.findAll('.meeting-row .actions button')[1]!.trigger('click')
+    await wrapper.findAll('[role="menuitemradio"]').find((item) => item.text().includes('My own link'))!.trigger('click')
+    server.set('picked', { ...failed, conference: teamsLink, conferenceRequest: null })
+    await sync()
+    expect(wrapper.get('.meeting-row button[aria-haspopup="menu"]').text()).toBe('Microsoft Teams')
+    expect(wrapper.get('.meeting-row .link').attributes('title')).toBe(TEAMS_URL)
+    expect(wrapper.text()).toContain('A meeting link was added meanwhile. It is shown now; save again to keep it.')
+    expect(await save(wrapper)).toMatchObject({ conferenceUrl: TEAMS_URL, conferenceProvider: null })
+  })
+
+  it('shows a link that arrives after the switch went off', async () => {
+    const plain = event('off-then-link')
+    server.set('off-then-link', plain)
+    const sync = followSync()
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(plain)[0]! })
+    await toggle(wrapper).trigger('click')
+    await toggle(wrapper).trigger('click')
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('false')
+    server.set('off-then-link', { ...plain, conference: teamsLink })
+    await sync()
+    expect(toggle(wrapper).attributes('aria-checked')).toBe('true')
+    expect(wrapper.get('.meeting-row .link').attributes('title')).toBe(TEAMS_URL)
+  })
+
+  it('keeps the title through a save stopped by a new link, and the next save sends that link', async () => {
+    const before = event('second')
+    server.set('second', { ...before, conference: teamsLink })
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(before)[0]! })
+    await toggle(wrapper).trigger('click')
+    await wrapper.get('input[placeholder="Add a title"]').setValue('Renamed review')
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('A meeting link was added meanwhile.'))
+    expect((wrapper.get('input[placeholder="Add a title"]').element as HTMLInputElement).value).toBe('Renamed review')
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.emitted('saved')).toHaveLength(1))
+    expect(requests.find((request) => request.method === 'PUT')!.body).toMatchObject({ summary: 'Renamed review', conferenceUrl: TEAMS_URL, conferenceProvider: null })
+    expect(wrapper.text()).not.toContain('A meeting link was added meanwhile.')
+  })
+
+  it('keeps the link when its own app is picked after another one, and says when a pick replaces it', async () => {
+    const MEET = 'https://meet.google.com/kfp-wzqn-rtx'
+    const meet = calendarEvent('meet2', 'home', { summary: 'meet', start: { dateTime: '2026-10-22T10:00:00', timeZone: AMS }, end: { dateTime: '2026-10-22T11:00:00', timeZone: AMS }, conference: { provider: 'meet', url: MEET, id: null, dialIn: null, removable: true } })
+    server.set('meet2', meet)
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(meet)[0]! })
+    const pick = async (name: string) => {
+      await wrapper.get('.meeting-row button[aria-haspopup="menu"]').trigger('click')
+      await wrapper.findAll('[role="menuitemradio"]').find((item) => item.text().includes(name))!.trigger('click')
+    }
+    await pick('My own link')
+    expect(wrapper.text()).toContain('It replaces the current link.')
+    await pick('Google Meet')
+    expect(wrapper.text()).not.toContain('It replaces the current link.')
+    expect(await save(wrapper)).toMatchObject({ conferenceUrl: MEET, conferenceProvider: null })
+  })
+
+  it('offers the app menu on a link of an app it does not know', async () => {
+    const webex = event('webex', { conference: { provider: 'webex', url: 'https://company.webex.com/meet/kim', id: null, dialIn: null, removable: true } })
+    server.set('webex', webex)
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(webex)[0]! })
+    const app = wrapper.get('.meeting-row button[aria-haspopup="menu"]')
+    expect(app.text()).toBe('Meeting link')
+    await app.trigger('click')
+    expect(wrapper.find('[role="menuitemradio"][aria-checked="true"]').exists()).toBe(false)
+  })
+
+  it('compares with the series link when a moved occurrence asks for all events', async () => {
+    const series = event('linked', { recurrence: 'FREQ=DAILY;COUNT=3', start: { dateTime: '2026-10-20T10:00:00', timeZone: AMS }, end: { dateTime: '2026-10-20T11:00:00', timeZone: AMS }, conference: teamsLink })
+    const moved = event('linked-2', { uid: series.uid, recurrenceId: '20261021T080000Z', start: { dateTime: '2026-10-21T12:00:00', timeZone: AMS }, end: { dateTime: '2026-10-21T13:00:00', timeZone: AMS } })
+    server.set('linked', series)
+    server.set('linked-2', moved)
+    const override = occurrenceOf(series, moved).find((item) => item.event.id === 'linked-2')!
+    const wrapper = await editor({ kind: 'edit', occurrence: override })
+    await toggle(wrapper).trigger('click')
+    await wrapper.get('.scope input[value="all"]').setValue(true)
+    const body = await save(wrapper)
+    expect(wrapper.text()).not.toContain('A meeting link was added meanwhile.')
+    expect(body).toMatchObject({ conferenceProvider: 'teams', conferenceUrl: null })
+  })
+
+  it('stops with a plain sentence when the event moved to another calendar meanwhile', async () => {
+    const moved = event('elsewhere')
+    server.set('elsewhere', { ...moved, calendarId: 'home' })
+    const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(moved)[0]! })
+    await wrapper.get('form').trigger('submit')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('This event was moved to another calendar meanwhile. Close it and open it again to change it.'))
+    expect(requests.some((request) => request.method === 'PUT')).toBe(false)
   })
 })
