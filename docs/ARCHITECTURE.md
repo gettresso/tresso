@@ -1885,8 +1885,8 @@ desktop app. WhatsApp is off until it is turned on for a Mac, while it waits for
 `defaults write app.tresso.desktop EnableWhatsApp -bool YES` (or `TRESSO_ENABLE_WHATSAPP=1`; `defaults delete
 app.tresso.desktop EnableWhatsApp` turns it off again). The shell reads the switch once at launch, and while it is off
 every WhatsApp command answers `unsupported` (`whatsapp_available` false), so nothing in the window can load a config,
-start a bridge, read or send; a bridge an earlier run left behind is still stopped at launch. Until then, and always in
-the browser, nothing of WhatsApp shows: no card in the provider list or on
+start a bridge, read or send; a bridge an earlier run left behind is still stopped at launch. Until then nothing of
+WhatsApp shows on that Mac (the browser shows the chats the server holds, see below): no card in the provider list or on
 Settings, Accounts, and every WhatsApp address (`/settings/whatsapp`, `/settings/whatsapp/connect`, and `/whatsapp`,
 `/whatsapp/:chatId` and `/chats/:chatId` for the chat screens) leads back to Accounts or the Unified Inbox; no bridge
 starts, also not for a WhatsApp connected before. Once the server confirmed who is signed in (where other users' mail
@@ -1930,7 +1930,8 @@ the name once it is; the stored rows are not rewritten).
 
 The chat screens (`apps/web/src/stores/chats.ts`, `apps/web/src/components/chat/`) show the chats of the "Only this
 Mac" account, or in "All my devices" those of the server's account (read again on every delta page with chat rows),
-only where WhatsApp is on and connected on the desktop; in the browser and with the switch off nothing of them renders.
+where WhatsApp is on and connected on the desktop; on a desktop with the switch off nothing of them renders. The browser
+is described at the end of this section.
 The sidebar has a WhatsApp row (unread chats in the Unified Inbox, which its count includes) and says `N mail accounts,
 WhatsApp`; the Unified Inbox places chats among the mail by time (`mergeInbox`, no checkbox, never in a bulk selection,
 and while older mail is still to be shown only chats newer than the last conversation on screen) with `Channels` tabs
@@ -2119,8 +2120,40 @@ off, so it never goes twice). It keeps every point above:
   `ChatApi` and a copy, not the relay, so the browser can use them as they are. On the relaying Mac a waiting reply says
   `waiting for the bridge`; on another Mac `waiting for your Mac` (or `sending` while the relaying Mac is online), and the
   composer names the Mac that sends. Attach stays "Only this Mac" until files go through the server (shown, disabled,
-  with why). Every crash point of both switches, a sign-out during one, a second user and the carried replies' crash
+  with why). A read of a chat the server refused or did not answer is put back and held, as on the phone: not asked
+  again for the same last message until the chat is looked at again (opened, or its window got the focus), and never
+  before the server's `Retry-After`, so a refusal cannot loop through the copy. Every crash point of both switches, a sign-out during one, a second user and the carried replies' crash
   points have a test in `apps/web/src/stores/__tests__/whatsappRelayServer.spec.ts`.
+
+WhatsApp in the browser (app.gettresso.com) has no bridge and runs nothing of the relay: `whatsappRelay.ts` never
+starts there (`whatsapp_available` is never asked), and `chatsFromServer` (`apps/web/src/platform/whatsapp.ts`, true
+outside the desktop app) makes the chat screens show the chats the server holds, exactly while the copy holds the
+server's WhatsApp chat account (the user chose "All my devices" on a Mac), with no switch. `chats.enabled` is the one
+flag every chat screen reads: on the desktop as above, in the browser the account in the copy (read when the copy opens
+and on every delta page with chat rows, so its tombstone turns it off). Without it nothing of WhatsApp shows and every
+WhatsApp address leads to Accounts or the Unified Inbox; an address opened before the copy is open waits for it (at most
+10 seconds, then opens, and the screen leaves once the copy says there is no account), and a screen open when the account
+goes leaves too. `/settings/whatsapp/connect` never opens: only Tresso for Mac connects WhatsApp. With it:
+
+- The sidebar's WhatsApp row (`+31612345678, via Kim's MacBook Pro`, the unread chats in the Unified Inbox), the Unified
+  Inbox's chat rows and `Channels` tabs, `/whatsapp`, and the chat pane, all from the IndexedDB copy fed by the delta;
+  nothing calls the chat read endpoints (those are for MCP clients).
+- Every write goes through `serverChatActions` as on a Mac that does not relay: read through, Noted, Archive, Leave
+  this chat out (a `PATCH` with `leftOut: true`; the server removes the chat's messages and replies and stores nothing
+  more of it, and the relaying Mac finds the chat left out in its copy and sends nothing of it), and replies queued with
+  a UUIDv7 on the server's clock, with the same states, words, Cancel (only while a reply waits), Try again, unsure rule,
+  drafts and guards. Taking a chat back in stays on the relaying Mac, which alone reads its bridge again.
+- A notice above the chat and above the WhatsApp list when the relaying Mac is offline (`Your Mac is offline since
+  08:40.`, from `relayOfflineSince`), its link went or its bridge stopped, from the chat account's row; the composer
+  says `Sent on WhatsApp by <Mac>. No signature, no subject.`; Attach is shown disabled (`Files are sent from the
+  relaying Mac for now.`), and a file row shows its kind, name and size with `Open this file on the relaying Mac.` and
+  nothing to download, until files go through the server.
+- Settings, WhatsApp (`SettingsWhatsAppBrowserView.vue`) shows the account read only: the relaying Mac and whether it is
+  online, the bridge and the link as it last reported them, which chats come in, and the chats left out (with why they
+  are taken back in on the Mac). Notify me, a setting the server keeps, is the one control (`PATCH` of the account). No
+  connect, relay, mode, folder, link or disconnect control.
+- No notifications of WhatsApp in the browser: the server pushes new WhatsApp messages to the phone only, and the web
+  client shows no in-tab notifications of its own.
 
 Both stores keep the smart inboxes and list a smart inbox across all accounts through an index on smart inbox,
 whether the conversation is in an inbox or junk folder, and date (`ListScope`: an inbox or a smart inbox).
