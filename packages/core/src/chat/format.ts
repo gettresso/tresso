@@ -299,7 +299,7 @@ export function inInbox(chat: Pick<SyncedChat, 'lastMessageAt' | 'archivedThroug
   return Number.isNaN(archivedThrough) || !((Date.parse(chat.lastMessageAt) || 0) <= archivedThrough)
 }
 
-/** The text a file sent from the desktop is recorded with (recordLocalAttachment): `File: <name>`. */
+/** The text a file sent from the desktop is shown with (recordLocalAttachment): `File: <name>`. */
 export const SENT_FILE_PREFIX = 'File: '
 
 /**
@@ -318,17 +318,25 @@ export function sentFileKind(name: string): ChatMediaKind {
 }
 
 /**
- * Whether a stored own message is the bridge's copy of a sent reply. Text replies match by their trimmed text. A file
- * sent from the desktop (`File: <name>`) matches an own message with no text that carries a file of the kind it was
- * sent as: the bridge stores none at sending, and the copy a history sync brings later has an empty caption and a name
- * the bridge made up (`image_<time>.jpg`, `document_<time>` for a document, whose name it sends as the title only).
+ * Whether a stored own message is the bridge's copy of a sent reply. Text replies match by their trimmed text, also one
+ * typed as `File: ...`. A file the desktop sent (a reply with `file`) matches an own message with no text that carries a
+ * file of the kind it was sent as and of the same size in bytes: the bridge stores none at sending, and the copy a
+ * history sync brings later has an empty caption and a name the bridge made up (`image_<time>.jpg`, `document_<time>`
+ * for a document, whose name it sends as the title only). The kind alone would let a photo sent from the phone a minute
+ * later hide Tresso's; a size unknown on either side matches nothing, so both show rather than a real message vanishing.
  */
 function isEchoOf(message: SyncedChatMessage, reply: SyncedChatOutgoing): boolean {
-  const text = reply.text.trim()
-  if (reply.text.startsWith(SENT_FILE_PREFIX) && message.mediaKind !== null && message.text.trim() === '') {
-    return message.mediaKind === sentFileKind(reply.text.slice(SENT_FILE_PREFIX.length))
+  const file = reply.file ?? null
+  if (file !== null) {
+    return (
+      message.text.trim() === '' &&
+      message.mediaKind === sentFileKind(file.name) &&
+      file.size !== null &&
+      message.mediaSize !== null &&
+      message.mediaSize === file.size
+    )
   }
-  return message.text.trim() === text
+  return message.text.trim() === reply.text.trim()
 }
 
 export type TimelineEntry =

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { chat, chatAccount, chatOutgoing } from '../store/contract'
 import { memorySql } from '../store/memorySql'
 import { SqliteMailStore } from '../store/sqlite'
@@ -358,19 +358,21 @@ describe('LocalChatBackend', () => {
     await backend.ingest([direct], [incoming('A1', DIRECT, -10)], false)
     const id = '0193a000-0000-7000-8000-0000000000f1'
 
-    const row = await recordLocalAttachment(store, localChatId(DIRECT), ' plan\u202E.pdf ', id, NOW)
-    expect(row).toMatchObject({ id, status: 'sent', text: 'File: plan.pdf', sentAt: iso(0), createdAt: iso(0), error: null })
-    expect(await recordLocalAttachment(store, localChatId(DIRECT), 'other.pdf', id, NOW + 60_000)).toEqual(row)
+    const row = await recordLocalAttachment(store, localChatId(DIRECT), { name: ' plan\u202E.pdf ', size: 4096 }, id, NOW)
+    expect(row).toMatchObject({ id, status: 'sent', text: 'File: plan.pdf', file: { name: 'plan.pdf', size: 4096 }, sentAt: iso(0), createdAt: iso(0), error: null })
+    expect(await recordLocalAttachment(store, localChatId(DIRECT), { name: 'other.pdf', size: 1 }, id, NOW + 60_000)).toEqual(row)
+    // A size that is no byte count is kept as unknown.
+    expect((await recordLocalAttachment(store, localChatId(DIRECT), { name: 'odd.pdf', size: -1 }, 'x9', NOW)).file).toEqual({ name: 'odd.pdf', size: null })
     const stored = (await store.chat(localChatId(DIRECT)))!
-    expect(stored.outgoing).toEqual([row])
+    expect(stored.outgoing[0]).toEqual(row)
     expect(stored.chat.lastMessageAt).toBe(iso(0))
     // Nothing the relay sends: it is no waiting reply.
     expect(await backend.claimNext()).toBeNull()
 
-    await expect(recordLocalAttachment(store, localChatId(DIRECT), '\u200B', 'x2', NOW)).rejects.toMatchObject({ code: 'empty' })
+    await expect(recordLocalAttachment(store, localChatId(DIRECT), { name: '\u200B', size: 1 }, 'x2', NOW)).rejects.toMatchObject({ code: 'empty' })
     await setLocalChatState(store, localChatId(DIRECT), { leftOut: true })
-    await expect(recordLocalAttachment(store, localChatId(DIRECT), 'a.pdf', 'x3', NOW)).rejects.toMatchObject({ code: 'left_out' })
-    await expect(recordLocalAttachment(store, localChatId(GROUP), 'a.pdf', 'x4', NOW)).rejects.toMatchObject({ code: 'no_chat' })
+    await expect(recordLocalAttachment(store, localChatId(DIRECT), { name: 'a.pdf', size: 1 }, 'x3', NOW)).rejects.toMatchObject({ code: 'left_out' })
+    await expect(recordLocalAttachment(store, localChatId(GROUP), { name: 'a.pdf', size: 1 }, 'x4', NOW)).rejects.toMatchObject({ code: 'no_chat' })
   })
 
   it('reads the store again with only rows from before the reset as history', async () => {
@@ -378,7 +380,16 @@ describe('LocalChatBackend', () => {
     expect((await store.chats())[0]).toMatchObject({ unread: 0 })
 
     // Taken back in at NOW: the re-read brings an old row (history) and one sent since (live, unread).
+    // The mark is written before the cursor goes: a crash in between keeps the old cursor, never a re-read without it.
+    const order: string[] = []
+    const set = store.setChatMeta.bind(store)
+    const spy = vi.spyOn(store, 'setChatMeta').mockImplementation(async (key, value) => {
+      order.push(key)
+      await set(key, value)
+    })
     await resetLocalCursor(store, NOW)
+    spy.mockRestore()
+    expect(order).toEqual([LOCAL_HISTORY_THROUGH, LOCAL_CURSOR])
     expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBe(String(NOW))
     expect(await backend.cursor()).toBeNull()
     await backend.ingest([direct], [incoming('A1', DIRECT, -30), incoming('A2', DIRECT, -20), incoming('A3', DIRECT, 5)], true)

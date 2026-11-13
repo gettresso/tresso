@@ -1,8 +1,8 @@
 import type { MailStore } from '../store/mailStore'
-import { CHAT_REPLY_MAX, chatKindOf, nameText, replyText } from './format'
+import { CHAT_REPLY_MAX, chatKindOf, nameText, replyText, SENT_FILE_PREFIX } from './format'
 import { chatInstant } from './rows'
 import { ChatRelayStopped, type ChatBackend, type ClaimedReply, type FirstImport, type IncomingChat, type IncomingMessage, type IngestCounts, type RelayCursor, type RelaySettings, type ReplyResult } from './relay'
-import { LOCAL_CHAT_PREFIX, type SyncedChat, type SyncedChatAccount, type SyncedChatMessage, type SyncedChatOutgoing } from './types'
+import { LOCAL_CHAT_PREFIX, type SentFile, type SyncedChat, type SyncedChatAccount, type SyncedChatMessage, type SyncedChatOutgoing } from './types'
 
 /** The chat account of the "Only this Mac" mode. */
 export const LOCAL_CHAT_ACCOUNT = `${LOCAL_CHAT_PREFIX}account`
@@ -436,19 +436,20 @@ export function queueLocalReply(store: MailStore, chatId: string, text: string, 
 
 /**
  * Records a file the user attached and the bridge took (sent at once by the desktop, never through the reply queue):
- * a reply `sent`, its text `File: <name>`, and the chat's `lastMessageAt` moved to it. Only a file that went out is
+ * a reply `sent`, its text `File: <name>`, marked as a file with its name and size (`file`, for matching the bridge's
+ * later copy, see timeline), and the chat's `lastMessageAt` moved to it. Only a file that went out is
  * recorded: a reply of the queue that was not sent goes out again as text on Try again, which a file must not. `id`
  * is a UUIDv7 the caller made; recording the same id again returns the reply as stored.
  *
  * @throws LocalChatError `no_chat`, `left_out`, `empty` (a name with nothing to show)
  */
-export function recordLocalAttachment(store: MailStore, chatId: string, fileName: string, id: string, now: number): Promise<SyncedChatOutgoing> {
+export function recordLocalAttachment(store: MailStore, chatId: string, file: SentFile, id: string, now: number): Promise<SyncedChatOutgoing> {
   return serialized(store, async () => {
     const chat = await localChat(store, chatId)
     if (chat.leftOut) {
       throw new LocalChatError('left_out')
     }
-    const name = nameText(fileName)
+    const name = nameText(file.name)
     if (name === '') {
       throw new LocalChatError('empty')
     }
@@ -461,7 +462,8 @@ export function recordLocalAttachment(store: MailStore, chatId: string, fileName
       id,
       chatId,
       chatAccountId: LOCAL_CHAT_ACCOUNT,
-      text: `File: ${name}`,
+      text: `${SENT_FILE_PREFIX}${name}`,
+      file: { name, size: file.size !== null && Number.isSafeInteger(file.size) && file.size >= 0 ? file.size : null },
       status: 'sent',
       error: null,
       createdAt: at,
@@ -629,8 +631,10 @@ export function removeLocalGroupChats(store: MailStore): Promise<number> {
  */
 export function resetLocalCursor(store: MailStore, liveFrom: number | null = null): Promise<void> {
   return serialized(store, async () => {
-    await store.setChatMeta(LOCAL_CURSOR, null)
+    // The mark first: a crash before the cursor is cleared leaves the old cursor (the mark goes with its next save), never
+    // a re-read without the mark, which would count everything as history.
     await store.setChatMeta(LOCAL_HISTORY_THROUGH, liveFrom === null ? null : String(Math.floor(liveFrom)))
+    await store.setChatMeta(LOCAL_CURSOR, null)
   })
 }
 
