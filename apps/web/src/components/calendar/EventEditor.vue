@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
@@ -233,11 +233,11 @@ const hadLink = computed(() => saved.value !== null && saved.value.conference !=
  * The link the editor knows of per row (the event, and its series): a save that would make a link compares the
  * server's link of the row it saves against this, so only a link the user has not seen stops it.
  */
-const knownLinks = new Map<string, string | null>()
+const knownLinks = reactive(new Map<string, SyncedCalendarEvent['conference']>())
 if (props.target.kind === 'edit') {
   const occurrence = props.target.occurrence
-  knownLinks.set(occurrence.event.id, occurrence.event.conference?.url ?? null)
-  if (occurrence.series !== null) knownLinks.set(occurrence.series.id, occurrence.series.conference?.url ?? null)
+  knownLinks.set(occurrence.event.id, occurrence.event.conference)
+  if (occurrence.series !== null) knownLinks.set(occurrence.series.id, occurrence.series.conference)
 }
 /** Only the organizer changes the link; an invited event shows who added it and nothing to change. */
 const organizes = computed(() => saved.value === null || saved.value.selfResponse === null)
@@ -255,19 +255,34 @@ const choices = computed(() => meetingChoices(selectedCalendar.value, meetingAcc
 const defaultApp = computed(() => defaultMeetingApp(selectedCalendar.value, meetingAccount.value, preferences.value))
 const starting = computed(() => startingChoice(choices.value, defaultApp.value))
 /** The app of the link the event has: the own link, or Meet, Teams or Zoom by its provider; null for any other. */
-const linkApp = computed<MeetingApp | null>(() => {
-  const conference = saved.value?.conference ?? null
+function appOf(conference: SyncedCalendarEvent['conference']): MeetingApp | null {
   if (conference === null) return null
   const own = preferences.value.ownLink
   if (own !== null && own !== '' && conference.url === own) return 'own'
   return conference.provider === 'meet' || conference.provider === 'teams' || conference.provider === 'zoom' ? conference.provider : null
+}
+const linkApp = computed<MeetingApp | null>(() => appOf(saved.value?.conference ?? null))
+/**
+ * The menu's apps for this event. While the event keeps a link whose host is Meet's or Teams' but that reads as
+ * another app here (the own link is a Teams room), that provider's item is not offered: the server keeps a meeting of
+ * the same app on a save, so the pick would promise a new link and change nothing.
+ */
+const rowChoices = computed(() => {
+  const conference = saved.value?.conference ?? null
+  if (conference === null || removed.value) return choices.value
+  const provider = conference.provider
+  if ((provider !== 'meet' && provider !== 'teams') || linkApp.value === provider) return choices.value
+  const name = provider === 'teams' ? 'Teams' : 'Google Meet'
+  return choices.value.map((choice) =>
+    choice.app === provider ? { ...choice, ok: false, problem: 'unsupported' as const, via: `The current link is already a ${name} link. Remove it first to get a new one.` } : choice,
+  )
 })
 /** Keeps the link it has: the app button names that link's app, not the calendar's default. */
 const keepsLink = computed(() => hadLink.value && !removed.value && explicitApp.value === null)
 const chosen = computed(() => {
   const app = explicitApp.value ?? (keepsLink.value ? linkApp.value : null)
   if (app === null) return keepsLink.value ? null : starting.value.choice
-  return choices.value.find((choice) => choice.app === app) ?? null
+  return rowChoices.value.find((choice) => choice.app === app) ?? null
 })
 /** A Teams meeting Microsoft keeps on its event: the server's word, or core's rule for rows from before it. */
 const locked = computed(() => {
@@ -344,22 +359,25 @@ onMounted(() => {
  */
 function adopt(own: SyncedCalendarEvent, series: SyncedCalendarEvent | null): void {
   if (saved.value === null) return
-  knownLinks.set(own.id, own.conference?.url ?? null)
-  if (series !== null) knownLinks.set(series.id, series.conference?.url ?? null)
+  knownLinks.set(own.id, own.conference)
+  if (series !== null) knownLinks.set(series.id, series.conference)
   const conference = own.conference
   const arrived = saved.value.conference === null && conference !== null
+  const changed = saved.value.conference !== null && conference !== null && saved.value.conference.url !== conference.url
   const gone = saved.value.conference !== null && conference === null
   saved.value = { ...saved.value, conference, conferenceRequest: (series ?? own).conferenceRequest ?? null }
-  if (arrived) {
+  if (arrived || changed) {
     // The link now on the event wins over anything chosen before it came: a pick after this replaces it knowingly.
     const acted = touched.value || explicitApp.value !== null || removed.value || !linkOn.value
     explicitApp.value = null
     removed.value = false
     linkOn.value = true
-    if (acted) meetingNotice.value = 'A meeting link was added meanwhile. It is shown now; save again to keep it.'
-  } else if (gone && !touched.value && explicitApp.value === null && !removed.value) {
-    // Taken off elsewhere: an untouched row does not make a new one when the event is saved.
+    if (acted || changed) meetingNotice.value = arrived ? 'A meeting link was added meanwhile. It is shown now.' : 'The meeting link was changed meanwhile. It is shown now.'
+  } else if (gone && explicitApp.value === null) {
+    // Taken off elsewhere: keeping it (untouched, switched back on, or Undo) no longer means a link; a save does not
+    // make a new one. A pick of another app stays a pick.
     linkOn.value = false
+    removed.value = false
   }
 }
 
@@ -402,6 +420,7 @@ function toggleLink(): void {
 }
 
 function pickApp(app: MeetingApp): void {
+  if (rowChoices.value.find((choice) => choice.app === app)?.ok === false) return
   // The app of the link the event has: picking it (again) keeps that link, it does not make a new one.
   if (hadLink.value && !removed.value && app === linkApp.value) {
     explicitApp.value = null
@@ -529,20 +548,21 @@ class Stale extends Error {}
  *   on and the calendar offers it (switching off drops only the request).
  */
 async function meetingFields(target: { occurrence: Occurrence; scope: EditScope } | null): Promise<Pick<EventInput, 'conferenceUrl' | 'conferenceProvider'>> {
-  if (removed.value) {
-    return { conferenceUrl: null, conferenceProvider: null }
-  }
   const fresh = target === null ? null : await calendar.event(linkRowId(target))
   // Moved to another calendar elsewhere, while the user left the calendar as it was: the meeting choices were made
-  // for the old one.
+  // for the old one, and a save would move it back.
   if (fresh !== null && fresh.calendarId !== before.calendarId && values.calendarId === before.calendarId) {
     throw new Stale('This event was moved to another calendar meanwhile. Close it and open it again to change it.')
   }
+  if (removed.value) {
+    return { conferenceUrl: null, conferenceProvider: null }
+  }
   const app = chosen.value
   if (linkOn.value && app !== null && app.ok && (explicitApp.value !== null || !hadLink.value)) {
-    if (target !== null && fresh !== null && fresh.conference !== null && fresh.conference.url !== (knownLinks.get(fresh.id) ?? null)) {
+    const known = knownLinks.get(fresh?.id ?? '') ?? null
+    if (target !== null && fresh !== null && fresh.conference !== null && fresh.conference.url !== known?.url) {
       await refreshFromServer()
-      throw new Stale('A meeting link was added meanwhile. It is shown now; save again to keep it.')
+      throw new Stale(known === null ? 'A meeting link was added meanwhile. It is shown now; save again to keep it.' : 'The meeting link was changed meanwhile. It is shown now; save again to keep it.')
     }
     if (app.app === 'meet' || app.app === 'teams') {
       return { conferenceUrl: null, conferenceProvider: app.app }
@@ -562,7 +582,16 @@ async function meetingFields(target: { occurrence: Occurrence; scope: EditScope 
 }
 
 /** Another app picked on an event with a link: saving replaces that link. */
-const replacing = computed(() => hadLink.value && !removed.value && explicitApp.value !== null && explicitApp.value !== linkApp.value && linkOn.value)
+const replacing = computed(() => {
+  if (removed.value || !linkOn.value || props.target.kind !== 'edit') return false
+  const occurrence = props.target.occurrence
+  // For all or following events of a series, the link replaced is the series' link.
+  const target = occurrence.recurring && scope.value !== 'this' ? (knownLinks.get(occurrence.seriesId) ?? null) : (saved.value?.conference ?? null)
+  if (target === null) return false
+  const app = chosen.value
+  const makes = app !== null && app.ok && (explicitApp.value !== null || !hadLink.value)
+  return makes && app.app !== appOf(target)
+})
 
 const meetingChanged = computed(() => touched.value || explicitApp.value !== null || removed.value)
 
@@ -838,7 +867,7 @@ const repeatSummary = computed(() => {
           <MeetingLinkRow
             v-if="organizes"
             :row="meeting"
-            :choices="choices"
+            :choices="rowChoices"
             :chosen="chosen"
             :default-app="defaultApp"
             :calendar-name="selectedCalendar?.name ?? ''"
