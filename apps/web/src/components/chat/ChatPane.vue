@@ -33,13 +33,33 @@ import SenderAvatar from '@/components/SenderAvatar.vue'
 import ChatBubble, { type BubbleView } from '@/components/chat/ChatBubble.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatNotice from '@/components/chat/ChatNotice.vue'
-import { attachText, chatName, chatNoticeKind, clockTime, composerNote as sendNoteText, desktopReplyLabel, LEAVE_OUT_BODY, LEAVE_OUT_TITLE, LEAVE_OUT_TWO_CHATS, localBubbleMeta, mediaKindLabel, replyAnnouncement, senderLabel, senderTone } from '@/components/chat/chatTexts'
+import ChatRelayNotice from '@/components/chat/ChatRelayNotice.vue'
+import {
+  attachText,
+  chatName,
+  chatNoticeKind,
+  clockTime,
+  composerNote as sendNoteText,
+  desktopReplyLabel,
+  LEAVE_OUT_BODY,
+  LEAVE_OUT_RELAY_ONLY,
+  LEAVE_OUT_TITLE,
+  LEAVE_OUT_TWO_CHATS,
+  LEFT_OUT_HERE,
+  localBubbleMeta,
+  mediaKindLabel,
+  relayNotice,
+  replyAnnouncement,
+  senderLabel,
+  senderTone,
+} from '@/components/chat/chatTexts'
 import { errorName } from '@/components/chat/whatsappTexts'
 import { composing } from '@/components/chat/composition'
 
 /**
  * A WhatsApp chat (the WhatsAppInbox and WhatsAppStates boards): the header with Do, Noted, Archive and Leave this
- * chat out, a notice when the bridge cannot bring messages in, the timeline, and the reply box. The timeline is read
+ * chat out, a notice when the bridge cannot bring messages in (in the browser: when the relaying Mac is offline, its
+ * bridge stopped or its link went, from the chat account's row), the timeline, and the reply box. The timeline is read
  * in windows: the newest PAGE messages first, older ones as the user scrolls up (the scroll position stays where it
  * was), so a chat of thousands of messages never loads at once. Opening a chat reads it in Tresso (never in WhatsApp).
  */
@@ -90,6 +110,8 @@ const subtitle = computed(() => (chat.value === null ? '' : chatSubtitle(chat.va
 const isGroup = computed(() => chat.value?.kind === 'group')
 /** The bridge's notice, on the Mac that sends only: on another Mac in "All my devices" replies wait in the server's queue. */
 const notice = computed(() => (chats.enabled && chats.relaysHere ? chatNoticeKind(wa.bridge) : null))
+/** In the browser: what the relaying Mac's state means here (no bridge of its own to start or link). */
+const relayNote = computed(() => (chats.enabled && chats.serverOnly ? relayNotice(chats.account) : null))
 /**
  * A waiting reply is as good as being sent: this Mac's relay runs, or (another Mac in "All my devices") the relaying Mac
  * is online as the server last heard.
@@ -315,6 +337,7 @@ async function open(): Promise<void> {
   take(page)
   loaded.value = true
   chats.openChatId = props.chatId
+  chats.lookedAt(props.chatId)
   await nextTick()
   toBottom()
   heading.value?.focus()
@@ -658,14 +681,20 @@ function shortcut(event: KeyboardEvent): void {
   }
 }
 
+/** The window got the focus back: the chat is looked at again, so a read that was held may be asked again. */
+function onFocus(): void {
+  chats.lookedAt(props.chatId)
+  markReadIfSeen()
+}
+
 onMounted(() => {
   window.addEventListener('keydown', shortcut)
-  window.addEventListener('focus', markReadIfSeen)
+  window.addEventListener('focus', onFocus)
 })
 onBeforeUnmount(() => {
   unmounted = true
   window.removeEventListener('keydown', shortcut)
-  window.removeEventListener('focus', markReadIfSeen)
+  window.removeEventListener('focus', onFocus)
   if (poll !== null) {
     clearInterval(poll)
   }
@@ -679,8 +708,9 @@ onBeforeUnmount(() => {
   <article class="pane chat-pane" :aria-label="chat ? `WhatsApp chat with ${name}` : 'WhatsApp chat'">
     <div v-if="!loaded" class="state" role="status"><LogoLoader /> Loading the chat…</div>
     <p v-else-if="chat === null" class="state">
-      This chat is not on this Mac any more. <RouterLink :to="backTo">Back to the list</RouterLink>
+      {{ chats.serverOnly ? 'This chat is not here any more.' : 'This chat is not on this Mac any more.' }} <RouterLink :to="backTo">Back to the list</RouterLink>
     </p>
+    <p v-else-if="chat.leftOut && chats.serverOnly" class="state">{{ LEFT_OUT_HERE }}</p>
     <p v-else-if="chat.leftOut" class="state">
       You left this chat out. Take it back in under <RouterLink :to="{ name: 'settings-whatsapp' }">Settings, WhatsApp</RouterLink>.
     </p>
@@ -713,7 +743,7 @@ onBeforeUnmount(() => {
 
       <div v-if="confirmingLeave" class="confirm" role="alertdialog" aria-labelledby="chat-leave-title" aria-describedby="chat-leave-body" @keydown.esc.prevent="cancelLeave">
         <p id="chat-leave-title"><strong>{{ LEAVE_OUT_TITLE }}</strong></p>
-        <p id="chat-leave-body">{{ LEAVE_OUT_BODY }} {{ LEAVE_OUT_TWO_CHATS }}</p>
+        <p id="chat-leave-body">{{ LEAVE_OUT_BODY }} {{ LEAVE_OUT_TWO_CHATS }}<template v-if="chats.serverOnly"> {{ LEAVE_OUT_RELAY_ONLY }}</template></p>
         <div class="confirm-actions">
           <button type="button" class="button button-danger" :disabled="busy" @click="leaveOut">Leave out</button>
           <button ref="leaveCancel" type="button" class="button button-quiet" :disabled="busy" @click="cancelLeave">Cancel</button>
@@ -721,6 +751,7 @@ onBeforeUnmount(() => {
       </div>
 
       <ChatNotice v-if="notice" :kind="notice" :busy="wa.busy !== null" @act="onNotice" />
+      <ChatRelayNotice v-else-if="relayNote" :notice="relayNote" />
 
       <!-- A region, not a log: a log would read out the history as it loads; changes of a reply are said by the composer. -->
       <div ref="scroller" class="timeline" role="region" tabindex="0" aria-label="Messages" @scroll.passive="onScroll">
@@ -735,6 +766,7 @@ onBeforeUnmount(() => {
               :bubble="row.bubble"
               :media-state="row.bubble.media ? chats.mediaOf(row.bubble.media.id) : undefined"
               :busy="busy"
+              :media-remote="chats.serverOnly"
               @retry="retry(row.bubble.outgoingId)"
               @cancel="cancel(row.bubble.outgoingId)"
               @download="row.bubble.media && chat && chats.download(chat, row.bubble.media)"

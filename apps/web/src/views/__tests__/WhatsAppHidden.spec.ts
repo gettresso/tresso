@@ -7,9 +7,13 @@ import ConnectPicker from '@/components/connect/ConnectPicker.vue'
 import router from '@/router'
 import SettingsAccountsView from '../SettingsAccountsView.vue'
 
+// The desktop app: the browser shows the chats the server holds instead (WhatsAppBrowser.spec.ts).
+vi.mock('@/platform/whatsapp', async (original) => ({ ...(await original<typeof import('@/platform/whatsapp')>()), chatsFromServer: false }))
+
 /**
- * WhatsApp stays hidden until it is turned on for a Mac (`defaults write app.tresso.desktop EnableWhatsApp -bool YES`,
- * read by the shell's whatsapp_available), and the browser never shows it: every way in is checked here, off and on.
+ * WhatsApp stays hidden on the desktop until it is turned on for a Mac (`defaults write app.tresso.desktop
+ * EnableWhatsApp -bool YES`, read by the shell's whatsapp_available): every way in is checked here, off and on. The
+ * browser never turns the bridge on; it shows only the chats the server holds (WhatsAppBrowser.spec.ts).
  */
 describe('WhatsApp while it is not turned on', () => {
   beforeEach(() => {

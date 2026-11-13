@@ -27,7 +27,8 @@ export interface BubbleView {
   grouped: boolean
 }
 
-defineProps<{ bubble: BubbleView; mediaState?: MediaState; busy?: boolean }>()
+/** `mediaRemote`: files stay on the relaying Mac (the browser), so file rows offer no download. */
+defineProps<{ bubble: BubbleView; mediaState?: MediaState; busy?: boolean; mediaRemote?: boolean }>()
 const emit = defineEmits<{ retry: []; cancel: []; download: []; open: [] }>()
 </script>
 
@@ -35,7 +36,7 @@ const emit = defineEmits<{ retry: []; cancel: []; download: []; open: [] }>()
   <li class="item" :class="{ mine: bubble.mine, grouped: bubble.grouped }">
     <div class="bubble" role="group" :aria-label="bubble.label">
       <span v-if="bubble.sender" class="sender" :class="`sender-${bubble.sender.tone}`" dir="auto">{{ bubble.sender.label }}</span>
-      <ChatMediaRow v-if="bubble.media" :message="bubble.media" :state="mediaState ?? { state: 'idle' }" @download="emit('download')" @open="emit('open')" />
+      <ChatMediaRow v-if="bubble.media" :message="bubble.media" :state="mediaState ?? { state: 'idle' }" :remote="mediaRemote" @download="emit('download')" @open="emit('open')" />
       <span v-if="bubble.text" class="text" dir="auto">{{ bubble.text }}</span>
       <button v-if="bubble.state === 'failed'" type="button" class="meta failed" :disabled="busy" @click="emit('retry')">{{ bubble.meta }}</button>
       <span v-else class="meta" :class="{ waiting: bubble.state === 'waiting', unconfirmed: bubble.state === 'unconfirmed' }">{{ bubble.meta }}</span>

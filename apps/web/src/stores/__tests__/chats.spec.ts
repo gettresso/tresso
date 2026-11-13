@@ -12,6 +12,8 @@ vi.mock('@/stores/mail', () => ({ useMailStore: () => fakes.mail }))
 vi.mock('@/platform/notifier', () => ({ notifier: { show: async (list: unknown[]) => void fakes.shown.push(...list) } }))
 vi.mock('@/platform/whatsapp', async (original) => ({
   ...(await original<typeof import('@/platform/whatsapp')>()),
+  // The desktop app's chats (the browser's are in the *Browser specs).
+  chatsFromServer: false,
   whatsAppShell: (): Partial<WhatsAppCommands> => {
     const shell = fakes.shell as ReturnType<typeof fakeShell>
     return {

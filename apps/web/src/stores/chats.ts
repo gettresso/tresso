@@ -1,6 +1,7 @@
 import { computed, ref, shallowRef, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
+  chatApiFailure,
   inInbox,
   LOCAL_CHAT_ACCOUNT,
   LocalChatError,
@@ -20,13 +21,14 @@ import {
 } from '@tresso/core'
 import { chatNotifications } from '@/mail/chatNotifications'
 import { notifier } from '@/platform/notifier'
-import { whatsAppShell, type ChosenFile } from '@/platform/whatsapp'
+import { chatsFromServer, whatsAppShell, type ChosenFile } from '@/platform/whatsapp'
 import { errorName } from '@/components/chat/whatsappTexts'
 import { useChatApi } from '@/api/chats'
-import { ChatActionError, localChatActions, serverChatActions, type ChatActions, type ChatStateChange } from '@/stores/chatActions'
+import { ChatActionError, chatActionError, localChatActions, serverChatActions, type ChatActions, type ChatStateChange } from '@/stores/chatActions'
 import { useAuthStore } from '@/stores/auth'
 import { useMailStore } from '@/stores/mail'
-import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
+import { RELAY_ONLY, useWhatsAppRelayStore } from '@/stores/whatsappRelay'
+import { serverAccountIn } from '@/stores/whatsappServer'
 
 /** Which chats and mail the Unified Inbox shows (its `Channels` tabs). */
 export type InboxChannel = 'all' | 'mail' | 'whatsapp'
@@ -63,6 +65,11 @@ export const UNSURE_REPLIES = 'unsure-replies'
 const REPLY_POLL_MS = 3_000
 /** While the store is read in, the chats are read again at most this often (the relay stores a page at a time). */
 const IMPORT_REFRESH_MS = 1_000
+/** How long a WhatsApp address waits in the browser for the copy to say whether the server holds chats (serverChats). */
+export const SERVER_CHECK_MS = 10_000
+
+/** Whether the server's chats show here: known yes, known no, or not known yet (the copy is still opening). */
+export type ServerChats = 'shown' | 'none' | 'unknown'
 
 const IDLE: MediaState = { state: 'idle' }
 
@@ -72,14 +79,20 @@ export function baseName(path: string): string {
 }
 
 /**
- * Chats on screen (the WhatsApp plan's WP6 and WP10): the list rows, the chat pane's windows of a chat, and what the
- * user does in a chat. Only the desktop app on macOS with WhatsApp connected has any: everywhere else `enabled` is false
- * and nothing is read. Which chats and which actions (ChatActions):
- * - "Only this Mac": the `wa:` chats, written through core's local actions (queueLocalReply and its siblings), after
- *   which the relay is asked for a round (whatsappRelay.pollNow).
- * - "All my devices": the server account's chats, which come through the delta (read again on every page that carries
- *   chat rows, mail.chatChanges), written through the server's actions (chatActions.ts): shown at once, put back when
- *   the server refuses. On the relaying Mac a queued reply is sent by its relay; on another Mac it waits for that one.
+ * Chats on screen (the WhatsApp plan's WP6, WP10 and WP11): the list rows, the chat pane's windows of a chat, and what
+ * the user does in a chat. `enabled` is the one flag every chat screen reads; while it is false nothing is read and
+ * nothing of WhatsApp shows. Which chats and which actions (ChatActions):
+ * - The desktop app (macOS, WhatsApp turned on and connected there):
+ *   - "Only this Mac": the `wa:` chats, written through core's local actions (queueLocalReply and its siblings), after
+ *     which the relay is asked for a round (whatsappRelay.pollNow).
+ *   - "All my devices": the server account's chats, which come through the delta (read again on every page that
+ *     carries chat rows, mail.chatChanges), written through the server's actions (chatActions.ts): shown at once, put
+ *     back when the server refuses. On the relaying Mac a queued reply is sent by its relay; on another Mac it waits for
+ *     that one.
+ * - The browser (`serverOnly`, platform/whatsapp chatsFromServer): no bridge and nothing of the relay. Chats show
+ *   exactly while the copy holds the server's WhatsApp account (the user chose "All my devices" on a Mac), with no
+ *   switch; they come through the delta and are written through the server's actions, as on a Mac that does not relay.
+ *   Replies wait in the server's queue for the relaying Mac; files stay on that Mac for now.
  *
  * Nothing of a chat (names, numbers, text) is ever logged: errors are logged by name only.
  */
@@ -87,13 +100,35 @@ export const useChatsStore = defineStore('chats', () => {
   const mail = useMailStore()
   const wa = useWhatsAppRelayStore()
   const commands = whatsAppShell()
+  const auth = useAuthStore()
+  const api = useChatApi()
 
-  /** Chats can show: WhatsApp is on here and connected, and in "All my devices" the server's account is in the copy. */
-  const enabled = computed(() => wa.available && wa.connected && (wa.config?.mode === 'local' || (wa.config?.mode === 'all' && wa.serverAccount !== null)))
+  /** The browser: the chats are those the server holds, relayed by a Mac; nothing of WhatsApp runs here. */
+  const serverOnly = chatsFromServer
+  /** In the browser: the server's WhatsApp account as the open copy holds it; null when it holds none. */
+  const serverAccount = shallowRef<SyncedChatAccount | null>(null)
+  /** In the browser: the open copy was read for that account (false while no copy is open or it is still opening). */
+  const serverChecked = ref(false)
+
+  /**
+   * Chats can show. In the browser: the copy holds the server's account. On the desktop: WhatsApp is on here and
+   * connected, and in "All my devices" the server's account is in the copy.
+   */
+  const enabled = computed(() =>
+    serverOnly ? serverAccount.value !== null : wa.available && wa.connected && (wa.config?.mode === 'local' || (wa.config?.mode === 'all' && wa.serverAccount !== null)),
+  )
   /** The chat account whose chats show: `wa:account`, or the server's. */
-  const accountId = computed(() => (!enabled.value ? null : wa.config?.mode === 'all' ? (wa.serverAccount?.id ?? null) : LOCAL_CHAT_ACCOUNT))
-  /** This Mac sends the replies itself: "Only this Mac", or it relays the server's account. */
-  const relaysHere = computed(() => enabled.value && (wa.config?.mode === 'local' || wa.relaysHere))
+  const accountId = computed(() => {
+    if (!enabled.value) {
+      return null
+    }
+    if (serverOnly) {
+      return serverAccount.value?.id ?? null
+    }
+    return wa.config?.mode === 'all' ? (wa.serverAccount?.id ?? null) : LOCAL_CHAT_ACCOUNT
+  })
+  /** This device sends the replies itself: "Only this Mac", or it relays the server's account. Never the browser. */
+  const relaysHere = computed(() => !serverOnly && enabled.value && (wa.config?.mode === 'local' || wa.relaysHere))
   /**
    * A reply can be written: on the Mac that sends, while its bridge runs and is linked (else the pane says why,
    * ChatNotice); on another Mac in "All my devices" always (it waits in the server's queue for the relaying Mac).
@@ -109,10 +144,17 @@ export const useChatsStore = defineStore('chats', () => {
       (wa.modeSwitch !== null || (wa.config?.mode === 'all' && wa.serverAccount === null) || (relaysHere.value && (wa.importState === 'waiting' || wa.importState === 'reading'))),
   )
   /** Why Attach is off: files go through the server only with a later package. */
-  const attachNote = computed(() => (enabled.value && wa.config?.mode === 'all' ? 'Files are sent in Only this Mac for now.' : null))
+  const attachNote = computed(() => {
+    if (!enabled.value) {
+      return null
+    }
+    if (serverOnly) {
+      return 'Files are sent from the relaying Mac for now.'
+    }
+    return wa.config?.mode === 'all' ? 'Files are sent in Only this Mac for now.' : null
+  })
   const localActions = localChatActions(() => mail.currentStore())
-  const auth = useAuthStore()
-  const serverActions = serverChatActions({ api: useChatApi(), store: () => mail.currentStore(), now: () => auth.serverNow(), pulled: () => void mail.syncNow() })
+  const serverActions = serverChatActions({ api, store: () => mail.currentStore(), now: () => auth.serverNow(), pulled: () => void mail.syncNow() })
   /**
    * Per chat, a reply whose sending ended without knowing whether the server took it (ChatActionError `unsure`): its
    * trimmed text and id. Sending the same text again reuses the id, so it is queued once. Kept in the copy's chat values
@@ -121,7 +163,13 @@ export const useChatsStore = defineStore('chats', () => {
    */
   let unsure = new Map<string, { text: string; id: string }>()
   /** The side every write goes to now. */
-  const actions = computed<ChatActions>(() => (wa.config?.mode === 'all' ? serverActions : localActions))
+  const actions = computed<ChatActions>(() => (serverOnly || wa.config?.mode === 'all' ? serverActions : localActions))
+  /**
+   * Reads of a chat the server refused or did not answer, by chat (the phone's rule): taking one back changes the copy,
+   * which reads the chat again, so it is not asked again for the same last message until the chat is looked at again
+   * (lookedAt), and never before the server's Retry-After.
+   */
+  const refusedReads = new Map<string, { lastMessageAt: string; notBefore: number; held: boolean }>()
   const account = shallowRef<SyncedChatAccount | null>(null)
   /** Every chat of this Mac that is not left out, newest first. */
   const summaries = shallowRef<ChatSummary[]>([])
@@ -250,6 +298,7 @@ export const useChatsStore = defineStore('chats', () => {
       primed = false
       // Signed out, disconnected or switched off: nothing typed into a chat stays behind.
       drafts.clear()
+      refusedReads.clear()
       media.value = new Map()
       attaching.value = { state: 'idle' }
       return
@@ -322,6 +371,76 @@ export const useChatsStore = defineStore('chats', () => {
     return known === undefined ? message : { ...message, sender: { ...sender, name: known } }
   }
 
+  /** Account reads in the browser, so an older one that lands late never overwrites a newer one. */
+  let accountReads = 0
+
+  /**
+   * The browser: whether the open copy holds the server's WhatsApp account (it comes with the delta, and goes with its
+   * tombstone or the copy). Read when the copy opens and on every page of the delta that carries chat rows.
+   */
+  async function readServerAccount(): Promise<void> {
+    const mine = ++accountReads
+    const copy = mail.ready ? mail.currentStore() : null
+    if (copy === null) {
+      serverAccount.value = null
+      serverChecked.value = false
+      return
+    }
+    let found: SyncedChatAccount | null
+    try {
+      found = await serverAccountIn(copy)
+    } catch (cause) {
+      // The copy closed meanwhile, or could not be read: the next page with chat rows reads it again.
+      console.error('Reading the WhatsApp account failed', errorName(cause))
+      return
+    }
+    if (mine !== accountReads) {
+      return
+    }
+    if (JSON.stringify(found) !== JSON.stringify(serverAccount.value)) {
+      serverAccount.value = found
+    }
+    serverChecked.value = true
+  }
+
+  if (serverOnly) {
+    watch([() => mail.currentStore(), () => mail.ready, () => mail.chatChanges], () => void readServerAccount(), { immediate: true })
+  }
+
+  /**
+   * Whether the server's chats show here, for a WhatsApp address opened in the browser: once the copy said so, or after
+   * `timeoutMs` without an answer (`unknown`: the screens then follow the copy once it opened). Signed out: `none`.
+   * On the desktop it is known at once.
+   */
+  function serverChats(timeoutMs = SERVER_CHECK_MS): Promise<ServerChats> {
+    const now = (): ServerChats | null => {
+      if (!serverOnly || serverChecked.value) {
+        return enabled.value ? 'shown' : 'none'
+      }
+      return auth.isAuthenticated ? null : 'none'
+    }
+    const known = now()
+    if (known !== null) {
+      return Promise.resolve(known)
+    }
+    return new Promise((resolve) => {
+      let stop: (() => void) | null = null
+      const finish = (answer: ServerChats) => {
+        clearTimeout(timer)
+        stop?.()
+        stop = null
+        resolve(answer)
+      }
+      const timer = setTimeout(() => finish('unknown'), timeoutMs)
+      stop = watch([serverChecked, enabled, () => auth.isAuthenticated], () => {
+        const answer = now()
+        if (answer !== null) {
+          finish(answer)
+        }
+      })
+    })
+  }
+
   watch([enabled, accountId, () => mail.synced, () => mail.ready, () => wa.config?.leftOut], () => void refresh(), { immediate: true })
 
   /*
@@ -351,7 +470,7 @@ export const useChatsStore = defineStore('chats', () => {
   watch(
     () => mail.chatChanges,
     () => {
-      if (wa.config?.mode === 'all') {
+      if (serverOnly || wa.config?.mode === 'all') {
         changed()
       }
     },
@@ -388,12 +507,38 @@ export const useChatsStore = defineStore('chats', () => {
     }
   }
 
-  /** The chat was read in Tresso up to its last message (never in WhatsApp: the phone keeps its own unread state). */
+  /**
+   * The chat was read in Tresso up to its last message (never in WhatsApp: the phone keeps its own unread state). A read
+   * that did not happen is logged by name, put back in the copy (setState) and held (refusedReads): not asked again for
+   * the same last message until the chat is looked at again, and never before the server's Retry-After.
+   */
   async function markRead(chat: SyncedChat): Promise<void> {
     if (chat.readThrough !== null && Date.parse(chat.readThrough) >= Date.parse(chat.lastMessageAt)) {
       return
     }
-    await setState(chat.id, { readThrough: chat.lastMessageAt })
+    const refused = refusedReads.get(chat.id)
+    if (refused !== undefined) {
+      if (refused.lastMessageAt === chat.lastMessageAt && (refused.held || Date.now() < refused.notBefore)) {
+        return
+      }
+      // A newer message came, or the chat is looked at again after its wait.
+      refusedReads.delete(chat.id)
+    }
+    try {
+      await setState(chat.id, { readThrough: chat.lastMessageAt })
+    } catch (cause) {
+      console.error('Reading a chat failed', errorName(cause))
+      const wait = cause instanceof ChatActionError ? cause.retryAfterMs : (chatApiFailure(cause)?.retryAfterMs ?? null)
+      refusedReads.set(chat.id, { lastMessageAt: chat.lastMessageAt, notBefore: Date.now() + (wait ?? 0), held: true })
+    }
+  }
+
+  /** The chat is looked at again (opened, or its window got the focus): a held read may be asked again once its wait passed. */
+  function lookedAt(chatId: string): void {
+    const refused = refusedReads.get(chatId)
+    if (refused !== undefined) {
+      refusedReads.set(chatId, { ...refused, held: false })
+    }
   }
 
   /** Noted: read and out of the Unified Inbox until a message comes in after. */
@@ -485,8 +630,26 @@ export const useChatsStore = defineStore('chats', () => {
     }
   }
 
-  /** Leaves the chat out: Tresso removes its copy and stops reading it; WhatsApp keeps it. */
+  /**
+   * Leaves the chat out: Tresso removes its copy and stops reading it; WhatsApp keeps it. In the browser the server's
+   * chat is left out (the server removes its messages and replies and takes nothing more of it, and the relaying Mac
+   * reads the chat's row in its copy and sends nothing of it).
+   *
+   * @throws ChatActionError in the browser when the server did not take it (the chat stays as it was)
+   */
   async function leaveChatOut(chat: SyncedChat): Promise<boolean> {
+    if (serverOnly) {
+      if (store() === null) {
+        return false
+      }
+      try {
+        await actions.value.setState(chat.id, { leftOut: true })
+        drafts.delete(chat.id)
+        return true
+      } finally {
+        await refresh()
+      }
+    }
     const done = await wa.leaveOut(chat.jid)
     if (done) {
       drafts.delete(chat.id)
@@ -495,11 +658,43 @@ export const useChatsStore = defineStore('chats', () => {
     return done
   }
 
-  /** Takes a chat that was left out back in; its messages come back as the relay reads the store again. */
+  /**
+   * Takes a chat that was left out back in; its messages come back as the relay reads the store again. Only the Mac
+   * that relays can: the browser cannot read the bridge again.
+   *
+   * @throws Error in the browser (RELAY_ONLY)
+   */
   async function takeBackIn(jid: string): Promise<boolean> {
+    if (serverOnly) {
+      throw new Error(RELAY_ONLY)
+    }
     const done = await wa.takeBackIn(jid)
     await refresh()
     return done
+  }
+
+  /**
+   * The browser's Notify me: the server's account setting (pushes to the phone, and the relaying Mac's notifications,
+   * whose config follows the account), shown at once once the server answered.
+   *
+   * @throws ChatActionError when the server did not take it
+   */
+  async function setNotify(notify: boolean): Promise<void> {
+    const copy = store()
+    const shown = serverAccount.value
+    if (!serverOnly || copy === null || shown === null || shown.notify === notify) {
+      return
+    }
+    let answered: SyncedChatAccount
+    try {
+      answered = await api.updateAccount(shown.id, { notify })
+    } catch (cause) {
+      throw chatActionError(cause, 'change')
+    }
+    await copy.putChatAccount(answered)
+    await readServerAccount()
+    await refresh()
+    void mail.syncNow()
   }
 
   function mediaOf(messageId: string): MediaState {
@@ -622,6 +817,12 @@ export const useChatsStore = defineStore('chats', () => {
   }
 
   return {
+    serverOnly,
+    serverAccount,
+    serverChecked,
+    serverChats,
+    setNotify,
+    lookedAt,
     draftOf,
     setDraft,
     enabled,

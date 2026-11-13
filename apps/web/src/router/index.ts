@@ -1,24 +1,37 @@
 import { createRouter, createWebHistory, type RouteLocationRaw } from 'vue-router'
+import { chatsFromServer } from '@/platform/whatsapp'
 import { useAuthStore } from '@/stores/auth'
+import { useChatsStore } from '@/stores/chats'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import { reportSignedOutReturn } from '@/components/connect/connectChannel'
 import AppShell from '@/views/AppShell.vue'
 import MailView from '@/views/MailView.vue'
 
 /**
- * WhatsApp's screens open only where WhatsApp is on (the desktop app on macOS, turned on there); anywhere else, and
- * in the browser, their addresses lead to `elsewhere`.
+ * WhatsApp's screens open only where WhatsApp is on: the desktop app on macOS, turned on there, and the browser while
+ * the copy holds the server's WhatsApp account (a Mac relays the chats). Anywhere else their addresses lead to
+ * `elsewhere`. In the browser the copy may still be opening: the address waits for it (chats.serverChats), and opens
+ * when that takes too long, after which the screens leave by themselves once the copy says there is no account.
  */
 function whatsappOnly(elsewhere: RouteLocationRaw) {
   return async (): Promise<true | RouteLocationRaw> => {
+    if (chatsFromServer) {
+      return (await useChatsStore().serverChats()) === 'none' ? elsewhere : true
+    }
     const whatsapp = useWhatsAppRelayStore()
     await whatsapp.ready()
     return whatsapp.available ? true : elsewhere
   }
 }
 
-/** The connect dialog is for connecting: once WhatsApp is connected its address shows the settings. */
+/**
+ * The connect dialog is for connecting: once WhatsApp is connected its address shows the settings. The browser cannot
+ * connect WhatsApp (only Tresso for Mac can): its address shows the settings, or Accounts without a chat account.
+ */
 async function notConnectedYet(): Promise<true | RouteLocationRaw> {
+  if (chatsFromServer) {
+    return (await useChatsStore().serverChats()) === 'none' ? { name: 'settings-accounts' } : { name: 'settings-whatsapp' }
+  }
   const whatsapp = useWhatsAppRelayStore()
   await whatsapp.ready()
   if (!whatsapp.available) {
@@ -69,7 +82,13 @@ const router = createRouter({
             { path: '', redirect: { name: 'settings-accounts' } },
             { path: 'accounts', name: 'settings-accounts', component: () => import('@/views/SettingsAccountsView.vue') },
             { path: 'accounts/new', name: 'settings-accounts-new', component: () => import('@/views/AddAccountView.vue') },
-            { path: 'whatsapp', name: 'settings-whatsapp', component: () => import('@/views/SettingsWhatsAppView.vue'), beforeEnter: whatsappOnly({ name: 'settings-accounts' }) },
+            {
+              path: 'whatsapp',
+              name: 'settings-whatsapp',
+              // The browser shows the server's account read only; the desktop app its own WhatsApp.
+              component: () => (chatsFromServer ? import('@/views/SettingsWhatsAppBrowserView.vue') : import('@/views/SettingsWhatsAppView.vue')),
+              beforeEnter: whatsappOnly({ name: 'settings-accounts' }),
+            },
             // The connect dialog over Settings, WhatsApp, as accounts/new is for mail.
             { path: 'whatsapp/connect', name: 'settings-whatsapp-connect', component: () => import('@/views/SettingsWhatsAppView.vue'), beforeEnter: notConnectedYet },
             { path: 'signatures', name: 'settings-signatures', component: () => import('@/views/SettingsSignaturesView.vue') },

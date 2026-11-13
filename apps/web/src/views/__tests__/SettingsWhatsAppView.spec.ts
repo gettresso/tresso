@@ -8,6 +8,9 @@ import { BRIDGE_PROBLEMS, BUILD_COMMAND, COPY_BODY, COPY_TITLE, GROUPS_WOULD_GO,
 import type { SyncedChatAccount } from '@tresso/core'
 import SettingsWhatsAppView from '../SettingsWhatsAppView.vue'
 
+// The desktop app's chats: these tests turn WhatsApp on for a Mac (the browser's are in the *Browser specs).
+vi.mock('@/platform/whatsapp', async (original) => ({ ...(await original<typeof import('@/platform/whatsapp')>()), chatsFromServer: false }))
+
 const NOW = Date.parse('2026-11-12T10:00:00Z')
 const STOPPED: BridgeState = { process: 'stopped', port: null, loopbackOnly: null, link: 'unknown', qr: null, error: null }
 const LINKED: BridgeState = { process: 'owned', port: 8741, loopbackOnly: true, link: 'linked', qr: null, error: null }

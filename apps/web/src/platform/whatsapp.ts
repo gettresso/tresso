@@ -1,6 +1,15 @@
 import type { BridgeRow } from '@tresso/core'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { isDesktop } from '@/platform/desktop'
+
+/**
+ * Where WhatsApp chats come from on this platform. The browser (app.gettresso.com) has no bridge and runs nothing of
+ * the relay: it shows only the chats the server holds, which a Mac relays in the "All my devices" mode, and queues
+ * replies for that Mac (stores/chats.ts). The desktop app reads its own bridge once WhatsApp is turned on there
+ * (stores/whatsappRelay.ts).
+ */
+export const chatsFromServer = !isDesktop
 
 /**
  * The desktop shell's WhatsApp commands (apps/desktop/src-tauri/src/whatsapp.rs), macOS only. The shell starts the

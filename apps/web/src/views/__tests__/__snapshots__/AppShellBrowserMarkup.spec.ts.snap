@@ -1,5 +1,86 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`the shell in the browser > adds the WhatsApp row for a user whose chats a Mac relays to the server 1`] = `
+"<div data-v-c4fdd4af="" class="app">
+  <details data-v-c4fdd4af="" class="mailboxes" open="">
+    <summary data-v-c4fdd4af="" class="mailboxes-toggle">Mailboxes</summary>
+    <nav data-v-a20b8ea9="" data-v-c4fdd4af="" class="sidebar" aria-label="Mailboxes">
+      <div data-v-a20b8ea9="" class="profile"><span data-v-e37e2500="" data-v-a20b8ea9="" class="avatar tint-0" aria-hidden="true" style="width: 28px; height: 28px; font-size: 9px;"></span><span data-v-a20b8ea9="" class="profile-text"><span data-v-a20b8ea9="" class="profile-name"></span><span data-v-a20b8ea9="" class="profile-detail">2 mail accounts, WhatsApp</span></span><button data-v-a20b8ea9="" type="button" class="button button-quiet sign-out" aria-busy="false">Sign out</button></div><button data-v-a20b8ea9="" type="button" class="button button-primary compose">Compose <kbd data-v-a20b8ea9="" class="shortcut"><span class="visually-hidden">C</span>
+          <span class="shortcut-key" aria-hidden="true">C</span>
+        </kbd></button>
+      <div data-v-a20b8ea9="" class="group"><a data-v-a20b8ea9="" aria-current="page" href="/" class="router-link-active router-link-exact-active item"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 13l3-8h12l3 8v6H3z"></path>
+            <path d="M3 13h5l1 3h6l1-3h5"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Unified Inbox</span><span data-v-a20b8ea9="" class="count"><span data-v-dd3d7c25="" data-v-a20b8ea9="" class="tick">1</span><span data-v-a20b8ea9="" class="visually-hidden"> unread</span></span></a><a data-v-a20b8ea9="" href="/brief" class="item"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"></path>
+            <path d="M12 9a3 3 0 100 6 3 3 0 000-6z"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Daily brief</span>
+        </a><a data-v-a20b8ea9="" href="/todos" class="item"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 4h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2z"></path>
+            <path d="M8 12l3 3 5-6"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Todos</span>
+        </a><a data-v-a20b8ea9="" href="/waiting" class="item"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7z"></path>
+            <path d="M3 20c0-3.3 2.7-6 6-6"></path>
+            <path d="M14 16h7"></path>
+            <path d="M18 13l3 3-3 3"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Waiting on</span>
+        </a><a data-v-a20b8ea9="" href="/calendar" class="item"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6h16v14H4z"></path>
+            <path d="M4 10h16"></path>
+            <path d="M8 3v5"></path>
+            <path d="M16 3v5"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Calendar</span></a><a data-v-a20b8ea9="" href="/triage" class="item"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6h16"></path>
+            <path d="M4 12h9"></path>
+            <path d="M4 18h9"></path>
+            <path d="M15 15l2.5 2.5L21 13"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Triage</span></a><a data-v-a20b8ea9="" href="/drafts" class="item"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 20h4L19 9l-4-4L4 16z"></path>
+            <path d="M13.5 6.5l4 4"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Drafts</span></a><a data-v-a20b8ea9="" href="/cleanup" class="item"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 4h18v4H3z"></path>
+            <path d="M5 8v12h14V8"></path>
+            <path d="M10 12h4"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Clean up</span></a>
+      </div>
+      <div data-v-a20b8ea9="" class="group">
+        <h2 data-v-a20b8ea9="" class="group-title">Smart inboxes</h2><a data-v-a20b8ea9="" href="/smart/news" class="item smart"><span data-v-921c2e1d="" data-v-a20b8ea9="" class="mark plain" aria-hidden="true">N</span><span data-v-a20b8ea9="" class="label">Newsletters</span>
+        </a><a data-v-a20b8ea9="" href="/batches" class="item smart"><svg data-v-a20b8ea9="" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="batches-icon">
+            <path d="M12 3a9 9 0 100 18 9 9 0 000-18z"></path>
+            <path d="M12 7v5l3 2"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Batches</span>
+        </a><a data-v-a20b8ea9="" href="/settings/smart-inboxes/new" class="add">+ New smart inbox</a>
+      </div>
+      <div data-v-a20b8ea9="" class="group">
+        <h2 data-v-a20b8ea9="" class="group-title">Accounts</h2>
+        <div data-v-a20b8ea9="" class="account-row"><a data-v-a20b8ea9="" href="/accounts/work" class="item account"><span data-v-e37e2500="" data-v-a20b8ea9="" class="avatar tint-4" aria-hidden="true" style="width: 24px; height: 24px; font-size: 8px;">WO</span><span data-v-a20b8ea9="" class="account-text"><span data-v-a20b8ea9="" class="account-name">Work</span><span data-v-a20b8ea9="" class="account-address problem">Sign-in failed</span></span>
+          </a><a data-v-a20b8ea9="" href="/settings/accounts" class="fix" aria-label="Fix Work">Fix</a></div>
+        <div data-v-a20b8ea9="" class="account-row"><a data-v-a20b8ea9="" href="/accounts/home" class="item account"><span data-v-e37e2500="" data-v-a20b8ea9="" class="avatar tint-1" aria-hidden="true" style="width: 24px; height: 24px; font-size: 8px;">HO</span><span data-v-a20b8ea9="" class="account-text"><span data-v-a20b8ea9="" class="account-name">Home</span><span data-v-a20b8ea9="" class="account-address">kim@mail.example</span></span>
+          </a>
+        </div><a data-v-a20b8ea9="" href="/whatsapp" class="item account whatsapp"><span data-v-a20b8ea9="" class="wa-mark" aria-hidden="true">WA</span><span data-v-a20b8ea9="" class="account-text"><span data-v-a20b8ea9="" class="account-name">WhatsApp</span><span data-v-a20b8ea9="" class="account-address">+31698765432, via Kim's MacBook Pro</span></span><span data-v-a20b8ea9="" class="count"><span data-v-dd3d7c25="" data-v-a20b8ea9="" class="tick">1</span><span data-v-a20b8ea9="" class="visually-hidden"> unread</span></span></a><a data-v-a20b8ea9="" href="/settings/accounts/new" class="add">+ Add account</a>
+      </div><a data-v-a20b8ea9="" href="/settings/accounts" class="item settings"><svg data-v-a20b8ea9="" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 6h9"></path>
+          <path d="M17 6h3"></path>
+          <path d="M13 4v4"></path>
+          <path d="M4 12h3"></path>
+          <path d="M11 12h9"></path>
+          <path d="M7 10v4"></path>
+          <path d="M4 18h11"></path>
+          <path d="M19 18h1"></path>
+          <path d="M15 16v4"></path>
+        </svg><span data-v-a20b8ea9="" class="label">Settings</span></a>
+      <div data-v-cc022dad="" data-v-a20b8ea9="" class="sync-status closed">
+        <p data-v-cc022dad="" class="visually-hidden" role="status" aria-live="polite"></p>
+      </div>
+    </nav>
+  </details>
+  <div data-v-c4fdd4af="" class="stage">
+    <section data-v-c4fdd4af="" class="screen">Inbox</section>
+  </div>
+</div>"
+`;
+
 exports[`the shell in the browser > renders the sidebar and the stage with the markup and classes it had before the desktop frame 1`] = `
 "<div data-v-c4fdd4af="" class="app">
   <details data-v-c4fdd4af="" class="mailboxes" open="">
