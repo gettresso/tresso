@@ -1,5 +1,6 @@
 import { chatMessageKey, labelText, SENT_FILE_PREFIX, timeline, type SyncedChatMessage, type SyncedChatOutgoing, type TimelineEntry } from '@tresso/core'
-import { clockTime, mediaTitle, mediaView, replyView, senderLabel, senderTone, type ReplyView } from '@/chat/texts'
+import type { FileUpload } from '@/chat/chatActions'
+import { clockTime, mediaTitle, mediaView, replyView, senderLabel, senderTone, uploadText, type ReplyView } from '@/chat/texts'
 import { dayLabel } from '@/mail/format'
 
 /** A bubble of a chat screen. */
@@ -16,8 +17,8 @@ export interface BubbleRow {
   sender: { label: string; tone: number } | null
   /** Under the text: `09:58`, `10:31, waiting for your Mac`, `Not sent, tap to retry`. */
   meta: string
-  /** A reply's state; `none` for a message from WhatsApp. */
-  state: 'none' | ReplyView['state']
+  /** A reply's state; `none` for a message from WhatsApp; `uploading` for a file still on its way from this phone. */
+  state: 'none' | 'uploading' | ReplyView['state']
   /** Why a reply was not sent; null otherwise. */
   reason: string | null
   /** The reply, for Cancel, Delete and Try again; null for a message. */
@@ -64,7 +65,7 @@ export function windowReplies(messages: readonly SyncedChatMessage[], outgoing: 
 export function timelineRows(
   messages: readonly SyncedChatMessage[],
   outgoing: readonly SyncedChatOutgoing[],
-  options: { group: boolean; name: string; relayOnline: boolean; now?: Date },
+  options: { group: boolean; name: string; relayOnline: boolean; now?: Date; uploads?: ReadonlyMap<string, FileUpload> },
 ): TimelineRow[] {
   const rows: TimelineRow[] = []
   let day: string | null = null
@@ -90,7 +91,7 @@ export function timelineRows(
   return rows
 }
 
-function bubbleOf(entry: TimelineEntry, options: { group: boolean; name: string; relayOnline: boolean }): BubbleRow | null {
+function bubbleOf(entry: TimelineEntry, options: { group: boolean; name: string; relayOnline: boolean; uploads?: ReadonlyMap<string, FileUpload> }): BubbleRow | null {
   const time = Number.isFinite(entry.at) ? clockTime(entry.at) : ''
   if (entry.kind === 'message') {
     const message = entry.message
@@ -113,6 +114,26 @@ function bubbleOf(entry: TimelineEntry, options: { group: boolean; name: string;
     }
   }
   const reply = entry.outgoing
+  const upload = options.uploads?.get(reply.id)
+  if (upload !== undefined) {
+    // On its way from this phone: not waiting for the Mac yet.
+    const said = uploadText(upload)
+    const shown = reply.file ? `${SENT_FILE_PREFIX}${reply.file.name}` : reply.text
+    return {
+      kind: 'bubble',
+      key: reply.id,
+      mine: true,
+      text: shown,
+      media: null,
+      sender: null,
+      meta: time === '' ? said : `${time}, ${said.charAt(0).toLowerCase()}${said.slice(1)}`,
+      state: 'uploading',
+      reason: null,
+      reply,
+      label: ['You', time, said, labelText(shown)].filter((part) => part !== '').join(', '),
+      grouped: false,
+    }
+  }
   const view = replyView(reply, time, options.relayOnline)
   if (view === null) {
     return null

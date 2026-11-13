@@ -19,6 +19,8 @@ interface Props {
   mediaNote: string | null
   /** The file's action: Download and Try again ask the Mac, Open opens a checked file, Open anyway one not checked. */
   onMedia(message: SyncedChatMessage, action: 'download' | 'open' | 'confirm'): void
+  /** Cancel on a file still on its way from this phone: the upload stops and nothing is queued. */
+  onCancelUpload(reply: SyncedChatOutgoing): void
 }
 
 /**
@@ -29,7 +31,7 @@ interface Props {
  * that was not sent is sent again with a tap (or deleted with a long press); one whose sending the Mac could not confirm
  * is sent again only by its own Try again, never by a tap on the bubble. Screen readers get the same as actions.
  */
-export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retryReply, onMenu: openMenu, relayOnline, mediaNote, onMedia }: Props) {
+export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retryReply, onMenu: openMenu, relayOnline, mediaNote, onMedia, onCancelUpload: cancelUpload }: Props) {
   const theme = useTheme()
   const styles = useMemo(() => makeStyles(theme), [theme])
   const waiting = bubble.state === 'waiting'
@@ -47,19 +49,31 @@ export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retr
     }
   }
 
-  const actions = [
-    ...(failed ? [{ name: 'activate', label: 'Try again' }] : []),
-    ...(waiting ? [{ name: 'longpress', label: 'Cancel' }] : []),
-    ...(failed || unconfirmed ? [{ name: 'longpress', label: 'Delete' }] : []),
-  ]
+  const uploading = bubble.state === 'uploading'
+  const fileAction = bubble.media === null ? null : mediaView(bubble.media, relayOnline).action
+  const actions = bubbleActions(bubble, relayOnline)
   const onAction = (event: AccessibilityActionEvent) => {
+    const name = event.nativeEvent.actionName
+    if (name === 'file' && bubble.media !== null && fileAction !== null) {
+      onMedia(bubble.media, fileAction === 'retry' ? 'download' : fileAction)
+      return
+    }
+    if (name === 'cancelUpload') {
+      onCancelUpload()
+      return
+    }
     if (busy) {
       return
     }
-    if (event.nativeEvent.actionName === 'activate') {
+    if (name === 'activate') {
       onRetry()
-    } else if (event.nativeEvent.actionName === 'longpress') {
+    } else if (name === 'longpress') {
       onMenu()
+    }
+  }
+  const onCancelUpload = () => {
+    if (reply !== null) {
+      cancelUpload(reply)
     }
   }
 
@@ -85,6 +99,11 @@ export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retr
         <Text style={[styles.meta, waiting && styles.waiting, (failed || unconfirmed) && styles.failed]}>{bubble.meta}</Text>
       </Pressable>
       {(failed || unconfirmed) && bubble.reason !== null && <Text style={[styles.reason, bubble.mine && styles.reasonMine]}>{bubble.reason}</Text>}
+      {uploading && (
+        <Pressable style={({ pressed }) => [styles.retry, pressed && styles.pressed]} onPress={onCancelUpload} accessibilityRole="button">
+          <Text style={styles.retryLabel}>Cancel</Text>
+        </Pressable>
+      )}
       {unconfirmed && (
         <Pressable style={({ pressed }) => [styles.retry, pressed && styles.pressed]} onPress={onRetry} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy }}>
           <Text style={styles.retryLabel}>Try again</Text>
@@ -95,6 +114,22 @@ export const ChatBubble = memo(function ChatBubble({ bubble, busy, onRetry: retr
 })
 
 const ACTION_LABELS = { download: 'Download', retry: 'Try again', open: 'Open', confirm: 'Open anyway' } as const
+
+/**
+ * What a screen reader may do with a bubble, which it reads as one element: Try again, Cancel (a reply that waits, or a
+ * file still uploading), Delete, and the file's own action (Download, Try again, Open, Open anyway), whose button sits
+ * inside the bubble and could not be reached otherwise.
+ */
+export function bubbleActions(bubble: BubbleRow, relayOnline: boolean): { name: string; label: string }[] {
+  const fileAction = bubble.media === null ? null : mediaView(bubble.media, relayOnline).action
+  return [
+    ...(bubble.state === 'failed' ? [{ name: 'activate', label: 'Try again' }] : []),
+    ...(bubble.state === 'waiting' ? [{ name: 'longpress', label: 'Cancel' }] : []),
+    ...(bubble.state === 'uploading' ? [{ name: 'cancelUpload', label: 'Cancel' }] : []),
+    ...(bubble.state === 'failed' || bubble.state === 'unconfirmed' ? [{ name: 'longpress', label: 'Delete' }] : []),
+    ...(fileAction === null ? [] : [{ name: 'file', label: ACTION_LABELS[fileAction] }]),
+  ]
+}
 
 function MediaRow({ message, relayOnline, note, onMedia, styles }: { message: SyncedChatMessage; relayOnline: boolean; note: string | null; onMedia: Props['onMedia']; styles: ReturnType<typeof makeStyles> }) {
   const view = mediaView(message, relayOnline)

@@ -335,6 +335,39 @@ export class Session {
     return upload ? this.answer<T>(path, init) : withDeadline((signal) => this.answer<T>(path, { ...init, signal }), init.signal)
   }
 
+  /**
+   * A request that `send` makes itself (a file upload through the platform's own uploader, which reads the file from its
+   * URI and reports progress): with this session's token, renewed and sent once more when the server refused it, as `api`
+   * does; the server's refusal as ApiError, a session that ended meanwhile as SessionEndedDuringRequestError.
+   */
+  async upload<T>(path: string, send: (url: string, token: string) => Promise<Response>): Promise<T> {
+    const url = `${this.config.apiUrl.replace(/\/+$/, '')}${path}`
+    const token = await this.accessToken()
+    const generation = this.generation
+    let response = await send(url, token)
+    if (response.status === 401 && generation === this.generation) {
+      const current = this.state.tokens
+      if (current === null) {
+        throw new ApiError(401, EXPIRED)
+      }
+      response = await send(url, current.accessToken === token ? await this.renew(current) : current.accessToken)
+      if (response.status === 401 && generation === this.generation) {
+        await this.expire()
+      }
+    }
+    if (response.status === 401) {
+      throw new ApiError(401, EXPIRED)
+    }
+    if (generation !== this.generation) {
+      throw new SessionEndedDuringRequestError()
+    }
+    if (!response.ok) {
+      const problem = await problemOf(response)
+      throw new ApiError(response.status, problem.detail, problem.violations, retryAfterMs(response.headers.get('Retry-After')), problem.code)
+    }
+    return (response.status === 204 ? undefined : await response.json()) as T
+  }
+
   private async answer<T>(path: string, init: RequestInit): Promise<T> {
     const token = await this.accessToken()
     const generation = this.generation

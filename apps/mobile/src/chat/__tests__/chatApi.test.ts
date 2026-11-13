@@ -13,11 +13,13 @@ function recording(answer: unknown) {
   return { api, calls }
 }
 
+const noUpload = <T,>(): Promise<T> => Promise.reject(new Error('No upload in this test.'))
+
 describe('phoneChatApi', () => {
   it('queues a reply with the id the phone made', async () => {
     const { api, calls } = recording(reply('0193a1c2-0000-7000-8000-000000000001', 'c1'))
 
-    const queued = await phoneChatApi(api).queueReply('c1', { id: '0193a1c2-0000-7000-8000-000000000001', text: 'On my way' })
+    const queued = await phoneChatApi(api, noUpload).queueReply('c1', { id: '0193a1c2-0000-7000-8000-000000000001', text: 'On my way' })
 
     expect(calls[0]?.path).toBe('/api/v1/chats/c1/outgoing')
     expect(calls[0]?.init?.method).toBe('POST')
@@ -27,7 +29,7 @@ describe('phoneChatApi', () => {
 
   it('cancels and tries a reply again', async () => {
     const { api, calls } = recording(reply('r/1', 'c1'))
-    const chats = phoneChatApi(api)
+    const chats = phoneChatApi(api, noUpload)
 
     await chats.cancelReply('r/1')
     await chats.retryReply('r/1')
@@ -41,7 +43,7 @@ describe('phoneChatApi', () => {
   it('changes a chat as a merge patch', async () => {
     const { api, calls } = recording(chat('c1', { readThrough: '2026-11-13T10:14:00.000Z' }))
 
-    const changed = await phoneChatApi(api).updateChat('c1', { readThrough: '2026-11-13T10:14:00.000Z' })
+    const changed = await phoneChatApi(api, noUpload).updateChat('c1', { readThrough: '2026-11-13T10:14:00.000Z' })
 
     expect(calls[0]?.init?.method).toBe('PATCH')
     expect(new Headers(calls[0]?.init?.headers).get('Content-Type')).toBe('application/merge-patch+json')
@@ -51,13 +53,13 @@ describe('phoneChatApi', () => {
   it('refuses an answer that is no chat row', async () => {
     const { api } = recording({ unexpected: true })
 
-    await expect(phoneChatApi(api).queueReply('c1', { id: 'x', text: 'Hi' })).rejects.toThrow('The server answered with a chat row the app cannot read.')
+    await expect(phoneChatApi(api, noUpload).queueReply('c1', { id: 'x', text: 'Hi' })).rejects.toThrow('The server answered with a chat row the app cannot read.')
   })
 
   it('passes the server\'s refusal on with its code, as core reads it', async () => {
     const api = vi.fn(async () => Promise.reject(new ApiError(409, 'This reply is being sent or was sent; it can no longer be cancelled.', {}, null, 'already_going_out'))) as unknown as <T>(path: string, init?: RequestInit) => Promise<T>
 
-    const error = await phoneChatApi(api)
+    const error = await phoneChatApi(api, noUpload)
       .cancelReply('r1')
       .catch((caught: unknown) => caught)
 

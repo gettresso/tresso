@@ -3,6 +3,7 @@ import { chatOnlyHere, uuidV7, type ChatMessageKey, type ChatPage, type ChatSumm
 import { useAuth } from '@/auth/AuthProvider'
 import { ChatActions } from '@/chat/chatActions'
 import { phoneChatApi } from '@/chat/chatApi'
+import { uploadByUri } from '@/chat/fileUpload'
 import { useMail } from '@/mail/MailProvider'
 import { todoApi } from '@/mail/todoApi'
 
@@ -61,7 +62,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     () =>
       new ChatActions({
         store,
-        api: phoneChatApi((path, init) => auth.session.api(path, init)),
+        api: phoneChatApi(
+          (path, init) => auth.session.api(path, init),
+          (path, uri, options) => auth.session.upload(path, uploadByUri(uri, options)),
+        ),
         // The server's time: a reply id is a UUIDv7 the server takes only when it was made about now by its clock.
         now: () => auth.session.serverNow(),
         newId: (at) => uuidV7(at),

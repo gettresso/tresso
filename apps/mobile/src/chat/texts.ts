@@ -116,6 +116,32 @@ export function mediaView(message: Pick<SyncedChatMessage, 'mediaKind' | 'mediaS
   }
 }
 
+/** A file on its way from the phone: `Uploading, 40%`, or `Queueing for your Mac` once it is up. */
+export function uploadText(upload: { phase: 'uploading' | 'queueing'; progress: number | null }): string {
+  if (upload.phase === 'queueing') {
+    return 'Queueing for your Mac'
+  }
+  return upload.progress === null ? 'Uploading' : `Uploading, ${Math.round(upload.progress * 100)}%`
+}
+
+/**
+ * The line under the reply box after a file did not go (FileNotSent): nothing queued when it failed before the reply was
+ * (reading or uploading the file, or a refusal), maybe queued when the queueing got no answer (the same file again goes
+ * as the same reply), and nothing at all when the user cancelled it.
+ */
+export function fileFailureText(name: string, phase: 'upload' | 'queue', reason: unknown, unsure: boolean, cancelled: boolean): string {
+  if (cancelled) {
+    return `${name} was not sent.`
+  }
+  if (unsure) {
+    return `${name} may have been queued. ${requestFailure(reason)} Attaching the same file again in the next minutes sends it once.`
+  }
+  return `${name} was not sent. ${phase === 'upload' && chatApiFailure(reason) === null && reason instanceof Error && reason.name !== 'TypeError' ? reason.message : requestFailure(reason)}`
+}
+
+/** A link to a file that the phone could not hand to an app. */
+export const FILE_NOT_OPENED = 'This phone could not open the file.'
+
 /** The warning before a file that could not be checked opens. */
 export const UNSCANNED_WARNING = 'This file could not be checked for malware. Open it only if you trust the sender.'
 
