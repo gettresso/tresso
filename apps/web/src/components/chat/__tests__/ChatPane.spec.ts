@@ -6,11 +6,11 @@ import { LocalChatBackend, type SqliteMailStore, type SyncedChatOutgoing } from 
 import type { WhatsAppCommands } from '@/platform/whatsapp'
 import { at, copyWith, DIRECT, DIRECT_ID, direct, fakeMail, fakeRelay, fakeShell, GROUP, GROUP_ID, group, incoming, LINKED, NOW, STOPPED } from '@/stores/__tests__/chatFixtures'
 
-const fakes = vi.hoisted(() => ({ relay: null as unknown, mail: null as unknown, shell: null as unknown, todos: { create: null as unknown }, selection: { active: false } }))
+const fakes = vi.hoisted(() => ({ relay: null as unknown, mail: null as unknown, shell: null as unknown, todos: { create: null as unknown }, selection: { active: false }, compose: { draft: null as unknown, minimized: false, notify: () => undefined } }))
 vi.mock('@/stores/whatsappRelay', () => ({ useWhatsAppRelayStore: () => fakes.relay }))
 vi.mock('@/stores/mail', () => ({ useMailStore: () => fakes.mail }))
 vi.mock('@/stores/todos', () => ({ useTodosStore: () => fakes.todos }))
-vi.mock('@/stores/compose', () => ({ useComposeStore: () => ({ draft: null, minimized: false, notify: () => undefined }) }))
+vi.mock('@/stores/compose', () => ({ useComposeStore: () => fakes.compose }))
 vi.mock('@/platform/notifier', () => ({ notifier: null }))
 vi.mock('@/stores/selection', () => ({ useSelectionStore: () => fakes.selection }))
 vi.mock('@/platform/whatsapp', async (original) => ({
@@ -52,6 +52,8 @@ describe('ChatPane', () => {
     fakes.mail = mail
     fakes.shell = shell
     fakes.selection.active = false
+    fakes.compose.draft = null
+    fakes.compose.minimized = false
     fakes.todos.create = vi.fn<(todo: { title: string }) => Promise<object>>(async () => ({}))
     setActivePinia(createPinia())
     router = createRouter({
@@ -617,6 +619,33 @@ describe('ChatPane', () => {
     relay.revision++
     await flushPromises()
     expect(view.get('.incoming').text()).toBe('Joost: Photo')
+    wrapper = view
+  })
+
+  it('follows the mail pane\'s rules for D, K and E: not with the compose window open or a modal layer on the page', async () => {
+    const view = await open(DIRECT_ID, await copyWith([direct], [incoming('A1', DIRECT, -10)]))
+    const pressE = async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e' }))
+      await flushPromises()
+      return (await store.chat(DIRECT_ID))!.chat.archivedThrough
+    }
+
+    fakes.compose.draft = {}
+    expect(await pressE()).toBeNull()
+    // Minimized, it holds nothing.
+    fakes.compose.minimized = true
+    fakes.compose.draft = null
+
+    const dialog = document.body.appendChild(document.createElement('dialog'))
+    dialog.setAttribute('open', '')
+    expect(await pressE()).toBeNull()
+    dialog.remove()
+    const question = document.body.appendChild(document.createElement('div'))
+    question.setAttribute('role', 'alertdialog')
+    expect(await pressE()).toBeNull()
+    question.remove()
+
+    expect(await pressE()).toBe(at(-10))
     wrapper = view
   })
 })

@@ -9,6 +9,8 @@ import { useMailStore } from '@/stores/mail'
 import { useSelectionStore } from '@/stores/selection'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import { config, copyWith, DIRECT, DIRECT_ID, direct, GROUP, GROUP_ID, group, incoming, LINKED, NOW } from '@/stores/__tests__/chatFixtures'
+import { defineComponent, h } from 'vue'
+import { openConversation, useConversationCommands } from '@/mail/openConversation'
 import MailView from '../MailView.vue'
 
 function conversation(threadId: string, lastMessageAt: number): Conversation {
@@ -116,6 +118,28 @@ describe('MailView with chats', () => {
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/')
     expect(document.activeElement).toBe(view.get('.scroll').element)
+  })
+
+  it('offers the Message menu no mail conversation while a chat is open', async () => {
+    // A reading pane that offers its commands as the real one does (useConversationCommands).
+    const done = async () => undefined
+    const ReadingPane = defineComponent({
+      setup() {
+        useConversationCommands({ ready: () => true, read: () => true, flagged: () => false, hasTodo: () => false, reply: done, archive: done, trash: done, chooseFolder: done, toggleRead: done, toggleFlag: done, settleDo: done, handOver: done, settleNoted: done, makeTodo: done })
+        return () => h('article', { class: 'mail-pane' })
+      },
+    })
+    await router.push('/inbox/t1')
+    wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router], stubs: { MiniAgenda: true, ReadingPane } }, attachTo: document.body })
+    await flushPromises()
+    expect(openConversation()).not.toBeNull()
+
+    // A chat opened from the list: the mail pane goes, and with it every command the menu could run on that mail.
+    await router.push(`/chats/${encodeURIComponent(DIRECT_ID)}`)
+    await flushPromises()
+    expect(wrapper.find('.chat-pane').exists()).toBe(true)
+    expect(wrapper.find('.mail-pane').exists()).toBe(false)
+    expect(openConversation()).toBeNull()
   })
 
   it('leaves the focus alone when a mail conversation is opened from the open chat', async () => {
