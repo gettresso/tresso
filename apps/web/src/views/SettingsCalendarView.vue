@@ -1,16 +1,25 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useForm } from 'vee-validate'
 import { toTypedSchema } from '@vee-validate/zod'
 import type { SchedulingPreferences, SchedulingPreferencesUpdate } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
 import { calendarSettingsSchema, type CalendarSettingsValues } from '@/forms/calendarSettings'
 import { useAuthStore } from '@/stores/auth'
+import { useMeetingAppsStore } from '@/stores/meetingApps'
 import LogoLoader from '@/components/LogoLoader.vue'
 
 const PATH = '/api/v1/calendar/scheduling-preferences'
 
 const auth = useAuthStore()
+const meetingApps = useMeetingAppsStore()
+/** Zoom is named only when this server offers it; until the preferences are read, it is not. */
+const meetingText = computed(() =>
+  meetingApps.preferences?.apps.includes('zoom')
+    ? 'Google Meet, Microsoft Teams, Zoom and your own link are set up under Meeting apps.'
+    : 'Google Meet, Microsoft Teams and your own link are set up under Meeting apps.',
+)
 const loading = ref(true)
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -23,6 +32,8 @@ const { defineField, handleSubmit, errors, meta, resetForm, setErrors } = useFor
 const [planTodos] = defineField('planTodos')
 
 onMounted(async () => {
+  // Only for the words of the Meeting links block; the page works without them.
+  meetingApps.ensureLoaded().catch(() => undefined)
   try {
     const preferences = await auth.api<SchedulingPreferences>(PATH)
     resetForm({ values: { planTodos: preferences.planTodos } })
@@ -61,6 +72,12 @@ const save = handleSubmit(async (current) => {
     <p v-if="loading" class="state" role="status"><LogoLoader /> Loading…</p>
 
     <template v-else>
+      <section class="meeting-links" aria-labelledby="meeting-links-title">
+        <h3 id="meeting-links-title">Meeting links</h3>
+        <p class="hint">{{ meetingText }}</p>
+        <RouterLink :to="{ name: 'settings-meeting-apps' }" class="open-link">Open Meeting apps</RouterLink>
+      </section>
+
       <label class="toggle">
         <input v-model="planTodos" type="checkbox" />
         <span>
@@ -103,6 +120,24 @@ const save = handleSubmit(async (current) => {
   margin: 0;
   color: var(--ink-2);
   line-height: 21px;
+}
+.meeting-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.meeting-links h3 {
+  margin: 0;
+  font: 600 14px/20px var(--font-ui);
+}
+.open-link {
+  align-self: flex-start;
+  color: var(--focus);
+  font-size: 13px;
+  font-weight: 600;
 }
 .toggle {
   display: flex;

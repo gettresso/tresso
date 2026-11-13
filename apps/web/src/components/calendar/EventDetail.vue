@@ -30,8 +30,10 @@ const props = withDefaults(
     error: string | null
     /** The server's time as the client knows it, for how long a meeting link has been asked for. */
     clock?: () => number
+    /** The user's own room link from Settings, Meeting apps, which reads "My own link"; null while not known. */
+    ownLink?: string | null
   }>(),
-  { clock: () => Date.now() },
+  { clock: () => Date.now(), ownLink: null },
 )
 const emit = defineEmits<{ close: []; edit: []; delete: []; respond: [response: Response, onlyThis: boolean] }>()
 
@@ -79,12 +81,11 @@ function initials(name: string | null, address: string): string {
     <p v-if="event.status === 'cancelled'" class="cancelled" role="status">This event was cancelled.</p>
     <p v-if="event.syncError" class="error" role="alert">Not saved at the provider: {{ event.syncError }}</p>
 
-    <!-- Until the settings for meeting apps keep the own link, it reads as "Meeting link". -->
     <MeetingLink
       :key="`${event.id} ${event.conference?.url ?? ''}`"
       :event="event"
       :request="(occurrence.series ?? event).conferenceRequest ?? null"
-      :own-link="null"
+      :own-link="ownLink"
       :clock="clock"
     />
     <p v-if="event.location" class="line"><AppIcon name="place" :size="15" /> {{ event.location }}</p>
