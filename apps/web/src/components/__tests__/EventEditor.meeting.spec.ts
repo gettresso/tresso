@@ -287,7 +287,8 @@ describe('the meeting link in the event editor', () => {
   it('shows a link that arrives while the editor is open', async () => {
     const failed = event('arrives', { conferenceRequest: { provider: 'teams', status: 'failed', reason: 'unreachable', requestedAt: new Date(NOW - 600_000).toISOString() } })
     const mail = useMailStore()
-    vi.spyOn(mail, 'currentStore').mockReturnValue({ calendarEvent: async (id: string) => server.get(id) ?? null } as unknown as ReturnType<typeof mail.currentStore>)
+    // The copy on this device as far as the editor and the calendar's own reload read it.
+    vi.spyOn(mail, 'currentStore').mockReturnValue({ calendarEvent: async (id: string) => server.get(id) ?? null, calendarEvents: async () => [...server.values()] } as unknown as ReturnType<typeof mail.currentStore>)
     const wrapper = await editor({ kind: 'edit', occurrence: occurrenceOf(failed)[0]! })
     expect(title(wrapper)).toBe('Could not make the Teams link')
     server.set('arrives', { ...failed, conference: { provider: 'teams', url: TEAMS_URL, id: null, dialIn: null, removable: false }, conferenceRequest: null })
