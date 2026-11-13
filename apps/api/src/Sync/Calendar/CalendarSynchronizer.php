@@ -163,11 +163,17 @@ final readonly class CalendarSynchronizer
         return new ObjectBatchResult($stored, $removed, $skipped);
     }
 
+    /** A meeting the provider has not made this long after it was asked for will not come: the request failed. */
+    public const string STALE_REQUEST = 'PT5M';
+
     /**
      * Stores the provider's version of a resource. Returns false when it was not taken (unreadable, or a local change
      * is waiting to be written).
+     *
+     * @param bool $settleStale a version from a sync (not the answer to a write, which settles the request itself)
+     *                          ends a request older than {@see self::STALE_REQUEST} that has no meeting yet
      */
-    public function upsert(Calendar $calendar, ?CalendarObject $object, RemoteObjectInput $remote): bool
+    public function upsert(Calendar $calendar, ?CalendarObject $object, RemoteObjectInput $remote, bool $settleStale = true): bool
     {
         try {
             $parsed = CalendarDocument::parse((string) $remote->ical);
@@ -197,9 +203,14 @@ final readonly class CalendarSynchronizer
             $object ??= new CalendarObject($calendar, $uid, '');
             $rows = $this->store->save($object, $vcalendar, true);
             $object->stored($remote->remoteId, $remote->etag);
-            if (null !== $object->getConferenceRequest() && null !== ($rows[''] ?? null)?->getConference()) {
+            $request = $object->getConferenceRequest();
+            if (null !== $request && null !== ($rows[''] ?? null)?->getConference()) {
                 // The meeting asked for is there (Google may make it after its first answer): nothing is pending.
                 $this->store->setConferenceRequest($object, null);
+            } elseif ($settleStale && null !== $request && 'pending' === $request['status']
+                && new \DateTimeImmutable($request['requestedAt']) < new \DateTimeImmutable()->sub(new \DateInterval(self::STALE_REQUEST))) {
+                // No write waits (that returned above): the provider has had its chance, and made no meeting.
+                $this->store->setConferenceRequest($object, ['status' => 'failed', 'reason' => 'refused'] + $request);
             }
             if (null !== $previous) {
                 $notes = $this->notes->lift($previous, static fn (string $key): string => $key);

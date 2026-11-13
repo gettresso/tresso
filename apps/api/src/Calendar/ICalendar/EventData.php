@@ -15,7 +15,7 @@ use App\Enum\Transparency;
  * @phpstan-type Address array{address: string, name: ?string}
  * @phpstan-type Attendee array{address: string, name: ?string, role: string, partstat: string, rsvp: bool, kind: string}
  * @phpstan-type Reminder array{action: string, trigger: ?string, relatedTo: string, at: ?string, channels: list<string>}
- * @phpstan-type Conference array{provider: string, url: string, id: ?string, dialIn: ?string}
+ * @phpstan-type Conference array{provider: string, url: string, id: ?string, dialIn: ?string, removable?: bool}
  */
 final readonly class EventData
 {

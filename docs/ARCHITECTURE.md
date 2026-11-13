@@ -2929,6 +2929,24 @@ locations of other events (Zoom, Teams, Meet, Webex) are recognized as well, so 
 `conference.url` for the join button. Personal Microsoft accounts and CalDAV or Tresso calendars get no meeting from
 their provider; a link pasted into the event (`conferenceUrl`) works everywhere.
 
+Worker contract for meeting links (the API side is in `EventEditor`, `CalendarOperations` and `CalendarSynchronizer`):
+
+- A request is `X-TRESSO-CONFERENCE-REQUEST:<meet|teams>` with `X-TRESSO-CONFERENCE-NONCE:<8 hex>` on the master. The
+  API keeps its state on the object (`conferenceRequest`: pending, or failed with `refused`, `not_supported` or
+  `unreachable`) because the provider's version drops both properties. A new request (after a failure, a removal or
+  120 seconds) has a new nonce; Google's request id is derived from the UID and the nonce, so it makes a new meeting.
+- The result of a write may carry `conferenceStatus` (`pending` while the provider is still making it, or `failed`)
+  and `conferenceError` (`refused`, `not_supported`), and nothing when the meeting is there or none was asked for.
+  A request still pending five minutes later, when a synced version without a meeting arrives and no write waits, is
+  failed (`refused`).
+- Removal of a Google Meet meeting: the master carries `X-TRESSO-CONFERENCE-REMOVE:meet`. Only then does the worker
+  patch `"conferenceData": null` (with `conferenceDataVersion=1`); a master that merely lacks `X-GOOGLE-CONFERENCE` is
+  never a reason to remove Google's meeting. A new request clears the marker; the provider's version drops it.
+- A Teams meeting Graph made cannot be removed (`conference.removable` is false); the API refuses the change.
+- A link the API knows (the user's own) travels as `CONFERENCE` and as the last line of the description, "Join the
+  meeting: <url>" or "Join with <App>: <url>" (`MeetingJoinLine`); Google and Microsoft keep the line, and the
+  detector reads it back. Into Graph's HTML body it goes as escaped text.
+
 #### AI features (interfaces with built-in and planned AI implementations)
 
 Tresso defines the interfaces and, where a deterministic version is useful on its own, implements it. The planned AI

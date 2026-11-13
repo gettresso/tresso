@@ -104,7 +104,7 @@ final readonly class CalendarOperations
             if (null !== $result->current && null !== $result->current->ical && $result->current->remoteId === $remoteId) {
                 // The provider changed the event while storing it (Google and Microsoft add the meeting they made, and
                 // their own UID spelling): its version replaces Tresso's, unless a newer change of the user's waits.
-                $this->synchronizer->upsert($calendar, $object, $result->current);
+                $this->synchronizer->upsert($calendar, $object, $result->current, false);
             }
             $this->settleConference($object, $result, $remoteId);
 
@@ -119,7 +119,7 @@ final readonly class CalendarOperations
 
         if (null !== $result->current && null !== $result->current->ical) {
             // The provider's version replaces the local one.
-            $this->synchronizer->upsert($calendar, $object, $result->current);
+            $this->synchronizer->upsert($calendar, $object, $result->current, false);
             $object ??= $this->entityManager->getRepository(CalendarObject::class)->findOneBy(['calendar' => $calendar, 'uid' => $operation->getUid()]);
             if (null !== $object) {
                 $this->store->reportSyncError($object, $message);

@@ -36,7 +36,12 @@ use Symfony\Component\Validator\Constraints as Assert;
  * series or drops the request. Both act on the whole series and only for events the user organizes. A save that
  * sends the provider of a request that is still pending changes nothing about it; one that sends the provider of a
  * failed request asks again. `conference.provider` and `conferenceRequest.provider` are plain strings (`other` for a
- * link of no known app): a client shows a name it does not know as a meeting link.
+ * link of no known app): a client shows a name it does not know as a meeting link. `conference.removable` is false
+ * for a Teams meeting Microsoft made on its calendar's event, which cannot be taken off it (rows stored before the
+ * field existed lack it until the event changes).
+ *
+ * A save replaces the meeting link with `conferenceUrl`: a client that keeps the link sends `conference.url` back as
+ * it got it. Without it the link is removed (and a Microsoft event with a Teams meeting answers 422).
  *
  * @phpstan-import-type Address from EventData
  * @phpstan-import-type Attendee from EventData

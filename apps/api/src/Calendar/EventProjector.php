@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Calendar;
 
 use App\Calendar\ICalendar\CalendarDocument;
+use App\Calendar\ICalendar\ConferenceDetector;
 use App\Calendar\ICalendar\EventReader;
 use App\Entity\CalendarEvent;
 use App\Entity\CalendarObject;
@@ -41,12 +42,14 @@ final readonly class EventProjector
 
         // Every event is read before any row changes: one that cannot be read leaves the rows as they were.
         $read = [];
+        $removable = [];
         foreach (CalendarDocument::events($calendar) as $vevent) {
             $data = EventReader::read($vevent, $calendar, $self);
             if ($data->uid !== $object->getUid() || isset($read[$data->recurrenceKey])) {
                 continue;
             }
             $read[$data->recurrenceKey] = $data;
+            $removable[$data->recurrenceKey] = ConferenceDetector::removable($vevent, $object->getCalendar()->getSource());
         }
 
         $rows = [];
@@ -58,6 +61,7 @@ final readonly class EventProjector
             } else {
                 $event->apply($data);
             }
+            $event->markConferenceRemovable($removable[$data->recurrenceKey]);
             $rows[$data->recurrenceKey] = $event;
         }
         // The meeting link asked for is the series' (or the single event's): only the master row shows it.
