@@ -25,6 +25,7 @@ use Symfony\Component\Uid\Uuid;
  *
  * Each event is settled in a transaction of its own, under the object's row lock as every write of it takes, and the
  * conditions are checked again under that lock. The master row's change gets a new change number, so clients see it.
+ * The candidates are read through the partial index of objects with a request, and only stale ones count to the limit.
  */
 #[AsMessageHandler]
 final readonly class SweepMeetingRequestsHandler
@@ -55,9 +56,10 @@ final readonly class SweepMeetingRequestsHandler
         $ids = $this->connection->fetchFirstColumn(
             "SELECT o.id FROM calendar_object o
               WHERE o.conference_request IS NOT NULL AND o.conference_request->>'status' = 'pending'
+                AND CAST(o.conference_request->>'requestedAt' AS TIMESTAMPTZ) < CAST(:before AS TIMESTAMPTZ)
                 AND NOT EXISTS (SELECT 1 FROM calendar_operation op WHERE op.object_id = o.id)
               LIMIT :limit",
-            ['limit' => self::LIMIT],
+            ['before' => $before->format(\DATE_ATOM), 'limit' => self::LIMIT],
         );
 
         $failed = 0;

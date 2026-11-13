@@ -20,6 +20,7 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Entity(repositoryClass: CalendarObjectRepository::class)]
 #[ORM\UniqueConstraint(columns: ['calendar_id', 'uid'])]
 #[ORM\Index(columns: ['calendar_id', 'remote_id'])]
+#[ORM\Index(name: 'calendar_object_conference_request', columns: ['id'], options: ['where' => '(conference_request IS NOT NULL)'])]
 class CalendarObject
 {
     #[ORM\Id]
