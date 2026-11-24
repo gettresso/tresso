@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { importOrder, importRoute, importServers, nextProviderRow, parseAddressList, type ImportEntryState, type ImportRoute } from './accountImports'
+import { importOrder, importRoute, importServers, nextImportRow, readPastedAddresses, type ImportEntryState, type ImportRoute } from './accountImports'
 import type { SuggestedServerSettings } from './accounts'
 
 function suggestion(provider: SuggestedServerSettings['provider'], found = provider !== null): SuggestedServerSettings {
@@ -15,17 +15,32 @@ function suggestion(provider: SuggestedServerSettings['provider'], found = provi
   }
 }
 
-describe('parseAddressList', () => {
-  it('reads one address per line, or separated by commas or semicolons', () => {
-    expect(parseAddressList('kim@example.com\nanna@example.com, bob@example.com;  lisa@example.com \r\n')).toEqual(['kim@example.com', 'anna@example.com', 'bob@example.com', 'lisa@example.com'])
+describe('readPastedAddresses', () => {
+  it('reads one address per line, or separated by commas, semicolons or spaces', () => {
+    const read = readPastedAddresses('kim@example.com\nAnna@Example.com, bob@example.com;  lisa@example.com \n\n', [])
+
+    expect(read.toAdd).toEqual(['kim@example.com', 'anna@example.com', 'bob@example.com', 'lisa@example.com'])
+    expect(read.total).toBe(4)
+    expect(read.issues).toEqual([])
   })
 
-  it('reduces "Name <address>" and mailto: to the address and drops empty parts', () => {
-    expect(parseAddressList('Kim Visser <kim@example.com>,,\n\nmailto:anna@example.com')).toEqual(['kim@example.com', 'anna@example.com'])
+  it('names what needs a look with its line: not valid, listed twice, already connected', () => {
+    const read = readPastedAddresses('kim@company.example\njeroen.smit.company.example\nanna@company.example\nanna@company\nANNA@company.example, sales@company.example', ['kim@company.example'])
+
+    expect(read.issues).toEqual([
+      { kind: 'connected', address: 'kim@company.example', line: 1 },
+      { kind: 'invalid', address: 'jeroen.smit.company.example', line: 2, noAt: true },
+      { kind: 'invalid', address: 'anna@company', line: 4, noAt: false },
+      { kind: 'twice', address: 'ANNA@company.example', line: 5, firstLine: 3 },
+    ])
+    expect(read.toAdd).toEqual(['anna@company.example', 'sales@company.example'])
+    expect([read.total, read.already, read.invalid, read.twice]).toEqual([6, 1, 2, 1])
   })
 
-  it('keeps what is not an address, and doubles, for the API to report per address', () => {
-    expect(parseAddressList('kim@example.com, not an address, kim@example.com')).toEqual(['kim@example.com', 'not an address', 'kim@example.com'])
+  it('counts a connected address given twice as listed twice', () => {
+    const read = readPastedAddresses('kim@company.example\nkim@company.example', ['kim@company.example'])
+
+    expect(read.issues.map((issue) => issue.kind)).toEqual(['connected', 'twice'])
   })
 })
 
@@ -61,24 +76,25 @@ describe('importServers', () => {
   })
 })
 
-describe('importOrder and nextProviderRow', () => {
+describe('importOrder and nextImportRow', () => {
   const google: ImportRoute = { kind: 'oauth', provider: 'google' }
   const microsoft: ImportRoute = { kind: 'oauth', provider: 'microsoft' }
   const password: ImportRoute = { kind: 'password', service: null }
   const row = (id: string, route: ImportRoute, state: ImportEntryState = 'todo') => ({ id, route, state })
 
-  it('groups rows of one provider, Google first, then Microsoft, then passwords, keeping the list order', () => {
-    const rows = [row('a', password), row('b', microsoft), row('c', google), row('d', microsoft), row('e', google)]
+  it('groups rows of one provider, Microsoft first, then Google, then passwords, keeping the list order', () => {
+    const rows = [row('a', password), row('b', google), row('c', microsoft), row('d', google), row('e', microsoft)]
 
     expect(importOrder(rows).map((r) => r.id)).toEqual(['c', 'e', 'b', 'd', 'a'])
   })
 
-  it('offers the next provider row still to do, wrapping around, and never a password row', () => {
-    const rows = importOrder([row('g1', google, 'connected'), row('g2', google), row('m1', microsoft, 'skipped'), row('m2', microsoft, 'failed'), row('p', password)])
+  it('offers the next row still to do, password rows included, wrapping around, and failed ones last', () => {
+    const rows = importOrder([row('m1', microsoft, 'connected'), row('m2', microsoft), row('g1', google, 'skipped'), row('g2', google, 'failed'), row('p', password), row('q', password, 'already_connected')])
 
-    expect(nextProviderRow(rows, null)?.id).toBe('g2')
-    expect(nextProviderRow(rows, 'g2')).toBeNull()
-    expect(nextProviderRow(rows, 'g2', true)?.id).toBe('m2')
-    expect(nextProviderRow(rows, 'm2', true)?.id).toBe('g2')
+    expect(nextImportRow(rows, null)?.id).toBe('m2')
+    expect(nextImportRow(rows, 'm2')?.id).toBe('p')
+    expect(nextImportRow(rows, 'p')?.id).toBe('m2')
+    expect(nextImportRow([row('g2', google, 'failed')], null)).toBeNull()
+    expect(nextImportRow([row('g2', google, 'failed'), row('g3', google, 'failed')], 'g2', true)?.id).toBe('g3')
   })
 })

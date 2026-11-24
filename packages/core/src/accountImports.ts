@@ -10,8 +10,11 @@ export const MAX_IMPORT_ENTRIES = 50
 /** How an address is expected to connect, as the one who made the list said. Only used when the lookup finds nothing. */
 export type ImportProviderHint = 'google' | 'microsoft' | 'imap'
 
-/** `connected` follows from the user's mail accounts; the others are stored. */
-export type ImportEntryState = 'todo' | 'connected' | 'failed' | 'skipped'
+/**
+ * Whether the user has the account follows from their mail accounts: `connected` when it was added from this list,
+ * `already_connected` when it was added another way. The others are stored.
+ */
+export type ImportEntryState = 'todo' | 'connected' | 'already_connected' | 'failed' | 'skipped'
 
 /** Why connecting an entry failed: the codes of a provider sign-in, and two of the server form. */
 export type ImportFailure =
@@ -40,6 +43,8 @@ export interface MailAccountImportEntry {
   /** Set once connected. */
   mailAccountId: string | null
   accountStatus: string | null
+  /** For `admin_approval_required`: where the organization's administrator approves Tresso. */
+  approvalUrl: string | null
 }
 
 export interface LeftOutAddress {
@@ -67,24 +72,65 @@ export interface NewMailAccountImport {
 
 export interface UpdateImportEntry {
   entryId: string
-  state: 'todo' | 'skipped' | 'failed'
+  /** `connected` only once the account exists: it says the account was added from this list. */
+  state: 'todo' | 'skipped' | 'failed' | 'connected'
   failure?: ImportFailure
 }
 
+/** What a pasted address needs before the list is made, as the paste step names it. */
+export type PastedIssue =
+  | { kind: 'invalid'; address: string; line: number; noAt: boolean }
+  | { kind: 'twice'; address: string; line: number; firstLine: number }
+  | { kind: 'connected'; address: string; line: number }
+
+/** The pasted text, read the way the paste step counts it. */
+export interface PastedAddresses {
+  /** Every address-like part, valid or not. */
+  total: number
+  /** The addresses that go on the list, once each, in the order pasted. */
+  toAdd: string[]
+  issues: PastedIssue[]
+  already: number
+  invalid: number
+  twice: number
+}
+
+const ADDRESS = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+
 /**
- * The addresses in pasted text: one per line, or separated by commas or semicolons. "Name <address>" and "mailto:"
- * are reduced to the address; empty parts are dropped. Nothing is checked or removed otherwise: the API says per
- * address what it left out, so the user sees the same reasons wherever the list was made.
+ * Reads pasted addresses: one per line, or separated by commas, semicolons or spaces. Each part is an address to add,
+ * or one that needs a look with its line: not valid (left out unless fixed), listed twice (added once) or already
+ * connected (left out). The API checks every address again and says per address what it left out.
+ *
+ * @param connected the addresses of the user's mail accounts, lowercase
  */
-export function parseAddressList(text: string): string[] {
-  return text
-    .split(/[\n\r,;]+/)
-    .map((part) => {
-      const trimmed = part.trim()
-      const angled = /<([^<>]+)>\s*$/.exec(trimmed)
-      return (angled?.[1] ?? trimmed).replace(/^mailto:/i, '').trim()
-    })
-    .filter((address) => address !== '')
+export function readPastedAddresses(text: string, connected: readonly string[]): PastedAddresses {
+  const seen = new Map<string, number>()
+  const result: PastedAddresses = { total: 0, toAdd: [], issues: [], already: 0, invalid: 0, twice: 0 }
+  text.split('\n').forEach((content, index) => {
+    const line = index + 1
+    for (const raw of content.split(/[,;\s]+/)) {
+      const address = raw.trim()
+      if (address === '') continue
+      const key = address.toLowerCase()
+      result.total++
+      if (!ADDRESS.test(address)) {
+        result.invalid++
+        result.issues.push({ kind: 'invalid', address, line, noAt: !address.includes('@') })
+      } else if (seen.has(key)) {
+        result.twice++
+        result.issues.push({ kind: 'twice', address, line, firstLine: seen.get(key)! })
+      } else if (connected.includes(key)) {
+        seen.set(key, line)
+        result.already++
+        result.issues.push({ kind: 'connected', address, line })
+      } else {
+        seen.set(key, line)
+        result.toAdd.push(key)
+      }
+    }
+  })
+  return result
 }
 
 /** How one row of the list connects, once its address was looked up. */
@@ -115,31 +161,34 @@ export function importServers(suggestion: SuggestedServerSettings | null, route:
   return null
 }
 
-const GROUP_ORDER: Record<string, number> = { google: 0, microsoft: 1, password: 2 }
+/** The groups of the list page, in their order. */
+export type ImportGroup = 'microsoft' | 'google' | 'password'
 
-function groupOf(route: ImportRoute): number {
-  return GROUP_ORDER[route.kind === 'oauth' ? route.provider : 'password']!
+export const IMPORT_GROUPS: ImportGroup[] = ['microsoft', 'google', 'password']
+
+export function importGroup(route: ImportRoute): ImportGroup {
+  return route.kind === 'oauth' ? route.provider : 'password'
 }
 
 /**
- * The rows in the order they are worked through: Google, then Microsoft, then those with a password, each group in
+ * The rows in the order they are worked through: Microsoft, then Google, then those with a password, each group in
  * the order of the list. Rows of one provider follow each other, so the provider's own session in the browser can
  * serve the next sign-in where the provider allows it.
  */
 export function importOrder<T extends { route: ImportRoute }>(rows: T[]): T[] {
   return rows
     .map((row, index) => ({ row, index }))
-    .sort((a, b) => groupOf(a.row.route) - groupOf(b.row.route) || a.index - b.index)
+    .sort((a, b) => IMPORT_GROUPS.indexOf(importGroup(a.row.route)) - IMPORT_GROUPS.indexOf(importGroup(b.row.route)) || a.index - b.index)
     .map(({ row }) => row)
 }
 
 /**
- * The next row to sign in at a provider after `afterId` (or the first), in {@link importOrder}, wrapping around: one
- * still to do (or failed, when `includeFailed`), with a provider sign-in, never `afterId` itself. Null when none is
- * left.
+ * The next row to connect after `afterId` (or the first), in {@link importOrder}, wrapping around and never `afterId`
+ * itself: one still to do, else (with `includeFailed`) one that failed. Password rows count: a run opens them and waits
+ * for the password. Null when none is left.
  */
-export function nextProviderRow<T extends { id: string; state: ImportEntryState; route: ImportRoute }>(ordered: T[], afterId: string | null, includeFailed = false): T | null {
+export function nextImportRow<T extends { id: string; state: ImportEntryState }>(ordered: T[], afterId: string | null, includeFailed = false): T | null {
   const start = afterId === null ? 0 : ordered.findIndex((row) => row.id === afterId) + 1
-  const waiting = (row: T): boolean => row.id !== afterId && row.route.kind === 'oauth' && (row.state === 'todo' || (includeFailed && row.state === 'failed'))
-  return ordered.slice(start).find(waiting) ?? ordered.slice(0, start).find(waiting) ?? null
+  const around = [...ordered.slice(start), ...ordered.slice(0, start)].filter((row) => row.id !== afterId)
+  return around.find((row) => row.state === 'todo') ?? (includeFailed ? (around.find((row) => row.state === 'failed') ?? null) : null)
 }
