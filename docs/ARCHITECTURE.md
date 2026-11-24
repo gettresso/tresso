@@ -378,7 +378,9 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   change); the result (`done`, `refused`, `failed`) with a reason; the duration in milliseconds; the scopes the action
   needed (from the tool, or from the operation's security expression); and the kind and id of what it touched (the
   resource named by the path segment before the last path variable and that variable's value, so
-  `/chats/{id}/outgoing` touched a chat; for a tool, the last operation it ran that named one). The id is kept only when
+  `/chats/{id}/outgoing` touched a chat; for an operation that made something, 201, the `id` of its answer and
+  nothing else of it, so `add_mail_accounts` names the list it made; for a tool, the last operation it ran that named
+  one). The id is kept only when
   it is a UUID, the only kind of id the API hands out: other path text is the caller's own and could plant a message
   such as `call-0800-123456.your-account-is-locked` in the user's log. For a refusal for want of a permission the
   entry also keeps the scopes the app lacked at that moment (`missing_scopes`), so the sentence read later is true about

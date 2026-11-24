@@ -6,6 +6,7 @@ namespace App\Activity;
 
 use ApiPlatform\Metadata\Resource\Factory\ResourceMetadataCollectionFactoryInterface;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Contracts\Service\ResetInterface;
 
 /**
@@ -29,12 +30,12 @@ final class ToolTrace implements ResetInterface
         $this->last = $this->lastWithId = null;
     }
 
-    public function saw(Request $subRequest): void
+    public function saw(Request $subRequest, ?Response $response = null): void
     {
         if (!$this->active) {
             return;
         }
-        $operation = ApiOperation::of($subRequest, $this->resources);
+        $operation = ApiOperation::of($subRequest, $this->resources, $response);
         if (null === $operation) {
             return;
         }

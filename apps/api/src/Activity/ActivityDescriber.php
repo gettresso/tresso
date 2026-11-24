@@ -36,6 +36,7 @@ final readonly class ActivityDescriber
         'ChatFileContent' => ['WhatsApp file', 'WhatsApp files'],
         'ChatUpload' => ['WhatsApp file', 'WhatsApp files'],
         'SmartInboxSenders' => ['Smart inbox', 'Smart inboxes'],
+        'MailAccountImport' => ['List of accounts to add', 'Lists of accounts to add'],
         'CalendarOccurrence' => ['Calendar event', 'Calendar events'],
         'MessageBody' => ['Message', 'Messages'],
         'AttachmentContent' => ['Attachment', 'Attachments'],

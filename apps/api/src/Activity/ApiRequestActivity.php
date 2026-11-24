@@ -77,7 +77,7 @@ final readonly class ApiRequestActivity
 
     private function record(Request $request, Response $response, \DateTimeImmutable $occurredAt, int $durationMs): void
     {
-        $operation = ApiOperation::of($request, $this->resources);
+        $operation = ApiOperation::of($request, $this->resources, $response);
         if (null === $operation) {
             return;
         }

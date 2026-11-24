@@ -138,7 +138,7 @@ final readonly class Api
         $request = Request::create(self::PREFIX.$path, $method, $query, [], [], $server, $content);
         $response = $this->httpKernel->handle($request, HttpKernelInterface::SUB_REQUEST);
         // For the activity log: which operation the tool reached, and the object it named (never the query or body).
-        $this->trace->saw($request);
+        $this->trace->saw($request, $response);
 
         return self::decode($method, $path, $response);
     }
