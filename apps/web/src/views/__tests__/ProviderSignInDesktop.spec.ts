@@ -126,6 +126,7 @@ describe('connecting a provider account in the desktop app', () => {
       routes: [
         { path: '/settings/accounts', name: 'settings-accounts', component: SettingsAccountsView },
         { path: '/settings/accounts/new', name: 'settings-accounts-new', component: AddAccountView },
+        { path: '/settings/accounts/import/:importId?', name: 'settings-accounts-import', component: { template: '<div />' } },
         { path: '/accounts/:accountId', name: 'account', component: Empty },
         { path: '/auth/callback', name: 'auth-callback', component: Empty },
       ],
