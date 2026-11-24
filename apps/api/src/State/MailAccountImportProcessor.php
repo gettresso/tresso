@@ -72,7 +72,9 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
                 throw self::violation($data, 'failure', 'A reason goes with the state failed only.', $data->failure->value);
             }
             if (!$this->imports->mark($import, (string) $data->entryId, $state, $data->failure)) {
-                throw self::violation($data, 'entryId', 'This list has no such entry.', (string) $data->entryId);
+                throw ImportEntryState::Connected === $state
+                    ? self::violation($data, 'state', 'This list has no such entry, or its address has no mail account yet.', $state->value)
+                    : self::violation($data, 'entryId', 'This list has no such entry.', (string) $data->entryId);
             }
 
             return $this->provider->resource($import);
@@ -108,8 +110,8 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
     }
 
     /**
-     * The app making the list, for the page to name: null for Tresso's own apps, the app's registered name for an app
-     * the user allowed, and the token's name for a personal access token.
+     * The app making the list, for the page to name in "This list was made by ...": null for Tresso's own apps, the
+     * app's registered name for an app the user allowed, and the token's name for a personal access token.
      */
     private function creatorName(): ?string
     {
@@ -121,15 +123,15 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
             $owner = $this->currentUser->get();
             $name = $this->personalAccessTokens->findOneOwnedBy($owner, $token->getPersonalAccessTokenId())?->getName();
 
-            return mb_substr(null === $name ? 'A personal access token' : \sprintf('The personal access token "%s"', $name), 0, 200);
+            return mb_substr(null === $name ? 'your personal access token' : \sprintf('your personal access token "%s"', $name), 0, 200);
         }
         if ($token instanceof OAuth2Token) {
             $name = $this->clients->find($token->getOAuthClientId())?->getName();
 
-            return mb_substr(null === $name || '' === trim($name) ? 'An app you allowed' : trim($name), 0, 200);
+            return mb_substr(null === $name || '' === trim($name) ? 'an app you allowed' : trim($name), 0, 200);
         }
 
-        return 'An app you allowed';
+        return 'an app you allowed';
     }
 
     private static function violation(object $input, string $path, string $message, string $value): ValidationException

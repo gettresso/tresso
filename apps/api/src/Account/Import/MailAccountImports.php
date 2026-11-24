@@ -154,7 +154,8 @@ final readonly class MailAccountImports
         return array_map(static function (ImportEntry $entry) use ($accounts): array {
             $account = $accounts[$entry->address] ?? null;
             $state = match (true) {
-                null !== $account => ImportEntryState::Connected,
+                null !== $account && $entry->added => ImportEntryState::Connected,
+                null !== $account => ImportEntryState::AlreadyConnected,
                 $entry->skipped => ImportEntryState::Skipped,
                 null !== $entry->failure => ImportEntryState::Failed,
                 default => ImportEntryState::Todo,
@@ -165,13 +166,19 @@ final readonly class MailAccountImports
     }
 
     /**
-     * Sets an entry to skipped, back to do (clearing a failure), or failed with a reason. False when the list has no
-     * such entry.
+     * Sets an entry to skipped, back to do (clearing a failure), failed with a reason, or connected: added from this
+     * list, which the server form of the page says once it created the account. False when the list has no such entry,
+     * or for connected when the owner has no account with its address.
      */
     public function mark(MailAccountImport $import, string $entryId, ImportEntryState $state, ?ImportFailure $failure): bool
     {
+        if (ImportEntryState::AlreadyConnected === $state) {
+            throw new \InvalidArgumentException('Already connected is read from the mail accounts, never set.');
+        }
         if (ImportEntryState::Connected === $state) {
-            throw new \InvalidArgumentException('Connected is read from the mail accounts, never set.');
+            $connected = $this->connectedAddresses($import->getOwner());
+
+            return $this->change($import->getId(), static fn (ImportEntry $entry): bool => $entry->id === $entryId && isset($connected[$entry->address]), static fn (ImportEntry $entry): ImportEntry => $entry->asAdded());
         }
 
         return $this->change($import->getId(), static fn (ImportEntry $entry): bool => $entry->id === $entryId, static fn (ImportEntry $entry): ImportEntry => match ($state) {
@@ -196,7 +203,7 @@ final readonly class MailAccountImports
         $this->change(
             $import->getId(),
             static fn (ImportEntry $entry): bool => $entry->address === $address,
-            static fn (ImportEntry $entry): ImportEntry => $entry->with(null === $error ? $entry->skipped : false, null === $error ? null : ImportFailure::fromConnectError($error)),
+            static fn (ImportEntry $entry): ImportEntry => null === $error ? $entry->asAdded() : $entry->with(false, ImportFailure::fromConnectError($error)),
         );
     }
 

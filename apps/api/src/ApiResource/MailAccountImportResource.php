@@ -22,8 +22,9 @@ use App\State\MailAccountImportProvider;
  * signing in at Google or Microsoft or typing the password into Tresso. A list belongs to the user who made it, holds
  * at most 50 addresses and lives 24 hours; afterwards it is gone (404), like another user's list.
  *
- * Each entry says where it stands: `todo`, `connected` (the user has a mail account with the address, whichever way it
- * was connected), `failed` (with `failure`, a code, and `reason`, a sentence) or `skipped`. On creation `leftOut` names
+ * Each entry says where it stands: `todo`, `connected` (added from this list), `already_connected` (the user has a mail
+ * account with the address that was added another way), `failed` (with `failure`, a code, `reason`, a sentence, and
+ * for `admin_approval_required` the `approvalUrl` for the organization's administrator) or `skipped`. On creation `leftOut` names
  * the addresses that were not taken and why (`invalid`, `duplicate`, `already_connected`); it is empty on later reads.
  * `createdBy` names the app that made the list when it is not one of Tresso's own, so the page can say so.
  */
@@ -73,9 +74,9 @@ use App\State\MailAccountImportProvider;
 final readonly class MailAccountImportResource
 {
     /**
-     * @param list<array{id: string, address: string, provider: ?string, state: string, failure: ?string, reason: ?string, mailAccountId: ?string, accountStatus: ?string}> $entries
+     * @param list<array{id: string, address: string, provider: ?string, state: string, failure: ?string, reason: ?string, mailAccountId: ?string, accountStatus: ?string, approvalUrl: ?string}> $entries
      * @param list<array{address: string, reason: string, message: string}>                                                                                          $leftOut
-     * @param array{todo: int, connected: int, failed: int, skipped: int}                                                                                             $progress
+     * @param array{todo: int, connected: int, already_connected: int, failed: int, skipped: int}                                                                                           $progress
      */
     public function __construct(
         #[ApiProperty(identifier: true)]

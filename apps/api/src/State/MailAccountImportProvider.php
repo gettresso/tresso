@@ -12,6 +12,8 @@ use App\Account\Import\MailAccountImports;
 use App\ApiResource\MailAccountImportResource;
 use App\Entity\MailAccountImport;
 use App\Enum\ImportEntryState;
+use App\Enum\ImportFailure;
+use App\ProviderAuth\ProviderSettings;
 use App\Security\CurrentUser;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -26,6 +28,7 @@ final readonly class MailAccountImportProvider implements ProviderInterface
     public function __construct(
         private MailAccountImports $imports,
         private ImportPages $pages,
+        private ProviderSettings $providerSettings,
         private CurrentUser $currentUser,
     ) {
     }
@@ -56,7 +59,7 @@ final readonly class MailAccountImportProvider implements ProviderInterface
     public function resource(MailAccountImport $import, array $leftOut = []): MailAccountImportResource
     {
         $entries = [];
-        $progress = ['todo' => 0, 'connected' => 0, 'failed' => 0, 'skipped' => 0];
+        $progress = ['todo' => 0, 'connected' => 0, 'already_connected' => 0, 'failed' => 0, 'skipped' => 0];
         foreach ($this->imports->view($import) as ['entry' => $entry, 'state' => $state, 'account' => $account]) {
             ++$progress[$state->value];
             $failure = ImportEntryState::Failed === $state ? $entry->failure : null;
@@ -69,6 +72,8 @@ final readonly class MailAccountImportProvider implements ProviderInterface
                 'reason' => $failure?->reason(),
                 'mailAccountId' => $account?->getId()->toRfc4122(),
                 'accountStatus' => $account?->getStatus()->value,
+                // Where the organization's administrator approves Tresso, for the row and "Copy approval link".
+                'approvalUrl' => ImportFailure::AdminApprovalRequired === $failure ? $this->providerSettings->adminConsentUrl($entry->address) : null,
             ];
         }
 

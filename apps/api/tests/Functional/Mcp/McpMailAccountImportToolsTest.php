@@ -62,7 +62,7 @@ final class McpMailAccountImportToolsTest extends DatabaseTestCase
         self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM provider_authorization_request'), 'Making a list starts no sign-in.');
 
         $progress = $this->mcpCallOk($this->headers, $this->session, 'get_mail_account_import', ['id' => $id]);
-        self::assertSame(['todo' => 2, 'connected' => 0, 'failed' => 0, 'skipped' => 0], $progress['progress'] ?? null);
+        self::assertSame(['todo' => 2, 'connected' => 0, 'already_connected' => 0, 'failed' => 0, 'skipped' => 0], $progress['progress'] ?? null);
         self::assertSame(['todo', 'todo'], array_column(self::asList($progress['entries'] ?? null), 'state'));
         self::assertSame(self::asString($answer['link']), $progress['link'] ?? null);
     }
