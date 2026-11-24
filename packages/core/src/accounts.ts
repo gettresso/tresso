@@ -142,6 +142,11 @@ export interface StartProviderAuthorization {
   /** The address typed for a new account; the provider gets it as a login hint. */
   emailAddress?: string
   /**
+   * Signing in for an address of this import list (with that address in emailAddress): the answer comes back to the
+   * list's page, and signing in with another provider account fails with `wrong_account`.
+   */
+  importId?: string
+  /**
    * Where the provider's answer goes: `web` (the default) to the page the sign-in started from, `native` to the
    * desktop app's own link (NATIVE_REDIRECT_URI), with that page in `next`, for a sign-in opened in the system browser.
    */
