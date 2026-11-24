@@ -53,7 +53,7 @@ export const PERSONAL_ACCESS_TOKEN_SCOPES: readonly PersonalAccessTokenScope[] =
   { value: 'signatures:read', label: 'See signatures', description: 'See your email signatures.' },
   { value: 'signatures:write', label: 'Change signatures', description: 'Add, change and delete email signatures.' },
   { value: 'settings:read', label: 'See settings', description: 'See your mail accounts, smart inboxes and other settings.' },
-  { value: 'settings:write', label: 'Change settings', description: 'Change settings such as account names, smart inboxes, rules and notifications. Never how a mail account connects, access tokens or connected apps.' },
+  { value: 'settings:write', label: 'Change settings', description: 'Change settings such as account names, smart inboxes, rules and notifications, and prepare a list of mail addresses for you to add. Never how a mail account connects, access tokens or connected apps.' },
   { value: 'chat:read', label: 'Read your WhatsApp chats', description: 'Read the WhatsApp chats and messages your Mac passes on to Tresso, and the replies waiting to go out.' },
   { value: 'chat:send', label: 'Send WhatsApp messages as you', description: 'Write replies in your WhatsApp chats; your Mac sends them from your WhatsApp.' },
 ]

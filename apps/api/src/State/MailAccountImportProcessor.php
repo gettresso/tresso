@@ -8,6 +8,7 @@ use ApiPlatform\Metadata\DeleteOperationInterface;
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use ApiPlatform\Validator\Exception\ValidationException;
+use App\Account\Import\ImportPages;
 use App\Account\Import\MailAccountImports;
 use App\ApiResource\Input\MailAccountImport\CreateMailAccountImport;
 use App\ApiResource\Input\MailAccountImport\NewImportEntry;
@@ -17,6 +18,7 @@ use App\Entity\MailAccountImport;
 use App\Entity\User;
 use App\Enum\ImportEntryState;
 use App\Repository\PersonalAccessTokenRepository;
+use App\Security\CallerKey;
 use App\Security\CurrentUser;
 use App\Security\FirstPartyClients;
 use App\Security\PersonalAccessToken\PersonalAccessTokenAuthentication;
@@ -25,6 +27,7 @@ use League\Bundle\OAuth2ServerBundle\Security\Authentication\Token\OAuth2Token;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Symfony\Component\Validator\ConstraintViolation;
 use Symfony\Component\Validator\ConstraintViolationList;
 
@@ -39,6 +42,7 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
     public function __construct(
         private MailAccountImports $imports,
         private MailAccountImportProvider $provider,
+        private ImportPages $pages,
         private CurrentUser $currentUser,
         private Security $security,
         private ClientManagerInterface $clients,
@@ -55,9 +59,15 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
         }
 
         $id = $uriVariables['id'] ?? null;
-        $import = \is_string($id) ? $this->imports->find($owner, $id) : null;
+        $import = \is_string($id) ? $this->imports->find($owner, $id, $this->provider->caller()) : null;
         if (!$import instanceof MailAccountImport) {
             throw new NotFoundHttpException('Import list not found.');
+        }
+
+        if ('mail_account_import_confirmation' === $operation->getName()) {
+            $this->imports->confirm($import);
+
+            return $this->provider->resource($import);
         }
 
         if ($operation instanceof DeleteOperationInterface) {
@@ -85,12 +95,14 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
 
     private function create(User $owner, CreateMailAccountImport $input): MailAccountImportResource
     {
-        if ($this->imports->liveListsOf($owner) >= MailAccountImports::MAX_LIVE_LISTS) {
-            throw new ConflictHttpException(\sprintf('You have %d import lists already. Finish or delete one before making another.', MailAccountImports::MAX_LIVE_LISTS));
+        // A list nobody can open is not made: checked before anything is stored.
+        if (!$this->pages->available()) {
+            throw new ServiceUnavailableHttpException(null, 'This server has no address for its web app (WEB_APP_URL), so there is no page to add the accounts on.');
         }
 
+        $caller = $this->provider->caller();
         $asked = array_map(static fn (NewImportEntry $entry): array => ['address' => (string) $entry->address, 'provider' => $entry->provider], $input->entries);
-        ['taken' => $taken, 'leftOut' => $leftOut] = $this->imports->sort($owner, $asked);
+        ['taken' => $taken, 'leftOut' => $leftOut] = $this->imports->sort($owner, $asked, CallerKey::OURS === $caller);
 
         if ([] === $taken) {
             $violations = new ConstraintViolationList();
@@ -101,7 +113,10 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
             throw new ValidationException($violations);
         }
 
-        $import = $this->imports->create($owner, $taken, $this->creatorName());
+        $import = $this->imports->create($owner, $taken, $this->creatorName(), $caller);
+        if (null === $import) {
+            throw new ConflictHttpException(\sprintf('You have %d import lists already. Finish or delete one before making another.', MailAccountImports::MAX_LIVE_LISTS));
+        }
 
         return $this->provider->resource($import, array_map(
             static fn (array $left): array => ['address' => $left['address'], 'reason' => $left['reason'], 'message' => $left['message']],

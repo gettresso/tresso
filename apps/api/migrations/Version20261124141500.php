@@ -21,7 +21,7 @@ final class Version20261124141500 extends AbstractMigration
 
     public function up(Schema $schema): void
     {
-        $this->addSql('CREATE TABLE mail_account_import (id UUID NOT NULL, sealed_entries TEXT NOT NULL, created_by VARCHAR(200) DEFAULT NULL, created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, expires_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, owner_id UUID NOT NULL, PRIMARY KEY (id))');
+        $this->addSql('CREATE TABLE mail_account_import (id UUID NOT NULL, sealed_entries TEXT NOT NULL, created_by VARCHAR(200) DEFAULT NULL, created_by_caller VARCHAR(80) DEFAULT NULL, confirmed_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT NULL, created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, expires_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, owner_id UUID NOT NULL, PRIMARY KEY (id))');
         $this->addSql('CREATE INDEX mail_account_import_owner ON mail_account_import (owner_id, expires_at)');
         $this->addSql('CREATE INDEX mail_account_import_expires ON mail_account_import (expires_at)');
         $this->addSql('CREATE INDEX IDX_B3D66E477E3C61F9 ON mail_account_import (owner_id)');

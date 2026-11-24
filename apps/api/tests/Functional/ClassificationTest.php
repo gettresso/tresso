@@ -948,13 +948,18 @@ final class ClassificationTest extends DatabaseTestCase
         return $this->decodedResponse();
     }
 
+    /** The day every message of this test class is dated on, taken once, so a run across midnight UTC keeps one day. */
+    private static ?\DateTimeImmutable $day = null;
+
     /**
-     * Yesterday at this hour (UTC): a correction classifies again only mail of the last 30 days
+     * The day before the class started, at this hour (UTC): a correction classifies again only mail of the last 30 days
      * (ClassificationScheduler::RECLASSIFY_PERIOD), so a fixed date stops being reclassified once it is older.
      */
     private static function receivedAt(int $hour): string
     {
-        return new \DateTimeImmutable('yesterday', new \DateTimeZone('UTC'))->setTime($hour, 0)->format(\DATE_ATOM);
+        self::$day ??= new \DateTimeImmutable('yesterday', new \DateTimeZone('UTC'));
+
+        return self::$day->setTime($hour, 0)->format(\DATE_ATOM);
     }
 
     /**

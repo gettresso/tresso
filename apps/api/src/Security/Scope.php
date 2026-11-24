@@ -158,7 +158,7 @@ enum Scope: string
             self::CalendarRead => 'See your calendars and events, with their guests, your notes and reminders.',
             self::CalendarWrite => 'Add, change and delete events and set your answers. Telling guests or organizers also needs Send mail.',
             self::SettingsRead => 'See your mail accounts, smart inboxes and other settings.',
-            self::SettingsWrite => 'Change settings such as account names, smart inboxes, rules and notifications. Never how a mail account connects, access tokens or connected apps.',
+            self::SettingsWrite => 'Change settings such as account names, smart inboxes, rules and notifications, and prepare a list of mail addresses for you to add. Never how a mail account connects, access tokens or connected apps.',
             self::SignaturesRead => 'See your email signatures.',
             self::SignaturesWrite => 'Add, change and delete email signatures.',
             self::TeamsRead => 'See your teams.',

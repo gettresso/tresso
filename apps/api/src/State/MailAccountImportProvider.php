@@ -14,12 +14,14 @@ use App\Entity\MailAccountImport;
 use App\Enum\ImportEntryState;
 use App\Enum\ImportFailure;
 use App\ProviderAuth\ProviderSettings;
+use App\Security\CallerKey;
 use App\Security\CurrentUser;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
  * Only ever returns the signed-in user's own import lists, and only while they live: another user's list and one that
- * expired are both not found.
+ * expired are both not found. An app or a token gets only the lists it made.
  *
  * @implements ProviderInterface<MailAccountImportResource>
  */
@@ -30,6 +32,7 @@ final readonly class MailAccountImportProvider implements ProviderInterface
         private ImportPages $pages,
         private ProviderSettings $providerSettings,
         private CurrentUser $currentUser,
+        private Security $security,
     ) {
     }
 
@@ -41,16 +44,22 @@ final readonly class MailAccountImportProvider implements ProviderInterface
         $owner = $this->currentUser->get();
 
         if ($operation instanceof CollectionOperationInterface) {
-            return array_map(fn (MailAccountImport $import): MailAccountImportResource => $this->resource($import), $this->imports->liveOf($owner));
+            return array_map(fn (MailAccountImport $import): MailAccountImportResource => $this->resource($import), $this->imports->liveOf($owner, $this->caller()));
         }
 
         $id = $uriVariables['id'] ?? null;
-        $import = \is_string($id) ? $this->imports->find($owner, $id) : null;
+        $import = \is_string($id) ? $this->imports->find($owner, $id, $this->caller()) : null;
         if (!$import instanceof MailAccountImport) {
             throw new NotFoundHttpException('Import list not found.');
         }
 
         return $this->resource($import);
+    }
+
+    /** Who asks: {@see CallerKey::OURS} for Tresso's own apps, else the app or token. */
+    public function caller(): string
+    {
+        return CallerKey::of($this->security->getToken());
     }
 
     /**
@@ -82,6 +91,7 @@ final readonly class MailAccountImportProvider implements ProviderInterface
             $entries,
             $progress,
             $import->getCreatedBy(),
+            $import->isConfirmed(),
             $this->pages->importPage($import->getId()),
             $import->getCreatedAt(),
             $import->getExpiresAt(),

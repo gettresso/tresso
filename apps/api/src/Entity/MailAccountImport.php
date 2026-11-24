@@ -43,17 +43,33 @@ class MailAccountImport
     #[ORM\Column(length: 200, nullable: true)]
     private ?string $createdBy;
 
+    /**
+     * The app or token that made it ({@see \App\Security\CallerKey}), which alone may see and delete it besides Tresso's
+     * own apps; null for a list made in Tresso.
+     */
+    #[ORM\Column(length: 80, nullable: true)]
+    private ?string $createdByCaller;
+
+    /**
+     * When the user checked the addresses of a list an app made and chose to use them; until then the page looks
+     * nothing up and offers no sign-in. A list made in Tresso is confirmed when it is made.
+     */
+    #[ORM\Column(nullable: true)]
+    private ?\DateTimeImmutable $confirmedAt;
+
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
 
     #[ORM\Column]
     private \DateTimeImmutable $expiresAt;
 
-    public function __construct(User $owner, ?string $createdBy, \DateTimeImmutable $now)
+    public function __construct(User $owner, ?string $createdBy, ?string $createdByCaller, \DateTimeImmutable $now)
     {
         $this->id = Uuid::v7();
         $this->owner = $owner;
         $this->createdBy = $createdBy;
+        $this->createdByCaller = $createdByCaller;
+        $this->confirmedAt = null === $createdByCaller ? $now : null;
         $this->createdAt = $now;
         $this->expiresAt = $now->modify(self::LIFETIME);
     }
@@ -81,6 +97,21 @@ class MailAccountImport
     public function getCreatedBy(): ?string
     {
         return $this->createdBy;
+    }
+
+    public function getCreatedByCaller(): ?string
+    {
+        return $this->createdByCaller;
+    }
+
+    public function isConfirmed(): bool
+    {
+        return null !== $this->confirmedAt;
+    }
+
+    public function confirm(\DateTimeImmutable $now): void
+    {
+        $this->confirmedAt ??= $now;
     }
 
     public function getCreatedAt(): \DateTimeImmutable
