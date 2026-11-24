@@ -10,9 +10,14 @@ export interface ConnectedApp {
    * computer, or an app's reverse-domain scheme.
    */
   domains: string[]
+  /** What the app may do now: the granted scopes without those the user switched off. */
   scopes: string[]
+  /** What the user granted on the consent screen; the app can be switched back on to any of these. */
+  grantedScopes: string[]
   /** When the user first allowed the app. */
   connectedAt: string
   /** When the app last got a token for the user, to within the hour. */
   lastUsedAt: string | null
+  /** The app in the activity log, for its `app` filter (`client:<client id>`). */
+  activityKey: string
 }

@@ -11,6 +11,8 @@ export interface PersonalAccessToken {
   expiresAt: string
   lastUsedAt: string | null
   revokedAt: string | null
+  /** The token in the activity log, for its `app` filter (`token:<id>`). */
+  activityKey: string
 }
 
 /** The answer to creating a token: the only time the secret (`token`) is handed out. */

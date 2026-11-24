@@ -110,6 +110,8 @@ export interface ServerInfo {
   trialDays: number
   /** Mail accounts may connect without TLS (local test servers only). */
   allowUnencryptedMailServers: boolean
+  /** The MCP endpoint of this server, the one address an AI assistant connects to. */
+  mcpEndpoint: string
 }
 
 /** The usual ports, to fill in when the user picks a security mode. */
