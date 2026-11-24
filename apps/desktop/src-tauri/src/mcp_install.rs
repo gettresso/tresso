@@ -18,7 +18,8 @@ pub fn checked_endpoint(endpoint: &str) -> Result<&str, String> {
   if endpoint.is_empty() || endpoint.len() > 2048 {
     return refused();
   }
-  if !endpoint.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._~:/%-".contains(&byte)) {
+  // Only what an MCP endpoint needs: not `%` (cmd.exe expands %PATH%), not `~` (a shell expands it).
+  if !endpoint.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".:/-".contains(&byte)) {
     return refused();
   }
   let (scheme, rest) = match endpoint.split_once("://") {
@@ -36,9 +37,12 @@ pub fn checked_endpoint(endpoint: &str) -> Result<&str, String> {
   if host.is_empty() || host.contains('%') || host.bytes().any(|byte| byte.is_ascii_uppercase()) {
     return refused();
   }
+  // A browser leaves out the scheme's own port (443 for https, 80 for http), so an address that names it is not one
+  // the web client accepts either.
   if let Some(port) = port {
+    let default = if scheme == "https" { 443 } else { 80 };
     match port.parse::<u32>() {
-      Ok(number) if (1..=65535).contains(&number) && !port.starts_with('0') => {}
+      Ok(number) if (1..=65535).contains(&number) && !port.starts_with('0') && number != default => {}
       _ => return refused(),
     }
   }
@@ -129,6 +133,10 @@ mod tests {
       "https://mcp.tresso.example:80a/mcp",
       "https://mcp.tresso.example/a/../mcp",
       "https://mcp.tresso.example/./mcp",
+      "https://mcp.tresso.example/%PATH%",
+      "https://mcp.tresso.example/~kim/mcp",
+      "https://mcp.tresso.example:443/mcp",
+      "http://localhost:80/mcp",
       "ftp://mcp.tresso.example/mcp",
     ] {
       assert!(cursor_install_link(endpoint).is_err(), "{endpoint}");

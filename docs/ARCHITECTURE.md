@@ -1653,8 +1653,9 @@ and `/settings/apps/activity`. All three pages are one content width (960px).
   manual steps for Claude and ChatGPT, whose makers document no link with the address filled in, for VS Code (until its
   install link is checked with a remote server) and for any other tool. The endpoint is `mcpEndpoint` of `GET
   /api/v1/server-info`, used only when it is a plain address (`checkedEndpoint`: https, http only on `localhost` or
-  `127.0.0.1`, a port from 1 to 65535, no user or password, no query or fragment, no `.` or `..` segment, plain
-  ASCII without spaces or shell characters, written as a browser writes it); otherwise the page says it could not read
+  `127.0.0.1`, a port from 1 to 65535 other than the scheme's own, no user or password, no query or fragment, no `.`
+  or `..` segment, only letters, digits, dots, hyphens, colons and slashes (no `%`, which cmd.exe expands, and no `~`),
+  written as a browser writes it); otherwise the page says it could not read
   the endpoint (reload when it was not read, ask whoever runs the server when it is not a plain address) and offers no
   command, link or Copy, and the Claude Code and Cursor panels show only that. On the
   desktop app, Add to Cursor asks the shell (`open_cursor_install`, `mcp_install.rs`), which checks the endpoint by the
