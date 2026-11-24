@@ -375,3 +375,20 @@ Tokens and MCP:
     sees any WhatsApp list or endpoint. With `chat:read`, a token and an MCP client list, read and search the chats and
     see a file's kind, name and size, but never get a link to it; with `chat:send` alone, a reply is queued and nothing
     is read. A third-party app that did not name the WhatsApp scopes never gets them.
+
+Adding several accounts:
+
+74. Paste 30 addresses (some on one line with commas, one twice, one already connected, one mistyped) on Settings,
+    Accounts, Add several accounts: the list shows the rest, grouped by provider, and says which were left out and why.
+75. A Microsoft account with two-step verification: Sign in on its row, approve at Microsoft, come back to the list
+    with the row connected and the next one offered; Enter starts it.
+76. A Google account: the provider's page starts with the row's address; picking another Google account there
+    connects nothing and the row says so.
+77. An IMAP account whose password a password manager fills in on its row: the manager offers the entry for that
+    address, the check passes and the row is connected. A wrong password marks the row failed, with the reason.
+78. Sign in to all, one after another: it goes on by itself after each connected row, stops at a row you cancel at
+    the provider, and stops after the current row when you press Stop. Close the tab, open the list again within a
+    day: it continues where it was and starts nothing by itself.
+79. Ask an assistant (MCP, with `settings:write`) to add three accounts: it answers a link and asks for no password;
+    the page says which app made the list. `get_mail_account_import` reports the progress, and
+    `reconnect_mail_account` for an account whose sign-in failed opens Settings, Accounts at that account.

@@ -391,8 +391,8 @@ the server holds; tools for mail, todos and events come later. The code is in `A
 | none | `get_me` (who, which scopes, and with `settings:read` the mail accounts), `get_server_info` |
 | `signatures:read` | `list_signatures`, `get_signature` |
 | `signatures:write` | `create_signature`, `update_signature`, `delete_signature`; with `signatures:read` and `settings:read`: `set_default_signature` (reads the mail account, so an unknown or another user's account is not found, then sets or clears its default through the signature's `defaultFor`) |
-| `settings:read` | `list_mail_accounts`, `get_mail_account` (without how the account connects), `list_smart_inboxes`, `get_smart_inbox`, `list_sender_rules`, `get_notification_settings`, `list_notification_devices`, `get_batch_delivery`, `get_daily_brief_settings`, `list_reminder_rules`, `get_reminder_rule`, `get_scheduling_preferences`, `get_meeting_preferences` |
-| `settings:write` | `update_mail_account` (name, pause and resume), `create_smart_inbox`, `update_smart_inbox`, `delete_smart_inbox`, `delete_sender_rule`, `update_notification_settings`, `update_notification_device` (name, on or off), `delete_notification_device`, `create_reminder_rule`, `delete_reminder_rule`, `update_scheduling_preferences`, `update_meeting_preferences` (not the own link, which only Tresso's own apps change); with `settings:read` (they change part of what the API saves whole, or of a list): `add_smart_inbox_senders`, `remove_smart_inbox_senders`, `update_batch_delivery`, `update_daily_brief_settings`, `update_reminder_rule` |
+| `settings:read` | `list_mail_accounts`, `get_mail_account` (without how the account connects), `get_mail_account_import` (where each address of an import list stands), `reconnect_mail_account` (the link to the page where the user signs an account in again; changes nothing), `list_smart_inboxes`, `get_smart_inbox`, `list_sender_rules`, `get_notification_settings`, `list_notification_devices`, `get_batch_delivery`, `get_daily_brief_settings`, `list_reminder_rules`, `get_reminder_rule`, `get_scheduling_preferences`, `get_meeting_preferences` |
+| `settings:write` | `update_mail_account` (name, pause and resume), `add_mail_accounts` (makes an import list and answers the link to its page; connects nothing), `create_smart_inbox`, `update_smart_inbox`, `delete_smart_inbox`, `delete_sender_rule`, `update_notification_settings`, `update_notification_device` (name, on or off), `delete_notification_device`, `create_reminder_rule`, `delete_reminder_rule`, `update_scheduling_preferences`, `update_meeting_preferences` (not the own link, which only Tresso's own apps change); with `settings:read` (they change part of what the API saves whole, or of a list): `add_smart_inbox_senders`, `remove_smart_inbox_senders`, `update_batch_delivery`, `update_daily_brief_settings`, `update_reminder_rule` |
 | `mail:read` | `get_smart_inbox_senders` (who sends the mail in a smart inbox) |
 | `calendar:read` | `list_calendars`, `get_calendar` |
 | `calendar:write` | `create_calendar`, `update_calendar`, `delete_calendar` |
@@ -417,11 +417,27 @@ the server holds; tools for mail, todos and events come later. The code is in `A
   followed. Connecting WhatsApp, taking over the relay, its settings, leaving a chat out, marking read, archiving and
   deleting have no tool (`CHAT_MANAGE` and the desktop check stay with our own apps).
 
+- **Adding mail accounts.** An assistant cannot connect an account and never sees a secret: signing in at Google or
+  Microsoft (with two-step verification and consent) happens in the user's browser, and a password is typed into
+  Tresso only. `add_mail_accounts` takes 1 to 50 addresses, each with an optional hint (`google`, `microsoft`,
+  `imap`), makes an import list (see "Adding several accounts" below) and answers its id, the link to its page in the
+  web app (`WEB_APP_URL/settings/accounts/import/<id>`), how many were taken, which were left out and why, and an
+  instruction for the assistant: give the user the link, never ask for passwords, app passwords or codes. Its entry
+  schema has an address and a hint only (`additionalProperties: false`), and the API refuses any other field.
+  `get_mail_account_import` answers each address with its state (`todo`, `connected`, `failed` with a reason,
+  `skipped`), for the assistant to report progress. `reconnect_mail_account` answers, for an account in `auth_failed`,
+  the link `WEB_APP_URL/settings/accounts#account-<id>`, where Settings, Accounts opens at that account; for any other
+  status it says nothing needs doing. All three say in their descriptions that the assistant cannot sign in. Starting
+  a provider sign-in and creating an account stay with our own apps (`FIRST_PARTY_CLIENT`), so making a list is all
+  `settings:write` adds here; its scope text ("never how a mail account connects") stays true.
+  `reconnect_mail_account` breaks the rule that read-only tools start with `get_`, `list_` or `search_`: the name was
+  asked for, and its annotations and description say it only reads.
 - **Partial updates.** `update_batch_delivery` changes only what it is given, but the API saves times and zone
   together and then counts both as chosen: while the user still has the defaults, the tool asks for both.
-- **Not tools.** What only our own apps may do (adding or removing mail accounts and how they connect, registering a
-  notification device, personal access tokens, connected apps, billing, realtime, managing WhatsApp) has no tool. The API cannot reorder
-  smart inboxes or give them a color, so neither can a tool.
+- **Not tools.** What only our own apps may do (connecting or removing mail accounts and how they connect, registering a
+  notification device, personal access tokens, connected apps, billing, realtime, managing WhatsApp) has no tool; for
+  adding accounts an assistant only makes an import list. The API cannot reorder smart inboxes or give them a color,
+  so neither can a tool.
 
 Users log in with email + password (Argon2id) and, later, Google / Microsoft sign-in as identity providers. (Signing
 in with Google or Microsoft to connect a mail account is separate: see Provider sign-in below.)
@@ -642,6 +658,53 @@ user's previous check, given up, still runs on the server) is retried quietly fo
 is being created removes it again. The desktop app opens the provider in the system browser and gets the answer
 through its link, as before. The last step shows the account as connected as soon as sign-in is
 proven, with the name on sent mail, the first sync's progress and whether its calendars sync.
+
+##### Adding several accounts (import lists)
+
+An import list (`App\Entity\MailAccountImport`, `/api/v1/mail-account-imports`) is a short list of addresses the user
+wants to add: made on the web app's "Add several accounts" page from pasted addresses (one per line, or separated by
+commas), or by an assistant through `add_mail_accounts`. Making one connects nothing.
+
+- **API.** `POST /mail-account-imports` (`settings:write`, any client: our own apps, an app the user allowed, a
+  personal access token) takes `entries` (1 to 50, each `address` and an optional `provider` hint) and refuses any
+  other field (`allow_extra_attributes: false`), so no password, code or token is ever taken. It answers the list
+  with `leftOut`: addresses that are not an address (`invalid`), given twice (`duplicate`) or connected already
+  (`already_connected`), each with its reason; only a list with nothing left to take is refused (422, a violation per
+  address). `GET /mail-account-imports` and `GET /mail-account-imports/{id}` (`settings:read`) answer the user's live
+  lists. `POST /mail-account-imports/{id}/entry-states` (`settings:write`) sets an entry to `skipped`, back to `todo`,
+  or to `failed` with a reason code (the server form records `password_refused` or `server_unreachable`; codes only,
+  never text). `DELETE /mail-account-imports/{id}` deletes it. Another user's list, and one that expired, answer 404.
+  A user has at most 20 live lists (409 beyond that). `createdBy` names the app that made the list (its registered
+  name, or the personal access token's name), null for our own apps; the page shows it.
+- **States.** `connected` is never stored: an entry is connected while the owner has a mail account with its address,
+  read whenever the list is read, however the account was added. `skipped` and the last failure are stored.
+- **Lifetime.** A list lives 24 hours (`expires_at`); the hourly `SweepMailAccountImports` (maintenance worker)
+  deletes the expired ones. Deleting a user deletes their lists (foreign key cascade).
+- **At rest.** The entries (address, hint, skipped, failure) are one JSON list sealed with the owner's field key
+  (`sealed_entries`, context `tresso:mail-account-import-entries:<id>`), so the table holds no address in the clear;
+  the API never logs them. Key rotation reseals them (`importLists` step of `Reencryption`).
+- **Signing in from a list.** `POST /provider-authorizations` takes an optional `importId` with the row's address in
+  `emailAddress`: the list must be the user's, live, and hold the address. The sign-in is otherwise the one above
+  (first-party only, login hint, PKCE, finished with `POST /provider-connections` by the signed-in user who started
+  it). Its answer comes back to `/settings/accounts/import/<id>` (for the desktop app through its link, `next` being
+  that page, which `signInRoute` accepts by its UUID only). A provider account other than the row's address fails
+  with `wrong_account` and connects nothing (an alias of the account counts as another address). How it ended is
+  written on the entry: a failure with its code, success clears an earlier failure.
+- **The page.** `/settings/accounts/import/:importId` (also reached from Settings, Accounts without an assistant)
+  lists the entries with how each connects: the lookup of the single flow (`GET /mail-server-settings`, four at a
+  time), the list's hint only when that finds nothing (`importRoute` in `@tresso/core`). Google rows come first, then
+  Microsoft, then password rows, so a provider's own browser session can serve the next sign-in. A Google or Microsoft
+  row signs in with its address as login hint; on the web this tab goes to the provider and comes back to the list,
+  in the desktop app the system browser opens. After a connected answer the page offers the next row ("Next:
+  <address>", one click or keypress). "Sign in to all, one after another" starts the next row by itself after each
+  connected answer and stops at the first that did not connect, or on Stop. What was started is noted in the tab's
+  session storage (list, row, mode, OAuth state); only an answer to that noted sign-in continues a run, and a page
+  load without one forgets the note, so nothing ever starts on load and the first start is always the user's click
+  (`components/connect/importRun.ts`, `useAccountImport.ts`). A password row has the server form inline (servers as
+  the lookup found them, or iCloud's and Yahoo's), the password typed in Tresso only; it is checked with
+  `POST /mail-account-checks` before the account is created, and a refused check is recorded on the row as a code.
+  A list made by an assistant says which app made it. Coming back within 24 hours continues where it was; a sign-out
+  or another user's sign-in drops the list and any run. The single "Add account" dialog is unchanged.
 
 ##### Registering the OAuth apps
 
@@ -3576,6 +3639,8 @@ master keys (DATA_KEYS, environment)
   `sealed_file_name` (`chat-outgoing-text`, `chat-outgoing-file-name`). Chats and messages are found by fingerprints
   under the user's index key (`jid_fingerprint`, `wa_fingerprint`). Readable are kinds, times, counts, sizes, states
   and a file's content fingerprint under the user's index key. Key rotation reseals every column of that list (`chatFields` step of `Reencryption`).
+- The addresses of a mail account import list are sealed as one JSON list in `mail_account_import.sealed_entries`
+  (`tresso:mail-account-import-entries:<id>`); key rotation reseals them (`importLists` step).
 - **Plaintext on purpose:** subject, sender and recipient addresses and names, dates, flags, sizes, folder and thread
   structure, attachment names and types. The server queries them: threading matches the normalized subject and the
   participants, sender rules and smart inboxes match addresses, recipient suggestions and the meeting brief search
