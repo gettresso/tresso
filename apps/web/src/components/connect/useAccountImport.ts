@@ -33,7 +33,20 @@ import { failureState, NO_STATE, SIGNED_OUT, type RowState } from './importTexts
 /** How many addresses are looked up at once. */
 const LOOKUPS_AT_ONCE = 4
 /** How long a tab the provider sent back waits for the waiting page to say where it goes on to. */
-const CONTINUE_WAIT_MS = 20_000
+export const CONTINUE_WAIT_MS = 20_000
+
+/** Where the API's providers sign in: the only places a tab the provider sent back is sent on to. */
+const PROVIDER_HOSTS = ['accounts.google.com', 'login.microsoftonline.com']
+
+/** A provider sign-in page the waiting page may send the returning tab to: https, a provider's host, with a state. */
+export function isProviderPage(url: string): boolean {
+  try {
+    const page = new URL(url)
+    return page.protocol === 'https:' && PROVIDER_HOSTS.includes(page.hostname) && (page.searchParams.get('state') ?? '') !== ''
+  } catch {
+    return false
+  }
+}
 
 /** One row of the list: an entry with how it connects (null while it is looked up) and the state it shows. */
 export interface ImportRow {
@@ -98,6 +111,8 @@ export function useAccountImport(importId: Ref<string | null>) {
   const router = useRouter()
 
   const status = ref<'idle' | 'loading' | 'ready' | 'missing' | 'error'>('idle')
+  /** The tab the provider sent back: finishing the sign-in, or one the page that waited had given up. */
+  const returning = ref<'finishing' | 'stopped' | null>(null)
   const error = ref<string | null>(null)
   /** The run under way: `all` goes on by itself, `one` ends after its row; null when nothing runs. */
   const mode = ref<RunMode | null>(null)
@@ -183,11 +198,12 @@ export function useAccountImport(importId: Ref<string | null>) {
   const connectedCount = computed(() => rows.value.filter((row) => row.state === 'connected' || row.state === 'already_connected').length)
   const addedCount = computed(() => rows.value.filter((row) => row.state === 'connected').length)
   const alreadyCount = computed(() => rows.value.filter((row) => row.state === 'already_connected').length)
-  const failedCount = computed(() => rows.value.filter((row) => row.state === 'failed' && row.view !== 'already').length)
+  /** Rows that failed and can be tried again. */
+  const failedCount = computed(() => rows.value.filter((row) => row.state === 'failed' && row.view !== 'already' && row.view !== 'failed-final').length)
   const todoCount = computed(() => rows.value.filter((row) => row.state === 'todo').length)
   const skippedRows = computed(() => rows.value.filter((row) => row.state === 'skipped'))
   /** Every row is connected, already connected or skipped. */
-  const allDone = computed(() => total.value > 0 && rows.value.every((row) => row.state === 'connected' || row.state === 'already_connected' || row.state === 'skipped'))
+  const allDone = computed(() => total.value > 0 && rows.value.every((row) => row.state === 'connected' || row.state === 'already_connected' || row.state === 'skipped' || row.view === 'already'))
   /** The rows a sign-in may still be started for: to do, or failed with something to try again. */
   const startable = computed(() => known.value.filter((row) => row.view !== 'already' && row.view !== 'failed-final'))
   /** The row "Next" and "Sign in to all" start with. */
@@ -261,7 +277,7 @@ export function useAccountImport(importId: Ref<string | null>) {
         for (let address = queue.shift(); address !== undefined; address = queue.shift()) {
           let found: SuggestedServerSettings | null = null
           try {
-            found = await accounts.suggest(address)
+            found = await accounts.suggest(address, undefined, importId.value ?? undefined)
           } catch {
             // Not found is no failure: the hint, else the password form.
           }
@@ -316,21 +332,31 @@ export function useAccountImport(importId: Ref<string | null>) {
   async function finishHere(answer: LocationQuery): Promise<boolean> {
     const state = typeof answer.state === 'string' ? answer.state : null
     if (state !== null && abandoned(state) !== null) {
-      // Stopped or given up in the page that waited: nothing is finished, and this tab is not needed.
-      if (!isDesktop && isAwaited(state)) window.close()
+      // Stopped or given up in the page that waited: nothing is finished, and this tab is not needed. Should the
+      // browser keep it open, it says so above the list.
+      returning.value = 'stopped'
+      if (!isDesktop) window.close()
       return false
     }
+    returning.value = 'finishing'
     let result: ProviderConnection | null
     try {
       result = await accounts.finishProviderSignIn(answer)
     } catch (e) {
       error.value = errorMessage(e)
+      returning.value = null
       return false
     }
-    if (result === null || isDesktop || state === null || !isAwaited(state)) return false
+    if (result === null || isDesktop || state === null || !isAwaited(state)) {
+      returning.value = null
+      return false
+    }
     const reply = await handOverAndGoOn(state, { kind: 'result', result }, CONTINUE_WAIT_MS)
+    returning.value = null
     if (!reply.taken) return false
-    if (reply.next !== null) {
+    // Only to a provider's own sign-in page: anything else the answer names is not followed, and the list shows.
+    if (reply.next !== null && isProviderPage(reply.next)) {
+      returning.value = 'finishing'
       window.location.assign(reply.next)
       return true
     }
@@ -505,7 +531,16 @@ export function useAccountImport(importId: Ref<string | null>) {
       rowErrors.value = { ...rowErrors.value, [entryId]: SIGNED_OUT }
       return Promise.resolve(end(entryId, false)).then(() => ({ next: null }))
     }
-    return applyAnswer(entryId, { kind: 'chain' }).then((next) => ({ next }))
+    const since = Date.now()
+    return applyAnswer(entryId, { kind: 'chain' }).then((next) => {
+      // The tab that came back waits so long for the next page; after that it shows the list, and the next row has
+      // no tab to open in.
+      if (next !== null && Date.now() - since >= CONTINUE_WAIT_MS && current.value !== null) {
+        blocked.value = { ...blocked.value, [current.value]: true }
+        return { next: null }
+      }
+      return { next }
+    })
   }
 
   /** Answers another tab noted while this one was not listening: a run goes on, but without a tab to open it in. */
@@ -768,15 +803,21 @@ export function useAccountImport(importId: Ref<string | null>) {
   function onVisible(): void {
     if (document.visibilityState === 'visible') readNotedOutcomes()
   }
+  // A reload or a closed tab gives up what waits too, not only leaving the page inside the app.
+  function onPageHide(): void {
+    giveUpAll()
+  }
   onMounted(() => {
     stopListening = listenForSignIns(take)
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('focus', readNotedOutcomes)
+    window.addEventListener('pagehide', onPageHide)
   })
   onBeforeUnmount(() => {
     stopListening()
     document.removeEventListener('visibilitychange', onVisible)
     window.removeEventListener('focus', readNotedOutcomes)
+    window.removeEventListener('pagehide', onPageHide)
     // Leaving the page gives up what it waited for: a provider tab that comes back later finishes nothing.
     giveUpAll()
     if (expiryTimer !== null) clearTimeout(expiryTimer)
@@ -805,6 +846,7 @@ export function useAccountImport(importId: Ref<string | null>) {
 
   return {
     status,
+    returning,
     error,
     expired,
     list,

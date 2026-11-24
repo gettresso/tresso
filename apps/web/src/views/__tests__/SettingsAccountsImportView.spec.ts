@@ -31,6 +31,8 @@ vi.mock('@/platform/desktop', () => ({
 
 const LIST_ID = '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'
 const APPROVAL = 'https://login.microsoftonline.com/contoso.example/adminconsent?client_id=x'
+const GOOGLE = 'https://accounts.google.com/o/oauth2/v2/auth'
+const MICROSOFT = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
 
 type Entry = Pick<MailAccountImportEntry, 'id' | 'address'> & { state?: MailAccountImportEntry['state']; failure?: ImportFailure | null; provider?: MailAccountImportEntry['provider'] }
 
@@ -58,6 +60,10 @@ class FakeApi {
   leftOut: MailAccountImport['leftOut'] = []
   signIns = 0
   started: Record<string, string> = {}
+  /** Runs when a sign-in starts, before the API answers. */
+  onStart: (() => void) | null = null
+  /** The next delete of a list fails. */
+  failDelete = false
 
   setList(entries: Entry[], createdBy: string | null = null): void {
     this.createdBy = createdBy
@@ -68,7 +74,7 @@ class FakeApi {
   list(): MailAccountImport {
     const progress = { todo: 0, connected: 0, already_connected: 0, failed: 0, skipped: 0 }
     for (const entry of this.entries) progress[entry.state]++
-    return { id: LIST_ID, entries: this.entries.map((entry) => ({ ...entry })), progress, createdBy: this.createdBy, confirmed: this.confirmed, pageUrl: '', createdAt: '2026-11-24T10:12:00+00:00', expiresAt: this.expiresAt, leftOut: this.leftOut }
+    return { id: LIST_ID, entries: this.entries.map((entry) => ({ ...entry })), progress, createdBy: this.createdBy, createdWithToken: false, confirmed: this.confirmed, pageUrl: '', createdAt: '2026-11-24T10:12:00+00:00', expiresAt: this.expiresAt, leftOut: this.leftOut }
   }
 
   entry(address: string): MailAccountImportEntry {
@@ -86,6 +92,8 @@ class FakeApi {
     if (path === '/api/v1/server-info') return Response.json({ product: 'tresso-server', apiVersion: 1, billing: false, trialDays: 0, allowUnencryptedMailServers: false })
     if (path === '/api/v1/mail-accounts' && method === 'GET') return Response.json(this.connectedAccounts.map((address, index) => ({ id: `a${index}`, emailAddress: address, displayName: address, provider: 'imap', status: 'active' })))
     if (path === '/api/v1/mail-server-settings') {
+      // The page always names the list; an app's list is not looked up before the user confirmed it.
+      if (url.searchParams.get('importId') !== LIST_ID || !this.confirmed) return Response.json({ detail: 'Not this list.', violations: [{ propertyPath: 'importId', message: 'No.' }] }, { status: 422 })
       if (this.heldLookup !== null) await this.heldLookup.promise
       const address = url.searchParams.get('emailAddress') ?? ''
       const provider = this.found[address] ?? null
@@ -107,6 +115,7 @@ class FakeApi {
       return Response.json(this.list())
     }
     if (path === `/api/v1/mail-account-imports/${LIST_ID}` && method === 'DELETE') {
+      if (this.failDelete) return Response.json({ detail: 'Try again later.' }, { status: 503 })
       this.entries = []
       return new Response(null, { status: 204 })
     }
@@ -128,7 +137,8 @@ class FakeApi {
       this.signIns++
       const state = `state-${this.signIns}`
       this.started[state] = String(body!.emailAddress)
-      return Response.json({ authorizationUrl: `https://${String(body!.provider)}.example/auth?state=${state}`, provider: body!.provider, expiresAt: new Date(Date.now() + this.signInMs).toISOString() }, { status: 201 })
+      this.onStart?.()
+      return Response.json({ authorizationUrl: `${body!.provider === 'google' ? GOOGLE : MICROSOFT}?state=${state}`, provider: body!.provider, expiresAt: new Date(Date.now() + this.signInMs).toISOString() }, { status: 201 })
     }
     if (path === '/api/v1/provider-connections') {
       this.entry(this.started[String(body!.state)]!).state = 'connected'
@@ -343,15 +353,23 @@ describe('Add several accounts', () => {
     })
 
     it('names the addresses the API left out after all, and then opens the list', async () => {
-      api.leftOut = [{ address: 'kim@gmaіl.com', reason: 'invalid', message: 'This is not an email address.' }]
+      api.leftOut = [
+        { address: 'kim@gmaіl.com', reason: 'invalid', message: 'This is not an email address.' },
+        { address: 'Anna@company.example', reason: 'duplicate', message: 'This address is in the list already.' },
+        { address: 'bob@company.example', reason: 'already_connected', message: 'This address is connected already.' },
+      ]
       const wrapper = await mountAt('/settings/accounts/import')
 
-      await wrapper.get('textarea').setValue('anna@company.example\nkim@gmaіl.com')
-      await button(wrapper, 'Continue with 2 addresses').trigger('click')
+      await wrapper.get('textarea').setValue('anna@company.example\nkim@gmaіl.com\ncarl@company.example\nbob@company.example')
+      await button(wrapper, 'Continue with 4 addresses').trigger('click')
       await settle()
 
       expect(wrapper.router.currentRoute.value.params.importId).toBeUndefined()
-      expect(texts(wrapper, '.issue-text')).toContain('This is not an email address. It is left out.')
+      expect(texts(wrapper, '.issue-text')).toEqual([
+        'The part after the @ is not complete. It is left out unless you fix it.',
+        'It is added once.',
+        'This account is already in Tresso. It is left out.',
+      ])
       await button(wrapper, 'Continue with 1 address').trigger('click')
       await settle()
       expect(wrapper.router.currentRoute.value.params.importId).toBe(LIST_ID)
@@ -368,7 +386,19 @@ describe('Add several accounts', () => {
       await settle()
 
       const calls = api.requests.filter((request) => request.path.startsWith('/api/v1/mail-account-imports') && request.method !== 'GET').map((request) => `${request.method} ${request.path}`)
-      expect(calls).toEqual([`DELETE /api/v1/mail-account-imports/${LIST_ID}`, 'POST /api/v1/mail-account-imports'])
+      expect(calls).toEqual(['POST /api/v1/mail-account-imports', `DELETE /api/v1/mail-account-imports/${LIST_ID}`])
+    })
+
+    it('opens the new list even when the old one cannot be deleted', async () => {
+      threeRows()
+      api.failDelete = true
+      const wrapper = await mountAt(`/settings/accounts/import?from=${LIST_ID}`)
+
+      await button(wrapper, 'Continue with 3 addresses').trigger('click')
+      await settle()
+
+      expect(wrapper.router.currentRoute.value.params.importId).toBe(LIST_ID)
+      expect(wrapper.find('.over-line').exists()).toBe(false)
     })
   })
 
@@ -424,7 +454,7 @@ describe('Add several accounts', () => {
       await settle()
 
       expect(starts()[0]?.body).toEqual({ provider: 'google', features: ['mail', 'calendar'], emailAddress: 'kim@gmail.example', importId: LIST_ID })
-      expect(tabs[0]).toMatchObject({ opener: null, location: { href: 'https://google.example/auth?state=state-1' } })
+      expect(tabs[0]).toMatchObject({ opener: null, location: { href: `${GOOGLE}?state=state-1` } })
       expect(isAwaited('state-1')).toBe(true)
       const waiting = row(wrapper, 'kim@gmail.example')
       expect(waiting.get('.row-state').text()).toBe('Waiting for the browser')
@@ -448,12 +478,12 @@ describe('Add several accounts', () => {
 
       await row(wrapper, 'kim@gmail.example').get('button').trigger('click')
       await settle()
-      expect(row(wrapper, 'kim@gmail.example').get('.row-hint').text()).toBe('Your browser blocked the sign-in page. Choose Open the page again.')
+      expect(row(wrapper, 'kim@gmail.example').get('.row-hint').text()).toBe('The sign-in page did not open. Choose Open the page again.')
 
       allowTabs = true
       await row(wrapper, 'kim@gmail.example').get('button').trigger('click')
       await settle()
-      expect(tabs[0]?.location.href).toBe('https://google.example/auth?state=state-1')
+      expect(tabs[0]?.location.href).toBe(`${GOOGLE}?state=state-1`)
       expect(row(wrapper, 'kim@gmail.example').get('.row-hint').text()).toBe('Sign in at Google and allow access. This row updates by itself.')
     })
 
@@ -468,7 +498,7 @@ describe('Add several accounts', () => {
       expect(wrapper.get('.run-line').text()).toBe('Signing in one after another. Now: noor@contoso.example. Next: kim@gmail.example. After each sign-in the next one starts by itself.')
       expect(wrapper.find('.visually-hidden[role="status"]').text()).toBe('Signing in one after another. Now: noor@contoso.example. Next: kim@gmail.example. After each sign-in the next one starts by itself.')
 
-      expect(await answer('state-1')).toEqual({ taken: true, next: 'https://google.example/auth?state=state-2' })
+      expect(await answer('state-1')).toEqual({ taken: true, next: `${GOOGLE}?state=state-2` })
       expect(startedFor()).toEqual(['noor@contoso.example', 'kim@gmail.example'])
       expect(opened).toHaveBeenCalledTimes(1)
 
@@ -682,7 +712,7 @@ describe('Add several accounts', () => {
       for (const [status, sentence] of [
         ['unreachable', 'imap.studio.example did not answer on port 993.'],
         ['certificate', 'The security certificate of imap.studio.example could not be verified.'],
-        ['blocked', 'Tresso may not connect to imap.studio.example.'],
+        ['blocked', 'Tresso does not connect to imap.studio.example: it is a private address.'],
         ['failed', 'imap.studio.example did not answer like a mail server.'],
       ] as const) {
         if (!wrapper.find('form').exists()) await row(wrapper, 'orders@studio.example').get('.row-action button').trigger('click')
@@ -706,7 +736,7 @@ describe('Add several accounts', () => {
 
       await button(wrapper, 'Change settings').trigger('click')
 
-      expect(wrapper.get('.goes-to').text()).toBe('The password is sent to imap.studio.example and smtp.studio.example only.')
+      expect(wrapper.get('.goes-to').text()).toBe('Tresso uses this password only to sign in at imap.studio.example and smtp.studio.example.')
     })
 
     it('checks once on a double submit, and Cancel on one row leaves the check of another', async () => {
@@ -777,7 +807,7 @@ describe('Add several accounts', () => {
       api.found = { 'kim@gmail.example': 'google', 'team@gmail.example': 'google' }
       const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}`)
 
-      expect(wrapper.get('.ending-title').text()).toBe('No accounts were added.')
+      expect(wrapper.get('.ending-title').text()).toBe('No accounts added')
       expect(wrapper.get('.ending-sub').text()).toBe('1 was skipped.')
       expect(texts(wrapper, '.column-title')).toEqual(['Skipped'])
     })
@@ -869,14 +899,14 @@ describe('Add several accounts', () => {
       markAwaiting('state-9', Date.now() + 60_000)
       const waiting = new BroadcastChannel('tresso-connect')
       waiting.onmessage = (event: MessageEvent<{ type: string; state: string }>) => {
-        if (event.data.type === 'outcome') waiting.postMessage({ type: 'taken', state: event.data.state, next: 'https://microsoft.example/auth?state=next' })
+        if (event.data.type === 'outcome') waiting.postMessage({ type: 'taken', state: event.data.state, next: `${MICROSOFT}?state=next` })
       }
 
       await mountAt(`/settings/accounts/import/${LIST_ID}?provider=google&state=state-9&code=code-1`)
       waiting.close()
 
       expect(api.requests.find((request) => request.path === '/api/v1/provider-connections')?.body).toEqual({ provider: 'google', state: 'state-9', code: 'code-1' })
-      expect(assign).toHaveBeenCalledWith('https://microsoft.example/auth?state=next')
+      expect(assign).toHaveBeenCalledWith(`${MICROSOFT}?state=next`)
       expect(close).not.toHaveBeenCalled()
     })
 
@@ -894,6 +924,108 @@ describe('Add several accounts', () => {
 
       expect(close).toHaveBeenCalled()
       expect(row(wrapper, 'kim@gmail.example').get('.row-state').text()).toBe('Connected')
+    })
+
+    it('in the tab the provider sent back, follows only a provider sign-in page', async () => {
+      threeRows()
+      api.started['state-9'] = 'kim@gmail.example'
+      for (const next of ['https://evil.example/o/oauth2/v2/auth?state=x', 'http://accounts.google.com/o/oauth2/v2/auth?state=x', `${GOOGLE}?client_id=x`, 'javascript:alert(1)']) {
+        markAwaiting('state-9', Date.now() + 60_000)
+        const waiting = new BroadcastChannel('tresso-connect')
+        waiting.onmessage = (event: MessageEvent<{ type: string; state: string }>) => {
+          if (event.data.type === 'outcome') waiting.postMessage({ type: 'taken', state: event.data.state, next })
+        }
+        const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}?provider=google&state=state-9&code=code-1`)
+        waiting.close()
+
+        expect(assign).not.toHaveBeenCalled()
+        expect(row(wrapper, 'kim@gmail.example').get('.row-state').text()).toBe('Connected')
+        wrapper.unmount()
+      }
+    })
+
+    it('in the tab the provider sent back, says it finishes the sign-in while it hands it over', async () => {
+      threeRows()
+      api.started['state-9'] = 'kim@gmail.example'
+      markAwaiting('state-9', Date.now() + 60_000)
+      const waiting = new BroadcastChannel('tresso-connect')
+      let reply: (() => void) | null = null
+      waiting.onmessage = (event: MessageEvent<{ type: string; state: string }>) => {
+        if (event.data.type === 'outcome') reply = () => waiting.postMessage({ type: 'taken', state: event.data.state, next: null })
+      }
+
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}?provider=google&state=state-9&code=code-1`)
+
+      expect(wrapper.get('.returning').text()).toBe('Finishing the sign-in\u2026')
+      reply!()
+      await settle()
+      waiting.close()
+      expect(wrapper.find('.returning').exists()).toBe(false)
+    })
+
+    it('in the tab the provider sent back after Stop, finishes nothing, closes, and says so should it stay', async () => {
+      threeRows()
+      const first = await mountAt(`/settings/accounts/import/${LIST_ID}`)
+      await button(first, 'Sign in to all, one after another').trigger('click')
+      await settle()
+      await button(first, 'Stop').trigger('click')
+      await settle()
+      first.unmount()
+
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}?provider=microsoft&state=state-1&code=code-1`)
+
+      expect(api.requests.some((request) => request.path === '/api/v1/provider-connections')).toBe(false)
+      expect(close).toHaveBeenCalled()
+      expect(wrapper.get('.returning').text()).toBe('This sign-in was stopped. Nothing was connected.')
+    })
+
+    it('gives up what waits when the tab is closed or reloaded', async () => {
+      threeRows()
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}`)
+      await button(wrapper, 'Sign in to all, one after another').trigger('click')
+      await settle()
+
+      window.dispatchEvent(new Event('pagehide'))
+
+      expect(abandoned('state-1')).toBe('cancelled')
+    })
+
+    it('says the page did not open when the tab that came back waited too long for the next one', async () => {
+      threeRows()
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}`)
+      await button(wrapper, 'Sign in to all, one after another').trigger('click')
+      await settle()
+      const now = Date.now()
+      api.onStart = () => {
+        vi.spyOn(Date, 'now').mockReturnValue(now + 21_000)
+      }
+
+      expect(await answer('state-1')).toEqual({ taken: true, next: null })
+      vi.restoreAllMocks()
+
+      expect(row(wrapper, 'kim@gmail.example').get('.row-hint').text()).toBe('The sign-in page did not open. Choose Open the page again.')
+    })
+
+    it('focuses the password field when a run starts at a password row', async () => {
+      api.setList([{ id: 'p1', address: 'orders@studio.example' }])
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}`)
+
+      await button(wrapper, 'Sign in to all, one after another').trigger('click')
+      await settle()
+
+      expect(document.activeElement).toBe(wrapper.get('input[type="password"]').element)
+    })
+
+    it('counts a row that cannot be tried again as no try left, and an already connected one as finished', async () => {
+      api.setList([
+        { id: 'g1', address: 'kim@gmail.example', state: 'failed', failure: 'no_mailbox' },
+        { id: 'g2', address: 'team@gmail.example', state: 'failed', failure: 'denied' },
+        { id: 'g3', address: 'info@gmail.example' },
+      ])
+      api.found = { 'kim@gmail.example': 'google', 'team@gmail.example': 'google', 'info@gmail.example': 'google' }
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}`)
+
+      expect(wrapper.get('.summary-line').text()).toBe('1 needs another try. 1 to go.')
     })
 
     it('without a waiting tab, shows the answer and starts nothing', async () => {
@@ -918,7 +1050,7 @@ describe('Add several accounts', () => {
       await wrapper.router.replace({ name: 'settings-accounts-import', params: { importId: LIST_ID }, query: { provider: 'microsoft', state: 'state-1', code: 'code-1' } })
       await settle()
 
-      expect(desktop.opened).toEqual(['https://microsoft.example/auth?state=state-1', 'https://google.example/auth?state=state-2'])
+      expect(desktop.opened).toEqual([`${MICROSOFT}?state=state-1`, `${GOOGLE}?state=state-2`])
       expect(opened).not.toHaveBeenCalled()
       expect(row(wrapper, 'noor@contoso.example').get('.row-state').text()).toBe('Connected')
     })

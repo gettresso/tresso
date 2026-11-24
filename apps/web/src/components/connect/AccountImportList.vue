@@ -32,6 +32,8 @@ import {
   stillAddLine,
   stoppedReason,
   stoppedTitle,
+  STOPPED_SIGN_IN,
+  FINISHING,
   summaryLine,
   summaryTitle,
   USE_ADDRESSES,
@@ -192,8 +194,9 @@ watch(
 
 async function start(kind: 'next' | 'all'): Promise<void> {
   await (kind === 'next' ? page.next() : page.signInAll())
-  // The button that was clicked is gone; Stop takes its place.
-  if (page.mode.value !== null) await focus('.summary .stop-button')
+  // The button that was clicked is gone; Stop takes its place, unless the run opened a password row, whose field has
+  // the focus.
+  if (page.mode.value !== null && page.openRow.value === null) await focus('.summary .stop-button')
 }
 
 async function checkAndAdd(entryId: string, values: Parameters<typeof page.connectWithPassword>[1]): Promise<void> {
@@ -238,6 +241,8 @@ const lookStage = computed(() => page.lookStage.value)
       </div>
     </header>
 
+    <p v-if="page.returning.value === 'finishing'" class="returning" role="status">{{ FINISHING }}</p>
+    <p v-else-if="page.returning.value === 'stopped'" class="returning" role="status">{{ STOPPED_SIGN_IN }}</p>
     <p v-if="page.error.value" class="form-error" role="alert">{{ page.error.value }}</p>
 
     <!-- The list is gone (expired, deleted, another user's): it replaces the summary and the list. -->
@@ -296,7 +301,7 @@ const lookStage = computed(() => page.lookStage.value)
       <template v-else>
         <div v-if="page.createdBy.value && (page.showAssistantNotice.value || !page.confirmed.value)" role="status" class="assistant">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9.5 17h-19z" /><path d="M12 10v4M12 17.5v.01" /></svg>
-          <span class="assistant-text" :title="page.createdBy.value">{{ assistantNotice(page.createdBy.value) }}</span>
+          <span class="assistant-text" :title="page.createdBy.value">{{ assistantNotice(page.createdBy.value, page.list.value.createdWithToken) }}</span>
           <button v-if="!page.confirmed.value" type="button" class="small primary" @click="useAddresses">{{ USE_ADDRESSES }}</button>
           <button type="button" class="small secondary" @click="deleteList">{{ LIST.deleteList }}</button>
         </div>
@@ -469,6 +474,12 @@ const lookStage = computed(() => page.lookStage.value)
   line-height: 28px;
 }
 .lead {
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.returning {
+  margin: 0;
+  padding: 0 4px;
   font-size: 14px;
   color: var(--ink-2);
 }

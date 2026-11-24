@@ -73,15 +73,17 @@ async function submit(): Promise<void> {
   busy.value = true
   failure.value = null
   try {
+    const list = await imports.create(read.value.toAdd.map((address) => ({ address })))
+    // The new list first, then the old one goes; should that fail, the new list opens all the same, and the old one
+    // expires within a day.
     if (replaces.value !== null) {
       try {
         await imports.remove(replaces.value)
-      } catch (e) {
-        if (!(e instanceof ApiError && e.status === 404)) throw e
+      } catch {
+        // Gone already, or not removable now: nothing is lost either way.
       }
       replaces.value = null
     }
-    const list = await imports.create(read.value.toAdd.map((address) => ({ address })))
     if (list.leftOut.length > 0) {
       made.value = { id: list.id, leftOut: list.leftOut, text: text.value }
       return

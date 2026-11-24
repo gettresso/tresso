@@ -59,6 +59,8 @@ export interface MailAccountImport {
   progress: Record<ImportEntryState, number>
   /** The app that made the list when it is not one of Tresso's own; null when the user made it in Tresso. */
   createdBy: string | null
+  /** `createdBy` is a personal access token: the list was made with it, not by it. */
+  createdWithToken: boolean
   /** A list an app made is used only once the user checked its addresses; one made in Tresso always is. */
   confirmed: boolean
   pageUrl: string
