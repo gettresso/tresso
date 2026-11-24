@@ -8,6 +8,7 @@ import {
   activityTime,
   durationText,
   permissionUsed,
+  repeatSpan,
   timesText,
   touched,
   type AppActivityEntry,
@@ -252,6 +253,7 @@ const SKELETON = [
                     <div v-if="timesText(entry.count)" class="fact">
                       <span class="fact-label">How often</span>
                       <span class="fact-value">{{ timesText(entry.count) }}</span>
+                      <span class="fact-mono">{{ repeatSpan(entry, now) }}</span>
                     </div>
                   </div>
                   <div v-if="entry.reason" class="why" :class="entry.result">
@@ -274,7 +276,7 @@ const SKELETON = [
 
         <div v-else class="foot">
           <span class="count" role="status">{{ countLabel }}</span>
-          <button v-if="store.nextCursor !== null" type="button" class="button older" :disabled="loadingMore" @click="more">Show older entries</button>
+          <button v-if="store.nextCursor !== null && moreError === null" type="button" class="button older" :disabled="loadingMore" @click="more">Show older entries</button>
         </div>
         <div v-if="moreError" class="more-error" role="alert">
           <span class="form-error">{{ moreError }}</span>

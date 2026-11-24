@@ -28,7 +28,10 @@ export interface AppActivityEntry {
   durationMs: number
   /** Each permission the action needed, and whether the app holds it now. */
   permissions: { scope: string; label: string; held: boolean }[]
-  object: { type: string; label: string; list: boolean; id: string | null } | null
+  /** `several`: repeats of this entry touched different objects, of which none is kept. */
+  object: { type: string; label: string; list: boolean; id: string | null; several: boolean } | null
+  /** When the last repeat happened; the same as occurredAt for an entry that happened once. */
+  lastOccurredAt: string
   /** How many times the same thing happened within a minute (an hour for a refused token), counted on this entry. */
   count: number
 }
@@ -132,9 +135,10 @@ function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
 
-/** `2 Sep`, in the reader's time zone. */
-export function shortDay(at: Date): string {
-  return `${at.getDate()} ${MONTHS[at.getMonth()]}`
+/** `2 Sep`, in the reader's time zone; with the year (`2 Sep 2025`) when `now` is given and in another year. */
+export function shortDay(at: Date, now?: Date): string {
+  const day = `${at.getDate()} ${MONTHS[at.getMonth()]}`
+  return now !== undefined && now.getFullYear() !== at.getFullYear() ? `${day} ${at.getFullYear()}` : day
 }
 
 /** The log's time: `10:38:12` today, `19 Oct 16:40:11` before. */
@@ -202,8 +206,14 @@ export function touched(entry: Pick<AppActivityEntry, 'object' | 'kind' | 'resul
   const nothing = { read: 'read', change: 'changed', send: 'sent' }[entry.kind]
   if (entry.object === null) return entry.result === 'done' ? null : { label: 'Nothing', id: `No id. Nothing was ${nothing}.` }
   if (entry.object.id !== null) return { label: entry.object.label, id: entry.object.id }
+  if (entry.object.several) return { label: entry.object.label, id: 'Several, not kept one by one' }
   if (entry.result !== 'done') return { label: entry.object.label, id: `No id. Nothing was ${nothing}.` }
   return { label: entry.object.label, id: entry.object.list ? 'No id. A list has none.' : 'No id.' }
+}
+
+/** For an entry that happened more than once: `First at 10:38:12, last at 10:38:55`; null for once. */
+export function repeatSpan(entry: Pick<AppActivityEntry, 'count' | 'occurredAt' | 'lastOccurredAt'>, now: Date = new Date()): string | null {
+  return entry.count > 1 ? `First at ${activityTime(entry.occurredAt, now)}, last at ${activityTime(entry.lastOccurredAt, now)}` : null
 }
 
 /** How often an entry happened: `3 times`, or null for once. */

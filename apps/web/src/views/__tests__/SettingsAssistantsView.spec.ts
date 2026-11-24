@@ -25,6 +25,7 @@ function entry(id: string, key: string, extra: Partial<AppActivityEntry> = {}): 
     durationMs: 84,
     permissions: [],
     object: null,
+    lastOccurredAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     count: 1,
     ...extra,
   }
@@ -155,10 +156,10 @@ describe('Settings, Apps, AI assistants', () => {
 
     await tab('Claude Code').trigger('click')
     expect(wrapper.get('.how-line').text()).toBe('Paste this line in your terminal. Then type /mcp in Claude Code and choose tresso to sign in.')
-    expect((wrapper.get('#mcp-command').element as HTMLInputElement).value).toBe(`claude mcp add --transport http tresso '${ENDPOINT}'`)
+    expect((wrapper.get('#mcp-command').element as HTMLInputElement).value).toBe(`claude mcp add --transport http tresso ${ENDPOINT}`)
     await wrapper.get('.copy-row .button-primary').trigger('click')
     await settle()
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(`claude mcp add --transport http tresso '${ENDPOINT}'`)
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(`claude mcp add --transport http tresso ${ENDPOINT}`)
     expect(wrapper.get('.copy-row .button-primary').text()).toBe('Copied')
 
     await tab('Cursor').trigger('click')
@@ -295,7 +296,7 @@ describe('Settings, Apps, AI assistants', () => {
     const dialog = wrapper.get('dialog.confirm-dialog')
     expect(dialog.attributes('role')).toBe('alertdialog')
     expect(dialog.get('h2').text()).toBe('Revoke access for Claude?')
-    expect(dialog.get('#revoke-description').text()).toBe('It stops working with your account right away. To use it again, it has to ask for permission again.')
+    expect(dialog.get('#revoke-description').text()).toBe('It stops working with your account right away. To use it again, connect it again.')
     expect(dialog.findAll('button').map((button) => button.text())).toEqual(['Revoke access', 'Keep it'])
     expect(document.activeElement).toBe(dialog.findAll('button')[1]!.element)
 
@@ -379,7 +380,7 @@ describe('Settings, Apps, AI assistants', () => {
     const { wrapper } = await page()
     await wrapper.get('.copy-plain').trigger('click')
     await settle()
-    expect(wrapper.get('.endpoint [role="alert"]').text()).toBe('Your browser did not allow copying. Select the text and copy it yourself.')
+    expect(wrapper.get('.endpoint [role="alert"]').text()).toBe('Copying did not work. Select the text and copy it yourself.')
     expect(wrapper.get('.copy-plain').text()).toBe('Copy')
   })
 
@@ -396,17 +397,17 @@ describe('Settings, Apps, AI assistants', () => {
     info = { ...info, mcpEndpoint: value }
     const { wrapper } = await page()
     expect(wrapper.find('#mcp-url').exists()).toBe(false)
-    await expectNoEndpoint(wrapper)
+    await expectNoEndpoint(wrapper, value === '' ? 'Reload the page to try again.' : 'Ask whoever runs this server to check its MCP address.')
   })
 
   it('offers no command, link or Copy when the server info has no endpoint or fails', async () => {
     info = { product: 'tresso-server', apiVersion: 1 }
     let { wrapper } = await page()
-    await expectNoEndpoint(wrapper)
+    await expectNoEndpoint(wrapper, 'Reload the page to try again.')
     wrapper.unmount()
     info = null
     ;({ wrapper } = await page())
-    await expectNoEndpoint(wrapper)
+    await expectNoEndpoint(wrapper, 'Reload the page to try again.')
     expect(wrapper.get('.form-error').text()).toBe('The server is busy.')
   })
 
@@ -429,22 +430,46 @@ describe('Settings, Apps, AI assistants', () => {
     expect(wrapper.find('.recent-list').exists()).toBe(false)
   })
 
-  async function expectNoEndpoint(wrapper: Awaited<ReturnType<typeof page>>['wrapper']): Promise<void> {
+  async function expectNoEndpoint(wrapper: Awaited<ReturnType<typeof page>>['wrapper'], next: string): Promise<void> {
+    const said = `Tresso could not read this server's MCP endpoint, so there is nothing to copy or open. ${next}`
     expect(wrapper.find('#mcp-url').exists()).toBe(false)
     expect(wrapper.find('.copy-plain').exists()).toBe(false)
-    expect(wrapper.get('.endpoint-error').text()).toBe("Tresso could not read this server's MCP address, so there is nothing to copy or open. Reload the page to try again.")
+    expect(wrapper.get('.endpoint-error').text()).toBe(said)
     const tab = (name: string) => wrapper.findAll('[role="tab"]').find((found) => found.get('.tile-name').text() === name)!
-    await tab('Claude Code').trigger('click')
-    expect(wrapper.find('#mcp-command').exists()).toBe(false)
-    expect(wrapper.find('.copy-row').exists()).toBe(false)
-    await tab('Cursor').trigger('click')
-    expect(wrapper.find('a.how-link').exists()).toBe(false)
+    for (const name of ['Claude Code', 'Cursor']) {
+      await tab(name).trigger('click')
+      // Only the error: no "Paste this line" or "Opens Cursor" with nothing under it.
+      expect(wrapper.get('#install-panel').text()).toBe(said)
+      expect(wrapper.find('#mcp-command').exists()).toBe(false)
+      expect(wrapper.find('a.how-link').exists()).toBe(false)
+    }
   }
 
-  it('shows no connected assistants section without any', async () => {
+  it('keeps the heading and says so without any connected app', async () => {
     apps = []
     const { wrapper } = await page()
-    expect(wrapper.find('#clients-title').exists()).toBe(false)
-    expect(wrapper.get('#add-title').text()).toBe('Add an assistant')
+    expect(wrapper.get('#clients-title').text()).toBe('Connected assistants and apps')
+    expect(wrapper.get('.clients-empty').text()).toBe('No connected assistants or apps. When an assistant or app asks to use your Tresso and you allow it, it shows up here.')
+    expect(wrapper.find('.clients-warning').exists()).toBe(false)
+    expect(wrapper.find('#client-title').exists()).toBe(false)
+  })
+
+  it('shows where each app sends you back to, and that Tresso has not checked the apps', async () => {
+    apps = [app('claude', 'Claude', ['mail:read'], { domains: ['claude.ai', 'localhost'], connectedAt: '2025-09-02T08:00:00+00:00' })]
+    const { wrapper } = await page()
+    expect(wrapper.get('.clients-warning').text()).toBe('Tresso has not checked these apps: disconnect any you do not recognize.')
+    expect(wrapper.get('.detail-text .domains').text()).toBe('claude.ai, localhost')
+    expect(wrapper.get('.detail-text .sub').text()).toBe('Connected 2 Sep 2025 by you.')
+  })
+
+  it('closes the revoke dialog with Escape and keeps the app', async () => {
+    const { wrapper } = await page()
+    await wrapper.get('button.revoke').trigger('click')
+    await settle()
+    await wrapper.get('dialog').trigger('cancel')
+    await settle()
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0)
+    expect(document.activeElement).toBe(wrapper.get('button.revoke').element)
   })
 })

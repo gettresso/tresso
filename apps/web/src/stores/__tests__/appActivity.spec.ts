@@ -17,6 +17,7 @@ function entry(id: string, key: string, at: string): AppActivityEntry {
     durationMs: 1,
     permissions: [],
     object: null,
+    lastOccurredAt: at,
     count: 1,
   }
 }

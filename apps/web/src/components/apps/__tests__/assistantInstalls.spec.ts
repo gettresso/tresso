@@ -5,7 +5,8 @@ import { checkedEndpoint, claudeCodeCommand, cursorInstallLink, installs } from 
 describe('assistant installs', () => {
   it('uses only the documented forms, with the endpoint and never a secret', () => {
     const endpoint = 'https://mcp.tresso.example/mcp'
-    expect(claudeCodeCommand(endpoint)).toBe("claude mcp add --transport http tresso 'https://mcp.tresso.example/mcp'")
+    expect(claudeCodeCommand(endpoint)).toBe('claude mcp add --transport http tresso https://mcp.tresso.example/mcp')
+    expect(claudeCodeCommand(endpoint)).not.toMatch(/['"]/)
     const link = new URL(cursorInstallLink(endpoint))
     expect(`${link.protocol}//${link.host}${link.pathname}`).toBe('cursor://anysphere.cursor-deeplink/mcp/install')
     expect(link.searchParams.get('name')).toBe('tresso')
@@ -24,7 +25,7 @@ describe('assistant installs', () => {
     expect(checkedEndpoint('https://mcp.tresso.example/mcp')).toBe('https://mcp.tresso.example/mcp')
     expect(checkedEndpoint('http://localhost:8080/mcp')).toBe('http://localhost:8080/mcp')
     expect(checkedEndpoint('http://127.0.0.1:8080/mcp')).toBe('http://127.0.0.1:8080/mcp')
-    for (const value of [undefined, null, 42, '', 'http://mcp.tresso.example/mcp', 'http://localhost.evil.example/mcp', 'https://kim:pw@mcp.tresso.example/mcp', 'https://mcp.tresso.example/mcp?x=1', 'https://mcp.tresso.example/mcp#x', "https://mcp.tresso.example/mcp'", 'https://mcp.tresso.example/$(id)', 'https://mcp.tresso.example/m cp', 'https://mcp.tréssö.example/mcp', 'https://mcp.例え.example/mcp', 'javascript:alert(1)', 'http://[::1]:8080/mcp']) {
+    for (const value of [undefined, null, 42, '', 'http://mcp.tresso.example/mcp', 'http://localhost.evil.example/mcp', 'https://kim:pw@mcp.tresso.example/mcp', 'https://mcp.tresso.example/mcp?x=1', 'https://mcp.tresso.example/mcp#x', "https://mcp.tresso.example/mcp'", 'https://mcp.tresso.example/$(id)', 'https://mcp.tresso.example/m cp', 'https://mcp.tréssö.example/mcp', 'https://mcp.例え.example/mcp', 'javascript:alert(1)', 'http://[::1]:8080/mcp', 'https://mcp.tresso.example/mcp"', "https://mcp.tresso.example/it's", 'https://MCP.tresso.example/mcp', 'https://mcp.tresso.example:65536/mcp', 'https://mcp.tresso.example:0/mcp', 'https://mcp.tresso.example/a/../mcp', 'https://mcp.tresso.example/./mcp']) {
       expect({ value, checked: checkedEndpoint(value) }).toEqual({ value, checked: null })
     }
     const none = installs(null)

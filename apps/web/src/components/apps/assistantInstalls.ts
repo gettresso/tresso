@@ -53,6 +53,8 @@ export function checkedEndpoint(value: unknown): string | null {
   const loopback = ['localhost', '127.0.0.1'].includes(url.hostname)
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null
   if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '' || url.hostname === '') return null
+  // A port from 1 to 65535 (the parser itself refuses one above).
+  if (url.port === '0') return null
   // What the URL parser made of it must be what was given (no decoding, no hidden host).
   return url.href === value || url.href === `${value}/` ? value : null
 }
@@ -63,9 +65,12 @@ export function cursorInstallLink(endpoint: string): string {
   return `cursor://anysphere.cursor-deeplink/mcp/install?name=${encodeURIComponent(SERVER_NAME)}&config=${encodeURIComponent(config)}`
 }
 
-/** Claude Code's command for a remote server at this address (a checked one), the address in single quotes. */
+/**
+ * Claude Code's command for a remote server at this address (a checked one). No quotes: the check refuses every
+ * character a shell reads, and quotes would break Windows' cmd.exe.
+ */
 export function claudeCodeCommand(endpoint: string): string {
-  return `claude mcp add --transport http ${SERVER_NAME} '${endpoint}'`
+  return `claude mcp add --transport http ${SERVER_NAME} ${endpoint}`
 }
 
 /** The panels; without a checked endpoint there is no command and no link to give. */

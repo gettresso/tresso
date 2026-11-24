@@ -96,6 +96,7 @@ describe('Settings, Apps', () => {
           durationMs: 10,
           permissions: [],
           object: null,
+          lastOccurredAt: new Date(Date.now() - 4 * 60_000).toISOString(),
           count: 1,
         },
       ],
@@ -177,9 +178,9 @@ describe('Settings, Apps', () => {
     expect(summary(wrapper, 'zoom')).toEqual({ name: 'Zoom', cat: 'Meetings', line: 'Meeting links made by Zoom.', pill: 'Not available yet', detail: '', action: null })
     expect(row(wrapper, 'zoom').classes()).toContain('soon')
 
-    expect(summary(wrapper, 'assistant-claude')).toEqual({ name: 'Claude', cat: 'AI assistants and apps', line: 'May read mail, change todos and signatures, and change settings.', pill: 'Connected', detail: 'Active 4 min ago', action: 'Manage' })
+    expect(summary(wrapper, 'assistant-claude')).toEqual({ name: 'Claude', cat: 'AI assistants and apps', line: 'May read mail, change todos and signatures, and change settings.', pill: 'Connected', detail: 'claude.ai · Active 4 min ago', action: 'Manage' })
     expect(row(wrapper, 'assistant-claude').get('.mark').text()).toBe('CL')
-    expect(summary(wrapper, 'assistant-chatgpt')).toEqual({ name: 'ChatGPT', cat: 'AI assistants and apps', line: 'May read mail and change todos.', pill: 'Connected', detail: 'Never used', action: 'Manage' })
+    expect(summary(wrapper, 'assistant-chatgpt')).toEqual({ name: 'ChatGPT', cat: 'AI assistants and apps', line: 'May read mail and change todos.', pill: 'Connected', detail: 'claude.ai · Never used', action: 'Manage' })
     expect(row(wrapper, 'assistant-chatgpt').get('.mark').text()).toBe('CG')
     expect(summary(wrapper, 'add')).toEqual({ name: 'Add an AI assistant', cat: 'AI assistants and apps', line: 'Install in a few clicks. No password or token to paste.', pill: null, detail: '', action: 'Add' })
     expect(wrapper.text()).not.toContain('Connected apps')
@@ -228,7 +229,7 @@ describe('Settings, Apps', () => {
 
   it('forgets when apps were active once another user signs in', async () => {
     const wrapper = await page()
-    expect(row(wrapper, 'assistant-claude').get('.detail').text()).toBe('Active 4 min ago')
+    expect(row(wrapper, 'assistant-claude').get('.detail').text()).toBe('claude.ai · Active 4 min ago')
     useAuthStore().generation++
     await settle()
     expect(row(wrapper, 'assistant-claude').exists()).toBe(false)

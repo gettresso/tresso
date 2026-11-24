@@ -165,7 +165,8 @@ const inRows = computed<Row[]>(() => {
     initials: appInitials(app.name),
     line: permissionLine(app.scopes) ?? NOTHING_ALLOWED,
     state: 'ok',
-    detail: activeText(lastActive.value[app.activityKey] ?? app.lastUsedAt, now.value) ?? 'Never used',
+    // The name is the app's own; the domain it sends the user back to is what was checked, so it comes first.
+    detail: [app.domains[0], activeText(lastActive.value[app.activityKey] ?? app.lastUsedAt, now.value) ?? 'Never used'].filter(Boolean).join(' · '),
     to: { name: 'settings-apps-assistants', query: { app: app.id } },
   }))
   const active = tokens.tokens.filter((token) => personalAccessTokenStatus(token, now.value) === 'active').length

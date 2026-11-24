@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activeText, activityAppName, activityTime, appActivityPath, durationText, permissionLine, permissionUsed, recentText, recentTime, recentTool, shortDay, timesText, touched, type AppActivityEntry } from './appActivity'
+import { activeText, activityAppName, activityTime, appActivityPath, durationText, permissionLine, permissionUsed, recentText, recentTime, recentTool, repeatSpan, shortDay, timesText, touched, type AppActivityEntry } from './appActivity'
 
 const NOW = new Date(2026, 9, 20, 10, 40, 0)
 
@@ -15,7 +15,8 @@ function entry(extra: Partial<AppActivityEntry> = {}): AppActivityEntry {
     reason: null,
     durationMs: 84,
     permissions: [{ scope: 'chat:read', label: 'Read your WhatsApp chats', held: true }],
-    object: { type: 'Chat', label: 'WhatsApp chats', list: true, id: null },
+    object: { type: 'Chat', label: 'WhatsApp chats', list: true, id: null, several: false },
+    lastOccurredAt: new Date(2026, 9, 20, 10, 38, 12).toISOString(),
     count: 1,
     ...extra,
   }
@@ -37,6 +38,8 @@ describe('app activity', () => {
     expect(recentTime(new Date(2026, 9, 19, 16, 40).toISOString(), NOW)).toBe('19 Oct')
     expect(shortDay(new Date(2026, 8, 2, 23, 59))).toBe('2 Sep')
     expect(shortDay(new Date(2027, 0, 31, 0, 0))).toBe('31 Jan')
+    expect(shortDay(new Date(2026, 8, 2), NOW)).toBe('2 Sep')
+    expect(shortDay(new Date(2025, 8, 2), NOW)).toBe('2 Sep 2025')
     expect(durationText(84)).toBe('84 ms')
     expect(durationText(1200)).toBe('1.2 s')
     expect(activeText(new Date(NOW.getTime() - 4 * 60_000).toISOString(), NOW)).toBe('Active 4 min ago')
@@ -57,15 +60,18 @@ describe('app activity', () => {
     expect(permissionUsed(entry({ permissions: [{ scope: 'chat:send', label: 'Send WhatsApp messages as you', held: false }] }))).toEqual({ label: 'Send WhatsApp messages as you, off for Claude', scopes: 'chat:send' })
     expect(touched(entry())).toEqual({ label: 'WhatsApp chats', id: 'No id. A list has none.' })
     expect(touched(entry({ result: 'refused', object: null }))).toEqual({ label: 'Nothing', id: 'No id. Nothing was read.' })
-    expect(touched(entry({ object: { type: 'Chat', label: 'WhatsApp chat', list: false, id: 'chat-1' } }))).toEqual({ label: 'WhatsApp chat', id: 'chat-1' })
+    expect(touched(entry({ object: { type: 'Chat', label: 'WhatsApp chat', list: false, id: 'chat-1', several: false } }))).toEqual({ label: 'WhatsApp chat', id: 'chat-1' })
     expect(touched(entry({ object: null }))).toBeNull()
-    expect(touched(entry({ object: { type: 'SmartInbox', label: 'Smart inbox', list: false, id: null } }))).toEqual({ label: 'Smart inbox', id: 'No id.' })
-    expect(touched(entry({ result: 'failed', kind: 'change', object: { type: 'MailAccount', label: 'Mail account', list: false, id: null } }))).toEqual({ label: 'Mail account', id: 'No id. Nothing was changed.' })
+    expect(touched(entry({ object: { type: 'SmartInbox', label: 'Smart inbox', list: false, id: null, several: false } }))).toEqual({ label: 'Smart inbox', id: 'No id.' })
+    expect(touched(entry({ result: 'failed', kind: 'change', object: { type: 'MailAccount', label: 'Mail account', list: false, id: null, several: false } }))).toEqual({ label: 'Mail account', id: 'No id. Nothing was changed.' })
     expect(activityAppName({ type: 'token', name: null })).toBe('A removed token')
     expect(activityAppName({ type: 'client', name: null })).toBe('A removed app')
     expect(activityAppName({ type: 'client', name: 'Claude' })).toBe('Claude')
     expect(permissionUsed(entry({ permissions: [] }))).toEqual({ label: 'None needed', scopes: '' })
     expect(permissionUsed(entry({ permissions: [{ scope: 'mail:read', label: 'Read mail', held: true }, { scope: 'calendar:read', label: 'See calendar', held: false }] }))).toEqual({ label: 'Read mail and See calendar, off for Claude', scopes: 'mail:read calendar:read' })
+    expect(touched(entry({ object: { type: 'SmartInbox', label: 'Smart inbox', list: false, id: null, several: true } }))).toEqual({ label: 'Smart inbox', id: 'Several, not kept one by one' })
+    expect(repeatSpan(entry(), NOW)).toBeNull()
+    expect(repeatSpan(entry({ count: 3, lastOccurredAt: new Date(2026, 9, 20, 10, 38, 55).toISOString() }), NOW)).toBe('First at 10:38:12, last at 10:38:55')
     expect(timesText(1)).toBeNull()
     expect(timesText(3)).toBe('3 times')
   })

@@ -1641,23 +1641,28 @@ and `/settings/apps/activity`. All three pages are one content width (960px).
   meeting preferences and the mail accounts (`appRows`; an expired permission is "Needs attention"), the own room
   link, WhatsApp as the rest of the app has it (the desktop app once it is turned on there, the browser while a Mac
   relays the server's chats; an offline Mac, an unlinked phone or a stopped bridge needs attention), each app the user
-  allowed through OAuth as a row of its own with a line made from its scopes (`permissionLine`; with every scope
+  allowed through OAuth as a row of its own, its domain first in the detail, with a line made from its scopes (`permissionLine`; with every scope
   switched off it says what the app can still see: name, email address and organizations) and when it was last active
   (its newest log entry, else the last token issued), "Add an AI assistant", and the number of active personal access
   tokens. Zoom is listed as not available yet, without an action. A row only leads to its page; nothing is changed on
   the Apps page. There is no webhooks row: the product has no webhooks.
 - **AI assistants and apps** (`SettingsAssistantsView`) has a tile per assistant with how to add Tresso: Claude Code's
-  command (`claude mcp add --transport http tresso '<endpoint>'`, then `/mcp` to sign in), Cursor's documented install
+  command (`claude mcp add --transport http tresso <endpoint>`, unquoted so cmd.exe takes it too, then `/mcp` to sign
+  in), Cursor's documented install
   link (`cursor://anysphere.cursor-deeplink/mcp/install?name=tresso&config=<base64 of {"url": endpoint}>`), and the
   manual steps for Claude and ChatGPT, whose makers document no link with the address filled in, for VS Code (until its
   install link is checked with a remote server) and for any other tool. The endpoint is `mcpEndpoint` of `GET
   /api/v1/server-info`, used only when it is a plain address (`checkedEndpoint`: https, http only on `localhost` or
-  `127.0.0.1`, no user or password, no query or fragment, plain ASCII without spaces or shell characters); otherwise,
-  or when server info fails, the page says it could not read the address and offers no command, link or Copy. On the
+  `127.0.0.1`, a port from 1 to 65535, no user or password, no query or fragment, no `.` or `..` segment, plain
+  ASCII without spaces or shell characters, written as a browser writes it); otherwise the page says it could not read
+  the endpoint (reload when it was not read, ask whoever runs the server when it is not a plain address) and offers no
+  command, link or Copy, and the Claude Code and Cursor panels show only that. On the
   desktop app, Add to Cursor asks the shell (`open_cursor_install`, `mcp_install.rs`), which checks the endpoint by the
   same rules and builds and opens the link itself; the opener's scope allows no `cursor://` link at all. No link or
   command ever carries a token: assistants sign in with OAuth. Each connected app has a switch per scope an app that is
-  not ours may hold (the consent screen's labels and descriptions); a switch saves at once through `PATCH
+  not ours may hold (the consent screen's labels and descriptions), under its name the places it may send the user
+  back to (an app names itself; the domain is what was checked), and above the list the line that Tresso has not
+  checked these apps. Without any connected app the list says so; a switch saves at once through `PATCH
   /api/v1/connected-apps/{id}`, quick toggles go out as their last state, and a failed save puts the switch back with
   the reason. A scope that was never granted cannot be switched on here (it needs the consent screen): its switch is
   dimmed and says "Not allowed when this app was connected. Connect it again to allow it." "Revoke access" asks first
@@ -1668,7 +1673,8 @@ and `/settings/apps/activity`. All three pages are one content width (960px).
   kind, result, period; the last 24 hours at first, or the app and period the address names) a page at a time ("Show
   older entries"; a page that fails says so under the table with Try again and keeps the entries; the last page moves
   the focus to its first entry). A row opens to show the permission used (and whether the app still holds it), what
-  was touched (nothing for an action that went through without an object), how it came in, how often it happened, the
+  was touched (nothing for an action that went through without an object; "Several, not kept one by one" when repeats
+  touched different objects), how it came in, how often it happened with the first and last time, the
   reason sentence and a link to where the app's permissions are changed. States: loading, empty (the log holds
   nothing), no match, and an error.
 
