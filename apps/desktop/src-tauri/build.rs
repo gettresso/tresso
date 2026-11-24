@@ -12,6 +12,7 @@ fn main() {
     "update_relaunch",
     "menu_state",
     "show_main_window_command",
+    "open_cursor_install",
     "load_tokens",
     "save_tokens",
     "clear_tokens",

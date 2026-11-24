@@ -1,5 +1,6 @@
 mod accessibility;
 mod glass;
+mod mcp_install;
 mod menu;
 mod sql;
 mod tokens;
@@ -39,6 +40,7 @@ pub fn run() {
       updates::update_relaunch,
       menu::menu_state,
       menu::show_main_window_command,
+      mcp_install::open_cursor_install,
       tokens::load_tokens,
       tokens::save_tokens,
       tokens::clear_tokens,
