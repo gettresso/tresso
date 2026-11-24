@@ -34,7 +34,7 @@ pub fn checked_endpoint(endpoint: &str) -> Result<&str, String> {
   };
   // Written as a browser writes it, so what the web client checked is what is opened: a lower-case host, a port from
   // 1 to 65535, and no `.` or `..` segment in the path.
-  if host.is_empty() || host.contains('%') || host.bytes().any(|byte| byte.is_ascii_uppercase()) {
+  if host.is_empty() || host.contains('%') || host.bytes().any(|byte| byte.is_ascii_uppercase()) || !plain_host(host) {
     return refused();
   }
   // A browser leaves out the scheme's own port (443 for https, 80 for http), so an address that names it is not one
@@ -55,6 +55,29 @@ pub fn checked_endpoint(endpoint: &str) -> Result<&str, String> {
     "http" if loopback => Ok(endpoint),
     _ => refused(),
   }
+}
+
+/// A host the web client's URL parser leaves as it is (and the page accepts):
+/// - no empty label and no punycode label (`xn--`), which the parser would check or rewrite;
+/// - a host whose last label is a number (all digits, or `0x` and hex digits: the parser reads it as an IPv4 address)
+///   only as four decimal octets from 0 to 255 without leading zeros, the one form the parser writes back unchanged.
+fn plain_host(host: &str) -> bool {
+  let labels: Vec<&str> = host.split('.').collect();
+  if labels.iter().any(|label| label.is_empty() || label.starts_with("xn--")) {
+    return false;
+  }
+  let last = labels[labels.len() - 1];
+  let numeric = last.bytes().all(|byte| byte.is_ascii_digit())
+    || (last.len() >= 2 && last.starts_with("0x") && last[2..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+  if !numeric {
+    return true;
+  }
+  labels.len() == 4
+    && labels.iter().all(|octet| {
+      octet.bytes().all(|byte| byte.is_ascii_digit())
+        && (octet.len() == 1 || !octet.starts_with('0'))
+        && octet.parse::<u16>().is_ok_and(|number| number <= 255)
+    })
 }
 
 /// Cursor's install link for this endpoint.
@@ -107,6 +130,9 @@ mod tests {
     assert!(cursor_install_link("http://localhost:8080/mcp").is_ok());
     assert!(cursor_install_link("http://127.0.0.1:8080/mcp").is_ok());
     assert!(cursor_install_link("https://mcp.tresso.example:8443/mcp").is_ok());
+    assert!(cursor_install_link("https://192.168.1.20/mcp").is_ok());
+    assert!(cursor_install_link("https://mcp-1.tresso.example/mcp").is_ok());
+    assert!(cursor_install_link("https://x.1a/mcp").is_ok());
   }
 
   #[test]
@@ -137,6 +163,17 @@ mod tests {
       "https://mcp.tresso.example/~kim/mcp",
       "https://mcp.tresso.example:443/mcp",
       "http://localhost:80/mcp",
+      "https://1.2.3/mcp",
+      "https://0x7f.1/mcp",
+      "https://01.2.3.4/mcp",
+      "https://a.123/mcp",
+      "https://1.2.3.256/mcp",
+      "https://1.2.3.4.5/mcp",
+      "https://mcp.0x10/mcp",
+      "https://xn--mcp.tresso.example/mcp",
+      "https://mcp.xn--trsso-fsa.example/mcp",
+      "https://mcp..tresso.example/mcp",
+      "https://mcp.tresso.example./mcp",
       "ftp://mcp.tresso.example/mcp",
     ] {
       assert!(cursor_install_link(endpoint).is_err(), "{endpoint}");
