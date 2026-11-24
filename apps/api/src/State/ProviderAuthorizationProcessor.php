@@ -74,7 +74,7 @@ final readonly class ProviderAuthorizationProcessor implements ProcessorInterfac
                 throw self::violation($data, 'importId', 'Sign in for an import list or for a connected account, not both.', $data->importId);
             }
             if (null === $data->emailAddress || !$this->imports->holds($owner, $data->importId, $data->emailAddress)) {
-                throw self::violation($data, 'importId', 'This import list does not hold this address, or it expired.', $data->importId);
+                throw self::violation($data, 'importId', 'This import list does not hold this address, has not been confirmed, or expired.', $data->importId);
             }
         }
         // The address as the list stores it (lowercase, its domain in ASCII), so the answer is matched to its row.

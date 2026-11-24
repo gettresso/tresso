@@ -278,7 +278,7 @@ final readonly class ProviderConnector
         // A sign-in for an address of an import list connects that address only: the user picked another account at
         // the provider (or the address is an alias of it), and the list's row would not be the account connected.
         $hint = $request->getLoginHint();
-        if (null !== $request->getImportId() && null !== $hint && mb_strtolower($identity->emailAddress) !== $hint) {
+        if (null !== $request->getImportId() && null !== $hint && MailAccountImports::spelling($identity->emailAddress) !== MailAccountImports::spelling($hint)) {
             throw new ConnectFailed(ConnectError::WrongAccount, 'Signed in with another provider account than the import list entry.');
         }
 

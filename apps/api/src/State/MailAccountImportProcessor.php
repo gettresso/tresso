@@ -78,6 +78,9 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
 
         if ($data instanceof UpdateImportEntry) {
             $state = $data->state ?? throw new \LogicException('Validation guarantees a state.');
+            if (!$import->isConfirmed()) {
+                throw self::violation($data, 'entryId', 'Use the addresses of this list first: an app made it, and nothing is done with it before you confirm it.', (string) $data->entryId);
+            }
             if (null !== $data->failure && ImportEntryState::Failed !== $state) {
                 throw self::violation($data, 'failure', 'A reason goes with the state failed only.', $data->failure->value);
             }
@@ -138,7 +141,7 @@ final readonly class MailAccountImportProcessor implements ProcessorInterface
             $owner = $this->currentUser->get();
             $name = $this->personalAccessTokens->findOneOwnedBy($owner, $token->getPersonalAccessTokenId())?->getName();
 
-            return mb_substr(null === $name ? 'your personal access token' : \sprintf('your personal access token "%s"', $name), 0, 200);
+            return mb_substr(null === $name ? 'your access token' : \sprintf('your access token "%s"', $name), 0, 200);
         }
         if ($token instanceof OAuth2Token) {
             $name = $this->clients->find($token->getOAuthClientId())?->getName();
