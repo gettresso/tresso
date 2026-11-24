@@ -675,7 +675,9 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
   attacker's domain for the server the password goes to. Every list remembers its caller (`CallerKey`): an app or a
   token lists, reads, follows (`get_mail_account_import`) and deletes only the lists it made, and only our own apps
   mark entries and confirm a list. A list an app made is `confirmed` only once the user chose "Use these addresses"
-  (`POST /mail-account-imports/{id}/confirmation`); before that the page looks nothing up and offers no sign-in. A
+  (`POST /mail-account-imports/{id}/confirmation`); before that the API starts no sign-in for its addresses, marks no
+  entry, and does not look them up: `GET /mail-server-settings` takes the list's `importId`, which the page always
+  sends, and refuses an address of a list that is not the user's, not confirmed or does not hold it. A
   server without `WEB_APP_URL` makes no list (503, nothing stored). It answers the list
   with `leftOut`: addresses that are not an address (`invalid`), given twice (`duplicate`) or connected already
   (`already_connected`), each with its reason; only a list with nothing left to take is refused (422, a violation per
@@ -686,7 +688,9 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
   A user has at most 20 live lists (409 beyond that), counted while the user's row is locked, so two requests at once
   cannot both pass. `createdBy` names the app that made the list (its registered
   name, or the personal access token's name), null for our own apps; the page shows it.
-- **States.** Whether the owner has the account is never stored: it is read whenever the list is read. An entry is
+- **States.** Whether the owner has the account is never stored: it is read whenever the list is read, comparing
+  addresses in the list's spelling (domain in ASCII), so an account or a provider identity with its domain in Unicode
+  matches its row. A stored `already_connected` failure counts only while that account exists; after, the row is to do. An entry is
   `connected` when its account was added from this list (a sign-in started from it, or the page's server form, which
   says so with `state: connected`, taken only while the account exists) and `already_connected` when it was added
   any other way. `skipped` and the last failure are stored; a failure of `admin_approval_required` comes with the
@@ -718,15 +722,18 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
   sends that tab back to the list's page, which finishes the sign-in and hands the answer to the waiting page over the
   connect channel. In a run the waiting page answers with the next provider page and the returning tab goes there
   itself (a page may only open a tab on a click), so the whole run happens in that one tab, which closes when the run
-  ends or stops (and shows the list should the browser keep it open). A tab the browser blocked leaves the row saying
+  ends or stops (and shows the list should the browser keep it open). The returning tab follows only an https page on
+  a provider's sign-in host with a state, says "Finishing the sign-in" while it hands over, and after a Stop finishes
+  nothing, closes and, should it stay, says the sign-in was stopped. An answer the returning tab gave up waiting for
+  (20 seconds) leaves the next row saying the page did not open. A tab the browser blocked leaves the row saying
   so, with "Open the page again". The desktop app opens each page in the system browser. The row waits ("Waiting for
   the browser"). "Next: <address>" connects one row and then starts nothing; "Sign in to all, one after another" goes
   through every row still to do, password rows included (the row opens with its password field focused and waits),
   and starts the next row after each that connected, judged by the row as the API wrote it
   (`components/connect/importRun.ts`, `useAccountImport.ts`); only the row the run is at decides what follows. A run
   stops at the first row that does not connect, with "Continue with the next", "Try this one again" and, when an
-  organization must approve, "Copy approval link". "Stop", a sign-in that expires, "Finish without the rest" and
-  leaving the page give up what waits (noted as cancelled for the connect channel, so a provider tab that comes back
+  organization must approve, "Copy approval link". "Stop", a sign-in that expires, "Finish without the rest",
+  leaving the page, and closing or reloading the tab (`pagehide`) give up what waits (noted as cancelled for the connect channel, so a provider tab that comes back
   later finishes nothing). Nothing is kept that could
   start a sign-in on a later page load, so the first start is always the user's click. A password row's form shows the
   servers found ("Change settings" to change them; servers typed by hand are named again before the password is typed),
@@ -735,7 +742,8 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
   recorded on the row as a code. A refused password closes the row, so it opens again with an empty field. "Finish without the rest"
   skips every row not connected and shows what was added and skipped; "Add back" and "Go back to the skipped ones"
   put rows on To do again; "Back to the addresses" opens step 1 with the addresses not connected yet, and Continue
-  replaces the list. A list made by an assistant says which app made it until the first sign-in (its name cut at 60
+  replaces the list (the new list is made first; should deleting the old one fail, the new one opens all the same and the
+  old one expires). A list made by an assistant says which app made it until the first sign-in (its name cut at 60
   characters), with "Use these addresses" until the user confirmed it, and "Delete this list". A list that is gone
   (expired, deleted, or another user's) shows "This list has expired"; one that expires while the page is open says
   when it was made and what was connected. Coming back
