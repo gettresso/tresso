@@ -38,6 +38,13 @@ final class StartProviderAuthorization
     #[Assert\Uuid]
     public ?string $mailAccountId = null;
 
+    /**
+     * Signing in for an address of this import list (with that address in emailAddress): the provider's answer comes
+     * back to the list's page, and signing in with any other provider account fails (wrong_account).
+     */
+    #[Assert\Uuid]
+    public ?string $importId = null;
+
     /** Where the provider's answer goes: the web app, or the desktop app that opened the system browser. */
     public ProviderReturnTarget $returnTo = ProviderReturnTarget::Web;
 }

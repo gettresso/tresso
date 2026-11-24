@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App;
 
+use App\Account\Import\SweepMailAccountImports;
 use App\Billing\ReconcileSubscriptions;
 use App\Bulk\SweepBulkActions;
 use App\Chat\PurgeCancelledReplies;
@@ -45,6 +46,7 @@ final readonly class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::every('1 minute', new SweepMeetingRequests()))
             ->add(RecurringMessage::every('10 minutes', new SweepChatMedia()))
             ->add(RecurringMessage::every('1 hour', new SweepReencryption()))
+            ->add(RecurringMessage::every('1 hour', new SweepMailAccountImports()))
             ->add(RecurringMessage::cron('17 3 * * *', new ReconcileSubscriptions()))
             ->add(RecurringMessage::cron('41 3 * * *', new PurgeOldPersonalAccessTokens()))
             ->add(RecurringMessage::cron('47 3 * * *', new PurgeUnusedRegisteredClients()))

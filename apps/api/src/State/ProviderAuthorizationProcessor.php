@@ -7,6 +7,7 @@ namespace App\State;
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use ApiPlatform\Validator\Exception\ValidationException;
+use App\Account\Import\MailAccountImports;
 use App\ApiResource\Input\StartProviderAuthorization;
 use App\ApiResource\ProviderAuthorization;
 use App\Entity\MailAccount;
@@ -31,6 +32,7 @@ final readonly class ProviderAuthorizationProcessor implements ProcessorInterfac
         private ProviderSettings $settings,
         private MailAccountRepository $mailAccounts,
         private CurrentUser $currentUser,
+        private MailAccountImports $imports,
         #[Autowire(env: 'NATIVE_REDIRECT_URI')]
         private string $nativeRedirectUri,
     ) {
@@ -65,7 +67,17 @@ final readonly class ProviderAuthorizationProcessor implements ProcessorInterfac
             throw self::violation($data, 'features', 'Allow calendars for a connected account: name it in mailAccountId, or ask for mail too.', implode(',', array_map(static fn (ProviderFeature $feature): string => $feature->value, $data->features)));
         }
 
-        $started = $this->connector->start($owner, $provider, $data->features, $mailAccount, $data->returnTo, null === $mailAccount ? $data->emailAddress : null);
+        if (null !== $data->importId) {
+            // A sign-in for an address of an import list is for that address only, as a new account.
+            if (null !== $mailAccount) {
+                throw self::violation($data, 'importId', 'Sign in for an import list or for a connected account, not both.', $data->importId);
+            }
+            if (null === $data->emailAddress || !$this->imports->holds($owner, $data->importId, $data->emailAddress)) {
+                throw self::violation($data, 'importId', 'This import list does not hold this address, or it expired.', $data->importId);
+            }
+        }
+
+        $started = $this->connector->start($owner, $provider, $data->features, $mailAccount, $data->returnTo, null === $mailAccount ? $data->emailAddress : null, $data->importId);
 
         return new ProviderAuthorization($started['url'], $provider->value, $started['expiresAt']);
     }

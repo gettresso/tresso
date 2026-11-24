@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\ProviderAuth;
 
+use App\Account\Import\ImportPages;
+use App\Account\Import\MailAccountImports;
 use App\Entity\MailAccount;
 use App\Entity\ProviderAuthorizationRequest;
 use App\Entity\ProviderGrant;
@@ -53,6 +55,7 @@ final readonly class ProviderConnector
         private ProviderGrantRepository $grants,
         private MailAccountRepository $mailAccounts,
         private RealtimeNotifier $notifier,
+        private MailAccountImports $imports,
         private LoggerInterface $logger,
     ) {
     }
@@ -62,10 +65,12 @@ final readonly class ProviderConnector
      * @param MailAccount|null      $mailAccount signing in again for this account
      * @param ProviderReturnTarget  $returnTo    the app the provider's answer goes back to
      * @param string|null           $loginHint   the address the user typed for a new account
+     * @param string|null           $importId    the import list the address is from: the answer goes back to its page, and
+     *                                           only that address may sign in
      *
      * @return array{url: string, expiresAt: \DateTimeImmutable}
      */
-    public function start(User $owner, OAuthProvider $provider, array $features, ?MailAccount $mailAccount, ProviderReturnTarget $returnTo, ?string $loginHint = null): array
+    public function start(User $owner, OAuthProvider $provider, array $features, ?MailAccount $mailAccount, ProviderReturnTarget $returnTo, ?string $loginHint = null, ?string $importId = null): array
     {
         if (!$this->settings->isConfigured($provider)) {
             throw new \LogicException(\sprintf('%s sign-in is not configured.', $provider->label()));
@@ -82,7 +87,10 @@ final readonly class ProviderConnector
         $state = self::randomToken();
         $verifier = self::randomToken();
         $loginHint = $mailAccount?->getEmailAddress() ?? (null === $loginHint ? null : mb_strtolower(trim($loginHint)));
-        $request = new ProviderAuthorizationRequest($state, $owner, $provider, $features, $scopes, $verifier, $mailAccount?->getId()->toRfc4122(), $returnTo, $loginHint);
+        if (null !== $importId && (null !== $mailAccount || null === $loginHint)) {
+            throw new \LogicException('A sign-in for an import list is for a new account with a login hint.');
+        }
+        $request = new ProviderAuthorizationRequest($state, $owner, $provider, $features, $scopes, $verifier, $mailAccount?->getId()->toRfc4122(), $returnTo, $loginHint, $importId);
 
         $this->entityManager->createQuery('DELETE FROM '.ProviderAuthorizationRequest::class.' r WHERE r.expiresAt <= :now')
             ->setParameter('now', new \DateTimeImmutable())
@@ -118,7 +126,11 @@ final readonly class ProviderConnector
         if (!\is_string($state) || null === $request || $request->getProvider() !== $provider) {
             return new ConnectResult(self::ADD_PATH, ['provider' => $provider->value, 'connectError' => ConnectError::Expired->value]);
         }
-        $path = null !== $request->getMailAccountId() ? self::ACCOUNTS_PATH : self::ADD_PATH;
+        $path = match (true) {
+            null !== $request->getImportId() => ImportPages::IMPORT_PATH.$request->getImportId(),
+            null !== $request->getMailAccountId() => self::ACCOUNTS_PATH,
+            default => self::ADD_PATH,
+        };
         if ($request->isExpired()) {
             return new ConnectResult($path, ['provider' => $provider->value, 'connectError' => ConnectError::Expired->value], $request->getReturnTo());
         }
@@ -147,6 +159,10 @@ final readonly class ProviderConnector
         // Read before the request is used up, so a failure can still say what was asked for.
         $requested = null !== $request && $request->getProvider() === $provider ? $request->getFeatures() : [];
         $loginHint = $request?->getLoginHint();
+        // The import list entry this sign-in is for, kept to say there how it ended.
+        $importEntry = null !== $request && null !== $request->getImportId() && null !== $loginHint
+            ? ['owner' => $request->getOwner(), 'importId' => $request->getImportId(), 'address' => $loginHint]
+            : null;
 
         try {
             if (null === $request || $request->getProvider() !== $provider) {
@@ -171,9 +187,18 @@ final readonly class ProviderConnector
                 throw new ConnectFailed(ConnectError::Failed, 'The provider sent no code.');
             }
 
-            return $this->connect($request, $code);
+            $outcome = $this->connect($request, $code);
+            if (null !== $importEntry) {
+                $this->imports->settleSignIn($importEntry['owner'], $importEntry['importId'], $importEntry['address'], null);
+            }
+
+            return $outcome;
         } catch (ConnectFailed $e) {
             $this->logger->info('Connecting a provider account failed.', ['provider' => $provider->value, 'error' => $e->error->value, 'reason' => $e->getMessage()]);
+            // Another user handing in the answer leaves the sign-in to its owner, who may still finish it.
+            if (null !== $importEntry && ConnectError::DifferentUser !== $e->error) {
+                $this->imports->settleSignIn($importEntry['owner'], $importEntry['importId'], $importEntry['address'], $e->error);
+            }
 
             $approvalUrl = ConnectError::AdminApprovalRequired === $e->error ? $this->settings->adminConsentUrl($loginHint) : null;
 
@@ -245,6 +270,13 @@ final readonly class ProviderConnector
             $this->logger->info('A provider sign-in left out a feature.', ['provider' => $provider->value, 'feature' => $feature->value]);
         }
         $requested = $request->getFeatures();
+
+        // A sign-in for an address of an import list connects that address only: the user picked another account at
+        // the provider (or the address is an alias of it), and the list's row would not be the account connected.
+        $hint = $request->getLoginHint();
+        if (null !== $request->getImportId() && null !== $hint && mb_strtolower($identity->emailAddress) !== $hint) {
+            throw new ConnectFailed(ConnectError::WrongAccount, 'Signed in with another provider account than the import list entry.');
+        }
 
         $owner = $request->getOwner();
         $forMail = \in_array(ProviderFeature::Mail, $request->getFeatures(), true);

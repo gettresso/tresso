@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Storage;
 
+use App\Account\Import\MailAccountImports;
 use App\Chat\ChatField;
 use App\Chat\ChatFields;
 use App\Chat\ChatMediaCollector;
@@ -44,7 +45,7 @@ final readonly class Reencryption
         ['chat_upload', 'object_key', 'key_version', 'sha256'],
     ];
 
-    public const array STEPS = ['credentials', 'messages', 'attachments', 'draftFiles', 'outgoing', 'bodyTexts', 'snippets', 'notificationBodies', 'chatFields', 'chatMedia'];
+    public const array STEPS = ['credentials', 'messages', 'attachments', 'draftFiles', 'outgoing', 'bodyTexts', 'snippets', 'notificationBodies', 'chatFields', 'chatMedia', 'importLists'];
 
     public function __construct(
         private Connection $connection,
@@ -57,6 +58,7 @@ final readonly class Reencryption
         private ChatFields $chatFields,
         private UploadCollector $uploads,
         private ChatMediaCollector $chatMedia,
+        private MailAccountImports $imports,
         private LoggerInterface $logger,
     ) {
     }
@@ -88,6 +90,7 @@ final readonly class Reencryption
                 'notificationBodies' => $this->notificationBodies($owner, $current, $batch, $until),
                 'chatFields' => $this->chatFields($owner, $current, $batch, $until),
                 'chatMedia' => $this->chatMedia($owner, $current, $batch, $until),
+                'importLists' => $this->importLists($owner, $current, $batch, $until),
             };
             $failed += $stepFailed;
             $progress($step, $moved, $stepFailed);
@@ -169,6 +172,10 @@ final readonly class Reencryption
                     self::CHAT_MEDIA,
                 )),
                 ['owner' => $parameters['owner'], 'current' => $parameters['current']],
+            )),
+            'importLists' => self::count($this->connection->fetchOne(
+                'SELECT COUNT(*) FROM mail_account_import WHERE owner_id = :owner AND sealed_entries NOT LIKE :sealed',
+                $parameters,
             )),
         ];
     }
@@ -592,6 +599,33 @@ final readonly class Reencryption
         }
 
         return [$moved, $failed];
+    }
+
+    /**
+     * The addresses of mail account import lists ({@see MailAccountImports}), sealed with an older key: resealed with
+     * the current one. A list lives a day, but a rotation must not wait for it, nor leave it unreadable.
+     *
+     * @return array{int, int}
+     */
+    private function importLists(Uuid $owner, int $current, int $batch, ?\DateTimeImmutable $until): array
+    {
+        return $this->walk(
+            'SELECT id, sealed_entries FROM mail_account_import
+             WHERE owner_id = :owner AND sealed_entries NOT LIKE :sealed AND id > CAST(:after AS UUID) ORDER BY id LIMIT :batch',
+            $owner,
+            $current,
+            $batch,
+            $until,
+            function (array $row) use ($owner): bool {
+                $id = Uuid::fromString(self::string($row['id']));
+                $sealed = self::string($row['sealed_entries']);
+
+                return 1 === $this->connection->executeStatement(
+                    'UPDATE mail_account_import SET sealed_entries = :sealed WHERE id = :id AND sealed_entries = :old',
+                    ['sealed' => $this->imports->reseal($owner, $id, $sealed), 'id' => $id->toRfc4122(), 'old' => $sealed],
+                );
+            },
+        );
     }
 
     /**

@@ -60,6 +60,12 @@ final readonly class PublicAddresses
         return $this->mcp;
     }
 
+    /** The web app (WEB_APP_URL), without a trailing slash; empty when the server has none. */
+    public function web(): string
+    {
+        return $this->web;
+    }
+
     /** Whether the MCP endpoint has a host of its own. */
     public function mcpHasItsOwnHost(): bool
     {
