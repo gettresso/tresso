@@ -400,10 +400,14 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   entity manager; a failure to write is logged as an error (ids, the action and codes only) and dropped, so the log
   never fails or slows a request, and so is a request or tool call that could not be put in the log's shape (a test
   keeps every route template and tool name inside it). What one app can write is bounded: repeats (the same owner,
-  app, way in, action, result and reason) within a minute are one entry with a `count` ("N times"), within an hour for
-  a refused token, so a script with an expired or revoked token adds one entry an hour; and an app writes at most 2000
-  entries per user per day (`app_activity_day` counts them), after which one entry "More activity was not recorded"
-  counts the rest. Two requests at the same moment may each pass the cap by one: it is a bound, not an exact number. `PurgeAppActivity` removes entries older than 90 days once a day at 03:29 on the `maintenance`
+  app, way in, action, result and reason, and for a send or a change also the same object) within a minute are one
+  entry with a `count` ("N times") and the time of the first and of the last (`last_occurred_at`), within an hour for
+  a refused token, so a script with an expired or revoked token adds one entry an hour. Ten messages to ten chats are
+  ten entries; reads of different objects fold into one entry that keeps no id and says it covered several
+  (`several_objects`). An app writes at most 2000 entries per user per day (`app_activity_day` counts them). Past that,
+  reads that went through fold into one entry "More activity was not recorded" that counts them, while sends, changes,
+  refusals and failures are still written, repeats counted per hour, so a flood of reads cannot hide them. Two requests
+  at the same moment may each pass the cap by one: it is a bound, not an exact number. `PurgeAppActivity` removes entries older than 90 days once a day at 03:29 on the `maintenance`
   worker, 5000 at a time until none is left, with the daily counts of those days; deleting a user deletes theirs
   (foreign key cascade). Indexes: owner, time and id (the page and its cursor, a row comparison `(occurred_at, id) <
   (:at, :id)`), owner with app, kind or result and time, the repeat key (unique), and time for the purge. The single
@@ -416,8 +420,8 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   channel, the action (its name, and a title: the tool's title, or one made from the method and resource such as "List
   mail accounts"), kind, result, the reason with its label and a sentence ("Claude did not have the permission Send
   WhatsApp messages as you. Nothing was sent."), the duration, each permission needed with its label and whether the
-  app holds it now, the object (type, label such as "Mail account", whether it was a list, id) and the `count` of
-  repeats. `apps` lists the apps for the app filter, with their names: those connected and with a live token now, and
+  app holds it now, the object (type, label such as "Mail account", whether it was a list, id, and `several` when
+  repeats touched different objects), the `count` of repeats and `lastOccurredAt`. `apps` lists the apps for the app filter, with their names: those connected and with a live token now, and
   those with entries in the period, read from `app_activity_day` (one row per app and day) and never from the log
   itself; `empty` says the log holds nothing at all. The AI assistants page's recent activity is the same endpoint
   with `app` and a small `limit`. The MCP endpoint address for the pages is `mcpEndpoint` in `GET

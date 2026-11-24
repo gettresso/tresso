@@ -114,6 +114,14 @@ class AppActivity
     #[ORM\Column(type: Types::JSON, options: ['default' => '[]'])]
     private array $missingScopes = [];
 
+    /** When the last repeat happened; the same as the time for an entry that happened once. */
+    #[ORM\Column(type: Types::DATETIME_IMMUTABLE)]
+    private \DateTimeImmutable $lastOccurredAt;
+
+    /** Whether repeats touched different objects, of which the entry keeps none. */
+    #[ORM\Column(options: ['default' => false])]
+    private bool $severalObjects = false;
+
     /** How many times the same thing happened within its bucket (a minute, an hour for a refused token). */
     #[ORM\Column(options: ['default' => 1])]
     private int $count = 1;
@@ -167,6 +175,7 @@ class AppActivity
         $this->missingScopes = $missingScopes;
         $this->count = $count;
         $this->repeatKey = $repeatKey ?? hash('sha256', $id->toRfc4122());
+        $this->lastOccurredAt = $occurredAt;
     }
 
     public function getId(): Uuid
@@ -249,6 +258,16 @@ class AppActivity
     public function getMissingScopes(): array
     {
         return $this->missingScopes;
+    }
+
+    public function getLastOccurredAt(): \DateTimeImmutable
+    {
+        return $this->lastOccurredAt;
+    }
+
+    public function hasSeveralObjects(): bool
+    {
+        return $this->severalObjects;
     }
 
     public function getCount(): int

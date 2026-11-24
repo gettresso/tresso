@@ -76,11 +76,13 @@ final readonly class ActivityEntry
 
     /**
      * What makes repeats one entry: the same owner, app, way in, action, result and reason within a minute; within an
-     * hour for a refused token (expired or revoked), which a script may keep sending for days.
+     * hour for a refused token (expired or revoked), which a script may keep sending for days, and for anything kept
+     * past the day's cap ($pastCap). A send or a change also needs the same object: ten messages to ten chats are ten
+     * entries, each with its chat.
      */
-    public function repeatKey(): string
+    public function repeatKey(bool $pastCap = false): string
     {
-        $hourly = \in_array($this->reason, [ActivityReason::TokenExpired, ActivityReason::AccessRevoked], true);
+        $hourly = $pastCap || \in_array($this->reason, [ActivityReason::TokenExpired, ActivityReason::AccessRevoked], true);
 
         return hash('sha256', implode('|', [
             $this->owner->toRfc4122(),
@@ -91,6 +93,13 @@ final readonly class ActivityEntry
             $this->result()->value,
             null === $this->reason ? '' : $this->reason->value,
             $this->occurredAt->format($hourly ? 'Y-m-d H' : 'Y-m-d H:i'),
+            ActivityKind::Read === $this->kind ? '' : ($this->objectId ?? ''),
         ]));
+    }
+
+    /** Whether the entry may fold into "More activity was not recorded" past the day's cap: a read that went through. */
+    public function foldsPastCap(): bool
+    {
+        return ActivityKind::Read === $this->kind && null === $this->reason;
     }
 }

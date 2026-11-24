@@ -119,11 +119,13 @@ final readonly class ActivityDescriber
                 'held' => \in_array($value, $app['held'], true),
             ], $entry->getScopes()),
             'count' => $entry->getCount(),
+            'lastOccurredAt' => $entry->getLastOccurredAt()->format(\DATE_ATOM),
             'object' => null === $objectType ? null : [
                 'type' => $objectType,
                 'label' => self::objectLabel($objectType, $entry->isObjectList()),
                 'list' => $entry->isObjectList(),
                 'id' => $entry->getObjectId(),
+                'several' => $entry->hasSeveralObjects(),
             ],
         ];
     }
