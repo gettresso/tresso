@@ -185,6 +185,24 @@ final class McpMailAccountImportToolsTest extends DatabaseTestCase
         self::assertStringStartsWith('Not found', $this->mcpCallError($lisa, $session, 'reconnect_mail_account', ['id' => $account]));
     }
 
+    public function testAnAppFollowsOnlyTheListsItMade(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/mail-account-imports', ['entries' => [['address' => 'anna@partner.example']]], $this->userHeaders('kim@example.test', ['settings:write']));
+        self::assertResponseStatusCodeSame(201);
+        $madeInTresso = $this->responseString('id');
+
+        self::assertStringStartsWith('Not found', $this->mcpCallError($this->headers, $this->session, 'get_mail_account_import', ['id' => $madeInTresso]));
+    }
+
+    public function testTheConsentTextSaysAnAppMayPrepareAListAndNeverConnects(): void
+    {
+        $contents = self::asList(self::asArray($this->mcpRequest($this->headers, $this->session, 'resources/read', ['uri' => 'tresso://scopes'])['result'] ?? null)['contents'] ?? null);
+        $text = self::asString($contents[0]['text'] ?? null);
+
+        self::assertStringContainsString('Change settings such as account names, smart inboxes, rules and notifications, and prepare a list of mail addresses for you to add. Never how a mail account connects, access tokens or connected apps.', $text);
+        self::assertStringContainsString('add_mail_accounts', $text);
+    }
+
     public function testReadingNeedsSettingsReadAndMakingSettingsWrite(): void
     {
         $readOnly = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);

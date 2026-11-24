@@ -56,6 +56,8 @@ class MailAccountImportRepository extends ServiceEntityRepository
             ->setParameter('owner', $owner->getId(), 'uuid')
             ->setParameter('now', $now)
             ->orderBy('i.createdAt', 'DESC')
+            // Ids are UUIDv7: within one second they still order by time.
+            ->addOrderBy('i.id', 'DESC')
             ->getQuery()
             ->getResult();
     }

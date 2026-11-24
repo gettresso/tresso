@@ -6,6 +6,7 @@ namespace App\Tests\Functional;
 
 use App\Account\Import\SweepMailAccountImports;
 use App\Account\Import\SweepMailAccountImportsHandler;
+use App\Account\UserDeletion;
 use App\Entity\User;
 use App\Security\Crypto\UserKeys;
 use App\Storage\Reencryption;
@@ -439,6 +440,192 @@ final class MailAccountImportTest extends DatabaseTestCase
         self::assertSame(0, $reencryption->remaining($this->kim->getId())['importLists']);
         self::assertStringStartsWith('f1.2.', self::string($this->connection()->fetchOne('SELECT sealed_entries FROM mail_account_import WHERE id = ?', [$id])));
         self::assertSame('todo', $this->entryState($id, 'anna@partner.example'));
+    }
+
+    public function testAListAnAppMadeLeavesOutLookalikeAddressesAndOneMadeInTresssoStoresTheDomainInAscii(): void
+    {
+        $app = $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $list = $this->createList([
+            ['address' => 'kim@gmaіl.com'],
+            ['address' => 'kіm@company.example'],
+            ['address' => 'kim@müller.de'],
+            ['address' => 'kim+news@gmail.com'],
+            ['address' => 'k.i.m@sub.mail.example'],
+        ], $app);
+        self::assertResponseStatusCodeSame(201);
+        self::assertSame(['kim+news@gmail.com', 'k.i.m@sub.mail.example'], array_column(self::asList($list['entries'] ?? null), 'address'));
+        self::assertSame(['invalid', 'invalid', 'invalid'], array_column(self::asList($list['leftOut'] ?? null), 'reason'));
+
+        $mine = $this->createList([['address' => 'Kim@Gmaіl.com'], ['address' => 'kim@müller.de']]);
+        self::assertSame(['kim@xn--gmal-n9d.com', 'kim@xn--mller-kva.de'], array_column(self::asList($mine['entries'] ?? null), 'address'));
+    }
+
+    public function testAddressesLongerThanAllowedAreLeftOut(): void
+    {
+        $list = $this->createList([
+            ['address' => str_repeat('a', 64).'@company.example'],
+            ['address' => str_repeat('a', 65).'@company.example'],
+            ['address' => 'kim@'.str_repeat('a', 64).'.example'],
+        ]);
+
+        self::assertSame([str_repeat('a', 64).'@company.example'], array_column(self::asList($list['entries'] ?? null), 'address'));
+        self::assertSame(['invalid', 'invalid'], array_column(self::asList($list['leftOut'] ?? null), 'reason'));
+    }
+
+    public function testOnlyTresssosOwnAppsMarkEntriesAndConfirmAList(): void
+    {
+        $id = self::string($this->createList([['address' => 'anna@partner.example']])['id'] ?? null);
+        $entry = $this->entryId($id, 'anna@partner.example');
+        $app = $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $token = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read', 'settings:write']);
+
+        foreach ([$app, $token] as $headers) {
+            $this->client->jsonRequest('POST', '/api/v1/mail-account-imports/'.$id.'/entry-states', ['entryId' => $entry, 'state' => 'skipped'], $headers);
+            self::assertResponseStatusCodeSame(403);
+            $this->client->jsonRequest('POST', '/api/v1/mail-account-imports/'.$id.'/confirmation', [], $headers);
+            self::assertResponseStatusCodeSame(403);
+        }
+        self::assertSame('todo', $this->entryState($id, 'anna@partner.example'));
+    }
+
+    public function testAnAppSeesFollowsAndDeletesOnlyTheListsItMade(): void
+    {
+        $mine = self::string($this->createList([['address' => 'anna@partner.example']])['id'] ?? null);
+        $app = $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $made = self::string($this->createList([['address' => 'bob@partner.example']], $app)['id'] ?? null);
+        $token = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read', 'settings:write']);
+
+        $this->client->request('GET', '/api/v1/mail-account-imports', server: $app);
+        self::assertSame([$made], array_column(self::asList($this->decodedResponse()), 'id'));
+        $this->client->request('GET', '/api/v1/mail-account-imports', server: $token);
+        self::assertSame([], $this->decodedResponse());
+        $this->client->request('GET', '/api/v1/mail-account-imports', server: $this->user);
+        self::assertSame([$made, $mine], array_column(self::asList($this->decodedResponse()), 'id'), 'Tresso shows every list of the user.');
+
+        $this->client->request('GET', '/api/v1/mail-account-imports/'.$mine, server: $app);
+        self::assertResponseStatusCodeSame(404);
+        $this->client->request('DELETE', '/api/v1/mail-account-imports/'.$mine, server: $app);
+        self::assertResponseStatusCodeSame(404);
+        $this->client->request('DELETE', '/api/v1/mail-account-imports/'.$made, server: $token);
+        self::assertResponseStatusCodeSame(404);
+        $this->client->request('DELETE', '/api/v1/mail-account-imports/'.$made, server: $app);
+        self::assertResponseStatusCodeSame(204);
+        self::assertSame([$mine], $this->connection()->fetchFirstColumn('SELECT id FROM mail_account_import'));
+    }
+
+    public function testAListAnAppMadeIsUsedOnlyOnceTheUserConfirmsIt(): void
+    {
+        self::assertTrue($this->createList([['address' => 'anna@partner.example']])['confirmed'] ?? null, 'Made in Tresso: nothing to confirm.');
+        $app = $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $id = self::string($this->createList([['address' => 'bob@partner.example']], $app)['id'] ?? null);
+        self::assertFalse($this->readList($id)['confirmed'] ?? null);
+
+        $this->client->jsonRequest('POST', '/api/v1/mail-account-imports/'.$id.'/confirmation', [], $this->user);
+        self::assertResponseIsSuccessful();
+        self::assertTrue($this->decodedResponse()['confirmed'] ?? null);
+        self::assertTrue($this->readList($id)['confirmed'] ?? null);
+    }
+
+    public function testTheCapCountsOnlyListsThatLive(): void
+    {
+        for ($i = 0; $i < 20; ++$i) {
+            $this->createList([['address' => "person{$i}@partner.example"]]);
+        }
+        $this->connection()->executeStatement("UPDATE mail_account_import SET expires_at = NOW() - INTERVAL '1 minute' WHERE id = (SELECT id FROM mail_account_import ORDER BY created_at LIMIT 1)");
+
+        $this->createList([['address' => 'one-more@partner.example']]);
+        self::assertResponseStatusCodeSame(201);
+        $this->createList([['address' => 'two-more@partner.example']]);
+        self::assertResponseStatusCodeSame(409);
+    }
+
+    public function testDeletingTheUserDeletesTheirLists(): void
+    {
+        $this->createList([['address' => 'anna@partner.example']]);
+
+        static::getContainer()->get(UserDeletion::class)->delete($this->kim->getId());
+
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM mail_account_import'));
+    }
+
+    public function testAnExpiredListTakesNoSignInNoMarkAndNoOutcome(): void
+    {
+        $id = self::string($this->createList([['address' => 'kim@gmail.example']])['id'] ?? null);
+        $entry = $this->entryId($id, 'kim@gmail.example');
+        $query = $this->startForList('google', $id, 'kim@gmail.example');
+        $this->connection()->executeStatement("UPDATE mail_account_import SET expires_at = NOW() - INTERVAL '1 minute'");
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'google', 'emailAddress' => 'kim@gmail.example', 'importId' => $id], $this->user);
+        self::assertResponseStatusCodeSame(422);
+        $this->markEntry($id, ['entryId' => $entry, 'state' => 'skipped']);
+        self::assertResponseStatusCodeSame(404);
+
+        // The sign-in started before still connects the account; the expired list is left as it was.
+        $this->googleTokens();
+        $page = $this->returnFromProvider('google', $query['state']);
+        self::assertStringContainsString('connected=', $page);
+        // Nothing was written on the expired list: brought back to life, its row shows an account it did not add.
+        $this->connection()->executeStatement("UPDATE mail_account_import SET expires_at = NOW() + INTERVAL '1 hour'");
+        self::assertSame('already_connected', $this->entryState($id, 'kim@gmail.example'));
+    }
+
+    public function testASignInStartRefusesAnImportIdThatIsNoId(): void
+    {
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'google', 'emailAddress' => 'kim@gmail.example', 'importId' => 'not-a-list'], $this->user);
+
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['importId'], $this->violationPaths());
+    }
+
+    public function testAListDeletedDuringASignInStillLetsTheSignInFinish(): void
+    {
+        $id = self::string($this->createList([['address' => 'kim@gmail.example']])['id'] ?? null);
+        $query = $this->startForList('google', $id, 'kim@gmail.example');
+        $this->client->request('DELETE', '/api/v1/mail-account-imports/'.$id, server: $this->user);
+        self::assertResponseStatusCodeSame(204);
+
+        $this->googleTokens();
+        $page = $this->returnFromProvider('google', $query['state']);
+
+        self::assertStringStartsWith(self::WEB.'/settings/accounts/import/'.$id.'?', $page);
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM mail_account'));
+    }
+
+    public function testAnotherUserHandingInTheAnswerLeavesTheRowAlone(): void
+    {
+        $id = self::string($this->createList([['address' => 'kim@gmail.example']])['id'] ?? null);
+        $query = $this->startForList('google', $id, 'kim@gmail.example');
+
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1']);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->userHeaders('lisa@example.test', ['settings:read', 'settings:write']));
+        self::assertSame('different_user', $this->decodedResponse()['connectError'] ?? null);
+
+        $entry = $this->entry($id, 'kim@gmail.example');
+        self::assertSame(['todo', null], [$entry['state'] ?? null, $entry['failure'] ?? null]);
+    }
+
+    public function testAnAnswerHandedInTwiceDoesNotOverwriteHowTheFirstEnded(): void
+    {
+        $id = self::string($this->createList([['address' => 'kim@gmail.example']])['id'] ?? null);
+        $query = $this->startForList('google', $id, 'kim@gmail.example');
+        $answer = $this->providerRedirect('google', ['state' => $query['state'], 'code' => 'code-1']);
+        $this->googleTokens();
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+        self::assertNull($this->decodedResponse()['connectError'] ?? null);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+        self::assertSame('expired', $this->decodedResponse()['connectError'] ?? null);
+
+        self::assertSame(['connected', null], [$this->entry($id, 'kim@gmail.example')['state'] ?? null, $this->entry($id, 'kim@gmail.example')['failure'] ?? null]);
+    }
+
+    public function testAnIdnAddressOfTheListSignsInByItsAsciiDomain(): void
+    {
+        $id = self::string($this->createList([['address' => 'kim@müller.de']])['id'] ?? null);
+
+        $query = $this->startForList('google', $id, 'kim@müller.de');
+
+        self::assertSame('kim@xn--mller-kva.de', $query['login_hint']);
     }
 
     /**

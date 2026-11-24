@@ -164,12 +164,15 @@ final readonly class ProviderConnector
             ? ['owner' => $request->getOwner(), 'importId' => $request->getImportId(), 'address' => $loginHint]
             : null;
 
+        // Only the call that used the request up says on the list how it ended: one that lost the claim to another
+        // call handing in the same answer must not write over what that one recorded.
+        $claimed = false;
         try {
             if (null === $request || $request->getProvider() !== $provider) {
                 throw new ConnectFailed(ConnectError::Expired);
             }
             if ($request->isExpired()) {
-                $this->claim($request);
+                $claimed = $this->claim($request);
 
                 throw new ConnectFailed(ConnectError::Expired);
             }
@@ -180,6 +183,7 @@ final readonly class ProviderConnector
             if (!$this->claim($request)) {
                 throw new ConnectFailed(ConnectError::Expired);
             }
+            $claimed = true;
             if (null !== $error && '' !== $error) {
                 throw new ConnectFailed(self::providerError($provider, $error, $errorDescription), \sprintf('The provider answered %s.', $error));
             }
@@ -195,8 +199,8 @@ final readonly class ProviderConnector
             return $outcome;
         } catch (ConnectFailed $e) {
             $this->logger->info('Connecting a provider account failed.', ['provider' => $provider->value, 'error' => $e->error->value, 'reason' => $e->getMessage()]);
-            // Another user handing in the answer leaves the sign-in to its owner, who may still finish it.
-            if (null !== $importEntry && ConnectError::DifferentUser !== $e->error) {
+            // Another user handing in the answer never claimed it: the sign-in stays its owner's, who may still finish it.
+            if (null !== $importEntry && $claimed) {
                 $this->imports->settleSignIn($importEntry['owner'], $importEntry['importId'], $importEntry['address'], $e->error);
             }
 

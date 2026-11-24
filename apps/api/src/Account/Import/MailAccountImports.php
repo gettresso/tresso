@@ -13,22 +13,23 @@ use App\Enum\ImportProviderHint;
 use App\ProviderAuth\ConnectError;
 use App\Repository\MailAccountImportRepository;
 use App\Repository\MailAccountRepository;
+use App\Security\CallerKey;
 use App\Security\Crypto\FieldVault;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Clock\ClockInterface;
 use Symfony\Component\Uid\Uuid;
-use Symfony\Component\Validator\Constraints as Assert;
-use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 /**
  * Mail account import lists: a short list of addresses the user wants to add, which the user then connects one by one
  * on the web app's page for it. Making a list connects nothing and asks for no password; every address is connected by
  * the user, through the same sign-in or server form as a single account.
  *
- * The entries are sealed with the owner's field key, bound to the list's row ({@see self::context()}). An entry counts
- * as connected while the owner has a mail account with its address, read whenever the list is read, never stored.
- * Addresses never go to a log.
+ * The entries are sealed with the owner's field key, bound to the list's row ({@see self::context()}). Whether the
+ * owner has an entry's account is read whenever the list is read, never stored. Addresses never go to a log.
+ *
+ * Every list remembers its caller ({@see CallerKey}): an app or a token sees, follows and deletes only the lists it
+ * made; Tresso's own apps see every list of the user.
  */
 final readonly class MailAccountImports
 {
@@ -42,7 +43,6 @@ final readonly class MailAccountImports
         private MailAccountImportRepository $imports,
         private MailAccountRepository $mailAccounts,
         private FieldVault $vault,
-        private ValidatorInterface $validator,
         private ClockInterface $clock,
     ) {
     }
@@ -54,22 +54,24 @@ final readonly class MailAccountImports
     }
 
     /**
-     * Sorts what was asked for into entries to take and addresses left out (not an address, given twice, connected
-     * already), each with the reason. Nothing is stored.
+     * Sorts what was asked for into entries to take and addresses left out (not an address for this kind of list, given
+     * twice, connected already), each with the reason. Nothing is stored.
      *
      * @param list<array{address: string, provider: ?ImportProviderHint}> $asked
+     * @param bool                                                        $firstParty made in Tresso's own apps
+     *                                                                                {@see ImportAddress::normalize()}
      *
      * @return array{taken: list<ImportEntry>, leftOut: list<array{index: int, address: string, reason: string, message: string}>}
      */
-    public function sort(User $owner, array $asked): array
+    public function sort(User $owner, array $asked, bool $firstParty): array
     {
         $connected = $this->connectedAddresses($owner);
         $taken = [];
         $seen = [];
         $leftOut = [];
         foreach ($asked as $index => $entry) {
-            $address = mb_strtolower(trim($entry['address']));
-            if (!$this->isAddress($address)) {
+            $address = ImportAddress::normalize($entry['address'], $firstParty);
+            if (null === $address) {
                 $leftOut[] = ['index' => $index, 'address' => mb_substr(trim($entry['address']), 0, 320), 'reason' => 'invalid', 'message' => 'This is not an email address.'];
                 continue;
             }
@@ -91,38 +93,61 @@ final readonly class MailAccountImports
     /**
      * Stores a list of the entries {@see self::sort()} took.
      *
+     * Stores a list of the entries {@see self::sort()} took, unless the owner has {@see self::MAX_LIVE_LISTS} already:
+     * then null. The owner's row is locked while counting, so two lists made at once cannot both pass the count.
+     *
      * @param non-empty-list<ImportEntry> $entries
      * @param string|null                 $createdBy the app that made it, when it is not one of Tresso's own
+     * @param string                      $caller    {@see CallerKey} of the request
      */
-    public function create(User $owner, array $entries, ?string $createdBy): MailAccountImport
+    public function create(User $owner, array $entries, ?string $createdBy, string $caller): ?MailAccountImport
     {
-        $import = new MailAccountImport($owner, $createdBy, $this->clock->now());
-        $this->seal($import, $entries);
-        $this->entityManager->persist($import);
-        $this->entityManager->flush();
+        return $this->entityManager->wrapInTransaction(function () use ($owner, $entries, $createdBy, $caller): ?MailAccountImport {
+            $this->entityManager->getConnection()->executeQuery('SELECT id FROM app_user WHERE id = :id FOR UPDATE', ['id' => $owner->getId()->toRfc4122()]);
+            $now = $this->clock->now();
+            if ($this->imports->countLiveOwnedBy($owner, $now) >= self::MAX_LIVE_LISTS) {
+                return null;
+            }
+            $import = new MailAccountImport($owner, $createdBy, CallerKey::OURS === $caller ? null : $caller, $now);
+            $this->seal($import, $entries);
+            $this->entityManager->persist($import);
+            $this->entityManager->flush();
 
-        return $import;
-    }
-
-    public function liveListsOf(User $owner): int
-    {
-        return $this->imports->countLiveOwnedBy($owner, $this->clock->now());
-    }
-
-    /** The owner's list while it lives; null for another user's list, an unknown id, or one that expired. */
-    public function find(User $owner, string $id): ?MailAccountImport
-    {
-        return $this->imports->findLiveOwnedBy($owner, $id, $this->clock->now());
+            return $import;
+        });
     }
 
     /**
-     * The owner's lists that live, newest first.
+     * The owner's list while it lives, for this caller: an app or a token gets only a list it made. Null for another
+     * user's list, another app's, an unknown id, or one that expired.
+     */
+    public function find(User $owner, string $id, string $caller = CallerKey::OURS): ?MailAccountImport
+    {
+        $import = $this->imports->findLiveOwnedBy($owner, $id, $this->clock->now());
+
+        return null === $import || !self::visibleTo($import, $caller) ? null : $import;
+    }
+
+    /**
+     * The owner's lists that live and this caller may see, newest first.
      *
      * @return list<MailAccountImport>
      */
-    public function liveOf(User $owner): array
+    public function liveOf(User $owner, string $caller = CallerKey::OURS): array
     {
-        return $this->imports->findAllLiveOwnedBy($owner, $this->clock->now());
+        return array_values(array_filter($this->imports->findAllLiveOwnedBy($owner, $this->clock->now()), static fn (MailAccountImport $import): bool => self::visibleTo($import, $caller)));
+    }
+
+    /** Marks a list an app made as checked by the user: from now on the page looks the addresses up and signs in. */
+    public function confirm(MailAccountImport $import): void
+    {
+        $import->confirm($this->clock->now());
+        $this->entityManager->flush();
+    }
+
+    private static function visibleTo(MailAccountImport $import, string $caller): bool
+    {
+        return CallerKey::OURS === $caller || $import->getCreatedByCaller() === $caller;
     }
 
     /**
@@ -214,9 +239,9 @@ final readonly class MailAccountImports
         if (null === $import) {
             return false;
         }
-        $address = mb_strtolower(trim($address));
+        $address = ImportAddress::normalize($address, true);
 
-        return [] !== array_filter($this->entries($import), static fn (ImportEntry $entry): bool => $entry->address === $address);
+        return null !== $address && [] !== array_filter($this->entries($import), static fn (ImportEntry $entry): bool => $entry->address === $address);
     }
 
     public function delete(MailAccountImport $import): void
@@ -285,14 +310,6 @@ final readonly class MailAccountImports
     {
         $json = json_encode(array_map(static fn (ImportEntry $entry): array => $entry->toArray(), $entries), \JSON_THROW_ON_ERROR | \JSON_UNESCAPED_UNICODE);
         $import->sealEntries($this->vault->seal($import->getOwner()->getId(), self::context($import->getId()), $json));
-    }
-
-    private function isAddress(string $address): bool
-    {
-        return '' !== $address && 0 === \count($this->validator->validate($address, [
-            new Assert\Email(mode: Assert\Email::VALIDATION_MODE_STRICT),
-            new Assert\Length(max: 320),
-        ]));
     }
 
     /**

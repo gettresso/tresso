@@ -7,6 +7,7 @@ namespace App\State;
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use ApiPlatform\Validator\Exception\ValidationException;
+use App\Account\Import\ImportAddress;
 use App\Account\Import\MailAccountImports;
 use App\ApiResource\Input\StartProviderAuthorization;
 use App\ApiResource\ProviderAuthorization;
@@ -76,8 +77,13 @@ final readonly class ProviderAuthorizationProcessor implements ProcessorInterfac
                 throw self::violation($data, 'importId', 'This import list does not hold this address, or it expired.', $data->importId);
             }
         }
+        // The address as the list stores it (lowercase, its domain in ASCII), so the answer is matched to its row.
+        $loginHint = null === $mailAccount ? $data->emailAddress : null;
+        if (null !== $data->importId && null !== $loginHint) {
+            $loginHint = ImportAddress::normalize($loginHint, true) ?? $loginHint;
+        }
 
-        $started = $this->connector->start($owner, $provider, $data->features, $mailAccount, $data->returnTo, null === $mailAccount ? $data->emailAddress : null, $data->importId);
+        $started = $this->connector->start($owner, $provider, $data->features, $mailAccount, $data->returnTo, $loginHint, $data->importId);
 
         return new ProviderAuthorization($started['url'], $provider->value, $started['expiresAt']);
     }

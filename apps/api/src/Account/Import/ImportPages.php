@@ -31,6 +31,12 @@ final readonly class ImportPages
         return $this->web().self::ACCOUNTS_PATH.'#account-'.$mailAccountId->toRfc4122();
     }
 
+    /** Whether the server has a web app to send the user to (WEB_APP_URL). */
+    public function available(): bool
+    {
+        return '' !== $this->addresses->web();
+    }
+
     private function web(): string
     {
         $web = $this->addresses->web();

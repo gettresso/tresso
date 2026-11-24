@@ -28,9 +28,12 @@ enum ImportFailure: string
     /** The mail server could not be reached, or did not answer like one. */
     case ServerUnreachable = 'server_unreachable';
 
+    /** The code of a provider sign-in failure; one this list does not know yet is the plain failure. */
     public static function fromConnectError(ConnectError $error): self
     {
-        return self::from($error->value);
+        // Every code there is today has its case; a code added to ConnectError later must not break a sign-in.
+        // @phpstan-ignore nullCoalesce.expr
+        return self::tryFrom($error->value) ?? self::Failed;
     }
 
     /** What went wrong, for the user and for an assistant reporting progress. */
