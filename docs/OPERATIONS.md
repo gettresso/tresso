@@ -392,6 +392,7 @@ Adding several accounts:
     cancel at the provider with Continue with the next and Try this one again, and stops after the current row when
     you press Stop. Close the tab and choose Add several accounts again within a day: the list continues where it was
     and starts nothing by itself. Finish without the rest lists what was added and skipped.
-79. Ask an assistant (MCP, with `settings:write`) to add three accounts: it answers a link and asks for no password;
-    the page says which app made the list. `get_mail_account_import` reports the progress, and
+79. Ask an assistant (MCP, with `settings:write`) to add three accounts, one of them with a lookalike domain
+    (`kim@gmaіl.com`): it answers a link, names the lookalike as left out, and asks for no password; the page says
+    which app made the list and looks nothing up until you choose Use these addresses. `get_mail_account_import` reports the progress, and
     `reconnect_mail_account` for an account whose sign-in failed opens Settings, Accounts at that account.
