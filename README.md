@@ -310,8 +310,8 @@ need):
 claude mcp add --transport http tresso http://localhost:8080/mcp --header "Authorization: Bearer tresso_pat_..."
 ```
 
-Settings, Apps, AI assistants lists the assistants you allowed, switches off what each may do and revokes them, and
-the activity log there shows what they did. See
+Settings, Apps, AI assistants and apps lists the assistants and apps you allowed, switches off what each may do and
+revokes them, and the activity log there shows what they did. See
 [Authentication and authorization](docs/ARCHITECTURE.md#32-authentication-and-authorization) for the tools and the
 scope each one needs.
 

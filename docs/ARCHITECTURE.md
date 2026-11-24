@@ -1630,36 +1630,47 @@ switches have no shortcuts, because the web client has none for them. Windows an
 #### Settings, Apps
 
 The web and desktop apps have one "Apps" entry in Settings in place of Meeting apps, Access tokens and Connected apps
-(the "Settings: apps" boards). Those pages keep their addresses (`/settings/meeting-apps`, `/settings/access-tokens`,
-`/settings/connected-apps`) and the navigation highlights Apps on them, as it does on `/settings/apps`,
-`/settings/apps/assistants` and `/settings/apps/activity`.
+(the "Settings: apps" boards). Meeting apps and access tokens keep their pages and addresses (`/settings/meeting-apps`,
+`/settings/access-tokens`); `/settings/connected-apps` leads to the AI assistants and apps page, which holds every
+connected app now. The navigation highlights Apps on all of them, and on `/settings/apps`, `/settings/apps/assistants`
+and `/settings/apps/activity`. All three pages are one content width (960px).
 
 - **Apps** (`SettingsAppsView`) shows two groups, "Tresso uses these" and "These can use your Tresso", with a category
-  filter (All, Meetings, Messaging, AI assistants, Developer; a group without rows in the category is hidden). Every
-  row is drawn from what the app's own page reads: Google Meet and Microsoft Teams from the meeting preferences and the
-  mail accounts (`appRows`; an expired permission is "Needs attention"), the own room link, WhatsApp as the rest of the
-  app has it (the desktop app once it is turned on there, the browser while a Mac relays the server's chats; an offline
-  Mac, an unlinked phone or a stopped bridge needs attention), each connected app as an AI assistant with a line made
-  from its scopes (`permissionLine`) and when it was last active (its newest log entry, else the last token issued),
-  "Add an AI assistant", the number of connected apps and of active personal access tokens. Zoom is listed as not
-  available yet, without an action. A row only leads to its page; nothing is changed on the Apps page. There is no
-  webhooks row: the product has no webhooks.
-- **AI assistants** (`SettingsAssistantsView`) has a tile per assistant with how to add Tresso: Claude Code's command
-  (`claude mcp add --transport http tresso <endpoint>`, then `/mcp` to sign in), Cursor's documented install link
-  (`cursor://anysphere.cursor-deeplink/mcp/install?name=tresso&config=<base64 of {"url": endpoint}>`, opened through
-  the system on the desktop app, whose opener allows exactly that link), and the manual steps for Claude, VS Code,
-  ChatGPT and any other tool, whose makers document no link with the address filled in. The endpoint is
-  `mcpEndpoint` of `GET /api/v1/server-info`, with Copy. No link or command ever carries a token: assistants sign in
-  with OAuth. Each connected app has a switch per scope an app that is not ours may hold (the consent screen's labels
-  and descriptions); a switch saves at once through `PATCH /api/v1/connected-apps/{id}` and puts itself back with the
-  reason when that fails. A scope that was never granted cannot be switched on here (it needs the consent screen), so
-  its switch is off and disabled. "Revoke access" disconnects the app at once (`DELETE`); it cannot be undone, so the
-  page offers no undo and says the app has to ask for permission again. Recent activity is the app's newest six log
-  entries, with the full log one link away.
+  filter of pressed buttons (All, Meetings, Messaging, AI assistants and apps, Developer; a group without rows in the
+  category is hidden). Every row is drawn from what the app's own page reads: Google Meet and Microsoft Teams from the
+  meeting preferences and the mail accounts (`appRows`; an expired permission is "Needs attention"), the own room
+  link, WhatsApp as the rest of the app has it (the desktop app once it is turned on there, the browser while a Mac
+  relays the server's chats; an offline Mac, an unlinked phone or a stopped bridge needs attention), each app the user
+  allowed through OAuth as a row of its own with a line made from its scopes (`permissionLine`; with every scope
+  switched off it says what the app can still see: name, email address and organizations) and when it was last active
+  (its newest log entry, else the last token issued), "Add an AI assistant", and the number of active personal access
+  tokens. Zoom is listed as not available yet, without an action. A row only leads to its page; nothing is changed on
+  the Apps page. There is no webhooks row: the product has no webhooks.
+- **AI assistants and apps** (`SettingsAssistantsView`) has a tile per assistant with how to add Tresso: Claude Code's
+  command (`claude mcp add --transport http tresso '<endpoint>'`, then `/mcp` to sign in), Cursor's documented install
+  link (`cursor://anysphere.cursor-deeplink/mcp/install?name=tresso&config=<base64 of {"url": endpoint}>`), and the
+  manual steps for Claude and ChatGPT, whose makers document no link with the address filled in, for VS Code (until its
+  install link is checked with a remote server) and for any other tool. The endpoint is `mcpEndpoint` of `GET
+  /api/v1/server-info`, used only when it is a plain address (`checkedEndpoint`: https, http only on `localhost` or
+  `127.0.0.1`, no user or password, no query or fragment, plain ASCII without spaces or shell characters); otherwise,
+  or when server info fails, the page says it could not read the address and offers no command, link or Copy. On the
+  desktop app, Add to Cursor asks the shell (`open_cursor_install`, `mcp_install.rs`), which checks the endpoint by the
+  same rules and builds and opens the link itself; the opener's scope allows no `cursor://` link at all. No link or
+  command ever carries a token: assistants sign in with OAuth. Each connected app has a switch per scope an app that is
+  not ours may hold (the consent screen's labels and descriptions); a switch saves at once through `PATCH
+  /api/v1/connected-apps/{id}`, quick toggles go out as their last state, and a failed save puts the switch back with
+  the reason. A scope that was never granted cannot be switched on here (it needs the consent screen): its switch is
+  dimmed and says "Not allowed when this app was connected. Connect it again to allow it." "Revoke access" asks first
+  in a dialog (focus on Keep it), then disconnects the app (`DELETE`); the note that says so takes the focus and is
+  announced. It cannot be undone, so the page offers no undo. Recent activity is the app's newest six log entries
+  (loading, "Nothing yet"), with the full log one link away, on that app and 90 days.
 - **Activity log** (`SettingsAppActivityView`) reads `GET /api/v1/app-activity` with the filters of the page (app,
-  kind, result, period; the last 24 hours at first) a page at a time ("Show older entries"). A row opens to show the
-  permission used (and whether the app still holds it), what was touched, how it came in, the reason sentence and a
-  link to where the app's permissions are changed. States: loading, empty (no app has an entry), and no match.
+  kind, result, period; the last 24 hours at first, or the app and period the address names) a page at a time ("Show
+  older entries"; a page that fails says so under the table with Try again and keeps the entries; the last page moves
+  the focus to its first entry). A row opens to show the permission used (and whether the app still holds it), what
+  was touched (nothing for an action that went through without an object), how it came in, how often it happened, the
+  reason sentence and a link to where the app's permissions are changed. States: loading, empty (the log holds
+  nothing), no match, and an error.
 
 #### The desktop window frame
 
