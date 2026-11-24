@@ -13,7 +13,8 @@ use App\State\ServerInfoProvider;
  * What this server is, for an app to check before it signs in: always open, also to someone whose subscription
  * stopped. `billing` says whether this server bills its organizations (Tresso Cloud) or not (a self-hosted server).
  * `allowUnencryptedMailServers` says whether mail accounts may connect without TLS (MAIL_ALLOW_UNSAFE_SERVERS, for
- * local test servers only), so apps offer that choice only where it can be saved.
+ * local test servers only), so apps offer that choice only where it can be saved. `mcpEndpoint` is the address an AI
+ * assistant connects to (MCP_PUBLIC_URL plus `/mcp`), the same for everyone.
  */
 #[ApiResource(
     shortName: 'ServerInfo',
@@ -36,6 +37,8 @@ final readonly class ServerInfo
         /** Days of free trial a new organization gets on a billing server; 0 elsewhere. */
         public int $trialDays,
         public bool $allowUnencryptedMailServers = false,
+        /** The MCP endpoint of this server, for an AI assistant to connect to. */
+        public string $mcpEndpoint = '',
     ) {
     }
 }

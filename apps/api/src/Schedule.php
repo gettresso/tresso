@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App;
 
 use App\Account\Import\SweepMailAccountImports;
+use App\Activity\PurgeAppActivity;
 use App\Billing\ReconcileSubscriptions;
 use App\Bulk\SweepBulkActions;
 use App\Chat\PurgeCancelledReplies;
@@ -51,6 +52,7 @@ final readonly class Schedule implements ScheduleProviderInterface
             ->add(RecurringMessage::cron('41 3 * * *', new PurgeOldPersonalAccessTokens()))
             ->add(RecurringMessage::cron('47 3 * * *', new PurgeUnusedRegisteredClients()))
             ->add(RecurringMessage::cron('53 3 * * *', new PurgeExpiredOAuthTokens()))
-            ->add(RecurringMessage::cron('59 3 * * *', new PurgeCancelledReplies()));
+            ->add(RecurringMessage::cron('59 3 * * *', new PurgeCancelledReplies()))
+            ->add(RecurringMessage::cron('29 3 * * *', new PurgeAppActivity()));
     }
 }

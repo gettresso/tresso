@@ -9,6 +9,7 @@ use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Delete;
 use ApiPlatform\Metadata\GetCollection;
 use ApiPlatform\Metadata\Post;
+use App\Activity\ActivityApp;
 use App\ApiResource\Input\CreatePersonalAccessToken;
 use App\ApiResource\Output\CreatedPersonalAccessToken;
 use App\Entity\PersonalAccessToken;
@@ -65,6 +66,8 @@ final class PersonalAccessTokenResource
         public \DateTimeImmutable $expiresAt,
         public ?\DateTimeImmutable $lastUsedAt,
         public ?\DateTimeImmutable $revokedAt,
+        /** The token in the activity log, for its `app` filter (`token:<id>`). */
+        public string $activityKey,
     ) {
     }
 
@@ -79,6 +82,7 @@ final class PersonalAccessTokenResource
             $token->getExpiresAt(),
             $token->getLastUsedAt(),
             $token->getRevokedAt(),
+            ActivityApp::token($token->getId()->toRfc4122())->key(),
         );
     }
 }

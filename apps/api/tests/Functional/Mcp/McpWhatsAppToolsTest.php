@@ -228,6 +228,26 @@ final class McpWhatsAppToolsTest extends DatabaseTestCase
         }
     }
 
+    public function testTheActivityLogKeepsWhatWasSentToWhichChatAndNeverTheTextOrTheSearch(): void
+    {
+        $headers = $this->thirdPartyHeaders('kim@example.test', ['chat:read', 'chat:send']);
+        $session = $this->mcpInitialize($headers);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+
+        $this->mcpCallOk($headers, $session, self::SEND_TOOL, ['chatId' => $this->annaChat, 'text' => 'Meet me at the Falcon office']);
+        $this->mcpCallOk($headers, $session, 'search_whatsapp_messages', ['query' => 'friday']);
+
+        $rows = $this->connection()->fetchAllAssociative('SELECT action, kind, result, scopes, object_type, object_id FROM app_activity ORDER BY occurred_at, id');
+        self::assertSame([
+            ['action' => self::SEND_TOOL, 'kind' => 'send', 'result' => 'done', 'scopes' => '["chat:send"]', 'object_type' => 'Chat', 'object_id' => $this->annaChat],
+            ['action' => 'search_whatsapp_messages', 'kind' => 'read', 'result' => 'done', 'scopes' => '["chat:read"]', 'object_type' => 'ChatSearch', 'object_id' => null],
+        ], $rows);
+        $stored = mb_strtolower((string) json_encode($this->connection()->fetchAllAssociative('SELECT * FROM app_activity')));
+        foreach (['falcon', 'meet me', 'friday', 'anna', strtolower(self::ANNA_JID)] as $content) {
+            self::assertStringNotContainsString($content, $stored);
+        }
+    }
+
     public function testAReplyWaitsWhileTheMacIsOfflineAndIsNeverSaidToBeSent(): void
     {
         $this->relayGoesOffline();
