@@ -106,6 +106,24 @@ describe('router', () => {
     expect(router.currentRoute.value.name).toBe('settings-meeting-apps')
   })
 
+  it('opens Apps and the pages under it at their new addresses, and the old ones still', async () => {
+    useAuthStore().tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
+
+    for (const [path, name] of [
+      ['/settings/apps', 'settings-apps'],
+      ['/settings/apps/assistants', 'settings-apps-assistants'],
+      ['/settings/apps/activity', 'settings-apps-activity'],
+      ['/settings/meeting-apps', 'settings-meeting-apps'],
+      ['/settings/access-tokens', 'settings-access-tokens'],
+      ['/settings/connected-apps', 'settings-connected-apps'],
+    ]) {
+      await router.push(path!)
+      expect({ path, name: router.currentRoute.value.name }).toEqual({ path, name })
+    }
+    await router.push('/settings/apps/assistants?app=consent-1')
+    expect(router.currentRoute.value.query.app).toBe('consent-1')
+  })
+
   it('shows the first settings page for a settings path that matches none', async () => {
     useAuthStore().tokens = { accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: Date.now() + 3_600_000 }
 

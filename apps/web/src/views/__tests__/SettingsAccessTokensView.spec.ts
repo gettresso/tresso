@@ -19,6 +19,7 @@ function token(id: string, name: string, extra: Partial<PersonalAccessToken> = {
     id,
     name,
     prefix: `tresso_pat_${id}`,
+    activityKey: `token:${id}`,
     scopes: ['mail:read', 'signatures:read'],
     createdAt: '2026-11-01T08:00:00+00:00',
     expiresAt: '2099-01-30T08:00:00+00:00',

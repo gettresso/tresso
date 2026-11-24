@@ -8,6 +8,7 @@ const listed: PersonalAccessToken = {
   id: 'pat-1',
   name: 'Backup script',
   prefix: 'tresso_pat_Xk3f9a',
+  activityKey: 'token:pat-1',
   scopes: ['mail:read'],
   createdAt: '2026-11-01T08:00:00+00:00',
   expiresAt: '2027-01-30T08:00:00+00:00',
