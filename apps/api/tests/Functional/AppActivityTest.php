@@ -68,6 +68,7 @@ final class AppActivityTest extends DatabaseTestCase
             'object_type' => 'MailAccount',
             'object_list' => true,
             'object_id' => null,
+            'several_objects' => false,
             'missing_scopes' => '[]',
             'count' => 1,
         ], $this->withoutVolatile($rows[0]));
@@ -85,6 +86,7 @@ final class AppActivityTest extends DatabaseTestCase
             'object_type' => 'SmartInbox',
             'object_list' => false,
             'object_id' => $inbox,
+            'several_objects' => false,
             'missing_scopes' => '[]',
             'count' => 1,
         ], $this->withoutVolatile($rows[1]));
@@ -120,6 +122,7 @@ final class AppActivityTest extends DatabaseTestCase
             'object_type' => 'SmartInbox',
             'object_list' => false,
             'object_id' => $inbox,
+            'several_objects' => false,
             'missing_scopes' => '[]',
             'count' => 1,
         ], $this->withoutVolatile($rows[0]));
@@ -242,7 +245,7 @@ final class AppActivityTest extends DatabaseTestCase
 
         $api = $page['items'][0];
         self::assertSame(['name' => 'GET /api/v1/signatures', 'title' => 'List signatures'], $api['action']);
-        self::assertSame(['type' => 'Signature', 'label' => 'Signatures', 'list' => true, 'id' => null], $api['object']);
+        self::assertSame(['type' => 'Signature', 'label' => 'Signatures', 'list' => true, 'id' => null, 'several' => false], $api['object']);
         self::assertSame([['scope' => 'signatures:read', 'label' => 'See signatures', 'held' => true]], $api['permissions']);
         self::assertSame('api', $api['channel']);
         self::assertIsInt($api['durationMs']);
@@ -367,6 +370,69 @@ final class AppActivityTest extends DatabaseTestCase
         self::assertSame([1, 3], array_column($items, 'count'));
     }
 
+    public function testThreeIdenticalRequestsAreOneEntryCountedThreeTimesAndOneEntryOfTheDay(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        $this->connection()->executeStatement('DELETE FROM app_activity_day');
+        for ($i = 0; $i < 3; ++$i) {
+            $this->client->request('GET', '/api/v1/mail-accounts', server: $headers);
+        }
+
+        self::assertSame([3], array_column($this->rows(), 'count'));
+        self::assertSame([1], $this->connection()->fetchFirstColumn('SELECT entries FROM app_activity_day'));
+    }
+
+    public function testReadsOfDifferentObjectsKeepNoIdAndSaySoWhileChangesStayApart(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $inboxes = array_values(array_filter($this->connection()->fetchFirstColumn('SELECT id FROM category WHERE owner_id = ? ORDER BY id LIMIT 2', [$this->kim->getId()->toRfc4122()]), \is_string(...)));
+        self::assertCount(2, $inboxes);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        foreach ($inboxes as $inbox) {
+            $this->client->request('GET', '/api/v1/smart-inboxes/'.$inbox, server: $headers);
+            self::assertResponseIsSuccessful();
+            $this->client->request('PATCH', '/api/v1/smart-inboxes/'.$inbox, server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: '{"autoCreateTodo": false}');
+        }
+
+        $rows = $this->rows();
+        $reads = array_values(array_filter($rows, static fn (array $row): bool => 'GET' === $row['method']));
+        $changes = array_values(array_filter($rows, static fn (array $row): bool => 'PATCH' === $row['method']));
+        self::assertSame([[2, null, true]], array_map(static fn (array $row): array => [$row['count'], $row['object_id'], $row['several_objects']], $reads));
+        self::assertSame($inboxes, array_column($changes, 'object_id'), 'A change to each object is an entry of its own.');
+
+        $this->client->request('GET', '/api/v1/app-activity', server: $this->userHeaders('kim@example.test', ['settings:read']));
+        /** @var array{items: list<array{action: array{name: string}, object: array{several: bool, id: string|null}, count: int, occurredAt: string, lastOccurredAt: string}>} $page */
+        $page = $this->decodedResponse();
+        $read = array_values(array_filter($page['items'], static fn (array $item): bool => str_starts_with($item['action']['name'], 'GET')))[0];
+        self::assertSame([true, null, 2], [$read['object']['several'], $read['object']['id'], $read['count']]);
+        self::assertGreaterThanOrEqual($read['occurredAt'], $read['lastOccurredAt']);
+    }
+
+    public function testPastTheCapSendsChangesAndRefusalsAreStillWritten(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $token = $this->connection()->fetchOne('SELECT id FROM personal_access_token');
+        self::assertIsString($token);
+        $inbox = $this->builtinInbox($this->kim);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        $this->connection()->executeStatement('DELETE FROM app_activity_day');
+        $this->connection()->insert('app_activity_day', ['owner_id' => $this->kim->getId()->toRfc4122(), 'app_type' => 'token', 'app_id' => $token, 'day' => new \DateTimeImmutable()->format('Y-m-d'), 'entries' => ActivityLog::DAILY_CAP]);
+
+        $this->client->request('GET', '/api/v1/signatures', server: $headers);
+        self::assertResponseStatusCodeSame(403);
+        $this->client->request('PATCH', '/api/v1/smart-inboxes/'.$inbox, server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: '{"autoCreateTodo": false}');
+        self::assertResponseIsSuccessful();
+        $this->client->request('GET', '/api/v1/mail-accounts', server: $headers);
+
+        $actions = array_column($this->rows(), 'action');
+        sort($actions);
+        self::assertSame(['/api/v1/signatures', '/api/v1/smart-inboxes/{id}', 'more_activity_not_recorded'], $actions);
+        $web = $this->userHeaders('kim@example.test', ['settings:read']);
+        self::assertSame(['GET /api/v1/signatures'], array_column(array_column($this->read($web, ['result' => 'refused'])['items'], 'action'), 'name'));
+        self::assertSame(['PATCH /api/v1/smart-inboxes/{id}'], array_column(array_column($this->read($web, ['kind' => 'change'])['items'], 'action'), 'name'));
+    }
+
     public function testARefusedTokenIsOneEntryAnHourHoweverOftenItIsSent(): void
     {
         $revoked = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);
@@ -390,7 +456,7 @@ final class AppActivityTest extends DatabaseTestCase
         $this->connection()->insert('app_activity_day', ['owner_id' => $this->kim->getId()->toRfc4122(), 'app_type' => 'token', 'app_id' => $token, 'day' => new \DateTimeImmutable()->format('Y-m-d'), 'entries' => ActivityLog::DAILY_CAP]);
 
         $this->client->request('GET', '/api/v1/mail-accounts', server: $headers);
-        $this->client->request('GET', '/api/v1/signatures', server: $headers);
+        $this->client->request('GET', '/api/v1/smart-inboxes', server: $headers);
 
         self::assertSame([['more_activity_not_recorded', 2, null]], array_map(static fn (array $row): array => [$row['action'], $row['count'], $row['method']], $this->rows()));
         $this->client->request('GET', '/api/v1/app-activity', server: $this->userHeaders('kim@example.test', ['settings:read']));
@@ -471,7 +537,8 @@ final class AppActivityTest extends DatabaseTestCase
         self::assertNotFalse(\DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $row['occurred_at']));
         self::assertIsString($row['app_id']);
         self::assertIsString($row['repeat_key']);
-        unset($row['id'], $row['occurred_at'], $row['duration_ms'], $row['repeat_key']);
+        self::assertSame($row['occurred_at'], $row['last_occurred_at']);
+        unset($row['id'], $row['occurred_at'], $row['last_occurred_at'], $row['duration_ms'], $row['repeat_key']);
         $row['app_id'] = rtrim($row['app_id']);
 
         return ['owner_id' => $row['owner_id']] + $row;
@@ -505,6 +572,7 @@ final class AppActivityTest extends DatabaseTestCase
             'id' => Uuid::v7()->toRfc4122(),
             'owner_id' => $owner->getId()->toRfc4122(),
             'occurred_at' => $at->format('Y-m-d H:i:s'),
+            'last_occurred_at' => $at->format('Y-m-d H:i:s'),
             'app_type' => $appType,
             'app_id' => $appId,
             'channel' => 'mcp',
