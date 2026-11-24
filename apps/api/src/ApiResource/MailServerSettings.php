@@ -21,6 +21,9 @@ use Symfony\Component\Validator\Constraints as Assert;
  * are never suggested. `provider` names the large provider that handles the address, by its domain or its mail
  * exchanger (google, outlook, m365, icloud, yahoo; null for any other), so the client can offer the easiest way to
  * connect it: the provider's own sign-in page, or an app password.
+ *
+ * For an address of an import list (`importId`), the list must be the user's, live, confirmed and hold the address: an
+ * address an app put on a list is not looked up (its domain asked for servers) before the user chose to use it.
  */
 #[ApiResource(
     shortName: 'MailServerSettings',
@@ -38,6 +41,12 @@ use Symfony\Component\Validator\Constraints as Assert;
                     required: true,
                     description: 'The address of the account to connect.',
                     constraints: [new Assert\NotBlank(), new Assert\Email(mode: Assert\Email::VALIDATION_MODE_STRICT), new Assert\Length(max: 320)],
+                ),
+                'importId' => new QueryParameter(
+                    schema: ['type' => 'string', 'format' => 'uuid'],
+                    required: false,
+                    description: 'The import list the address is from: looked up only once the user confirmed a list an app made.',
+                    constraints: [new Assert\Uuid()],
                 ),
             ],
         ),

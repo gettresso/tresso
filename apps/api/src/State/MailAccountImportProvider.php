@@ -91,6 +91,7 @@ final readonly class MailAccountImportProvider implements ProviderInterface
             $entries,
             $progress,
             $import->getCreatedBy(),
+            str_starts_with((string) $import->getCreatedByCaller(), 'pat:'),
             $import->isConfirmed(),
             $this->pages->importPage($import->getId()),
             $import->getCreatedAt(),

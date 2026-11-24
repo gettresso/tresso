@@ -100,6 +100,8 @@ final readonly class MailAccountImportResource
         public array $entries,
         public array $progress,
         public ?string $createdBy,
+        /** Whether `createdBy` is a personal access token rather than an app ("made with" rather than "made by"). */
+        public bool $createdWithToken,
         public bool $confirmed,
         /** The web app's page for this list, where the user connects the addresses. */
         public string $pageUrl,

@@ -93,8 +93,8 @@ final readonly class MailAccountImports
     /**
      * Stores a list of the entries {@see self::sort()} took.
      *
-     * Stores a list of the entries {@see self::sort()} took, unless the owner has {@see self::MAX_LIVE_LISTS} already:
-     * then null. The owner's row is locked while counting, so two lists made at once cannot both pass the count.
+     * Stores a list of the entries {@see self::sort()} took; null when the owner has {@see self::MAX_LIVE_LISTS}
+     * already. The owner's row is locked while counting, so two lists made at once cannot both pass the count.
      *
      * @param non-empty-list<ImportEntry> $entries
      * @param string|null                 $createdBy the app that made it, when it is not one of Tresso's own
@@ -173,7 +173,7 @@ final readonly class MailAccountImports
     {
         $accounts = [];
         foreach ($this->mailAccounts->findOwnedBy($import->getOwner()) as $account) {
-            $accounts[$account->getEmailAddress()] = $account;
+            $accounts[self::spelling($account->getEmailAddress())] = $account;
         }
 
         return array_map(static function (ImportEntry $entry) use ($accounts): array {
@@ -182,6 +182,8 @@ final readonly class MailAccountImports
                 null !== $account && $entry->added => ImportEntryState::Connected,
                 null !== $account => ImportEntryState::AlreadyConnected,
                 $entry->skipped => ImportEntryState::Skipped,
+                // "Connected another way" said only while that account existed: once it is gone the row is to do.
+                ImportFailure::AlreadyConnected === $entry->failure => ImportEntryState::Todo,
                 null !== $entry->failure => ImportEntryState::Failed,
                 default => ImportEntryState::Todo,
             };
@@ -224,7 +226,7 @@ final readonly class MailAccountImports
         if (null === $import) {
             return;
         }
-        $address = mb_strtolower($address);
+        $address = self::spelling($address);
         $this->change(
             $import->getId(),
             static fn (ImportEntry $entry): bool => $entry->address === $address,
@@ -232,11 +234,14 @@ final readonly class MailAccountImports
         );
     }
 
-    /** Whether the owner's live list $importId holds $address. */
+    /**
+     * Whether the owner's live list $importId holds $address and may be used: a list an app made only once the user
+     * confirmed it. Nothing is looked up or signed in for its addresses before.
+     */
     public function holds(User $owner, string $importId, string $address): bool
     {
         $import = $this->find($owner, $importId);
-        if (null === $import) {
+        if (null === $import || !$import->isConfirmed()) {
             return false;
         }
         $address = ImportAddress::normalize($address, true);
@@ -313,13 +318,22 @@ final readonly class MailAccountImports
     }
 
     /**
+     * An address as a list stores it (lowercase, its domain in ASCII), so a mail account stored with its domain in
+     * Unicode matches its entry. One that is no address by the list's rule stays as it is.
+     */
+    public static function spelling(string $address): string
+    {
+        return ImportAddress::normalize($address, true) ?? mb_strtolower($address);
+    }
+
+    /**
      * @return array<string, true>
      */
     private function connectedAddresses(User $owner): array
     {
         $addresses = [];
         foreach ($this->mailAccounts->findOwnedBy($owner) as $account) {
-            $addresses[$account->getEmailAddress()] = true;
+            $addresses[self::spelling($account->getEmailAddress())] = true;
         }
 
         return $addresses;

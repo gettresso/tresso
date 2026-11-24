@@ -134,11 +134,13 @@ final class MailAccountImportTest extends DatabaseTestCase
         $this->client->jsonRequest('POST', '/api/v1/mail-account-imports', ['entries' => [['address' => 'anna@partner.example']]], $app);
         self::assertResponseStatusCodeSame(201);
         self::assertSame('Some app', $this->decodedResponse()['createdBy'] ?? null);
+        self::assertFalse($this->decodedResponse()['createdWithToken'] ?? null);
 
         $token = $this->personalAccessTokenHeaders('kim@example.test', ['settings:write']);
         $this->client->jsonRequest('POST', '/api/v1/mail-account-imports', ['entries' => [['address' => 'anna@partner.example']]], $token);
         self::assertResponseStatusCodeSame(201);
-        self::assertSame('your personal access token "Script"', $this->decodedResponse()['createdBy'] ?? null);
+        self::assertSame('your access token "Script"', $this->decodedResponse()['createdBy'] ?? null);
+        self::assertTrue($this->decodedResponse()['createdWithToken'] ?? null);
     }
 
     public function testMakingAListNeedsSettingsWriteAndReadingItSettingsRead(): void
@@ -626,6 +628,81 @@ final class MailAccountImportTest extends DatabaseTestCase
         $query = $this->startForList('google', $id, 'kim@müller.de');
 
         self::assertSame('kim@xn--mller-kva.de', $query['login_hint']);
+    }
+
+    public function testNothingIsSignedInLookedUpOrMarkedForAListAnAppMadeBeforeItIsConfirmed(): void
+    {
+        $app = $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $id = self::string($this->createList([['address' => 'kim@gmail.example'], ['address' => 'anna@partner.example']], $app)['id'] ?? null);
+        $entry = $this->entryId($id, 'anna@partner.example');
+
+        $this->client->jsonRequest('POST', '/api/v1/provider-authorizations', ['provider' => 'google', 'emailAddress' => 'kim@gmail.example', 'importId' => $id], $this->user);
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['importId'], $this->violationPaths());
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM provider_authorization_request'));
+
+        $this->client->request('GET', '/api/v1/mail-server-settings?'.http_build_query(['emailAddress' => 'anna@partner.example', 'importId' => $id]), server: $this->user);
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['importId'], $this->violationPaths());
+
+        $this->markEntry($id, ['entryId' => $entry, 'state' => 'skipped']);
+        self::assertResponseStatusCodeSame(422);
+        self::assertSame(['entryId'], $this->violationPaths());
+
+        $this->client->jsonRequest('POST', '/api/v1/mail-account-imports/'.$id.'/confirmation', [], $this->user);
+        self::assertResponseIsSuccessful();
+
+        $this->startForList('google', $id, 'kim@gmail.example');
+        self::assertSame(1, $this->countRows('SELECT COUNT(*) FROM provider_authorization_request'));
+        $this->markEntry($id, ['entryId' => $entry, 'state' => 'skipped']);
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testTheLookupOfAnAddressOfAListNeedsTheListToHoldIt(): void
+    {
+        $id = self::string($this->createList([['address' => 'anna@partner.example']])['id'] ?? null);
+        $lisasList = self::string($this->createList([['address' => 'lisa@partner.example']], $this->userHeaders('lisa@example.test', ['settings:write']))['id'] ?? null);
+
+        $this->client->request('GET', '/api/v1/mail-server-settings?'.http_build_query(['emailAddress' => 'other@partner.example', 'importId' => $id]), server: $this->user);
+        self::assertResponseStatusCodeSame(422);
+        $this->client->request('GET', '/api/v1/mail-server-settings?'.http_build_query(['emailAddress' => 'lisa@partner.example', 'importId' => $lisasList]), server: $this->user);
+        self::assertResponseStatusCodeSame(422);
+        $this->client->request('GET', '/api/v1/mail-server-settings?'.http_build_query(['emailAddress' => 'anna@partner.example', 'importId' => 'not-a-list']), server: $this->user);
+        self::assertResponseStatusCodeSame(422);
+    }
+
+    public function testAnIdnAddressConnectsWhicheverWayTheProviderSpellsIt(): void
+    {
+        $id = self::string($this->createList([['address' => 'kim@müller.de'], ['address' => 'anna@xn--mller-kva.de']])['id'] ?? null);
+        self::assertSame(['kim@xn--mller-kva.de', 'anna@xn--mller-kva.de'], array_column(self::asList($this->readList($id)['entries'] ?? null), 'address'));
+
+        $query = $this->startForList('google', $id, 'kim@müller.de');
+        $this->googleTokens(claims: ['email' => 'Kim@Müller.de', 'sub' => 'google-sub-3']);
+        $page = $this->returnFromProvider('google', $query['state']);
+
+        self::assertStringNotContainsString('wrong_account', $page);
+        self::assertSame('connected', $this->entryState($id, 'kim@xn--mller-kva.de'), 'An account stored with its domain in Unicode is the row of its ASCII spelling.');
+
+        $query = $this->startForList('google', $id, 'anna@xn--mller-kva.de');
+        $this->googleTokens(claims: ['email' => 'anna@xn--mller-kva.de', 'sub' => 'google-sub-4']);
+        $this->returnFromProvider('google', $query['state']);
+        self::assertSame('connected', $this->entryState($id, 'anna@xn--mller-kva.de'));
+    }
+
+    public function testAConnectedElsewhereFailureIsAlreadyConnectedWhileTheAccountExistsAndToDoAfter(): void
+    {
+        $id = self::string($this->createList([['address' => 'kim@gmail.example']])['id'] ?? null);
+        $query = $this->startForList('google', $id, 'kim@gmail.example');
+        // The address was connected with a password meanwhile: the Google sign-in for it is refused.
+        $account = $this->createImapAccount('kim@gmail.example');
+        $this->googleTokens();
+        self::assertStringContainsString('connectError=already_connected', $this->returnFromProvider('google', $query['state']));
+
+        self::assertSame(['already_connected', null], [$this->entry($id, 'kim@gmail.example')['state'] ?? null, $this->entry($id, 'kim@gmail.example')['failure'] ?? null]);
+
+        $this->client->request('DELETE', '/api/v1/mail-accounts/'.$account, server: $this->user);
+        self::assertResponseStatusCodeSame(204);
+        self::assertSame(['todo', null], [$this->entry($id, 'kim@gmail.example')['state'] ?? null, $this->entry($id, 'kim@gmail.example')['failure'] ?? null]);
     }
 
     /**
