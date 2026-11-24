@@ -83,6 +83,7 @@ function checkProblem(row: ImportRow): { problem: CheckProblem; host: string; po
 
 function action(row: ImportRow): { label: string; run: () => void; toggle: boolean } | null {
   if (!page.confirmed.value) return null
+  if (row.lookupError !== null) return { label: ROW_ACTIONS.tryAgain, run: () => void page.retryLookup(row.address), toggle: false }
   const password = row.route?.kind === 'password'
   switch (row.view) {
     case 'todo':
@@ -117,6 +118,7 @@ function providerOf(row: ImportRow) {
 
 function hint(row: ImportRow): string | null {
   if (!page.confirmed.value) return null
+  if (row.lookupError !== null) return row.lookupError
   const error = page.rowErrors.value[row.id]
   if (error) return error
   const provider = providerOf(row) ?? 'microsoft'
@@ -196,7 +198,7 @@ async function start(kind: 'next' | 'all'): Promise<void> {
   await (kind === 'next' ? page.next() : page.signInAll())
   // The button that was clicked is gone; Stop takes its place, unless the run opened a password row, whose field has
   // the focus.
-  if (page.mode.value !== null && page.openRow.value === null) await focus('.summary .stop-button')
+  if (page.mode.value !== null && !(page.openRow.value !== null && page.openedByRun.value)) await focus('.summary .stop-button')
 }
 
 async function checkAndAdd(entryId: string, values: Parameters<typeof page.connectWithPassword>[1]): Promise<void> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appName, assistantNotice, doneLine, doneTitle, expiredCounts, listTime, passwordGoesTo, summaryLine } from '../importTexts'
+import { appName, assistantNotice, leftOutPill, leftOutText, doneLine, doneTitle, expiredCounts, listTime, passwordGoesTo, summaryLine } from '../importTexts'
 
 describe('the words of Add several accounts', () => {
   it('writes a time as the boards do', () => {
@@ -25,6 +25,14 @@ describe('the words of Add several accounts', () => {
     expect(doneLine(27, 3)).toBe('3 were skipped. Mail for the new accounts is coming in, newest first.')
     expect(doneLine(0, 1)).toBe('1 was skipped.')
     expect(doneLine(2, 0)).toBe('Mail for the new accounts is coming in, newest first.')
+  })
+
+  it('says why the API left an address out', () => {
+    const lookalike = { address: 'kim@gmaіl.com', reason: 'lookalike', message: '' } as const
+    expect([leftOutPill(lookalike), leftOutText(lookalike)]).toEqual(['Not valid', 'This address uses letters that look like other letters. It is left out.'])
+    expect(leftOutText({ address: 'kim@x', reason: 'invalid', message: '' })).toBe('This is not a valid address. It is left out unless you fix it.')
+    expect(leftOutText({ address: 'kim', reason: 'invalid', message: '' })).toBe('There is no @ in this address. It is left out unless you fix it.')
+    expect(leftOutText({ address: 'kim@x.example', reason: 'duplicate', message: '' })).toBe('It is added once.')
   })
 
   it('cuts an app name at 60 characters', () => {
