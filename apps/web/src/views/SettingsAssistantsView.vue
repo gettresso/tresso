@@ -420,7 +420,7 @@ watch(
                 </button>
               </div>
             </div>
-            <span class="perm-foot">With Change settings an assistant may prepare a list of mail addresses to add. You sign in to each account yourself.</span>
+            <span class="perm-foot">An assistant only prepares the list of mail addresses. You sign in to each account yourself.</span>
             <span class="perm-foot more">File links are never given to an assistant.</span>
             <span class="perm-foot more">Tresso does not ask you again before an assistant sends a WhatsApp message: your assistant asks you. An app can queue at most 20 messages in 10 minutes and 100 a day.</span>
           </div>

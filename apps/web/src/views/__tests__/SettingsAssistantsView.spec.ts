@@ -233,7 +233,7 @@ describe('Settings, Apps, AI assistants', () => {
     ])
     expect(switches.filter((one) => one.attributes('aria-checked') === 'true').map((one) => one.attributes('aria-label'))).toEqual(['Read mail for Claude', 'See settings for Claude', 'Read your WhatsApp chats for Claude'])
     expect(wrapper.findAll('.perm-foot').map((note) => note.text())).toEqual([
-      'With Change settings an assistant may prepare a list of mail addresses to add. You sign in to each account yourself.',
+      'An assistant only prepares the list of mail addresses. You sign in to each account yourself.',
       'File links are never given to an assistant.',
       'Tresso does not ask you again before an assistant sends a WhatsApp message: your assistant asks you. An app can queue at most 20 messages in 10 minutes and 100 a day.',
     ])
