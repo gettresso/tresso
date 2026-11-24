@@ -55,6 +55,13 @@ class ProviderAuthorizationRequest
     #[ORM\Column(length: 320, nullable: true)]
     private ?string $loginHint = null;
 
+    /**
+     * Set when the sign-in is for an address of a mail account import list: the answer goes back to that list's page,
+     * and the provider account must be that address (the login hint). No foreign key: the list may go first.
+     */
+    #[ORM\Column(length: 36, nullable: true)]
+    private ?string $importId = null;
+
     /** Where the callback sends the provider's answer. */
     #[ORM\Column(length: 16, enumType: ProviderReturnTarget::class, options: ['default' => ProviderReturnTarget::Web->value])]
     private ProviderReturnTarget $returnTo;
@@ -66,9 +73,10 @@ class ProviderAuthorizationRequest
      * @param list<ProviderFeature> $features
      * @param list<string>          $requestedScopes
      */
-    public function __construct(string $state, User $owner, OAuthProvider $provider, array $features, array $requestedScopes, string $codeVerifier, ?string $mailAccountId, ProviderReturnTarget $returnTo, ?string $loginHint = null)
+    public function __construct(string $state, User $owner, OAuthProvider $provider, array $features, array $requestedScopes, string $codeVerifier, ?string $mailAccountId, ProviderReturnTarget $returnTo, ?string $loginHint = null, ?string $importId = null)
     {
         $this->loginHint = $loginHint;
+        $this->importId = $importId;
         $this->stateHash = self::hashState($state);
         $this->owner = $owner;
         $this->provider = $provider;
@@ -125,6 +133,11 @@ class ProviderAuthorizationRequest
     public function getLoginHint(): ?string
     {
         return $this->loginHint;
+    }
+
+    public function getImportId(): ?string
+    {
+        return $this->importId;
     }
 
     public function getReturnTo(): ProviderReturnTarget

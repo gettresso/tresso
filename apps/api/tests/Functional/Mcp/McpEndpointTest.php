@@ -120,14 +120,15 @@ final class McpEndpointTest extends DatabaseTestCase
             }
             $schema = self::asArray($tool['inputSchema'] ?? null);
             $annotations = self::asArray($tool['annotations'] ?? null);
-            self::assertMatchesRegularExpression('/^(get|list|search|create|update|delete|set|add|remove|send)_[a-z_]+$/', $name);
+            // reconnect_mail_account only answers the page where the user signs an account in again: a read.
+            self::assertMatchesRegularExpression('/^(get|list|search|create|update|delete|set|add|remove|send|reconnect)_[a-z_]+$/', $name);
             self::assertNotEmpty($tool['description'] ?? null, $name);
             self::assertSame('object', $schema['type'] ?? null, $name);
             self::assertFalse($schema['additionalProperties'] ?? true, $name.' refuses fields it does not name.');
             self::assertIsBool($annotations['readOnlyHint'] ?? null, $name);
             self::assertIsBool($annotations['destructiveHint'] ?? null, $name);
             self::assertIsBool($annotations['idempotentHint'] ?? null, $name);
-            self::assertSame(str_starts_with($name, 'get_') || str_starts_with($name, 'list_') || str_starts_with($name, 'search_'), $annotations['readOnlyHint'], $name);
+            self::assertSame(str_starts_with($name, 'get_') || str_starts_with($name, 'list_') || str_starts_with($name, 'search_') || str_starts_with($name, 'reconnect_'), $annotations['readOnlyHint'], $name);
             self::assertSame(str_starts_with($name, 'delete_') || str_starts_with($name, 'send_'), $annotations['destructiveHint'], $name.': deleting and sending cannot be taken back.');
             self::assertSame(str_starts_with($name, 'send_'), $annotations['openWorldHint'] ?? null, $name.': only sending reaches other people.');
         }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Mcp\Tools;
 
+use App\Account\Import\ImportPages;
 use App\Enum\MailAccountStatus;
 use App\Mcp\Api;
 use App\Mcp\Tool\Schema;
@@ -12,15 +13,21 @@ use App\Mcp\Tool\ToolArguments;
 use App\Mcp\Tool\ToolEffect;
 use App\Mcp\Tool\ToolProvider;
 use App\Security\Scope;
+use Symfony\Component\Uid\Uuid;
 
 /**
- * The user's mail accounts: read them, rename them, pause and resume syncing. Adding and removing an account and
- * changing how it connects (servers, username, password, calendar server) stay in Tresso's own apps, and the
- * connection details are left out of what these tools answer.
+ * The user's mail accounts: read them, rename them, pause and resume syncing, and find the page where the user signs an
+ * account in again. Adding (see {@see MailAccountImportTools}) and removing an account and changing how it connects
+ * (servers, username, password, calendar server) stay in Tresso's own apps, and the connection details are left out of
+ * what these tools answer.
  */
 final readonly class MailAccountTools implements ToolProvider
 {
     private const string ACCOUNT_ID = 'The id of the mail account, from list_mail_accounts or get_me.';
+
+    public function __construct(private ImportPages $pages)
+    {
+    }
 
     public function tools(): iterable
     {
@@ -65,6 +72,52 @@ final readonly class MailAccountTools implements ToolProvider
                 $api->patch('/mail-accounts/'.$arguments->id('id'), $arguments->only(['displayName', 'status'])),
             ),
         );
+
+        yield new Tool(
+            name: 'reconnect_mail_account',
+            title: 'Where to sign a mail account in again',
+            description: 'For a mail account whose sign-in failed (status auth_failed): answers the link to the page in '
+                .'Tresso where the user signs it in again. Changes nothing. You cannot sign in for the user: give them '
+                .'the link. Never ask the user for a password, an app password or a verification code.',
+            scopes: [Scope::SettingsRead],
+            effect: ToolEffect::Read,
+            inputSchema: Schema::object(['id' => Schema::id(self::ACCOUNT_ID)], ['id']),
+            run: $this->reconnect(...),
+        );
+    }
+
+    /**
+     * @return array<mixed>
+     */
+    private function reconnect(ToolArguments $arguments, Api $api): array
+    {
+        $account = self::summary($api->get('/mail-accounts/'.$arguments->id('id')));
+        $id = $account['id'] ?? null;
+        if (!\is_string($id)) {
+            throw new \UnexpectedValueException('The API answered a mail account without an id.');
+        }
+        if (MailAccountStatus::AuthFailed->value !== ($account['status'] ?? null)) {
+            return [
+                'mailAccountId' => $id,
+                'emailAddress' => $account['emailAddress'] ?? null,
+                'status' => $account['status'] ?? null,
+                'signInNeeded' => false,
+                'instruction' => 'This account\'s sign-in has not failed, so there is nothing to sign in again.',
+            ];
+        }
+        $link = $this->pages->accountPage(Uuid::fromString($id));
+
+        return [
+            'mailAccountId' => $id,
+            'emailAddress' => $account['emailAddress'] ?? null,
+            'status' => $account['status'],
+            'statusDetail' => $account['statusDetail'] ?? null,
+            'signInNeeded' => true,
+            'link' => $link,
+            'instruction' => 'Give the user this link: '.$link.' That page opens this account and says how to fix it: '
+                .'signing in at Google or Microsoft again in their own browser, or typing the new password into Tresso. '
+                .'You cannot sign in for them. Never ask the user for a password, an app password or a verification code.',
+        ];
     }
 
     /**

@@ -14,8 +14,9 @@ use App\State\ProviderAuthorizationProcessor;
 
 /**
  * A started sign-in at Google or Microsoft. The client sends the browser to `authorizationUrl`; afterwards the provider
- * returns the browser to the API, which passes its answer on to the web app (/settings/accounts/new, or
- * /settings/accounts when signing in again) as `state` plus `code` or `error` in the query, or straight away
+ * returns the browser to the API, which passes its answer on to the web app (/settings/accounts/new,
+ * /settings/accounts when signing in again, or /settings/accounts/import/{id} for an address of an import list, see
+ * {@see MailAccountImportResource}) as `state` plus `code` or `error` in the query, or straight away
  * `connectError=expired` for a state it does not know. The web app finishes with {@see ProviderConnection}. A sign-in
  * started with `returnTo: native` (the desktop app, which opens the provider in the system browser) gets the same
  * query through NATIVE_REDIRECT_URI instead, with the web app page in `next`.
