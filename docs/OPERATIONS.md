@@ -379,16 +379,19 @@ Tokens and MCP:
 Adding several accounts:
 
 74. Paste 30 addresses (some on one line with commas, one twice, one already connected, one mistyped) on Settings,
-    Accounts, Add several accounts: the list shows the rest, grouped by provider, and says which were left out and why.
+    Accounts, Add several accounts: "Check these first" names each one with its line, and Continue makes the list of
+    the rest, grouped as Microsoft 365, Google and other mail with a password.
 75. A Microsoft account with two-step verification: Sign in on its row, approve at Microsoft, come back to the list
     with the row connected and the next one offered; Enter starts it.
 76. A Google account: the provider's page starts with the row's address; picking another Google account there
     connects nothing and the row says so.
 77. An IMAP account whose password a password manager fills in on its row: the manager offers the entry for that
     address, the check passes and the row is connected. A wrong password marks the row failed, with the reason.
-78. Sign in to all, one after another: it goes on by itself after each connected row, stops at a row you cancel at
-    the provider, and stops after the current row when you press Stop. Close the tab, open the list again within a
-    day: it continues where it was and starts nothing by itself.
+78. Sign in to all, one after another: it goes on by itself after each connected row (in a new tab on the web; allow
+    pop-ups or use Open the page again), opens each password row and waits for its password, stops at a row you
+    cancel at the provider with Continue with the next and Try this one again, and stops after the current row when
+    you press Stop. Close the tab and choose Add several accounts again within a day: the list continues where it was
+    and starts nothing by itself. Finish without the rest lists what was added and skipped.
 79. Ask an assistant (MCP, with `settings:write`) to add three accounts: it answers a link and asks for no password;
     the page says which app made the list. `get_mail_account_import` reports the progress, and
     `reconnect_mail_account` for an account whose sign-in failed opens Settings, Accounts at that account.
