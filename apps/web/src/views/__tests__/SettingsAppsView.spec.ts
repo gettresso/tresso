@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { AppActivityPage, ConnectedApp, MailAccount, MeetingPreferences, PersonalAccessToken, SyncedChatAccount } from '@tresso/core'
 import { calendar } from '@tresso/core/testing'
+import { useAuthStore } from '@/stores/auth'
 import { useChatsStore } from '@/stores/chats'
 import { useMailStore } from '@/stores/mail'
 import SettingsAppsView from '../SettingsAppsView.vue'
@@ -95,10 +96,12 @@ describe('Settings, Apps', () => {
           durationMs: 10,
           permissions: [],
           object: null,
+          count: 1,
         },
       ],
       nextCursor: null,
       apps: [],
+      empty: false,
     }
     useMailStore().calendars = CALENDARS
     vi.stubGlobal(
@@ -151,13 +154,21 @@ describe('Settings, Apps', () => {
     const wrapper = await page()
     expect(wrapper.get('h2').text()).toBe('Apps')
     expect(wrapper.get('.lead').text()).toBe('Everything that is connected to Tresso, in one place: the apps Tresso uses for you, and the apps that may use your Tresso.')
-    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(['All', 'Meetings', 'Messaging', 'AI assistants', 'Developer'])
+    expect(wrapper.get('[role="group"]').attributes('aria-label')).toBe('Category')
+    expect(wrapper.findAll('.filter').map((chip) => chip.text())).toEqual(['All', 'Meetings', 'Messaging', 'AI assistants and apps', 'Developer'])
+    expect(wrapper.findAll('.filter').map((chip) => [chip.attributes('aria-pressed'), chip.attributes('tabindex')])).toEqual([
+      ['true', undefined],
+      ['false', undefined],
+      ['false', undefined],
+      ['false', undefined],
+      ['false', undefined],
+    ])
     expect(wrapper.findAll('.group h3').map((heading) => heading.text())).toEqual(['Tresso uses these', 'These can use your Tresso'])
     expect(wrapper.findAll('.group .sub').map((sub) => sub.text())).toEqual([
       'Tresso reaches out to these apps for you, to make meeting links and to bring in your chats.',
       'These apps reach into Tresso. Each one signs in with your permission and can only do what you allow.',
     ])
-    expect(wrapper.findAll('[data-row]').map((found) => found.attributes('data-row'))).toEqual(['meet', 'teams', 'own', 'zoom', 'assistant-claude', 'assistant-chatgpt', 'add', 'connected-apps', 'tokens'])
+    expect(wrapper.findAll('[data-row]').map((found) => found.attributes('data-row'))).toEqual(['meet', 'teams', 'own', 'zoom', 'assistant-claude', 'assistant-chatgpt', 'add', 'tokens'])
 
     expect(summary(wrapper, 'meet')).toEqual({ name: 'Google Meet', cat: 'Meetings', line: 'Makes meeting links on Google calendars.', pill: 'Needs attention', detail: 'The permission for support@company.example expired.', action: 'Review' })
     expect(row(wrapper, 'meet').get('a.action').classes()).toContain('primary')
@@ -166,12 +177,12 @@ describe('Settings, Apps', () => {
     expect(summary(wrapper, 'zoom')).toEqual({ name: 'Zoom', cat: 'Meetings', line: 'Meeting links made by Zoom.', pill: 'Not available yet', detail: '', action: null })
     expect(row(wrapper, 'zoom').classes()).toContain('soon')
 
-    expect(summary(wrapper, 'assistant-claude')).toEqual({ name: 'Claude', cat: 'AI assistants', line: 'May read mail, change todos and signatures, and change settings.', pill: 'Connected', detail: 'Active 4 min ago', action: 'Manage' })
+    expect(summary(wrapper, 'assistant-claude')).toEqual({ name: 'Claude', cat: 'AI assistants and apps', line: 'May read mail, change todos and signatures, and change settings.', pill: 'Connected', detail: 'Active 4 min ago', action: 'Manage' })
     expect(row(wrapper, 'assistant-claude').get('.mark').text()).toBe('CL')
-    expect(summary(wrapper, 'assistant-chatgpt')).toEqual({ name: 'ChatGPT', cat: 'AI assistants', line: 'May read mail and change todos.', pill: 'Connected', detail: 'Never used', action: 'Manage' })
+    expect(summary(wrapper, 'assistant-chatgpt')).toEqual({ name: 'ChatGPT', cat: 'AI assistants and apps', line: 'May read mail and change todos.', pill: 'Connected', detail: 'Never used', action: 'Manage' })
     expect(row(wrapper, 'assistant-chatgpt').get('.mark').text()).toBe('CG')
-    expect(summary(wrapper, 'add')).toEqual({ name: 'Add an AI assistant', cat: 'AI assistants', line: 'Install in a few clicks. No password or token to paste.', pill: null, detail: '', action: 'Add' })
-    expect(summary(wrapper, 'connected-apps')).toEqual({ name: 'Connected apps', cat: 'Developer', line: 'Other apps you approved with OAuth.', pill: 'Connected', detail: '2 apps', action: 'Manage' })
+    expect(summary(wrapper, 'add')).toEqual({ name: 'Add an AI assistant', cat: 'AI assistants and apps', line: 'Install in a few clicks. No password or token to paste.', pill: null, detail: '', action: 'Add' })
+    expect(wrapper.text()).not.toContain('Connected apps')
     expect(summary(wrapper, 'tokens')).toEqual({ name: 'Personal access tokens', cat: 'Developer', line: 'Keys for your own scripts. A token acts as you.', pill: 'Connected', detail: '1 active token', action: 'Manage' })
     expect(wrapper.text()).not.toContain('Webhooks')
 
@@ -186,32 +197,41 @@ describe('Settings, Apps', () => {
     expect(href('own')).toBe('/settings-meeting-apps')
     expect(href('assistant-claude')).toBe('/settings-apps-assistants?app=claude')
     expect(href('add')).toBe('/settings-apps-assistants')
-    expect(href('connected-apps')).toBe('/settings-connected-apps')
     expect(href('tokens')).toBe('/settings-access-tokens')
     expect(row(wrapper, 'assistant-claude').get('a.action').attributes('aria-label')).toBe('Manage Claude')
     expect(wrapper.get('.log-line a').attributes('href')).toBe('/settings-apps-activity')
   })
 
-  it('filters by category and hides a group without rows, by click and by arrow keys', async () => {
+  it('filters by category with pressed buttons and hides a group without rows', async () => {
     const wrapper = await page()
-    const tabs = () => wrapper.findAll('[role="tab"]')
+    const chips = () => wrapper.findAll('.filter')
 
-    await tabs()[3]!.trigger('click')
-    expect(tabs()[3]!.attributes('aria-selected')).toBe('true')
+    await chips()[3]!.trigger('click')
+    expect(chips().map((chip) => chip.attributes('aria-pressed'))).toEqual(['false', 'false', 'false', 'true', 'false'])
     expect(wrapper.findAll('.group h3').map((heading) => heading.text())).toEqual(['These can use your Tresso'])
     expect(wrapper.findAll('[data-row]').map((found) => found.attributes('data-row'))).toEqual(['assistant-claude', 'assistant-chatgpt', 'add'])
 
-    await tabs()[3]!.trigger('keydown', { key: 'ArrowLeft' })
-    await settle()
-    expect(tabs()[2]!.attributes('aria-selected')).toBe('true')
-    expect(document.activeElement).toBe(tabs()[2]!.element)
+    await chips()[2]!.trigger('click')
     // Messaging without WhatsApp has no rows at all.
     expect(wrapper.findAll('.group')).toHaveLength(0)
 
-    await tabs()[2]!.trigger('keydown', { key: 'Home' })
+    await chips()[0]!.trigger('click')
+    expect(wrapper.findAll('[data-row]')).toHaveLength(8)
+  })
+
+  it('says what an app with every permission switched off can still see', async () => {
+    apps = [app('quiet', 'Quiet app', [], { grantedScopes: ['mail:read'] })]
+    const wrapper = await page()
+    expect(row(wrapper, 'assistant-quiet').get('.line').text()).toBe('Every permission is switched off. It can still see your name, email address and organizations.')
+    expect(row(wrapper, 'assistant-quiet').get('a.action').attributes('href')).toBe('/settings-apps-assistants?app=quiet')
+  })
+
+  it('forgets when apps were active once another user signs in', async () => {
+    const wrapper = await page()
+    expect(row(wrapper, 'assistant-claude').get('.detail').text()).toBe('Active 4 min ago')
+    useAuthStore().generation++
     await settle()
-    expect(wrapper.findAll('[data-row]')).toHaveLength(9)
-    expect(tabs().map((tab) => tab.attributes('tabindex'))).toEqual(['0', '-1', '-1', '-1', '-1'])
+    expect(row(wrapper, 'assistant-claude').exists()).toBe(false)
   })
 
   it('shows WhatsApp as the browser has it, and a Mac that is offline as needing attention', async () => {
@@ -232,9 +252,8 @@ describe('Settings, Apps', () => {
     tokens = [token('old', { revokedAt: '2026-11-02T08:00:00+00:00' })]
     preferences = { ...preferences, ownLink: null, apps: ['own'] }
     const wrapper = await page()
-    expect(wrapper.findAll('[data-row]').map((found) => found.attributes('data-row'))).toEqual(['own', 'zoom', 'add', 'connected-apps', 'tokens'])
+    expect(wrapper.findAll('[data-row]').map((found) => found.attributes('data-row'))).toEqual(['own', 'zoom', 'add', 'tokens'])
     expect(summary(wrapper, 'own')).toMatchObject({ pill: 'Not connected', detail: 'No link yet', action: 'Set up' })
-    expect(summary(wrapper, 'connected-apps')).toMatchObject({ pill: 'Not connected', detail: '', action: 'Set up' })
     expect(summary(wrapper, 'tokens')).toMatchObject({ pill: 'Not connected', detail: '', action: 'Set up' })
   })
 
@@ -243,10 +262,10 @@ describe('Settings, Apps', () => {
       'fetch',
       vi.fn<typeof fetch>(async (input) => {
         const path = new URL(String(input)).pathname
-        if (path === '/api/v1/connected-apps') {
+        if (path === '/api/v1/personal-access-tokens') {
           return new Response(JSON.stringify({ detail: 'The server is busy. Try again in a moment.' }), { status: 503, headers: { 'Content-Type': 'application/problem+json' } })
         }
-        const body: Record<string, unknown> = { '/api/v1/calendar/meeting-preferences': preferences, '/api/v1/mail-accounts': [WORK], '/api/v1/personal-access-tokens': tokens, '/api/v1/app-activity': activity }
+        const body: Record<string, unknown> = { '/api/v1/calendar/meeting-preferences': preferences, '/api/v1/mail-accounts': [WORK], '/api/v1/connected-apps': apps, '/api/v1/app-activity': activity }
         return new Response(JSON.stringify(body[path] ?? {}))
       }),
     )

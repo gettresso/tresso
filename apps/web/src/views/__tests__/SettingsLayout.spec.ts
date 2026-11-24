@@ -45,7 +45,7 @@ describe('Settings navigation', () => {
   })
 
   it('highlights Apps on every page under it, old addresses included', async () => {
-    for (const path of ['/settings/apps', '/settings/apps/assistants', '/settings/apps/activity', '/settings/meeting-apps', '/settings/access-tokens', '/settings/connected-apps']) {
+    for (const path of ['/settings/apps', '/settings/apps/assistants', '/settings/apps/activity', '/settings/meeting-apps', '/settings/access-tokens']) {
       const wrapper = await at(path)
       const apps = wrapper.get('nav a[href="/settings/apps"]')
       expect({ path, active: apps.classes().includes('router-link-active'), current: apps.attributes('aria-current') }).toEqual({ path, active: true, current: 'page' })

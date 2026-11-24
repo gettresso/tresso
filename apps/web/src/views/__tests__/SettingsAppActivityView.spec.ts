@@ -23,6 +23,7 @@ const REFUSED: AppActivityEntry = {
   durationMs: 12,
   permissions: [{ scope: 'chat:send', label: 'Send WhatsApp messages as you', held: false }],
   object: { type: 'Chat', label: 'WhatsApp chat', list: false, id: 'chat_8f2k41' },
+  count: 1,
 }
 
 const LISTED: AppActivityEntry = {
@@ -37,6 +38,7 @@ const LISTED: AppActivityEntry = {
   durationMs: 140,
   permissions: [{ scope: 'settings:read', label: 'See settings', held: true }],
   object: { type: 'MailAccount', label: 'Mail accounts', list: true, id: null },
+  count: 3,
 }
 
 const FAILED: AppActivityEntry = {
@@ -62,28 +64,36 @@ describe('Settings, Apps, Activity log', () => {
   const queries: URLSearchParams[] = []
   let answer: (query: URLSearchParams) => AppActivityPage
   let hold: Promise<void> | null
+  let failMore: boolean
 
   beforeEach(() => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
     setActivePinia(createPinia())
     queries.length = 0
     hold = null
+    failMore = false
     const apps = [
       { key: 'client:chatgpt', type: 'client' as const, name: 'ChatGPT' },
       { key: 'token:pat-1', type: 'token' as const, name: 'Invoice export script' },
     ]
     answer = (query) =>
       query.get('cursor') === 'page-2'
-        ? { items: [FAILED], nextCursor: null, apps }
+        ? { items: [FAILED], nextCursor: null, apps, empty: false }
         : query.get('result') === 'failed'
-          ? { items: [], nextCursor: null, apps }
-          : { items: [REFUSED, LISTED], nextCursor: 'page-2', apps }
+          ? { items: [], nextCursor: null, apps, empty: false }
+          : { items: [REFUSED, LISTED], nextCursor: 'page-2', apps, empty: false }
     vi.stubGlobal(
       'fetch',
       vi.fn<typeof fetch>(async (input) => {
         const url = new URL(String(input))
         queries.push(url.searchParams)
         if (hold !== null) await hold
+        if (failMore && url.searchParams.has('cursor')) {
+          return new Response(JSON.stringify({ detail: 'The server is busy. Try again in a moment.' }), { status: 503, headers: { 'Content-Type': 'application/problem+json' } })
+        }
+        if (url.searchParams.get('kind') === 'change') {
+          return new Response(JSON.stringify({ detail: 'Could not read the log.' }), { status: 503, headers: { 'Content-Type': 'application/problem+json' } })
+        }
         return new Response(JSON.stringify(answer(url.searchParams)))
       }),
     )
@@ -150,8 +160,9 @@ describe('Settings, Apps, Activity log', () => {
     await wrapper.findAll('button.toggle')[1]!.trigger('click')
     const second = wrapper.get('.detail-row')
     expect(second.findAll('.fact')[1]!.text()).toBe('What it touchedMail accountsNo id. A list has none.')
+    expect(second.findAll('.fact')[3]!.text()).toBe('How often3 times')
     expect(second.find('.why').exists()).toBe(false)
-    expect(second.get('.detail-foot a').text()).toBe('Open tokens and connected apps')
+    expect(second.get('.detail-foot a').text()).toBe('Open personal access tokens')
     expect(second.get('.detail-foot a').attributes('href')).toBe('/settings-access-tokens')
     expect(wrapper.findAll('.detail-row')).toHaveLength(1)
   })
@@ -187,6 +198,50 @@ describe('Settings, Apps, Activity log', () => {
     expect(wrapper.find('.count').exists()).toBe(false)
   })
 
+  it('keeps the entries when older ones fail to load, says why under the table and tries again', async () => {
+    failMore = true
+    const wrapper = await page()
+    await wrapper.get('button.older').trigger('click')
+    await settle()
+    expect(wrapper.findAll('tbody tr')).toHaveLength(2)
+    expect(wrapper.get('.more-error').text()).toContain('The server is busy. Try again in a moment.')
+    expect(wrapper.get('.more-error').attributes('role')).toBe('alert')
+
+    failMore = false
+    await wrapper.get('.more-error button').trigger('click')
+    await settle()
+    expect(wrapper.find('.more-error').exists()).toBe(false)
+    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
+  })
+
+  it('moves the focus to the first new entry when the last page arrives', async () => {
+    const wrapper = await page()
+    ;(wrapper.get('button.older').element as HTMLButtonElement).focus()
+    await wrapper.get('button.older').trigger('click')
+    await settle()
+    expect(document.activeElement).toBe(wrapper.findAll('tbody tr')[2]!.element)
+  })
+
+  it('says why the log could not be read', async () => {
+    const wrapper = await page()
+    await wrapper.get('#log-kind').setValue('change')
+    await settle()
+    expect(wrapper.get('[role="alert"]').text()).toBe('Could not read the log.')
+    expect(wrapper.find('table').exists()).toBe(false)
+  })
+
+  it('opens on the period the address names, as the full log of one assistant does', async () => {
+    await page({ app: 'client:chatgpt', period: '90d' })
+    expect(queries[0]!.toString()).toBe('period=90d&app=client%3Achatgpt')
+  })
+
+  it('leaves out what was touched for an action that went through without an object', async () => {
+    answer = () => ({ items: [{ ...LISTED, object: null }], nextCursor: null, apps: [], empty: false })
+    const wrapper = await page()
+    await wrapper.get('button.toggle').trigger('click')
+    expect(wrapper.get('.detail-row').text()).not.toContain('What it touched')
+  })
+
   it('opens filtered on the app the address names', async () => {
     await page({ app: 'client:chatgpt' })
     expect(queries[0]!.toString()).toBe('period=24h&app=client%3Achatgpt')
@@ -195,7 +250,7 @@ describe('Settings, Apps, Activity log', () => {
   it('shows the loading state, then the empty log', async () => {
     let release = () => undefined as void
     hold = new Promise<void>((resolve) => (release = resolve))
-    answer = () => ({ items: [], nextCursor: null, apps: [] })
+    answer = () => ({ items: [], nextCursor: null, apps: [], empty: true })
     const stub = { template: '<div />' }
     const router = createRouter({ history: createMemoryHistory(), routes: ['settings-apps-activity', 'settings-apps', 'settings-apps-assistants'].map((name) => ({ path: `/${name}`, name, component: stub })) })
     const wrapper = mount(SettingsAppActivityView, { global: { plugins: [router] }, attachTo: document.body })

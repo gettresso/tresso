@@ -62,3 +62,11 @@ export async function onDeepLinks(handle: (url: string) => void): Promise<void> 
   }
   await onOpenUrl((urls) => urls.forEach(handleAndRemember))
 }
+
+/**
+ * Opens Cursor's prompt to add this server (Settings, Apps, AI assistants). The shell checks the endpoint and builds
+ * the install link itself (mcp_install.rs): the page cannot make it open any other link.
+ */
+export function openCursorInstall(endpoint: string): Promise<void> {
+  return invoke('open_cursor_install', { endpoint })
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, type RouteLocationRaw } from 'vue-router'
 import {
   ACTIVITY_KIND_LABELS,
@@ -8,6 +8,7 @@ import {
   activityTime,
   durationText,
   permissionUsed,
+  timesText,
   touched,
   type AppActivityEntry,
   type AppActivityKind,
@@ -29,13 +30,14 @@ const route = useRoute()
 const app = ref(typeof route.query.app === 'string' ? route.query.app : 'all')
 const kind = ref<'all' | AppActivityKind>('all')
 const result = ref<'all' | AppActivityResult>('all')
-const period = ref<AppActivityPeriod>('24h')
 const PERIODS: [AppActivityPeriod, string][] = [
   ['24h', 'Last 24 hours'],
   ['7d', 'Last 7 days'],
   ['30d', 'Last 30 days'],
   ['90d', 'Last 90 days'],
 ]
+/** The last 24 hours, unless the address names a period (the full log of one assistant opens on 90 days). */
+const period = ref<AppActivityPeriod>(PERIODS.some(([value]) => value === route.query.period) ? (route.query.period as AppActivityPeriod) : '24h')
 
 const filters = computed<AppActivityFilters>(() => ({
   period: period.value,
@@ -47,12 +49,16 @@ const filters = computed<AppActivityFilters>(() => ({
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 const loadingMore = ref(false)
+/** A failed "Show older entries": said under the table, with a retry; the entries shown stay. */
+const moreError = ref<string | null>(null)
+const rows = ref<HTMLTableRowElement[]>([])
 const open = ref<string | null>(null)
 const now = ref(new Date())
 
 async function load(): Promise<void> {
   loading.value = true
   loadError.value = null
+  moreError.value = null
   open.value = null
   try {
     await store.load(filters.value)
@@ -68,28 +74,34 @@ watch(filters, load)
 
 async function more(): Promise<void> {
   loadingMore.value = true
-  loadError.value = null
+  moreError.value = null
+  const first = store.entries.length
   try {
     await store.more(filters.value)
+    // The button goes with the last page: the focus goes to the first entry that came with it.
+    if (store.nextCursor === null) {
+      await nextTick()
+      rows.value[first]?.focus()
+    }
   } catch (cause) {
-    loadError.value = errorMessage(cause)
+    moreError.value = errorMessage(cause)
   } finally {
     loadingMore.value = false
   }
 }
 
-/** Nothing at all in the log (no app has an entry in 90 days), as opposed to nothing that matches the filters. */
-const empty = computed(() => store.apps.length === 0 && store.entries.length === 0)
+/** Nothing at all in the log, as opposed to nothing that matches the filters. */
+const empty = computed(() => store.empty && store.entries.length === 0)
 const countLabel = computed(() => (store.entries.length === 1 ? '1 entry' : `${store.entries.length} entries`))
 
 function manage(entry: AppActivityEntry): { to: RouteLocationRaw; label: string } {
-  if (entry.channel === 'mcp' && entry.app.type === 'client') {
+  if (entry.app.type === 'client') {
     return {
       to: { name: 'settings-apps-assistants', query: entry.app.connectedAppId === null ? {} : { app: entry.app.connectedAppId } },
       label: `Change what ${activityAppName(entry.app)} may do`,
     }
   }
-  return { to: { name: entry.app.type === 'token' ? 'settings-access-tokens' : 'settings-connected-apps' }, label: 'Open tokens and connected apps' }
+  return { to: { name: 'settings-access-tokens' }, label: 'Open personal access tokens' }
 }
 
 const SKELETON = [
@@ -190,7 +202,7 @@ const SKELETON = [
           </thead>
           <tbody>
             <template v-for="entry in store.entries" :key="entry.id">
-              <tr :class="{ opened: open === entry.id }">
+              <tr ref="rows" tabindex="-1" :class="{ opened: open === entry.id }">
                 <td class="mono nowrap">{{ activityTime(entry.occurredAt, now) }}</td>
                 <td class="app-cell">{{ activityAppName(entry.app) }}</td>
                 <td>
@@ -228,14 +240,18 @@ const SKELETON = [
                       <span class="fact-value">{{ permissionUsed(entry).label }}</span>
                       <span class="fact-mono">{{ permissionUsed(entry).scopes }}</span>
                     </div>
-                    <div class="fact">
+                    <div v-if="touched(entry)" class="fact">
                       <span class="fact-label">What it touched</span>
-                      <span class="fact-value">{{ touched(entry).label }}</span>
-                      <span class="fact-mono">{{ touched(entry).id }}</span>
+                      <span class="fact-value">{{ touched(entry)!.label }}</span>
+                      <span class="fact-mono">{{ touched(entry)!.id }}</span>
                     </div>
                     <div class="fact">
                       <span class="fact-label">Came in through</span>
                       <span class="fact-value">{{ entry.channel === 'mcp' ? 'MCP' : 'API' }}</span>
+                    </div>
+                    <div v-if="timesText(entry.count)" class="fact">
+                      <span class="fact-label">How often</span>
+                      <span class="fact-value">{{ timesText(entry.count) }}</span>
                     </div>
                   </div>
                   <div v-if="entry.reason" class="why" :class="entry.result">
@@ -260,6 +276,10 @@ const SKELETON = [
           <span class="count" role="status">{{ countLabel }}</span>
           <button v-if="store.nextCursor !== null" type="button" class="button older" :disabled="loadingMore" @click="more">Show older entries</button>
         </div>
+        <div v-if="moreError" class="more-error" role="alert">
+          <span class="form-error">{{ moreError }}</span>
+          <button type="button" class="button older" :disabled="loadingMore" @click="more">Try again</button>
+        </div>
       </template>
     </section>
   </section>
@@ -270,14 +290,24 @@ const SKELETON = [
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 1040px;
+  max-width: 960px;
 }
 .header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  padding: 0 4px;
+  padding: 4px 4px 0;
+}
+tr[tabindex='-1']:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.more-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }
 .back {
   display: flex;

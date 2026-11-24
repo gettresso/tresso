@@ -103,7 +103,8 @@ const router = createRouter({
             { path: 'apps/activity', name: 'settings-apps-activity', component: () => import('@/views/SettingsAppActivityView.vue') },
             { path: 'meeting-apps', name: 'settings-meeting-apps', component: () => import('@/views/SettingsMeetingAppsView.vue') },
             { path: 'access-tokens', name: 'settings-access-tokens', component: () => import('@/views/SettingsAccessTokensView.vue') },
-            { path: 'connected-apps', name: 'settings-connected-apps', component: () => import('@/views/SettingsConnectedAppsView.vue') },
+            // Connected apps are on the AI assistants and apps page now; the old address leads there.
+            { path: 'connected-apps', name: 'settings-connected-apps', redirect: { name: 'settings-apps-assistants' } },
             { path: 'smart-inboxes', name: 'settings-smart-inboxes', component: () => import('@/views/SettingsSmartInboxesView.vue') },
             { path: 'smart-inboxes/:smartInboxId', name: 'settings-smart-inbox', component: () => import('@/views/SettingsSmartInboxEditView.vue') },
             { path: 'notifications', name: 'settings-notifications', component: () => import('@/views/SettingsNotificationsView.vue') },

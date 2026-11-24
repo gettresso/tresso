@@ -55,6 +55,11 @@
    */
   --whatsapp: #256b5d;
   --whatsapp-text: #ffffff;
+  /* WhatsApp's mark on Settings, Apps: the same green, lighter on the dark ground (the dark "Settings: apps" board). */
+  --whatsapp-mark: #256b5d;
+  --whatsapp-mark-text: #ffffff;
+  /* The knob of a switch, lifted off its track. */
+  --switch-knob-shadow: 0 1px 2px rgb(22 24 29 / 20%);
   --chat-timeline: #f8f9fa;
   --bubble-theirs: #ffffff;
   --bubble-theirs-edge: #e3e5e9;
@@ -97,6 +102,9 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --whatsapp-mark: #6cc7b2;
+    --whatsapp-mark-text: #171a20;
+    --switch-knob-shadow: 0 1px 2px rgb(0 0 0 / 40%);
     --canvas: #0b0d12;
     --paper: #171a20;
     --ground: rgb(255 255 255 / 5%);
