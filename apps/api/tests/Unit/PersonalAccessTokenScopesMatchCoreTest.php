@@ -57,4 +57,26 @@ final class PersonalAccessTokenScopesMatchCoreTest extends TestCase
             self::assertSame($scope->description(), $description, $value);
         }
     }
+
+    /** The AI assistants page lists exactly the scopes an app that is not ours may hold. */
+    public function testTheAssistantsPageListsTheScopesAnAppThatIsNotOursMayHold(): void
+    {
+        $root = \dirname(__DIR__, 4);
+        if (!is_dir($root.self::CORE)) {
+            self::markTestSkipped('packages/core is not next to apps/api here (the dev container mounts apps/api only).');
+        }
+
+        $source = file_get_contents($root.'/packages/core/src/appActivity.ts');
+        self::assertIsString($source, 'packages/core/src/appActivity.ts is missing.');
+        if (1 !== preg_match('/export const ASSISTANT_SCOPE_ORDER = \[(.*?)\] as const/s', $source, $list)) {
+            self::fail('ASSISTANT_SCOPE_ORDER not found in packages/core/src/appActivity.ts.');
+        }
+        preg_match_all("/'([^']+)'/", $list[1], $values);
+
+        $listed = $values[1];
+        $allowed = array_map(static fn (Scope $scope): string => $scope->value, Scope::thirdPartyAppScopes());
+        sort($listed);
+        sort($allowed);
+        self::assertSame($allowed, $listed);
+    }
 }
