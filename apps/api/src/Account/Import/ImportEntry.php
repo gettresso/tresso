@@ -19,18 +19,28 @@ final readonly class ImportEntry
         public string $address,
         public ?ImportProviderHint $provider,
         public bool $skipped = false,
-        /** Why the last sign-in for this address failed; cleared when the user starts again or skips it. */
+        /** Why the last sign-in for this address failed; cleared when it connects or the user skips it. */
         public ?ImportFailure $failure = null,
+        /**
+         * Connected from this list (a sign-in or the server form on its page). An account with the address that was
+         * added any other way shows as already connected.
+         */
+        public bool $added = false,
     ) {
     }
 
     public function with(bool $skipped, ?ImportFailure $failure): self
     {
-        return new self($this->id, $this->address, $this->provider, $skipped, $failure);
+        return new self($this->id, $this->address, $this->provider, $skipped, $failure, $this->added);
+    }
+
+    public function asAdded(): self
+    {
+        return new self($this->id, $this->address, $this->provider, false, null, true);
     }
 
     /**
-     * @return array{id: string, address: string, provider: ?string, skipped: bool, failure: ?string}
+     * @return array{id: string, address: string, provider: ?string, skipped: bool, failure: ?string, added: bool}
      */
     public function toArray(): array
     {
@@ -40,6 +50,7 @@ final readonly class ImportEntry
             'provider' => $this->provider?->value,
             'skipped' => $this->skipped,
             'failure' => $this->failure?->value,
+            'added' => $this->added,
         ];
     }
 
@@ -62,6 +73,7 @@ final readonly class ImportEntry
             \is_string($provider) ? ImportProviderHint::tryFrom($provider) : null,
             true === ($data['skipped'] ?? false),
             \is_string($failure) ? ImportFailure::tryFrom($failure) : null,
+            true === ($data['added'] ?? false),
         );
     }
 }

@@ -79,8 +79,8 @@ final readonly class MailAccountImportTools implements ToolProvider
         yield new Tool(
             name: 'get_mail_account_import',
             title: 'Follow a list of mail accounts to add',
-            description: 'Where each address of a list made with add_mail_accounts stands: todo, connected, failed (with the '
-                .'reason) or skipped, with the counts and the link to the page where the user signs in. Use it to tell '
+            description: 'Where each address of a list made with add_mail_accounts stands: todo, connected (added from the list), '
+                .'already_connected (added another way), failed (with the reason) or skipped, with the counts and the link to the page where the user signs in. Use it to tell '
                 .'the user how far they are. It cannot sign in or retry anything: only the user can, on that page.',
             scopes: [Scope::SettingsRead],
             effect: ToolEffect::Read,

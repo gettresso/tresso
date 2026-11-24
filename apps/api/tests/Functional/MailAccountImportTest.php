@@ -59,7 +59,7 @@ final class MailAccountImportTest extends DatabaseTestCase
             ['address' => 'anna@partner.example', 'reason' => 'duplicate', 'message' => 'This address is in the list already.'],
             ['address' => 'kim@company.example', 'reason' => 'already_connected', 'message' => 'This address is connected already.'],
         ], $list['leftOut'] ?? null);
-        self::assertSame(['todo' => 2, 'connected' => 0, 'failed' => 0, 'skipped' => 0], $list['progress'] ?? null);
+        self::assertSame(['todo' => 2, 'connected' => 0, 'already_connected' => 0, 'failed' => 0, 'skipped' => 0], $list['progress'] ?? null);
         self::assertSame(self::WEB.'/settings/accounts/import/'.$id, $list['pageUrl'] ?? null);
         self::assertArrayHasKey('createdBy', $list);
         self::assertNull($list['createdBy'], 'Made in Tresso itself: no app to name.');
@@ -137,7 +137,7 @@ final class MailAccountImportTest extends DatabaseTestCase
         $token = $this->personalAccessTokenHeaders('kim@example.test', ['settings:write']);
         $this->client->jsonRequest('POST', '/api/v1/mail-account-imports', ['entries' => [['address' => 'anna@partner.example']]], $token);
         self::assertResponseStatusCodeSame(201);
-        self::assertSame('The personal access token "Script"', $this->decodedResponse()['createdBy'] ?? null);
+        self::assertSame('your personal access token "Script"', $this->decodedResponse()['createdBy'] ?? null);
     }
 
     public function testMakingAListNeedsSettingsWriteAndReadingItSettingsRead(): void
@@ -205,17 +205,29 @@ final class MailAccountImportTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(409);
     }
 
-    public function testAnEntryIsConnectedOnceTheUserHasTheAccountHoweverItWasAdded(): void
+    public function testAnAccountAddedAnotherWayIsAlreadyConnectedAndOneAddedFromTheListConnected(): void
     {
-        $id = self::string($this->createList([['address' => 'kim@company.example'], ['address' => 'anna@partner.example']])['id'] ?? null);
+        $id = self::string($this->createList([['address' => 'kim@company.example'], ['address' => 'anna@partner.example'], ['address' => 'bob@partner.example']])['id'] ?? null);
+        $anna = $this->entryId($id, 'anna@partner.example');
 
         $account = $this->createImapAccount('kim@company.example');
+        $this->markEntry($id, ['entryId' => $anna, 'state' => 'connected']);
+        self::assertResponseStatusCodeSame(422, 'Connected is only taken for an address that has its account.');
+        self::assertSame(['state'], $this->violationPaths());
+
+        // The page's server form created the account, then says it came from the list.
+        $this->createImapAccount('anna@partner.example');
+        $this->markEntry($id, ['entryId' => $anna, 'state' => 'connected']);
+        self::assertResponseIsSuccessful();
 
         $list = $this->readList($id);
-        self::assertSame(['connected', 'todo'], array_column(self::asList($list['entries'] ?? null), 'state'));
+        self::assertSame(['already_connected', 'connected', 'todo'], array_column(self::asList($list['entries'] ?? null), 'state'));
         self::assertSame($account, self::asList($list['entries'] ?? null)[0]['mailAccountId'] ?? null);
         self::assertSame('active', self::asList($list['entries'] ?? null)[0]['accountStatus'] ?? null);
-        self::assertSame(['todo' => 1, 'connected' => 1, 'failed' => 0, 'skipped' => 0], $list['progress'] ?? null);
+        self::assertSame(['todo' => 1, 'connected' => 1, 'already_connected' => 1, 'failed' => 0, 'skipped' => 0], $list['progress'] ?? null);
+
+        $this->markEntry($id, ['entryId' => $anna, 'state' => 'already_connected']);
+        self::assertResponseStatusCodeSame(422);
     }
 
     public function testEntriesAreSkippedFailedAndSetBack(): void
@@ -226,7 +238,7 @@ final class MailAccountImportTest extends DatabaseTestCase
 
         $this->markEntry($id, ['entryId' => $anna, 'state' => 'skipped']);
         self::assertResponseIsSuccessful();
-        self::assertSame(['todo' => 1, 'connected' => 0, 'failed' => 0, 'skipped' => 1], $this->decodedResponse()['progress'] ?? null);
+        self::assertSame(['todo' => 1, 'connected' => 0, 'already_connected' => 0, 'failed' => 0, 'skipped' => 1], $this->decodedResponse()['progress'] ?? null);
 
         $this->markEntry($id, ['entryId' => $bob, 'state' => 'failed', 'failure' => 'password_refused']);
         self::assertResponseIsSuccessful();
@@ -239,7 +251,7 @@ final class MailAccountImportTest extends DatabaseTestCase
         self::assertNull(self::asList($this->decodedResponse()['entries'] ?? null)[1]['failure'] ?? null);
 
         $this->markEntry($id, ['entryId' => $anna, 'state' => 'connected']);
-        self::assertResponseStatusCodeSame(422, 'Connected follows from the mail accounts.');
+        self::assertResponseStatusCodeSame(422, 'Not connected without its account.');
         $this->markEntry($id, ['entryId' => $anna, 'state' => 'skipped', 'failure' => 'denied']);
         self::assertResponseStatusCodeSame(422);
         self::assertSame(['failure'], $this->violationPaths());
@@ -363,6 +375,21 @@ final class MailAccountImportTest extends DatabaseTestCase
 
         $entry = $this->entry($id, 'kim@gmail.example');
         self::assertSame(['failed', 'denied'], [$entry['state'] ?? null, $entry['failure'] ?? null]);
+        self::assertNull($entry['approvalUrl'] ?? null);
+    }
+
+    public function testAnOrganizationThatMustApproveTresssoGivesTheRowTheApprovalLink(): void
+    {
+        $id = self::string($this->createList([['address' => 'kim@contoso.example']])['id'] ?? null);
+        $query = $this->startForList('microsoft', $id, 'kim@contoso.example');
+
+        $answer = $this->providerRedirect('microsoft', ['state' => $query['state'], 'error' => 'consent_required']);
+        $this->client->jsonRequest('POST', '/api/v1/provider-connections', $this->connectionInput($answer['query']), $this->user);
+        self::assertSame('admin_approval_required', $this->decodedResponse()['connectError'] ?? null);
+
+        $entry = $this->entry($id, 'kim@contoso.example');
+        self::assertSame(['failed', 'admin_approval_required'], [$entry['state'] ?? null, $entry['failure'] ?? null]);
+        self::assertStringStartsWith('https://login.microsoftonline.com/contoso.example/adminconsent?', self::string($entry['approvalUrl'] ?? null));
     }
 
     public function testASignInForTheListNeedsAnAddressOfTheList(): void
