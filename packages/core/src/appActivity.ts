@@ -1,5 +1,7 @@
 /** Wire format of /api/v1/app-activity, and the words the Apps pages make from it. */
 
+import { PERSONAL_ACCESS_TOKEN_SCOPES, type PersonalAccessTokenScope } from './personalAccessTokens'
+
 export type AppActivityKind = 'read' | 'change' | 'send'
 export type AppActivityResult = 'done' | 'refused' | 'failed'
 export type AppActivityChannel = 'mcp' | 'api'
@@ -66,25 +68,32 @@ export function appActivityPath(query: AppActivityQuery): string {
 }
 
 /**
- * The permissions an AI assistant can have, in the order the AI assistants page lists them, with the words of the
- * consent screen (Scope::label() and Scope::description()). The teams, webhooks and sync scopes are left out: such an
- * app cannot hold them.
+ * The scopes an AI assistant (or any app that is not ours) can have, in the order the AI assistants page lists them.
+ * The teams, webhooks and sync scopes are left out: such an app cannot hold them (Scope::thirdPartyAppScopes()).
  */
-export const ASSISTANT_SCOPES: readonly { value: string; label: string; description: string }[] = [
-  { value: 'mail:read', label: 'Read mail', description: 'Read your messages, conversations, attachments and drafts in every account.' },
-  { value: 'mail:write', label: 'Organize mail', description: 'Archive, move, flag, mark as read and delete messages.' },
-  { value: 'mail:send', label: 'Send mail', description: 'Send messages from your accounts, in your name.' },
-  { value: 'todos:read', label: 'See todos', description: 'See your todos and when they are planned.' },
-  { value: 'todos:write', label: 'Change todos', description: 'Add, complete, change and delete todos.' },
-  { value: 'calendar:read', label: 'See calendar', description: 'See your calendars and events, with their guests, your notes and reminders.' },
-  { value: 'calendar:write', label: 'Change calendar', description: 'Add, change and delete events and set your answers. Telling guests or organizers also needs Send mail.' },
-  { value: 'settings:read', label: 'See settings', description: 'See your mail accounts, smart inboxes and other settings.' },
-  { value: 'settings:write', label: 'Change settings', description: 'Change settings such as account names, smart inboxes, rules and notifications. Never how a mail account connects, access tokens or connected apps.' },
-  { value: 'signatures:read', label: 'See signatures', description: 'See your email signatures.' },
-  { value: 'signatures:write', label: 'Change signatures', description: 'Add, change and delete email signatures.' },
-  { value: 'chat:read', label: 'Read your WhatsApp chats', description: 'Read the WhatsApp chats and messages your Mac passes on to Tresso, and the replies waiting to go out.' },
-  { value: 'chat:send', label: 'Send WhatsApp messages as you', description: 'Write replies in your WhatsApp chats; your Mac sends them from your WhatsApp.' },
-]
+export const ASSISTANT_SCOPE_ORDER = [
+  'mail:read',
+  'mail:write',
+  'mail:send',
+  'todos:read',
+  'todos:write',
+  'calendar:read',
+  'calendar:write',
+  'settings:read',
+  'settings:write',
+  'signatures:read',
+  'signatures:write',
+  'chat:read',
+  'chat:send',
+] as const
+
+/**
+ * Those scopes with the words of the consent screen, taken from PERSONAL_ACCESS_TOKEN_SCOPES (which a test of the API
+ * keeps equal to Scope::label() and Scope::description()), so the two lists never say different things.
+ */
+export const ASSISTANT_SCOPES: readonly PersonalAccessTokenScope[] = ASSISTANT_SCOPE_ORDER.map(
+  (value) => PERSONAL_ACCESS_TOKEN_SCOPES.find((scope) => scope.value === value)!,
+)
 
 /** `a`, `a and b`, `a, b and c`. */
 function words(items: string[]): string {
