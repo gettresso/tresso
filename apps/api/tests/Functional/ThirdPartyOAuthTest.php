@@ -920,7 +920,7 @@ final class ThirdPartyOAuthTest extends DatabaseTestCase
         $apps = $this->decodedResponse();
         self::assertCount(1, $apps);
         self::assertIsArray($apps[0]);
-        self::assertSame(['id', 'name', 'domains', 'scopes', 'connectedAt', 'lastUsedAt'], array_keys($apps[0]));
+        self::assertSame(['id', 'name', 'domains', 'scopes', 'grantedScopes', 'connectedAt', 'lastUsedAt', 'activityKey'], array_keys($apps[0]));
         self::assertSame('MCP Inspector', $apps[0]['name']);
         self::assertSame(['127.0.0.1'], $apps[0]['domains']);
         self::assertSame(['signatures:read', 'mail:read'], $apps[0]['scopes']);

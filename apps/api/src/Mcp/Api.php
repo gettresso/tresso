@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Mcp;
 
+use App\Activity\ToolTrace;
 use App\Billing\PaymentWall;
 use App\Deployment\PublicAddresses;
 use Symfony\Component\HttpFoundation\Request;
@@ -22,8 +23,10 @@ use Symfony\Component\HttpKernel\HttpKernelInterface;
  * Sub-requests go to the API's own address (API_PUBLIC_URL), whatever host the MCP request came to: URLs the API makes
  * inside a tool (a signed content URL) must point at the API, not at the MCP host, which answers nothing but /mcp.
  *
+ * Each sub-request is reported to the {@see ToolTrace}, so the tool's entry in the activity log names what it touched.
+ *
  * Answers with the decoded JSON body (an empty array for 204). A 4xx becomes an {@see ApiRefusal} with the API's
- * message and violations; a 5xx is a failure of ours and is thrown as such.
+ * message and violations; a 5xx is a failure of ours and is thrown as an {@see ApiFailure}.
  */
 final readonly class Api
 {
@@ -37,6 +40,7 @@ final readonly class Api
         private RequestStack $requestStack,
         private PaymentWall $paymentWall,
         private PublicAddresses $addresses,
+        private ToolTrace $trace,
     ) {
     }
 
@@ -132,8 +136,11 @@ final readonly class Api
         }
 
         $request = Request::create(self::PREFIX.$path, $method, $query, [], [], $server, $content);
+        $response = $this->httpKernel->handle($request, HttpKernelInterface::SUB_REQUEST);
+        // For the activity log: which operation the tool reached, and the object it named (never the query or body).
+        $this->trace->saw($request);
 
-        return self::decode($method, $path, $this->httpKernel->handle($request, HttpKernelInterface::SUB_REQUEST));
+        return self::decode($method, $path, $response);
     }
 
     /**
@@ -143,7 +150,7 @@ final readonly class Api
     {
         $status = $response->getStatusCode();
         if ($status >= 500) {
-            throw new \RuntimeException(\sprintf('The API answered %d to %s %s for an MCP tool.', $status, $method, $path));
+            throw new ApiFailure($status, \sprintf('The API answered %d to %s %s for an MCP tool.', $status, $method, $path));
         }
 
         $raw = Response::HTTP_NO_CONTENT === $status ? '' : (string) $response->getContent();

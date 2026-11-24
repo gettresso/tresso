@@ -16,6 +16,12 @@ use Symfony\Component\Uid\Uuid;
  * A user allowed an app that is not ours to act for them with these scopes. While it holds every scope the app asks
  * for, the app is approved without the consent screen. Removing it (disconnecting the app) also revokes the app's
  * tokens for that user. Deleting the user or the client deletes it.
+ *
+ * Two sets are kept apart: the scopes the user granted on the consent screen ({@see getScopes()}), and among them those
+ * the user switched off later in Tresso ({@see getDisabledScopes()}). What the app may use is the first without the
+ * second ({@see getAllowedScopes()}); every request of the app is narrowed to it
+ * ({@see \App\Security\OAuth\NarrowedScopes}). A scope can only be switched back on when it was granted; anything
+ * more needs the consent screen again.
  */
 #[ORM\Entity(repositoryClass: OAuthConsentRepository::class)]
 #[ORM\Table(name: 'oauth_consent')]
@@ -37,6 +43,14 @@ class OAuthConsent
     /** @var list<string> */
     #[ORM\Column(type: Types::JSON)]
     private array $scopes = [];
+
+    /**
+     * Granted scopes the user switched off, always a part of {@see $scopes}.
+     *
+     * @var list<string>
+     */
+    #[ORM\Column(type: Types::JSON, options: ['default' => '[]'])]
+    private array $disabledScopes = [];
 
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
@@ -75,10 +89,55 @@ class OAuthConsent
         return $this->client;
     }
 
-    /** @return list<string> */
+    /**
+     * What the user granted on the consent screen, switched off or not.
+     *
+     * @return list<string>
+     */
     public function getScopes(): array
     {
         return $this->scopes;
+    }
+
+    /**
+     * Granted scopes the user switched off in Tresso.
+     *
+     * @return list<string>
+     */
+    public function getDisabledScopes(): array
+    {
+        return $this->disabledScopes;
+    }
+
+    /**
+     * What the app may use now: the granted scopes without those switched off.
+     *
+     * @return list<string>
+     */
+    public function getAllowedScopes(): array
+    {
+        return array_values(array_diff($this->scopes, $this->disabledScopes));
+    }
+
+    /**
+     * Sets what the app may use to these granted scopes: the others are switched off, these (back) on.
+     *
+     * @param list<string> $allowed
+     *
+     * @return list<string> the scopes that were allowed before and are switched off now
+     *
+     * @throws \InvalidArgumentException when a scope was never granted
+     */
+    public function narrow(array $allowed): array
+    {
+        $beyond = array_values(array_diff($allowed, $this->scopes));
+        if ([] !== $beyond) {
+            throw new \InvalidArgumentException(\sprintf('The user did not grant "%s" on the consent screen.', implode('", "', $beyond)));
+        }
+        $before = $this->getAllowedScopes();
+        $this->disabledScopes = array_values(array_diff($this->scopes, $allowed));
+
+        return array_values(array_diff($before, $allowed));
     }
 
     public function getCreatedAt(): \DateTimeImmutable
@@ -103,6 +162,8 @@ class OAuthConsent
 
     /**
      * Adds scopes the user allowed; what was allowed before stays allowed, since the tokens issued for it still work.
+     * A scope the user switched off in Tresso stays off when an app asks for it again on the consent screen: only the
+     * switch turns it back on, so the choice made in Tresso is never undone by an app that signs in again.
      *
      * @param list<string> $scopes
      */
@@ -127,6 +188,7 @@ class OAuthConsent
     {
         $withdrawn = array_values(array_intersect($this->scopes, $scopes));
         $this->scopes = array_values(array_diff($this->scopes, $scopes));
+        $this->disabledScopes = array_values(array_diff($this->disabledScopes, $scopes));
 
         return $withdrawn;
     }

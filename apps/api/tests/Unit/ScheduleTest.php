@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Unit;
 
+use App\Activity\PurgeAppActivity;
 use App\Chat\PurgeCancelledReplies;
 use App\Schedule;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -79,6 +80,26 @@ final class ScheduleTest extends TestCase
         }
 
         self::assertCount(1, $runs, 'One entry purges the cancelled replies.');
+        [$first, $second] = $runs[0];
+        self::assertNotNull($second);
+        self::assertSame(86_400, $second->getTimestamp() - $first->getTimestamp(), 'Once a day.');
+    }
+
+    public function testTheAppActivityLogIsPurgedOnceADay(): void
+    {
+        $now = new \DateTimeImmutable('2026-07-01T12:00:00Z');
+        $runs = [];
+        foreach ($this->provider(Schedule::class)->getSchedule()->getRecurringMessages() as $message) {
+            foreach ($message->getMessages(new MessageContext('default', $message->getId(), $message->getTrigger(), $now)) as $sent) {
+                if ($sent instanceof PurgeAppActivity) {
+                    $first = $message->getTrigger()->getNextRunDate($now);
+                    self::assertNotNull($first);
+                    $runs[] = [$first, $message->getTrigger()->getNextRunDate($first)];
+                }
+            }
+        }
+
+        self::assertCount(1, $runs, 'One entry purges the app activity log.');
         [$first, $second] = $runs[0];
         self::assertNotNull($second);
         self::assertSame(86_400, $second->getTimestamp() - $first->getTimestamp(), 'Once a day.');

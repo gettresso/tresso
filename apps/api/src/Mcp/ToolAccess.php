@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Mcp;
 
 use App\Mcp\Tool\Tool;
+use App\Security\OAuth\NarrowedScopes;
 use App\Security\Scope;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
 
 /**
@@ -15,8 +17,10 @@ use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
  */
 final readonly class ToolAccess
 {
-    public function __construct(private AuthorizationCheckerInterface $authorizationChecker)
-    {
+    public function __construct(
+        private AuthorizationCheckerInterface $authorizationChecker,
+        private TokenStorageInterface $tokenStorage,
+    ) {
     }
 
     public function allows(Tool $tool): bool
@@ -33,5 +37,17 @@ final readonly class ToolAccess
             $tool->scopes,
             fn (Scope $scope): bool => !$this->authorizationChecker->isGranted($scope->role()),
         ));
+    }
+
+    /**
+     * Whether every one of these scopes is one the user granted the app and then switched off in Tresso.
+     *
+     * @param list<Scope> $scopes
+     */
+    public function allSwitchedOff(array $scopes): bool
+    {
+        $off = NarrowedScopes::switchedOff($this->tokenStorage->getToken());
+
+        return [] !== $scopes && [] === array_diff(array_map(static fn (Scope $scope): string => $scope->value, $scopes), $off);
     }
 }
