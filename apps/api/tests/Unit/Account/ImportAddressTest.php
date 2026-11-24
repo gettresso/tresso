@@ -19,7 +19,7 @@ final class ImportAddressTest extends TestCase
     private const string FIXTURE = __DIR__.'/../../Fixtures/import-addresses.json';
 
     /**
-     * @return iterable<string, array{string, ?string, ?string}>
+     * @return iterable<string, array{string, ?string, ?string, bool}>
      */
     public static function cases(): iterable
     {
@@ -32,15 +32,16 @@ final class ImportAddressTest extends TestCase
             self::assertIsString($input);
             $firstParty = $case['firstParty'] ?? null;
             $thirdParty = $case['thirdParty'] ?? null;
-            yield \sprintf('%d: %s', $index, mb_substr($input, 0, 40)) => [$input, \is_string($firstParty) ? $firstParty : null, \is_string($thirdParty) ? $thirdParty : null];
+            yield \sprintf('%d: %s', $index, mb_substr($input, 0, 40)) => [$input, \is_string($firstParty) ? $firstParty : null, \is_string($thirdParty) ? $thirdParty : null, true === ($case['lookalike'] ?? false)];
         }
     }
 
     #[DataProvider('cases')]
-    public function testTheSharedCases(string $input, ?string $firstParty, ?string $thirdParty): void
+    public function testTheSharedCases(string $input, ?string $firstParty, ?string $thirdParty, bool $lookalike): void
     {
         self::assertSame($firstParty, ImportAddress::normalize($input, true), 'A list made in Tresso.');
         self::assertSame($thirdParty, ImportAddress::normalize($input, false), 'A list an app or a token made.');
+        self::assertSame($lookalike, ImportAddress::isLookalike($input), 'Left out of an app\'s list for its letters alone.');
     }
 
     public function testEveryProviderFailureHasAReasonOnTheRow(): void

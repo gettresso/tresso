@@ -70,6 +70,15 @@ final class ImportAddress
         return $local.'@'.$domain;
     }
 
+    /**
+     * Whether a list an app made leaves the address out for its letters alone: an address in a list made in Tresso, but
+     * with a domain that is not plain ASCII or a local part that mixes scripts.
+     */
+    public static function isLookalike(string $input): bool
+    {
+        return null !== self::normalize($input, true) && null === self::normalize($input, false);
+    }
+
     /** Whether the text holds letters of more than one script (Latin and Cyrillic, say). */
     private static function mixesScripts(string $text): bool
     {

@@ -1,35 +1,185 @@
 {
-  "about": "What counts as an address of a mail account import list, checked by App\\Account\\Import\\ImportAddress (API) and readPastedAddresses (packages/core). firstParty: a list made in Tresso's own apps (and the paste step); thirdParty: a list an app or a token made. null: not an address for that kind of list; otherwise the address as stored.",
+  "about": "What counts as an address of a mail account import list, checked by App\\Account\\Import\\ImportAddress (API) and readPastedAddresses (packages/core). firstParty: a list made in Tresso's own apps (and the paste step); thirdParty: a list an app or a token made. null: not an address for that kind of list; otherwise the address as stored. lookalike: an address a list made in Tresso takes but a list an app made leaves out for its letters (a domain that is not plain ASCII, a local part mixing scripts).",
   "cases": [
-    { "input": "kim@company.example", "firstParty": "kim@company.example", "thirdParty": "kim@company.example" },
-    { "input": "Kim.Visser@Company.Example", "firstParty": "kim.visser@company.example", "thirdParty": "kim.visser@company.example" },
-    { "input": "kim+news@gmail.com", "firstParty": "kim+news@gmail.com", "thirdParty": "kim+news@gmail.com" },
-    { "input": "k.i.m@sub.mail.example", "firstParty": "k.i.m@sub.mail.example", "thirdParty": "k.i.m@sub.mail.example" },
-    { "input": "o'neil@company.example", "firstParty": "o'neil@company.example", "thirdParty": "o'neil@company.example" },
-    { "input": "kim@müller.de", "firstParty": "kim@xn--mller-kva.de", "thirdParty": null },
-    { "input": "kim@gmaіl.com", "firstParty": "kim@xn--gmal-n9d.com", "thirdParty": null },
-    { "input": "kim@xn--mller-kva.de", "firstParty": "kim@xn--mller-kva.de", "thirdParty": "kim@xn--mller-kva.de" },
-    { "input": "jürgen@müller.de", "firstParty": "jürgen@xn--mller-kva.de", "thirdParty": null },
-    { "input": "jürgen@example.de", "firstParty": "jürgen@example.de", "thirdParty": "jürgen@example.de" },
-    { "input": "kіm@company.example", "firstParty": "kіm@company.example", "thirdParty": null },
-    { "input": "jeroen.smit.company.example", "firstParty": null, "thirdParty": null },
-    { "input": "anna@company", "firstParty": null, "thirdParty": null },
-    { "input": "anna@company.c0m", "firstParty": null, "thirdParty": null },
-    { "input": "kim@@company.example", "firstParty": null, "thirdParty": null },
-    { "input": "kim@company@example.com", "firstParty": null, "thirdParty": null },
-    { "input": ".kim@company.example", "firstParty": null, "thirdParty": null },
-    { "input": "kim.@company.example", "firstParty": null, "thirdParty": null },
-    { "input": "ki..m@company.example", "firstParty": null, "thirdParty": null },
-    { "input": "kim@-company.example", "firstParty": null, "thirdParty": null },
-    { "input": "kim@company-.example", "firstParty": null, "thirdParty": null },
-    { "input": "kim@company..example", "firstParty": null, "thirdParty": null },
-    { "input": "kim visser@company.example", "firstParty": null, "thirdParty": null },
-    { "input": "kim@company.example.", "firstParty": null, "thirdParty": null },
-    { "input": "\"kim\"@company.example", "firstParty": null, "thirdParty": null },
-    { "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@company.example", "firstParty": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@company.example", "thirdParty": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@company.example" },
-    { "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@company.example", "firstParty": null, "thirdParty": null },
-    { "input": "kim@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example", "firstParty": null, "thirdParty": null },
-    { "input": "kim@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example", "firstParty": null, "thirdParty": null },
-    { "input": "", "firstParty": null, "thirdParty": null }
+    {
+      "input": "kim@company.example",
+      "firstParty": "kim@company.example",
+      "thirdParty": "kim@company.example",
+      "lookalike": false
+    },
+    {
+      "input": "Kim.Visser@Company.Example",
+      "firstParty": "kim.visser@company.example",
+      "thirdParty": "kim.visser@company.example",
+      "lookalike": false
+    },
+    {
+      "input": "kim+news@gmail.com",
+      "firstParty": "kim+news@gmail.com",
+      "thirdParty": "kim+news@gmail.com",
+      "lookalike": false
+    },
+    {
+      "input": "k.i.m@sub.mail.example",
+      "firstParty": "k.i.m@sub.mail.example",
+      "thirdParty": "k.i.m@sub.mail.example",
+      "lookalike": false
+    },
+    {
+      "input": "o'neil@company.example",
+      "firstParty": "o'neil@company.example",
+      "thirdParty": "o'neil@company.example",
+      "lookalike": false
+    },
+    {
+      "input": "kim@müller.de",
+      "firstParty": "kim@xn--mller-kva.de",
+      "thirdParty": null,
+      "lookalike": true
+    },
+    {
+      "input": "kim@gmaіl.com",
+      "firstParty": "kim@xn--gmal-n9d.com",
+      "thirdParty": null,
+      "lookalike": true
+    },
+    {
+      "input": "kim@xn--mller-kva.de",
+      "firstParty": "kim@xn--mller-kva.de",
+      "thirdParty": "kim@xn--mller-kva.de",
+      "lookalike": false
+    },
+    {
+      "input": "jürgen@müller.de",
+      "firstParty": "jürgen@xn--mller-kva.de",
+      "thirdParty": null,
+      "lookalike": true
+    },
+    {
+      "input": "jürgen@example.de",
+      "firstParty": "jürgen@example.de",
+      "thirdParty": "jürgen@example.de",
+      "lookalike": false
+    },
+    {
+      "input": "kіm@company.example",
+      "firstParty": "kіm@company.example",
+      "thirdParty": null,
+      "lookalike": true
+    },
+    {
+      "input": "jeroen.smit.company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "anna@company",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "anna@company.c0m",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim@@company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim@company@example.com",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": ".kim@company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim.@company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "ki..m@company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim@-company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim@company-.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim@company..example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim visser@company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim@company.example.",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "\"kim\"@company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@company.example",
+      "firstParty": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@company.example",
+      "thirdParty": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@company.example",
+      "lookalike": false
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@company.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "kim@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    },
+    {
+      "input": "",
+      "firstParty": null,
+      "thirdParty": null,
+      "lookalike": false
+    }
   ]
 }

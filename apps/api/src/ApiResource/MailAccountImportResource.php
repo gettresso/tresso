@@ -26,7 +26,7 @@ use App\State\MailAccountImportProvider;
  * Each entry says where it stands: `todo`, `connected` (added from this list), `already_connected` (the user has a mail
  * account with the address that was added another way), `failed` (with `failure`, a code, `reason`, a sentence, and
  * for `admin_approval_required` the `approvalUrl` for the organization's administrator) or `skipped`. On creation `leftOut` names
- * the addresses that were not taken and why (`invalid`, `duplicate`, `already_connected`); it is empty on later reads.
+ * the addresses that were not taken and why (`invalid`, `lookalike`, `duplicate`, `already_connected`); it is empty on later reads.
  * `createdBy` names the app that made the list when it is not one of Tresso's own, so the page can say so; such a list
  * is `confirmed` only once the user checked its addresses and chose to use them, and the page looks nothing up and
  * offers no sign-in before. An app or a token sees, follows and deletes only the lists it made itself; marking entries
