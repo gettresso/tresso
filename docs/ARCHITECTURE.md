@@ -667,14 +667,24 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
 
 - **API.** `POST /mail-account-imports` (`settings:write`, any client: our own apps, an app the user allowed, a
   personal access token) takes `entries` (1 to 50, each `address` and an optional `provider` hint) and refuses any
-  other field (`allow_extra_attributes: false`), so no password, code or token is ever taken. It answers the list
+  other field (`allow_extra_attributes: false`), so no password, code or token is ever taken. What counts as an address
+  is `ImportAddress` (the same rule as `readPastedAddresses` in `@tresso/core`; both check the cases in
+  `apps/api/tests/Fixtures/import-addresses.json`): addresses are lowercased and a domain is stored in ASCII
+  (punycode). A list an app or a token made leaves out an address whose domain is not plain ASCII or whose local part
+  mixes scripts (`invalid`): `kim@gmaіl.com` with a Cyrillic letter looks like Gmail, and its lookup would ask the
+  attacker's domain for the server the password goes to. Every list remembers its caller (`CallerKey`): an app or a
+  token lists, reads, follows (`get_mail_account_import`) and deletes only the lists it made, and only our own apps
+  mark entries and confirm a list. A list an app made is `confirmed` only once the user chose "Use these addresses"
+  (`POST /mail-account-imports/{id}/confirmation`); before that the page looks nothing up and offers no sign-in. A
+  server without `WEB_APP_URL` makes no list (503, nothing stored). It answers the list
   with `leftOut`: addresses that are not an address (`invalid`), given twice (`duplicate`) or connected already
   (`already_connected`), each with its reason; only a list with nothing left to take is refused (422, a violation per
   address). `GET /mail-account-imports` and `GET /mail-account-imports/{id}` (`settings:read`) answer the user's live
   lists. `POST /mail-account-imports/{id}/entry-states` (`settings:write`) sets an entry to `skipped`, back to `todo`,
   or to `failed` with a reason code (the server form records `password_refused` or `server_unreachable`; codes only,
   never text). `DELETE /mail-account-imports/{id}` deletes it. Another user's list, and one that expired, answer 404.
-  A user has at most 20 live lists (409 beyond that). `createdBy` names the app that made the list (its registered
+  A user has at most 20 live lists (409 beyond that), counted while the user's row is locked, so two requests at once
+  cannot both pass. `createdBy` names the app that made the list (its registered
   name, or the personal access token's name), null for our own apps; the page shows it.
 - **States.** Whether the owner has the account is never stored: it is read whenever the list is read. An entry is
   `connected` when its account was added from this list (a sign-in started from it, or the page's server form, which
@@ -692,7 +702,8 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
   it). Its answer comes back to `/settings/accounts/import/<id>` (for the desktop app through its link, `next` being
   that page, which `signInRoute` accepts by its UUID only). A provider account other than the row's address fails
   with `wrong_account` and connects nothing (an alias of the account counts as another address). How it ended is
-  written on the entry: a failure with its code, success clears an earlier failure.
+  written on the entry by the call that used the sign-in up (a second call handing in the same answer, or another
+  user, writes nothing): a failure with its code, success clears an earlier failure.
 - **The page** (boards AddAccountsPaste, AddAccountsList and AddAccountsStates; `SettingsAccountsImportView`). "Add
   several accounts" in Settings, Accounts (before "Add account") opens the newest list that still has addresses to
   connect, else step 1 (`/settings/accounts/import`): a text box for the addresses, read per line
@@ -703,21 +714,31 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
   password, each row with its state and at most one action. How a row connects is looked up as the single flow does
   (`GET /mail-server-settings`, four at a time; the list's hint only when that finds nothing, `importRoute`); while
   that runs the page shows the connect flow's checks. A Google or Microsoft row opens the provider's page with the
-  row's address as login hint, on the web in a new tab (the provider sends it back to the list's page, which finishes
-  the sign-in and hands the answer to the waiting tab over the connect channel, as the connect dialog does), in the
-  desktop app in the system browser; the row waits ("Waiting for the browser", with "Open the page again"). "Next:
-  <address>" connects one row and then starts nothing; "Sign in to all, one after another" goes through every row
-  still to do, password rows included (the row opens and waits for its password), and starts the next row by itself
-  after each that connected (`components/connect/importRun.ts`, `useAccountImport.ts`). A run stops at the first row
-  that does not connect, with "Continue with the next", "Try this one again" and, when an organization must approve,
-  "Copy approval link"; "Stop" lets the row under way finish and starts nothing after it. Nothing is kept that could
+  row's address as login hint. On the web the click opens a tab and the page sends it to the provider; the provider
+  sends that tab back to the list's page, which finishes the sign-in and hands the answer to the waiting page over the
+  connect channel. In a run the waiting page answers with the next provider page and the returning tab goes there
+  itself (a page may only open a tab on a click), so the whole run happens in that one tab, which closes when the run
+  ends or stops (and shows the list should the browser keep it open). A tab the browser blocked leaves the row saying
+  so, with "Open the page again". The desktop app opens each page in the system browser. The row waits ("Waiting for
+  the browser"). "Next: <address>" connects one row and then starts nothing; "Sign in to all, one after another" goes
+  through every row still to do, password rows included (the row opens with its password field focused and waits),
+  and starts the next row after each that connected, judged by the row as the API wrote it
+  (`components/connect/importRun.ts`, `useAccountImport.ts`); only the row the run is at decides what follows. A run
+  stops at the first row that does not connect, with "Continue with the next", "Try this one again" and, when an
+  organization must approve, "Copy approval link". "Stop", a sign-in that expires, "Finish without the rest" and
+  leaving the page give up what waits (noted as cancelled for the connect channel, so a provider tab that comes back
+  later finishes nothing). Nothing is kept that could
   start a sign-in on a later page load, so the first start is always the user's click. A password row's form shows the
-  servers found ("Change settings" to change them), the username and a password field marked up for password managers
-  (`username`, `current-password`, the label naming the address); it is checked with `POST /mail-account-checks`
-  before the account is created, and a refused check is recorded on the row as a code. "Finish without the rest"
+  servers found ("Change settings" to change them; servers typed by hand are named again before the password is typed),
+  the username and a password field marked up for password managers (`username`, `current-password`, the label naming
+  the address); it is checked with `POST /mail-account-checks` before the account is created, and a refused check is
+  recorded on the row as a code. A refused password closes the row, so it opens again with an empty field. "Finish without the rest"
   skips every row not connected and shows what was added and skipped; "Add back" and "Go back to the skipped ones"
-  put rows on To do again. A list made by an assistant says which app made it until the first sign-in, with "Delete
-  this list". A list that is gone (expired, deleted, or another user's) shows "This list has expired". Coming back
+  put rows on To do again; "Back to the addresses" opens step 1 with the addresses not connected yet, and Continue
+  replaces the list. A list made by an assistant says which app made it until the first sign-in (its name cut at 60
+  characters), with "Use these addresses" until the user confirmed it, and "Delete this list". A list that is gone
+  (expired, deleted, or another user's) shows "This list has expired"; one that expires while the page is open says
+  when it was made and what was connected. Coming back
   within 24 hours continues where it was; a sign-out or another user's sign-in drops the list and any run. The single
   "Add account" dialog is unchanged.
 
