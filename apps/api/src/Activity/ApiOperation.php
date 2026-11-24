@@ -11,6 +11,8 @@ use ApiPlatform\Metadata\Resource\Factory\ResourceMetadataCollectionFactoryInter
 use App\Security\ChatAccessVoter;
 use App\Security\Scope;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * What the activity log keeps of an API operation a request reached: its route template (never the path with its ids,
@@ -33,7 +35,10 @@ final readonly class ApiOperation
     ) {
     }
 
-    public static function of(Request $request, ResourceMetadataCollectionFactoryInterface $resources): ?self
+    /**
+     * $response: for an operation that made something (201), its id is taken from the answer, and nothing else of it.
+     */
+    public static function of(Request $request, ResourceMetadataCollectionFactoryInterface $resources, ?Response $response = null): ?self
     {
         $operation = $request->attributes->get('_api_operation');
         if (!$operation instanceof HttpOperation) {
@@ -74,6 +79,15 @@ final readonly class ApiOperation
             if (\is_string($value)) {
                 $objectId = $value;
                 $objectType = self::resourceOf($segment);
+            }
+        }
+
+        if (null === $objectId && null !== $response && Response::HTTP_CREATED === $response->getStatusCode()) {
+            $answer = json_decode((string) $response->getContent(), true);
+            $created = \is_array($answer) ? ($answer['id'] ?? null) : null;
+            if (\is_string($created) && Uuid::isValid($created)) {
+                $objectId = $created;
+                $list = false;
             }
         }
 

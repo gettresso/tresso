@@ -516,6 +516,26 @@ final class AppActivityTest extends DatabaseTestCase
         self::assertTrue($this->read($this->userHeaders('lisa@example.test', ['settings:read']), [])['empty']);
     }
 
+    public function testTheMailAccountImportToolsAreLoggedWithTheirTitles(): void
+    {
+        $headers = $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $session = $this->mcpInitialize($headers);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        $answer = $this->mcpCallOk($headers, $session, 'add_mail_accounts', ['entries' => [['address' => 'kim@gmail.example', 'provider' => 'google']]]);
+        $this->mcpCallOk($headers, $session, 'get_mail_account_import', ['id' => self::asString($answer['importId'] ?? null)]);
+        $this->mcpCallError($headers, $session, 'reconnect_mail_account', ['id' => Uuid::v7()->toRfc4122()]);
+
+        $page = $this->read($this->userHeaders('kim@example.test', ['settings:read']), []);
+        self::assertSame([
+            ['reconnect_mail_account', 'Where to sign a mail account in again', 'read', 'refused'],
+            ['get_mail_account_import', 'Follow a list of mail accounts to add', 'read', 'done'],
+            ['add_mail_accounts', 'Make a list of mail accounts to add', 'change', 'done'],
+        ], array_map(static fn (array $item): array => [self::asArray($item['action'])['name'], self::asArray($item['action'])['title'], $item['kind'], $item['result']], $page['items']));
+        $added = self::asArray($page['items'][2]['object'] ?? null);
+        self::assertSame(['MailAccountImport', 'List of accounts to add', self::asString($answer['importId'] ?? null)], [$added['type'] ?? null, $added['label'] ?? null, $added['id'] ?? null], 'The list it made, by the id the API answered with; nothing else of the answer.');
+        $this->assertHoldsNone($this->rows(), ['kim@gmail', 'google']);
+    }
+
     public function testACallOfOurOwnAppOnTheMcpEndpointIsNotLogged(): void
     {
         $headers = $this->userHeaders('kim@example.test', ['settings:read']);

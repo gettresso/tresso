@@ -96,6 +96,19 @@ final class ConnectedAppPermissionsTest extends DatabaseTestCase
         self::assertContains('list_whatsapp_chats', $this->mcpToolNames($headers, $session));
     }
 
+    public function testListsOfMailAccountsToAddStayGovernedByChangeSettings(): void
+    {
+        $headers = $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $session = $this->mcpInitialize($headers);
+        $this->narrow($this->connectedAppId(), ['settings:read']);
+        self::assertResponseIsSuccessful();
+
+        self::assertNotContains('add_mail_accounts', $this->mcpToolNames($headers, $session));
+        self::assertStringContainsString('which the user switched off for this app in Tresso', $this->mcpCallError($headers, $session, 'add_mail_accounts', ['entries' => [['address' => 'kim@gmail.example']]]));
+        self::assertSame(0, $this->countRows('SELECT COUNT(*) FROM mail_account_import'));
+        self::assertSame(['no_permission'], $this->connection()->fetchFirstColumn("SELECT reason FROM app_activity WHERE action = 'add_mail_accounts'"));
+    }
+
     public function testEverythingCanBeSwitchedOffWhileTheAppStaysConnected(): void
     {
         $headers = $this->thirdPartyHeaders('kim@example.test', ['settings:read']);
