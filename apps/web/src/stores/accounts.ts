@@ -83,11 +83,13 @@ export const useAccountsStore = defineStore('accounts', () => {
    * system browser, whose tabs hold none of its tokens, so the web app there could not finish the sign-in.
    *
    * @param emailAddress the address typed for a new account, which the provider gets as a login hint
+   * @param importId     the import list the address is from: the answer comes back to the list's page
    */
-  async function startProviderSignIn(provider: OAuthProviderId, mailAccountId?: string, features: ProviderFeature[] = ['mail'], emailAddress?: string): Promise<ProviderAuthorization> {
+  async function startProviderSignIn(provider: OAuthProviderId, mailAccountId?: string, features: ProviderFeature[] = ['mail'], emailAddress?: string, importId?: string): Promise<ProviderAuthorization> {
     const body: StartProviderAuthorization = { provider, features }
     if (mailAccountId !== undefined) body.mailAccountId = mailAccountId
     if (mailAccountId === undefined && emailAddress !== undefined && emailAddress !== '') body.emailAddress = emailAddress
+    if (mailAccountId === undefined && importId !== undefined) body.importId = importId
     if (isDesktop) body.returnTo = 'native'
 
     return auth.send<ProviderAuthorization>('POST', '/api/v1/provider-authorizations', body)

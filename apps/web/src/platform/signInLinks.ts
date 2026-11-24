@@ -2,12 +2,15 @@ import type { RouteLocationRaw } from 'vue-router'
 
 /**
  * The pages a provider sign-in (connecting Gmail or Microsoft 365) may come back to, by the `next` the API puts in the
- * link. Nothing else: a link is not trusted to pick a page.
+ * link, besides the page of an import list ({@link IMPORT_PAGE}). Nothing else: a link is not trusted to pick a page.
  */
 const CONNECT_PAGES = new Map([
   ['/settings/accounts/new', 'settings-accounts-new'],
   ['/settings/accounts', 'settings-accounts'],
 ])
+
+/** The page of a mail account import list: /settings/accounts/import/<uuid>, nothing more. */
+const IMPORT_PAGE = /^\/settings\/accounts\/import\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 
 /**
  * Where a link the desktop app was opened with leads. Both kinds of sign-in come back through this app's redirect URI:
@@ -26,7 +29,12 @@ export function signInRoute(link: string, redirectUri: string): RouteLocationRaw
     return { name: 'auth-callback', query }
   }
   const page = CONNECT_PAGES.get(next)
-  return page === undefined ? null : { name: page, query }
+  if (page !== undefined) {
+    return { name: page, query }
+  }
+  // The page of a mail account import list, by its id only.
+  const importList = IMPORT_PAGE.exec(next)
+  return importList === null ? null : { name: 'settings-accounts-import', params: { importId: importList[1]!.toLowerCase() }, query }
 }
 
 /**

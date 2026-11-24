@@ -125,9 +125,10 @@ router.beforeEach((to) => {
       reportSignedOutReturn(to.query)
       return { name: 'unified' }
     }
-    // The answer to signing an account in again (or allowing its calendars) holds a one-time code: it is not kept in
-    // the address bar and for after the sign-in. The accounts page is, where the account still says what it needs.
-    if (to.name === 'settings-accounts' && to.query.provider !== undefined) {
+    // The answer to signing an account in again (or allowing its calendars, or connecting an address of an import list)
+    // holds a one-time code: it is not kept in the address bar and for after the sign-in. The page is, where the account
+    // or the list still says what it needs.
+    if ((to.name === 'settings-accounts' || to.name === 'settings-accounts-import') && to.query.provider !== undefined) {
       return { name: 'unified', query: { returnTo: to.path } }
     }
     return { name: 'unified', query: { returnTo: to.fullPath } }

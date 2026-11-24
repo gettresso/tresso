@@ -70,7 +70,7 @@ function remove(): Promise<void> {
 </script>
 
 <template>
-  <section class="card" :class="{ problem }" :aria-label="account.displayName">
+  <section :id="`account-${account.id}`" class="card" :class="{ problem }" :aria-label="account.displayName" tabindex="-1">
     <button type="button" class="head" :aria-expanded="open" @click="open = !open">
       <SenderAvatar :sender="{ name: account.displayName, address: account.emailAddress }" :size="36" />
       <span class="who">

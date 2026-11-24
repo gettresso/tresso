@@ -16,6 +16,7 @@ describe('SettingsAccountsView', () => {
   const requests: { method: string; path: string; body: unknown }[] = []
   let connectError: string | null
   let answer: Record<string, unknown>
+  let accounts: unknown[]
 
   beforeEach(() => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
@@ -23,6 +24,7 @@ describe('SettingsAccountsView', () => {
     requests.length = 0
     connectError = null
     answer = {}
+    accounts = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -43,7 +45,7 @@ describe('SettingsAccountsView', () => {
           })
         }
         if (url.pathname === '/api/v1/mail-accounts') {
-          return Response.json([])
+          return Response.json(accounts)
         }
         return Response.json({ detail: 'Unexpected request' }, { status: 500 })
       }),
@@ -55,7 +57,7 @@ describe('SettingsAccountsView', () => {
     sessionStorage.clear()
   })
 
-  async function mountView(path: string) {
+  async function mountView(path: string, attach = false) {
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [
@@ -66,9 +68,26 @@ describe('SettingsAccountsView', () => {
     await router.push(path)
     await router.isReady()
 
-    const wrapper = mount(SettingsAccountsView, { global: { plugins: [router] } })
+    const wrapper = mount(SettingsAccountsView, { global: { plugins: [router] }, ...(attach ? { attachTo: document.body } : {}) })
     return Object.assign(wrapper, { router })
   }
+
+  it('opens at the account a link names (#account-<id>), focused, as reconnect_mail_account links to it', async () => {
+    const id = '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'
+    accounts = [
+      { id, emailAddress: 'kim@company.example', displayName: 'Kim', provider: 'imap', status: 'auth_failed', statusDetail: 'Login refused', username: 'kim', imap: { host: 'imap.company.example', port: 993, security: 'tls' }, smtp: { host: 'smtp.company.example', port: 465, security: 'tls' }, calendarUrl: null, calendarStatus: 'unknown', calendarStatusDetail: null, lastSyncedAt: null, createdAt: '2026-10-19T08:00:00+00:00', defaultSignatureId: null },
+    ]
+    const scrolled = vi.fn()
+    Element.prototype.scrollIntoView = scrolled
+    const wrapper = await mountView(`/settings/accounts#account-${id}`, true)
+    await settle()
+
+    const card = wrapper.get(`#account-${id}`)
+    expect(card.attributes('tabindex')).toBe('-1')
+    expect(scrolled).toHaveBeenCalled()
+    expect(document.activeElement).toBe(card.element)
+    wrapper.unmount()
+  })
 
   it('finishes signing in again with its own token, so the user stays signed in to Tresso', async () => {
     const wrapper = await mountView('/settings/accounts?provider=microsoft&state=state-1&code=code-1')

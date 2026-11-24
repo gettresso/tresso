@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { accountSubtitle, providerSignInOutcome, signedInAgainNotice } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
@@ -73,9 +73,23 @@ watch(
   },
 )
 
+/**
+ * A link to one account (#account-<id>, as the MCP tool reconnect_mail_account hands out): once the list is there,
+ * that account is scrolled to and focused, so a screen reader starts there too.
+ */
+async function showLinkedAccount(): Promise<void> {
+  const match = /^#account-([0-9a-f-]{36})$/i.exec(route.hash)
+  if (match === null) return
+  await nextTick()
+  const card = document.getElementById(`account-${match[1]!.toLowerCase()}`)
+  card?.scrollIntoView({ block: 'start' })
+  card?.focus({ preventScroll: true })
+}
+
 onMounted(async () => {
   await readSignInResult()
   await load()
+  await showLinkedAccount()
   try {
     await accounts.loadServerRules()
   } catch {

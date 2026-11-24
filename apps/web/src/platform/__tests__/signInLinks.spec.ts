@@ -26,6 +26,18 @@ describe('signInRoute', () => {
     })
   })
 
+  it('routes the answer for an address of an import list to that list, by its id only', () => {
+    const id = '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'
+    expect(signInRoute(`${REDIRECT}?next=%2Fsettings%2Faccounts%2Fimport%2F${id.toUpperCase()}&provider=google&state=xyz&code=abc`, REDIRECT)).toEqual({
+      name: 'settings-accounts-import',
+      params: { importId: id },
+      query: { provider: 'google', state: 'xyz', code: 'abc' },
+    })
+    expect(signInRoute(`${REDIRECT}?next=%2Fsettings%2Faccounts%2Fimport%2Fnot-an-id&provider=google&state=xyz`, REDIRECT)).toBeNull()
+    expect(signInRoute(`${REDIRECT}?next=%2Fsettings%2Faccounts%2Fimport%2F${id}%2F..%2F..%2Faccess-tokens&provider=google`, REDIRECT)).toBeNull()
+    expect(signInRoute(`${REDIRECT}?next=%2Fsettings%2Faccounts%2Fimport%2F${id}%3Fx%3D1&provider=google`, REDIRECT)).toBeNull()
+  })
+
   it('ignores a next that is not a page connecting a mail account comes back to', () => {
     expect(signInRoute(`${REDIRECT}?next=%2Fsettings%2Faccess-tokens&provider=google&state=xyz&code=abc`, REDIRECT)).toBeNull()
     expect(signInRoute(`${REDIRECT}?next=https%3A%2F%2Fevil.example%2F&provider=google&state=xyz`, REDIRECT)).toBeNull()
