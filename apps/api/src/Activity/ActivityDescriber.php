@@ -113,11 +113,12 @@ final readonly class ActivityDescriber
                 'sentence' => $this->sentence($entry, $reason, $app),
             ],
             'durationMs' => $entry->getDurationMs(),
-            'permissions' => array_map(static function (string $value) use ($app): array {
-                $scope = Scope::from($value);
-
-                return ['scope' => $value, 'label' => $scope->label(), 'held' => \in_array($value, $app['held'], true)];
-            }, $entry->getScopes()),
+            'permissions' => array_map(static fn (string $value): array => [
+                'scope' => $value,
+                'label' => self::scopeLabel($value),
+                'held' => \in_array($value, $app['held'], true),
+            ], $entry->getScopes()),
+            'count' => $entry->getCount(),
             'object' => null === $objectType ? null : [
                 'type' => $objectType,
                 'label' => self::objectLabel($objectType, $entry->isObjectList()),
@@ -129,6 +130,9 @@ final readonly class ActivityDescriber
 
     private function title(AppActivity $entry): string
     {
+        if (AppActivity::NOT_RECORDED === $entry->getAction()) {
+            return 'More activity was not recorded';
+        }
         $method = $entry->getMethod();
         if (null === $method) {
             return ($this->tools->all()[$entry->getAction()] ?? null)->title ?? $entry->getAction();
@@ -166,7 +170,7 @@ final readonly class ActivityDescriber
         $nothing = ' Nothing was '.$entry->getKind()->nothingWas().'.';
 
         return match ($reason) {
-            ActivityReason::NoPermission => $this->noPermission($entry, $name, $app['held']).$nothing,
+            ActivityReason::NoPermission => $this->noPermission($entry, $name).$nothing,
             ActivityReason::TokenExpired => \sprintf('The token %s had expired.', $name).$nothing,
             ActivityReason::AccessRevoked => ('token' === $app['type'] ? \sprintf('The token %s was revoked.', $name) : \sprintf('%s was disconnected from your Tresso.', $name)).$nothing,
             ActivityReason::NotFound => \sprintf('%s asked for something that does not exist or is not yours.', $name).$nothing,
@@ -179,17 +183,24 @@ final readonly class ActivityDescriber
     }
 
     /**
-     * @param list<string> $held
+     * The refusal in words, from the scopes the app lacked when it was refused (kept with the entry), never from what
+     * it holds now.
      */
-    private function noPermission(AppActivity $entry, string $name, array $held): string
+    private function noPermission(AppActivity $entry, string $name): string
     {
-        $missing = array_values(array_diff($entry->getScopes(), $held));
+        $missing = $entry->getMissingScopes();
         if ([] === $missing) {
             return 'Only Tresso\'s own apps may do this.';
         }
-        $labels = array_map(static fn (string $scope): string => Scope::from($scope)->label(), $missing);
+        $labels = array_map(self::scopeLabel(...), $missing);
 
-        return \sprintf('%s does not have the permission%s %s.', $name, \count($labels) > 1 ? 's' : '', implode(' and ', $labels));
+        return \sprintf('%s did not have the permission%s %s.', $name, \count($labels) > 1 ? 's' : '', implode(' and ', $labels));
+    }
+
+    /** A scope's label; a scope this version no longer has is named neutrally. */
+    private static function scopeLabel(string $value): string
+    {
+        return Scope::tryFrom($value)?->label() ?? 'A permission that no longer exists';
     }
 
     /**

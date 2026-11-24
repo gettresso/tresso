@@ -196,6 +196,9 @@ final readonly class ConsentScreen
         $redirectUri = self::targetOf($event, $client);
         $request = $this->requests->getCurrentRequest() ?? throw new \LogicException('The consent screen needs a request.');
         $asked = array_map(static fn (string $scope): Scope => Scope::from($scope), $scopes);
+        // Asked for, granted before and switched off in Tresso since: allowing here does not switch them on again.
+        $disabled = $this->consentRepository->findOneFor($user, $client->getIdentifier())?->getDisabledScopes() ?? [];
+        $switchedOff = array_values(array_filter($asked, static fn (Scope $scope): bool => \in_array($scope->value, $disabled, true)));
 
         $response = new Response($this->twig->render('security/consent.html.twig', [
             'app_name' => $client->getName(),
@@ -206,6 +209,7 @@ final readonly class ConsentScreen
             'action' => $request->getRequestUri(),
             'error' => $error,
             'allowed_before' => $allowedBefore,
+            'switched_off' => array_map(static fn (Scope $scope): string => $scope->label(), $switchedOff),
             'csrf_token_id' => self::CSRF_TOKEN_ID,
         ]), null === $error ? Response::HTTP_OK : Response::HTTP_BAD_REQUEST);
 

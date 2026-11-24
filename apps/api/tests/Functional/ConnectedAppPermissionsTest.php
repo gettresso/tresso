@@ -67,7 +67,7 @@ final class ConnectedAppPermissionsTest extends DatabaseTestCase
         $this->client->request('GET', '/api/v1/app-activity?result=refused', server: $this->userHeaders('kim@example.test', ['settings:read']));
         /** @var array{items: list<array{reason: array{sentence: string}, permissions: list<array<string, mixed>>}>} $page */
         $page = $this->decodedResponse();
-        self::assertSame('Some app does not have the permission See signatures. Nothing was read.', $page['items'][0]['reason']['sentence']);
+        self::assertSame('Some app did not have the permission See signatures. Nothing was read.', $page['items'][0]['reason']['sentence']);
         self::assertSame([['scope' => 'signatures:read', 'label' => 'See signatures', 'held' => false]], $page['items'][0]['permissions']);
 
         // Back on: the same token works again, without signing in again.
@@ -143,6 +143,66 @@ final class ConnectedAppPermissionsTest extends DatabaseTestCase
         self::assertResponseStatusCodeSame(404, 'Another user\'s app does not exist for Lisa.');
         $this->client->request('PATCH', '/api/v1/connected-apps/'.Uuid::v7()->toRfc4122(), server: $this->userHeaders('kim@example.test', ['settings:write']) + $patch, content: $body);
         self::assertResponseStatusCodeSame(404);
+    }
+
+    public function testATokenGotByARefreshAfterASwitchOffIsNarrowedToo(): void
+    {
+        $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'signatures:read']);
+        $this->narrow($this->connectedAppId(), ['settings:read']);
+        self::assertResponseIsSuccessful();
+
+        $this->client->request('POST', '/oauth/token', [
+            'grant_type' => 'refresh_token',
+            'client_id' => $this->thirdPartyClientId,
+            'refresh_token' => $this->thirdPartyRefreshToken,
+        ]);
+        self::assertResponseIsSuccessful('A switch-off does not end the connection: the app refreshes as before.');
+        $refreshed = ['HTTP_AUTHORIZATION' => 'Bearer '.$this->responseString('access_token'), 'HTTP_ACCEPT' => 'application/json'];
+
+        $this->client->request('GET', '/api/v1/signatures', server: $refreshed);
+        self::assertResponseStatusCodeSame(403);
+        $this->client->request('GET', '/api/v1/mail-accounts', server: $refreshed);
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testAllowingAgainOnTheConsentScreenKeepsASwitchOffAndSaysSo(): void
+    {
+        $this->thirdPartyHeaders('kim@example.test', ['settings:read', 'signatures:read']);
+        $this->narrow($this->connectedAppId(), ['settings:read']);
+        $clientId = (string) $this->thirdPartyClientId;
+
+        $this->client->getCookieJar()->clear();
+        $crawler = $this->client->request('GET', '/login');
+        $this->client->submit($crawler->selectButton('Sign in')->form(['_username' => 'kim@example.test', '_password' => self::DEFAULT_PASSWORD]));
+        $verifier = bin2hex(random_bytes(32));
+        $crawler = $this->client->request('GET', '/oauth/authorize?'.http_build_query([
+            'response_type' => 'code',
+            'client_id' => $clientId,
+            'redirect_uri' => self::THIRD_PARTY_REDIRECT,
+            'scope' => 'settings:read signatures:read',
+            'state' => 'again',
+            'code_challenge' => rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '='),
+            'code_challenge_method' => 'S256',
+        ]));
+        self::assertResponseIsSuccessful('An app on this computer sees the consent screen every time.');
+        self::assertSame('You switched off See signatures for this app in Tresso. Allowing here keeps it off; switch it on under Settings, Apps.', trim($crawler->filter('p.switched-off')->text()));
+
+        $this->client->request('POST', (string) $crawler->filter('form.decision')->attr('action'), [
+            '_csrf_token' => (string) $crawler->filter('input[name="_csrf_token"]')->attr('value'),
+            'decision' => 'allow',
+        ]);
+        parse_str((string) parse_url((string) $this->client->getResponse()->headers->get('Location'), \PHP_URL_QUERY), $query);
+        self::assertIsString($query['code'] ?? null);
+        $this->client->request('POST', '/oauth/token', ['grant_type' => 'authorization_code', 'client_id' => $clientId, 'redirect_uri' => self::THIRD_PARTY_REDIRECT, 'code' => $query['code'], 'code_verifier' => $verifier]);
+        self::assertResponseIsSuccessful();
+        $headers = ['HTTP_AUTHORIZATION' => 'Bearer '.$this->responseString('access_token'), 'HTTP_ACCEPT' => 'application/json'];
+        $this->client->getCookieJar()->clear();
+
+        $disabled = $this->connection()->fetchOne('SELECT disabled_scopes FROM oauth_consent');
+        self::assertIsString($disabled);
+        self::assertSame(['signatures:read'], json_decode($disabled, true));
+        $this->client->request('GET', '/api/v1/signatures', server: $headers);
+        self::assertResponseStatusCodeSame(403);
     }
 
     /**

@@ -37,6 +37,8 @@ final readonly class PurgeAppActivityHandler
             );
             $removed += $batch;
         } while (self::BATCH === $batch);
+        // The per-day counts go with the days they count (one row per app and day: few, so in one statement).
+        $this->connection->executeStatement('DELETE FROM app_activity_day WHERE day < :day', ['day' => substr($before, 0, 10)]);
 
         return $removed;
     }

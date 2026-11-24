@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace App\Security\OAuth;
 
-use App\Activity\ActivityApp;
+use App\Command\BootstrapOAuthClientsCommand;
 use App\Entity\User;
 use App\Repository\OAuthConsentRepository;
+use App\Security\FirstPartyClients;
 use App\Security\PersonalAccessToken\PersonalAccessTokenAuthentication;
 use App\Security\Scope;
 use League\Bundle\OAuth2ServerBundle\Security\Authentication\Token\OAuth2Token;
@@ -39,9 +40,10 @@ final readonly class NarrowedScopes
     public function __invoke(AuthenticationTokenCreatedEvent $event): void
     {
         $token = $event->getAuthenticatedToken();
-        if (!$token instanceof OAuth2Token || $token instanceof PersonalAccessTokenAuthentication || !ActivityApp::isLogged($token->getOAuthClientId())) {
+        if (!self::narrows($token)) {
             return;
         }
+        \assert($token instanceof OAuth2Token);
         $user = $token->getUser();
         if (!$user instanceof User) {
             return;
@@ -63,6 +65,19 @@ final readonly class NarrowedScopes
         );
         $narrowed->setAttribute(self::SWITCHED_OFF, $switchedOff);
         $event->setAuthenticatedToken($narrowed);
+    }
+
+    /**
+     * Whose requests are narrowed: an access token of an OAuth client that is not ours, the only kind of caller a
+     * consent with switched-off scopes belongs to. Never our own apps, the sync worker or a personal access token
+     * (whose scopes are fixed when it is made).
+     */
+    public static function narrows(?TokenInterface $token): bool
+    {
+        return $token instanceof OAuth2Token
+            && !$token instanceof PersonalAccessTokenAuthentication
+            && !FirstPartyClients::isFirstParty($token->getOAuthClientId())
+            && BootstrapOAuthClientsCommand::SYNC_WORKER !== $token->getOAuthClientId();
     }
 
     /**

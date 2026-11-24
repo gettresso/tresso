@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Functional;
 
 use App\Account\UserDeletion;
+use App\Activity\ActivityLog;
 use App\Activity\PurgeAppActivity;
 use App\Activity\PurgeAppActivityHandler;
 use App\Entity\User;
@@ -67,6 +68,8 @@ final class AppActivityTest extends DatabaseTestCase
             'object_type' => 'MailAccount',
             'object_list' => true,
             'object_id' => null,
+            'missing_scopes' => '[]',
+            'count' => 1,
         ], $this->withoutVolatile($rows[0]));
         self::assertSame([
             'owner_id' => $this->kim->getId()->toRfc4122(),
@@ -82,6 +85,8 @@ final class AppActivityTest extends DatabaseTestCase
             'object_type' => 'SmartInbox',
             'object_list' => false,
             'object_id' => $inbox,
+            'missing_scopes' => '[]',
+            'count' => 1,
         ], $this->withoutVolatile($rows[1]));
         $this->assertHoldsNone($rows, ['falcon', 'quarterly', 'anna', 'partner.example', 'takeover', '?', 'tresso_pat_']);
     }
@@ -115,6 +120,8 @@ final class AppActivityTest extends DatabaseTestCase
             'object_type' => 'SmartInbox',
             'object_list' => false,
             'object_id' => $inbox,
+            'missing_scopes' => '[]',
+            'count' => 1,
         ], $this->withoutVolatile($rows[0]));
         self::assertSame(['SmartInbox', $inbox, '["settings:read","settings:write"]'], [$rows[1]['object_type'], $rows[1]['object_id'], $rows[1]['scopes']], 'The last operation that named an object: the inbox it changed.');
         self::assertSame(['read', 'SmartInbox', true, null], [$rows[2]['kind'], $rows[2]['object_type'], $rows[2]['object_list'], $rows[2]['object_id']]);
@@ -143,6 +150,7 @@ final class AppActivityTest extends DatabaseTestCase
             ['api', '/api/v1/connected-apps', 'refused', 'no_permission', '["settings:read"]'],
             ['api', '/api/v1/smart-inboxes/{id}', 'refused', 'not_found', '["settings:read"]'],
         ], array_map(static fn (array $row): array => [$row['channel'], $row['action'], $row['result'], $row['reason'], $row['scopes']], $rows));
+        self::assertSame(['["chat:read"]', '["settings:read"]', '["settings:read"]', '[]'], array_column($rows, 'missing_scopes'), 'What the app lacked then.');
     }
 
     public function testAnExpiredOrRevokedTokenIsLoggedAndAnUnknownOneIsNot(): void
@@ -227,7 +235,7 @@ final class AppActivityTest extends DatabaseTestCase
         self::assertSame([
             'code' => 'no_permission',
             'label' => 'No permission',
-            'sentence' => 'Some app does not have the permission Read your WhatsApp chats. Nothing was read.',
+            'sentence' => 'Some app did not have the permission Read your WhatsApp chats. Nothing was read.',
         ], $refused['reason']);
         self::assertSame([['scope' => 'chat:read', 'label' => 'Read your WhatsApp chats', 'held' => false]], $refused['permissions']);
         self::assertNull($refused['object']);
@@ -293,6 +301,7 @@ final class AppActivityTest extends DatabaseTestCase
 
         self::assertSame(2, $handler(new PurgeAppActivity()));
         self::assertSame(2, $this->countRows('SELECT COUNT(*) FROM app_activity'));
+        self::assertSame(0, $this->countRows("SELECT COUNT(*) FROM app_activity_day WHERE day < DATE '2026-08-26'"), 'The daily counts go with their days.');
         self::assertSame(0, $handler(new PurgeAppActivity()));
 
         for ($i = 0; $i < PurgeAppActivityHandler::BATCH + 3; ++$i) {
@@ -320,17 +329,119 @@ final class AppActivityTest extends DatabaseTestCase
         self::assertSame('http://localhost/mcp', $this->decodedResponse()['mcpEndpoint'] ?? null);
     }
 
+    public function testAnIdIsKeptOnlyWhenItIsAUuid(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);
+        $rows = [];
+        foreach (['call-0800-123456.your-account-is-locked', '08001234567', Uuid::v7()->toRfc4122()] as $id) {
+            // One request at a time: the same refusal within a minute would be one entry.
+            $this->connection()->executeStatement('DELETE FROM app_activity');
+            $this->client->request('GET', '/api/v1/smart-inboxes/'.$id, server: $headers);
+            self::assertResponseStatusCodeSame(404);
+            $rows = [...$rows, ...$this->rows()];
+        }
+
+        self::assertSame(['SmartInbox', 'SmartInbox', 'SmartInbox'], array_column($rows, 'object_type'));
+        self::assertNull($rows[0]['object_id'], 'A dotted name is the caller\'s text, not an id.');
+        self::assertNull($rows[1]['object_id'], 'A digit string is the caller\'s text, not an id.');
+        self::assertIsString($rows[2]['object_id']);
+        self::assertTrue(Uuid::isValid($rows[2]['object_id']));
+        $this->assertHoldsNone($rows, ['0800', 'locked']);
+    }
+
+    public function testRepeatsWithinAMinuteAreOneEntryWithACount(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        for ($i = 0; $i < 3; ++$i) {
+            $this->client->request('GET', '/api/v1/mail-accounts', server: $headers);
+        }
+        $this->client->request('GET', '/api/v1/connected-apps', server: $headers);
+
+        self::assertSame([['/api/v1/mail-accounts', 3], ['/api/v1/connected-apps', 1]], array_map(static fn (array $row): array => [$row['action'], $row['count']], $this->rows()));
+        $this->client->request('GET', '/api/v1/app-activity', server: $this->userHeaders('kim@example.test', ['settings:read']));
+        $counts = array_column(array_column((array) ($this->decodedResponse()['items'] ?? []), 'action'), 'name');
+        self::assertSame(['GET /api/v1/connected-apps', 'GET /api/v1/mail-accounts'], $counts);
+        $items = $this->decodedResponse()['items'] ?? [];
+        self::assertIsArray($items);
+        self::assertSame([1, 3], array_column($items, 'count'));
+    }
+
+    public function testARefusedTokenIsOneEntryAnHourHoweverOftenItIsSent(): void
+    {
+        $revoked = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);
+        $this->connection()->executeStatement('UPDATE personal_access_token SET revoked_at = NOW()');
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        for ($i = 0; $i < 25; ++$i) {
+            $this->client->request('GET', '/api/v1/mail-accounts/'.Uuid::v7()->toRfc4122(), server: $revoked);
+            self::assertResponseStatusCodeSame(401);
+        }
+
+        self::assertSame([['access_revoked', 25]], array_map(static fn (array $row): array => [$row['reason'], $row['count']], $this->rows()));
+    }
+
+    public function testPastTheDailyCapOneEntrySaysMoreWasNotRecorded(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);
+        $token = $this->connection()->fetchOne('SELECT id FROM personal_access_token');
+        self::assertIsString($token);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        $this->connection()->executeStatement('DELETE FROM app_activity_day');
+        $this->connection()->insert('app_activity_day', ['owner_id' => $this->kim->getId()->toRfc4122(), 'app_type' => 'token', 'app_id' => $token, 'day' => new \DateTimeImmutable()->format('Y-m-d'), 'entries' => ActivityLog::DAILY_CAP]);
+
+        $this->client->request('GET', '/api/v1/mail-accounts', server: $headers);
+        $this->client->request('GET', '/api/v1/signatures', server: $headers);
+
+        self::assertSame([['more_activity_not_recorded', 2, null]], array_map(static fn (array $row): array => [$row['action'], $row['count'], $row['method']], $this->rows()));
+        $this->client->request('GET', '/api/v1/app-activity', server: $this->userHeaders('kim@example.test', ['settings:read']));
+        /** @var array{items: list<array{action: array{title: string}}>} $page */
+        $page = $this->decodedResponse();
+        self::assertSame('More activity was not recorded', $page['items'][0]['action']['title']);
+    }
+
+    public function testTheAppFilterListsConnectedAppsTokensAndAppsWithEntriesWithoutReadingTheLog(): void
+    {
+        $this->thirdPartyHeaders('kim@example.test', ['settings:read']);
+        $this->personalAccessTokenHeaders('kim@example.test', ['settings:read']);
+        $this->connection()->executeStatement('UPDATE personal_access_token SET revoked_at = NOW()');
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        $this->connection()->executeStatement('DELETE FROM app_activity_day');
+        $this->insertEntry($this->kim, new \DateTimeImmutable('-2 days'), 'client', 'gone-app', 'get_me');
+        $this->insertEntry($this->kim, new \DateTimeImmutable('-40 days'), 'client', 'older-app', 'get_me');
+
+        $web = $this->userHeaders('kim@example.test', ['settings:read']);
+        $keys = array_column($this->read($web, ['period' => '7d'])['apps'], 'key');
+        sort($keys);
+        $client = $this->connection()->fetchOne('SELECT client_id FROM oauth_consent');
+        self::assertIsString($client);
+        $expected = ['client:'.rtrim($client), 'client:gone-app'];
+        sort($expected);
+        self::assertSame($expected, $keys, 'The connected app, and the app with entries in the period; not the revoked token or an app seen only before.');
+        self::assertFalse($this->read($web, ['period' => '7d'])['empty']);
+        self::assertTrue($this->read($this->userHeaders('lisa@example.test', ['settings:read']), [])['empty']);
+    }
+
+    public function testACallOfOurOwnAppOnTheMcpEndpointIsNotLogged(): void
+    {
+        $headers = $this->userHeaders('kim@example.test', ['settings:read']);
+        $session = $this->mcpInitialize($headers);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        $this->mcpCallOk($headers, $session, 'list_mail_accounts');
+
+        self::assertSame([], $this->rows());
+    }
+
     /**
      * @param array<string, string> $headers
      * @param array<string, string> $query
      *
-     * @return array{items: list<array<string, mixed>>, nextCursor: string|null, apps: list<array<string, mixed>>}
+     * @return array{items: list<array<string, mixed>>, nextCursor: string|null, apps: list<array<string, mixed>>, empty: bool}
      */
     private function read(array $headers, array $query): array
     {
         $this->client->request('GET', '/api/v1/app-activity'.([] === $query ? '' : '?'.http_build_query($query)), server: $headers);
         self::assertResponseIsSuccessful((string) $this->client->getResponse()->getContent());
-        /** @var array{items: list<array<string, mixed>>, nextCursor: string|null, apps: list<array<string, mixed>>} */
+        /** @var array{items: list<array<string, mixed>>, nextCursor: string|null, apps: list<array<string, mixed>>, empty: bool} */
         return $this->decodedResponse();
     }
 
@@ -359,7 +470,8 @@ final class AppActivityTest extends DatabaseTestCase
         self::assertIsString($row['occurred_at']);
         self::assertNotFalse(\DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $row['occurred_at']));
         self::assertIsString($row['app_id']);
-        unset($row['id'], $row['occurred_at'], $row['duration_ms']);
+        self::assertIsString($row['repeat_key']);
+        unset($row['id'], $row['occurred_at'], $row['duration_ms'], $row['repeat_key']);
         $row['app_id'] = rtrim($row['app_id']);
 
         return ['owner_id' => $row['owner_id']] + $row;
@@ -406,6 +518,12 @@ final class AppActivityTest extends DatabaseTestCase
             'object_type' => null,
             'object_list' => 'false',
             'object_id' => null,
+            'repeat_key' => hash('sha256', Uuid::v7()->toRfc4122()),
         ]);
+        $this->connection()->executeStatement(
+            'INSERT INTO app_activity_day (owner_id, app_type, app_id, day, entries) VALUES (:owner, :type, :app, :day, 1)
+             ON CONFLICT (owner_id, app_type, app_id, day) DO UPDATE SET entries = app_activity_day.entries + 1',
+            ['owner' => $owner->getId()->toRfc4122(), 'type' => $appType, 'app' => $appId, 'day' => $at->format('Y-m-d')],
+        );
     }
 }

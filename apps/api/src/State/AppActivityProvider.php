@@ -85,7 +85,8 @@ final readonly class AppActivityProvider implements ProviderInterface
         return new AppActivityPage(
             $this->describer->describe($user, $rows),
             $next,
-            $this->describer->appList($user, $this->activity->findApps($user)),
+            $this->describer->appList($user, $this->activity->findApps($user, $since)),
+            $this->activity->isEmpty($user),
         );
     }
 

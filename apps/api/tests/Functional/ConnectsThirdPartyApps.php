@@ -17,6 +17,10 @@ trait ConnectsThirdPartyApps
 {
     private const string THIRD_PARTY_REDIRECT = 'http://127.0.0.1:33418/callback';
 
+    /** The refresh token and client id of the app thirdPartyHeaders() connected last. */
+    protected ?string $thirdPartyRefreshToken = null;
+    protected ?string $thirdPartyClientId = null;
+
     /**
      * Registers an app, signs the user in, allows the app on the consent screen and returns its request headers. An app
      * that wants a chat scope names its scopes when it registers, as it must; any other registers without.
@@ -69,6 +73,8 @@ trait ConnectsThirdPartyApps
         ]);
         self::assertResponseIsSuccessful();
         $this->client->getCookieJar()->clear();
+        $this->thirdPartyRefreshToken = $this->responseString('refresh_token');
+        $this->thirdPartyClientId = $clientId;
 
         return ['HTTP_AUTHORIZATION' => 'Bearer '.$this->responseString('access_token'), 'HTTP_ACCEPT' => 'application/json'];
     }

@@ -6,6 +6,7 @@ namespace App\Activity;
 
 use ApiPlatform\Metadata\CollectionOperationInterface;
 use ApiPlatform\Metadata\HttpOperation;
+use ApiPlatform\Metadata\NotExposed;
 use ApiPlatform\Metadata\Resource\Factory\ResourceMetadataCollectionFactoryInterface;
 use App\Security\ChatAccessVoter;
 use App\Security\Scope;
@@ -51,6 +52,10 @@ final readonly class ApiOperation
             }
         }
 
+        // API Platform's own placeholder routes (`/.well-known/genid/{id}`) always answer 404 and are no action.
+        if ($operation instanceof NotExposed) {
+            return null;
+        }
         $template = str_replace('{._format}', '', (string) $operation->getUriTemplate());
         $route = rtrim((string) $operation->getRoutePrefix(), '/').$template;
         $method = strtoupper($operation->getMethod());
