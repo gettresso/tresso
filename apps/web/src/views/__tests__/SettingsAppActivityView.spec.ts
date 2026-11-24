@@ -22,7 +22,8 @@ const REFUSED: AppActivityEntry = {
   reason: { code: 'no_permission', label: 'No permission', sentence: 'ChatGPT does not have the permission Send WhatsApp messages as you. Nothing was sent.' },
   durationMs: 12,
   permissions: [{ scope: 'chat:send', label: 'Send WhatsApp messages as you', held: false }],
-  object: { type: 'Chat', label: 'WhatsApp chat', list: false, id: 'chat_8f2k41' },
+  object: { type: 'Chat', label: 'WhatsApp chat', list: false, id: 'chat_8f2k41', several: false },
+  lastOccurredAt: today(10, 21, 5),
   count: 1,
 }
 
@@ -37,7 +38,8 @@ const LISTED: AppActivityEntry = {
   reason: null,
   durationMs: 140,
   permissions: [{ scope: 'settings:read', label: 'See settings', held: true }],
-  object: { type: 'MailAccount', label: 'Mail accounts', list: true, id: null },
+  object: { type: 'MailAccount', label: 'Mail accounts', list: true, id: null, several: false },
+  lastOccurredAt: today(9, 43, 1),
   count: 3,
 }
 
@@ -160,7 +162,7 @@ describe('Settings, Apps, Activity log', () => {
     await wrapper.findAll('button.toggle')[1]!.trigger('click')
     const second = wrapper.get('.detail-row')
     expect(second.findAll('.fact')[1]!.text()).toBe('What it touchedMail accountsNo id. A list has none.')
-    expect(second.findAll('.fact')[3]!.text()).toBe('How often3 times')
+    expect(second.findAll('.fact')[3]!.text()).toBe('How often3 timesFirst at 09:41:30, last at 09:43:01')
     expect(second.find('.why').exists()).toBe(false)
     expect(second.get('.detail-foot a').text()).toBe('Open personal access tokens')
     expect(second.get('.detail-foot a').attributes('href')).toBe('/settings-access-tokens')
@@ -205,6 +207,7 @@ describe('Settings, Apps, Activity log', () => {
     await settle()
     expect(wrapper.findAll('tbody tr')).toHaveLength(2)
     expect(wrapper.get('.more-error').text()).toContain('The server is busy. Try again in a moment.')
+    expect(wrapper.find('.foot button.older').exists()).toBe(false)
     expect(wrapper.get('.more-error').attributes('role')).toBe('alert')
 
     failMore = false
@@ -233,6 +236,13 @@ describe('Settings, Apps, Activity log', () => {
   it('opens on the period the address names, as the full log of one assistant does', async () => {
     await page({ app: 'client:chatgpt', period: '90d' })
     expect(queries[0]!.toString()).toBe('period=90d&app=client%3Achatgpt')
+  })
+
+  it('says when repeats touched several objects', async () => {
+    answer = () => ({ items: [{ ...LISTED, object: { type: 'SmartInbox', label: 'Smart inbox', list: false, id: null, several: true } }], nextCursor: null, apps: [], empty: false })
+    const wrapper = await page()
+    await wrapper.get('button.toggle').trigger('click')
+    expect(wrapper.get('.detail-row').findAll('.fact')[1]!.text()).toBe('What it touchedSmart inboxSeveral, not kept one by one')
   })
 
   it('leaves out what was touched for an action that went through without an object', async () => {

@@ -26,8 +26,23 @@ pub fn checked_endpoint(endpoint: &str) -> Result<&str, String> {
     None => return refused(),
   };
   // The host ends at its port or path (an IPv6 address in brackets is refused with the other characters above).
-  let host = rest.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
-  if host.is_empty() || host.contains('%') {
+  let authority = rest.split('/').next().unwrap_or("");
+  let (host, port) = match authority.split_once(':') {
+    Some((host, port)) => (host, Some(port)),
+    None => (authority, None),
+  };
+  // Written as a browser writes it, so what the web client checked is what is opened: a lower-case host, a port from
+  // 1 to 65535, and no `.` or `..` segment in the path.
+  if host.is_empty() || host.contains('%') || host.bytes().any(|byte| byte.is_ascii_uppercase()) {
+    return refused();
+  }
+  if let Some(port) = port {
+    match port.parse::<u32>() {
+      Ok(number) if (1..=65535).contains(&number) && !port.starts_with('0') => {}
+      _ => return refused(),
+    }
+  }
+  if rest.split('/').skip(1).any(|segment| segment == "." || segment == "..") {
     return refused();
   }
   let loopback = LOOPBACK.contains(&host);
@@ -87,6 +102,7 @@ mod tests {
     );
     assert!(cursor_install_link("http://localhost:8080/mcp").is_ok());
     assert!(cursor_install_link("http://127.0.0.1:8080/mcp").is_ok());
+    assert!(cursor_install_link("https://mcp.tresso.example:8443/mcp").is_ok());
   }
 
   #[test]
@@ -106,6 +122,13 @@ mod tests {
       "https://",
       "http://localhost.evil.example/mcp",
       "http://[::1]:8080/mcp",
+      "https://MCP.tresso.example/mcp",
+      "https://mcp.tresso.example:0/mcp",
+      "https://mcp.tresso.example:65536/mcp",
+      "https://mcp.tresso.example:/mcp",
+      "https://mcp.tresso.example:80a/mcp",
+      "https://mcp.tresso.example/a/../mcp",
+      "https://mcp.tresso.example/./mcp",
       "ftp://mcp.tresso.example/mcp",
     ] {
       assert!(cursor_install_link(endpoint).is_err(), "{endpoint}");

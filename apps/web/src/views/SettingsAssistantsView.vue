@@ -34,22 +34,31 @@ const route = useRoute()
 const router = useRouter()
 
 const NOT_GRANTED = 'Not allowed when this app was connected. Connect it again to allow it.'
-const NO_ENDPOINT = 'Tresso could not read this server\'s MCP address, so there is nothing to copy or open. Reload the page to try again.'
+const NO_ENDPOINT = 'Tresso could not read this server\'s MCP endpoint, so there is nothing to copy or open.'
+/** What to do about it: read again when it was not read, ask the server's admin when it is not a plain address. */
+const NEXT_STEP = { unread: 'Reload the page to try again.', invalid: 'Ask whoever runs this server to check its MCP address.' }
 
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 /** The server's MCP endpoint when it is a plain address; null while unknown or when it is not one. */
 const endpoint = ref<string | null>(null)
+/** Why there is no endpoint: it was not read (server info failed or has none), or it is not a plain address. */
+const endpointProblem = ref<'unread' | 'invalid' | null>(null)
 const lastActive = ref<Record<string, string>>({})
 const now = ref(new Date())
 
 onMounted(async () => {
   const results = await Promise.allSettled([
-    auth.api<ServerInfo>('/api/v1/server-info').then((info) => (endpoint.value = checkedEndpoint((info as Partial<ServerInfo>).mcpEndpoint))),
+    auth.api<ServerInfo>('/api/v1/server-info').then((info) => {
+      const raw = (info as Partial<ServerInfo>).mcpEndpoint
+      endpoint.value = checkedEndpoint(raw)
+      endpointProblem.value = endpoint.value !== null ? null : typeof raw === 'string' && raw !== '' ? 'invalid' : 'unread'
+    }),
     connectedApps.load(),
     activity.lastActive().then((last) => (lastActive.value = last)),
   ])
   const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (results[0].status === 'rejected') endpointProblem.value = 'unread'
   loadError.value = failed === undefined ? null : errorMessage(failed.reason)
   now.value = new Date()
   loading.value = false
@@ -99,7 +108,7 @@ async function copy(what: 'url' | 'command', text: string): Promise<void> {
     if (copiedTimer !== null) clearTimeout(copiedTimer)
     copiedTimer = setTimeout(() => (copied.value = ''), 2000)
   } catch {
-    copyError.value = 'Your browser did not allow copying. Select the text and copy it yourself.'
+    copyError.value = 'Copying did not work. Select the text and copy it yourself.'
   }
 }
 onBeforeUnmount(() => {
@@ -311,7 +320,8 @@ watch(
         </div>
 
         <div id="install-panel" role="tabpanel" :aria-label="how.title" class="how">
-          <div class="how-head">
+          <p v-if="endpoint === null && how.kind !== 'steps'" class="form-error how-error">{{ NO_ENDPOINT }} {{ NEXT_STEP[endpointProblem ?? 'unread'] }}</p>
+          <div v-else class="how-head">
             <span class="how-text">
               <span class="how-title">{{ how.title }}</span>
               <span class="how-line">{{ how.text }}</span>
@@ -348,7 +358,7 @@ watch(
           </template>
           <template v-else>
             <span class="endpoint-label">Your MCP endpoint</span>
-            <p class="form-error endpoint-error" role="alert">{{ NO_ENDPOINT }}</p>
+            <p class="form-error endpoint-error" role="alert">{{ NO_ENDPOINT }} {{ NEXT_STEP[endpointProblem ?? 'unread'] }}</p>
           </template>
           <p v-if="copyError" class="form-error" role="alert">{{ copyError }}</p>
           <span class="visually-hidden" role="status">{{ copied === '' ? '' : 'Copied' }}</span>
@@ -360,10 +370,12 @@ watch(
         </div>
       </section>
 
-      <div v-if="selected" class="connected">
+      <div class="connected">
         <section class="panel clients" aria-labelledby="clients-title">
           <h3 id="clients-title">Connected assistants and apps</h3>
-          <button v-for="app in clients" :key="app.id" type="button" class="client" :aria-pressed="selected.id === app.id ? 'true' : 'false'" @click="select(app)">
+          <p v-if="clients.length === 0" class="clients-empty">No connected assistants or apps. When an assistant or app asks to use your Tresso and you allow it, it shows up here.</p>
+          <p v-else class="clients-warning">Tresso has not checked these apps: disconnect any you do not recognize.</p>
+          <button v-for="app in clients" :key="app.id" type="button" class="client" :aria-pressed="selected?.id === app.id ? 'true' : 'false'" @click="select(app)">
             <span class="client-mark" aria-hidden="true">{{ appInitials(app.name) }}</span>
             <span class="client-text">
               <span class="client-name">{{ app.name }}</span>
@@ -372,11 +384,12 @@ watch(
           </button>
         </section>
 
-        <section class="panel client-detail" aria-labelledby="client-title">
+        <section v-if="selected" class="panel client-detail" aria-labelledby="client-title">
           <div class="detail-head">
             <div class="detail-text">
               <h3 id="client-title">{{ selected.name }}</h3>
-              <span class="sub">Connected {{ shortDay(new Date(selected.connectedAt)) }} by you.</span>
+              <span class="domains" dir="auto">{{ selected.domains.join(', ') }}</span>
+              <span class="sub">Connected {{ shortDay(new Date(selected.connectedAt), now) }} by you.</span>
             </div>
             <button v-if="!isRevoked(selected)" ref="revokeButton" type="button" class="button revoke" @click="ask(selected)">Revoke access</button>
           </div>
@@ -444,7 +457,7 @@ watch(
       @click="backdrop.onClick"
     >
       <h2 id="revoke-title">Revoke access for {{ confirming.name }}?</h2>
-      <p id="revoke-description">It stops working with your account right away. To use it again, it has to ask for permission again.</p>
+      <p id="revoke-description">It stops working with your account right away. To use it again, connect it again.</p>
       <p v-if="revokeError" class="form-error" role="alert">{{ revokeError }}</p>
       <div class="dialog-actions">
         <button type="button" class="button button-danger" :disabled="revoking" @click="revoke">
@@ -828,6 +841,23 @@ h3 {
 .perm.never .perm-note,
 .perm.never .switch {
   opacity: 0.5;
+}
+.clients-empty,
+.clients-warning {
+  margin: 0;
+  padding: 0 8px 6px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ink-2);
+}
+.domains {
+  font-size: 13px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.how-error {
+  margin: 0;
+  font-size: 13px;
 }
 .perm-never {
   font-size: 12px;
