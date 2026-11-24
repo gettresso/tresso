@@ -109,6 +109,13 @@ final class McpMailAccountImportToolsTest extends DatabaseTestCase
         self::assertSame(50, $answer['taken'] ?? null);
     }
 
+    public function testALookalikeAddressIsLeftOutWithItsReason(): void
+    {
+        $answer = $this->mcpCallOk($this->headers, $this->session, 'add_mail_accounts', ['entries' => [['address' => 'kim@gmaіl.com'], ['address' => 'kim@gmail.example']]]);
+
+        self::assertSame([['address' => 'kim@gmaіl.com', 'reason' => 'lookalike', 'message' => 'The address uses letters that look like other letters.']], $answer['leftOut'] ?? null);
+    }
+
     public function testAListWithNothingToAddIsAToolErrorPerAddress(): void
     {
         $this->createImapAccount('kim@company.example');

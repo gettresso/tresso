@@ -456,7 +456,8 @@ final class MailAccountImportTest extends DatabaseTestCase
         ], $app);
         self::assertResponseStatusCodeSame(201);
         self::assertSame(['kim+news@gmail.com', 'k.i.m@sub.mail.example'], array_column(self::asList($list['entries'] ?? null), 'address'));
-        self::assertSame(['invalid', 'invalid', 'invalid'], array_column(self::asList($list['leftOut'] ?? null), 'reason'));
+        self::assertSame(['lookalike', 'lookalike', 'lookalike'], array_column(self::asList($list['leftOut'] ?? null), 'reason'));
+        self::assertSame('The address uses letters that look like other letters.', self::asList($list['leftOut'] ?? null)[0]['message'] ?? null);
 
         $mine = $this->createList([['address' => 'Kim@Gmaіl.com'], ['address' => 'kim@müller.de']]);
         self::assertSame(['kim@xn--gmal-n9d.com', 'kim@xn--mller-kva.de'], array_column(self::asList($mine['entries'] ?? null), 'address'));

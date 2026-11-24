@@ -54,8 +54,8 @@ final readonly class MailAccountImports
     }
 
     /**
-     * Sorts what was asked for into entries to take and addresses left out (not an address for this kind of list, given
-     * twice, connected already), each with the reason. Nothing is stored.
+     * Sorts what was asked for into entries to take and addresses left out (not an address, an address an app gave whose
+     * letters look like others (`lookalike`), given twice, connected already), each with the reason. Nothing is stored.
      *
      * @param list<array{address: string, provider: ?ImportProviderHint}> $asked
      * @param bool                                                        $firstParty made in Tresso's own apps
@@ -72,7 +72,13 @@ final readonly class MailAccountImports
         foreach ($asked as $index => $entry) {
             $address = ImportAddress::normalize($entry['address'], $firstParty);
             if (null === $address) {
-                $leftOut[] = ['index' => $index, 'address' => mb_substr(trim($entry['address']), 0, 320), 'reason' => 'invalid', 'message' => 'This is not an email address.'];
+                $lookalike = !$firstParty && ImportAddress::isLookalike($entry['address']);
+                $leftOut[] = [
+                    'index' => $index,
+                    'address' => mb_substr(trim($entry['address']), 0, 320),
+                    'reason' => $lookalike ? 'lookalike' : 'invalid',
+                    'message' => $lookalike ? 'The address uses letters that look like other letters.' : 'This is not an email address.',
+                ];
                 continue;
             }
             if (isset($seen[$address])) {
