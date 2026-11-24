@@ -34,8 +34,11 @@ export const SERVER_NAME = 'tresso'
 
 const MANUAL_STEPS = ['Paste your endpoint URL.', 'Sign in and approve the permissions it asks for.', 'It shows up below. Narrow its permissions any time.']
 
-/** Anything a shell or a link could read as more than an address. */
-const UNSAFE = /[^A-Za-z0-9._~:/%-]/
+/**
+ * Anything a shell or a link could read as more than an address: an MCP endpoint needs only letters, digits, dots,
+ * hyphens, colons and slashes. Not `%` (cmd.exe expands %PATH%), not `~` (a shell expands it to a home folder).
+ */
+const UNSAFE = /[^A-Za-z0-9.:/-]/
 
 /**
  * The MCP endpoint when it is a plain address an assistant can be pointed at: https (http only on this computer), no

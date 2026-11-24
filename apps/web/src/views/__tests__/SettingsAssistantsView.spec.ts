@@ -397,7 +397,7 @@ describe('Settings, Apps, AI assistants', () => {
     info = { ...info, mcpEndpoint: value }
     const { wrapper } = await page()
     expect(wrapper.find('#mcp-url').exists()).toBe(false)
-    await expectNoEndpoint(wrapper, value === '' ? 'Reload the page to try again.' : 'Ask whoever runs this server to check its MCP address.')
+    await expectNoEndpoint(wrapper, value === '' ? 'Reload the page to try again.' : 'Ask whoever runs this server to check its MCP endpoint.')
   })
 
   it('offers no command, link or Copy when the server info has no endpoint or fails', async () => {

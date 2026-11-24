@@ -36,7 +36,7 @@ const router = useRouter()
 const NOT_GRANTED = 'Not allowed when this app was connected. Connect it again to allow it.'
 const NO_ENDPOINT = 'Tresso could not read this server\'s MCP endpoint, so there is nothing to copy or open.'
 /** What to do about it: read again when it was not read, ask the server's admin when it is not a plain address. */
-const NEXT_STEP = { unread: 'Reload the page to try again.', invalid: 'Ask whoever runs this server to check its MCP address.' }
+const NEXT_STEP = { unread: 'Reload the page to try again.', invalid: 'Ask whoever runs this server to check its MCP endpoint.' }
 
 const loading = ref(true)
 const loadError = ref<string | null>(null)
