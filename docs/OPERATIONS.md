@@ -102,6 +102,12 @@ The other WhatsApp jobs of the `maintenance` worker:
 - `SweepPendingScans` (every 5 minutes) and `SweepReencryption` (every hour) cover WhatsApp files and sealed chat
   columns like mail.
 
+The activity log of apps and AI assistants (`app_activity`) is purged by `PurgeAppActivity`, once a day at 03:29:
+entries older than 90 days go, 5000 at a time in short statements of their own, until none is left. While the
+`maintenance` worker is down, older entries stay in the table (the page never reads past 90 days); the next run
+removes them all.
+Writing the log never needs a worker: the API writes each entry itself after the response was sent.
+
 Removing a file that nothing needs any more (`CollectChatMedia`) runs on the `async` worker, and a WhatsApp push
 (`NotifyChatMessage`) on the `push` worker. While the `maintenance` worker is down, relays are not shown offline,
 unconfirmed replies stay `sending`, and unqueued uploads count toward the user's waiting bytes until it is back.
