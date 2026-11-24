@@ -58,6 +58,8 @@ export function checkedEndpoint(value: unknown): string | null {
   if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '' || url.hostname === '') return null
   // A port from 1 to 65535 (the parser itself refuses one above).
   if (url.port === '0') return null
+  // No empty label and no punycode label, which the parser checks or rewrites (the shell refuses them alike).
+  if (url.hostname.split('.').some((label) => label === '' || label.startsWith('xn--'))) return null
   // What the URL parser made of it must be what was given (no decoding, no hidden host).
   return url.href === value || url.href === `${value}/` ? value : null
 }

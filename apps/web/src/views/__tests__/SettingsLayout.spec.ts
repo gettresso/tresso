@@ -30,7 +30,16 @@ describe('Settings navigation', () => {
     ]
     const router = createRouter({
       history: createMemoryHistory(),
-      routes: [{ path: '/settings', component: SettingsLayout, children: names.map((name) => ({ path: name, name: `settings-${name.replace('/', '-')}`, component: stub })) }],
+      routes: [
+        {
+          path: '/settings',
+          component: SettingsLayout,
+          children: [
+            ...names.map((name) => ({ path: name, name: `settings-${name.replace('/', '-')}`, component: stub })),
+            { path: 'accounts/import/:importId?', name: 'settings-accounts-import', component: stub },
+          ],
+        },
+      ],
     })
     await router.push(path)
     const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
@@ -52,6 +61,14 @@ describe('Settings navigation', () => {
       expect({ path, active: wrapper.findAll('nav a.router-link-active').map((link) => link.text()) }).toEqual({ path, active: ['Apps'] })
       wrapper.unmount()
     }
+  })
+
+  it('highlights Accounts on a list of accounts to add, and Apps on the Apps pages, each alone', async () => {
+    let wrapper = await at('/settings/accounts/import/0190b4a0-0000-7000-8000-000000000000')
+    expect(wrapper.findAll('nav a.router-link-active').map((link) => link.text())).toEqual(['Accounts'])
+    wrapper.unmount()
+    wrapper = await at('/settings/apps/activity')
+    expect(wrapper.findAll('nav a.router-link-active').map((link) => link.text())).toEqual(['Apps'])
   })
 
   it('does not highlight Apps elsewhere', async () => {
