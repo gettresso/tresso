@@ -7,8 +7,8 @@ import { useAccountImportsStore } from '../accountImports'
 
 const LIST: MailAccountImport = {
   id: 'list-1',
-  entries: [{ id: 'e1', address: 'kim@gmail.example', provider: 'google', state: 'todo', failure: null, reason: null, mailAccountId: null, accountStatus: null }],
-  progress: { todo: 1, connected: 0, failed: 0, skipped: 0 },
+  entries: [{ id: 'e1', address: 'kim@gmail.example', provider: 'google', state: 'todo', failure: null, reason: null, mailAccountId: null, accountStatus: null, approvalUrl: null }],
+  progress: { todo: 1, connected: 0, already_connected: 0, failed: 0, skipped: 0 },
   createdBy: 'Claude',
   pageUrl: 'http://localhost:5173/settings/accounts/import/list-1',
   createdAt: '2026-11-24T10:00:00+00:00',

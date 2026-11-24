@@ -94,6 +94,7 @@ describe('connecting through the provider in another tab', () => {
       routes: [
         { path: '/settings/accounts', name: 'settings-accounts', component: { template: '<div />' } },
         { path: '/settings/accounts/new', name: 'settings-accounts-new', component: AddAccountView },
+        { path: '/settings/accounts/import/:importId?', name: 'settings-accounts-import', component: { template: '<div />' } },
         { path: '/accounts/:accountId', name: 'account', component: { template: '<div />' } },
       ],
     })

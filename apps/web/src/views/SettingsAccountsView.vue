@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { accountSubtitle, providerSignInOutcome, signedInAgainNotice } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
+import { useAccountImportsStore } from '@/stores/accountImports'
 import { useAccountsStore } from '@/stores/accounts'
 import { useChatsStore } from '@/stores/chats'
 import { useMailStore } from '@/stores/mail'
@@ -19,6 +20,15 @@ import LogoLoader from '@/components/LogoLoader.vue'
 const props = withDefaults(defineProps<{ finishesSignIn?: boolean }>(), { finishesSignIn: true })
 
 const accounts = useAccountsStore()
+const imports = useAccountImportsStore()
+/**
+ * "Add several accounts" continues the newest list that still has addresses to connect (a list is kept for 24 hours),
+ * and otherwise starts a new one.
+ */
+const severalTarget = computed(() => {
+  const open = imports.lists.find((list) => list.progress.todo > 0 || list.progress.failed > 0)
+  return open ? { name: 'settings-accounts-import', params: { importId: open.id } } : { name: 'settings-accounts-import' }
+})
 const mail = useMailStore()
 const whatsapp = useWhatsAppRelayStore()
 const chats = useChatsStore()
@@ -91,6 +101,11 @@ onMounted(async () => {
   await load()
   await showLinkedAccount()
   try {
+    await imports.loadLists()
+  } catch {
+    // Without the lists "Add several accounts" starts a new one; an open list is still reached by its link.
+  }
+  try {
     await accounts.loadServerRules()
   } catch {
     // Without it "None" is not offered as connection security, which only local test servers need.
@@ -108,6 +123,7 @@ watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.
         <h2>Accounts</h2>
         <p>{{ accounts.accounts.length === 1 ? '1 mail account.' : `${accounts.accounts.length} mail accounts.` }} Your mail stays with your provider; passwords and sign-ins are stored encrypted.</p>
       </div>
+      <RouterLink :to="severalTarget" class="button several">Add several accounts</RouterLink>
       <RouterLink :to="{ name: 'settings-accounts-new' }" class="button button-primary">Add account</RouterLink>
     </header>
 
@@ -172,6 +188,17 @@ h2 {
 .header .button {
   text-decoration: none;
   flex-shrink: 0;
+}
+.header > div {
+  flex: 1;
+}
+.several {
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+}
+.several:hover {
+  background: var(--ground);
 }
 .done {
   margin: 0;

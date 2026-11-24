@@ -63,6 +63,7 @@ describe('SettingsAccountsView', () => {
       routes: [
         { path: '/settings/accounts', name: 'settings-accounts', component: SettingsAccountsView },
         { path: '/settings/accounts/new', name: 'settings-accounts-new', component: { template: '<div />' } },
+        { path: '/settings/accounts/import/:importId?', name: 'settings-accounts-import', component: { template: '<div />' } },
       ],
     })
     await router.push(path)
@@ -77,7 +78,7 @@ describe('SettingsAccountsView', () => {
     accounts = [
       { id, emailAddress: 'kim@company.example', displayName: 'Kim', provider: 'imap', status: 'auth_failed', statusDetail: 'Login refused', username: 'kim', imap: { host: 'imap.company.example', port: 993, security: 'tls' }, smtp: { host: 'smtp.company.example', port: 465, security: 'tls' }, calendarUrl: null, calendarStatus: 'unknown', calendarStatusDetail: null, lastSyncedAt: null, createdAt: '2026-10-19T08:00:00+00:00', defaultSignatureId: null },
     ]
-    const scrolled = vi.fn()
+    const scrolled = vi.fn<() => void>()
     Element.prototype.scrollIntoView = scrolled
     const wrapper = await mountView(`/settings/accounts#account-${id}`, true)
     await settle()

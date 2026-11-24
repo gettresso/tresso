@@ -82,6 +82,8 @@ const router = createRouter({
             { path: '', redirect: { name: 'settings-accounts' } },
             { path: 'accounts', name: 'settings-accounts', component: () => import('@/views/SettingsAccountsView.vue') },
             { path: 'accounts/new', name: 'settings-accounts-new', component: () => import('@/views/AddAccountView.vue') },
+            // Add several accounts: pasting the addresses, then the list (an assistant's link opens the list).
+            { path: 'accounts/import/:importId?', name: 'settings-accounts-import', component: () => import('@/views/SettingsAccountsImportView.vue') },
             {
               path: 'whatsapp',
               name: 'settings-whatsapp',

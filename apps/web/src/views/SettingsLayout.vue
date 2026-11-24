@@ -7,8 +7,11 @@ import FrameTitle from '@/components/FrameTitle.vue'
 
 const billing = useBillingStore()
 const route = useRoute()
-/** WhatsApp's settings belong under Accounts (the SettingsWhatsApp board), though their address is their own. */
-const underAccounts = computed(() => typeof route.name === 'string' && route.name.startsWith('settings-whatsapp'))
+/**
+ * WhatsApp's settings (the SettingsWhatsApp board) and Add several accounts belong under Accounts, though their
+ * addresses are their own.
+ */
+const underAccounts = computed(() => typeof route.name === 'string' && (route.name.startsWith('settings-whatsapp') || route.name === 'settings-accounts-import'))
 </script>
 
 <template>
