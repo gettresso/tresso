@@ -29,13 +29,17 @@ export interface AppActivityEntry {
   /** Each permission the action needed, and whether the app holds it now. */
   permissions: { scope: string; label: string; held: boolean }[]
   object: { type: string; label: string; list: boolean; id: string | null } | null
+  /** How many times the same thing happened within a minute (an hour for a refused token), counted on this entry. */
+  count: number
 }
 
 export interface AppActivityPage {
   items: AppActivityEntry[]
   nextCursor: string | null
-  /** Every app with entries, for the app filter. */
+  /** The apps for the app filter: connected or with a token now, and those with entries in the period. */
   apps: AppActivityApp[]
+  /** The log holds nothing at all, whatever the filters. */
+  empty: boolean
 }
 
 /** A filter left out, or undefined, is not applied. */
@@ -190,11 +194,19 @@ export function permissionUsed(entry: Pick<AppActivityEntry, 'permissions' | 'ap
   }
 }
 
-/** "What it touched": the kind, and the id or why there is none. */
-export function touched(entry: Pick<AppActivityEntry, 'object' | 'kind' | 'result'>): { label: string; id: string } {
+/**
+ * "What it touched": the kind, and the id or why there is none. "Nothing was ..." only for an action that did not go
+ * through; one that went through without touching an object has no line at all (null).
+ */
+export function touched(entry: Pick<AppActivityEntry, 'object' | 'kind' | 'result'>): { label: string; id: string } | null {
   const nothing = { read: 'read', change: 'changed', send: 'sent' }[entry.kind]
-  if (entry.object === null) return { label: 'Nothing', id: `No id. Nothing was ${nothing}.` }
+  if (entry.object === null) return entry.result === 'done' ? null : { label: 'Nothing', id: `No id. Nothing was ${nothing}.` }
   if (entry.object.id !== null) return { label: entry.object.label, id: entry.object.id }
   if (entry.result !== 'done') return { label: entry.object.label, id: `No id. Nothing was ${nothing}.` }
   return { label: entry.object.label, id: entry.object.list ? 'No id. A list has none.' : 'No id.' }
+}
+
+/** How often an entry happened: `3 times`, or null for once. */
+export function timesText(count: number): string | null {
+  return count > 1 ? `${count} times` : null
 }
