@@ -1,4 +1,4 @@
-import { connectErrorMessage, type ImportFailure, type ImportGroup, type OAuthProviderId, type PastedAddresses, type PastedIssue } from '@tresso/core'
+import { connectErrorMessage, type ImportFailure, type ImportGroup, type LeftOutAddress, type OAuthProviderId, type PastedAddresses, type PastedIssue } from '@tresso/core'
 
 /**
  * The words of the "Add several accounts" pages, as the boards AddAccountsPaste, AddAccountsList and AddAccountsStates
@@ -12,11 +12,12 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`
 }
 
-/** "Tuesday 21 October at 10:12". */
-export function listTime(iso: string): string {
+/** "Tuesday 21 October at 10:12", in the time zone of the device (or the one given). */
+export function listTime(iso: string, timeZone?: string): string {
   const date = new Date(iso)
-  const day = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(date)
-  const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date)
+  const zone = timeZone === undefined ? {} : { timeZone }
+  const day = new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', ...zone }).format(date)
+  const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', ...zone }).format(date)
   return `${day} at ${time}`
 }
 
@@ -54,13 +55,22 @@ export function overLine(read: PastedAddresses): string {
   return `That is ${read.toAdd.length - LIMIT} more than ${LIMIT}. Remove some addresses, or add the rest in a second list.`
 }
 
-export function checkTitle(read: PastedAddresses): string {
-  return read.issues.length > 0 ? 'Check these first' : 'Nothing to check'
+export function checkTitle(read: PastedAddresses, issues = read.issues.length): string {
+  return issues > 0 ? 'Check these first' : 'Nothing to check'
 }
 
-export function checkLead(read: PastedAddresses): string {
-  if (read.issues.length > 0) return `${plural(read.issues.length, 'address needs', 'addresses need')} a look. The others are ready.`
+export function checkLead(read: PastedAddresses, issues = read.issues.length): string {
+  if (issues > 0) return `${plural(issues, 'address needs', 'addresses need')} a look. The others are ready.`
   return read.total === 0 ? 'Addresses that need a look show up here.' : 'Every address looks right.'
+}
+
+/** An address the API left out of the list it made, as "Check these first" names it. */
+export function leftOutPill(left: LeftOutAddress): string {
+  return left.reason === 'invalid' ? 'Not valid' : left.reason === 'duplicate' ? 'Listed twice' : 'Already connected'
+}
+
+export function leftOutText(left: LeftOutAddress): string {
+  return `${left.message} It is left out.`
 }
 
 export function issuePill(issue: PastedIssue): string {
@@ -79,8 +89,9 @@ export function issueText(issue: PastedIssue): string {
   }
 }
 
-export function continueLabel(read: PastedAddresses): string {
-  return `Continue with ${plural(read.toAdd.length, 'address', 'addresses')}`
+/** With `leftOut` addresses the API left out of the list it made, the list holds that many fewer. */
+export function continueLabel(read: PastedAddresses, leftOut = 0): string {
+  return `Continue with ${plural(read.toAdd.length - leftOut, 'address', 'addresses')}`
 }
 
 // ---- Step 2, the list ------------------------------------------------------------------------------------------------
@@ -125,9 +136,24 @@ export function runLine(mode: 'all' | 'one', now: string, after: string | null):
   return after === null ? `Signing in one after another. Now: ${now}.` : `Signing in one after another. Now: ${now}. Next: ${after}. After each sign-in the next one starts by itself.`
 }
 
-export function assistantNotice(app: string): string {
-  return `This list was made by ${app}. Check the addresses before you sign in.`
+/** The app's own name, cut at 60 characters: the user reads it as text, whatever the app called itself. */
+export function appName(app: string): string {
+  const characters = [...app.trim()]
+  return characters.length > 60 ? `${characters.slice(0, 60).join('')}\u2026` : characters.join('')
 }
+
+export function assistantNotice(app: string): string {
+  return `This list was made by ${appName(app)}. Check the addresses before you sign in.`
+}
+
+export const USE_ADDRESSES = 'Use these addresses'
+
+/** A sign-in that came back in a tab signed out of Tresso, which cannot finish it. */
+export const SIGNED_OUT = 'The sign-in came back in a tab that is signed out of Tresso. Sign in to Tresso there, then try again.'
+/** The API answered a sign-in page without its state. */
+export const NO_STATE = 'The sign-in page could not be opened. Try again.'
+/** The browser did not open the provider's page (a blocked pop-up, a run without a tab to go on in). */
+export const BLOCKED_HINT = 'Your browser blocked the sign-in page. Choose Open the page again.'
 
 export function keptLine(expiresAt: string): string {
   return `This list is kept for 24 hours, until ${listTime(expiresAt)}. You can leave and continue later: choose Add several accounts in Settings, Accounts.`
@@ -143,6 +169,11 @@ export function groupCount(done: number, total: number): string {
   return `${done} of ${total} connected`
 }
 
+/** Under servers typed by hand: where the password goes, named before it is typed. */
+export function passwordGoesTo(imap: string, smtp: string): string {
+  return imap === smtp ? `The password is sent to ${imap} only.` : `The password is sent to ${imap} and ${smtp} only.`
+}
+
 export function passwordLabel(address: string): string {
   return `Password for ${address}`
 }
@@ -150,7 +181,7 @@ export function passwordLabel(address: string): string {
 // ---- Row states --------------------------------------------------------------------------------------------------------
 
 /** The states of a row, as the states board draws them; `failed` is a provider failure without a board of its own. */
-export type RowState = 'todo' | 'signing-in' | 'waiting' | 'connected' | 'cancelled' | 'approve' | 'refused' | 'unreachable' | 'already' | 'skipped' | 'failed'
+export type RowState = 'todo' | 'signing-in' | 'waiting' | 'connected' | 'cancelled' | 'approve' | 'wrong' | 'refused' | 'unreachable' | 'already' | 'skipped' | 'failed' | 'failed-final'
 
 export type RowIcon = 'dot' | 'spin' | 'check' | 'undo' | 'alert' | 'dash'
 
@@ -161,11 +192,13 @@ export const ROW_STATES: Record<RowState, { label: string; icon: RowIcon; tone: 
   connected: { label: 'Connected', icon: 'check', tone: 'know' },
   cancelled: { label: 'Sign-in cancelled', icon: 'undo', tone: 'muted' },
   approve: { label: 'Organization must approve', icon: 'alert', tone: 'danger' },
+  wrong: { label: 'Signed in with another account', icon: 'alert', tone: 'danger' },
   refused: { label: 'Password refused', icon: 'alert', tone: 'danger' },
   unreachable: { label: 'Server not reached', icon: 'alert', tone: 'danger' },
   already: { label: 'Already connected', icon: 'check', tone: 'muted' },
   skipped: { label: 'Skipped', icon: 'dash', tone: 'muted' },
   failed: { label: 'Sign-in failed', icon: 'alert', tone: 'danger' },
+  'failed-final': { label: 'Sign-in failed', icon: 'alert', tone: 'danger' },
 }
 
 /** The row state of a failure code. */
@@ -175,6 +208,14 @@ export function failureState(failure: ImportFailure | null): RowState {
       return 'cancelled'
     case 'admin_approval_required':
       return 'approve'
+    case 'wrong_account':
+      return 'wrong'
+    case 'already_connected':
+      return 'already'
+    case 'unverified_address':
+    case 'no_mailbox':
+      // Trying again changes nothing: the provider account itself is the problem.
+      return 'failed-final'
     case 'password_refused':
       return 'refused'
     case 'server_unreachable':
@@ -204,7 +245,7 @@ export const ALREADY_HINT = 'This account is already in Tresso.'
 
 export function approveHint(address: string, approvalUrl: string | null): string {
   const first = `The IT team of ${domainOf(address)} has to approve Tresso first.`
-  return approvalUrl === null ? first : `${first} Send them ${approvalUrl}.`
+  return approvalUrl === null ? first : `${first} Send them ${approvalUrl}`
 }
 
 export function refusedHint(address: string): string {
@@ -213,6 +254,22 @@ export function refusedHint(address: string): string {
 
 export function unreachableHint(server: { host: string; port: number }): string {
   return `${server.host} did not answer on port ${server.port}.`
+}
+
+/** How a server check failed: as the single connect flow's server form says it. */
+export type CheckProblem = 'unreachable' | 'certificate' | 'blocked' | 'failed'
+
+export function checkHint(problem: CheckProblem, server: { host: string; port: number }): string {
+  switch (problem) {
+    case 'certificate':
+      return `The security certificate of ${server.host} could not be verified.`
+    case 'blocked':
+      return `Tresso may not connect to ${server.host}.`
+    case 'failed':
+      return `${server.host} did not answer like a mail server.`
+    default:
+      return unreachableHint(server)
+  }
 }
 
 /** A provider failure without a board of its own: what the single connect flow says. */
@@ -226,20 +283,36 @@ export function stoppedTitle(address: string): string {
   return `Stopped at ${address}`
 }
 
-export function stoppedReason(state: RowState, address: string, server: { host: string } | null, failure: ImportFailure | null, provider: OAuthProviderId | null): string {
-  switch (state) {
+/** The first sentence of the stop notice: why the row did not connect, in the row's own words. */
+export function stoppedReason(input: { state: RowState; address: string; provider: OAuthProviderId | null; failure: ImportFailure | null; check: { problem: CheckProblem; host: string } | null; error: string | null }): string {
+  if (input.error !== null && input.error !== '') return input.error
+  switch (input.state) {
     case 'cancelled':
       return 'Sign-in was cancelled. Nothing was connected for this address.'
     case 'approve':
-      return `The IT team of ${domainOf(address)} has to approve Tresso first. Other addresses of ${domainOf(address)} will stop here too.`
+      return `The IT team of ${domainOf(input.address)} has to approve Tresso first. Other addresses of ${domainOf(input.address)} will stop here too.`
     case 'refused':
-      return `${domainOf(address)} did not accept the password for this address.`
-    case 'unreachable':
-      return `${server?.host ?? domainOf(address)} did not answer. Nothing was connected for this address.`
+      return `${domainOf(input.address)} did not accept the password for this address.`
+    case 'unreachable': {
+      const host = input.check?.host ?? domainOf(input.address)
+      switch (input.check?.problem) {
+        case 'certificate':
+          return `The security certificate of ${host} could not be verified. Nothing was connected for this address.`
+        case 'blocked':
+          return `Tresso may not connect to ${host}. Nothing was connected for this address.`
+        case 'failed':
+          return `${host} did not answer like a mail server. Nothing was connected for this address.`
+        default:
+          return `${host} did not answer. Nothing was connected for this address.`
+      }
+    }
     default:
-      return failedHint(failure, provider ?? 'microsoft')
+      return input.provider === null ? NOTHING_CONNECTED : failedHint(input.failure, input.provider)
   }
 }
+
+/** A row without a provider whose reason is not known here. */
+export const NOTHING_CONNECTED = 'Nothing was connected for this address.'
 
 export function soFar(connected: number, total: number): string {
   return `${connected} of ${total} are connected so far.`
@@ -247,14 +320,21 @@ export function soFar(connected: number, total: number): string {
 
 // ---- Endings -----------------------------------------------------------------------------------------------------------
 
-export function doneTitle(added: number, total: number, skipped: number): string {
-  if (skipped === 0) return total === 1 ? '1 account added' : `All ${total} accounts added`
+/**
+ * The title of the ending: how many accounts this list added (an account added another way is not counted). With
+ * nothing skipped and nothing there already, "All N accounts added".
+ */
+export function doneTitle(added: number, total: number, skipped: number, already: number): string {
+  if (added === 0) return 'No accounts were added.'
+  if (skipped === 0 && already === 0) return total === 1 ? '1 account added' : `All ${total} accounts added`
   return plural(added, 'account added', 'accounts added')
 }
 
-export function doneLine(skipped: number): string {
-  const rest = 'Mail for the new accounts is coming in, newest first.'
-  return skipped === 0 ? rest : `${skipped} ${skipped === 1 ? 'was' : 'were'} skipped. ${rest}`
+export function doneLine(added: number, skipped: number): string {
+  const parts: string[] = []
+  if (skipped > 0) parts.push(`${skipped} ${skipped === 1 ? 'was' : 'were'} skipped.`)
+  if (added > 0) parts.push('Mail for the new accounts is coming in, newest first.')
+  return parts.join(' ')
 }
 
 export const DONE = {
@@ -280,5 +360,8 @@ export function expiredMade(createdAt: string): string {
 }
 
 export function expiredCounts(connected: number, rest: number): string {
-  return `The ${connected} accounts you connected stay connected. The other ${rest} were not added.`
+  const kept = connected === 1 ? 'The 1 account you connected stays connected.' : `The ${connected} accounts you connected stay connected.`
+  const lost = rest === 1 ? 'The other 1 was not added.' : `The other ${rest} were not added.`
+  if (connected === 0) return rest === 1 ? 'The 1 account was not added.' : `The ${rest} accounts were not added.`
+  return rest === 0 ? kept : `${kept} ${lost}`
 }

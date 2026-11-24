@@ -26,16 +26,14 @@ import { isDesktop, openInBrowser } from '@/platform/desktop'
 import { useAccountImportsStore } from '@/stores/accountImports'
 import { useAccountsStore } from '@/stores/accounts'
 import { useAuthStore } from '@/stores/auth'
-import { abandoned, clearAwaiting, handOver, isAwaited, listenForSignIns, markAwaiting, stateOf, takeNotedOutcome, type HandedOver } from './connectChannel'
-import { afterRow, connectedBy, type RunMode } from './importRun'
-import { failureState, type RowState } from './importTexts'
-
-/** A sign-in that came back in a tab signed out of Tresso, which cannot finish it. */
-export const SIGNED_OUT = 'The sign-in came back in a tab that is signed out of Tresso. Sign in to Tresso there, then try again.'
-const NO_STATE = 'The sign-in page could not be opened. Try again.'
+import { abandoned, clearAwaiting, handOverAndGoOn, isAwaited, listenForSignIns, markAwaiting, markCancelled, stateOf, takeNotedOutcome, type HandedOver } from './connectChannel'
+import { afterRow, type RunMode } from './importRun'
+import { failureState, NO_STATE, SIGNED_OUT, type RowState } from './importTexts'
 
 /** How many addresses are looked up at once. */
 const LOOKUPS_AT_ONCE = 4
+/** How long a tab the provider sent back waits for the waiting page to say where it goes on to. */
+const CONTINUE_WAIT_MS = 20_000
 
 /** One row of the list: an entry with how it connects (null while it is looked up) and the state it shows. */
 export interface ImportRow {
@@ -64,23 +62,33 @@ export interface PasswordValues {
   password: string
 }
 
+/** The last server check of a password row, for the sentence that says which server failed and how. */
+export interface RowCheck {
+  result: MailAccountCheck
+  imap: ServerSettings
+  smtp: ServerSettings
+}
+
 interface PendingSignIn {
   url: string
   state: string
   expiresAt: number
-  provider: OAuthProviderId
   timer: ReturnType<typeof setTimeout>
 }
+
+/** How a provider page is opened: in a tab the click opened, by the tab that came back, or with nothing to open it. */
+type Opener = { kind: 'tab'; tab: Window | null } | { kind: 'chain' } | { kind: 'none' }
 
 /**
  * The logic of step 2 of "Add several accounts" (/settings/accounts/import/:importId): the rows grouped by how they
  * connect, signing in per row, "Next" (one row, then nothing) and "Sign in to all, one after another" ({@link
  * ./importRun}), the password form per row, Stop, the stop notice, finishing without the rest and adding rows back.
  *
- * A provider sign-in opens the provider's page in a new tab on the web (in the system browser in the desktop app) while
- * this page waits; that tab comes back to the list's page, finishes the sign-in and hands the answer to this one over
- * the connect channel ({@link ./connectChannel}), as the single connect dialog does. Nothing here starts a sign-in on
- * its own except the next row of a run the user started with a click.
+ * On the web a provider page opens in a tab the user's click opened; the provider sends that tab back to the list's
+ * page, which finishes the sign-in and hands the answer to this page over the connect channel ({@link
+ * ./connectChannel}). In a run this page answers with the next provider page, and the returning tab goes there itself:
+ * a page may only open a tab on a click, so the run goes on in that one tab. In the desktop app the system browser opens
+ * each page. Nothing starts on its own except the next row of a run the user started with a click.
  */
 export function useAccountImport(importId: Ref<string | null>) {
   const auth = useAuthStore()
@@ -97,23 +105,35 @@ export function useAccountImport(importId: Ref<string | null>) {
   const current = ref<string | null>(null)
   /** Where a run stopped at a row that did not connect. */
   const stopped = ref<string | null>(null)
-  /** The password row that is open, and whether its server settings are shown. */
+  /** The password row that is open, whether its server settings are shown, and whether a run opened it. */
   const openRow = ref<string | null>(null)
+  const openedByRun = ref(false)
   const settingsShown = ref<Record<string, boolean>>({})
+  /** Per row, how often its password was tried; the form empties its password field on each new try. */
+  const attempts = ref<Record<string, number>>({})
   /** Rows whose password is being checked, or whose provider answer is being finished. */
   const signingIn = ref<Record<string, boolean>>({})
-  /** The last check of a password row, for which server did not answer. */
-  const checks = ref<Record<string, { result: MailAccountCheck; imap: ServerSettings; smtp: ServerSettings }>>({})
-  /** What went wrong that the row's state does not say (a request that failed). */
+  /** The last check of a password row. */
+  const checks = ref<Record<string, RowCheck>>({})
+  /** What went wrong that the row's state does not say (a request that failed, a signed-out return). */
   const rowErrors = ref<Record<string, string>>({})
+  /** Rows waiting for a provider page the browser did not open. */
+  const blocked = ref<Record<string, boolean>>({})
   const suggestions = ref<Record<string, SuggestedServerSettings | null>>({})
+  /** Looking the addresses up: 0 while the addresses are looked up, 1 while the way to connect each is chosen. */
   const looking = ref(false)
+  const lookStage = ref(0)
   const pending = new Map<string, PendingSignIn>()
   const waiting = ref<Record<string, boolean>>({})
-  let checking: AbortController | null = null
+  const checking = new Map<string, AbortController>()
+  /** The list expired while the page was open. */
+  const expired = ref(false)
+  let expiryTimer: ReturnType<typeof setTimeout> | null = null
 
   const list = computed<MailAccountImport | null>(() => (imports.current !== null && imports.current.id === importId.value ? imports.current : null))
   const signInProviders = computed(() => accounts.providers.map((provider) => provider.id))
+  /** A list an app made is used only once the user checked its addresses. */
+  const confirmed = computed(() => list.value?.confirmed ?? false)
 
   function viewOf(entryId: string, state: ImportEntryState, failure: ImportFailure | null): RowState {
     if (waiting.value[entryId]) return 'waiting'
@@ -134,7 +154,7 @@ export function useAccountImport(importId: Ref<string | null>) {
 
   const rows = computed<ImportRow[]>(() =>
     (list.value?.entries ?? []).map((entry) => {
-      const looked = entry.address in suggestions.value
+      const looked = confirmed.value && entry.address in suggestions.value && !looking.value
       const suggestion = suggestions.value[entry.address] ?? null
       const rowRoute = looked ? importRoute(suggestion, entry.provider, signInProviders.value) : null
       return {
@@ -156,28 +176,45 @@ export function useAccountImport(importId: Ref<string | null>) {
   const groups = computed(() =>
     IMPORT_GROUPS.map((group) => {
       const groupRows = known.value.filter((row) => row.group === group)
-      return { group, rows: groupRows, done: groupRows.filter((row) => row.state === 'connected' || row.state === 'already_connected').length }
+      return { group, rows: groupRows, done: groupRows.filter((row) => row.state === 'connected' || row.state === 'already_connected').length, added: groupRows.filter((row) => row.state === 'connected').length }
     }).filter((group) => group.rows.length > 0),
   )
   const total = computed(() => rows.value.length)
   const connectedCount = computed(() => rows.value.filter((row) => row.state === 'connected' || row.state === 'already_connected').length)
-  const failedCount = computed(() => rows.value.filter((row) => row.state === 'failed').length)
+  const addedCount = computed(() => rows.value.filter((row) => row.state === 'connected').length)
+  const alreadyCount = computed(() => rows.value.filter((row) => row.state === 'already_connected').length)
+  const failedCount = computed(() => rows.value.filter((row) => row.state === 'failed' && row.view !== 'already').length)
   const todoCount = computed(() => rows.value.filter((row) => row.state === 'todo').length)
   const skippedRows = computed(() => rows.value.filter((row) => row.state === 'skipped'))
   /** Every row is connected, already connected or skipped. */
   const allDone = computed(() => total.value > 0 && rows.value.every((row) => row.state === 'connected' || row.state === 'already_connected' || row.state === 'skipped'))
+  /** The rows a sign-in may still be started for: to do, or failed with something to try again. */
+  const startable = computed(() => known.value.filter((row) => row.view !== 'already' && row.view !== 'failed-final'))
   /** The row "Next" and "Sign in to all" start with. */
-  const nextRow = computed(() => nextImportRow(known.value, null, true))
+  const nextRow = computed(() => nextImportRow(startable.value, null, true))
   /** The row after the current one, for the run line. */
-  const afterCurrent = computed(() => (current.value === null ? null : nextImportRow(known.value, current.value)))
+  const afterCurrent = computed(() => (current.value === null ? null : nextImportRow(startable.value, current.value)))
   const createdBy = computed(() => list.value?.createdBy ?? null)
   /** The assistant's notice stays until the first sign-in. */
   const showAssistantNotice = computed(
     () => createdBy.value !== null && mode.value === null && current.value === null && rows.value.every((row) => row.state === 'todo' || row.state === 'skipped' || row.state === 'already_connected'),
   )
-  const expired = ref(false)
 
   // ---- Loading -----------------------------------------------------------------------------------------------------
+
+  function watchExpiry(): void {
+    if (expiryTimer !== null) clearTimeout(expiryTimer)
+    const at = list.value === null ? Number.NaN : Date.parse(list.value.expiresAt)
+    if (Number.isNaN(at)) return
+    // A page left open past the list's day shows that it expired, without waiting for a click.
+    expiryTimer = setTimeout(() => goneExpired(), Math.max(0, at - Date.now()))
+  }
+
+  function goneExpired(): void {
+    giveUpAll()
+    expired.value = true
+    status.value = 'missing'
+  }
 
   async function load(): Promise<boolean> {
     const id = importId.value
@@ -191,8 +228,11 @@ export function useAccountImport(importId: Ref<string | null>) {
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         // Expired while the page was open: what the list held is still known here.
-        expired.value = list.value !== null && Date.parse(list.value.expiresAt) <= Date.now()
-        status.value = 'missing'
+        if (list.value !== null && Date.parse(list.value.expiresAt) <= Date.now()) {
+          goneExpired()
+        } else {
+          status.value = 'missing'
+        }
         error.value = null
       } else {
         status.value = 'error'
@@ -202,20 +242,19 @@ export function useAccountImport(importId: Ref<string | null>) {
     }
     error.value = null
     status.value = 'ready'
+    watchExpiry()
     return true
   }
 
-  /** Looks up each address not looked up yet, a few at a time, the way the single "Add account" flow does. */
+  /**
+   * Looks up each address not looked up yet, a few at a time, the way the single "Add account" flow does, and then
+   * chooses how each connects. Not for a list an app made until the user confirmed it.
+   */
   async function lookUp(): Promise<void> {
+    if (!confirmed.value) return
     looking.value = true
+    lookStage.value = 0
     try {
-      if (accounts.providers.length === 0) {
-        try {
-          await accounts.loadProviders()
-        } catch {
-          // Without the list no row signs in at a provider's page: every row gets the password form.
-        }
-      }
       const generation = auth.generation
       const queue = (list.value?.entries ?? []).filter((entry) => !(entry.address in suggestions.value)).map((entry) => entry.address)
       const worker = async (): Promise<void> => {
@@ -231,15 +270,36 @@ export function useAccountImport(importId: Ref<string | null>) {
         }
       }
       await Promise.all(Array.from({ length: Math.min(LOOKUPS_AT_ONCE, queue.length) }, worker))
+      lookStage.value = 1
+      if (accounts.providers.length === 0) {
+        try {
+          await accounts.loadProviders()
+        } catch {
+          // Without the list no row signs in at a provider's page: every row gets the password form.
+        }
+      }
     } finally {
       looking.value = false
     }
   }
 
+  /** "Use these addresses": the user checked the addresses of a list an app made. */
+  async function confirm(): Promise<void> {
+    const id = importId.value
+    if (id === null) return
+    try {
+      await imports.confirm(id)
+    } catch (e) {
+      error.value = errorMessage(e)
+      return
+    }
+    await lookUp()
+  }
+
   /**
-   * Opens the page: the list and how each row connects. A page the provider sent back (a new tab on the web) finishes
-   * the sign-in, hands the answer to the tab that waits for it and closes; without such a tab it shows the list. Nothing
-   * starts on load.
+   * Opens the page. A tab the provider sent back finishes the sign-in and hands the answer to the page that waits for
+   * it, which may send it on to the next provider page; otherwise it closes, and shows the list where the browser keeps
+   * it open. Nothing starts on load.
    */
   async function open(): Promise<void> {
     const answer = route.query.provider !== undefined ? { ...route.query } : null
@@ -252,10 +312,14 @@ export function useAccountImport(importId: Ref<string | null>) {
     await lookUp()
   }
 
-  /** Finishes an answer that came back to this page; true when it went to the tab that waits and this one closes. */
+  /** Finishes an answer that came back to this tab; true when this tab went on to the next provider page. */
   async function finishHere(answer: LocationQuery): Promise<boolean> {
     const state = typeof answer.state === 'string' ? answer.state : null
-    if (state !== null && abandoned(state) !== null) return false
+    if (state !== null && abandoned(state) !== null) {
+      // Stopped or given up in the page that waited: nothing is finished, and this tab is not needed.
+      if (!isDesktop && isAwaited(state)) window.close()
+      return false
+    }
     let result: ProviderConnection | null
     try {
       result = await accounts.finishProviderSignIn(answer)
@@ -263,10 +327,15 @@ export function useAccountImport(importId: Ref<string | null>) {
       error.value = errorMessage(e)
       return false
     }
-    if (result !== null && !isDesktop && state !== null && isAwaited(state) && (await handOver(state, { kind: 'result', result }))) {
-      window.close()
+    if (result === null || isDesktop || state === null || !isAwaited(state)) return false
+    const reply = await handOverAndGoOn(state, { kind: 'result', result }, CONTINUE_WAIT_MS)
+    if (!reply.taken) return false
+    if (reply.next !== null) {
+      window.location.assign(reply.next)
       return true
     }
+    // The page that waited shows how it went. Should the browser keep this tab open, it shows the list too.
+    window.close()
     return false
   }
 
@@ -277,19 +346,51 @@ export function useAccountImport(importId: Ref<string | null>) {
     return accounts.providers.find((info) => info.id === provider)?.features.includes('calendar') ? ['mail', 'calendar'] : ['mail']
   }
 
-  /** Starts a row: a provider row opens the provider's page and waits; a password row opens and waits for the password. */
-  async function startRow(entryId: string, runMode: RunMode): Promise<void> {
+  /** A tab for a provider page, opened in the click itself (a page may only open one then); null when blocked. */
+  function tabForClick(): Window | null {
+    if (isDesktop) return null
+    try {
+      return window.open('', '_blank')
+    } catch {
+      return null
+    }
+  }
+
+  function showPage(tab: Window | null, url: string): boolean {
+    if (tab === null) return false
+    try {
+      tab.opener = null
+      tab.location.href = url
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Starts a row: a provider row opens the provider's page and waits; a password row opens and waits for the password.
+   * Answers the provider page when the tab that came back is to go there itself (`chain`).
+   */
+  async function startRow(entryId: string, runMode: RunMode, opener: Opener): Promise<string | null> {
     const id = importId.value
     const row = rows.value.find((candidate) => candidate.id === entryId)
-    if (id === null || row === undefined || row.route === null) return
+    if (id === null || row === undefined || row.route === null) {
+      if (opener.kind === 'tab') opener.tab?.close()
+      return null
+    }
     stopped.value = null
     mode.value = runMode
     current.value = entryId
     rowErrors.value = { ...rowErrors.value, [entryId]: '' }
+    blocked.value = { ...blocked.value, [entryId]: false }
     if (row.route.kind === 'password') {
+      if (opener.kind === 'tab') opener.tab?.close()
       openRow.value = entryId
-      return
+      openedByRun.value = true
+      return null
     }
+    // A sign-in started for this row before is given up: its answer must not finish anything any more.
+    giveUp(entryId)
     const provider = row.route.provider
     let url: string
     let expiresAt: number
@@ -298,62 +399,66 @@ export function useAccountImport(importId: Ref<string | null>) {
       url = started.authorizationUrl
       expiresAt = Date.parse(started.expiresAt)
     } catch (e) {
+      if (opener.kind === 'tab') opener.tab?.close()
       rowErrors.value = { ...rowErrors.value, [entryId]: errorMessage(e) }
       end(entryId, false)
-      return
+      return null
     }
     const state = stateOf(url)
     if (state === null) {
+      if (opener.kind === 'tab') opener.tab?.close()
       rowErrors.value = { ...rowErrors.value, [entryId]: NO_STATE }
       end(entryId, false)
-      return
+      return null
     }
     // Once the sign-in expired no answer can connect anything any more.
     const timer = setTimeout(() => void expire(entryId), Math.max(0, expiresAt - Date.now()))
-    pending.set(entryId, { url, state, expiresAt, provider, timer })
+    pending.set(entryId, { url, state, expiresAt, timer })
     waiting.value = { ...waiting.value, [entryId]: true }
-    if (!isDesktop) markAwaiting(state, expiresAt)
-    await openPage(url)
-    readNotedOutcomes()
-  }
-
-  async function openPage(url: string): Promise<void> {
     if (isDesktop) {
       await openInBrowser(url)
-    } else {
-      // A blocked window leaves the row waiting; "Open the page again" is a fresh click.
-      window.open(url, '_blank', 'noopener')
+      return null
     }
+    markAwaiting(state, expiresAt)
+    if (opener.kind === 'chain') return url
+    if (!(opener.kind === 'tab' && showPage(opener.tab, url))) blocked.value = { ...blocked.value, [entryId]: true }
+    readNotedOutcomes()
+    return null
   }
 
-  /** A row's own action: Sign in, Try again. Nothing starts after it. */
-  function signIn(entryId: string): Promise<void> {
-    return startRow(entryId, 'one')
+  /** A row's own action (Sign in, Try again), from a click. Nothing starts after it. */
+  function signIn(entryId: string): Promise<string | null> {
+    return startRow(entryId, 'one', { kind: 'tab', tab: tabForClick() })
   }
 
-  /** "Next: <address>": the next row, and nothing after it. */
-  function next(): Promise<void> {
-    return nextRow.value === null ? Promise.resolve() : startRow(nextRow.value.id, 'one')
+  /** "Next: <address>", from a click: the next row, and nothing after it. */
+  function next(): Promise<string | null> {
+    const row = nextRow.value
+    return row === null ? Promise.resolve(null) : startRow(row.id, 'one', { kind: 'tab', tab: row.route.kind === 'oauth' ? tabForClick() : null })
   }
 
-  /** "Sign in to all, one after another". */
-  function signInAll(): Promise<void> {
-    return nextRow.value === null ? Promise.resolve() : startRow(nextRow.value.id, 'all')
+  /** "Sign in to all, one after another", from a click. */
+  function signInAll(): Promise<string | null> {
+    const row = nextRow.value
+    return row === null ? Promise.resolve(null) : startRow(row.id, 'all', { kind: 'tab', tab: row.route.kind === 'oauth' ? tabForClick() : null })
   }
 
-  /** "Open the page again", for a page behind another window or blocked. */
-  function openAgain(entryId: string): Promise<void> {
+  /** "Open the page again", from a click, for a page behind another window or blocked. */
+  function openAgain(entryId: string): void {
     const signIn = pending.get(entryId)
-    return signIn === undefined ? Promise.resolve() : openPage(signIn.url)
+    if (signIn === undefined) return
+    if (isDesktop) {
+      void openInBrowser(signIn.url)
+      return
+    }
+    blocked.value = { ...blocked.value, [entryId]: !showPage(tabForClick(), signIn.url) }
   }
 
-  /** Stop: the row under way still finishes, but nothing starts after it. */
+  /** Stop: whatever waits is given up, its row back on To do, and nothing starts after it. */
   function stopAll(): void {
-    if (mode.value !== null) mode.value = 'one'
-    if (current.value === null || (!waiting.value[current.value] && !signingIn.value[current.value])) {
-      mode.value = null
-      current.value = null
-    }
+    for (const entryId of pending.keys()) giveUp(entryId)
+    mode.value = null
+    current.value = null
   }
 
   // ---- Answers -----------------------------------------------------------------------------------------------------
@@ -365,6 +470,22 @@ export function useAccountImport(importId: Ref<string | null>) {
     return null
   }
 
+  /** No longer waits for the row's sign-in; its answer will not be finished in any tab. */
+  function giveUp(entryId: string): void {
+    const signIn = pending.get(entryId)
+    if (signIn === undefined) return
+    markCancelled(signIn.state, signIn.expiresAt + 15 * 60_000)
+    forgetPending(entryId)
+  }
+
+  function giveUpAll(): void {
+    for (const entryId of pending.keys()) giveUp(entryId)
+    for (const controller of checking.values()) controller.abort()
+    checking.clear()
+    mode.value = null
+    current.value = null
+  }
+
   function forgetPending(entryId: string): void {
     const signIn = pending.get(entryId)
     if (signIn === undefined) return
@@ -372,40 +493,53 @@ export function useAccountImport(importId: Ref<string | null>) {
     if (!isDesktop) clearAwaiting(signIn.state)
     pending.delete(entryId)
     waiting.value = { ...waiting.value, [entryId]: false }
+    blocked.value = { ...blocked.value, [entryId]: false }
   }
 
-  function take(state: string, outcome: HandedOver): boolean {
+  /** An answer another tab hands over: this page's when it waits for that state. */
+  function take(state: string, outcome: HandedOver): false | Promise<{ next: string | null }> {
     const entryId = entryOfState(state)
     if (entryId === null) return false
     if (outcome.kind === 'signed-out') {
       forgetPending(entryId)
       rowErrors.value = { ...rowErrors.value, [entryId]: SIGNED_OUT }
-      end(entryId, false)
-      return true
+      return Promise.resolve(end(entryId, false)).then(() => ({ next: null }))
     }
-    void applyAnswer(entryId, outcome.result)
-    return true
+    return applyAnswer(entryId, { kind: 'chain' }).then((next) => ({ next }))
   }
 
-  /** Answers another tab noted while this one was not listening. */
+  /** Answers another tab noted while this one was not listening: a run goes on, but without a tab to open it in. */
   function readNotedOutcomes(): void {
     for (const [, signIn] of pending) {
       const outcome = takeNotedOutcome(signIn.state)
-      if (outcome !== null) take(signIn.state, outcome)
+      if (outcome === null) continue
+      const entryId = entryOfState(signIn.state)
+      if (entryId === null) continue
+      if (outcome.kind === 'signed-out') {
+        forgetPending(entryId)
+        rowErrors.value = { ...rowErrors.value, [entryId]: SIGNED_OUT }
+        void end(entryId, false)
+      } else {
+        void applyAnswer(entryId, { kind: 'none' })
+      }
     }
   }
 
-  async function applyAnswer(entryId: string, result: ProviderConnection): Promise<void> {
+  /**
+   * The row's sign-in came back: read the list again (the API wrote on the row how it ended) and go on from what the
+   * row says now, not from the message.
+   */
+  async function applyAnswer(entryId: string, opener: Opener): Promise<string | null> {
     forgetPending(entryId)
-    // The API wrote on the row how it ended; read the list again before deciding what follows.
     await load()
-    end(entryId, connectedBy(result))
+    const row = rows.value.find((candidate) => candidate.id === entryId)
+    return end(entryId, row?.state === 'connected' || row?.state === 'already_connected', opener)
   }
 
   /** A waiting sign-in expired without an answer: the row says so and a run stops there. */
   async function expire(entryId: string): Promise<void> {
     if (!pending.has(entryId)) return
-    forgetPending(entryId)
+    giveUp(entryId)
     const id = importId.value
     if (id !== null) {
       try {
@@ -414,20 +548,22 @@ export function useAccountImport(importId: Ref<string | null>) {
         rowErrors.value = { ...rowErrors.value, [entryId]: errorMessage(e) }
       }
     }
-    end(entryId, false)
+    await end(entryId, false)
   }
 
-  /** A row ended: go on, stop the run here, or end. */
-  function end(entryId: string, connected: boolean): void {
-    const decision = afterRow(entryId, connected, mode.value, known.value)
-    if (connected && openRow.value === entryId) openRow.value = null
-    if (decision.kind === 'continue') {
-      void startRow(decision.entryId, 'all')
-      return
-    }
+  /**
+   * A row ended: only the row the run is at decides what follows (another row that ended, say one signed in in a tab
+   * of its own, changes nothing but itself). Goes on, stops the run here, or ends.
+   */
+  async function end(entryId: string, connected: boolean, opener: Opener = { kind: 'none' }): Promise<string | null> {
+    if (openRow.value === entryId && connected) openRow.value = null
+    if (entryId !== current.value) return null
+    const decision = afterRow(entryId, connected, mode.value, startable.value)
+    if (decision.kind === 'continue') return startRow(decision.entryId, 'all', opener)
     if (decision.kind === 'stopped') stopped.value = entryId
     mode.value = null
     current.value = null
+    return null
   }
 
   // The desktop app gets the answer while the page is open: the app's link changes only the query.
@@ -438,14 +574,15 @@ export function useAccountImport(importId: Ref<string | null>) {
       const answer = { ...route.query }
       await router.replace({ query: {} })
       const state = typeof answer.state === 'string' ? answer.state : null
+      // A sign-in given up (Stop, expiry, finished without the rest) is not finished.
+      if (state !== null && abandoned(state) !== null) return
       const entryId = state === null ? null : entryOfState(state)
       if (entryId !== null) {
         waiting.value = { ...waiting.value, [entryId]: false }
         signingIn.value = { ...signingIn.value, [entryId]: true }
       }
-      let result: ProviderConnection | null = null
       try {
-        result = await accounts.finishProviderSignIn(answer)
+        await accounts.finishProviderSignIn(answer)
       } catch (e) {
         if (entryId !== null) rowErrors.value = { ...rowErrors.value, [entryId]: errorMessage(e) }
       } finally {
@@ -455,12 +592,7 @@ export function useAccountImport(importId: Ref<string | null>) {
         await load()
         return
       }
-      if (result === null) {
-        forgetPending(entryId)
-        end(entryId, false)
-        return
-      }
-      await applyAnswer(entryId, result)
+      await applyAnswer(entryId, { kind: 'none' })
     },
   )
 
@@ -478,6 +610,7 @@ export function useAccountImport(importId: Ref<string | null>) {
     }
     // Opening a row by hand starts no run: the password is checked when the user chooses Check and add.
     openRow.value = entryId
+    openedByRun.value = false
   }
 
   /** "Check settings": the row opens with its server settings shown. */
@@ -498,24 +631,27 @@ export function useAccountImport(importId: Ref<string | null>) {
 
   /**
    * "Check and add": checks that Tresso can sign in and send, then creates the account and says on the list that it
-   * came from there. A refused check is recorded on the row as a code; the password goes to the API only.
+   * came from there. A refused check is recorded on the row as a code; the password goes to the API only. A refused
+   * password closes the row, so Enter password opens it again with an empty field.
    */
   async function connectWithPassword(entryId: string, values: PasswordValues): Promise<boolean> {
     const id = importId.value
     const row = rows.value.find((candidate) => candidate.id === entryId)
-    if (id === null || row === undefined || signingIn.value[entryId]) return false
+    if (id === null || row === undefined || signingIn.value[entryId] || checking.has(entryId)) return false
     signingIn.value = { ...signingIn.value, [entryId]: true }
     rowErrors.value = { ...rowErrors.value, [entryId]: '' }
+    attempts.value = { ...attempts.value, [entryId]: (attempts.value[entryId] ?? 0) + 1 }
     const controller = new AbortController()
-    checking = controller
+    checking.set(entryId, controller)
     const secret = row.route?.kind === 'password' && row.route.service !== null ? normalizeAppPassword(values.password) : values.password
     const input = { emailAddress: row.address, username: values.username, password: secret, imap: values.imap, smtp: values.smtp }
-    let connected = false
+    let failure: ImportFailure | null = null
     try {
       const check = await accounts.check(input, controller.signal)
+      if (controller.signal.aborted) return false
       checks.value = { ...checks.value, [entryId]: { result: check, imap: values.imap, smtp: values.smtp } }
       if (check.imap !== 'ok' || check.smtp !== 'ok') {
-        const failure: ImportFailure = check.imap === 'auth_failed' || check.smtp === 'auth_failed' ? 'password_refused' : 'server_unreachable'
+        failure = check.imap === 'auth_failed' || check.smtp === 'auth_failed' ? 'password_refused' : 'server_unreachable'
         await imports.mark(id, entryId, 'failed', failure)
       } else {
         const created = await accounts.create({ ...input, displayName: startingName(row.address) })
@@ -525,49 +661,50 @@ export function useAccountImport(importId: Ref<string | null>) {
           return false
         }
         await imports.mark(id, entryId, 'connected')
-        connected = true
       }
     } catch (e) {
       if (controller.signal.aborted) return false
       rowErrors.value = { ...rowErrors.value, [entryId]: errorMessage(e) }
     } finally {
-      if (checking === controller) checking = null
+      if (checking.get(entryId) === controller) checking.delete(entryId)
       signingIn.value = { ...signingIn.value, [entryId]: false }
     }
+    if (failure === 'password_refused' && openRow.value === entryId) openRow.value = null
     await load()
-    end(entryId, connected)
+    const now = rows.value.find((candidate) => candidate.id === entryId)
+    const connected = now?.state === 'connected' || now?.state === 'already_connected'
+    if (!connected && current.value !== entryId) return false
+    await end(entryId, connected)
     return connected
   }
 
-  /** Cancel while a password is checked: the row goes back to To do, and a run stops. */
+  /** Cancel while a password is checked: that row goes back to To do, and a run stops. */
   function cancelCheck(entryId: string): void {
-    checking?.abort()
+    checking.get(entryId)?.abort()
+    checking.delete(entryId)
     signingIn.value = { ...signingIn.value, [entryId]: false }
-    mode.value = null
-    current.value = null
-  }
-
-  /** The server that did not answer for a password row: the one its last check named, else the found one. */
-  function unreachableServer(row: ImportRow): ServerSettings | null {
-    const check = checks.value[row.id]
-    if (check !== undefined) return check.result.imap !== 'ok' && check.result.imap !== 'not_checked' ? check.imap : check.smtp
-    return row.servers?.imap ?? null
+    if (current.value === entryId) {
+      mode.value = null
+      current.value = null
+    }
   }
 
   // ---- The stop notice ---------------------------------------------------------------------------------------------
 
-  /** "Continue with the next": leaves the row as it is and goes on. */
-  function continueWithNext(): Promise<void> {
+  /** "Continue with the next", from a click: leaves the row as it is and goes on. */
+  function continueWithNext(): Promise<string | null> {
     const at = stopped.value
-    const following = at === null ? null : nextImportRow(known.value, at)
+    const following = at === null ? null : nextImportRow(startable.value, at)
     stopped.value = null
-    return following === null ? Promise.resolve() : startRow(following.id, 'all')
+    if (following === null) return Promise.resolve(null)
+    return startRow(following.id, 'all', { kind: 'tab', tab: following.route.kind === 'oauth' ? tabForClick() : null })
   }
 
-  /** "Try this one again": the run goes on from the row it stopped at. */
-  function tryAgain(): Promise<void> {
-    const at = stopped.value
-    return at === null ? Promise.resolve() : startRow(at, 'all')
+  /** "Try this one again", from a click: the run goes on from the row it stopped at. */
+  function tryAgain(): Promise<string | null> {
+    const at = rows.value.find((row) => row.id === stopped.value)
+    if (at === undefined) return Promise.resolve(null)
+    return startRow(at.id, 'all', { kind: 'tab', tab: at.route?.kind === 'oauth' ? tabForClick() : null })
   }
 
   async function copyApprovalLink(entryId: string): Promise<void> {
@@ -581,7 +718,7 @@ export function useAccountImport(importId: Ref<string | null>) {
     const id = importId.value
     if (id === null) return
     try {
-      for (const row of rows.value.filter((candidate) => states.includes(candidate.state))) {
+      for (const row of rows.value.filter((candidate) => states.includes(candidate.state) && candidate.view !== 'already')) {
         await imports.mark(id, row.id, to)
       }
     } catch (e) {
@@ -589,11 +726,9 @@ export function useAccountImport(importId: Ref<string | null>) {
     }
   }
 
-  /** "Finish without the rest": every row not connected becomes Skipped, and the ending shows. */
+  /** "Finish without the rest": what waits is given up, and every row not connected becomes Skipped. */
   async function finishWithoutRest(): Promise<void> {
-    for (const entryId of pending.keys()) forgetPending(entryId)
-    mode.value = null
-    current.value = null
+    giveUpAll()
     stopped.value = null
     openRow.value = null
     await markAll(['todo', 'failed'], 'skipped')
@@ -617,6 +752,7 @@ export function useAccountImport(importId: Ref<string | null>) {
   async function removeList(): Promise<boolean> {
     const id = importId.value
     if (id === null) return false
+    giveUpAll()
     try {
       await imports.remove(id)
     } catch (e) {
@@ -641,48 +777,45 @@ export function useAccountImport(importId: Ref<string | null>) {
     stopListening()
     document.removeEventListener('visibilitychange', onVisible)
     window.removeEventListener('focus', readNotedOutcomes)
-    for (const entryId of pending.keys()) forgetPending(entryId)
-    checking?.abort()
+    // Leaving the page gives up what it waited for: a provider tab that comes back later finishes nothing.
+    giveUpAll()
+    if (expiryTimer !== null) clearTimeout(expiryTimer)
   })
 
   function reset(): void {
-    for (const entryId of pending.keys()) forgetPending(entryId)
-    checking?.abort()
-    mode.value = null
-    current.value = null
+    giveUpAll()
     stopped.value = null
     openRow.value = null
     settingsShown.value = {}
+    attempts.value = {}
     signingIn.value = {}
     waiting.value = {}
+    blocked.value = {}
     checks.value = {}
     rowErrors.value = {}
     suggestions.value = {}
     expired.value = false
     error.value = null
     status.value = 'idle'
+    if (expiryTimer !== null) clearTimeout(expiryTimer)
   }
 
   // Another user signed in (the desktop app does that without a reload): nothing of this list may stay or go on.
   watch(() => auth.generation, reset)
-  // Another list in the same page (Start a new list, a link): start afresh.
-  watch(importId, (id, previous) => {
-    if (id !== previous) {
-      reset()
-      void open()
-    }
-  })
 
   return {
     status,
     error,
     expired,
     list,
+    confirmed,
     rows,
     known,
     groups,
     total,
     connectedCount,
+    addedCount,
+    alreadyCount,
     failedCount,
     todoCount,
     skippedRows,
@@ -692,14 +825,20 @@ export function useAccountImport(importId: Ref<string | null>) {
     createdBy,
     showAssistantNotice,
     looking,
+    lookStage,
     mode,
     current,
     stopped,
     openRow,
+    openedByRun,
     settingsShown,
+    attempts,
+    checks,
     rowErrors,
+    blocked,
     open,
     load,
+    confirm,
     signIn,
     next,
     signInAll,
@@ -710,7 +849,6 @@ export function useAccountImport(importId: Ref<string | null>) {
     showSettings,
     connectWithPassword,
     cancelCheck,
-    unreachableServer,
     continueWithNext,
     tryAgain,
     copyApprovalLink,

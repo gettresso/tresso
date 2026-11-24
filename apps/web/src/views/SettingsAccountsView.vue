@@ -22,11 +22,11 @@ const props = withDefaults(defineProps<{ finishesSignIn?: boolean }>(), { finish
 const accounts = useAccountsStore()
 const imports = useAccountImportsStore()
 /**
- * "Add several accounts" continues the newest list that still has addresses to connect (a list is kept for 24 hours),
- * and otherwise starts a new one.
+ * "Add several accounts" continues the newest list that still has addresses to connect, or skipped ones to add back (a
+ * list is kept for 24 hours), and otherwise starts a new one.
  */
 const severalTarget = computed(() => {
-  const open = imports.lists.find((list) => list.progress.todo > 0 || list.progress.failed > 0)
+  const open = imports.lists.find((list) => list.progress.todo > 0 || list.progress.failed > 0 || list.progress.skipped > 0)
   return open ? { name: 'settings-accounts-import', params: { importId: open.id } } : { name: 'settings-accounts-import' }
 })
 const mail = useMailStore()
@@ -95,6 +95,12 @@ async function showLinkedAccount(): Promise<void> {
   card?.scrollIntoView({ block: 'start' })
   card?.focus({ preventScroll: true })
 }
+
+// A link to another account while the page is open (the hash changes only) goes there too.
+watch(
+  () => route.hash,
+  () => void showLinkedAccount(),
+)
 
 onMounted(async () => {
   await readSignInResult()

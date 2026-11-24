@@ -90,6 +90,25 @@ describe('SettingsAccountsView', () => {
     wrapper.unmount()
   })
 
+  it('goes to the account a link names while the page is already open', async () => {
+    const id = '0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'
+    accounts = [
+      { id, emailAddress: 'kim@company.example', displayName: 'Kim', provider: 'imap', status: 'auth_failed', statusDetail: 'Login refused', username: 'kim', imap: { host: 'imap.company.example', port: 993, security: 'tls' }, smtp: { host: 'smtp.company.example', port: 465, security: 'tls' }, calendarUrl: null, calendarStatus: 'unknown', calendarStatusDetail: null, lastSyncedAt: null, createdAt: '2026-10-19T08:00:00+00:00', defaultSignatureId: null },
+    ]
+    const scrolled = vi.fn<() => void>()
+    Element.prototype.scrollIntoView = scrolled
+    const wrapper = await mountView('/settings/accounts', true)
+    await settle()
+    expect(scrolled).not.toHaveBeenCalled()
+
+    await wrapper.router.push(`/settings/accounts#account-${id}`)
+    await settle()
+
+    expect(scrolled).toHaveBeenCalled()
+    expect(document.activeElement).toBe(wrapper.get(`#account-${id}`).element)
+    wrapper.unmount()
+  })
+
   it('finishes signing in again with its own token, so the user stays signed in to Tresso', async () => {
     const wrapper = await mountView('/settings/accounts?provider=microsoft&state=state-1&code=code-1')
     await settle()

@@ -10,6 +10,7 @@ const LIST: MailAccountImport = {
   entries: [{ id: 'e1', address: 'kim@gmail.example', provider: 'google', state: 'todo', failure: null, reason: null, mailAccountId: null, accountStatus: null, approvalUrl: null }],
   progress: { todo: 1, connected: 0, already_connected: 0, failed: 0, skipped: 0 },
   createdBy: 'Claude',
+  confirmed: false,
   pageUrl: 'http://localhost:5173/settings/accounts/import/list-1',
   createdAt: '2026-11-24T10:00:00+00:00',
   expiresAt: '2026-11-25T10:00:00+00:00',
@@ -66,6 +67,15 @@ describe('import lists store', () => {
       { method: 'DELETE', path: '/api/v1/mail-account-imports/list-1', body: undefined },
     ])
     expect(store.current).toBeNull()
+  })
+
+  it('confirms a list an app made', async () => {
+    const store = useAccountImportsStore()
+    await store.load('list-1')
+
+    await store.confirm('list-1')
+
+    expect(requests[1]).toEqual({ method: 'POST', path: '/api/v1/mail-account-imports/list-1/confirmation', body: {} })
   })
 
   it('says a list of another user is not found, and keeps nothing of it', async () => {
