@@ -59,6 +59,8 @@ export interface MailAccountImport {
   progress: Record<ImportEntryState, number>
   /** The app that made the list when it is not one of Tresso's own; null when the user made it in Tresso. */
   createdBy: string | null
+  /** A list an app made is used only once the user checked its addresses; one made in Tresso always is. */
+  confirmed: boolean
   pageUrl: string
   createdAt: string
   expiresAt: string
@@ -95,26 +97,67 @@ export interface PastedAddresses {
   twice: number
 }
 
-const ADDRESS = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+const LOCAL = /^[\p{L}\p{N}!#$%&'*+/=?^_`{|}~-]+(\.[\p{L}\p{N}!#$%&'*+/=?^_`{|}~-]+)*$/u
+const LABEL = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
+const TOP = /^(?:\p{L}+|xn--[a-z0-9-]+)$/u
+
+/** Characters, as PHP's mb_strlen counts them (not UTF-16 units). */
+function characters(text: string): number {
+  return [...text].length
+}
 
 /**
- * Reads pasted addresses: one per line, or separated by commas, semicolons or spaces. Each part is an address to add,
- * or one that needs a look with its line: not valid (left out unless fixed), listed twice (added once) or already
- * connected (left out). The API checks every address again and says per address what it left out.
+ * An address as an import list made in Tresso stores it (lowercase, its domain in ASCII), or null when it is not one.
+ * The same rule as the API's ImportAddress; both check the cases in apps/api/tests/Fixtures/import-addresses.json.
+ */
+export function importAddress(input: string): string | null {
+  const address = input.trim().toLowerCase()
+  if (address === '' || characters(address) > 320 || address.split('@').length !== 2) return null
+  const [local, domain] = address.split('@') as [string, string]
+  if (local === '' || characters(local) > 64 || !LOCAL.test(local)) return null
+  const labels = domain.split('.')
+  if (labels.length < 2 || labels.some((label) => characters(label) > 63 || !LABEL.test(label)) || !TOP.test(labels[labels.length - 1]!)) return null
+  let ascii = domain
+  if (!/^[\x20-\x7e]*$/.test(domain)) {
+    try {
+      ascii = new URL(`http://${domain}`).hostname
+    } catch {
+      return null
+    }
+  }
+  if (ascii.length > 253 || local.length + 1 + ascii.length > 320) return null
+  return `${local}@${ascii}`
+}
+
+/** One pasted part reduced to the address in it: without `<>`, quotes, `mailto:` and a dot that ends a sentence. */
+function cleaned(part: string): string {
+  return part
+    .trim()
+    .replace(/^["'<]+|["'>]+$/g, '')
+    .replace(/^mailto:/i, '')
+    .replace(/\.$/, '')
+}
+
+/**
+ * Reads pasted addresses: one per line, or separated by commas, semicolons or spaces; "Name <address>" counts as the
+ * address. Each part is an address to add, or one that needs a look with its line: not valid (left out unless fixed),
+ * listed twice (added once) or already connected (left out). The API checks every address again and says per address
+ * what it left out.
  *
  * @param connected the addresses of the user's mail accounts, lowercase
  */
 export function readPastedAddresses(text: string, connected: readonly string[]): PastedAddresses {
   const seen = new Map<string, number>()
   const result: PastedAddresses = { total: 0, toAdd: [], issues: [], already: 0, invalid: 0, twice: 0 }
-  text.split('\n').forEach((content, index) => {
+  text.split(/\r\n?|\n/).forEach((content, index) => {
     const line = index + 1
-    for (const raw of content.split(/[,;\s]+/)) {
-      const address = raw.trim()
+    const withoutNames = content.replace(/[^,;<>]*<([^<>]*)>/g, ' $1 ')
+    for (const raw of withoutNames.split(/[,;\s]+/)) {
+      const address = cleaned(raw)
       if (address === '') continue
-      const key = address.toLowerCase()
       result.total++
-      if (!ADDRESS.test(address)) {
+      const key = importAddress(address)
+      if (key === null) {
         result.invalid++
         result.issues.push({ kind: 'invalid', address, line, noAt: !address.includes('@') })
       } else if (seen.has(key)) {
