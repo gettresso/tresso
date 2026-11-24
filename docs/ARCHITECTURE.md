@@ -206,7 +206,7 @@ are independent: `chat:send` alone queues a reply and reads nothing, not even th
 
 #### Personal access tokens
 
-A user makes a personal access token under Settings, Access tokens for their own scripts and tools, and sends it as
+A user makes a personal access token under Settings, Apps, Personal access tokens for their own scripts and tools, and sends it as
 `Authorization: Bearer tresso_pat_...` to the same API the apps use:
 
 ```bash
@@ -1626,6 +1626,40 @@ Closing the window hides it and the app stays in the Dock; the Dock icon and Win
 a click on a notification (`show_main_window_command`), a `tresso://` link (the sign-in coming back), a second launch
 and Sparkle's question before a relaunch, each through the shell. The view
 switches have no shortcuts, because the web client has none for them. Windows and Linux keep no menu bar, as before.
+
+#### Settings, Apps
+
+The web and desktop apps have one "Apps" entry in Settings in place of Meeting apps, Access tokens and Connected apps
+(the "Settings: apps" boards). Those pages keep their addresses (`/settings/meeting-apps`, `/settings/access-tokens`,
+`/settings/connected-apps`) and the navigation highlights Apps on them, as it does on `/settings/apps`,
+`/settings/apps/assistants` and `/settings/apps/activity`.
+
+- **Apps** (`SettingsAppsView`) shows two groups, "Tresso uses these" and "These can use your Tresso", with a category
+  filter (All, Meetings, Messaging, AI assistants, Developer; a group without rows in the category is hidden). Every
+  row is drawn from what the app's own page reads: Google Meet and Microsoft Teams from the meeting preferences and the
+  mail accounts (`appRows`; an expired permission is "Needs attention"), the own room link, WhatsApp as the rest of the
+  app has it (the desktop app once it is turned on there, the browser while a Mac relays the server's chats; an offline
+  Mac, an unlinked phone or a stopped bridge needs attention), each connected app as an AI assistant with a line made
+  from its scopes (`permissionLine`) and when it was last active (its newest log entry, else the last token issued),
+  "Add an AI assistant", the number of connected apps and of active personal access tokens. Zoom is listed as not
+  available yet, without an action. A row only leads to its page; nothing is changed on the Apps page. There is no
+  webhooks row: the product has no webhooks.
+- **AI assistants** (`SettingsAssistantsView`) has a tile per assistant with how to add Tresso: Claude Code's command
+  (`claude mcp add --transport http tresso <endpoint>`, then `/mcp` to sign in), Cursor's documented install link
+  (`cursor://anysphere.cursor-deeplink/mcp/install?name=tresso&config=<base64 of {"url": endpoint}>`, opened through
+  the system on the desktop app, whose opener allows exactly that link), and the manual steps for Claude, VS Code,
+  ChatGPT and any other tool, whose makers document no link with the address filled in. The endpoint is
+  `mcpEndpoint` of `GET /api/v1/server-info`, with Copy. No link or command ever carries a token: assistants sign in
+  with OAuth. Each connected app has a switch per scope an app that is not ours may hold (the consent screen's labels
+  and descriptions); a switch saves at once through `PATCH /api/v1/connected-apps/{id}` and puts itself back with the
+  reason when that fails. A scope that was never granted cannot be switched on here (it needs the consent screen), so
+  its switch is off and disabled. "Revoke access" disconnects the app at once (`DELETE`); it cannot be undone, so the
+  page offers no undo and says the app has to ask for permission again. Recent activity is the app's newest six log
+  entries, with the full log one link away.
+- **Activity log** (`SettingsAppActivityView`) reads `GET /api/v1/app-activity` with the filters of the page (app,
+  kind, result, period; the last 24 hours at first) a page at a time ("Show older entries"). A row opens to show the
+  permission used (and whether the app still holds it), what was touched, how it came in, the reason sentence and a
+  link to where the app's permissions are changed. States: loading, empty (no app has an entry), and no match.
 
 #### The desktop window frame
 
