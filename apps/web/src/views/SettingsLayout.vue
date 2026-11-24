@@ -13,10 +13,10 @@ const route = useRoute()
  */
 const underAccounts = computed(() => typeof route.name === 'string' && (route.name.startsWith('settings-whatsapp') || route.name === 'settings-accounts-import'))
 /**
- * Meeting apps, access tokens and connected apps are pages under Apps (the "Settings: apps" board): their addresses stay,
- * and the navigation highlights Apps on them.
+ * Meeting apps and access tokens are pages under Apps (the "Settings: apps" board): their addresses stay and the
+ * navigation highlights Apps on them. Connected apps lead to the AI assistants and apps page.
  */
-const UNDER_APPS = ['settings-meeting-apps', 'settings-access-tokens', 'settings-connected-apps']
+const UNDER_APPS = ['settings-meeting-apps', 'settings-access-tokens']
 const underApps = computed(() => typeof route.name === 'string' && (route.name.startsWith('settings-apps') || UNDER_APPS.includes(route.name)))
 </script>
 

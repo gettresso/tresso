@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { AppActivityEntry, AppActivityPage, ConnectedApp } from '@tresso/core'
+import { useAuthStore } from '@/stores/auth'
 import SettingsAssistantsView from '../SettingsAssistantsView.vue'
 
 const ENDPOINT = 'https://mcp.tresso.example/mcp'
@@ -24,6 +25,7 @@ function entry(id: string, key: string, extra: Partial<AppActivityEntry> = {}): 
     durationMs: 84,
     permissions: [],
     object: null,
+    count: 1,
     ...extra,
   }
 }
@@ -39,12 +41,18 @@ describe('Settings, Apps, AI assistants', () => {
   const requests: { method: string; path: string; query: string; body: unknown }[] = []
   let apps: ConnectedApp[]
   let refusePatch: string | null
+  let info: Record<string, unknown> | null
+  let recentHold: Promise<void> | null
+  let failDelete: boolean
 
   beforeEach(() => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
     setActivePinia(createPinia())
     requests.length = 0
     refusePatch = null
+    info = { product: 'tresso-server', apiVersion: 1, billing: false, trialDays: 0, allowUnencryptedMailServers: false, mcpEndpoint: ENDPOINT }
+    recentHold = null
+    failDelete = false
     apps = [
       app('claude', 'Claude', ['mail:read', 'settings:read', 'chat:read'], { grantedScopes: ['mail:read', 'settings:read', 'chat:read', 'todos:read'] }),
       app('cursor', 'Cursor', ['mail:read']),
@@ -57,7 +65,7 @@ describe('Settings, Apps, AI assistants', () => {
         const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : undefined
         requests.push({ method, path: url.pathname, query: url.search, body })
         if (url.pathname === '/api/v1/server-info') {
-          return new Response(JSON.stringify({ product: 'tresso-server', apiVersion: 1, billing: false, trialDays: 0, allowUnencryptedMailServers: false, mcpEndpoint: ENDPOINT }))
+          return info === null ? new Response(JSON.stringify({ detail: 'The server is busy.' }), { status: 503, headers: { 'Content-Type': 'application/problem+json' } }) : new Response(JSON.stringify(info))
         }
         if (url.pathname === '/api/v1/connected-apps') {
           return new Response(JSON.stringify(apps))
@@ -73,10 +81,11 @@ describe('Settings, Apps, AI assistants', () => {
           return new Response(JSON.stringify(changed))
         }
         if (url.pathname.startsWith('/api/v1/connected-apps/') && method === 'DELETE') {
-          return new Response(null, { status: 204 })
+          return failDelete ? new Response(JSON.stringify({ detail: 'Connected app not found.' }), { status: 404, headers: { 'Content-Type': 'application/problem+json' } }) : new Response(null, { status: 204 })
         }
         if (url.pathname === '/api/v1/app-activity') {
           const app = url.searchParams.get('app')
+          if (app !== null && recentHold !== null) await recentHold
           const page: AppActivityPage = {
             items:
               app === 'client:claude'
@@ -89,12 +98,16 @@ describe('Settings, Apps, AI assistants', () => {
                   : [],
             nextCursor: null,
             apps: [],
+            empty: false,
           }
           return new Response(JSON.stringify(page))
         }
         return new Response('{}')
       }),
     )
+    // jsdom has no modal dialogs: opening one marks it open, as a browser does, so what is inside can take the focus.
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { value: function (this: HTMLDialogElement) { this.setAttribute('open', '') }, configurable: true, writable: true })
+    Object.defineProperty(HTMLDialogElement.prototype, 'close', { value: function (this: HTMLDialogElement) { this.removeAttribute('open') }, configurable: true, writable: true })
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn<(text: string) => Promise<void>>(async () => undefined) }, configurable: true })
   })
 
@@ -122,8 +135,8 @@ describe('Settings, Apps, AI assistants', () => {
 
   it('shows the add section with the endpoint, the OAuth note and the board words', async () => {
     const { wrapper } = await page()
-    expect(wrapper.get('h2').text()).toBe('AI assistants')
-    expect(wrapper.get('.lead').text()).toBe('Let an AI assistant work with your Tresso through MCP. You decide what each one may do.')
+    expect(wrapper.get('h2').text()).toBe('AI assistants and apps')
+    expect(wrapper.get('.lead').text()).toBe('Let an AI assistant or another app work with your Tresso. You decide what each one may do.')
     expect(wrapper.get('a.back').attributes('aria-label')).toBe('Back to apps')
     expect(wrapper.get('#add-title').text()).toBe('Add an assistant')
     expect(wrapper.findAll('[role="tab"] .tile-name').map((name) => name.text())).toEqual(['Claude', 'Claude Code', 'Cursor', 'VS Code', 'ChatGPT', 'Other'])
@@ -142,10 +155,10 @@ describe('Settings, Apps, AI assistants', () => {
 
     await tab('Claude Code').trigger('click')
     expect(wrapper.get('.how-line').text()).toBe('Paste this line in your terminal. Then type /mcp in Claude Code and choose tresso to sign in.')
-    expect((wrapper.get('#mcp-command').element as HTMLInputElement).value).toBe(`claude mcp add --transport http tresso ${ENDPOINT}`)
+    expect((wrapper.get('#mcp-command').element as HTMLInputElement).value).toBe(`claude mcp add --transport http tresso '${ENDPOINT}'`)
     await wrapper.get('.copy-row .button-primary').trigger('click')
     await settle()
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(`claude mcp add --transport http tresso ${ENDPOINT}`)
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(`claude mcp add --transport http tresso '${ENDPOINT}'`)
     expect(wrapper.get('.copy-row .button-primary').text()).toBe('Copied')
 
     await tab('Cursor').trigger('click')
@@ -157,7 +170,8 @@ describe('Settings, Apps, AI assistants', () => {
     expect(JSON.parse(atob(href.searchParams.get('config')!))).toEqual({ url: ENDPOINT })
 
     await tab('VS Code').trigger('click')
-    expect(wrapper.get('.how-line').text()).toBe('VS Code has no install link. Copy your MCP endpoint below and follow these steps.')
+    expect(wrapper.get('.how-line').text()).toBe('Copy your MCP endpoint below and follow these steps.')
+    expect(wrapper.get('.steps li').text()).toBe('1In VS Code, add an MCP server.')
     await tab('ChatGPT').trigger('click')
     expect(wrapper.get('.how-line').text()).toBe('ChatGPT has no install link. Copy your MCP endpoint below and follow these steps.')
     expect(wrapper.get('.steps li').text()).toBe('1In ChatGPT, add a custom connector.')
@@ -194,6 +208,7 @@ describe('Settings, Apps, AI assistants', () => {
 
   it('lists the connected assistants and shows the chosen one with its switches, notes and recent activity', async () => {
     const { wrapper } = await page()
+    expect(wrapper.get('#clients-title').text()).toBe('Connected assistants and apps')
     expect(wrapper.findAll('.client .client-name').map((name) => name.text())).toEqual(['Claude', 'Cursor'])
     expect(wrapper.findAll('.client .client-meta').map((meta) => meta.text())).toEqual(['Active 4 min ago', 'Never used'])
     expect(wrapper.get('#client-title').text()).toBe('Claude')
@@ -226,7 +241,7 @@ describe('Settings, Apps, AI assistants', () => {
     expect(wrapper.findAll('.recent-title').map((title) => title.text())).toEqual(['Get a mail account', 'List WhatsApp chats, refused'])
     expect(wrapper.findAll('.recent-tool').map((tool) => tool.text())).toEqual(['get_mail_account', 'list_whatsapp_chats (no permission)'])
     expect(wrapper.get('a.full-log').text()).toBe('Full activity log')
-    expect(wrapper.get('a.full-log').attributes('href')).toBe('/settings/apps/activity?app=client:claude')
+    expect(wrapper.get('a.full-log').attributes('href')).toBe('/settings/apps/activity?app=client:claude&period=90d')
   })
 
   it('opens on the assistant the address names, and switches assistants', async () => {
@@ -273,17 +288,158 @@ describe('Settings, Apps, AI assistants', () => {
     expect(wrapper.get('.perm [role="alert"]').text()).toBe('You did not give Claude this permission when you connected it.')
   })
 
-  it('revokes access at once and offers no undo, since the app has to ask again', async () => {
+  it('asks before revoking, with the focus on Keep it, and keeps the app when it is kept', async () => {
     const { wrapper } = await page()
     await wrapper.get('button.revoke').trigger('click')
     await settle()
+    const dialog = wrapper.get('dialog.confirm-dialog')
+    expect(dialog.attributes('role')).toBe('alertdialog')
+    expect(dialog.get('h2').text()).toBe('Revoke access for Claude?')
+    expect(dialog.get('#revoke-description').text()).toBe('It stops working with your account right away. To use it again, it has to ask for permission again.')
+    expect(dialog.findAll('button').map((button) => button.text())).toEqual(['Revoke access', 'Keep it'])
+    expect(document.activeElement).toBe(dialog.findAll('button')[1]!.element)
+
+    await dialog.findAll('button')[1]!.trigger('click')
+    await settle()
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0)
+    expect(document.activeElement).toBe(wrapper.get('button.revoke').element)
+  })
+
+  it('revokes once confirmed, says so in a live note that takes the focus, and offers no undo', async () => {
+    const { wrapper } = await page()
+    await wrapper.get('button.revoke').trigger('click')
+    await settle()
+    await wrapper.get('dialog').findAll('button')[0]!.trigger('click')
+    await settle()
     expect(requests.filter((request) => request.method === 'DELETE').map((request) => request.path)).toEqual(['/api/v1/connected-apps/claude'])
-    expect(wrapper.get('.revoked-note').text()).toBe('Access revoked. The next request from Claude is refused and it has to ask for permission again.')
+    const note = wrapper.get('.revoked-note')
+    expect(note.attributes('role')).toBe('status')
+    expect(note.text()).toBe('Access revoked. The next request from Claude is refused and it has to ask for permission again.')
+    expect(document.activeElement).toBe(note.element)
+    expect(wrapper.find('dialog').exists()).toBe(false)
     expect(wrapper.find('button.revoke').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Undo revoke')
     expect(wrapper.findAll('.client-meta')[1]!.text()).toBe('Access revoked')
     expect(wrapper.findAll('[role="switch"]').every((one) => one.attributes('aria-checked') === 'false' && one.attributes('aria-disabled') === 'true')).toBe(true)
   })
+
+  it('says why revoking failed and keeps the app', async () => {
+    failDelete = true
+    const { wrapper } = await page()
+    await wrapper.get('button.revoke').trigger('click')
+    await settle()
+    await wrapper.get('dialog').findAll('button')[0]!.trigger('click')
+    await settle()
+    expect(wrapper.get('dialog [role="alert"]').text()).toBe('Connected app not found.')
+    expect(wrapper.get('.revoked-note').text()).toBe('')
+    expect(wrapper.findAll('.client-meta')[0]!.text()).not.toBe('Access revoked')
+  })
+
+  it('marks a permission that was never granted, and says so to a screen reader too', async () => {
+    const { wrapper } = await page()
+    const perm = wrapper.findAll('.perm').find((one) => one.get('.perm-label').text() === 'Send mail')!
+    expect(perm.classes()).toContain('never')
+    expect(perm.get('.perm-never').text()).toBe('Not allowed when this app was connected. Connect it again to allow it.')
+    expect(perm.get('[role="switch"]').attributes('aria-describedby')).toBe('perm-never-mail:send')
+    const todos = wrapper.findAll('.perm').find((one) => one.get('.perm-label').text() === 'See todos')!
+    expect(todos.classes()).not.toContain('never')
+    expect(todos.get('[role="switch"]').attributes('aria-describedby')).toBe('perm-note-todos:read')
+  })
+
+  it('sends a quick double toggle as its last state, without flicker', async () => {
+    const { wrapper } = await page()
+    const toggle = () => wrapper.findAll('[role="switch"]').find((one) => one.attributes('aria-label') === 'See settings for Claude')!
+    await toggle().trigger('click')
+    expect(toggle().attributes('aria-checked')).toBe('false')
+    await toggle().trigger('click')
+    expect(toggle().attributes('aria-checked')).toBe('true')
+    await settle()
+    const patches = requests.filter((request) => request.method === 'PATCH').map((request) => (request.body as { scopes: string[] }).scopes)
+    // The first save left before the second click; the second sends the last state, and no third follows.
+    expect(patches).toHaveLength(2)
+    expect([...patches[1]!].sort()).toEqual(['chat:read', 'mail:read', 'settings:read'])
+    expect(toggle().attributes('aria-checked')).toBe('true')
+    expect(apps.find((one) => one.id === 'claude')!.scopes.includes('settings:read')).toBe(true)
+  })
+
+  it('shows recent activity loading, then nothing yet for an app without entries', async () => {
+    let release = () => undefined as void
+    recentHold = new Promise<void>((resolve) => (release = resolve))
+    const { wrapper } = await page({ app: 'cursor' })
+    expect(wrapper.get('.recent-state').text()).toContain('Loading recent activity…')
+    release()
+    await settle()
+    expect(wrapper.get('.recent-state').text()).toBe('Nothing yet')
+    expect(wrapper.find('.recent-list').exists()).toBe(false)
+  })
+
+  it('says when copying is not allowed', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn<(text: string) => Promise<void>>(async () => Promise.reject(new Error('denied'))) }, configurable: true })
+    const { wrapper } = await page()
+    await wrapper.get('.copy-plain').trigger('click')
+    await settle()
+    expect(wrapper.get('.endpoint [role="alert"]').text()).toBe('Your browser did not allow copying. Select the text and copy it yourself.')
+    expect(wrapper.get('.copy-plain').text()).toBe('Copy')
+  })
+
+  it.each([
+    ['http on another host', 'http://mcp.tresso.example/mcp'],
+    ['a user and password', 'https://kim:secret@mcp.tresso.example/mcp'],
+    ['a query', 'https://mcp.tresso.example/mcp?token=x'],
+    ['shell characters', "https://mcp.tresso.example/mcp';rm -rf ~;'"],
+    ['whitespace', 'https://mcp.tresso.example/m cp'],
+    ['non-Latin-1 text', 'https://mcp.例え.example/mcp'],
+    ['another scheme', 'javascript:alert(1)'],
+    ['nothing', ''],
+  ])('offers no command, link or Copy for an endpoint with %s', async (_, value) => {
+    info = { ...info, mcpEndpoint: value }
+    const { wrapper } = await page()
+    expect(wrapper.find('#mcp-url').exists()).toBe(false)
+    await expectNoEndpoint(wrapper)
+  })
+
+  it('offers no command, link or Copy when the server info has no endpoint or fails', async () => {
+    info = { product: 'tresso-server', apiVersion: 1 }
+    let { wrapper } = await page()
+    await expectNoEndpoint(wrapper)
+    wrapper.unmount()
+    info = null
+    ;({ wrapper } = await page())
+    await expectNoEndpoint(wrapper)
+    expect(wrapper.get('.form-error').text()).toBe('The server is busy.')
+  })
+
+  it('accepts http on this computer', async () => {
+    info = { ...info, mcpEndpoint: 'http://localhost:8080/mcp' }
+    const { wrapper } = await page()
+    expect((wrapper.get('#mcp-url').element as HTMLInputElement).value).toBe('http://localhost:8080/mcp')
+  })
+
+  it('forgets the revoked app, its activity and the switches once another user signs in', async () => {
+    const { wrapper } = await page()
+    await wrapper.get('button.revoke').trigger('click')
+    await settle()
+    await wrapper.get('dialog').findAll('button')[0]!.trigger('click')
+    await settle()
+    useAuthStore().generation++
+    await settle()
+    expect(wrapper.find('.client').exists()).toBe(false)
+    expect(wrapper.find('.revoked-note').exists()).toBe(false)
+    expect(wrapper.find('.recent-list').exists()).toBe(false)
+  })
+
+  async function expectNoEndpoint(wrapper: Awaited<ReturnType<typeof page>>['wrapper']): Promise<void> {
+    expect(wrapper.find('#mcp-url').exists()).toBe(false)
+    expect(wrapper.find('.copy-plain').exists()).toBe(false)
+    expect(wrapper.get('.endpoint-error').text()).toBe("Tresso could not read this server's MCP address, so there is nothing to copy or open. Reload the page to try again.")
+    const tab = (name: string) => wrapper.findAll('[role="tab"]').find((found) => found.get('.tile-name').text() === name)!
+    await tab('Claude Code').trigger('click')
+    expect(wrapper.find('#mcp-command').exists()).toBe(false)
+    expect(wrapper.find('.copy-row').exists()).toBe(false)
+    await tab('Cursor').trigger('click')
+    expect(wrapper.find('a.how-link').exists()).toBe(false)
+  }
 
   it('shows no connected assistants section without any', async () => {
     apps = []

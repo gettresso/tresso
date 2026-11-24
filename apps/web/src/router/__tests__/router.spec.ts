@@ -115,7 +115,8 @@ describe('router', () => {
       ['/settings/apps/activity', 'settings-apps-activity'],
       ['/settings/meeting-apps', 'settings-meeting-apps'],
       ['/settings/access-tokens', 'settings-access-tokens'],
-      ['/settings/connected-apps', 'settings-connected-apps'],
+      // Connected apps are on the AI assistants and apps page now.
+      ['/settings/connected-apps', 'settings-apps-assistants'],
     ]) {
       await router.push(path!)
       expect({ path, name: router.currentRoute.value.name }).toEqual({ path, name })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import { activeText, permissionLine, personalAccessTokenStatus, phoneLabel } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
@@ -10,6 +10,7 @@ import LogoLoader from '@/components/LogoLoader.vue'
 import { chatsFromServer } from '@/platform/whatsapp'
 import { useAccountsStore } from '@/stores/accounts'
 import { useAppActivityStore } from '@/stores/appActivity'
+import { useAuthStore } from '@/stores/auth'
 import { useCalendarStore } from '@/stores/calendar'
 import { useChatsStore } from '@/stores/chats'
 import { useConnectedAppsStore } from '@/stores/connectedApps'
@@ -21,12 +22,13 @@ import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
  * Settings, Apps (the "Settings: apps" board): everything connected to Tresso on one page, in two groups by the
  * direction of access, with a category filter on top. A row only shows what the app's own page says and leads there;
  * nothing is connected, changed or revoked here. Rows for things the product does not have are not shown (webhooks);
- * Zoom is listed as not available yet.
+ * Zoom is listed as not available yet. Every app the user allowed through OAuth is one row of its own, which leads to
+ * the AI assistants and apps page.
  */
 type Category = 'meetings' | 'messaging' | 'ai' | 'developer'
 type Filter = 'all' | Category
 type State = 'ok' | 'attention' | 'off' | 'soon' | 'add'
-type Mark = 'video' | 'link' | 'grid' | 'key' | 'plus' | 'text'
+type Mark = 'video' | 'link' | 'key' | 'plus' | 'text'
 
 interface Row {
   key: string
@@ -46,10 +48,12 @@ const FILTERS: [Filter, string][] = [
   ['all', 'All'],
   ['meetings', 'Meetings'],
   ['messaging', 'Messaging'],
-  ['ai', 'AI assistants'],
+  ['ai', 'AI assistants and apps'],
   ['developer', 'Developer'],
 ]
-const CATEGORY_LABELS: Record<Category, string> = { meetings: 'Meetings', messaging: 'Messaging', ai: 'AI assistants', developer: 'Developer' }
+/** The line of an app with every permission switched off: what it can still read needs no permission. */
+const NOTHING_ALLOWED = 'Every permission is switched off. It can still see your name, email address and organizations.'
+const CATEGORY_LABELS: Record<Category, string> = { meetings: 'Meetings', messaging: 'Messaging', ai: 'AI assistants and apps', developer: 'Developer' }
 
 const accounts = useAccountsStore()
 const calendar = useCalendarStore()
@@ -60,6 +64,7 @@ const connectedApps = useConnectedAppsStore()
 const tokens = usePersonalAccessTokensStore()
 const activity = useAppActivityStore()
 
+const auth = useAuthStore()
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 const lastActive = ref<Record<string, string>>({})
@@ -80,6 +85,12 @@ onMounted(async () => {
   now.value = new Date()
   loading.value = false
 })
+
+// The desktop app signs another user in without a reload: nothing of the previous one may show meanwhile.
+watch(
+  () => auth.generation,
+  () => (lastActive.value = {}),
+)
 
 function meetingRow(app: ProviderApp): Row | null {
   const prefs = meetingApps.preferences
@@ -152,26 +163,15 @@ const inRows = computed<Row[]>(() => {
     name: app.name,
     mark: 'text',
     initials: appInitials(app.name),
-    line: permissionLine(app.scopes) ?? 'Every permission is switched off.',
+    line: permissionLine(app.scopes) ?? NOTHING_ALLOWED,
     state: 'ok',
     detail: activeText(lastActive.value[app.activityKey] ?? app.lastUsedAt, now.value) ?? 'Never used',
     to: { name: 'settings-apps-assistants', query: { app: app.id } },
   }))
-  const apps = connectedApps.apps.length
   const active = tokens.tokens.filter((token) => personalAccessTokenStatus(token, now.value) === 'active').length
   return [
     ...assistants,
     { key: 'add', cat: 'ai', name: 'Add an AI assistant', mark: 'plus', line: 'Install in a few clicks. No password or token to paste.', state: 'add', detail: '', to: { name: 'settings-apps-assistants' } },
-    {
-      key: 'connected-apps',
-      cat: 'developer',
-      name: 'Connected apps',
-      mark: 'grid',
-      line: 'Other apps you approved with OAuth.',
-      state: apps > 0 ? 'ok' : 'off',
-      detail: apps === 0 ? '' : apps === 1 ? '1 app' : `${apps} apps`,
-      to: { name: 'settings-connected-apps' },
-    },
     {
       key: 'tokens',
       cat: 'developer',
@@ -199,17 +199,6 @@ function action(row: Row): string {
   return row.state === 'ok' ? 'Manage' : row.state === 'attention' ? 'Review' : row.state === 'add' ? 'Add' : 'Set up'
 }
 
-// The category filter is a row of tabs: the arrow keys, Home and End move between them.
-const tabs = ref<HTMLButtonElement[]>([])
-async function onTabKey(event: KeyboardEvent, index: number): Promise<void> {
-  const last = FILTERS.length - 1
-  const next = { ArrowRight: index === last ? 0 : index + 1, ArrowLeft: index === 0 ? last : index - 1, Home: 0, End: last }[event.key]
-  if (next === undefined) return
-  event.preventDefault()
-  filter.value = FILTERS[next]![0]
-  await nextTick()
-  tabs.value[next]?.focus()
-}
 </script>
 
 <template>
@@ -219,19 +208,8 @@ async function onTabKey(event: KeyboardEvent, index: number): Promise<void> {
       <span class="lead">Everything that is connected to Tresso, in one place: the apps Tresso uses for you, and the apps that may use your Tresso.</span>
     </header>
 
-    <div role="tablist" aria-label="Category" class="filters">
-      <button
-        v-for="([value, label], index) in FILTERS"
-        :key="value"
-        ref="tabs"
-        type="button"
-        role="tab"
-        class="filter"
-        :aria-selected="filter === value ? 'true' : 'false'"
-        :tabindex="filter === value ? 0 : -1"
-        @click="filter = value"
-        @keydown="onTabKey($event, index)"
-      >
+    <div role="group" aria-label="Category" class="filters">
+      <button v-for="[value, label] in FILTERS" :key="value" type="button" class="filter" :aria-pressed="filter === value ? 'true' : 'false'" @click="filter = value">
         {{ label }}
       </button>
     </div>
@@ -249,7 +227,6 @@ async function onTabKey(event: KeyboardEvent, index: number): Promise<void> {
           <span class="mark" :class="{ add: row.state === 'add', whatsapp: row.whatsapp, initials: row.mark === 'text' && !row.whatsapp }" aria-hidden="true">
             <svg v-if="row.mark === 'video'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="13" height="12" rx="2"></rect><path d="M16 10l5-3v10l-5-3"></path></svg>
             <svg v-else-if="row.mark === 'link'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.07 0l3-3a5 5 0 00-7.07-7.07l-1.5 1.5"></path><path d="M14 11a5 5 0 00-7.07 0l-3 3a5 5 0 007.07 7.07l1.5-1.5"></path></svg>
-            <svg v-else-if="row.mark === 'grid'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>
             <svg v-else-if="row.mark === 'key'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"></circle><path d="M11 12l8-8M16 7l3 3"></path></svg>
             <svg v-else-if="row.mark === 'plus'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
             <template v-else>{{ row.initials }}</template>
@@ -321,7 +298,7 @@ async function onTabKey(event: KeyboardEvent, index: number): Promise<void> {
   font: 600 12px var(--font-ui);
   cursor: pointer;
 }
-.filter[aria-selected='true'] {
+.filter[aria-pressed='true'] {
   background: var(--ink);
   color: var(--paper);
 }
@@ -379,8 +356,8 @@ async function onTabKey(event: KeyboardEvent, index: number): Promise<void> {
   color: var(--ink-2);
 }
 .mark.whatsapp {
-  background: var(--whatsapp);
-  color: var(--whatsapp-text);
+  background: var(--whatsapp-mark);
+  color: var(--whatsapp-mark-text);
 }
 .mark.add {
   border: 1px dashed var(--line-strong);

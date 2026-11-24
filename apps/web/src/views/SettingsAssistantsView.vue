@@ -4,22 +4,28 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { activeText, ASSISTANT_SCOPES, recentText, recentTime, recentTool, shortDay, type AppActivityEntry, type ConnectedApp, type ServerInfo } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { appInitials } from '@/components/apps/appMarks'
-import { installs, type InstallId } from '@/components/apps/assistantInstalls'
+import { checkedEndpoint, installs, type InstallId } from '@/components/apps/assistantInstalls'
+import { backdropClose } from '@/components/backdropClose'
 import LogoLoader from '@/components/LogoLoader.vue'
-import { isDesktop, openInBrowser } from '@/platform/desktop'
+import { isDesktop, openCursorInstall } from '@/platform/desktop'
 import { useAppActivityStore } from '@/stores/appActivity'
 import { useAuthStore } from '@/stores/auth'
 import { useConnectedAppsStore } from '@/stores/connectedApps'
 
 /**
- * Settings, Apps, AI assistants (the "Settings: apps, AI assistants (MCP)" board): adding an assistant (an install link
- * where its maker documents one, a command for Claude Code, the manual steps for the others), this server's MCP
- * endpoint, and every connected assistant with a switch per permission, revoking, and what it did lately.
+ * Settings, Apps, AI assistants and apps (the "Settings: apps, AI assistants (MCP)" board): adding an assistant (an
+ * install link where its maker documents one, a command for Claude Code, the manual steps for the others), this
+ * server's MCP endpoint, and every app the user allowed through OAuth with a switch per permission, revoking, and what
+ * it did lately.
  *
- * A switch saves at once (PATCH /api/v1/connected-apps/{id}); a failed save says why under it and puts it back. Only a
- * permission the user granted on the consent screen can be switched on: anything more needs the consent screen, so
- * such a switch is shown off and cannot be turned on here. Revoking disconnects the app at once and cannot be undone
- * (the app has to ask for permission again), so the page offers no undo.
+ * The endpoint comes from the server and goes into a command and a link: it is used only when it is a plain address
+ * (checkedEndpoint); otherwise the page says so and offers no command, link or Copy. On the desktop app the shell
+ * builds Cursor's link itself.
+ *
+ * A switch saves at once (PATCH /api/v1/connected-apps/{id}); quick toggles of one app are sent as their last state,
+ * and a failed save says why under the switch and puts it back. Only a permission the user granted on the consent
+ * screen can be switched on: anything more needs the consent screen, which the switch says. Revoking is confirmed
+ * first and cannot be undone (the app has to ask for permission again), so the page offers no undo.
  */
 const auth = useAuthStore()
 const connectedApps = useConnectedAppsStore()
@@ -27,15 +33,19 @@ const activity = useAppActivityStore()
 const route = useRoute()
 const router = useRouter()
 
+const NOT_GRANTED = 'Not allowed when this app was connected. Connect it again to allow it.'
+const NO_ENDPOINT = 'Tresso could not read this server\'s MCP address, so there is nothing to copy or open. Reload the page to try again.'
+
 const loading = ref(true)
 const loadError = ref<string | null>(null)
-const endpoint = ref('')
+/** The server's MCP endpoint when it is a plain address; null while unknown or when it is not one. */
+const endpoint = ref<string | null>(null)
 const lastActive = ref<Record<string, string>>({})
 const now = ref(new Date())
 
 onMounted(async () => {
   const results = await Promise.allSettled([
-    auth.api<ServerInfo>('/api/v1/server-info').then((info) => (endpoint.value = info.mcpEndpoint)),
+    auth.api<ServerInfo>('/api/v1/server-info').then((info) => (endpoint.value = checkedEndpoint((info as Partial<ServerInfo>).mcpEndpoint))),
     connectedApps.load(),
     activity.lastActive().then((last) => (lastActive.value = last)),
   ])
@@ -47,15 +57,15 @@ onMounted(async () => {
 
 // Adding an assistant: one tile per assistant, the panel of the chosen one.
 const install = ref<InstallId>('claude')
-const how = computed(() => installs(endpoint.value).find((item) => item.id === install.value)!)
+const list = computed(() => installs(endpoint.value))
+const how = computed(() => list.value.find((item) => item.id === install.value)!)
 const tiles = ref<HTMLButtonElement[]>([])
 async function onTileKey(event: KeyboardEvent, index: number): Promise<void> {
-  const list = installs(endpoint.value)
-  const last = list.length - 1
+  const last = list.value.length - 1
   const next = { ArrowRight: index === last ? 0 : index + 1, ArrowLeft: index === 0 ? last : index - 1, Home: 0, End: last }[event.key]
   if (next === undefined) return
   event.preventDefault()
-  pick(list[next]!.id)
+  pick(list.value[next]!.id)
   await nextTick()
   tiles.value[next]?.focus()
 }
@@ -65,12 +75,13 @@ function pick(id: InstallId): void {
   copyError.value = null
 }
 
-/** The desktop app hands the install link to the system, which opens the assistant. */
-async function openLink(event: MouseEvent, url: string): Promise<void> {
-  if (!isDesktop) return
+/** The desktop app asks the shell, which builds Cursor's link from the endpoint itself and opens it. */
+async function openLink(event: MouseEvent): Promise<void> {
+  if (!isDesktop || endpoint.value === null) return
   event.preventDefault()
+  copyError.value = null
   try {
-    await openInBrowser(url)
+    await openCursorInstall(endpoint.value)
   } catch (cause) {
     copyError.value = errorMessage(cause)
   }
@@ -95,7 +106,7 @@ onBeforeUnmount(() => {
   if (copiedTimer !== null) clearTimeout(copiedTimer)
 })
 
-// The connected assistants, and the one shown.
+// The connected apps, and the one shown.
 const revoked = ref<ConnectedApp[]>([])
 const clients = computed(() => [...connectedApps.apps, ...revoked.value])
 const isRevoked = (app: ConnectedApp) => revoked.value.some((gone) => gone.id === app.id)
@@ -112,6 +123,7 @@ function meta(app: ConnectedApp): string {
 
 // Recent activity of the one shown.
 const recent = ref<AppActivityEntry[]>([])
+const recentLoading = ref(false)
 const recentError = ref<string | null>(null)
 watch(
   () => selected.value?.activityKey,
@@ -119,52 +131,106 @@ watch(
     recent.value = []
     recentError.value = null
     if (key === undefined) return
+    recentLoading.value = true
     try {
       const entries = await activity.recent(key)
       if (selected.value?.activityKey === key) recent.value = entries
     } catch (cause) {
-      recentError.value = errorMessage(cause)
+      if (selected.value?.activityKey === key) recentError.value = errorMessage(cause)
+    } finally {
+      if (selected.value?.activityKey === key) recentLoading.value = false
     }
   },
   { immediate: true },
 )
 
-// Switches: what is shown while a change is on its way, errors by scope, and one save at a time.
-const picked = reactive<Record<string, boolean>>({})
+// Switches: per app, the scopes it should have now (the last toggle wins), sent one save at a time.
+const wanted = reactive<Record<string, string[]>>({})
 const errors = reactive<Record<string, string>>({})
-let saving: Promise<unknown> = Promise.resolve()
+const saving = new Set<string>()
+function scopesShown(app: ConnectedApp): string[] {
+  return wanted[app.id] ?? app.scopes
+}
 function checked(app: ConnectedApp, scope: string): boolean {
-  if (isRevoked(app)) return false
-  return picked[`${app.id} ${scope}`] ?? app.scopes.includes(scope)
+  return !isRevoked(app) && scopesShown(app).includes(scope)
 }
 function granted(app: ConnectedApp, scope: string): boolean {
   return app.grantedScopes.includes(scope)
 }
+function locked(app: ConnectedApp, scope: string): boolean {
+  return isRevoked(app) || (!granted(app, scope) && !checked(app, scope))
+}
 function toggle(app: ConnectedApp, scope: string): void {
-  if (isRevoked(app) || (!granted(app, scope) && !checked(app, scope))) return
-  const key = `${app.id} ${scope}`
-  const on = !checked(app, scope)
-  picked[key] = on
-  errors[key] = ''
-  saving = saving.then(async () => {
-    const current = connectedApps.apps.find((known) => known.id === app.id)
-    if (current === undefined) return
-    const scopes = on ? [...new Set([...current.scopes, scope])] : current.scopes.filter((held) => held !== scope)
-    try {
-      await connectedApps.narrow(app.id, scopes)
-    } catch (cause) {
-      errors[key] = errorMessage(cause)
-    } finally {
-      delete picked[key]
+  if (locked(app, scope)) return
+  const shown = scopesShown(app)
+  wanted[app.id] = shown.includes(scope) ? shown.filter((held) => held !== scope) : [...shown, scope]
+  errors[`${app.id} ${scope}`] = ''
+  void save(app.id)
+}
+async function save(id: string): Promise<void> {
+  if (saving.has(id)) return
+  saving.add(id)
+  try {
+    for (;;) {
+      const scopes = wanted[id]
+      const current = connectedApps.apps.find((known) => known.id === id)
+      if (scopes === undefined || current === undefined) break
+      if (sameScopes(scopes, current.scopes)) {
+        delete wanted[id]
+        break
+      }
+      try {
+        await connectedApps.narrow(id, scopes)
+      } catch (cause) {
+        // Every switch that differs from what is saved goes back, and says why.
+        for (const scope of new Set([...scopes, ...current.scopes])) {
+          if (scopes.includes(scope) !== current.scopes.includes(scope)) errors[`${id} ${scope}`] = errorMessage(cause)
+        }
+        delete wanted[id]
+        break
+      }
     }
-  })
+  } finally {
+    saving.delete(id)
+  }
+}
+function sameScopes(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((scope) => b.includes(scope))
 }
 
-// Revoking: at once, for good.
+// Revoking: confirmed in a dialog first, then at once and for good.
+const dialog = ref<HTMLDialogElement | null>(null)
+const keepButton = ref<HTMLButtonElement | null>(null)
+const revokeButton = ref<HTMLButtonElement | null>(null)
+const confirming = ref<ConnectedApp | null>(null)
 const revokeError = ref<string | null>(null)
 const revoking = ref(false)
-async function revoke(app: ConnectedApp): Promise<void> {
+const revokedNote = ref<HTMLElement | null>(null)
+/** What the live region says per revoked app, set once the region is on screen so a screen reader hears it. */
+const revokedSaid = ref<Record<string, string>>({})
+async function ask(app: ConnectedApp): Promise<void> {
+  confirming.value = app
+  revokeError.value = null
+  await nextTick()
+  dialog.value?.showModal?.()
+  keepButton.value?.focus()
+}
+function close(): void {
   if (revoking.value) return
+  dialog.value?.close?.()
+  confirming.value = null
+}
+// Kept: the focus goes back to the button that opened the dialog.
+watch(confirming, async (now, before) => {
+  if (now === null && before !== null && !isRevoked(before)) {
+    await nextTick()
+    revokeButton.value?.focus()
+  }
+})
+const backdrop = backdropClose(close)
+async function revoke(): Promise<void> {
+  const app = confirming.value
+  if (app === null || revoking.value) return
   revoking.value = true
   revokeError.value = null
   try {
@@ -172,12 +238,31 @@ async function revoke(app: ConnectedApp): Promise<void> {
     // It stays on screen, revoked, until the page is left.
     selectedId.value = app.id
     revoked.value = [...revoked.value, app]
+    revoking.value = false
+    dialog.value?.close?.()
+    confirming.value = null
+    await nextTick()
+    revokedSaid.value = { ...revokedSaid.value, [app.id]: `Access revoked. The next request from ${app.name} is refused and it has to ask for permission again.` }
+    revokedNote.value?.focus()
   } catch (cause) {
     revokeError.value = errorMessage(cause)
   } finally {
     revoking.value = false
   }
 }
+
+// The desktop app signs another user in without a reload: nothing of the previous one may show meanwhile.
+watch(
+  () => auth.generation,
+  () => {
+    revoked.value = []
+    recent.value = []
+    lastActive.value = {}
+    revokedSaid.value = {}
+    for (const key of Object.keys(wanted)) delete wanted[key]
+    for (const key of Object.keys(errors)) delete errors[key]
+  },
+)
 </script>
 
 <template>
@@ -187,12 +272,12 @@ async function revoke(app: ConnectedApp): Promise<void> {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg>
       </RouterLink>
       <div class="heading">
-        <h2 id="assistants-title" class="title">AI assistants</h2>
-        <span class="lead">Let an AI assistant work with your Tresso through MCP. You decide what each one may do.</span>
+        <h2 id="assistants-title" class="title">AI assistants and apps</h2>
+        <span class="lead">Let an AI assistant or another app work with your Tresso. You decide what each one may do.</span>
       </div>
     </header>
 
-    <p v-if="loading" class="state" role="status"><LogoLoader /> Loading AI assistants…</p>
+    <p v-if="loading" class="state" role="status"><LogoLoader /> Loading AI assistants and apps…</p>
     <template v-else>
       <p v-if="loadError" class="form-error" role="alert">{{ loadError }}</p>
 
@@ -204,7 +289,7 @@ async function revoke(app: ConnectedApp): Promise<void> {
 
         <div role="tablist" aria-label="Assistant to add" class="tiles">
           <button
-            v-for="(item, index) in installs(endpoint)"
+            v-for="(item, index) in list"
             :id="`install-${item.id}`"
             :key="item.id"
             ref="tiles"
@@ -231,15 +316,15 @@ async function revoke(app: ConnectedApp): Promise<void> {
               <span class="how-title">{{ how.title }}</span>
               <span class="how-line">{{ how.text }}</span>
             </span>
-            <a v-if="how.kind === 'link' && how.url" :href="how.url" class="button button-primary how-link" @click="openLink($event, how.url!)">
+            <a v-if="how.kind === 'link' && how.url" :href="how.url" class="button button-primary how-link" @click="openLink($event)">
               {{ how.button }}
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"></path></svg>
             </a>
           </div>
-          <div v-if="how.kind === 'command'" class="copy-row">
+          <div v-if="how.kind === 'command' && how.command" class="copy-row">
             <label for="mcp-command" class="visually-hidden">Command for Claude Code</label>
             <input id="mcp-command" class="mono" readonly :value="how.command" />
-            <button type="button" class="button button-primary" @click="copy('command', how.command ?? '')">
+            <button type="button" class="button button-primary" @click="copy('command', how.command)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a1 1 0 011-1h10"></path></svg>
               {{ copied === 'command' ? 'Copied' : 'Copy command' }}
             </button>
@@ -250,15 +335,21 @@ async function revoke(app: ConnectedApp): Promise<void> {
         </div>
 
         <div class="endpoint">
-          <label for="mcp-url" class="endpoint-label">Your MCP endpoint</label>
-          <div class="copy-row">
-            <input id="mcp-url" class="mono quiet" readonly :value="endpoint" aria-describedby="mcp-url-note" />
-            <button type="button" class="button copy-plain" @click="copy('url', endpoint)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a1 1 0 011-1h10"></path></svg>
-              {{ copied === 'url' ? 'Copied' : 'Copy' }}
-            </button>
-          </div>
-          <span id="mcp-url-note" class="note">Streamable HTTP.</span>
+          <template v-if="endpoint !== null">
+            <label for="mcp-url" class="endpoint-label">Your MCP endpoint</label>
+            <div class="copy-row">
+              <input id="mcp-url" class="mono quiet" readonly :value="endpoint" aria-describedby="mcp-url-note" />
+              <button type="button" class="button copy-plain" @click="copy('url', endpoint)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a1 1 0 011-1h10"></path></svg>
+                {{ copied === 'url' ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+            <span id="mcp-url-note" class="note">Streamable HTTP.</span>
+          </template>
+          <template v-else>
+            <span class="endpoint-label">Your MCP endpoint</span>
+            <p class="form-error endpoint-error" role="alert">{{ NO_ENDPOINT }}</p>
+          </template>
           <p v-if="copyError" class="form-error" role="alert">{{ copyError }}</p>
           <span class="visually-hidden" role="status">{{ copied === '' ? '' : 'Copied' }}</span>
         </div>
@@ -271,7 +362,7 @@ async function revoke(app: ConnectedApp): Promise<void> {
 
       <div v-if="selected" class="connected">
         <section class="panel clients" aria-labelledby="clients-title">
-          <h3 id="clients-title">Connected assistants</h3>
+          <h3 id="clients-title">Connected assistants and apps</h3>
           <button v-for="app in clients" :key="app.id" type="button" class="client" :aria-pressed="selected.id === app.id ? 'true' : 'false'" @click="select(app)">
             <span class="client-mark" aria-hidden="true">{{ appInitials(app.name) }}</span>
             <span class="client-text">
@@ -287,19 +378,19 @@ async function revoke(app: ConnectedApp): Promise<void> {
               <h3 id="client-title">{{ selected.name }}</h3>
               <span class="sub">Connected {{ shortDay(new Date(selected.connectedAt)) }} by you.</span>
             </div>
-            <button v-if="!isRevoked(selected)" type="button" class="button revoke" :disabled="revoking" @click="revoke(selected)">Revoke access</button>
+            <button v-if="!isRevoked(selected)" ref="revokeButton" type="button" class="button revoke" @click="ask(selected)">Revoke access</button>
           </div>
-          <p v-if="revokeError" class="form-error" role="alert">{{ revokeError }}</p>
-          <div v-if="isRevoked(selected)" role="status" class="revoked-note">Access revoked. The next request from {{ selected.name }} is refused and it has to ask for permission again.</div>
+          <div v-show="isRevoked(selected)" ref="revokedNote" tabindex="-1" role="status" class="revoked-note">{{ revokedSaid[selected.id] ?? '' }}</div>
 
           <div role="group" aria-labelledby="perm-title" class="perms">
             <span id="perm-title" class="perms-title">Permissions</span>
             <div class="perm-grid">
-              <div v-for="scope in ASSISTANT_SCOPES" :key="scope.value" class="perm" :class="{ dim: isRevoked(selected) }">
+              <div v-for="scope in ASSISTANT_SCOPES" :key="scope.value" class="perm" :class="{ dim: isRevoked(selected), never: !isRevoked(selected) && locked(selected, scope.value) }">
                 <span class="perm-text">
                   <span class="perm-label">{{ scope.label }}</span>
                   <span :id="`perm-note-${scope.value}`" class="perm-note">{{ scope.description }}</span>
                   <span class="perm-scope">{{ scope.value }}</span>
+                  <span v-if="!isRevoked(selected) && locked(selected, scope.value)" :id="`perm-never-${scope.value}`" class="perm-never">{{ NOT_GRANTED }}</span>
                   <span v-if="errors[`${selected.id} ${scope.value}`]" class="form-error" role="alert">{{ errors[`${selected.id} ${scope.value}`] }}</span>
                 </span>
                 <button
@@ -308,8 +399,8 @@ async function revoke(app: ConnectedApp): Promise<void> {
                   class="switch"
                   :aria-checked="checked(selected, scope.value) ? 'true' : 'false'"
                   :aria-label="`${scope.label} for ${selected.name}`"
-                  :aria-describedby="`perm-note-${scope.value}`"
-                  :aria-disabled="isRevoked(selected) || (!granted(selected, scope.value) && !checked(selected, scope.value)) ? 'true' : undefined"
+                  :aria-describedby="!isRevoked(selected) && locked(selected, scope.value) ? `perm-never-${scope.value}` : `perm-note-${scope.value}`"
+                  :aria-disabled="locked(selected, scope.value) ? 'true' : undefined"
                   @click="toggle(selected, scope.value)"
                 >
                   <span class="knob" />
@@ -324,7 +415,9 @@ async function revoke(app: ConnectedApp): Promise<void> {
           <div class="recent">
             <span class="perms-title">Recent activity</span>
             <p v-if="recentError" class="form-error" role="alert">{{ recentError }}</p>
-            <ol class="recent-list">
+            <p v-else-if="recentLoading" class="recent-state" role="status"><LogoLoader /> Loading recent activity…</p>
+            <p v-else-if="recent.length === 0" class="recent-state">Nothing yet</p>
+            <ol v-else class="recent-list">
               <li v-for="entry in recent" :key="entry.id">
                 <span class="recent-time">{{ recentTime(entry.occurredAt, now) }}</span>
                 <span class="recent-text">
@@ -333,11 +426,33 @@ async function revoke(app: ConnectedApp): Promise<void> {
                 </span>
               </li>
             </ol>
-            <RouterLink :to="{ name: 'settings-apps-activity', query: { app: selected.activityKey } }" class="full-log">Full activity log</RouterLink>
+            <RouterLink :to="{ name: 'settings-apps-activity', query: { app: selected.activityKey, period: '90d' } }" class="full-log">Full activity log</RouterLink>
           </div>
         </section>
       </div>
     </template>
+
+    <dialog
+      v-if="confirming"
+      ref="dialog"
+      class="confirm-dialog"
+      role="alertdialog"
+      aria-labelledby="revoke-title"
+      aria-describedby="revoke-description"
+      @cancel.prevent="close"
+      @pointerdown="backdrop.onPointerdown"
+      @click="backdrop.onClick"
+    >
+      <h2 id="revoke-title">Revoke access for {{ confirming.name }}?</h2>
+      <p id="revoke-description">It stops working with your account right away. To use it again, it has to ask for permission again.</p>
+      <p v-if="revokeError" class="form-error" role="alert">{{ revokeError }}</p>
+      <div class="dialog-actions">
+        <button type="button" class="button button-danger" :disabled="revoking" @click="revoke">
+          <template v-if="revoking"><LogoLoader tone="current" /> Revoking…</template><template v-else>Revoke access</template>
+        </button>
+        <button ref="keepButton" type="button" class="button button-quiet" :disabled="revoking" @click="close">Keep it</button>
+      </div>
+    </dialog>
   </section>
 </template>
 
@@ -462,7 +577,7 @@ h3 {
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
-  background: var(--canvas);
+  background: var(--ground);
 }
 .how-head {
   display: flex;
@@ -504,7 +619,7 @@ h3 {
   color: var(--ink);
 }
 .copy-row input.quiet {
-  background: var(--canvas);
+  background: var(--ground);
 }
 .mono {
   font: 500 12px var(--font-mono);
@@ -540,7 +655,7 @@ h3 {
   width: 20px;
   height: 20px;
   border-radius: 999px;
-  background: var(--paper);
+  background: var(--canvas);
   color: var(--ink-2);
   font: 500 11px var(--font-mono);
 }
@@ -709,6 +824,51 @@ h3 {
 .perm-text .form-error {
   font-size: 12px;
 }
+.perm.never .perm-label,
+.perm.never .perm-note,
+.perm.never .switch {
+  opacity: 0.5;
+}
+.perm-never {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ink-2);
+}
+.recent-state {
+  margin: 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.revoked-note:focus {
+  outline: none;
+}
+.confirm-dialog {
+  animation: pop-in var(--motion-base) var(--ease-out);
+  width: min(440px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-material);
+  backdrop-filter: var(--glass-material);
+  color: var(--ink);
+  box-shadow: var(--raised);
+}
+.confirm-dialog h2 {
+  margin: 0 0 8px;
+  font: 700 18px/24px var(--font-display);
+  overflow-wrap: anywhere;
+}
+.confirm-dialog p {
+  margin: 0 0 16px;
+  color: var(--ink-2);
+}
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+}
 .switch {
   display: flex;
   flex-shrink: 0;
@@ -734,7 +894,7 @@ h3 {
   height: 20px;
   border-radius: 999px;
   background: var(--paper);
-  box-shadow: 0 1px 2px rgb(22 24 29 / 20%);
+  box-shadow: var(--switch-knob-shadow);
 }
 .perm-foot {
   padding-top: 8px;

@@ -17,6 +17,8 @@ export const useAppActivityStore = defineStore('appActivity', () => {
   const entries = ref<AppActivityEntry[]>([])
   const apps = ref<AppActivityApp[]>([])
   const nextCursor = ref<string | null>(null)
+  /** The log holds nothing at all, whatever the filters (from the last page read). */
+  const empty = ref(false)
   let asked = 0
 
   /** The first page for these filters, in place of what was shown. */
@@ -28,6 +30,7 @@ export const useAppActivityStore = defineStore('appActivity', () => {
     entries.value = page.items
     apps.value = page.apps
     nextCursor.value = page.nextCursor
+    empty.value = page.empty
   }
 
   /** The next page for the same filters, after what is shown. */
@@ -68,8 +71,9 @@ export const useAppActivityStore = defineStore('appActivity', () => {
       entries.value = []
       apps.value = []
       nextCursor.value = null
+      empty.value = false
     },
   )
 
-  return { entries, apps, nextCursor, load, more, recent, lastActive }
+  return { entries, apps, nextCursor, empty, load, more, recent, lastActive }
 })
