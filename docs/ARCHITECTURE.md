@@ -424,8 +424,8 @@ the server holds; tools for mail, todos and events come later. The code is in `A
   web app (`WEB_APP_URL/settings/accounts/import/<id>`), how many were taken, which were left out and why, and an
   instruction for the assistant: give the user the link, never ask for passwords, app passwords or codes. Its entry
   schema has an address and a hint only (`additionalProperties: false`), and the API refuses any other field.
-  `get_mail_account_import` answers each address with its state (`todo`, `connected`, `failed` with a reason,
-  `skipped`), for the assistant to report progress. `reconnect_mail_account` answers, for an account in `auth_failed`,
+  `get_mail_account_import` answers each address with its state (`todo`, `connected`, `already_connected`,
+  `failed` with a reason, `skipped`), for the assistant to report progress. `reconnect_mail_account` answers, for an account in `auth_failed`,
   the link `WEB_APP_URL/settings/accounts#account-<id>`, where Settings, Accounts opens at that account; for any other
   status it says nothing needs doing. All three say in their descriptions that the assistant cannot sign in. Starting
   a provider sign-in and creating an account stay with our own apps (`FIRST_PARTY_CLIENT`), so making a list is all
@@ -676,8 +676,11 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
   never text). `DELETE /mail-account-imports/{id}` deletes it. Another user's list, and one that expired, answer 404.
   A user has at most 20 live lists (409 beyond that). `createdBy` names the app that made the list (its registered
   name, or the personal access token's name), null for our own apps; the page shows it.
-- **States.** `connected` is never stored: an entry is connected while the owner has a mail account with its address,
-  read whenever the list is read, however the account was added. `skipped` and the last failure are stored.
+- **States.** Whether the owner has the account is never stored: it is read whenever the list is read. An entry is
+  `connected` when its account was added from this list (a sign-in started from it, or the page's server form, which
+  says so with `state: connected`, taken only while the account exists) and `already_connected` when it was added
+  any other way. `skipped` and the last failure are stored; a failure of `admin_approval_required` comes with the
+  `approvalUrl` for the organization's administrator.
 - **Lifetime.** A list lives 24 hours (`expires_at`); the hourly `SweepMailAccountImports` (maintenance worker)
   deletes the expired ones. Deleting a user deletes their lists (foreign key cascade).
 - **At rest.** The entries (address, hint, skipped, failure) are one JSON list sealed with the owner's field key
@@ -690,21 +693,33 @@ commas), or by an assistant through `add_mail_accounts`. Making one connects not
   that page, which `signInRoute` accepts by its UUID only). A provider account other than the row's address fails
   with `wrong_account` and connects nothing (an alias of the account counts as another address). How it ended is
   written on the entry: a failure with its code, success clears an earlier failure.
-- **The page.** `/settings/accounts/import/:importId` (also reached from Settings, Accounts without an assistant)
-  lists the entries with how each connects: the lookup of the single flow (`GET /mail-server-settings`, four at a
-  time), the list's hint only when that finds nothing (`importRoute` in `@tresso/core`). Google rows come first, then
-  Microsoft, then password rows, so a provider's own browser session can serve the next sign-in. A Google or Microsoft
-  row signs in with its address as login hint; on the web this tab goes to the provider and comes back to the list,
-  in the desktop app the system browser opens. After a connected answer the page offers the next row ("Next:
-  <address>", one click or keypress). "Sign in to all, one after another" starts the next row by itself after each
-  connected answer and stops at the first that did not connect, or on Stop. What was started is noted in the tab's
-  session storage (list, row, mode, OAuth state); only an answer to that noted sign-in continues a run, and a page
-  load without one forgets the note, so nothing ever starts on load and the first start is always the user's click
-  (`components/connect/importRun.ts`, `useAccountImport.ts`). A password row has the server form inline (servers as
-  the lookup found them, or iCloud's and Yahoo's), the password typed in Tresso only; it is checked with
-  `POST /mail-account-checks` before the account is created, and a refused check is recorded on the row as a code.
-  A list made by an assistant says which app made it. Coming back within 24 hours continues where it was; a sign-out
-  or another user's sign-in drops the list and any run. The single "Add account" dialog is unchanged.
+- **The page** (boards AddAccountsPaste, AddAccountsList and AddAccountsStates; `SettingsAccountsImportView`). "Add
+  several accounts" in Settings, Accounts (before "Add account") opens the newest list that still has addresses to
+  connect, else step 1 (`/settings/accounts/import`): a text box for the addresses, read per line
+  (`readPastedAddresses` in `@tresso/core`) with a count, the limit of 50, and "Check these first" naming each address
+  that is not valid (left out), listed twice (added once) or already connected (left out) with its line. "Continue
+  with N addresses" makes the list of the rest. Step 2 (`/settings/accounts/import/:importId`, also an assistant's
+  link) shows a summary with a progress bar and the rows in three groups, Microsoft 365, Google and other mail with a
+  password, each row with its state and at most one action. How a row connects is looked up as the single flow does
+  (`GET /mail-server-settings`, four at a time; the list's hint only when that finds nothing, `importRoute`); while
+  that runs the page shows the connect flow's checks. A Google or Microsoft row opens the provider's page with the
+  row's address as login hint, on the web in a new tab (the provider sends it back to the list's page, which finishes
+  the sign-in and hands the answer to the waiting tab over the connect channel, as the connect dialog does), in the
+  desktop app in the system browser; the row waits ("Waiting for the browser", with "Open the page again"). "Next:
+  <address>" connects one row and then starts nothing; "Sign in to all, one after another" goes through every row
+  still to do, password rows included (the row opens and waits for its password), and starts the next row by itself
+  after each that connected (`components/connect/importRun.ts`, `useAccountImport.ts`). A run stops at the first row
+  that does not connect, with "Continue with the next", "Try this one again" and, when an organization must approve,
+  "Copy approval link"; "Stop" lets the row under way finish and starts nothing after it. Nothing is kept that could
+  start a sign-in on a later page load, so the first start is always the user's click. A password row's form shows the
+  servers found ("Change settings" to change them), the username and a password field marked up for password managers
+  (`username`, `current-password`, the label naming the address); it is checked with `POST /mail-account-checks`
+  before the account is created, and a refused check is recorded on the row as a code. "Finish without the rest"
+  skips every row not connected and shows what was added and skipped; "Add back" and "Go back to the skipped ones"
+  put rows on To do again. A list made by an assistant says which app made it until the first sign-in, with "Delete
+  this list". A list that is gone (expired, deleted, or another user's) shows "This list has expired". Coming back
+  within 24 hours continues where it was; a sign-out or another user's sign-in drops the list and any run. The single
+  "Add account" dialog is unchanged.
 
 ##### Registering the OAuth apps
 
