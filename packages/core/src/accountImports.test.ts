@@ -59,6 +59,14 @@ describe('readPastedAddresses', () => {
     }
   })
 
+  it('takes the addresses an app list leaves out for their letters, since the paste step is the user\'s own', () => {
+    const lookalikes = fixture.cases.filter((entry) => entry.lookalike)
+    expect(lookalikes.map((entry) => entry.input)).toContain('kim@gmaіl.com')
+    for (const { input } of lookalikes) {
+      expect(importAddress(input), input).not.toBeNull()
+    }
+  })
+
   it('counts a connected address given twice as listed twice', () => {
     const read = readPastedAddresses('kim@company.example\nkim@company.example', ['kim@company.example'])
 

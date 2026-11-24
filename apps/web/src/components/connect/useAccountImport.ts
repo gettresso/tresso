@@ -38,11 +38,21 @@ export const CONTINUE_WAIT_MS = 20_000
 /** Where the API's providers sign in: the only places a tab the provider sent back is sent on to. */
 const PROVIDER_HOSTS = ['accounts.google.com', 'login.microsoftonline.com']
 
-/** A provider sign-in page the waiting page may send the returning tab to: https, a provider's host, with a state. */
+/**
+ * A provider sign-in page the waiting page may send the returning tab to: https on a provider's host itself (no user,
+ * password or port), with a state.
+ */
 export function isProviderPage(url: string): boolean {
   try {
     const page = new URL(url)
-    return page.protocol === 'https:' && PROVIDER_HOSTS.includes(page.hostname) && (page.searchParams.get('state') ?? '') !== ''
+    return (
+      page.protocol === 'https:' &&
+      page.username === '' &&
+      page.password === '' &&
+      page.port === '' &&
+      PROVIDER_HOSTS.includes(page.hostname) &&
+      (page.searchParams.get('state') ?? '') !== ''
+    )
   } catch {
     return false
   }
@@ -63,6 +73,8 @@ export interface ImportRow {
   servers: { imap: ServerSettings; smtp: ServerSettings } | null
   /** The username the lookup found, else the address. */
   username: string
+  /** Why looking the address up failed; the row offers to try it again. */
+  lookupError: string | null
   /** As the row shows it. */
   view: RowState
 }
@@ -135,6 +147,8 @@ export function useAccountImport(importId: Ref<string | null>) {
   /** Rows waiting for a provider page the browser did not open. */
   const blocked = ref<Record<string, boolean>>({})
   const suggestions = ref<Record<string, SuggestedServerSettings | null>>({})
+  /** Per address: why looking it up failed (not "nothing found", which is no failure). */
+  const lookupErrors = ref<Record<string, string>>({})
   /** Looking the addresses up: 0 while the addresses are looked up, 1 while the way to connect each is chosen. */
   const looking = ref(false)
   const lookStage = ref(0)
@@ -183,6 +197,7 @@ export function useAccountImport(importId: Ref<string | null>) {
         group: rowRoute === null ? null : importGroup(rowRoute),
         servers: rowRoute === null ? null : importServers(suggestion, rowRoute),
         username: suggestion?.found && suggestion.username ? suggestion.username : entry.address,
+        lookupError: lookupErrors.value[entry.address] ?? null,
         view: viewOf(entry.id, entry.state, entry.failure),
       }
     }),
@@ -205,7 +220,7 @@ export function useAccountImport(importId: Ref<string | null>) {
   /** Every row is connected, already connected or skipped. */
   const allDone = computed(() => total.value > 0 && rows.value.every((row) => row.state === 'connected' || row.state === 'already_connected' || row.state === 'skipped' || row.view === 'already'))
   /** The rows a sign-in may still be started for: to do, or failed with something to try again. */
-  const startable = computed(() => known.value.filter((row) => row.view !== 'already' && row.view !== 'failed-final'))
+  const startable = computed(() => known.value.filter((row) => row.view !== 'already' && row.view !== 'failed-final' && row.lookupError === null))
   /** The row "Next" and "Sign in to all" start with. */
   const nextRow = computed(() => nextImportRow(startable.value, null, true))
   /** The row after the current one, for the run line. */
@@ -273,19 +288,25 @@ export function useAccountImport(importId: Ref<string | null>) {
     try {
       const generation = auth.generation
       const queue = (list.value?.entries ?? []).filter((entry) => !(entry.address in suggestions.value)).map((entry) => entry.address)
+      // The API refused the list itself (gone, or no longer the user's to use): read it again, which shows why.
+      let refused = false
       const worker = async (): Promise<void> => {
         for (let address = queue.shift(); address !== undefined; address = queue.shift()) {
           let found: SuggestedServerSettings | null = null
           try {
             found = await accounts.suggest(address, undefined, importId.value ?? undefined)
-          } catch {
-            // Not found is no failure: the hint, else the password form.
+          } catch (e) {
+            if (generation !== auth.generation) return
+            if (e instanceof ApiError && e.status === 422) refused = true
+            // The row says what went wrong and offers to try again, instead of a password form for servers no one found.
+            lookupErrors.value = { ...lookupErrors.value, [address]: errorMessage(e) }
           }
           if (generation !== auth.generation) return
           suggestions.value = { ...suggestions.value, [address]: found }
         }
       }
       await Promise.all(Array.from({ length: Math.min(LOOKUPS_AT_ONCE, queue.length) }, worker))
+      if (refused) await load()
       lookStage.value = 1
       if (accounts.providers.length === 0) {
         try {
@@ -297,6 +318,13 @@ export function useAccountImport(importId: Ref<string | null>) {
     } finally {
       looking.value = false
     }
+  }
+
+  /** "Try again" on a row whose lookup failed. */
+  async function retryLookup(address: string): Promise<void> {
+    lookupErrors.value = Object.fromEntries(Object.entries(lookupErrors.value).filter(([key]) => key !== address))
+    suggestions.value = Object.fromEntries(Object.entries(suggestions.value).filter(([key]) => key !== address))
+    await lookUp()
   }
 
   /** "Use these addresses": the user checked the addresses of a list an app made. */
@@ -405,6 +433,8 @@ export function useAccountImport(importId: Ref<string | null>) {
       return null
     }
     stopped.value = null
+    // A tab that said its earlier sign-in was stopped starts another: that line no longer applies.
+    returning.value = null
     mode.value = runMode
     current.value = entryId
     rowErrors.value = { ...rowErrors.value, [entryId]: '' }
@@ -835,6 +865,7 @@ export function useAccountImport(importId: Ref<string | null>) {
     checks.value = {}
     rowErrors.value = {}
     suggestions.value = {}
+    lookupErrors.value = {}
     expired.value = false
     error.value = null
     status.value = 'idle'
@@ -881,6 +912,7 @@ export function useAccountImport(importId: Ref<string | null>) {
     open,
     load,
     confirm,
+    retryLookup,
     signIn,
     next,
     signInAll,

@@ -64,6 +64,11 @@ class FakeApi {
   onStart: (() => void) | null = null
   /** The next delete of a list fails. */
   failDelete = false
+  /** The lookup of this address fails (500). */
+  failLookup: string | null = null
+  /** The lookup refuses the list (422), and the list is gone afterwards. */
+  refuseLookup = false
+  goneAfterLookup = false
 
   setList(entries: Entry[], createdBy: string | null = null): void {
     this.createdBy = createdBy
@@ -91,6 +96,13 @@ class FakeApi {
     if (path === '/api/v1/oauth-providers') return Response.json([{ id: 'google', name: 'Google', features: ['mail', 'calendar'] }, { id: 'microsoft', name: 'Microsoft', features: ['mail'] }])
     if (path === '/api/v1/server-info') return Response.json({ product: 'tresso-server', apiVersion: 1, billing: false, trialDays: 0, allowUnencryptedMailServers: false })
     if (path === '/api/v1/mail-accounts' && method === 'GET') return Response.json(this.connectedAccounts.map((address, index) => ({ id: `a${index}`, emailAddress: address, displayName: address, provider: 'imap', status: 'active' })))
+    if (path === '/api/v1/mail-server-settings' && this.refuseLookup) {
+      if (this.goneAfterLookup) this.entries = []
+      return Response.json({ detail: 'No.', violations: [{ propertyPath: 'importId', message: 'No.' }] }, { status: 422 })
+    }
+    if (path === '/api/v1/mail-server-settings' && url.searchParams.get('emailAddress') === this.failLookup) {
+      return Response.json({ detail: 'Lookup failed.' }, { status: 500 })
+    }
     if (path === '/api/v1/mail-server-settings') {
       // The page always names the list; an app's list is not looked up before the user confirmed it.
       if (url.searchParams.get('importId') !== LIST_ID || !this.confirmed) return Response.json({ detail: 'Not this list.', violations: [{ propertyPath: 'importId', message: 'No.' }] }, { status: 422 })
@@ -354,7 +366,7 @@ describe('Add several accounts', () => {
 
     it('names the addresses the API left out after all, and then opens the list', async () => {
       api.leftOut = [
-        { address: 'kim@gmaіl.com', reason: 'invalid', message: 'This is not an email address.' },
+        { address: 'kim@gmaіl.com', reason: 'lookalike', message: 'The address uses letters that look like other letters.' },
         { address: 'Anna@company.example', reason: 'duplicate', message: 'This address is in the list already.' },
         { address: 'bob@company.example', reason: 'already_connected', message: 'This address is connected already.' },
       ]
@@ -366,7 +378,7 @@ describe('Add several accounts', () => {
 
       expect(wrapper.router.currentRoute.value.params.importId).toBeUndefined()
       expect(texts(wrapper, '.issue-text')).toEqual([
-        'The part after the @ is not complete. It is left out unless you fix it.',
+        'This address uses letters that look like other letters. It is left out.',
         'It is added once.',
         'This account is already in Tresso. It is left out.',
       ])
@@ -929,7 +941,15 @@ describe('Add several accounts', () => {
     it('in the tab the provider sent back, follows only a provider sign-in page', async () => {
       threeRows()
       api.started['state-9'] = 'kim@gmail.example'
-      for (const next of ['https://evil.example/o/oauth2/v2/auth?state=x', 'http://accounts.google.com/o/oauth2/v2/auth?state=x', `${GOOGLE}?client_id=x`, 'javascript:alert(1)']) {
+      for (const next of [
+        'https://evil.example/o/oauth2/v2/auth?state=x',
+        'http://accounts.google.com/o/oauth2/v2/auth?state=x',
+        `${GOOGLE}?client_id=x`,
+        'javascript:alert(1)',
+        'https://user:secret@accounts.google.com/o/oauth2/v2/auth?state=x',
+        'https://accounts.google.com:8443/o/oauth2/v2/auth?state=x',
+        'https://accounts.google.com.evil.example/o/oauth2/v2/auth?state=x',
+      ]) {
         markAwaiting('state-9', Date.now() + 60_000)
         const waiting = new BroadcastChannel('tresso-connect')
         waiting.onmessage = (event: MessageEvent<{ type: string; state: string }>) => {
@@ -977,6 +997,51 @@ describe('Add several accounts', () => {
       expect(api.requests.some((request) => request.path === '/api/v1/provider-connections')).toBe(false)
       expect(close).toHaveBeenCalled()
       expect(wrapper.get('.returning').text()).toBe('This sign-in was stopped. Nothing was connected.')
+
+      await row(wrapper, 'kim@gmail.example').get('button').trigger('click')
+      await settle()
+      expect(wrapper.find('.returning').exists()).toBe(false)
+    })
+
+    it('says a failed lookup on the row and tries it again, instead of a password form', async () => {
+      threeRows()
+      api.failLookup = 'orders@studio.example'
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}`)
+
+      const failed = row(wrapper, 'orders@studio.example')
+      expect(failed.get('.row-hint').text()).toBe('Lookup failed.')
+      expect(failed.get('.row-action button').text()).toBe('Try again')
+      await failed.get('.row-action button').trigger('click')
+      await settle()
+      expect(wrapper.find('form').exists()).toBe(false)
+      expect(row(wrapper, 'orders@studio.example').get('.row-hint').text()).toBe('Lookup failed.')
+
+      api.failLookup = null
+      await row(wrapper, 'orders@studio.example').get('.row-action button').trigger('click')
+      await settle()
+      expect(row(wrapper, 'orders@studio.example').find('.row-hint').exists()).toBe(false)
+      expect(row(wrapper, 'orders@studio.example').get('.row-action button').text()).toBe('Enter password')
+    })
+
+    it('reads the list again when the lookup is refused for the list, and shows it is gone', async () => {
+      threeRows()
+      api.refuseLookup = true
+      api.goneAfterLookup = true
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}`)
+
+      expect(wrapper.get('.ending-title').text()).toBe('This list has expired')
+    })
+
+    it('focuses Stop when the run starts elsewhere while a password row is open by hand', async () => {
+      threeRows()
+      const wrapper = await mountAt(`/settings/accounts/import/${LIST_ID}`)
+      await row(wrapper, 'orders@studio.example').get('.row-action button').trigger('click')
+      await settle()
+
+      await button(wrapper, 'Sign in to all, one after another').trigger('click')
+      await settle()
+
+      expect(document.activeElement?.textContent).toBe('Stop')
     })
 
     it('gives up what waits when the tab is closed or reloaded', async () => {

@@ -49,7 +49,8 @@ export interface MailAccountImportEntry {
 
 export interface LeftOutAddress {
   address: string
-  reason: 'invalid' | 'duplicate' | 'already_connected'
+  /** `lookalike`: an app's list leaves out an address whose letters look like others (a Cyrillic "і" in "gmaіl.com"). */
+  reason: 'invalid' | 'lookalike' | 'duplicate' | 'already_connected'
   message: string
 }
 

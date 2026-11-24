@@ -66,7 +66,7 @@ export function checkLead(read: PastedAddresses, issues = read.issues.length): s
 
 /** An address the API left out of the list it made, as "Check these first" names it. */
 export function leftOutPill(left: LeftOutAddress): string {
-  return left.reason === 'invalid' ? 'Not valid' : left.reason === 'duplicate' ? 'Listed twice' : 'Already connected'
+  return left.reason === 'invalid' || left.reason === 'lookalike' ? 'Not valid' : left.reason === 'duplicate' ? 'Listed twice' : 'Already connected'
 }
 
 /** As the board says it for an address it names itself, without a line: the API's list has no lines. */
@@ -76,8 +76,10 @@ export function leftOutText(left: LeftOutAddress): string {
       return 'It is added once.'
     case 'already_connected':
       return 'This account is already in Tresso. It is left out.'
+    case 'lookalike':
+      return 'This address uses letters that look like other letters. It is left out.'
     default:
-      return `${left.address.includes('@') ? 'The part after the @ is not complete.' : 'There is no @ in this address.'} It is left out unless you fix it.`
+      return left.address.includes('@') ? 'This is not a valid address. It is left out unless you fix it.' : 'There is no @ in this address. It is left out unless you fix it.'
   }
 }
 
