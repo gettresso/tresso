@@ -77,8 +77,8 @@ final readonly class ActivityEntry
     /**
      * What makes repeats one entry: the same owner, app, way in, action, result and reason within a minute; within an
      * hour for a refused token (expired or revoked), which a script may keep sending for days, and for anything kept
-     * past the day's cap ($pastCap). A send or a change also needs the same object: ten messages to ten chats are ten
-     * entries, each with its chat.
+     * past the day's cap ($pastCap). A send or a change that went through also needs the same object: ten messages to
+     * ten chats are ten entries, each with its chat.
      */
     public function repeatKey(bool $pastCap = false): string
     {
@@ -93,7 +93,9 @@ final readonly class ActivityEntry
             $this->result()->value,
             null === $this->reason ? '' : $this->reason->value,
             $this->occurredAt->format($hourly ? 'Y-m-d H' : 'Y-m-d H:i'),
-            ActivityKind::Read === $this->kind ? '' : ($this->objectId ?? ''),
+            // Only a send or a change that went through is an entry per object; refusals and failures on different
+            // objects fold into one, so a loop over random ids stays one entry.
+            ActivityKind::Read === $this->kind || null !== $this->reason ? '' : ($this->objectId ?? ''),
         ]));
     }
 

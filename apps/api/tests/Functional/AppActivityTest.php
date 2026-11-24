@@ -409,6 +409,35 @@ final class AppActivityTest extends DatabaseTestCase
         self::assertGreaterThanOrEqual($read['occurredAt'], $read['lastOccurredAt']);
     }
 
+    public function testRefusalsOnDifferentObjectsAreOneEntryWhateverTheIds(): void
+    {
+        $revoked = $this->personalAccessTokenHeaders('kim@example.test', ['settings:write']);
+        $this->connection()->executeStatement('UPDATE personal_access_token SET revoked_at = NOW()');
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        for ($i = 0; $i < 25; ++$i) {
+            $this->client->request('DELETE', '/api/v1/mail-accounts/'.Uuid::v7()->toRfc4122(), server: $revoked);
+            self::assertResponseStatusCodeSame(401);
+        }
+
+        self::assertSame([['access_revoked', 25, null, true]], array_map(static fn (array $row): array => [$row['reason'], $row['count'], $row['object_id'], $row['several_objects']], $this->rows()));
+    }
+
+    public function testNotFoundChangesPastTheCapAreOneEntryWhateverTheIds(): void
+    {
+        $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read', 'settings:write']);
+        $token = $this->connection()->fetchOne('SELECT id FROM personal_access_token');
+        self::assertIsString($token);
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        $this->connection()->executeStatement('DELETE FROM app_activity_day');
+        $this->connection()->insert('app_activity_day', ['owner_id' => $this->kim->getId()->toRfc4122(), 'app_type' => 'token', 'app_id' => $token, 'day' => new \DateTimeImmutable()->format('Y-m-d'), 'entries' => ActivityLog::DAILY_CAP]);
+        for ($i = 0; $i < 25; ++$i) {
+            $this->client->request('PATCH', '/api/v1/smart-inboxes/'.Uuid::v7()->toRfc4122(), server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: '{"autoCreateTodo": false}');
+            self::assertResponseStatusCodeSame(404);
+        }
+
+        self::assertSame([['not_found', 25, null, true]], array_map(static fn (array $row): array => [$row['reason'], $row['count'], $row['object_id'], $row['several_objects']], $this->rows()));
+    }
+
     public function testPastTheCapSendsChangesAndRefusalsAreStillWritten(): void
     {
         $headers = $this->personalAccessTokenHeaders('kim@example.test', ['settings:read', 'settings:write']);
