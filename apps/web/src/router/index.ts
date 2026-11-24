@@ -96,6 +96,11 @@ const router = createRouter({
             { path: 'signatures', name: 'settings-signatures', component: () => import('@/views/SettingsSignaturesView.vue') },
             { path: 'brief', name: 'settings-brief', component: () => import('@/views/SettingsBriefView.vue') },
             { path: 'calendar', name: 'settings-calendar', component: () => import('@/views/SettingsCalendarView.vue') },
+            // Apps (the "Settings: apps" boards): one page for everything connected, with the AI assistants and the
+            // activity log under it. Meeting apps, access tokens and connected apps keep their own addresses.
+            { path: 'apps', name: 'settings-apps', component: () => import('@/views/SettingsAppsView.vue') },
+            { path: 'apps/assistants', name: 'settings-apps-assistants', component: () => import('@/views/SettingsAssistantsView.vue') },
+            { path: 'apps/activity', name: 'settings-apps-activity', component: () => import('@/views/SettingsAppActivityView.vue') },
             { path: 'meeting-apps', name: 'settings-meeting-apps', component: () => import('@/views/SettingsMeetingAppsView.vue') },
             { path: 'access-tokens', name: 'settings-access-tokens', component: () => import('@/views/SettingsAccessTokensView.vue') },
             { path: 'connected-apps', name: 'settings-connected-apps', component: () => import('@/views/SettingsConnectedAppsView.vue') },

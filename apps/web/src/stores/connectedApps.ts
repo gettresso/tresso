@@ -4,7 +4,7 @@ import type { ConnectedApp } from '@tresso/core'
 import { useAuthStore } from '@/stores/auth'
 
 /**
- * The apps that are not ours which the user allowed to act for them, read and disconnected through the API (they are
+ * The apps that are not ours which the user allowed to act for them, read, narrowed and disconnected through the API (they are
  * not part of the synced copy).
  */
 export const useConnectedAppsStore = defineStore('connectedApps', () => {
@@ -15,6 +15,19 @@ export const useConnectedAppsStore = defineStore('connectedApps', () => {
   async function load(): Promise<ConnectedApp[]> {
     apps.value = await auth.api<ConnectedApp[]>('/api/v1/connected-apps')
     return apps.value
+  }
+
+  /**
+   * Lets the app keep only these of the permissions the user granted it; the others are switched off from its next
+   * request on. The answer replaces the app in the list.
+   */
+  async function narrow(id: string, scopes: string[]): Promise<ConnectedApp> {
+    const generation = auth.generation
+    const app = await auth.send<ConnectedApp>('PATCH', `/api/v1/connected-apps/${encodeURIComponent(id)}`, { scopes })
+    if (generation === auth.generation) {
+      apps.value = apps.value.map((known) => (known.id === app.id ? app : known))
+    }
+    return app
   }
 
   /** Disconnects the app: its tokens stop working at once, and it is gone from the list. */
@@ -31,5 +44,5 @@ export const useConnectedAppsStore = defineStore('connectedApps', () => {
     },
   )
 
-  return { apps, load, disconnect }
+  return { apps, load, narrow, disconnect }
 })

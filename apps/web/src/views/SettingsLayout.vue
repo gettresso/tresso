@@ -12,6 +12,12 @@ const route = useRoute()
  * addresses are their own.
  */
 const underAccounts = computed(() => typeof route.name === 'string' && (route.name.startsWith('settings-whatsapp') || route.name === 'settings-accounts-import'))
+/**
+ * Meeting apps, access tokens and connected apps are pages under Apps (the "Settings: apps" board): their addresses stay,
+ * and the navigation highlights Apps on them.
+ */
+const UNDER_APPS = ['settings-meeting-apps', 'settings-access-tokens', 'settings-connected-apps']
+const underApps = computed(() => typeof route.name === 'string' && (route.name.startsWith('settings-apps') || UNDER_APPS.includes(route.name)))
 </script>
 
 <template>
@@ -25,9 +31,7 @@ const underAccounts = computed(() => typeof route.name === 'string' && (route.na
       <RouterLink :to="{ name: 'settings-batches' }" class="item">Batched delivery</RouterLink>
       <RouterLink :to="{ name: 'settings-brief' }" class="item">Daily brief</RouterLink>
       <RouterLink :to="{ name: 'settings-calendar' }" class="item">Calendar</RouterLink>
-      <RouterLink :to="{ name: 'settings-meeting-apps' }" class="item">Meeting apps</RouterLink>
-      <RouterLink :to="{ name: 'settings-access-tokens' }" class="item">Access tokens</RouterLink>
-      <RouterLink :to="{ name: 'settings-connected-apps' }" class="item">Connected apps</RouterLink>
+      <RouterLink :to="{ name: 'settings-apps' }" class="item" :class="{ 'router-link-active': underApps }" :aria-current="underApps ? 'page' : undefined">Apps</RouterLink>
       <RouterLink v-if="isDesktop" :to="{ name: 'settings-updates' }" class="item">Updates</RouterLink>
       <RouterLink v-if="billing.status?.enabled" :to="{ name: 'settings-billing' }" class="item">Subscription</RouterLink>
     </nav>

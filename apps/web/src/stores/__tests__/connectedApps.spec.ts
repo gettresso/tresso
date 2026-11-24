@@ -9,8 +9,10 @@ const claude: ConnectedApp = {
   name: 'Claude',
   domains: ['claude.ai'],
   scopes: ['mail:read', 'todos:read'],
+  grantedScopes: ['mail:read', 'todos:read'],
   connectedAt: '2026-11-01T08:00:00+00:00',
   lastUsedAt: '2026-11-03T08:00:00+00:00',
+  activityKey: 'client:claude',
 }
 
 const inspector: ConnectedApp = {
@@ -18,8 +20,10 @@ const inspector: ConnectedApp = {
   name: 'MCP Inspector',
   domains: ['localhost'],
   scopes: ['settings:read'],
+  grantedScopes: ['settings:read'],
   connectedAt: '2026-11-02T08:00:00+00:00',
   lastUsedAt: null,
+  activityKey: 'client:inspector',
 }
 
 describe('connected apps store', () => {

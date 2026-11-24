@@ -20,7 +20,7 @@ export const usePersonalAccessTokensStore = defineStore('personalAccessTokens', 
   async function create(token: NewPersonalAccessToken): Promise<CreatedPersonalAccessToken> {
     const created = await auth.send<CreatedPersonalAccessToken>('POST', '/api/v1/personal-access-tokens', token)
     const { token: _secret, ...listed } = created
-    tokens.value = [{ ...listed, lastUsedAt: null, revokedAt: null }, ...tokens.value.filter((t) => t.id !== created.id)]
+    tokens.value = [{ ...listed, lastUsedAt: null, revokedAt: null, activityKey: `token:${created.id}` }, ...tokens.value.filter((t) => t.id !== created.id)]
     return created
   }
 

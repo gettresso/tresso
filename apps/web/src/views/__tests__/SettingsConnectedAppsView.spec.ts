@@ -17,6 +17,8 @@ function app(id: string, name: string, extra: Partial<ConnectedApp> = {}): Conne
     name,
     domains: ['claude.ai'],
     scopes: ['mail:read', 'todos:read'],
+    grantedScopes: ['mail:read', 'todos:read'],
+    activityKey: `client:${id}`,
     connectedAt: '2026-11-01T08:00:00+00:00',
     lastUsedAt: null,
     ...extra,
