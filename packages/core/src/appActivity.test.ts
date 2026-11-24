@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { activeText, activityAppName, activityTime, appActivityPath, durationText, permissionLine, permissionUsed, recentText, recentTime, recentTool, repeatSpan, shortDay, timesText, touched, type AppActivityEntry } from './appActivity'
+import { PERSONAL_ACCESS_TOKEN_SCOPES } from './personalAccessTokens'
+import { ASSISTANT_SCOPE_ORDER, ASSISTANT_SCOPES, activeText, activityAppName, activityTime, appActivityPath, durationText, permissionLine, permissionUsed, recentText, recentTime, recentTool, repeatSpan, shortDay, timesText, touched, type AppActivityEntry } from './appActivity'
 
 const NOW = new Date(2026, 9, 20, 10, 40, 0)
 
@@ -23,6 +24,17 @@ function entry(extra: Partial<AppActivityEntry> = {}): AppActivityEntry {
 }
 
 describe('app activity', () => {
+  it('lists every scope an assistant can have once, in the words of the consent screen', () => {
+    expect(ASSISTANT_SCOPES.map((scope) => scope.value)).toEqual([...ASSISTANT_SCOPE_ORDER])
+    expect(new Set(ASSISTANT_SCOPE_ORDER).size).toBe(ASSISTANT_SCOPE_ORDER.length)
+    for (const scope of ASSISTANT_SCOPES) {
+      expect(scope).toEqual(PERSONAL_ACCESS_TOKEN_SCOPES.find((known) => known.value === scope.value))
+    }
+    expect(ASSISTANT_SCOPES.find((scope) => scope.value === 'settings:write')!.description).toBe(
+      'Change settings such as account names, smart inboxes, rules and notifications, and prepare a list of mail addresses for you to add. Never how a mail account connects, access tokens or connected apps.',
+    )
+  })
+
   it('says what an assistant may do in one line, as the Apps page shows it', () => {
     expect(permissionLine(['mail:read', 'todos:read', 'todos:write', 'settings:read', 'settings:write', 'signatures:read', 'signatures:write'])).toBe('May read mail, change todos and signatures, and change settings.')
     expect(permissionLine(['mail:read', 'todos:read', 'todos:write'])).toBe('May read mail and change todos.')
