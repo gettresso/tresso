@@ -175,6 +175,32 @@ final class AppActivityTest extends DatabaseTestCase
         self::assertSame([$this->kim->getId()->toRfc4122(), $this->kim->getId()->toRfc4122()], array_column($rows, 'owner_id'));
     }
 
+    public function testARefusedTokenIsNamedOnceWhetherItIsStillThereOrGone(): void
+    {
+        $expired = $this->personalAccessTokenHeaders('kim@example.test', ['settings:write']);
+        $this->connection()->executeStatement("UPDATE personal_access_token SET name = 'Migration helper', expires_at = NOW() - INTERVAL '1 day'");
+        $revoked = $this->personalAccessTokenHeaders('kim@example.test', ['settings:write']);
+        $this->connection()->executeStatement('UPDATE personal_access_token SET revoked_at = NOW() WHERE revoked_at IS NULL AND expires_at > NOW()');
+        $this->connection()->executeStatement('DELETE FROM app_activity');
+        foreach ([$expired, $revoked] as $headers) {
+            $this->client->request('PATCH', '/api/v1/mail-accounts/'.Uuid::v7()->toRfc4122(), server: $headers + ['CONTENT_TYPE' => 'application/merge-patch+json'], content: '{}');
+            self::assertResponseStatusCodeSame(401);
+        }
+        $web = $this->userHeaders('kim@example.test', ['settings:read']);
+
+        self::assertSame([
+            'The token Script was revoked. Nothing was changed.',
+            'The token Migration helper had expired. Nothing was changed.',
+        ], $this->sentences($this->read($web, [])));
+
+        // Both tokens gone (the cleanup removes old ones): "This token", never "The token This token".
+        $this->connection()->executeStatement('DELETE FROM personal_access_token');
+        self::assertSame([
+            'This token was revoked. Nothing was changed.',
+            'This token had expired. Nothing was changed.',
+        ], $this->sentences($this->read($web, [])));
+    }
+
     public function testATokenOfADisconnectedAppIsLoggedAsRevoked(): void
     {
         $headers = $this->thirdPartyHeaders('kim@example.test', ['settings:read']);
@@ -605,6 +631,23 @@ final class AppActivityTest extends DatabaseTestCase
         foreach ($needles as $needle) {
             self::assertStringNotContainsString(mb_strtolower($needle), $stored, \sprintf('The log holds "%s".', $needle));
         }
+    }
+
+    /**
+     * The reason sentences of a page of the log, newest first.
+     *
+     * @param array{items: list<array<string, mixed>>} $page
+     *
+     * @return list<mixed>
+     */
+    private function sentences(array $page): array
+    {
+        $sentences = [];
+        foreach ($page['items'] as $item) {
+            $sentences[] = self::asArray($item['reason'] ?? null)['sentence'] ?? null;
+        }
+
+        return $sentences;
     }
 
     private function builtinInbox(User $owner): string

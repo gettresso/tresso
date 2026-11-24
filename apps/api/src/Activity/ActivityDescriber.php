@@ -170,12 +170,14 @@ final readonly class ActivityDescriber
     private function sentence(AppActivity $entry, ActivityReason $reason, array $app): string
     {
         $name = $app['name'] ?? ('token' === $app['type'] ? 'This token' : 'This app');
+        // A token's sentences name it as "The token Backup script", or "This token" once it is gone.
+        $token = null === $app['name'] ? 'This token' : 'The token '.$app['name'];
         $nothing = ' Nothing was '.$entry->getKind()->nothingWas().'.';
 
         return match ($reason) {
             ActivityReason::NoPermission => $this->noPermission($entry, $name).$nothing,
-            ActivityReason::TokenExpired => \sprintf('The token %s had expired.', $name).$nothing,
-            ActivityReason::AccessRevoked => ('token' === $app['type'] ? \sprintf('The token %s was revoked.', $name) : \sprintf('%s was disconnected from your Tresso.', $name)).$nothing,
+            ActivityReason::TokenExpired => \sprintf('%s had expired.', $token).$nothing,
+            ActivityReason::AccessRevoked => ('token' === $app['type'] ? \sprintf('%s was revoked.', $token) : \sprintf('%s was disconnected from your Tresso.', $name)).$nothing,
             ActivityReason::NotFound => \sprintf('%s asked for something that does not exist or is not yours.', $name).$nothing,
             ActivityReason::NotAccepted => \sprintf('Tresso did not accept the request as %s sent it.', $name).$nothing,
             ActivityReason::TooManyRequests => \sprintf('%s made too many requests in a short time.', $name).$nothing,
