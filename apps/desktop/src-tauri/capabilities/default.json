@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: the app's own commands (whatsapp.json has the WhatsApp ones), core APIs, the link the app was opened with, opening web pages in the default browser, and notifications whose click brings the window to the front, and dragging the window by its own title area (the macOS app draws its title bar itself)",
+  "description": "The main window: the app's own commands (whatsapp.json has the WhatsApp ones), core APIs, the link the app was opened with, opening web pages in the default browser and Cursor's MCP install link (Settings, Apps, AI assistants), and notifications whose click brings the window to the front, and dragging the window by its own title area (the macOS app draws its title bar itself)",
   "windows": [
     "main"
   ],
@@ -10,6 +10,10 @@
     "deep-link:default",
     "opener:allow-open-url",
     "opener:allow-default-urls",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "cursor://anysphere.cursor-deeplink/mcp/install*" }]
+    },
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",
     "notification:allow-notify",
