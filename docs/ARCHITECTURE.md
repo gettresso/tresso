@@ -352,7 +352,9 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   names is switched on again. A scope that was never granted is refused (422, "connect the app again and allow it
   there"): only the consent screen grants. Scopes the app cannot hold (`teams:*`, `webhooks:manage`, `sync:*`) are
   refused too, the chat scopes keep their rule (granted only by ticking them on the consent screen, never implied), and
-  an empty list is allowed: the app stays connected and can do nothing. It takes effect on the app's next request with
+  an empty list is allowed: the app stays connected with no scope, which still lets it read what needs none: who the
+  user is (`/api/v1/me`: name and email address), their organizations (`/api/v1/organizations`), the server's info, and
+  the MCP tools `get_me` and `get_server_info`. It takes effect on the app's next request with
   the tokens it already holds: `NarrowedScopes` (on `AuthenticationTokenCreatedEvent`, for the `api` and `mcp`
   firewalls) looks up the consent of every request of an app that is not ours and replaces the security token by one
   without the switched-off scopes, before anything checks a role, so the API, the voters, `tools/list` and every tool
@@ -360,8 +362,11 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   sign in again, and a refresh token cannot widen again, so a scope switched back on would only return after a new
   authorization; with the check, a token keeps carrying what was granted and can never use what is switched off, and
   switching back on works at once. It costs one indexed lookup per request of such an app. A token response still
-  lists the granted scopes. The consent screen does not undo a switch: when the app asks again for a scope the user
-  switched off, the scope stays off until the user switches it on. A tool refused for a switched-off scope says so
+  lists the granted scopes, and a refresh after a switch-off gets a token that is narrowed the same way. The consent
+  screen does not undo a switch: when the app asks again for a scope the user switched off, the scope stays off until
+  the user switches it on, and the page says so in one line ("You switched off See signatures for this app in Tresso.
+  Allowing here keeps it off; switch it on under Settings, Apps."). Only an access token of an OAuth client that is not
+  ours is narrowed (`NarrowedScopes::narrows()`): never our own apps, the sync worker or a personal access token. A tool refused for a switched-off scope says so
   ("the user switched off for this app in Tresso"), and the refusal is in the activity log as "No permission".
 - **Activity log.** Every MCP tool call and every API request of an app that is not ours (an OAuth client or a
   personal access token) is one `app_activity` row of the user it acted for. Our own apps and the sync worker are not
@@ -373,7 +378,11 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   change); the result (`done`, `refused`, `failed`) with a reason; the duration in milliseconds; the scopes the action
   needed (from the tool, or from the operation's security expression); and the kind and id of what it touched (the
   resource named by the path segment before the last path variable and that variable's value, so
-  `/chats/{id}/outgoing` touched a chat; for a tool, the last operation it ran that named one). It never keeps message
+  `/chats/{id}/outgoing` touched a chat; for a tool, the last operation it ran that named one). The id is kept only when
+  it is a UUID, the only kind of id the API hands out: other path text is the caller's own and could plant a message
+  such as `call-0800-123456.your-account-is-locked` in the user's log. For a refusal for want of a permission the
+  entry also keeps the scopes the app lacked at that moment (`missing_scopes`), so the sentence read later is true about
+  then, whatever the app holds now. It never keeps message
   text, subjects, file names or content, search words, addresses of other people, request or response bodies, the query
   string, the concrete path or tool arguments: `ActivityEntry` refuses an action that is not a tool name or a route
   template (no literal segment of an API route has a digit, every id does) and drops an object id that is not shaped
@@ -386,21 +395,31 @@ themselves and sign in with the user's consent. `App\Security\OAuth` holds the p
   the user disconnected (its `jti` names a stored, revoked token and no consent is left). An app's access token that
   just expired or was replaced by a refresh is renewed by the client every hour and is not logged, nor is an unknown
   token. The API does not talk to mail providers while it answers a request (the sync workers do), so there is no
-  "mail provider did not answer" reason. Entries are written after the response was sent (`kernel.terminate`), with
-  the connection and outside the entity manager; a failure to write is logged and dropped, so the log never fails or
-  slows a request. `PurgeAppActivity` removes entries older than 90 days once a day at 03:29 on the `maintenance`
-  worker, 5000 at a time until none is left; deleting a user deletes theirs (foreign key cascade). Indexes: owner and
-  time, and owner with app, kind or result and time.
+  "mail provider did not answer" reason. API Platform's own placeholder routes (`/.well-known/genid/{id}`) are not
+  logged. Entries are written after the response was sent (`kernel.terminate`), with the connection and outside the
+  entity manager; a failure to write is logged as an error (ids, the action and codes only) and dropped, so the log
+  never fails or slows a request, and so is a request or tool call that could not be put in the log's shape (a test
+  keeps every route template and tool name inside it). What one app can write is bounded: repeats (the same owner,
+  app, way in, action, result and reason) within a minute are one entry with a `count` ("N times"), within an hour for
+  a refused token, so a script with an expired or revoked token adds one entry an hour; and an app writes at most 2000
+  entries per user per day (`app_activity_day` counts them), after which one entry "More activity was not recorded"
+  counts the rest. Two requests at the same moment may each pass the cap by one: it is a bound, not an exact number. `PurgeAppActivity` removes entries older than 90 days once a day at 03:29 on the `maintenance`
+  worker, 5000 at a time until none is left, with the daily counts of those days; deleting a user deletes theirs
+  (foreign key cascade). Indexes: owner, time and id (the page and its cursor, a row comparison `(occurred_at, id) <
+  (:at, :id)`), owner with app, kind or result and time, the repeat key (unique), and time for the purge. The single
+  owner index on `app_activity` stays: Doctrine keeps one for the foreign key, and the schema check fails without it.
 - **Reading the log.** `GET /api/v1/app-activity` (`settings:read` and our own apps only) answers the signed-in
   user's entries newest first, `limit` (1 to 100, 50) at a time with `nextCursor`, filtered by `period` (`24h`, `7d`,
   `30d`, `90d` by default), `app` (an `activityKey` of a connected app, or `token:<id>` of a personal access token,
   which the token list carries as `activityKey` too), `kind` and `result` (anything else is a 422). Each entry has the
   app (key, type, name or null once the app or token is gone, its connected app or token id while it exists), the
   channel, the action (its name, and a title: the tool's title, or one made from the method and resource such as "List
-  mail accounts"), kind, result, the reason with its label and a sentence ("Claude does not have the permission Send
+  mail accounts"), kind, result, the reason with its label and a sentence ("Claude did not have the permission Send
   WhatsApp messages as you. Nothing was sent."), the duration, each permission needed with its label and whether the
-  app holds it now, and the object (type, label such as "Mail account", whether it was a list, id). `apps` lists every
-  app with entries, with its name, for the app filter. The AI assistants page's recent activity is the same endpoint
+  app holds it now, the object (type, label such as "Mail account", whether it was a list, id) and the `count` of
+  repeats. `apps` lists the apps for the app filter, with their names: those connected and with a live token now, and
+  those with entries in the period, read from `app_activity_day` (one row per app and day) and never from the log
+  itself; `empty` says the log holds nothing at all. The AI assistants page's recent activity is the same endpoint
   with `app` and a small `limit`. The MCP endpoint address for the pages is `mcpEndpoint` in `GET
   /api/v1/server-info` (the MCP resource, `<MCP_PUBLIC_URL>/mcp`, one address for everyone).
 
