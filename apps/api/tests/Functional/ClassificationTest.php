@@ -105,7 +105,7 @@ final class ClassificationTest extends DatabaseTestCase
     {
         $this->ingest('messages', ['folder' => 'INBOX', 'messages' => [$this->message('1', 'Budget', ['messageId' => '<budget@x>'])]]);
         $this->ingest('messages', ['folder' => 'Sent', 'messages' => [
-            $this->message('1', 'Re: Budget', ['messageId' => '<reply@x>', 'inReplyTo' => '<budget@x>', 'from' => ['address' => self::ME], 'to' => [['address' => 'anna@partner.example']], 'receivedAt' => '2026-10-19T09:00:00+00:00']),
+            $this->message('1', 'Re: Budget', ['messageId' => '<reply@x>', 'inReplyTo' => '<budget@x>', 'from' => ['address' => self::ME], 'to' => [['address' => 'anna@partner.example']], 'receivedAt' => self::receivedAt(9)]),
             $this->message('2', 'Lunch?', ['messageId' => '<lunch@x>', 'from' => ['address' => self::ME], 'to' => [['address' => 'anna@partner.example']]]),
         ]]);
         $this->runClassification();
@@ -949,6 +949,15 @@ final class ClassificationTest extends DatabaseTestCase
     }
 
     /**
+     * Yesterday at this hour (UTC): a correction classifies again only mail of the last 30 days
+     * (ClassificationScheduler::RECLASSIFY_PERIOD), so a fixed date stops being reclassified once it is older.
+     */
+    private static function receivedAt(int $hour): string
+    {
+        return new \DateTimeImmutable('yesterday', new \DateTimeZone('UTC'))->setTime($hour, 0)->format(\DATE_ATOM);
+    }
+
+    /**
      * @param array<string, mixed> $override
      *
      * @return array<string, mixed>
@@ -962,7 +971,7 @@ final class ClassificationTest extends DatabaseTestCase
             'rawObjectKey' => $this->rawKeyFor($this->accountId, $uid.$subject),
             'keyVersion' => 1,
             'size' => 100,
-            'receivedAt' => '2026-10-19T08:00:00+00:00',
+            'receivedAt' => self::receivedAt(8),
             'messageId' => '<'.$sha.'@x>',
             'subject' => $subject,
             'from' => ['address' => 'anna@partner.example', 'name' => 'Anna'],
