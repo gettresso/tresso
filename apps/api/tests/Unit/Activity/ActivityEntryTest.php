@@ -29,7 +29,7 @@ final class ActivityEntryTest extends TestCase
         self::assertSame(['Chat', 'b3f1c2d4-0000-7000-8000-000000000000'], [$tool->objectType, $tool->objectId]);
         self::assertSame(ActivityResult::Done, $tool->result());
 
-        $request = $this->entry(ActivityChannel::Api, 'PATCH', '/api/v1/mail-accounts/{id}', 'MailAccount', 'acc-1', ActivityReason::Unavailable);
+        $request = $this->entry(ActivityChannel::Api, 'PATCH', '/api/v1/mail-accounts/{id}', 'MailAccount', 'b3f1c2d4-0000-7000-8000-000000000001', ActivityReason::Unavailable);
         self::assertSame(ActivityResult::Failed, $request->result());
     }
 
@@ -59,8 +59,32 @@ final class ActivityEntryTest extends TestCase
         $entry = $this->entry(ActivityChannel::Api, 'GET', '/api/v1/chats/{id}', 'Chat', 'anna@partner.example');
         self::assertSame(['Chat', null], [$entry->objectType, $entry->objectId], 'An address is no id.');
 
-        $entry = $this->entry(ActivityChannel::Api, 'GET', '/api/v1/chats/{id}', 'Chat with Anna', 'chat-1');
+        $entry = $this->entry(ActivityChannel::Api, 'GET', '/api/v1/chats/{id}', 'Chat with Anna', 'b3f1c2d4-0000-7000-8000-000000000000');
         self::assertSame([null, null], [$entry->objectType, $entry->objectId]);
+
+        foreach (['call-0800-123456.your-account-is-locked', '08001234567', 'acc-1'] as $text) {
+            self::assertNull($this->entry(ActivityChannel::Api, 'GET', '/api/v1/chats/{id}', 'Chat', $text)->objectId, $text);
+        }
+        self::assertSame('b3f1c2d4-0000-7000-8000-000000000000', $this->entry(ActivityChannel::Api, 'GET', '/api/v1/chats/{id}', 'Chat', 'B3F1C2D4-0000-7000-8000-000000000000')->objectId);
+    }
+
+    public function testRepeatsShareAKeyWithinAMinuteAndARefusedTokenWithinAnHour(): void
+    {
+        $owner = Uuid::v7();
+        $at = static fn (string $time, ?ActivityReason $reason) => new ActivityEntry($owner, new \DateTimeImmutable($time), ActivityApp::client('claude'), ActivityChannel::Api, 'GET', '/api/v1/chats', ActivityKind::Read, $reason, 5, ['chat:read']);
+        self::assertSame($at('2026-11-24 10:00:05', null)->repeatKey(), $at('2026-11-24 10:00:55', null)->repeatKey());
+        self::assertNotSame($at('2026-11-24 10:00:05', null)->repeatKey(), $at('2026-11-24 10:01:05', null)->repeatKey());
+        self::assertNotSame($at('2026-11-24 10:00:05', null)->repeatKey(), $at('2026-11-24 10:00:06', ActivityReason::NotFound)->repeatKey());
+        self::assertSame($at('2026-11-24 10:00:05', ActivityReason::TokenExpired)->repeatKey(), $at('2026-11-24 10:59:00', ActivityReason::TokenExpired)->repeatKey());
+        self::assertNotSame($at('2026-11-24 10:00:05', ActivityReason::AccessRevoked)->repeatKey(), $at('2026-11-24 11:00:00', ActivityReason::AccessRevoked)->repeatKey());
+    }
+
+    public function testMissingScopesAreKeptOnlyForARefusalForWantOfAPermission(): void
+    {
+        $refused = new ActivityEntry(Uuid::v7(), new \DateTimeImmutable(), ActivityApp::client('claude'), ActivityChannel::Mcp, null, 'list_whatsapp_chats', ActivityKind::Read, ActivityReason::NoPermission, 1, ['chat:read'], missingScopes: ['chat:read', 'mail:send']);
+        self::assertSame(['chat:read'], $refused->missingScopes, 'Only scopes the action needed.');
+        $done = new ActivityEntry(Uuid::v7(), new \DateTimeImmutable(), ActivityApp::client('claude'), ActivityChannel::Mcp, null, 'list_whatsapp_chats', ActivityKind::Read, null, 1, ['chat:read'], missingScopes: ['chat:read']);
+        self::assertSame([], $done->missingScopes);
     }
 
     public function testOnlyScopesAreKept(): void

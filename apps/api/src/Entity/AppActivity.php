@@ -32,6 +32,7 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Index(name: 'app_activity_owner_kind_time', columns: ['owner_id', 'kind', 'occurred_at'])]
 #[ORM\Index(name: 'app_activity_owner_result_time', columns: ['owner_id', 'result', 'occurred_at'])]
 #[ORM\Index(name: 'app_activity_time', columns: ['occurred_at'])]
+#[ORM\UniqueConstraint(name: 'app_activity_repeat', columns: ['repeat_key'])]
 class AppActivity
 {
     public const string KEEP_FOR = 'P90D';
@@ -39,6 +40,8 @@ class AppActivity
     public const int ACTION_MAX_LENGTH = 200;
     public const int OBJECT_TYPE_MAX_LENGTH = 64;
     public const int OBJECT_ID_MAX_LENGTH = 100;
+    /** The action of the one entry kept for an app once it reached the day's cap ({@see \App\Activity\ActivityLog::DAILY_CAP}). */
+    public const string NOT_RECORDED = 'more_activity_not_recorded';
 
     #[ORM\Id]
     #[ORM\Column(type: UuidType::NAME)]
@@ -104,7 +107,26 @@ class AppActivity
     private ?string $objectId;
 
     /**
+     * For a refusal for want of a permission: the scopes the app lacked at that moment, by their value.
+     *
+     * @var list<string>
+     */
+    #[ORM\Column(type: Types::JSON, options: ['default' => '[]'])]
+    private array $missingScopes = [];
+
+    /** How many times the same thing happened within its bucket (a minute, an hour for a refused token). */
+    #[ORM\Column(options: ['default' => 1])]
+    private int $count = 1;
+
+    /**
+     * What makes repeats one entry: a hash of the owner, the app, the action, the result, the reason and the bucket.
+     */
+    #[ORM\Column(length: 64)]
+    private string $repeatKey;
+
+    /**
      * @param list<string> $scopes
+     * @param list<string> $missingScopes
      */
     public function __construct(
         Uuid $id,
@@ -122,6 +144,9 @@ class AppActivity
         ?string $objectType,
         bool $objectList,
         ?string $objectId,
+        array $missingScopes = [],
+        int $count = 1,
+        ?string $repeatKey = null,
     ) {
         $this->id = $id;
         $this->owner = $owner;
@@ -139,6 +164,9 @@ class AppActivity
         $this->objectType = $objectType;
         $this->objectList = $objectList;
         $this->objectId = $objectId;
+        $this->missingScopes = $missingScopes;
+        $this->count = $count;
+        $this->repeatKey = $repeatKey ?? hash('sha256', $id->toRfc4122());
     }
 
     public function getId(): Uuid
@@ -215,5 +243,16 @@ class AppActivity
     public function getObjectId(): ?string
     {
         return $this->objectId;
+    }
+
+    /** @return list<string> */
+    public function getMissingScopes(): array
+    {
+        return $this->missingScopes;
+    }
+
+    public function getCount(): int
+    {
+        return $this->count;
     }
 }

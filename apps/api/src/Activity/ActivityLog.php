@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Activity;
 
+use App\Entity\AppActivity;
 use Doctrine\DBAL\Connection;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
@@ -14,10 +15,19 @@ use Symfony\Contracts\Service\ResetInterface;
 /**
  * Keeps the entries of a request and writes them once the response was sent (`kernel.terminate`, after
  * `fastcgi_finish_request()`), straight through the connection, outside the entity manager. A failure to write is
- * logged and dropped: the log never fails or slows a request.
+ * logged as an error (with ids, the action and codes only) and dropped: the log never fails or slows a request.
+ *
+ * What one app can write is bounded:
+ * - Repeats are one entry with a count: the same owner, app, way in, action, result and reason within a minute (an
+ *   hour for a refused token), {@see ActivityEntry::repeatKey()}.
+ * - At most {@see DAILY_CAP} entries per owner and app per day ({@see AppActivityDay}); after that nothing more is
+ *   written for the app that day except one entry "More activity was not recorded", whose count says how much was not.
+ *   Two requests at the same moment may each write one entry past the cap; the cap is a bound, not an exact number.
  */
 final class ActivityLog implements ResetInterface
 {
+    public const int DAILY_CAP = 2000;
+
     /** @var list<ActivityEntry> */
     private array $pending = [];
 
@@ -40,29 +50,94 @@ final class ActivityLog implements ResetInterface
 
         foreach ($entries as $entry) {
             try {
-                $this->connection->insert('app_activity', [
-                    'id' => UuidV7::generate($entry->occurredAt),
-                    'owner_id' => $entry->owner->toRfc4122(),
-                    'occurred_at' => $entry->occurredAt->format('Y-m-d H:i:s'),
-                    'app_type' => $entry->app->type,
-                    'app_id' => $entry->app->id,
+                $this->writeOne($entry);
+            } catch (\Throwable $exception) {
+                $this->logger->error('An entry of the app activity log was not written.', [
+                    'owner' => $entry->owner->toRfc4122(),
+                    'app' => $entry->app->key(),
                     'channel' => $entry->channel->value,
-                    'method' => $entry->method,
                     'action' => $entry->action,
-                    'kind' => $entry->kind->value,
                     'result' => $entry->result()->value,
                     'reason' => $entry->reason?->value,
-                    'duration_ms' => max(0, $entry->durationMs),
-                    'scopes' => json_encode($entry->scopes, \JSON_THROW_ON_ERROR),
-                    'object_type' => $entry->objectType,
-                    'object_list' => $entry->objectList ? 'true' : 'false',
-                    'object_id' => $entry->objectId,
+                    'error' => $exception::class,
                 ]);
-            } catch (\Throwable $exception) {
-                // The user's own row can be gone (deleted meanwhile): nothing to keep then either.
-                $this->logger->warning('An entry of the app activity log was not written.', ['exception' => $exception]);
             }
         }
+    }
+
+    private function writeOne(ActivityEntry $entry): void
+    {
+        $day = $entry->occurredAt->format('Y-m-d');
+        $written = $this->connection->fetchOne(
+            'SELECT entries FROM app_activity_day WHERE owner_id = :owner AND app_type = :type AND app_id = :app AND day = :day',
+            ['owner' => $entry->owner->toRfc4122(), 'type' => $entry->app->type, 'app' => $entry->app->id, 'day' => $day],
+        );
+        if (\is_int($written) && $written >= self::DAILY_CAP) {
+            $this->upsert($entry, AppActivity::NOT_RECORDED, null, ActivityKind::Read, null, [], null, false, null, [], hash('sha256', implode('|', [$entry->owner->toRfc4122(), $entry->app->key(), $day, AppActivity::NOT_RECORDED])));
+
+            return;
+        }
+
+        $inserted = $this->upsert(
+            $entry,
+            $entry->action,
+            $entry->method,
+            $entry->kind,
+            $entry->reason,
+            $entry->scopes,
+            $entry->objectType,
+            $entry->objectList,
+            $entry->objectId,
+            $entry->missingScopes,
+            $entry->repeatKey(),
+        );
+        if ($inserted) {
+            $this->connection->executeStatement(
+                'INSERT INTO app_activity_day (owner_id, app_type, app_id, day, entries) VALUES (:owner, :type, :app, :day, 1)
+                 ON CONFLICT (owner_id, app_type, app_id, day) DO UPDATE SET entries = app_activity_day.entries + 1',
+                ['owner' => $entry->owner->toRfc4122(), 'type' => $entry->app->type, 'app' => $entry->app->id, 'day' => $day],
+            );
+        }
+    }
+
+    /**
+     * Writes the entry, or counts one more of it when its repeat key is there already.
+     *
+     * @param list<string> $scopes
+     * @param list<string> $missingScopes
+     *
+     * @return bool whether a new row was written
+     */
+    private function upsert(ActivityEntry $entry, string $action, ?string $method, ActivityKind $kind, ?ActivityReason $reason, array $scopes, ?string $objectType, bool $objectList, ?string $objectId, array $missingScopes, string $repeatKey): bool
+    {
+        $result = $reason?->result() ?? ActivityResult::Done;
+
+        return true === $this->connection->fetchOne(
+            'INSERT INTO app_activity (id, owner_id, occurred_at, app_type, app_id, channel, method, action, kind, result, reason, duration_ms, scopes, object_type, object_list, object_id, missing_scopes, count, repeat_key)
+             VALUES (:id, :owner, :at, :type, :app, :channel, :method, :action, :kind, :result, :reason, :duration, :scopes, :objectType, :objectList, :objectId, :missing, 1, :repeat)
+             ON CONFLICT (repeat_key) DO UPDATE SET count = app_activity.count + 1
+             RETURNING (xmax = 0)',
+            [
+                'id' => UuidV7::generate($entry->occurredAt),
+                'owner' => $entry->owner->toRfc4122(),
+                'at' => $entry->occurredAt->format('Y-m-d H:i:s'),
+                'type' => $entry->app->type,
+                'app' => $entry->app->id,
+                'channel' => $entry->channel->value,
+                'method' => AppActivity::NOT_RECORDED === $action ? null : $method,
+                'action' => $action,
+                'kind' => $kind->value,
+                'result' => $result->value,
+                'reason' => $reason?->value,
+                'duration' => AppActivity::NOT_RECORDED === $action ? 0 : max(0, $entry->durationMs),
+                'scopes' => json_encode($scopes, \JSON_THROW_ON_ERROR),
+                'objectType' => $objectType,
+                'objectList' => $objectList ? 'true' : 'false',
+                'objectId' => $objectId,
+                'missing' => json_encode($missingScopes, \JSON_THROW_ON_ERROR),
+                'repeat' => $repeatKey,
+            ],
+        );
     }
 
     public function reset(): void

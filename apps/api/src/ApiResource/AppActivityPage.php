@@ -17,7 +17,8 @@ use App\State\AppActivityProvider;
  * Query: `period` (`24h`, `7d`, `30d` or `90d`, the default), `app` (an `activityKey` of a connected app or a personal
  * access token: `client:<id>`, `token:<id>`), `kind` (`read`, `change`, `send`), `result` (`done`, `refused`,
  * `failed`), `limit` (1 to 100, default 50) and `cursor` (the `nextCursor` of the page before; null on the last page).
- * `apps` lists every app that has entries, with its name, for the app filter. An entry holds no content: see
+ * `apps` lists, for the app filter, the apps connected or with a token now and those with entries in the period, with
+ * their names; `empty` says the log holds nothing at all. An entry holds no content: see
  * {@see \App\Entity\AppActivity}.
  */
 #[ApiResource(
@@ -43,6 +44,8 @@ final readonly class AppActivityPage
         public array $items,
         public ?string $nextCursor,
         public array $apps,
+        /** The log holds no entry at all, whatever the filters. */
+        public bool $empty,
     ) {
     }
 }

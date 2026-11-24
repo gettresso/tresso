@@ -7,6 +7,7 @@ namespace App\Activity;
 use ApiPlatform\Metadata\Resource\Factory\ResourceMetadataCollectionFactoryInterface;
 use App\Entity\User;
 use Psr\Clock\ClockInterface;
+use Psr\Log\LoggerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
@@ -34,6 +35,7 @@ final readonly class ApiRequestActivity
         private RefusedCallers $refusedCallers,
         private ActivityLog $log,
         private ClockInterface $clock,
+        private LoggerInterface $logger,
     ) {
     }
 
@@ -63,8 +65,13 @@ final readonly class ApiRequestActivity
 
         try {
             $this->record($request, $event->getResponse(), $occurredAt, $durationMs);
-        } catch (\Throwable) {
-            // The log never fails a request; what could not be described is not logged.
+        } catch (\Throwable $exception) {
+            // The log never fails a request; what could not be described is not logged, and that is an error of ours.
+            $this->logger->error('An API request could not be put in the app activity log.', [
+                'route' => $request->attributes->get('_route'),
+                'status' => $event->getResponse()->getStatusCode(),
+                'error' => $exception::class,
+            ]);
         }
     }
 
@@ -106,6 +113,7 @@ final readonly class ApiRequestActivity
             $operation->objectType,
             $operation->objectList,
             $operation->objectId,
+            ActivityReason::NoPermission === $reason ? ActivityApp::missingScopes($operation->scopes, $token) : [],
         ));
     }
 }

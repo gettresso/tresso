@@ -6,6 +6,7 @@ namespace App\Activity;
 
 use App\Command\BootstrapOAuthClientsCommand;
 use App\Security\FirstPartyClients;
+use App\Security\Scope;
 use App\Security\PersonalAccessToken\PersonalAccessTokenAuthentication;
 use League\Bundle\OAuth2ServerBundle\Security\Authentication\Token\OAuth2Token;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
@@ -58,6 +59,20 @@ final readonly class ActivityApp
     public static function isLogged(string $clientIdentifier): bool
     {
         return !FirstPartyClients::isFirstParty($clientIdentifier) && BootstrapOAuthClientsCommand::SYNC_WORKER !== $clientIdentifier;
+    }
+
+    /**
+     * Of these scopes, those the security token of the request does not hold: what an app lacked when it was refused.
+     *
+     * @param list<string> $scopes
+     *
+     * @return list<string>
+     */
+    public static function missingScopes(array $scopes, ?TokenInterface $token): array
+    {
+        $roles = $token?->getRoleNames() ?? [];
+
+        return array_values(array_filter($scopes, static fn (string $scope): bool => !\in_array(Scope::ROLE_PREFIX.strtoupper($scope), $roles, true)));
     }
 
     /** `client:<id>` or `token:<uuid>`; null for anything else. */

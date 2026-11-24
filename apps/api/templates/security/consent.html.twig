@@ -56,6 +56,10 @@
                 </ul>
             {% endif %}
 
+            {% if switched_off is not empty %}
+                <p class="switched-off">You switched off {{ switched_off|join(', ', ' and ') }} for this app in Tresso. Allowing here keeps {{ switched_off|length > 1 ? 'them' : 'it' }} off; switch {{ switched_off|length > 1 ? 'them' : 'it' }} on under Settings, Apps.</p>
+            {% endif %}
+
             <form class="form decision" method="post" action="{{ action }}">
                 <input type="hidden" name="_csrf_token" value="{{ csrf_token(csrf_token_id) }}">
 
@@ -87,6 +91,6 @@
             </form>
         </section>
 
-        <p class="footnote">You can disconnect the app any time under Settings, Connected apps.</p>
+        <p class="footnote">You can disconnect the app any time under Settings, Apps.</p>
     </main>
 {% endblock %}

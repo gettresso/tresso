@@ -9,6 +9,7 @@ use App\Mcp\ApiFailure;
 use App\Mcp\Tool\Tool;
 use App\Security\Scope;
 use Psr\Clock\ClockInterface;
+use Psr\Log\LoggerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 
 /**
@@ -23,6 +24,7 @@ final readonly class ToolActivity
         private ToolTrace $trace,
         private ActivityLog $log,
         private ClockInterface $clock,
+        private LoggerInterface $logger,
     ) {
     }
 
@@ -49,6 +51,7 @@ final readonly class ToolActivity
             return;
         }
         [$at, $occurredAt] = $started;
+        $scopes = array_map(static fn (Scope $scope): string => $scope->value, $tool->scopes);
 
         try {
             $this->log->record(new ActivityEntry(
@@ -61,13 +64,15 @@ final readonly class ToolActivity
                 ActivityKind::ofTool($tool->effect),
                 $reason,
                 intdiv(hrtime(true) - $at, 1_000_000),
-                array_map(static fn (Scope $scope): string => $scope->value, $tool->scopes),
+                $scopes,
                 $touched?->objectType,
                 null !== $touched && $touched->objectList,
                 $touched?->objectId,
+                ActivityReason::NoPermission === $reason ? ActivityApp::missingScopes($scopes, $token) : [],
             ));
-        } catch (\Throwable) {
-            // The log never fails a tool call.
+        } catch (\Throwable $exception) {
+            // The log never fails a tool call; a call that could not be described is an error of ours.
+            $this->logger->error('An MCP tool call could not be put in the app activity log.', ['tool' => $tool->name, 'error' => $exception::class]);
         }
     }
 

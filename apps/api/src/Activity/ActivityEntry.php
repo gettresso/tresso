@@ -23,13 +23,16 @@ final readonly class ActivityEntry
     private const string ACTION = '#^([a-z]+(_[a-z]+)+|/api/v1(/([a-z_-]+|\{[a-zA-Z]+\}))+)$#';
     private const string METHOD = '/^(GET|HEAD|POST|PUT|PATCH|DELETE)$/';
     private const string OBJECT_TYPE = '/^[A-Z][A-Za-z]{0,63}$/';
-    private const string OBJECT_ID = '/^[A-Za-z0-9._-]{1,100}$/';
 
     public ?string $objectType;
     public ?string $objectId;
 
+    /** @var list<string> */
+    public array $missingScopes;
+
     /**
-     * @param list<string> $scopes the values of the scopes the action needed
+     * @param list<string> $scopes        the values of the scopes the action needed
+     * @param list<string> $missingScopes for a refusal for want of a permission: those the app lacked then
      */
     public function __construct(
         public Uuid $owner,
@@ -45,6 +48,7 @@ final readonly class ActivityEntry
         ?string $objectType = null,
         public bool $objectList = false,
         ?string $objectId = null,
+        array $missingScopes = [],
     ) {
         if (1 !== preg_match(self::ACTION, $action) || \strlen($action) > AppActivity::ACTION_MAX_LENGTH) {
             throw new \InvalidArgumentException('An activity action is a tool name or a route template.');
@@ -52,18 +56,41 @@ final readonly class ActivityEntry
         if ((ActivityChannel::Api === $channel) !== (null !== $method) || (null !== $method && 1 !== preg_match(self::METHOD, $method))) {
             throw new \InvalidArgumentException('An API request has its method; a tool call has none.');
         }
-        foreach ($scopes as $scope) {
+        foreach ([...$scopes, ...$missingScopes] as $scope) {
             if (null === Scope::tryFrom($scope)) {
                 throw new \InvalidArgumentException(\sprintf('"%s" is not a scope.', $scope));
             }
         }
-        // What does not have the shape of a resource name or an id is left out, not refused: the action is still logged.
+        $this->missingScopes = ActivityReason::NoPermission === $reason ? array_values(array_intersect($missingScopes, $scopes)) : [];
+        // What does not have the shape of a resource name is left out, not refused: the action is still logged. The id
+        // is kept only when it is a UUID, the only kind of id the API hands out: any other path text is the caller's
+        // own (`/smart-inboxes/call-0800-123456`) and must not show up in the user's log as if Tresso said it.
         $this->objectType = null !== $objectType && 1 === preg_match(self::OBJECT_TYPE, $objectType) ? $objectType : null;
-        $this->objectId = null !== $this->objectType && null !== $objectId && 1 === preg_match(self::OBJECT_ID, $objectId) ? $objectId : null;
+        $this->objectId = null !== $this->objectType && null !== $objectId && Uuid::isValid($objectId) ? Uuid::fromString($objectId)->toRfc4122() : null;
     }
 
     public function result(): ActivityResult
     {
         return $this->reason?->result() ?? ActivityResult::Done;
+    }
+
+    /**
+     * What makes repeats one entry: the same owner, app, way in, action, result and reason within a minute; within an
+     * hour for a refused token (expired or revoked), which a script may keep sending for days.
+     */
+    public function repeatKey(): string
+    {
+        $hourly = \in_array($this->reason, [ActivityReason::TokenExpired, ActivityReason::AccessRevoked], true);
+
+        return hash('sha256', implode('|', [
+            $this->owner->toRfc4122(),
+            $this->app->key(),
+            $this->channel->value,
+            $this->method ?? '',
+            $this->action,
+            $this->result()->value,
+            null === $this->reason ? '' : $this->reason->value,
+            $this->occurredAt->format($hourly ? 'Y-m-d H' : 'Y-m-d H:i'),
+        ]));
     }
 }
