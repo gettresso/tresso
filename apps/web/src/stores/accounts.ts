@@ -134,8 +134,13 @@ export const useAccountsStore = defineStore('accounts', () => {
     return auth.send<ProviderConnection>('POST', '/api/v1/provider-connections', answer)
   }
 
-  function suggest(emailAddress: string, signal?: AbortSignal): Promise<SuggestedServerSettings> {
-    return auth.api<SuggestedServerSettings>(`/api/v1/mail-server-settings?${new URLSearchParams({ emailAddress })}`, signal ? { signal } : {})
+  /**
+   * Looks up how an address connects. For an address of an import list, `importId` names the list: the API looks it up
+   * only once the user chose to use a list an app made.
+   */
+  function suggest(emailAddress: string, signal?: AbortSignal, importId?: string): Promise<SuggestedServerSettings> {
+    const query = new URLSearchParams(importId === undefined ? { emailAddress } : { emailAddress, importId })
+    return auth.api<SuggestedServerSettings>(`/api/v1/mail-server-settings?${query}`, signal ? { signal } : {})
   }
 
   /** Signs in to the servers of an account that is not created yet; nothing is stored. Takes up to half a minute. */

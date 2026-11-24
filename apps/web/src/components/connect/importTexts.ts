@@ -69,8 +69,16 @@ export function leftOutPill(left: LeftOutAddress): string {
   return left.reason === 'invalid' ? 'Not valid' : left.reason === 'duplicate' ? 'Listed twice' : 'Already connected'
 }
 
+/** As the board says it for an address it names itself, without a line: the API's list has no lines. */
 export function leftOutText(left: LeftOutAddress): string {
-  return `${left.message} It is left out.`
+  switch (left.reason) {
+    case 'duplicate':
+      return 'It is added once.'
+    case 'already_connected':
+      return 'This account is already in Tresso. It is left out.'
+    default:
+      return `${left.address.includes('@') ? 'The part after the @ is not complete.' : 'There is no @ in this address.'} It is left out unless you fix it.`
+  }
 }
 
 export function issuePill(issue: PastedIssue): string {
@@ -142,9 +150,15 @@ export function appName(app: string): string {
   return characters.length > 60 ? `${characters.slice(0, 60).join('')}\u2026` : characters.join('')
 }
 
-export function assistantNotice(app: string): string {
-  return `This list was made by ${appName(app)}. Check the addresses before you sign in.`
+/** `withToken`: made with a personal access token rather than by an app. */
+export function assistantNotice(app: string, withToken = false): string {
+  return `This list was made ${withToken ? 'with' : 'by'} ${appName(app)}. Check the addresses before you sign in.`
 }
+
+/** The tab the provider sent back, while it finishes the sign-in and hands it to the page that waits. */
+export const FINISHING = 'Finishing the sign-in\u2026'
+/** The tab the provider sent back for a sign-in the page that waited gave up (Stop, say). */
+export const STOPPED_SIGN_IN = 'This sign-in was stopped. Nothing was connected.'
 
 export const USE_ADDRESSES = 'Use these addresses'
 
@@ -153,7 +167,7 @@ export const SIGNED_OUT = 'The sign-in came back in a tab that is signed out of 
 /** The API answered a sign-in page without its state. */
 export const NO_STATE = 'The sign-in page could not be opened. Try again.'
 /** The browser did not open the provider's page (a blocked pop-up, a run without a tab to go on in). */
-export const BLOCKED_HINT = 'Your browser blocked the sign-in page. Choose Open the page again.'
+export const BLOCKED_HINT = 'The sign-in page did not open. Choose Open the page again.'
 
 export function keptLine(expiresAt: string): string {
   return `This list is kept for 24 hours, until ${listTime(expiresAt)}. You can leave and continue later: choose Add several accounts in Settings, Accounts.`
@@ -171,7 +185,7 @@ export function groupCount(done: number, total: number): string {
 
 /** Under servers typed by hand: where the password goes, named before it is typed. */
 export function passwordGoesTo(imap: string, smtp: string): string {
-  return imap === smtp ? `The password is sent to ${imap} only.` : `The password is sent to ${imap} and ${smtp} only.`
+  return imap === smtp ? `Tresso uses this password only to sign in at ${imap}.` : `Tresso uses this password only to sign in at ${imap} and ${smtp}.`
 }
 
 export function passwordLabel(address: string): string {
@@ -264,7 +278,7 @@ export function checkHint(problem: CheckProblem, server: { host: string; port: n
     case 'certificate':
       return `The security certificate of ${server.host} could not be verified.`
     case 'blocked':
-      return `Tresso may not connect to ${server.host}.`
+      return `Tresso does not connect to ${server.host}: it is a private address.`
     case 'failed':
       return `${server.host} did not answer like a mail server.`
     default:
@@ -299,7 +313,7 @@ export function stoppedReason(input: { state: RowState; address: string; provide
         case 'certificate':
           return `The security certificate of ${host} could not be verified. Nothing was connected for this address.`
         case 'blocked':
-          return `Tresso may not connect to ${host}. Nothing was connected for this address.`
+          return `Tresso does not connect to ${host}: it is a private address. Nothing was connected for this address.`
         case 'failed':
           return `${host} did not answer like a mail server. Nothing was connected for this address.`
         default:
@@ -325,7 +339,7 @@ export function soFar(connected: number, total: number): string {
  * nothing skipped and nothing there already, "All N accounts added".
  */
 export function doneTitle(added: number, total: number, skipped: number, already: number): string {
-  if (added === 0) return 'No accounts were added.'
+  if (added === 0) return 'No accounts added'
   if (skipped === 0 && already === 0) return total === 1 ? '1 account added' : `All ${total} accounts added`
   return plural(added, 'account added', 'accounts added')
 }
@@ -361,7 +375,7 @@ export function expiredMade(createdAt: string): string {
 
 export function expiredCounts(connected: number, rest: number): string {
   const kept = connected === 1 ? 'The 1 account you connected stays connected.' : `The ${connected} accounts you connected stay connected.`
-  const lost = rest === 1 ? 'The other 1 was not added.' : `The other ${rest} were not added.`
+  const lost = rest === 1 ? 'The other one was not added.' : `The other ${rest} were not added.`
   if (connected === 0) return rest === 1 ? 'The 1 account was not added.' : `The ${rest} accounts were not added.`
   return rest === 0 ? kept : `${kept} ${lost}`
 }
