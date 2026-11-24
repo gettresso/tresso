@@ -52,6 +52,14 @@ export const useAccountImportsStore = defineStore('accountImports', () => {
     return list
   }
 
+  /** The user checked the addresses of a list an app made and uses them. */
+  async function confirm(id: string): Promise<MailAccountImport> {
+    const generation = auth.generation
+    const list = await auth.send<MailAccountImport>('POST', `/api/v1/mail-account-imports/${encodeURIComponent(id)}/confirmation`, {})
+    if (generation === auth.generation && current.value?.id === id) current.value = list
+    return list
+  }
+
   async function remove(id: string): Promise<void> {
     await auth.send<void>('DELETE', `/api/v1/mail-account-imports/${encodeURIComponent(id)}`)
     lists.value = lists.value.filter((list) => list.id !== id)
@@ -67,5 +75,5 @@ export const useAccountImportsStore = defineStore('accountImports', () => {
     },
   )
 
-  return { lists, current, loadLists, load, create, mark, remove }
+  return { lists, current, loadLists, load, create, mark, confirm, remove }
 })

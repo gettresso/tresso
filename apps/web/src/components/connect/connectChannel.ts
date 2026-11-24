@@ -24,7 +24,14 @@ const OUTCOME_KEY = 'tresso.connect.outcome'
 /** How a sign-in the waiting tab started ended in the other tab. */
 export type HandedOver = { kind: 'result'; result: ProviderConnection } | { kind: 'signed-out' }
 
-type Message = { type: 'outcome'; state: string; outcome: HandedOver } | { type: 'taken'; state: string }
+/**
+ * `next`: the waiting tab goes on to another sign-in (Add several accounts, signing in to all one after another) and
+ * asks the tab that came back to open this provider page itself, since a page may only open a tab when clicked.
+ */
+type Message = { type: 'outcome'; state: string; outcome: HandedOver } | { type: 'taken'; state: string; next?: string | null }
+
+/** What a waiting tab answers when it takes an outcome: taken, and possibly a page for the returning tab to go on to. */
+export type Taking = boolean | Promise<false | { next: string | null }>
 
 interface Noted {
   state: string
@@ -126,21 +133,33 @@ export function takeNotedOutcome(state: string): HandedOver | null {
 }
 
 /**
- * Listens for outcomes other tabs report. `take` returns true for an outcome this tab was waiting for.
+ * Listens for outcomes other tabs report. `take` returns true for an outcome this tab was waiting for, or a promise of
+ * the page the returning tab is to go on to (false: not this tab's).
  *
  * @returns stops listening
  */
-export function listenForSignIns(take: (state: string, outcome: HandedOver) => boolean): () => void {
+export function listenForSignIns(take: (state: string, outcome: HandedOver) => Taking): () => void {
   const listener = channel()
   if (listener === null) return () => {}
+  let open = true
   listener.onmessage = (event: MessageEvent<Message>) => {
     const message = event.data
-    if (message?.type === 'outcome' && take(message.state, message.outcome)) {
-      write(OUTCOME_KEY, null)
+    if (message?.type !== 'outcome') return
+    const taking = take(message.state, message.outcome)
+    if (taking === false) return
+    write(OUTCOME_KEY, null)
+    if (taking === true) {
       listener.postMessage({ type: 'taken', state: message.state } satisfies Message)
+      return
     }
+    void taking.then((answer) => {
+      if (answer !== false && open) listener.postMessage({ type: 'taken', state: message.state, next: answer.next } satisfies Message)
+    })
   }
-  return () => listener.close()
+  return () => {
+    open = false
+    listener.close()
+  }
 }
 
 /**
@@ -149,20 +168,28 @@ export function listenForSignIns(take: (state: string, outcome: HandedOver) => b
  * @param waitMs how long to wait for a tab to take it
  * @returns whether a tab took it within the wait
  */
-export function handOver(state: string, outcome: HandedOver, waitMs = 1500): Promise<boolean> {
+export async function handOver(state: string, outcome: HandedOver, waitMs = 1500): Promise<boolean> {
+  return (await handOverAndGoOn(state, outcome, waitMs)).taken
+}
+
+/**
+ * Hands an outcome over like {@link handOver}, and says where the waiting tab wants this one to go on to (a provider page
+ * for the next sign-in), null when it is done with this tab.
+ */
+export function handOverAndGoOn(state: string, outcome: HandedOver, waitMs: number): Promise<{ taken: boolean; next: string | null }> {
   write(OUTCOME_KEY, { state, expiresAt: Date.now() + 15 * 60_000, outcome })
   const sender = channel()
-  if (sender === null) return Promise.resolve(false)
+  if (sender === null) return Promise.resolve({ taken: false, next: null })
 
   return new Promise((resolve) => {
-    const timer = setTimeout(() => finish(false), waitMs)
-    function finish(taken: boolean): void {
+    const timer = setTimeout(() => finish(false, null), waitMs)
+    function finish(taken: boolean, next: string | null): void {
       clearTimeout(timer)
       sender!.close()
-      resolve(taken)
+      resolve({ taken, next })
     }
     sender.onmessage = (event: MessageEvent<Message>) => {
-      if (event.data?.type === 'taken' && event.data.state === state) finish(true)
+      if (event.data?.type === 'taken' && event.data.state === state) finish(true, event.data.next ?? null)
     }
     sender.postMessage({ type: 'outcome', state, outcome } satisfies Message)
   })

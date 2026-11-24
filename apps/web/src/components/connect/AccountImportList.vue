@@ -9,7 +9,9 @@ import {
   ALREADY_HINT,
   approveHint,
   assistantNotice,
+  BLOCKED_HINT,
   CANCELLED_HINT,
+  checkHint,
   DONE,
   doneLine,
   doneTitle,
@@ -32,22 +34,24 @@ import {
   stoppedTitle,
   summaryLine,
   summaryTitle,
-  unreachableHint,
+  USE_ADDRESSES,
   waitingHint,
+  type CheckProblem,
 } from './importTexts'
 import { useAccountImport, type ImportRow } from './useAccountImport'
 
 /**
  * Step 2 of "Add several accounts" (the AddAccountsList and AddAccountsStates boards): the summary with its progress,
- * the rows grouped by how they sign in, one action per row, and the endings (all done, expired).
+ * the rows grouped by how they sign in, one action per row, and the endings (all done, expired). A list an app made
+ * shows only its addresses until the user chose "Use these addresses".
  */
 const props = defineProps<{ importId: string }>()
 const page = useAccountImport(toRef(props, 'importId'))
 const accounts = useAccountsStore()
 const router = useRouter()
 
-const nextButton = ref<HTMLButtonElement | null>(null)
-/** For screen readers: how the last row that changed stands now. */
+const root = ref<HTMLElement | null>(null)
+/** For screen readers: what just happened (a row that changed, a run that started or stopped). */
 const announcement = ref('')
 
 onMounted(async () => {
@@ -59,15 +63,24 @@ onMounted(async () => {
   }
 })
 
-const doneTotal = computed(() => page.total.value)
 const percent = computed(() => (page.total.value === 0 ? 0 : Math.round((page.connectedCount.value / page.total.value) * 100)))
 const currentRow = computed(() => page.rows.value.find((row) => row.id === page.current.value) ?? null)
 const stoppedRow = computed(() => page.rows.value.find((row) => row.id === page.stopped.value) ?? null)
-const addedGroups = computed(() =>
-  page.groups.value.map((group) => ({ title: GROUPS[group.group].title, count: group.done })).filter((group) => group.count > 0),
-)
+const addedGroups = computed(() => page.groups.value.map((group) => ({ title: GROUPS[group.group].title, count: group.added })).filter((group) => group.count > 0))
+
+/** How the row's last server check failed, with the server it names; null when its password was refused or not checked. */
+function checkProblem(row: ImportRow): { problem: CheckProblem; host: string; port: number } | null {
+  const check = page.checks.value[row.id]
+  if (check === undefined) return row.servers === null ? null : { problem: 'unreachable', host: row.servers.imap.host, port: row.servers.imap.port }
+  const imapFailed = check.result.imap !== 'ok' && check.result.imap !== 'not_checked'
+  const status = imapFailed ? check.result.imap : check.result.smtp
+  const server = imapFailed ? check.imap : check.smtp
+  const problem: CheckProblem = status === 'certificate' || status === 'blocked' || status === 'failed' ? status : 'unreachable'
+  return { problem, host: server.host, port: server.port }
+}
 
 function action(row: ImportRow): { label: string; run: () => void; toggle: boolean } | null {
+  if (!page.confirmed.value) return null
   const password = row.route?.kind === 'password'
   switch (row.view) {
     case 'todo':
@@ -77,11 +90,14 @@ function action(row: ImportRow): { label: string; run: () => void; toggle: boole
     case 'signing-in':
       return password ? { label: ROW_ACTIONS.cancel, run: () => page.cancelCheck(row.id), toggle: false } : null
     case 'waiting':
-      return { label: ROW_ACTIONS.openAgain, run: () => void page.openAgain(row.id), toggle: false }
+      return { label: ROW_ACTIONS.openAgain, run: () => page.openAgain(row.id), toggle: false }
     case 'cancelled':
     case 'approve':
+    case 'wrong':
     case 'failed':
-      return { label: ROW_ACTIONS.tryAgain, run: () => void page.signIn(row.id), toggle: false }
+      return password
+        ? { label: page.openRow.value === row.id ? ROW_ACTIONS.close : ROW_ACTIONS.enterPassword, run: () => page.toggleForm(row.id), toggle: true }
+        : { label: ROW_ACTIONS.tryAgain, run: () => void page.signIn(row.id), toggle: false }
     case 'refused':
       return { label: page.openRow.value === row.id ? ROW_ACTIONS.close : ROW_ACTIONS.enterPassword, run: () => page.toggleForm(row.id), toggle: true }
     case 'unreachable':
@@ -93,13 +109,18 @@ function action(row: ImportRow): { label: string; run: () => void; toggle: boole
   }
 }
 
+function providerOf(row: ImportRow) {
+  return row.route?.kind === 'oauth' ? row.route.provider : null
+}
+
 function hint(row: ImportRow): string | null {
+  if (!page.confirmed.value) return null
   const error = page.rowErrors.value[row.id]
   if (error) return error
-  const provider = row.route?.kind === 'oauth' ? row.route.provider : 'microsoft'
+  const provider = providerOf(row) ?? 'microsoft'
   switch (row.view) {
     case 'waiting':
-      return waitingHint(provider)
+      return page.blocked.value[row.id] ? BLOCKED_HINT : waitingHint(provider)
     case 'cancelled':
       return CANCELLED_HINT
     case 'approve':
@@ -107,12 +128,14 @@ function hint(row: ImportRow): string | null {
     case 'refused':
       return refusedHint(row.address)
     case 'unreachable': {
-      const server = page.unreachableServer(row)
-      return server === null ? null : unreachableHint(server)
+      const found = checkProblem(row)
+      return found === null ? null : checkHint(found.problem, found)
     }
     case 'already':
       return ALREADY_HINT
+    case 'wrong':
     case 'failed':
+    case 'failed-final':
       return failedHint(row.failure, provider)
     default:
       return null
@@ -122,9 +145,9 @@ function hint(row: ImportRow): string | null {
 const stoppedText = computed(() => {
   const row = stoppedRow.value
   if (row === null) return ''
-  const server = row.route?.kind === 'password' ? page.unreachableServer(row) : null
-  const provider = row.route?.kind === 'oauth' ? row.route.provider : null
-  return `${stoppedReason(row.view, row.address, server, row.failure, provider)} ${soFar(page.connectedCount.value, page.total.value)}`
+  const found = row.view === 'unreachable' ? checkProblem(row) : null
+  const reason = stoppedReason({ state: row.view, address: row.address, provider: providerOf(row), failure: row.failure, check: found, error: page.rowErrors.value[row.id] ?? null })
+  return `${reason} ${soFar(page.connectedCount.value, page.total.value)}`
 })
 
 const statusLine = computed(() => {
@@ -133,48 +156,91 @@ const statusLine = computed(() => {
   return runLine(page.mode.value, row.address, page.mode.value === 'all' ? (page.afterCurrent.value?.address ?? null) : null)
 })
 
-// Each row that changes is read out with its new state, so the progress of a run is heard.
+// Each row that changes is read out with its new state, and a run that starts or ends with its line.
 watch(
   () => page.rows.value.map((row) => `${row.id}:${row.view}`).join('|'),
   (now, before) => {
     if (before === undefined || before === '') return
     const old = new Map(before.split('|').map((part) => part.split(':') as [string, string]))
-    const changed = page.rows.value.find((row) => old.get(row.id) !== undefined && old.get(row.id) !== row.view)
+    // A row that starts waiting is said by the run line.
+    const changed = page.rows.value.find((row) => old.get(row.id) !== undefined && old.get(row.id) !== row.view && row.view !== 'waiting')
     if (changed) announcement.value = `${changed.address}: ${ROW_STATES[changed.view].label}`
   },
 )
-
-// After a row connected and nothing runs, "Next" has the focus: one keypress starts it.
 watch(
   () => page.mode.value,
-  async (now, before) => {
-    if (now === null && before !== null && page.stopped.value === null) {
-      await nextTick()
-      nextButton.value?.focus()
-    }
+  (now, before) => {
+    if ((now === null) !== (before === null)) announcement.value = statusLine.value
   },
 )
+
+/** Moves the focus to the first element the selector finds once the page has drawn. */
+async function focus(selector: string): Promise<void> {
+  await nextTick()
+  root.value?.querySelector<HTMLElement>(selector)?.focus()
+}
+
+// A run that stops at a row that did not connect: the notice's first action. A row that ended with nothing running:
+// "Next", so one keypress starts it.
+watch(
+  () => [page.mode.value, page.stopped.value] as const,
+  ([mode, stopped], [beforeMode]) => {
+    if (stopped !== null) void focus('.stopped button')
+    else if (mode === null && beforeMode !== null) void focus('.summary .next-button')
+  },
+)
+
+async function start(kind: 'next' | 'all'): Promise<void> {
+  await (kind === 'next' ? page.next() : page.signInAll())
+  // The button that was clicked is gone; Stop takes its place.
+  if (page.mode.value !== null) await focus('.summary .stop-button')
+}
+
+async function checkAndAdd(entryId: string, values: Parameters<typeof page.connectWithPassword>[1]): Promise<void> {
+  const connected = await page.connectWithPassword(entryId, values)
+  if (page.mode.value !== null || page.stopped.value !== null) return
+  if (connected) await focus('.summary .next-button, .ending a')
+  else await focus(`[data-row="${entryId}"] .row-action button`)
+}
+
+async function finish(): Promise<void> {
+  await page.finishWithoutRest()
+  await focus('.ending a')
+}
+
+async function goBack(): Promise<void> {
+  await page.goBackToSkipped()
+  await focus('.summary .next-button')
+}
+
+async function useAddresses(): Promise<void> {
+  await page.confirm()
+  await focus('.summary .next-button')
+}
 
 async function deleteList(): Promise<void> {
   if (await page.removeList()) await router.push({ name: 'settings-accounts' })
 }
+
+/** The second label of the lookup turns once the addresses are looked up. */
+const lookStage = computed(() => page.lookStage.value)
 </script>
 
 <template>
-  <div class="import">
+  <div ref="root" class="import">
     <header class="head">
-      <RouterLink :to="{ name: 'settings-accounts-import' }" class="back" :aria-label="LIST.back">
+      <RouterLink :to="{ name: 'settings-accounts-import', query: { from: importId } }" class="back" :aria-label="LIST.back">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
       </RouterLink>
       <div class="titles">
-        <h1>{{ LIST.title }}</h1>
+        <h2 class="title">{{ LIST.title }}</h2>
         <span class="lead">{{ LIST.lead }}</span>
       </div>
     </header>
 
     <p v-if="page.error.value" class="form-error" role="alert">{{ page.error.value }}</p>
 
-    <!-- The list has expired: it replaces the summary and the list. -->
+    <!-- The list is gone (expired, deleted, another user's): it replaces the summary and the list. -->
     <section v-if="page.status.value === 'missing'" class="card ending-card" aria-label="The list has expired">
       <div class="ending">
         <div class="ending-head">
@@ -199,16 +265,16 @@ async function deleteList(): Promise<void> {
       <section v-if="page.allDone.value" class="card ending-card" aria-label="All done">
         <div class="ending">
           <div class="ending-head">
-            <span class="ending-mark know"
+            <span class="ending-mark" :class="page.addedCount.value > 0 ? 'know' : 'quiet'"
               ><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg
             ></span>
             <span class="ending-titles">
-              <span class="ending-title">{{ doneTitle(page.connectedCount.value, doneTotal, page.skippedRows.value.length) }}</span>
-              <span class="ending-sub">{{ doneLine(page.skippedRows.value.length) }}</span>
+              <span class="ending-title">{{ doneTitle(page.addedCount.value, page.total.value, page.skippedRows.value.length, page.alreadyCount.value) }}</span>
+              <span v-if="doneLine(page.addedCount.value, page.skippedRows.value.length)" class="ending-sub">{{ doneLine(page.addedCount.value, page.skippedRows.value.length) }}</span>
             </span>
           </div>
-          <div class="ending-columns">
-            <div class="ending-column">
+          <div v-if="addedGroups.length > 0 || page.skippedRows.value.length > 0" class="ending-columns">
+            <div v-if="addedGroups.length > 0" class="ending-column">
               <span class="column-title">{{ DONE.added }}</span>
               <span v-for="group in addedGroups" :key="group.title" class="added"
                 ><span class="added-name">{{ group.title }}</span><span class="added-count">{{ group.count }}</span></span
@@ -222,28 +288,29 @@ async function deleteList(): Promise<void> {
           <span v-if="page.skippedRows.value.length > 0" class="small-note">{{ stillAddLine(page.list.value.expiresAt) }}</span>
           <div class="ending-actions">
             <RouterLink :to="{ name: 'settings-accounts' }" class="small primary">{{ DONE.done }}</RouterLink>
-            <button v-if="page.skippedRows.value.length > 0" type="button" class="small secondary" @click="page.goBackToSkipped()">{{ DONE.goBack }}</button>
+            <button v-if="page.skippedRows.value.length > 0" type="button" class="small secondary" @click="goBack">{{ DONE.goBack }}</button>
           </div>
         </div>
       </section>
 
       <template v-else>
-        <div v-if="page.showAssistantNotice.value && page.createdBy.value" role="status" class="assistant">
+        <div v-if="page.createdBy.value && (page.showAssistantNotice.value || !page.confirmed.value)" role="status" class="assistant">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9.5 17h-19z" /><path d="M12 10v4M12 17.5v.01" /></svg>
-          <span class="assistant-text">{{ assistantNotice(page.createdBy.value) }}</span>
+          <span class="assistant-text" :title="page.createdBy.value">{{ assistantNotice(page.createdBy.value) }}</span>
+          <button v-if="!page.confirmed.value" type="button" class="small primary" @click="useAddresses">{{ USE_ADDRESSES }}</button>
           <button type="button" class="small secondary" @click="deleteList">{{ LIST.deleteList }}</button>
         </div>
 
-        <section class="card summary" aria-labelledby="sum-title">
+        <section v-if="page.confirmed.value" class="card summary" aria-labelledby="sum-title">
           <div class="summary-head">
             <div class="summary-titles">
-              <h2 id="sum-title">{{ summaryTitle(page.connectedCount.value, page.total.value) }}</h2>
+              <h3 id="sum-title">{{ summaryTitle(page.connectedCount.value, page.total.value) }}</h3>
               <span class="summary-line">{{ summaryLine(page.failedCount.value, page.todoCount.value) }}</span>
             </div>
-            <button v-if="page.mode.value !== null" type="button" class="button-40 secondary" @click="page.stopAll()">{{ LIST.stop }}</button>
+            <button v-if="page.mode.value !== null" type="button" class="button-40 secondary stop-button" @click="page.stopAll()">{{ LIST.stop }}</button>
             <template v-else-if="page.nextRow.value && !page.looking.value">
-              <button ref="nextButton" type="button" class="button-40 secondary" @click="page.next()">{{ nextLabel(page.nextRow.value.address) }}</button>
-              <button type="button" class="button-40 primary" @click="page.signInAll()">{{ LIST.all }}</button>
+              <button type="button" class="button-40 secondary next-button" @click="start('next')">{{ nextLabel(page.nextRow.value.address) }}</button>
+              <button type="button" class="button-40 primary" @click="start('all')">{{ LIST.all }}</button>
             </template>
           </div>
           <div role="progressbar" class="bar" :aria-label="LIST.progressLabel" aria-valuemin="0" :aria-valuemax="page.total.value" :aria-valuenow="page.connectedCount.value">
@@ -259,31 +326,42 @@ async function deleteList(): Promise<void> {
             </div>
             <div class="stopped-actions">
               <button type="button" class="button-32 primary" @click="page.continueWithNext()">{{ LIST.continueNext }}</button>
-              <button type="button" class="button-32 secondary" @click="page.tryAgain()">{{ LIST.tryAgain }}</button>
+              <button v-if="stoppedRow.view !== 'failed-final' && stoppedRow.view !== 'already'" type="button" class="button-32 secondary" @click="page.tryAgain()">{{ LIST.tryAgain }}</button>
               <button v-if="stoppedRow.view === 'approve' && stoppedRow.approvalUrl" type="button" class="button-32 secondary" @click="page.copyApprovalLink(stoppedRow.id)">{{ LIST.copyApproval }}</button>
             </div>
           </div>
           <span v-else role="status" class="run-line">{{ statusLine }}</span>
         </section>
 
-        <section v-if="page.looking.value" class="card group" aria-label="Looking up the addresses">
-          <ConnectChecks :labels="[...LIST.looking]" :stage="0" />
+        <!-- A list an app made, before the user chose to use it: only its addresses. -->
+        <section v-if="!page.confirmed.value" class="card group" aria-label="Addresses">
+          <ul class="rows">
+            <li v-for="row in page.rows.value" :key="row.id" class="row">
+              <div class="row-line">
+                <span class="row-address">{{ row.address }}</span>
+              </div>
+            </li>
+          </ul>
+        </section>
+
+        <section v-else-if="page.looking.value" class="card group" aria-label="Looking up the addresses">
+          <ConnectChecks :labels="[...LIST.looking]" :stage="lookStage" />
         </section>
 
         <template v-else>
           <section v-for="group in page.groups.value" :key="group.group" class="card group" :aria-labelledby="`bulk-${group.group}`">
             <div class="group-head">
-              <ProviderMark :provider="GROUPS[group.group].mark" :size="32" />
+              <ProviderMark :provider="GROUPS[group.group].mark" :size="32" :font-size="15" />
               <div class="group-titles">
-                <h2 :id="`bulk-${group.group}`" class="group-title">{{ GROUPS[group.group].title }}</h2>
+                <h3 :id="`bulk-${group.group}`" class="group-title">{{ GROUPS[group.group].title }}</h3>
                 <span class="group-how">{{ GROUPS[group.group].how }}</span>
               </div>
               <span class="group-count">{{ groupCount(group.done, group.rows.length) }}</span>
             </div>
             <ul class="rows">
-              <li v-for="row in group.rows" :key="row.id" class="row">
+              <li v-for="row in group.rows" :key="row.id" class="row" :data-row="row.id">
                 <div class="row-line">
-                  <ProviderMark :provider="GROUPS[group.group].mark" :size="24" />
+                  <ProviderMark :provider="GROUPS[group.group].mark" :size="24" :font-size="12" />
                   <span class="row-who">
                     <span class="row-address">{{ row.address }}</span>
                     <span v-if="hint(row)" class="row-hint">{{ hint(row) }}</span>
@@ -329,7 +407,9 @@ async function deleteList(): Promise<void> {
                   :settings-shown="page.settingsShown.value[row.id] === true"
                   :busy="row.view === 'signing-in'"
                   :allow-unencrypted="accounts.allowUnencrypted"
-                  @submit="(values) => page.connectWithPassword(row.id, values)"
+                  :attempt="page.attempts.value[row.id] ?? 0"
+                  :focus-password="page.openedByRun.value"
+                  @submit="(values) => checkAndAdd(row.id, values)"
                   @show-settings="page.showSettings(row.id)"
                 />
               </li>
@@ -342,7 +422,7 @@ async function deleteList(): Promise<void> {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
             <span>{{ keptLine(page.list.value.expiresAt) }}</span>
           </span>
-          <button type="button" class="button-36 secondary" @click="page.finishWithoutRest()">{{ LIST.finish }}</button>
+          <button v-if="page.confirmed.value" type="button" class="button-36 secondary" @click="finish">{{ LIST.finish }}</button>
         </section>
       </template>
     </template>
@@ -383,12 +463,10 @@ async function deleteList(): Promise<void> {
   flex-direction: column;
   gap: 2px;
 }
-h1 {
+.title {
   margin: 0;
-  font-family: var(--font-display);
-  font-size: 28px;
-  line-height: 34px;
-  font-weight: 700;
+  font-size: 20px;
+  line-height: 28px;
 }
 .lead {
   font-size: 14px;
@@ -396,6 +474,7 @@ h1 {
 }
 .card {
   box-sizing: border-box;
+  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--paper);
 }
@@ -471,6 +550,7 @@ h1 {
   align-items: center;
   gap: 10px 12px;
   padding: 12px 14px;
+  border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--delegate-soft);
 }
@@ -480,6 +560,8 @@ h1 {
 }
 .assistant-text {
   flex: 1 1 280px;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 20px;
   color: var(--ink);
@@ -506,7 +588,7 @@ h1 {
   flex-direction: column;
   gap: 2px;
 }
-.summary h2 {
+.summary h3 {
   margin: 0;
   font-size: 18px;
   line-height: 24px;

@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { guessedServers, type ServerSettings } from '@tresso/core'
 import { fieldErrors, manualSchema, serverErrors } from '@/forms/accounts'
 import ServerFields from '@/components/ServerFields.vue'
-import { domainOf, LIST, passwordLabel } from './importTexts'
+import { domainOf, LIST, passwordGoesTo, passwordLabel } from './importTexts'
 import type { ImportRow, PasswordValues } from './useAccountImport'
 
 /**
  * The password form of one row of the list (the AddAccountsList board): the server settings that were found, the
  * username and a password field marked up as a sign-in form, so a password manager offers the entry of this address.
- * "Change settings" (and a row without found settings) shows the servers to change.
+ * "Change settings" (and a row without found settings) shows the servers to change, and then names where the password
+ * goes before it is typed. Each new try (`attempt`) starts with an empty password field; a run that opens the row puts
+ * the cursor there (`focusPassword`).
  */
-const props = defineProps<{ row: ImportRow; settingsShown: boolean; busy: boolean; allowUnencrypted: boolean }>()
+const props = defineProps<{ row: ImportRow; settingsShown: boolean; busy: boolean; allowUnencrypted: boolean; attempt: number; focusPassword: boolean }>()
 const emit = defineEmits<{ submit: [values: PasswordValues]; showSettings: [] }>()
 
 const start = props.row.servers ?? guessedServers(domainOf(props.row.address))
@@ -20,6 +22,17 @@ const smtp = ref<ServerSettings>({ ...start.smtp })
 const username = ref(props.row.username)
 const password = ref('')
 const errors = ref<Record<string, string>>({})
+const passwordField = ref<HTMLInputElement | null>(null)
+
+watch(
+  () => props.attempt,
+  () => {
+    password.value = ''
+  },
+)
+onMounted(() => {
+  if (props.focusPassword) passwordField.value?.focus()
+})
 
 /** The servers are shown to change when asked for, or when none were found. */
 const editing = computed(() => props.settingsShown || props.row.servers === null)
@@ -50,6 +63,7 @@ function submit(): void {
     <template v-else>
       <ServerFields v-model="imap" protocol="imap" title="Incoming mail" :errors="serverErrors(errors, 'imap')" :allow-unencrypted="allowUnencrypted" />
       <ServerFields v-model="smtp" protocol="smtp" title="Outgoing mail" :errors="serverErrors(errors, 'smtp')" :allow-unencrypted="allowUnencrypted" />
+      <p v-if="imap.host && smtp.host" class="goes-to">{{ passwordGoesTo(imap.host, smtp.host) }}</p>
     </template>
     <div class="fields">
       <div class="field-box">
@@ -70,7 +84,7 @@ function submit(): void {
       </div>
       <div class="field-box">
         <label :for="`bulk-password-${row.id}`" class="field-label">{{ passwordLabel(row.address) }}</label>
-        <input :id="`bulk-password-${row.id}`" v-model="password" type="password" name="password" autocomplete="current-password" maxlength="1024" class="input password" :aria-invalid="errors.password ? 'true' : undefined" />
+        <input :id="`bulk-password-${row.id}`" ref="passwordField" v-model="password" type="password" name="password" autocomplete="current-password" maxlength="1024" class="input password" :aria-invalid="errors.password ? 'true' : undefined" />
         <small v-if="errors.password" class="error" role="alert">{{ errors.password }}</small>
       </div>
       <button type="submit" class="add" :disabled="busy">{{ LIST.checkAndAdd }}</button>
@@ -172,6 +186,12 @@ function submit(): void {
 .add:disabled {
   opacity: 0.55;
   cursor: default;
+}
+.goes-to {
+  margin: 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--ink);
 }
 .note {
   font-size: 12px;

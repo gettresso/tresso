@@ -1,29 +1,42 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
-import { readPastedAddresses } from '@tresso/core'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { readPastedAddresses, type LeftOutAddress, type PastedIssue } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
 import { useAccountImportsStore } from '@/stores/accountImports'
 import { useAccountsStore } from '@/stores/accounts'
-import { checkLead, checkTitle, continueLabel, countLine, issuePill, issueText, LIMIT, limitLabel, overLine, PASTE } from './importTexts'
+import { checkLead, checkTitle, continueLabel, countLine, issuePill, issueText, leftOutPill, leftOutText, LIMIT, limitLabel, overLine, PASTE } from './importTexts'
 
 /**
  * Step 1 of "Add several accounts" (the AddAccountsPaste board): paste the addresses, see what needs a look, and make
  * the list. Nothing is connected here. Addresses that are not valid or already connected are left out, an address
  * listed twice is added once; above 50 the list cannot be made.
+ *
+ * Back from a list ("Back to the addresses", `?from=<id>`), the box holds that list's addresses not connected yet, and
+ * Continue replaces that list with the new one, so no list is left behind. Addresses the API left out after all are
+ * named here as well, and Continue then opens the list made of the rest.
  */
 const accounts = useAccountsStore()
 const imports = useAccountImportsStore()
+const route = useRoute()
 const router = useRouter()
 
 const text = ref('')
 const busy = ref(false)
 const failure = ref<string | null>(null)
+/** The list this one replaces (back from a list), or the list made already when the API left addresses out. */
+const replaces = ref<string | null>(null)
+const made = ref<{ id: string; leftOut: LeftOutAddress[]; text: string } | null>(null)
 
 const connected = computed(() => accounts.accounts.map((account) => account.emailAddress.toLowerCase()))
 const read = computed(() => readPastedAddresses(text.value, connected.value))
 const over = computed(() => read.value.toAdd.length > LIMIT)
 const canContinue = computed(() => read.value.toAdd.length > 0 && !over.value)
+/** What needs a look: what the box shows, then what the API left out of the list it made. */
+const issues = computed<{ address: string; pill: string; text: string; kind: PastedIssue['kind'] }[]>(() => [
+  ...read.value.issues.map((issue) => ({ address: issue.address, pill: issuePill(issue), text: issueText(issue), kind: issue.kind })),
+  ...(made.value !== null && made.value.text === text.value ? made.value.leftOut : []).map((left) => ({ address: left.address, pill: leftOutPill(left), text: leftOutText(left), kind: left.reason === 'invalid' ? ('invalid' as const) : left.reason === 'duplicate' ? ('twice' as const) : ('connected' as const) })),
+])
 
 onMounted(async () => {
   if (!accounts.loaded) {
@@ -33,15 +46,46 @@ onMounted(async () => {
       // Without the list an address connected already is not named here; the API leaves it out all the same.
     }
   }
+  const from = typeof route.query.from === 'string' ? route.query.from : null
+  if (from !== null) {
+    try {
+      const list = await imports.load(from)
+      text.value = list.entries.filter((entry) => entry.state !== 'connected' && entry.state !== 'already_connected').map((entry) => entry.address).join('\n')
+      replaces.value = list.id
+    } catch {
+      // A list that is gone leaves the box empty.
+    }
+  }
 })
 
-/** Makes the list of the addresses to add and opens it. */
+// A change to the box after the API left addresses out makes a new list on Continue, which replaces that one.
+watch(text, () => {
+  if (made.value !== null && made.value.text !== text.value) replaces.value = made.value.id
+})
+
+/** Makes the list of the addresses to add (in place of the one it replaces) and opens it. */
 async function submit(): Promise<void> {
   if (!canContinue.value || busy.value) return
+  if (made.value !== null && made.value.text === text.value) {
+    await router.push({ name: 'settings-accounts-import', params: { importId: made.value.id } })
+    return
+  }
   busy.value = true
   failure.value = null
   try {
+    if (replaces.value !== null) {
+      try {
+        await imports.remove(replaces.value)
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 404)) throw e
+      }
+      replaces.value = null
+    }
     const list = await imports.create(read.value.toAdd.map((address) => ({ address })))
+    if (list.leftOut.length > 0) {
+      made.value = { id: list.id, leftOut: list.leftOut, text: text.value }
+      return
+    }
     await router.push({ name: 'settings-accounts-import', params: { importId: list.id } })
   } catch (e) {
     failure.value = e instanceof ApiError && Object.keys(e.violations).length > 0 ? Object.values(e.violations).join(' ') : errorMessage(e)
@@ -58,7 +102,7 @@ async function submit(): Promise<void> {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
       </RouterLink>
       <div class="titles">
-        <h1>{{ PASTE.title }}</h1>
+        <h2 class="title">{{ PASTE.title }}</h2>
         <span class="lead">{{ PASTE.lead }}</span>
       </div>
     </header>
@@ -83,17 +127,17 @@ async function submit(): Promise<void> {
       </section>
 
       <section class="card check" aria-labelledby="check-title">
-        <h2 id="check-title">{{ checkTitle(read) }}</h2>
-        <span class="check-lead">{{ checkLead(read) }}</span>
-        <div v-for="(issue, index) in read.issues" :key="`${issue.line}-${index}`" class="issue">
+        <h3 id="check-title">{{ checkTitle(read, issues.length) }}</h3>
+        <span class="check-lead">{{ checkLead(read, issues.length) }}</span>
+        <div v-for="(issue, index) in issues" :key="`${issue.address}-${index}`" class="issue">
           <span class="issue-head">
             <span class="issue-address">{{ issue.address }}</span>
             <span class="pill" :class="issue.kind">
               <svg v-if="issue.kind === 'connected'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
-              {{ issuePill(issue) }}</span
+              {{ issue.pill }}</span
             >
           </span>
-          <span class="issue-text">{{ issueText(issue) }}</span>
+          <span class="issue-text">{{ issue.text }}</span>
         </div>
       </section>
     </div>
@@ -104,7 +148,7 @@ async function submit(): Promise<void> {
         <span>{{ PASTE.nothingConnected }}</span>
       </span>
       <RouterLink :to="{ name: 'settings-accounts' }" class="cancel">{{ PASTE.cancel }}</RouterLink>
-      <button v-if="canContinue" type="button" class="primary" :disabled="busy" @click="submit">{{ continueLabel(read) }}</button>
+      <button v-if="canContinue" type="button" class="primary" :disabled="busy" @click="submit">{{ continueLabel(read, made !== null && made.text === text ? made.leftOut.length : 0) }}</button>
       <button v-else type="button" class="off" disabled aria-disabled="true">{{ PASTE.continue }}</button>
     </section>
   </div>
@@ -142,12 +186,10 @@ async function submit(): Promise<void> {
   flex-direction: column;
   gap: 2px;
 }
-h1 {
+.title {
   margin: 0;
-  font-family: var(--font-display);
-  font-size: 28px;
-  line-height: 34px;
-  font-weight: 700;
+  font-size: 20px;
+  line-height: 28px;
 }
 .lead {
   font-size: 14px;
@@ -161,6 +203,7 @@ h1 {
 }
 .card {
   box-sizing: border-box;
+  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--paper);
 }
@@ -242,7 +285,7 @@ h1 {
   min-width: 0;
   padding: 18px 20px;
 }
-h2 {
+h3 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;

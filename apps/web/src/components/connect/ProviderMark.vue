@@ -2,11 +2,11 @@
 import { PROVIDERS, type ProviderChoice } from './providers'
 
 /** A provider's round mark: its letter on its own color. */
-defineProps<{ provider: ProviderChoice; size?: number }>()
+defineProps<{ provider: ProviderChoice; size?: number; /** The letter's size when it is not in proportion to the mark. */ fontSize?: number }>()
 </script>
 
 <template>
-  <span class="provider-mark" :class="provider" :style="{ width: `${size ?? 40}px`, height: `${size ?? 40}px`, fontSize: `${Math.round((size ?? 40) * 0.42)}px` }" aria-hidden="true">{{
+  <span class="provider-mark" :class="provider" :style="{ width: `${size ?? 40}px`, height: `${size ?? 40}px`, fontSize: `${fontSize ?? Math.round((size ?? 40) * 0.42)}px` }" aria-hidden="true">{{
     PROVIDERS[provider].mark
   }}</span>
 </template>
