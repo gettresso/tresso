@@ -238,6 +238,24 @@ describe('Settings, Apps, Activity log', () => {
     expect(queries[0]!.toString()).toBe('period=90d&app=client%3Achatgpt')
   })
 
+  it('names the list of accounts an assistant made, by its id', async () => {
+    const made: AppActivityEntry = {
+      ...REFUSED,
+      id: 'e6',
+      action: { name: 'add_mail_accounts', title: 'Make a list of mail accounts to add' },
+      kind: 'change',
+      result: 'done',
+      reason: null,
+      permissions: [{ scope: 'settings:write', label: 'Change settings', held: true }],
+      object: { type: 'MailAccountImport', label: 'List of accounts to add', list: false, id: '0190b4a0-0000-7000-8000-0000000000aa', several: false },
+    }
+    answer = () => ({ items: [made], nextCursor: null, apps: [], empty: false })
+    const wrapper = await page()
+    expect(wrapper.get('tbody tr').findAll('td')[2]!.text()).toBe('Make a list of mail accounts to addadd_mail_accounts')
+    await wrapper.get('button.toggle').trigger('click')
+    expect(wrapper.get('.detail-row').findAll('.fact')[1]!.text()).toBe('What it touchedList of accounts to add0190b4a0-0000-7000-8000-0000000000aa')
+  })
+
   it('says when repeats touched several objects', async () => {
     answer = () => ({ items: [{ ...LISTED, object: { type: 'SmartInbox', label: 'Smart inbox', list: false, id: null, several: true } }], nextCursor: null, apps: [], empty: false })
     const wrapper = await page()
