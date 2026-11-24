@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { importOrder, importRoute, importServers, nextImportRow, readPastedAddresses, type ImportEntryState, type ImportRoute } from './accountImports'
+import fixture from '../../../apps/api/tests/Fixtures/import-addresses.json'
+import { importAddress, importOrder, importRoute, importServers, nextImportRow, readPastedAddresses, type ImportEntryState, type ImportRoute } from './accountImports'
 import type { SuggestedServerSettings } from './accounts'
 
 function suggestion(provider: SuggestedServerSettings['provider'], found = provider !== null): SuggestedServerSettings {
@@ -35,6 +36,27 @@ describe('readPastedAddresses', () => {
     ])
     expect(read.toAdd).toEqual(['anna@company.example', 'sales@company.example'])
     expect([read.total, read.already, read.invalid, read.twice]).toEqual([6, 1, 2, 1])
+  })
+
+  it('strips <>, quotes, mailto: and a dot ending a sentence, and reads "Name <address>" as the address', () => {
+    const read = readPastedAddresses('<kim@company.example>\r\n"anna@company.example"\rmailto:bob@company.example, lisa@company.example.\nKim Visser <kim.visser@company.example>; \'eva@company.example\'', [])
+
+    expect(read.toAdd).toEqual(['kim@company.example', 'anna@company.example', 'bob@company.example', 'lisa@company.example', 'kim.visser@company.example', 'eva@company.example'])
+    expect(read.issues).toEqual([])
+    expect(readPastedAddresses('a@company.example\r\nnope', []).issues).toEqual([{ kind: 'invalid', address: 'nope', line: 2, noAt: true }])
+  })
+
+  it('counts more than 50 all the same', () => {
+    const read = readPastedAddresses(Array.from({ length: 60 }, (_, i) => `p${i}@company.example`).join('\n'), [])
+
+    expect(read.toAdd).toHaveLength(60)
+    expect(read.total).toBe(60)
+  })
+
+  it('agrees with the API on what is an address (the shared cases, as a list made in Tresso)', () => {
+    for (const { input, firstParty } of fixture.cases) {
+      expect(importAddress(input), input).toBe(firstParty)
+    }
   })
 
   it('counts a connected address given twice as listed twice', () => {
