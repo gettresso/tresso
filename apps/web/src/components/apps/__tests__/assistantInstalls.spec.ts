@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { appInitials } from '../appMarks'
+import { ASSISTANT_ICONS } from '../assistantIcons'
 import { checkedEndpoint, claudeCodeCommand, cursorInstallLink, installs } from '../assistantInstalls'
 
 describe('assistant installs', () => {
@@ -33,6 +34,17 @@ describe('assistant installs', () => {
     const none = installs(null)
     expect(none.find((item) => item.id === 'claude-code')!.command).toBeUndefined()
     expect(none.find((item) => item.id === 'cursor')!.url).toBeUndefined()
+  })
+
+  it('has a one-path logo for every listed assistant, and none for Other', () => {
+    const ids = installs(null).map((item) => item.id)
+    expect(Object.keys(ASSISTANT_ICONS).sort()).toEqual(ids.filter((id) => id !== 'other').sort())
+    for (const icon of Object.values(ASSISTANT_ICONS)) {
+      // A single path in the 24x24 box: drawing commands and numbers only.
+      expect(icon.path).toMatch(/^[MmLlHhVvCcSsQqTtAaZz0-9.,\s-]+$/)
+      expect(['#D97757', '#007ACC', 'currentColor']).toContain(icon.color)
+    }
+    expect(installs(null).every((item) => !('mark' in item))).toBe(true)
   })
 
   it('marks an app with two letters', () => {

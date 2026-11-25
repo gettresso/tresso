@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { activeText, ASSISTANT_SCOPES, recentText, recentTime, recentTool, shortDay, type AppActivityEntry, type ConnectedApp, type ServerInfo } from '@tresso/core'
 import { errorMessage } from '@/api/errors'
 import { appInitials } from '@/components/apps/appMarks'
+import { ASSISTANT_ICONS } from '@/components/apps/assistantIcons'
 import { checkedEndpoint, installs, type InstallId } from '@/components/apps/assistantInstalls'
 import { backdropClose } from '@/components/backdropClose'
 import LogoLoader from '@/components/LogoLoader.vue'
@@ -311,7 +312,10 @@ watch(
             @click="pick(item.id)"
             @keydown="onTileKey($event, index)"
           >
-            <span class="tile-mark" aria-hidden="true">{{ item.mark }}</span>
+            <span class="tile-mark" aria-hidden="true">
+              <svg v-if="item.id !== 'other'" width="16" height="16" viewBox="0 0 24 24" :fill="ASSISTANT_ICONS[item.id].color"><path :d="ASSISTANT_ICONS[item.id].path"></path></svg>
+              <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+            </span>
             <span class="tile-text">
               <span class="tile-name">{{ item.name }}</span>
               <span class="tile-effort">{{ item.effort }}</span>
@@ -376,6 +380,7 @@ watch(
           <p v-if="clients.length === 0" class="clients-empty">No connected assistants or apps. When an assistant or app asks to use your Tresso and you allow it, it shows up here.</p>
           <p v-else class="clients-warning">Tresso has not checked these apps: disconnect any you do not recognize.</p>
           <button v-for="app in clients" :key="app.id" type="button" class="client" :aria-pressed="selected?.id === app.id ? 'true' : 'false'" @click="select(app)">
+            <!-- Initials, never a logo: an OAuth app picks its own name, so a logo by name would let any app pose as Claude. -->
             <span class="client-mark" aria-hidden="true">{{ appInitials(app.name) }}</span>
             <span class="client-text">
               <span class="client-name">{{ app.name }}</span>
@@ -551,11 +556,23 @@ h3 {
   text-align: left;
   cursor: pointer;
 }
+/* A chosen card, as elsewhere in the app: the selected tint with a 1px ring in the focus colour. */
 .tile[aria-selected='true'] {
-  background: var(--canvas);
-  box-shadow: inset 0 0 0 1.5px var(--ink);
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--focus);
 }
-.tile-mark,
+.tile-mark {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink);
+}
 .client-mark {
   display: flex;
   flex-shrink: 0;
@@ -728,8 +745,8 @@ h3 {
   cursor: pointer;
 }
 .client[aria-pressed='true'] {
-  background: var(--canvas);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--focus);
 }
 .client .client-mark {
   width: 32px;
