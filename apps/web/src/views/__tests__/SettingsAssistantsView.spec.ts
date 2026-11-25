@@ -186,6 +186,28 @@ describe('Settings, Apps, AI assistants', () => {
     }
   })
 
+  it('marks each assistant to add with its own logo, the first one chosen, and Other with a plus', async () => {
+    const { wrapper } = await page()
+    const tabs = wrapper.findAll('[role="tab"]')
+    expect(tabs.map((tab) => tab.attributes('aria-selected'))).toEqual(['true', 'false', 'false', 'false', 'false', 'false'])
+    const marks = tabs.map((tab) => tab.get('.tile-mark'))
+    for (const mark of marks) {
+      expect(mark.attributes('aria-hidden')).toBe('true')
+      expect(mark.text()).toBe('')
+      expect(mark.findAll('svg')).toHaveLength(1)
+    }
+    // The five products: a filled logo, in its brand colour or the text colour.
+    expect(marks.slice(0, 5).map((mark) => mark.get('svg').attributes('fill'))).toEqual(['#D97757', '#D97757', 'currentColor', '#007ACC', 'currentColor'])
+    for (const mark of marks.slice(0, 5)) expect(mark.get('path').attributes('d')!.length).toBeGreaterThan(100)
+    // Other: a stroked plus.
+    const plus = marks[5]!.get('svg')
+    expect(plus.attributes('fill')).toBe('none')
+    expect(plus.attributes('stroke')).toBe('currentColor')
+    expect(plus.get('path').attributes('d')).toBe('M12 5v14M5 12h14')
+    // The tile's name stays its text.
+    expect(tabs[2]!.text()).toBe('CursorOne click')
+  })
+
   it('copies the endpoint and says so', async () => {
     const { wrapper } = await page()
     await wrapper.get('.copy-plain').trigger('click')
@@ -211,6 +233,9 @@ describe('Settings, Apps, AI assistants', () => {
     const { wrapper } = await page()
     expect(wrapper.get('#clients-title').text()).toBe('Connected assistants and apps')
     expect(wrapper.findAll('.client .client-name').map((name) => name.text())).toEqual(['Claude', 'Cursor'])
+    // A connected app names itself, so it keeps its initials and never gets a logo by its name.
+    expect(wrapper.findAll('.client .client-mark').map((mark) => mark.text())).toEqual(['CL', 'CU'])
+    expect(wrapper.find('.client .client-mark svg').exists()).toBe(false)
     expect(wrapper.findAll('.client .client-meta').map((meta) => meta.text())).toEqual(['Active 4 min ago', 'Never used'])
     expect(wrapper.get('#client-title').text()).toBe('Claude')
     expect(wrapper.get('.detail-text .sub').text()).toBe('Connected 2 Sep by you.')

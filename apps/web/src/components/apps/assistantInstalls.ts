@@ -18,7 +18,6 @@ export type InstallId = 'claude' | 'claude-code' | 'cursor' | 'vscode' | 'chatgp
 export interface Install {
   id: InstallId
   name: string
-  mark: string
   effort: string
   kind: 'link' | 'command' | 'steps'
   title: string
@@ -84,7 +83,6 @@ export function installs(endpoint: string | null): Install[] {
     {
       id: 'claude',
       name: 'Claude',
-      mark: 'CL',
       effort: 'A few steps',
       kind: 'steps',
       title: 'Add Tresso to Claude',
@@ -94,7 +92,6 @@ export function installs(endpoint: string | null): Install[] {
     {
       id: 'claude-code',
       name: 'Claude Code',
-      mark: 'CC',
       effort: 'One command',
       kind: 'command',
       title: 'Add Tresso to Claude Code',
@@ -104,7 +101,6 @@ export function installs(endpoint: string | null): Install[] {
     {
       id: 'cursor',
       name: 'Cursor',
-      mark: 'CU',
       effort: 'One click',
       kind: 'link',
       button: 'Add to Cursor',
@@ -115,7 +111,6 @@ export function installs(endpoint: string | null): Install[] {
     {
       id: 'vscode',
       name: 'VS Code',
-      mark: 'VS',
       effort: 'A few steps',
       kind: 'steps',
       title: 'Add Tresso to VS Code',
@@ -125,7 +120,6 @@ export function installs(endpoint: string | null): Install[] {
     {
       id: 'chatgpt',
       name: 'ChatGPT',
-      mark: 'CG',
       effort: 'A few steps',
       kind: 'steps',
       title: 'Add Tresso to ChatGPT',
@@ -135,7 +129,6 @@ export function installs(endpoint: string | null): Install[] {
     {
       id: 'other',
       name: 'Other',
-      mark: '+',
       effort: 'A few steps',
       kind: 'steps',
       title: 'Add Tresso to another AI tool',
