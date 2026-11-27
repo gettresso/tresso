@@ -394,6 +394,39 @@ describe('the WhatsApp relay store', () => {
     expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBeNull()
   })
 
+  it('does not start the relay on a new store whose id could not be checked (busy), and tries again', async () => {
+    shell.storeId = 'store-old'
+    shell.add('A1', DIRECT, 60)
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.emit(LINKED)
+    await pass()
+    await importDone(wa)
+
+    shell.emit({ ...RUNNING, link: 'waiting_for_scan', qr: ['1'.repeat(29)] })
+    await pass()
+    shell.rows = []
+    shell.storeId = 'store-new'
+    shell.add('A1', DIRECT, 61)
+    shell.add('G1', GROUP, 45)
+    // The history sync writes: every read is busy for a while.
+    shell.readFails = 'busy'
+    shell.emit(LINKED)
+    await pass(30_000)
+    expect(wa.relayRunning).toBe(false)
+    // From the third try on, Settings says reading fails for now.
+    expect(wa.relayFailing).toBe('read')
+    expect(JSON.parse((await store.chatMeta(LOCAL_CURSOR))!)).toMatchObject({ storeId: 'store-old' })
+
+    shell.readFails = null
+    await pass(60_000)
+    expect(wa.relayRunning).toBe(true)
+    await importDone(wa)
+    // The rule held after all: the chat never seen arrives read.
+    expect(await unread(GROUP)).toBe(0)
+    expect(JSON.parse((await store.chatMeta(LOCAL_CURSOR))!)).toMatchObject({ storeId: 'store-new' })
+  })
+
   it('keeps a chat left out out across a store change', async () => {
     shell.storeId = 'store-old'
     shell.add('G1', GROUP, 60)

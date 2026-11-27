@@ -55,6 +55,8 @@ export interface BridgeState {
   /** The QR code to scan: one string of `0` (light) and `1` (dark) per row, quiet zone included. */
   qr: string[] | null
   error: BridgeFailure | null
+  /** Stopped after an unexpected exit with a restart planned (the shell's backoff): not a failure yet. */
+  restarting?: boolean
 }
 
 export interface WhatsAppConfig {

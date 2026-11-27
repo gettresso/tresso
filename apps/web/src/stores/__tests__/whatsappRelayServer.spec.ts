@@ -696,50 +696,83 @@ describe('the WhatsApp relay store in "All my devices"', () => {
   })
 
   it('takes up a new store in "All my devices": what the server holds comes back known, the history marked read', async () => {
+    const OTHER = '31687654321@s.whatsapp.net'
     shell.storeId = 'store-old'
     const wa = await relayedHere()
     shell.add('A1', DIRECT, 60)
     shell.add('A2', DIRECT, 50)
+    shell.add('G1', GROUP, 55)
     shell.emit(LINKED)
     await pass(3_000)
     await pass(70_000)
     await mail.syncNow()
     await pass()
     expect(wa.importState).toBe('done')
+    // A group message that came live and was not read: the group has real unread messages.
+    shell.add('G2', GROUP, 0)
+    await pass(3_000)
+    await mail.syncNow()
+    await pass()
+    const groupBefore = server.chats.get(GROUP)!
+    const g2 = [...server.messages.values()].find((message) => message.waId === 'G2')!
+    expect(groupBefore.readThrough === null || Date.parse(groupBefore.readThrough) < Date.parse(g2.sentAt)).toBe(true)
     expect(readRelayCursor((await store.chatMeta(serverCursorKey(ACCOUNT_ID)))!)).toMatchObject({ storeId: 'store-old', firstImport: null })
     const stored = server.messages.size
 
-    // The phone links anew: a new store, the history synced again, a chat the server never had, then a message after.
+    // The phone links anew: a new store; the history sync brings the old rows again and a direct chat the server never
+    // had, and goes on bringing history after the link; then one message after the link.
     shell.emit({ ...RUNNING, link: 'waiting_for_scan', qr: ['1'.repeat(29)] })
     await pass()
     shell.rows = []
     shell.storeId = 'store-new'
-    shell.add('A1', DIRECT, 61)
-    shell.add('A2', DIRECT, 51)
-    shell.add('G1', GROUP, 45)
+    shell.add('A1', DIRECT, 62)
+    shell.add('A2', DIRECT, 52)
+    shell.add('G1', GROUP, 57)
+    shell.add('O1', OTHER, 47)
     const before = batches().length
     shell.emit(LINKED)
     await pass(3_000)
+    await mail.syncNow()
+    await pass()
+    // History still arriving well after the relay began (more than the new store's first rows).
+    const late = [2, 3, 4].map((i) => `3161111111${i}@s.whatsapp.net`)
+    for (const [index, jid] of late.entries()) {
+      await pass(20_000)
+      // History of chats that come in only now, long after the relay passed the new store's first rows.
+      shell.add(`L${index}`, jid, 50 + index)
+      await mail.syncNow()
+      await pass()
+    }
     vi.setSystemTime(Date.now() + 60_000)
     shell.add('A3', DIRECT, 0)
     await pass(3_000)
-    await mail.syncNow()
-    await pass()
-    await mail.syncNow()
-    await pass()
+    // Quiet for a minute: the new store's first import ends, and with it the mark.
+    await pass(70_000)
+    for (let i = 0; i < 3; i++) {
+      await mail.syncNow()
+      await pass()
+    }
 
-    const reread = batches().slice(before)
-    // Live batches only (a first import may not follow live ones on the server); the known rows store nothing twice.
-    expect(reread.every((batch) => !batch.firstImport)).toBe(true)
-    expect(server.messages.size).toBe(stored + 2)
-    expect(readRelayCursor((await store.chatMeta(serverCursorKey(ACCOUNT_ID)))!)).toMatchObject({ storeId: 'store-new' })
-    // The history is marked read through the link: the new chat has nothing unread, the old one only A3.
+    expect(batches().length).toBeGreaterThan(before)
+    // Nothing stored twice: A1, A2 and G1 came back known.
+    expect(server.messages.size).toBe(stored + 5)
+    for (const jid of late) {
+      const chat = server.chats.get(jid)!
+      expect({ jid, read: Date.parse(chat.readThrough!) >= Date.parse(chat.lastMessageAt) }).toEqual({ jid, read: true })
+    }
+    expect(readRelayCursor((await store.chatMeta(serverCursorKey(ACCOUNT_ID)))!)).toMatchObject({ storeId: 'store-new', firstImport: null })
+    // The direct chat the server never had arrives read, also its history that came after the relay began.
+    const other = server.chats.get(OTHER)!
+    expect(Date.parse(other.readThrough!)).toBeGreaterThanOrEqual(Date.parse(other.lastMessageAt))
+    // The group with a real unread message keeps it.
     const group = server.chats.get(GROUP)!
-    expect(group.readThrough).not.toBeNull()
-    expect(Date.parse(group.readThrough!)).toBeGreaterThanOrEqual(Date.parse(group.lastMessageAt))
+    expect(group.readThrough === null || Date.parse(group.readThrough) < Date.parse(g2.sentAt)).toBe(true)
+    // The old direct chat: history read, A3 (after the link) unread.
     const direct = server.chats.get(DIRECT)!
     const a3 = [...server.messages.values()].find((message) => message.waId === 'A3')!
     expect(Date.parse(direct.readThrough!)).toBeLessThan(Date.parse(a3.sentAt))
+    // The re-read is over.
+    expect(await store.chatMeta(serverHistoryKey(ACCOUNT_ID))).toBeNull()
   })
 
   it('takes a chat back in with live batches, its history marked read by the chat state', async () => {

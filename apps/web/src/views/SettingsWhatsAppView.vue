@@ -133,6 +133,9 @@ const statusRow = computed<{ value: string; ok: boolean; detail: string | null; 
     const failure = failureRow(bridge.error)
     return { value: failure.title, ok: false, detail: failure.text, action: failure.retry }
   }
+  if (bridge.restarting === true) {
+    return { value: 'Starting again', ok: false, detail: null, action: false }
+  }
   if (stage.value === 'idle' && !moved.value) {
     return { value: 'Stopped', ok: false, detail: null, action: true }
   }

@@ -11,8 +11,18 @@ import { CODE_EXPIRED, CODE_EXPIRED_NOTE, CODE_RENEWS, GETTING_CODE, LINK_STEPS,
  * live region announces the change of state (the tiles have none of their own, so nothing is said twice; the code
  * itself is never announced).
  */
+const props = withDefaults(
+  defineProps<{
+    /** Whether a stopped, unlinked bridge is a code that expired (one was shown and timed out); else a code is on its way. */
+    expiredShown?: boolean
+  }>(),
+  { expiredShown: true },
+)
 const wa = useWhatsAppRelayStore()
-const stage = computed(() => linkStage(wa.bridge))
+const stage = computed(() => {
+  const now = linkStage(wa.bridge)
+  return now === 'expired' && !props.expiredShown ? 'loading' : now
+})
 const rows = computed(() => (stage.value === 'scan' ? (wa.bridge.qr ?? []) : []))
 </script>
 

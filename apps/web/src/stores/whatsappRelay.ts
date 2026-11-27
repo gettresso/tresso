@@ -60,6 +60,7 @@ import {
   setCarryCounts,
   type CarryCounts,
   historyAt,
+  storeChange,
   MODE_SWITCH,
   SERVER_ACCOUNT,
   readCarriedReplies,
@@ -85,6 +86,9 @@ const FALLBACK_DEVICE = 'This Mac'
 const NAMES_PER_CALL = 500
 /** How often the relaying Mac tells the server it is there ("All my devices"), besides at connect and on each change. */
 export const HEARTBEAT_MS = 60_000
+/** The first wait before the store id is checked again after it could not be (busy); doubles up to the maximum. */
+const TAKE_UP_RETRY_MS = 2_000
+const TAKE_UP_RETRY_MAX_MS = 60_000
 /** How long a step of "All my devices" that failed for a passing reason (no network) waits before it is tried again. */
 export const SERVER_RETRY_MS = 30_000
 /** The longest device and display name the server takes. */
@@ -382,6 +386,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   let importDoneAtPull: number | null = null
   /** The pull count once the live re-read reached where it began; its mark goes after a later pull. */
   let historyDoneAtPull: number | null = null
+  /** Checks of the bridge's store id that failed in a row (takeUpNewStore), and the planned next try. */
+  let takeUpTries = 0
+  let takeUpRetry: (() => void) | null = null
   /** Raised by every start and stop, so a start overtaken meanwhile gives up. */
   let relayRun = 0
   /** Resolves once every relay stopped so far has finished its round. */
@@ -544,6 +551,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
 
   /** Forgets the user who left; their relay stops in the background (the shell stops the bridge). */
   function leaveUser(): void {
+    takeUpRetry?.()
+    takeUpRetry = null
+    takeUpTries = 0
     void stopRelay()
     stopHeartbeat()
     cancelServerRetry()
@@ -849,10 +859,27 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         return
       }
     }
-    await takeUpNewStore(store, account?.id ?? null, current)
+    const checked = await takeUpNewStore(store, account?.id ?? null, current)
     if (mine !== relayRun) {
       return
     }
+    if (!checked) {
+      // Not started on a store whose change could not be checked: it would be read as live. Tried again with a backoff;
+      // from the third try Settings says reading fails for now.
+      relayStore = null
+      relayAccountId = null
+      takeUpTries++
+      if (takeUpTries >= 3) {
+        relayFailing.value = 'read'
+      }
+      takeUpRetry?.()
+      takeUpRetry = schedule(() => {
+        takeUpRetry = null
+        ensureRelay()
+      }, Math.min(TAKE_UP_RETRY_MS * 2 ** (takeUpTries - 1), TAKE_UP_RETRY_MAX_MS))
+      return
+    }
+    takeUpTries = 0
     await readImportState(store)
     if (mine !== relayRun) {
       return
@@ -874,25 +901,30 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   /**
    * The bridge's store is another one than the cursor read (the phone linked anew: an earlier version's whatsapp-mcp
    * store gave way to Tresso's own, or Disconnect and a new link made a new one). Its history sync brings the last weeks
-   * again, plus chats Tresso never saw. The rule: rows sent before the moment the phone linked (the config's `linkedAt`,
-   * else now) are history, as in the first import after connecting (read, no notification); rows sent after it are live.
-   * Done as a re-read is ("Take back in"): "Only this Mac" reads the store from 0 as a first import with that moment as
-   * `history-through` (resetLocalCursor); "All my devices" reads it again with live batches, which the server answers
-   * `known` for what it holds, and marks each chat's history read through that moment (resetServerCursor and
-   * markHistory), since a first-import batch may not follow live ones there. A renumbered store (VACUUM) under the same
-   * file reads the same way, which changes nothing that was read. Nothing happens while the store is busy: the next
-   * start of the relay looks again.
+   * again, plus chats Tresso never saw. The rule, in both modes the one of the first import after connecting: rows sent
+   * before the moment the phone linked are history, and a chat that is new or had nothing unread at the change is read
+   * through that moment (a chat with unread messages keeps them); rows sent after it are live. The re-read ends as that
+   * first import does: once the relay caught up with the new store and it stayed quiet a minute.
+   * - "Only this Mac": the store is read from 0 as a first import with the moment as `history-through`
+   *   (resetLocalCursor).
+   * - "All my devices": the cursor keeps the old store id with a first import under way, so the relay reads the new
+   *   store from 0 with the same quiet rule; the server answers `known` for what it holds and honours the flag only
+   *   while its own history import runs (ChatIngestor), so the history is marked read by chat state changes instead
+   *   (markHistory), for every chat but those that had unread messages at the change (an `all` scope).
+   * A renumbered store (VACUUM) reads the same way, which changes nothing that was read. Resolves true once the check
+   * was made (whatever it found), false when it could not be (the store busy or unreadable): the relay then does not
+   * start, and tries again later.
    */
-  async function takeUpNewStore(store: MailStore, accountId: string | null, current: WhatsAppConfig): Promise<void> {
+  async function takeUpNewStore(store: MailStore, accountId: string | null, current: WhatsAppConfig): Promise<boolean> {
     try {
       const value = await store.chatMeta(accountId === null ? LOCAL_CURSOR : serverCursorKey(accountId))
       const cursor = value === null ? null : readRelayCursor(value)
       if (cursor === null || cursor.storeId === '') {
-        return
+        return true
       }
       const page = await commands.read(0, 1)
       if (page.storeId === cursor.storeId) {
-        return
+        return true
       }
       // The link seen in this session first (its save may still be under way), else the saved one, else now.
       const seen = linkedHere.value ?? current.linkedAt
@@ -900,18 +932,19 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       const at = Number.isNaN(linkedAt) ? Date.now() : linkedAt
       if (accountId === null) {
         await resetLocalCursor(store, at)
-      } else {
-        // As resetServerCursor, but the re-read ends at the new store's highest row: the old store's numbering means
-        // nothing here.
-        const before = readServerHistory(await store.chatMeta(serverHistoryKey(accountId)))
-        const history: ServerHistory = { scopes: [...(before?.scopes ?? []), { jid: null, at }], throughRowid: page.maxRowid }
-        await store.setChatMeta(serverHistoryKey(accountId), JSON.stringify(history))
-        await store.setChatMeta(serverCursorKey(accountId), JSON.stringify({ ...cursor, rowid: 0 }))
+        return true
       }
+      const unread = (await store.chats()).filter(({ chat, unread }) => chat.chatAccountId === accountId && unread > 0).map(({ chat }) => chat.jid)
+      const before = readServerHistory(await store.chatMeta(serverHistoryKey(accountId)))
+      const scopes = [...(before?.scopes ?? []).filter((scope) => !('all' in scope)), { all: true as const, at, unread, storeId: page.storeId }]
+      await store.setChatMeta(serverHistoryKey(accountId), JSON.stringify({ scopes, throughRowid: before?.throughRowid ?? 0 } satisfies ServerHistory))
+      await store.setChatMeta(serverCursorKey(accountId), JSON.stringify({ ...cursor, rowid: 0, firstImport: { through: 0, ranFor: 0, quietFor: 0 } }))
+      return true
     } catch (cause) {
       if (cause !== 'busy') {
         logRelayError(cause, 'read')
       }
+      return false
     }
   }
 
@@ -2019,7 +2052,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
     const value = await store.chatMeta(serverCursorKey(account.id))
     const cursor = value === null ? null : readRelayCursor(value)
-    if (cursor === null || cursor.rowid < history.throughRowid) {
+    // A store change ends with the new store's first import (caught up and quiet); another re-read where it began.
+    const change = storeChange(history)
+    const reading = change !== null ? cursor === null || cursor.storeId !== change.storeId || cursor.firstImport !== null : cursor === null || cursor.rowid < history.throughRowid
+    if (reading) {
       historyDoneAtPull = null
       return
     }
@@ -2678,6 +2714,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   /** Stops listening and the relay (tests, and a page that goes away). */
   async function dispose(): Promise<void> {
     scope.stop()
+    takeUpRetry?.()
+    takeUpRetry = null
     stopHeartbeat()
     cancelServerRetry()
     stopListening?.()
