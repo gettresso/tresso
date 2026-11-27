@@ -147,6 +147,48 @@ jobs:
           S3_TEST_ACCESS_KEY: ci-access-key
           S3_TEST_SECRET_KEY: ci-secret-key
 
+  whatsapp-bridge:
+    name: WhatsApp bridge (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/whatsapp-bridge
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: apps/whatsapp-bridge/go.sum
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  # The desktop app will bundle one binary for both Mac architectures. The bridge is pure Go (no cgo), so both build
+  # here with CGO_ENABLED=0 and lipo joins them; -verify_arch fails the job when either is missing.
+  whatsapp-bridge-macos:
+    name: WhatsApp bridge (universal macOS binary)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/whatsapp-bridge
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: apps/whatsapp-bridge/go.sum
+      - name: Build arm64 and x86_64 and join them
+        env:
+          CGO_ENABLED: '0'
+          GOOS: darwin
+        run: |
+          GOARCH=arm64 go build -trimpath -o dist/whatsapp-bridge-arm64 .
+          GOARCH=amd64 go build -trimpath -o dist/whatsapp-bridge-amd64 .
+          lipo -create -output dist/whatsapp-bridge dist/whatsapp-bridge-arm64 dist/whatsapp-bridge-amd64
+          lipo -info dist/whatsapp-bridge
+          lipo dist/whatsapp-bridge -verify_arch arm64
+          lipo dist/whatsapp-bridge -verify_arch x86_64
+
   images:
     name: Image ${{ matrix.image }}
     runs-on: ubuntu-latest
