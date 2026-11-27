@@ -45,20 +45,20 @@ describe('WhatsApp while it is not turned on', () => {
   it('leaves the WhatsApp card out of the accounts page', async () => {
     const wrapper = mount(SettingsAccountsView, { global: { plugins: [router] } })
     await flushPromises()
-    expect(wrapper.find('section[aria-label="WhatsApp"]').exists()).toBe(false)
+    expect(wrapper.find('[role="listitem"][aria-label="WhatsApp"]').exists()).toBe(false)
 
     const wa = useWhatsAppRelayStore()
     wa.available = true
     wa.configLoaded = true
     await flushPromises()
-    expect(wrapper.get('section[aria-label="WhatsApp"]').text()).toContain('Chats next to your mail, through whatsapp-mcp on this Mac.')
-    expect(wrapper.get('section[aria-label="WhatsApp"] a').attributes('href')).toBe('/settings/whatsapp/connect')
+    expect(wrapper.get('[role="listitem"][aria-label="WhatsApp"]').text()).toContain('Chats next to your mail, on this Mac.')
+    expect(wrapper.get('[role="listitem"][aria-label="WhatsApp"] a').attributes('href')).toBe('/settings/whatsapp/connect')
 
     wa.config = { folder: '/Users/kim/whatsapp-mcp', mode: 'local', deviceId: 'd', deviceName: 'Mac', linkedAt: null, importSince: '2026-10-13T10:00:00.000Z', includeGroups: true, notify: false, leftOut: [] }
     wa.identity = { number: '31698765432', name: 'Kim' }
     await flushPromises()
-    expect(wrapper.get('section[aria-label="WhatsApp"]').text()).toContain('+31698765432, via this Mac')
-    expect(wrapper.get('section[aria-label="WhatsApp"] a').attributes('href')).toBe('/settings/whatsapp')
+    expect(wrapper.get('[role="listitem"][aria-label="WhatsApp"]').text()).toContain('+31698765432, via this Mac')
+    expect(wrapper.get('[role="listitem"][aria-label="WhatsApp"] a').attributes('href')).toBe('/settings/whatsapp')
   })
 
   it('sends every WhatsApp address elsewhere', async () => {
