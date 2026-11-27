@@ -23,7 +23,7 @@ refuses to start without any of them:
 
 | Variable | Value |
 |---|---|
-| `WHATSAPP_BRIDGE_STORE` | Absolute path of the store folder. Created 0700 (with its missing parents) when it does not exist. An existing one must be a folder (not a symbolic link) of the user the bridge runs as, and nobody else may write it; one that others may only read is made 0700. |
+| `WHATSAPP_BRIDGE_STORE` | Absolute path of the store folder. Created 0700 (with its missing parents, also 0700) when it does not exist. An existing one must be a folder (not a symbolic link) of the user the bridge runs as that nobody else may read or write (0700 or stricter); the bridge refuses anything else instead of changing its rights, and never changes the rights of a folder it did not create. The root folder and the home folder (`$HOME`, also through a link) are always refused. |
 | `WHATSAPP_BRIDGE_PORT` | Port of the REST API, 1 to 65535. There is no default. |
 | `WHATSAPP_BRIDGE_TOKEN` | The token every request must carry: 32 to 512 printable ASCII characters without spaces (Tresso gives 64 hex characters, new for every start). There is no mode without a token. The bridge removes it from its own environment once read and never writes it anywhere. |
 
@@ -35,14 +35,17 @@ The store holds the same files, under the same names, as the `store` folder of w
   `file_enc_sha256`, `file_length`), with `messages.chat_jid` a foreign key to `chats.jid`.
 - `<chat jid>/<message id>_<name>`: downloaded media (`:` in the chat JID becomes `_`).
 
-The databases and their journal files are 0600, the chat folders 0700, downloaded files 0600.
+The databases and their journal files are made 0600. A chat folder is created 0700 by the first download into it;
+folders already in the store are left as they are. Downloaded files are 0600.
 
 The bridge stops cleanly (stops the API, disconnects from WhatsApp, closes both databases) when its **stdin ends**,
 at SIGTERM and at SIGINT. The parent keeps stdin open as long as it wants the bridge to run; when the parent quits or
 crashes, the pipe closes and the bridge goes with it. Started with stdin at `/dev/null`, it stops right away. A stdout
 nobody reads any more does not stop it (SIGPIPE is ignored); the end of stdin does.
 
-Exit status: 0 after a stop that was asked for, or after a log out; 1 after a `fatal` event or a `qr_timeout`.
+Exit status: 0 after a stop that was asked for, or after a log out; 1 after a `fatal` event or a `qr_timeout`. A
+panic in the bridge's own code (its main goroutine, the stdin and signal watchers, the HTTP server loop) becomes the
+`fatal` event `panic`; the panic value, which can hold message data, is never printed.
 
 ## Output
 
@@ -87,6 +90,7 @@ The `fatal` codes:
 {"v":1,"event":"fatal","code":"temporary_ban"}
 {"v":1,"event":"fatal","code":"listen_failed"}
 {"v":1,"event":"fatal","code":"server_failed"}
+{"v":1,"event":"fatal","code":"panic"}
 ```
 
 | Code | Meaning |
@@ -101,9 +105,15 @@ The `fatal` codes:
 | `temporary_ban` | WhatsApp banned the account for a while. |
 | `listen_failed` | The port is taken or cannot be bound. |
 | `server_failed` | The REST API stopped on its own. |
+| `panic` | An internal error. |
 
 **stderr** carries short diagnostics for a human: fixed texts of this program and whatsmeow's warnings and errors as
 their format string only (`Failed to decrypt message from %s: %v`), never with the values. Nothing should parse it.
+
+Nothing else reaches either stream. `os.Stdout`, which libraries print to, points at `/dev/null` (or at nothing, so
+every write fails, when `/dev/null` cannot be opened); only the event writer holds the real stdout. libsignal's
+logger, which would print to stdout, is replaced by a silent one, Go's standard logger is discarded, and net/http's
+error log is dropped.
 
 ## REST API
 
@@ -117,9 +127,18 @@ The probe `POST /api/send` with the body `{}` answers `401` without the token an
 it.
 
 `POST /api/send` with `{"recipient": "<number or JID>", "message": "<text>", "media_path": "<absolute path>"}`
-(`media_path` optional) sends a text, or a file with the text as its caption. It answers
-`{"success": true, "message": "..."}`, or `500` with `success` false and the reason in `message` (`Not connected to
-WhatsApp` while not connected).
+(`media_path` optional) sends a text, or a file with the text as its caption. Before anything is sent:
+
+- A `media_path` that is not absolute gets `400 Media path must be absolute`, before every other check.
+- `recipient` must be what the desktop app sends (its `valid_recipient`): a phone number of 1 to 32 digits, or a JID
+  whose user is 1 to 128 of `[0-9A-Za-z.:_-]` and whose server is `s.whatsapp.net`, `g.us` or `lid`. Anything else
+  (`status@broadcast`, a channel, a name) gets `400 Recipient is not valid`.
+- `media_path` must name a regular file once links are followed (not a folder, FIFO or device) of at most 100 MB, the
+  desktop app's `MAX_SEND_BYTES`; else `400` with `Media path is not a regular file`, `Media file is larger than 100
+  MB` or `Media file cannot be read`. The file is opened without blocking and checked again before it is read.
+
+It answers `{"success": true, "message": "..."}`, or `500` with `success` false and the reason in `message` (`Not
+connected to WhatsApp` while not connected).
 
 `POST /api/download` with `{"message_id": "<id>", "chat_jid": "<jid>"}` downloads the media of a stored message to
 `<store>/<chat>/<message id>_<name>` and answers `{"success": true, "message": "...", "filename": "<name>", "path":
@@ -129,7 +148,10 @@ letters, digits, `-` and `_`. A file downloaded before is handed back again only
 message names. When WhatsApp no longer serves the file, the bridge asks the phone to upload it again (up to 60
 seconds).
 
-A request body is at most 1 MiB.
+A request body is at most 1 MiB (`413` beyond), and headers at most 16 KiB. A client has 10 seconds to send its
+headers and 30 for the whole request (ample for 1 MiB of JSON on 127.0.0.1: files go by path, never in the body), and
+an idle connection is closed after 60 seconds. There is no write timeout, since a download may wait up to 60 seconds
+for the phone.
 
 ## The linked device's name
 
@@ -165,6 +187,11 @@ What stays as it was with mattn/go-sqlite3:
 - Unused code of the fork is gone (`requestHistorySync` and the message store's read methods nothing called).
 - A voice message's placeholder waveform is again the same for the same duration (`rand.Seed` does nothing since Go
   1.24).
+- A voice message's duration is read correctly: the fork read the pre-skip at the wrong offset of the Opus head and
+  divided by the input sample rate, while an Opus granule always counts at 48 kHz. The Ogg reader no longer reads
+  past the end of a cut or malformed file.
+- Sending checks the recipient and the media path (above), and the REST server has read and idle timeouts.
+- An existing store folder is refused, not repaired, when others may read or write it.
 
 ## Development
 

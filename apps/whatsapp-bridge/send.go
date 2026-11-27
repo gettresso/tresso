@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -31,39 +35,126 @@ type SendMessageRequest struct {
 	MediaPath string `json:"media_path,omitempty"`
 }
 
+// maxSendBytes is the largest file the bridge sends: the desktop app's MAX_SEND_BYTES (100 MB), so a file it allows is
+// never refused here.
+const maxSendBytes = 100 * 1024 * 1024
+
+var (
+	errMediaNotAbsolute = errors.New("media path must be absolute")
+	errMediaNotFile     = errors.New("media path is not a regular file")
+	errMediaTooLarge    = errors.New("media file is larger than 100 MB")
+	errMediaUnreadable  = errors.New("media file cannot be read")
+	errRecipient        = errors.New("recipient is not a phone number or a person, group or LID JID")
+)
+
+// recipientServers are the servers a recipient JID may name: a person, a group, a person by LID. The same as the
+// desktop app's valid_jid.
+var recipientServers = map[string]bool{
+	types.DefaultUserServer: true,
+	types.GroupServer:       true,
+	types.HiddenUserServer:  true,
+}
+
+// recipientJID reads a recipient as the desktop app sends it (valid_recipient in whatsapp.rs): a phone number of 1 to
+// 32 digits, or a JID `<user>@<server>` whose user is 1 to 128 of [0-9A-Za-z.:_-] and whose server is
+// s.whatsapp.net, g.us or lid. Anything else (status@broadcast, a channel, a free string) is refused.
+func recipientJID(recipient string) (types.JID, error) {
+	if recipient != "" && len(recipient) <= 32 && allDigits(recipient) {
+		return types.JID{User: recipient, Server: types.DefaultUserServer}, nil
+	}
+	user, server, found := strings.Cut(recipient, "@")
+	if !found || !recipientServers[server] || user == "" || len(user) > 128 {
+		return types.JID{}, errRecipient
+	}
+	for _, c := range user {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '.' || c == ':' || c == '_' || c == '-') {
+			return types.JID{}, errRecipient
+		}
+	}
+	jid, err := types.ParseJID(recipient)
+	if err != nil || jid.User == "" || !recipientServers[jid.Server] {
+		return types.JID{}, errRecipient
+	}
+	return jid, nil
+}
+
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// checkMedia refuses a media path the bridge must not read: not absolute, not a regular file once links are followed
+// (a FIFO or a device would block or never end), or larger than maxSendBytes. The desktop app sends a canonical path.
+func checkMedia(path string) error {
+	if !filepath.IsAbs(path) {
+		return errMediaNotAbsolute
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return errMediaUnreadable
+	}
+	if !info.Mode().IsRegular() {
+		return errMediaNotFile
+	}
+	if info.Size() > maxSendBytes {
+		return errMediaTooLarge
+	}
+	return nil
+}
+
+// readMedia reads a file checkMedia accepts. It opens without blocking (the path may have become a FIFO since the
+// check), checks the open file again and reads at most maxSendBytes, so it never waits on a pipe or fills memory.
+func readMedia(path string) ([]byte, error) {
+	if err := checkMedia(path); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, errMediaUnreadable
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, errMediaUnreadable
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errMediaNotFile
+	}
+	if info.Size() > maxSendBytes {
+		return nil, errMediaTooLarge
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxSendBytes+1))
+	if err != nil {
+		return nil, errMediaUnreadable
+	}
+	if len(data) > maxSendBytes {
+		return nil, errMediaTooLarge
+	}
+	return data, nil
+}
+
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
 
-	// Create JID for recipient
-	var recipientJID types.JID
-	var err error
-
-	// Check if recipient is a JID
-	isJID := strings.Contains(recipient, "@")
-
-	if isJID {
-		// Parse the JID string
-		recipientJID, err = types.ParseJID(recipient)
-		if err != nil {
-			return false, fmt.Sprintf("Error parsing JID: %v", err)
-		}
-	} else {
-		// Create JID from phone number
-		recipientJID = types.JID{
-			User:   recipient,
-			Server: "s.whatsapp.net", // For personal chats
-		}
+	// The handler checked the recipient already; this keeps the function safe on its own.
+	to, err := recipientJID(recipient)
+	if err != nil {
+		return false, err.Error()
 	}
 
 	msg := &waProto.Message{}
 
 	// Check if we have media to send
 	if mediaPath != "" {
-		// Read media file
-		mediaData, err := os.ReadFile(mediaPath)
+		// Read media file: a regular file of at most maxSendBytes, never a FIFO or a device.
+		mediaData, err := readMedia(mediaPath)
 		if err != nil {
 			return false, fmt.Sprintf("Error reading media file: %v", err)
 		}
@@ -187,7 +278,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	}
 
 	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	_, err = client.SendMessage(context.Background(), to, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err)
@@ -195,6 +286,12 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 
 	return true, fmt.Sprintf("Message sent to %s", recipient)
 }
+
+// opusGranuleRate is the rate of an Opus granule position: 48 kHz, whatever the input sample rate.
+const opusGranuleRate = 48000.0
+
+// maxVoiceSeconds is the longest duration a voice message is given.
+const maxVoiceSeconds = 300
 
 // analyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file
 func analyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
@@ -204,16 +301,16 @@ func analyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 		return 0, nil, fmt.Errorf("not a valid Ogg file (missing OggS signature)")
 	}
 
-	// Parse Ogg pages to find the last page with a valid granule position
+	// Parse Ogg pages to find the last page with a valid granule position. Every read below stays inside data: the
+	// file comes from the caller and may be cut short or malformed anywhere.
 	var lastGranule uint64
-	var sampleRate uint32 = 48000 // Default Opus sample rate
-	var preSkip uint16 = 0
+	var preSkip uint16
 	var foundOpusHead bool
 
 	// Scan through the file looking for Ogg pages
 	for i := 0; i < len(data); {
 		// Check if we have enough data to read Ogg page header
-		if i+27 >= len(data) {
+		if i+27 > len(data) {
 			break
 		}
 
@@ -230,7 +327,7 @@ func analyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 		numSegments := int(data[i+26])
 
 		// Extract segment table
-		if i+27+numSegments >= len(data) {
+		if i+27+numSegments > len(data) {
 			break
 		}
 		segmentTable := data[i+27 : i+27+numSegments]
@@ -240,22 +337,20 @@ func analyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 		for _, segLen := range segmentTable {
 			pageSize += int(segLen)
 		}
+		// A page that claims more bytes than the file has left is cut off: stop here.
+		if i+pageSize > len(data) {
+			break
+		}
 
 		// Check if we're looking at an OpusHead packet (should be in first few pages)
 		if !foundOpusHead && pageSeqNum <= 1 {
-			// Look for "OpusHead" marker in this page
+			// OpusHead: magic "OpusHead" (8 bytes), version (1), channels (1), pre-skip (2, at offset 10), input
+			// sample rate (4, at offset 12), ...
 			pageData := data[i : i+pageSize]
 			headPos := bytes.Index(pageData, []byte("OpusHead"))
-			if headPos >= 0 && headPos+12 < len(pageData) {
-				// Found OpusHead, extract sample rate and pre-skip
-				// OpusHead format: Magic(8) + Version(1) + Channels(1) + PreSkip(2) + SampleRate(4) + ...
-				headPos += 8 // Skip "OpusHead" marker
-				// PreSkip is 2 bytes at offset 10
-				if headPos+12 <= len(pageData) {
-					preSkip = binary.LittleEndian.Uint16(pageData[headPos+10 : headPos+12])
-					sampleRate = binary.LittleEndian.Uint32(pageData[headPos+12 : headPos+16])
-					foundOpusHead = true
-				}
+			if headPos >= 0 && headPos+16 <= len(pageData) {
+				preSkip = binary.LittleEndian.Uint16(pageData[headPos+10 : headPos+12])
+				foundOpusHead = true
 			}
 		}
 
@@ -268,15 +363,15 @@ func analyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 		i += pageSize
 	}
 
-	// Calculate duration based on granule position
-	if lastGranule > 0 {
-		// Formula for duration: (lastGranule - preSkip) / sampleRate
-		durationSeconds := float64(lastGranule-uint64(preSkip)) / float64(sampleRate)
-		duration = uint32(math.Ceil(durationSeconds))
+	// Calculate duration based on granule position. An Opus granule position counts samples at 48 kHz whatever the
+	// input sample rate in the head was.
+	if lastGranule > uint64(preSkip) {
+		durationSeconds := float64(lastGranule-uint64(preSkip)) / opusGranuleRate
+		duration = uint32(math.Min(math.Ceil(durationSeconds), maxVoiceSeconds))
 	} else {
 		// Fallback to rough estimation if granule position not found
 		durationEstimate := float64(len(data)) / 2000.0 // Very rough approximation
-		duration = uint32(durationEstimate)
+		duration = uint32(math.Min(durationEstimate, maxVoiceSeconds))
 	}
 
 	// Make sure we have a reasonable duration (at least 1 second, at most 300 seconds)

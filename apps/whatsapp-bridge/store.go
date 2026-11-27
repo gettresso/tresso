@@ -38,23 +38,39 @@ var (
 	errStoreNotFolder   = errors.New("the store is not a folder")
 	errStoreLink        = errors.New("the store or a database in it is a symbolic link")
 	errStoreOwner       = errors.New("the store folder belongs to another user")
-	errStoreWritable    = errors.New("others may write the store folder")
+	errStoreNotPrivate  = errors.New("others may read or write the store folder")
+	errStoreTooWide     = errors.New("the store folder is the root or the home folder")
 	errStoreNotUsable   = errors.New("the store folder cannot be made or used")
 	errDatabaseNotAFile = errors.New("a database in the store is not a file")
 )
 
-// prepareStore makes the store folder ready, or refuses it. A folder that is missing is created 0700 (its missing
-// parents as well). An existing one must be a real folder (not a link) of this user that nobody else may write; one
-// that others may only read is made 0700. The databases are created empty 0600 when missing (so SQLite does not create
-// them readable by others), and every database and journal file is made 0600; the chat folders directly in the store
-// 0700. Downloaded files deeper down are not walked: the 0700 folders above them already keep other users out.
+// prepareStore makes the store folder ready, or refuses it. It never changes the rights of a folder it did not make:
+// a mistaken path (the home folder, say) must not have its folders changed.
+//
+//   - The root folder and the user's home folder are refused outright.
+//   - A folder that is missing is created 0700, with its missing parents 0700 as well; existing parents stay as they
+//     are.
+//   - An existing folder must be a real folder (not a link) of this user that nobody else may read or write
+//     (mode 0700 or stricter); anything else is refused, not repaired.
+//   - In the folder, the two databases are created empty 0600 when missing (so SQLite does not create them readable by
+//     others), and the databases and their journal files are made 0600: they are the bridge's own files. A database
+//     that is a link or not a regular file is refused. Chat folders for downloads are made 0700 when a download
+//     creates them; existing folders in the store are not touched.
 func prepareStore(dir string) error {
 	if !filepath.IsAbs(dir) {
 		return errStoreNotUsable
 	}
+	dir = filepath.Clean(dir)
+	if tooWide(dir) {
+		return errStoreTooWide
+	}
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return errors.Join(errStoreNotUsable, err)
+		}
+		// The folder is new and the bridge's own: make it exactly 0700 whatever the umask did.
+		if err := os.Chmod(dir, 0o700); err != nil {
 			return errors.Join(errStoreNotUsable, err)
 		}
 		info, err = os.Lstat(dir)
@@ -71,11 +87,8 @@ func prepareStore(dir string) error {
 	if !ownedByMe(info) {
 		return errStoreOwner
 	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return errStoreWritable
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return errors.Join(errStoreNotUsable, err)
+	if info.Mode().Perm()&0o077 != 0 {
+		return errStoreNotPrivate
 	}
 	for _, name := range storeDatabases {
 		path := filepath.Join(dir, name)
@@ -108,19 +121,28 @@ func prepareStore(dir string) error {
 			return errors.Join(errStoreNotUsable, err)
 		}
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return errors.Join(errStoreNotUsable, err)
+	return nil
+}
+
+// tooWide reports whether dir is the root folder or the user's home folder ($HOME), also when one of them is reached
+// through a link.
+func tooWide(dir string) bool {
+	candidates := []string{"/"}
+	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+		candidates = append(candidates, filepath.Clean(home))
 	}
-	for _, entry := range entries {
-		// A link is not a folder to ReadDir, so only real folders are changed.
-		if entry.IsDir() {
-			if err := os.Chmod(filepath.Join(dir, entry.Name()), 0o700); err != nil {
-				return errors.Join(errStoreNotUsable, err)
+	resolved, resolvedErr := filepath.EvalSymlinks(dir)
+	for _, candidate := range candidates {
+		if dir == candidate {
+			return true
+		}
+		if resolvedErr == nil {
+			if real, err := filepath.EvalSymlinks(candidate); err == nil && real == resolved {
+				return true
 			}
 		}
 	}
-	return nil
+	return false
 }
 
 // ownedByMe reports whether the file belongs to the user the bridge runs as.

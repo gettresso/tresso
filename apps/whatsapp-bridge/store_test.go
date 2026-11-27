@@ -23,19 +23,27 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 }
 
 func TestPrepareStore(t *testing.T) {
-	// A new store, with a parent that does not exist yet either.
-	dir := filepath.Join(t.TempDir(), "app", "store")
+	// A new store, with a parent that does not exist yet either, under a parent that does and stays as it was.
+	base := t.TempDir()
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(base, "app", "store")
 	if err := prepareStore(dir); err != nil {
 		t.Fatal(err)
 	}
 	assertMode(t, dir, 0o700)
 	assertMode(t, filepath.Dir(dir), 0o700)
+	assertMode(t, base, 0o755)
 	assertMode(t, filepath.Join(dir, "whatsapp.db"), 0o600)
 	assertMode(t, filepath.Join(dir, "messages.db"), 0o600)
 
-	// An existing store that others could read is made private.
+	// An existing private store: its databases are made 0600, the folders in it are left as they are.
 	chat := filepath.Join(dir, "31612345678@s.whatsapp.net")
-	if err := os.Mkdir(chat, 0o755); err != nil {
+	if err := os.Mkdir(chat, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(chat, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"whatsapp.db", "messages.db", "messages.db-wal"} {
@@ -46,22 +54,25 @@ func TestPrepareStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Chmod(chat, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := prepareStore(dir); err != nil {
 		t.Fatal(err)
 	}
 	assertMode(t, dir, 0o700)
-	assertMode(t, chat, 0o700)
+	assertMode(t, chat, 0o755)
 	assertMode(t, filepath.Join(dir, "whatsapp.db"), 0o600)
 	assertMode(t, filepath.Join(dir, "messages.db"), 0o600)
 	assertMode(t, filepath.Join(dir, "messages.db-wal"), 0o600)
 	if data, _ := os.ReadFile(filepath.Join(dir, "messages.db")); string(data) != "x" {
 		t.Error("prepareStore changed an existing database")
+	}
+
+	// A stricter folder is private too.
+	strict := folderWithMode(t, 0o500)
+	if err := os.Chmod(strict, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareStore(strict); err != nil {
+		t.Errorf("a 0700 folder was refused: %v", err)
 	}
 }
 
@@ -71,9 +82,31 @@ func TestPrepareStoreRefuses(t *testing.T) {
 		setup func(t *testing.T) string
 		want  error
 	}{
-		{"group writable", func(t *testing.T) string { return folderWithMode(t, 0o770) }, errStoreWritable},
-		{"world writable", func(t *testing.T) string { return folderWithMode(t, 0o702) }, errStoreWritable},
-		{"writable by all", func(t *testing.T) string { return folderWithMode(t, 0o777) }, errStoreWritable},
+		{"group writable", func(t *testing.T) string { return folderWithMode(t, 0o770) }, errStoreNotPrivate},
+		{"world writable", func(t *testing.T) string { return folderWithMode(t, 0o702) }, errStoreNotPrivate},
+		{"writable by all", func(t *testing.T) string { return folderWithMode(t, 0o777) }, errStoreNotPrivate},
+		{"group readable", func(t *testing.T) string { return folderWithMode(t, 0o750) }, errStoreNotPrivate},
+		{"world readable", func(t *testing.T) string { return folderWithMode(t, 0o705) }, errStoreNotPrivate},
+		{"the root folder", func(t *testing.T) string { return "/" }, errStoreTooWide},
+		{"the home folder", func(t *testing.T) string {
+			home := folderWithMode(t, 0o700)
+			t.Setenv("HOME", home)
+			return home
+		}, errStoreTooWide},
+		{"the home folder with a trailing slash", func(t *testing.T) string {
+			home := folderWithMode(t, 0o700)
+			t.Setenv("HOME", home)
+			return home + "/"
+		}, errStoreTooWide},
+		{"the home folder through a link", func(t *testing.T) string {
+			home := folderWithMode(t, 0o700)
+			t.Setenv("HOME", home)
+			link := filepath.Join(t.TempDir(), "home-link")
+			if err := os.Symlink(home, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}, errStoreTooWide},
 		{"a file", func(t *testing.T) string {
 			path := filepath.Join(t.TempDir(), "store")
 			if err := os.WriteFile(path, nil, 0o600); err != nil {
@@ -123,12 +156,25 @@ func TestPrepareStoreRefuses(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			path := tc.setup(t)
+			var before os.FileMode
+			if info, err := os.Lstat(path); err == nil {
+				before = info.Mode()
+			}
 			err := prepareStore(path)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 			if reason := storeReason(err); reason != tc.want.Error() {
 				t.Errorf("reason %q, want %q", reason, tc.want.Error())
+			}
+			// A refused folder keeps its rights, and gets no databases.
+			if info, err := os.Lstat(path); err == nil && info.Mode() != before {
+				t.Errorf("mode changed from %v to %v", before, info.Mode())
+			}
+			if tc.want != errStoreLink && tc.want != errDatabaseNotAFile {
+				if _, err := os.Lstat(filepath.Join(path, "messages.db")); err == nil {
+					t.Error("a database was created in a refused folder")
+				}
 			}
 		})
 	}
