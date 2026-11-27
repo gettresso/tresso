@@ -9,16 +9,15 @@ import AppIcon from '@/components/AppIcon.vue'
 import ConnectWhatsApp from '@/components/connect/ConnectWhatsApp.vue'
 import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
-  BUILD_COMMAND,
-  CLOSE_PORT_URL,
   COPY_BODY,
   COPY_TITLE,
   GROUPS_WOULD_GO,
   LEFT_OUT_KEPT,
   MODE_NOTE,
+  MOVED_TEXT,
+  FAILURES,
   REMOVE_BODY,
   REMOVE_TITLE,
-  bridgeText,
   carriedText,
   carryCountsText,
   notCarriedText,
@@ -28,11 +27,12 @@ import {
   serverRefusedText,
   switchText,
   importText,
+  failureLine,
   linkedAge,
-  linkText,
+  linkStage,
   phoneNumber,
   relativeTime,
-  shortFolder,
+  statusWord,
 } from '@/components/chat/whatsappTexts'
 
 /**
@@ -101,48 +101,44 @@ let clock: ReturnType<typeof setInterval> | null = null
 
 const device = computed(() => wa.config?.deviceName ?? wa.deviceName ?? 'this Mac')
 const number = computed(() => (wa.identity?.number ? phoneNumber(wa.identity.number) : null))
-const subtitle = computed(() => (number.value === null ? `Through whatsapp-mcp on ${device.value}` : `${number.value}, through whatsapp-mcp on ${device.value}`))
+const subtitle = computed(() => (number.value === null ? `On ${device.value}` : `${number.value}, on ${device.value}`))
+/** Connected through the bridge of an earlier version: the phone links again. */
+const moved = computed(() => wa.config?.moved === true)
+const stage = computed(() => linkStage(wa.bridge))
 
-/** The pill next to the title. */
-const pill = computed<{ text: string; ok: boolean }>(() => {
-  if (wa.busy === 'disconnect') return { text: 'Disconnecting', ok: false }
+/** The pill next to the title: Connected, Starting, Not linked, Link again, Could not start, Stopped. */
+const pill = computed<{ text: string; ok: boolean }>(() => (wa.busy === 'disconnect' ? { text: 'Disconnecting', ok: false } : statusWord(wa.bridge, moved.value)))
+
+/** The "On this Mac" row: whether WhatsApp runs here, in plain words, with Try again when it stopped. */
+const statusRow = computed<{ value: string; ok: boolean; detail: string | null; action: boolean }>(() => {
   const bridge = wa.bridge
   if (bridge.process === 'owned') {
-    if (bridge.link === 'linked') return { text: 'Connected', ok: true }
-    if (bridge.link === 'unknown') return { text: 'Starting', ok: false }
-    return { text: 'Not linked', ok: false }
-  }
-  return bridge.link === 'unlinked' && bridge.error === null ? { text: 'Not linked', ok: false } : { text: 'Bridge stopped', ok: false }
-})
-
-const bridgeView = computed(() => bridgeText(wa.bridge, true))
-const bridgeRow = computed<{ value: string; ok: boolean; detail: string | null; action: 'start' | 'close-port' | null }>(() => {
-  const view = bridgeView.value
-  if (wa.bridge.process === 'owned' && wa.bridge.port !== null) {
-    if (wa.bridge.loopbackOnly === false) {
-      return { value: view.status, ok: false, detail: view.detail, action: 'close-port' }
+    if (bridge.link === 'linked' && bridge.port !== null) {
+      const last = wa.lastMessageAt === null ? 'no messages yet' : `last message ${relativeTime(wa.lastMessageAt, now.value)}`
+      return { value: `Connected, ${last}`, ok: true, detail: null, action: false }
     }
-    const last = wa.lastMessageAt === null ? 'no messages yet' : `last message ${relativeTime(wa.lastMessageAt, now.value)}`
-    return { value: `Running, ${last}`, ok: true, detail: null, action: null }
+    return { value: bridge.link === 'waiting_for_scan' || bridge.link === 'unlinked' ? 'Waiting for your phone' : 'Starting', ok: false, detail: null, action: false }
   }
-  if (wa.bridge.process === 'owned') {
-    return { value: 'Starting', ok: false, detail: null, action: null }
+  if (bridge.error !== null && bridge.error !== 'logged_out') {
+    return { value: 'Could not start', ok: false, detail: failureLine(bridge.error), action: true }
   }
-  return { value: view.status, ok: false, detail: view.detail, action: 'start' }
+  return { value: 'Stopped', ok: false, detail: bridge.error === null && stage.value === 'idle' ? 'Tresso starts it again in a moment.' : null, action: stage.value === 'idle' }
 })
 
-const linkView = computed(() => linkText(wa.bridge, wa.identity))
-const linkRow = computed<{ value: string; ok: boolean }>(() => {
+const linkRow = computed<{ value: string; ok: boolean; relink: boolean }>(() => {
   if (wa.linked) {
-    return { value: linkedAge(wa.config?.linkedAt ?? null, now.value), ok: true }
+    return { value: linkedAge(wa.config?.linkedAt ?? null, now.value), ok: true, relink: false }
   }
-  if (wa.bridge.process === 'stopped' && !linkView.value.expired) {
-    return { value: 'Not known while the bridge is stopped.', ok: false }
+  if (moved.value) {
+    return { value: MOVED_TEXT, ok: false, relink: wa.bridge.process === 'stopped' && stage.value !== 'expired' }
   }
-  return { value: 'Not linked. Nothing comes in or goes out.', ok: false }
+  if (wa.bridge.error === 'logged_out') {
+    return { value: `${FAILURES.logged_out.title}. ${FAILURES.logged_out.text}`, ok: false, relink: true }
+  }
+  return { value: 'Not linked. Nothing comes in or goes out.', ok: false, relink: false }
 })
-/** The QR panel: asked for, or needed (the bridge waits for a scan, or the code expired). */
-const linkPanel = computed(() => showLink.value || (!wa.linked && (wa.bridge.link === 'waiting_for_scan' || wa.bridge.link === 'unlinked')))
+/** The QR panel: asked for, or needed (a code is on its way or shown, or the code expired). */
+const linkPanel = computed(() => showLink.value || (!wa.linked && (stage.value === 'loading' || stage.value === 'scan' || stage.value === 'expired')))
 
 const importView = computed(() =>
   importText(wa.importState, { messages: wa.progress?.stored ?? 0, chats: wa.progress?.chats ?? 0, stored: wa.chatCount, refused: wa.stuckRefused }),
@@ -154,16 +150,11 @@ const importAnnouncement = computed(() =>
 
 /** The import date the config keeps, in the app's date format. */
 const importSince = computed(() => (wa.config === null ? '' : shortDue(wa.config.importSince)))
-/** The whatsapp-mcp row: the folder, and whether Tresso's bridge runs from it now. */
-const folderRow = computed<{ value: string; ok: boolean }>(() => {
-  const folder = wa.config === null ? '' : shortFolder(wa.config.folder)
-  return wa.bridge.process === 'owned' && wa.bridge.error === null ? { value: `${folder}, bridge started by Tresso`, ok: true } : { value: `${folder}, bridge not running`, ok: false }
-})
 const disconnecting = computed(() => wa.busy === 'disconnect')
 
 /** "All my devices" on this Mac. */
 const allDevices = computed(() => wa.config?.mode === 'all')
-/** This Mac reads its bridge's store in: "Only this Mac", or it relays the server's account. */
+/** This Mac reads its WhatsApp messages in: "Only this Mac", or it relays the server's account. */
 const readsHere = computed(() => !allDevices.value || wa.relaysHere)
 /** The Relaying Mac row: this Mac, or the one that relays (with "Use this Mac instead"), or none yet. */
 const relayRow = computed<{ value: string; ok: boolean; takeOver: 'relay' | 'switch' | null; detail: string | null }>(() => {
@@ -242,8 +233,6 @@ async function relayAnyway(): Promise<void> {
   const task = wa.askNumber
   if (task === 'take-over') {
     await wa.useThisMac({ number: true, keepGroups: keepGroups.value })
-  } else if (task === 'folder') {
-    await wa.changeFolder({ number: true })
   } else if (task === 'mode') {
     if (await wa.switchMode('all', { copy: true, number: true, keepGroups: keepGroups.value })) {
       confirmingMode.value = null
@@ -335,7 +324,7 @@ onBeforeUnmount(() => {
       <p v-if="wa.notice" class="notice" role="status">{{ wa.notice }}</p>
       <div v-if="wa.otherRelay !== null" class="panel">
         <p>
-          Your WhatsApp chats are on your Tresso server, relayed by {{ deviceLabel(wa.otherRelay.name) }}. Connect whatsapp-mcp on this Mac to relay them from here instead; the other Mac then
+          Your WhatsApp chats are on your Tresso server, relayed by {{ deviceLabel(wa.otherRelay.name) }}. Connect WhatsApp on this Mac to relay them from here instead; the other Mac then
           stops.
         </p>
         <div>
@@ -343,7 +332,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-else class="panel">
-        <p>Read and answer your WhatsApp chats next to your mail, through whatsapp-mcp on this Mac. Your phone stays the WhatsApp account, and the chats stay on this Mac unless you choose to copy them to your Tresso server.</p>
+        <p>Read and answer your WhatsApp chats next to your mail, on this Mac. Your phone stays the WhatsApp account, and the chats stay on this Mac unless you choose to copy them to your Tresso server.</p>
         <div>
           <RouterLink :to="{ name: 'settings-whatsapp-connect' }" class="button button-primary">Connect WhatsApp</RouterLink>
         </div>
@@ -409,22 +398,16 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="row">
-          <span class="label">whatsapp-mcp</span>
-          <span class="value"><span class="dot" :class="{ ok: folderRow.ok }" aria-hidden="true" />{{ folderRow.value }}</span>
-          <button type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.changeFolder()">Change folder</button>
-        </div>
-        <div class="row">
-          <span class="label">Bridge</span>
-          <span class="value"><span class="dot" :class="{ ok: bridgeRow.ok }" aria-hidden="true" />{{ bridgeRow.value }}</span>
-          <button v-if="bridgeRow.action === 'start'" type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.start()">Start again</button>
-          <a v-else-if="bridgeRow.action === 'close-port'" :href="CLOSE_PORT_URL" target="_blank" rel="noopener noreferrer" class="button button-quiet outline">Show how to close it</a>
-          <span v-if="bridgeRow.detail" class="detail">{{ bridgeRow.detail }}</span>
-          <code v-if="bridgeView.problem === 'not_built' || bridgeView.problem === 'unprotected'" class="command">{{ BUILD_COMMAND }}</code>
+          <span class="label">On this Mac</span>
+          <span class="value"><span class="dot" :class="{ ok: statusRow.ok }" aria-hidden="true" />{{ statusRow.value }}</span>
+          <button v-if="statusRow.action" type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.start()">Try again</button>
+          <span v-if="statusRow.detail" class="detail">{{ statusRow.detail }}</span>
         </div>
         <div class="row">
           <span class="label">Linked to phone</span>
           <span class="value"><span class="dot" :class="{ ok: linkRow.ok }" aria-hidden="true" />{{ linkRow.value }}</span>
-          <button type="button" class="button button-quiet outline" :aria-expanded="linkPanel" aria-controls="wa-link" @click="showLink = !showLink">Show how to link</button>
+          <button v-if="linkRow.relink" type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.start()">Link again</button>
+          <button v-else type="button" class="button button-quiet outline" :aria-expanded="linkPanel" aria-controls="wa-link" @click="showLink = !showLink">Show how to link</button>
           <div v-if="linkPanel" id="wa-link" class="detail link">
             <WhatsAppLink v-if="!wa.linked" />
             <p v-else>Linked. To link another phone, remove this Mac under WhatsApp &gt; Linked devices on the phone that is linked now; a new code then shows here.</p>
@@ -476,8 +459,8 @@ onBeforeUnmount(() => {
           <p id="wa-groups-body">
             {{
               allDevices
-                ? 'They go from your Tresso server and from every device. WhatsApp and the bridge keep them, and turning groups on again brings them back.'
-                : 'They go from Tresso on this Mac. WhatsApp and the bridge keep them, and turning groups on again brings them back.'
+                ? 'They go from your Tresso server and from every device. WhatsApp keeps them, and turning groups on again brings them back.'
+                : 'They go from Tresso on this Mac. WhatsApp keeps them, and turning groups on again brings them back.'
             }}
           </p>
           <div class="actions">
@@ -499,8 +482,8 @@ onBeforeUnmount(() => {
       <section v-if="leftOutRows.length > 0" class="panel left-out" aria-labelledby="wa-left-out">
         <h3 id="wa-left-out">Chats left out</h3>
         <p class="option-note">
-          Tresso does not read these chats; WhatsApp keeps them. Taking one back in reads the bridge's store again: its messages come back as read, also those that came while it was left out, and
-          new ones arrive as usual.<template v-if="allDevices"> {{ LEFT_OUT_KEPT }}</template><template v-if="!readsHere"> Take chats back in on the Mac that relays WhatsApp.</template>
+          Tresso does not read these chats; WhatsApp keeps them. Taking one back in reads this Mac's WhatsApp messages again: its messages come back as read, also those that came while it was
+          left out, and new ones arrive as usual.<template v-if="allDevices"> {{ LEFT_OUT_KEPT }}</template><template v-if="!readsHere"> Take chats back in on the Mac that relays WhatsApp.</template>
         </p>
         <ul class="left-list">
           <li v-for="row in leftOutRows" :key="row.jid" class="left-row">
@@ -514,20 +497,20 @@ onBeforeUnmount(() => {
         <p>
           {{
             allDevices
-              ? 'Disconnecting removes your WhatsApp chats from your Tresso server and from every device. WhatsApp itself, the bridge and its own message store on this Mac stay as they are.'
-              : 'Disconnecting removes the WhatsApp chats Tresso copied. WhatsApp itself, the bridge and its own message store on this Mac stay as they are.'
+              ? 'Disconnecting removes your WhatsApp chats from your Tresso server and from every device, and everything Tresso keeps of WhatsApp on this Mac. WhatsApp on your phone keeps everything.'
+              : 'Disconnecting removes the WhatsApp chats Tresso copied and everything Tresso keeps of WhatsApp on this Mac. WhatsApp on your phone keeps everything.'
           }}
         </p>
         <button ref="disconnectButton" type="button" class="button button-danger" :disabled="wa.busy !== null" @click="confirmingDisconnect = true">Disconnect WhatsApp</button>
         <div v-if="confirmingDisconnect" class="confirm" role="alertdialog" aria-labelledby="wa-disconnect-title" aria-describedby="wa-disconnect-body">
           <p id="wa-disconnect-title"><strong>Disconnect WhatsApp?</strong></p>
           <p v-if="allDevices" id="wa-disconnect-body">
-            Tresso deletes your WhatsApp chats from your Tresso server, so web, mobile and your other Macs stop showing them, with the replies still waiting there, and stops the bridge on this Mac. It
-            deletes nothing in your whatsapp-mcp folder: the bridge and its own message store stay there. Your phone keeps this Mac under Linked devices until you remove it there.
+            Tresso deletes your WhatsApp chats from your Tresso server, so web, mobile and your other Macs stop showing them, with the replies still waiting there, and removes WhatsApp from this
+            Mac with its link to your phone. Your phone keeps this Mac under Linked devices until you remove it there.
           </p>
           <p v-else id="wa-disconnect-body">
-            Tresso stops the bridge and removes the WhatsApp chats it copied to this Mac. It deletes nothing in your whatsapp-mcp folder: the bridge and its own message store stay there. Your
-            phone keeps this Mac under Linked devices until you remove it there.
+            Tresso removes WhatsApp from this Mac: the chats it copied, the messages it kept and its link to your phone. Your phone keeps this Mac under Linked devices until you remove it
+            there.
           </p>
           <div class="actions">
             <button type="button" class="button button-danger" :disabled="wa.busy !== null" @click="disconnect">{{ disconnecting ? 'Disconnecting…' : 'Disconnect' }}</button>
@@ -706,15 +689,6 @@ h2 {
 }
 .detail.link p {
   margin: 0;
-}
-.command {
-  flex: 1 1 100%;
-  padding: 8px 12px;
-  border-radius: var(--radius-control);
-  background: var(--ground);
-  font: 400 13px var(--font-mono);
-  overflow-wrap: anywhere;
-  user-select: all;
 }
 h3 {
   margin: 0;

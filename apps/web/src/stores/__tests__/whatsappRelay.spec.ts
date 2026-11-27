@@ -5,7 +5,7 @@ import { ChatRelayImportStuck, LOCAL_CHAT_ACCOUNT, LOCAL_CURSOR, LOCAL_HISTORY_T
 import { memorySql } from '@tresso/core/testing/sql'
 import type { WhatsAppConfig } from '@/platform/whatsapp'
 import type { SessionEnd } from '@/stores/auth'
-import { NOW, DAY, FOLDER, DIRECT, GROUP, MESSAGE_TEXT, RUNNING, LINKED, WAITING, GOOD_FOLDER, FakeShell } from './whatsappShellFixture'
+import { NOW, DAY, DIRECT, GROUP, MESSAGE_TEXT, RUNNING, LINKED, WAITING, FakeShell } from './whatsappShellFixture'
 
 const fake = vi.hoisted(() => ({ shell: null as unknown, desktop: true }))
 vi.mock('@/platform/whatsapp', async (original) => ({
@@ -41,7 +41,6 @@ const { useWhatsAppRelayStore } = await import('../whatsappRelay')
 
 function connectedConfig(extra: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
   return {
-    folder: FOLDER,
     mode: 'local',
     deviceId: '0193a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b',
     deviceName: "Kim's MacBook Pro",
@@ -50,6 +49,7 @@ function connectedConfig(extra: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
     includeGroups: true,
     notify: false,
     leftOut: [],
+    moved: false,
     ...extra,
   }
 }
@@ -125,6 +125,8 @@ describe('the WhatsApp relay store', () => {
   it('resumes a connection: starts the bridge, and the relay only once it is linked and the copy caught up', async () => {
     const wa = await signedIn(connectedConfig())
     expect(shell.calls).toContain('start')
+    // On the signed-in user's own store: the shell builds its path from the user id.
+    expect(shell.startedFor).toEqual(['u1'])
     expect(wa.connected).toBe(true)
     shell.add('A1', DIRECT, 60)
 
@@ -186,23 +188,19 @@ describe('the WhatsApp relay store', () => {
     expect(shell.sent).toHaveLength(1)
   })
 
-  it('connects: folder, risk, bridge, scan, then saves the config once with the import date and starts the relay', async () => {
+  it('connects: risk, code, scan, then saves the config once with the import date and starts the relay', async () => {
     const wa = await signedIn()
     mail.synced = true
     expect(wa.connected).toBe(false)
 
-    await wa.chooseFolder()
-    expect(wa.folder).toBe(FOLDER)
-    expect(wa.inspection).toEqual(GOOD_FOLDER)
-
     // Nothing links before the risk was confirmed.
     expect(await wa.start()).toBe(false)
     expect(shell.calls).not.toContain('start')
-    expect(wa.error).toBe('Confirm the risk and choose a folder with a built bridge first.')
+    expect(wa.error).toBe('Confirm the risk first.')
 
     wa.riskAccepted = true
     expect(await wa.start()).toBe(true)
-    expect(shell.calls).toContain('start')
+    expect(shell.startedFor).toEqual(['u1'])
     // Not linked yet: no config can be saved.
     expect(await wa.connect()).toBe(false)
 
@@ -216,7 +214,6 @@ describe('the WhatsApp relay store', () => {
     await pass()
     expect(shell.saved).toHaveLength(1)
     expect(shell.saved[0]).toMatchObject({
-      folder: FOLDER,
       mode: 'local',
       deviceName: "Kim's MacBook Pro",
       linkedAt: new Date(NOW).toISOString(),
@@ -224,7 +221,9 @@ describe('the WhatsApp relay store', () => {
       includeGroups: true,
       notify: false,
       leftOut: [],
+      moved: false,
     })
+    expect(shell.saved[0]).not.toHaveProperty('folder')
     expect(shell.saved[0]!.deviceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(wa.relayRunning).toBe(true)
 
@@ -246,12 +245,10 @@ describe('the WhatsApp relay store', () => {
 
   it('stops the bridge it started when the dialog closes without connecting', async () => {
     const wa = await signedIn()
-    await wa.chooseFolder()
     wa.riskAccepted = true
     await wa.start()
     await wa.cancel()
     expect(shell.calls[shell.calls.length - 1]).toBe('stop')
-    expect(wa.folder).toBeNull()
     expect(wa.riskAccepted).toBe(false)
   })
 
@@ -289,17 +286,34 @@ describe('the WhatsApp relay store', () => {
 
   it('maps a refused shell command to a plain sentence', async () => {
     const wa = await signedIn()
-    shell.failures.chooseFolder = 'unsupported'
-    expect(await wa.chooseFolder()).toBe(false)
+    shell.failures.start = 'unsupported'
+    wa.riskAccepted = true
+    expect(await wa.start()).toBe(false)
     expect(wa.error).toBe('WhatsApp works in Tresso for Mac only.')
 
-    shell.failures = { start: 'not_chosen' }
-    wa.riskAccepted = true
-    wa.folder = FOLDER
-    wa.inspection = GOOD_FOLDER
-    await wa.start()
-    expect(wa.error).toBe('Choose the whatsapp-mcp folder again: Tresso only uses a folder you picked.')
-    expect(JSON.stringify(errors)).not.toContain(FOLDER)
+    shell.failures = { start: 'The WhatsApp data of /Users/kim cannot be used' }
+    expect(await wa.start()).toBe(false)
+    expect(wa.error).toBe('The WhatsApp data of /Users/kim cannot be used')
+    expect(JSON.stringify(errors)).not.toContain('/Users/kim')
+  })
+
+  it('takes up a connection an earlier version made through whatsapp-mcp: links again on its own store, then keeps the relay going', async () => {
+    // The shell moved the config at load (whatsapp.rs): no folder, no link time, `moved`.
+    const wa = await signedIn(connectedConfig({ linkedAt: null, moved: true }))
+    mail.synced = true
+    expect(shell.startedFor).toEqual(['u1'])
+    expect(wa.connected).toBe(true)
+    // The new store has no session: a code to scan, and nothing is read meanwhile.
+    shell.emit(WAITING)
+    await pass(10_000)
+    expect(wa.relayRunning).toBe(false)
+    expect(shell.calls).not.toContain('read')
+
+    shell.emit(LINKED)
+    await pass()
+    expect(wa.relayRunning).toBe(true)
+    expect(shell.saved[shell.saved.length - 1]).toMatchObject({ moved: false, linkedAt: new Date(NOW + 10_000).toISOString(), mode: 'local', deviceId: connectedConfig().deviceId })
+    expect(wa.config?.moved).toBe(false)
   })
 
   it('disconnects: stops the relay and the bridge, removes the copied chats and the config, and keeps nothing', async () => {
@@ -400,20 +414,6 @@ describe('the WhatsApp relay store', () => {
     expect((await store.chat(localChatId(DIRECT)))?.messages ?? []).toEqual([])
   })
 
-  it('changes the folder: picks and checks first, then stops, saves and starts again, keeping the chats', async () => {
-    const wa = await signedIn(connectedConfig())
-    mail.synced = true
-    shell.add('A1', DIRECT, 10)
-    shell.emit(LINKED)
-    await pass(3_000)
-
-    expect(await wa.changeFolder()).toBe(true)
-    await pass()
-    expect(shell.saved[shell.saved.length - 1]).toMatchObject({ folder: FOLDER, linkedAt: null })
-    expect(shell.calls.slice(-3)).toEqual(['stop', 'saveConfig', 'start'])
-    expect(await store.chatByJid(LOCAL_CHAT_ACCOUNT, DIRECT)).not.toBeNull()
-  })
-
   it('connects only after the risk was confirmed on this page, and stops a bridge a reloaded page left', async () => {
     // A page that started the bridge and was reloaded while the code showed: no config, the bridge still runs.
     shell.state = { ...RUNNING, link: 'waiting_for_scan' }
@@ -422,7 +422,6 @@ describe('the WhatsApp relay store', () => {
     expect(wa.bridge.process).toBe('stopped')
 
     // Even linked, connecting needs the risk confirmed here.
-    await wa.chooseFolder()
     shell.emit(LINKED)
     await pass()
     expect(await wa.connect()).toBe(false)
@@ -434,7 +433,6 @@ describe('the WhatsApp relay store', () => {
 
   it('closing the dialog while the bridge starts waits for the start, then stops the bridge', async () => {
     const wa = await signedIn()
-    await wa.chooseFolder()
     wa.riskAccepted = true
     let release!: () => void
     shell.startHeld = new Promise((resolve) => (release = resolve))
@@ -496,11 +494,12 @@ describe('the WhatsApp relay store', () => {
     await pass()
     expect(wa.relayRunning).toBe(true)
 
-    shell.configs.set('u2', connectedConfig({ folder: '/Users/sam/whatsapp-mcp', includeGroups: false }))
+    shell.configs.set('u2', connectedConfig({ deviceId: '0193a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5c', includeGroups: false }))
     auth.me = { id: 'u2' }
     await pass()
     expect(wa.userId).toBe('u2')
-    expect(wa.config?.folder).toBe('/Users/sam/whatsapp-mcp')
+    expect(shell.startedFor).toEqual(['u1', 'u2'])
+    expect(wa.config?.deviceId).toBe('0193a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5c')
     expect(wa.config?.includeGroups).toBe(false)
 
     // A user without WhatsApp: nothing of the other one shows.

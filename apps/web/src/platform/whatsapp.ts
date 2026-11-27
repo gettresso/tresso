@@ -13,17 +13,17 @@ export const chatsFromServer = !isDesktop
 
 /**
  * The desktop shell's WhatsApp commands (apps/desktop/src-tauri/src/whatsapp.rs), macOS only. The shell starts the
- * user's own whatsapp-mcp bridge from the folder the user picked, reads its store read only and calls its REST API on
- * 127.0.0.1; the relay logic that uses these lives in packages/core/src/chat. Outside macOS every command but
- * `whatsappAvailable` rejects with `unsupported`.
+ * WhatsApp bridge the Mac app carries (apps/whatsapp-bridge) on the signed-in user's own store in the app's data
+ * folder, reads that store read only and calls the bridge's REST API on 127.0.0.1; the relay logic that uses these
+ * lives in packages/core/src/chat. No command takes a path to a store: the shell builds it from the user id `start`
+ * was given. Outside macOS every command but `whatsappAvailable` rejects with `unsupported`.
  *
  * Every command answers `unsupported` too while WhatsApp is not turned on for this Mac (whatsapp.rs). The shell does not
  * know which user its tokens belong to, so binding a config to the confirmed user is this client's rule
  * (stores/whatsappRelay.ts).
  *
- * Errors are rejections with a string: a code the caller can act on (`busy`, `no_store`, `not_chosen`, `no_folder`,
- * `bridge_stopped`, `not_found`, `not_media`, `failed`, `refused`, `mismatch`, `too_large`, `unsupported`, `no_store`) or a
- * sentence for anything else.
+ * Errors are rejections with a string: a code the caller can act on (`busy`, `no_store`, `bridge_stopped`, `not_found`,
+ * `not_media`, `failed`, `refused`, `mismatch`, `too_large`, `unsupported`) or a sentence for anything else.
  */
 
 /** The event the shell sends every change of the bridge's state on (EVENT in whatsapp.rs). */
@@ -32,12 +32,18 @@ export const WHATSAPP_EVENT = 'whatsapp'
 export type BridgeProcess = 'owned' | 'stopped'
 export type BridgeLink = 'linked' | 'unlinked' | 'waiting_for_scan' | 'unknown'
 /**
- * `not_built`: no built bridge in the folder. `exited`: it stopped three times within a minute. `port_busy`: another
- * bridge or program holds the port. `unprotected`: a bridge answers without Tresso's token (upstream whatsapp-mcp, or
- * one started in a terminal), so anything on the Mac could send through it (docs/whatsapp-bridge.md). `unsafe`: the
- * binary or its folder can be changed by another user.
+ * Why the bridge does not run (Failure in whatsapp.rs; whatsappTexts.ts says each in plain words):
+ * - `missing`: the app lacks the bridge or cannot start it.
+ * - `store`: its store on this Mac cannot be made, opened or read.
+ * - `offline`: WhatsApp could not be reached, three times in a row.
+ * - `pair_failed`: the phone or WhatsApp refused the link.
+ * - `outdated`: WhatsApp no longer takes this version; Tresso needs an update.
+ * - `replaced`: another program connected with the same link.
+ * - `banned`: WhatsApp banned the account for a while.
+ * - `logged_out`: the phone removed this Mac under Linked devices; linking again shows a new code.
+ * - `exited`: it stopped three times within a minute for another reason.
  */
-export type BridgeFailure = 'not_built' | 'exited' | 'port_busy' | 'unprotected' | 'unsafe'
+export type BridgeFailure = 'missing' | 'store' | 'offline' | 'pair_failed' | 'outdated' | 'replaced' | 'banned' | 'logged_out' | 'exited'
 
 export interface BridgeState {
   /** `owned`: Tresso started it (Tresso uses no bridge it did not start). */
@@ -51,19 +57,7 @@ export interface BridgeState {
   error: BridgeFailure | null
 }
 
-export interface BridgeInspection {
-  /** `whatsapp-bridge/main.go` is in the folder. */
-  found: boolean
-  /** `whatsapp-bridge/whatsapp-bridge` is built. */
-  built: boolean
-  /** The bridge ran once and has a store. */
-  hasStore: boolean
-  /** The binary and its folder belong to this user and nobody else may write them; else it is not started. */
-  safe: boolean
-}
-
 export interface WhatsAppConfig {
-  folder: string
   mode: 'local' | 'all'
   deviceId: string
   deviceName: string
@@ -74,6 +68,11 @@ export interface WhatsAppConfig {
   includeGroups: boolean
   notify: boolean
   leftOut: string[]
+  /**
+   * Connected through whatsapp-mcp by an earlier version: the phone has to be linked to Tresso's own bridge again.
+   * Cleared once it is (and a config made at connect never has it).
+   */
+  moved: boolean
 }
 
 export interface BridgeRows {
@@ -131,26 +130,23 @@ export function whatsAppShell(shell: WhatsAppShell = tauriShell) {
     /** This computer's name, for "via <device>". */
     device: () => shell.invoke<{ name: string }>('whatsapp_device'),
     loadConfig: (userId: string) => shell.invoke<WhatsAppConfig | null>('whatsapp_config_load', { userId }),
-    /** The folder must be one `chooseFolder` returned. */
     saveConfig: (userId: string, config: WhatsAppConfig) => shell.invoke<void>('whatsapp_config_save', { userId, config }),
-    /** On disconnect and sign-out; stops the bridge Tresso started from that folder. */
+    /** On disconnect and sign-out: stops the bridge running for this user, and removes their config and their store. */
     clearConfig: (userId: string) => shell.invoke<void>('whatsapp_config_clear', { userId }),
-    /** Once the server confirmed the user: every other user's config goes, with the folders only they named. */
+    /** Once the server confirmed the user: every other user's config and store go. */
     keepOnlyConfig: (userId: string) => shell.invoke<void>('whatsapp_config_keep_only', { userId }),
-    /** The folder dialog; null when cancelled. Only a folder picked here can be used. */
-    chooseFolder: () => shell.invoke<string | null>('whatsapp_choose_folder'),
-    inspect: (folder: string) => shell.invoke<BridgeInspection>('whatsapp_inspect', { folder }),
-    /** Uses a bridge that already runs, else starts the one in the folder. */
-    start: (folder: string) => shell.invoke<BridgeState>('whatsapp_start', { folder }),
+    /** Starts the bridge on this user's store (made first); one that runs for this user already is kept. */
+    start: (userId: string) => shell.invoke<BridgeState>('whatsapp_start', { userId }),
     stop: () => shell.invoke<BridgeState>('whatsapp_stop'),
     state: () => shell.invoke<BridgeState>('whatsapp_state'),
-    identity: (folder: string) => shell.invoke<WhatsAppIdentity | null>('whatsapp_identity', { folder }),
+    /** The account the store of the last started user is linked to; null while nothing is linked. */
+    identity: () => shell.invoke<WhatsAppIdentity | null>('whatsapp_identity'),
     /** At most 500 rows after `afterRowid`; rejects with `busy` while the bridge writes (skip the round). */
-    read: (folder: string, afterRowid: number, limit: number) => shell.invoke<BridgeRows>('whatsapp_read', { folder, afterRowid, limit }),
-    names: (folder: string, ids: string[]) => shell.invoke<Record<string, SenderName>>('whatsapp_names', { folder, ids }),
+    read: (afterRowid: number, limit: number) => shell.invoke<BridgeRows>('whatsapp_read', { afterRowid, limit }),
+    names: (ids: string[]) => shell.invoke<Record<string, SenderName>>('whatsapp_names', { ids }),
     /** `mediaPath` must be a file `chooseFile` returned, of at most 100 MB for now; a larger one rejects with `too_large`. */
     send: (recipient: string, text: string, mediaPath: string | null = null) => shell.invoke<SendResult>('whatsapp_send', { recipient, text, mediaPath }),
-    download: (folder: string, messageId: string, chatJid: string) => shell.invoke<DownloadedFile>('whatsapp_download', { folder, messageId, chatJid }),
+    download: (messageId: string, chatJid: string) => shell.invoke<DownloadedFile>('whatsapp_download', { messageId, chatJid }),
     /** Opens a file `download` returned with its default app. */
     openFile: (path: string) => shell.invoke<void>('whatsapp_open_file', { path }),
     /** The file dialog for Attach: the file's path and size in bytes; null when cancelled. */

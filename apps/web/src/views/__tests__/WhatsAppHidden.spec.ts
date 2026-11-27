@@ -37,7 +37,7 @@ describe('WhatsApp while it is not turned on', () => {
 
     const on = mount(ConnectPicker, { props: { address: null, signInProviders: ['google', 'microsoft'], whatsapp: true } })
     const card = on.findAll('button').find((button) => button.text().includes('WhatsApp'))!
-    expect(card.text()).toBe('WAWhatsAppChats next to your mail, through whatsapp-mcp on your computer. Desktop app only.')
+    expect(card.text()).toBe('WAWhatsAppChats next to your mail, in Tresso for Mac. Desktop app only.')
     await card.trigger('click')
     expect(on.emitted('whatsapp')).toHaveLength(1)
   })
@@ -54,7 +54,7 @@ describe('WhatsApp while it is not turned on', () => {
     expect(wrapper.get('[role="listitem"][aria-label="WhatsApp"]').text()).toContain('Chats next to your mail, on this Mac.')
     expect(wrapper.get('[role="listitem"][aria-label="WhatsApp"] a').attributes('href')).toBe('/settings/whatsapp/connect')
 
-    wa.config = { folder: '/Users/kim/whatsapp-mcp', mode: 'local', deviceId: 'd', deviceName: 'Mac', linkedAt: null, importSince: '2026-10-13T10:00:00.000Z', includeGroups: true, notify: false, leftOut: [] }
+    wa.config = { mode: 'local', deviceId: 'd', deviceName: 'Mac', linkedAt: null, importSince: '2026-10-13T10:00:00.000Z', includeGroups: true, notify: false, leftOut: [], moved: false }
     wa.identity = { number: '31698765432', name: 'Kim' }
     await flushPromises()
     expect(wrapper.get('[role="listitem"][aria-label="WhatsApp"]').text()).toContain('+31698765432, via this Mac')
@@ -81,7 +81,7 @@ describe('WhatsApp while it is not turned on', () => {
     expect(router.currentRoute.value.name).toBe('settings-whatsapp')
     await router.push('/settings/whatsapp/connect')
     expect(router.currentRoute.value.name).toBe('settings-whatsapp-connect')
-    wa.config = { folder: '/Users/kim/whatsapp-mcp', mode: 'local', deviceId: 'd', deviceName: 'Mac', linkedAt: null, importSince: '2026-10-13T10:00:00.000Z', includeGroups: true, notify: false, leftOut: [] }
+    wa.config = { mode: 'local', deviceId: 'd', deviceName: 'Mac', linkedAt: null, importSince: '2026-10-13T10:00:00.000Z', includeGroups: true, notify: false, leftOut: [], moved: false }
     await router.push('/settings/accounts')
     await router.push('/settings/whatsapp/connect')
     expect(router.currentRoute.value.name).toBe('settings-whatsapp')

@@ -128,7 +128,7 @@ const composerNote = computed(() => {
     // Said by the reply box while the server has not confirmed who is signed in (chats.writesHeld).
     return 'Tresso is still checking who is signed in. Replies can be written once it is connected.'
   }
-  return notice.value !== null || !chats.relaysHere ? null : wa.linked ? null : 'Replies can be written once the bridge is linked.'
+  return notice.value !== null || !chats.relaysHere ? null : wa.linked ? null : 'Replies can be written once WhatsApp is linked.'
 })
 const sendNote = computed(() => sendNoteText(chats.relaysHere, chats.account?.relayDeviceName ?? null))
 /** The page's own file picker: in "All my devices" a file is read by the page and uploaded (chats.attachFile). */

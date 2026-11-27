@@ -157,7 +157,7 @@ describe('ChatPane', () => {
   it('says each reply state as the boards do, with Cancel only while it waits', async () => {
     relay.relayRunning = false
     let view = await withReply({ status: 'waiting' })
-    expect(metaOf(view)[1]).toMatch(/^\d{1,2}:\d\d(?: [AP]M)?, waiting for the bridge$/)
+    expect(metaOf(view)[1]).toMatch(/^\d{1,2}:\d\d(?: [AP]M)?, waiting for WhatsApp$/)
     expect(bubbles(view)[1]!.get('.meta').classes()).toContain('waiting')
     expect(bubbles(view)[1]!.findAll('button').map((button) => button.text())).toEqual(['Cancel'])
     view.unmount()
@@ -179,7 +179,7 @@ describe('ChatPane', () => {
     view.unmount()
 
     for (const [error, why] of [
-      ['bridge_stopped', 'The bridge is not running.'],
+      ['bridge_stopped', 'WhatsApp is not running on your Mac.'],
       ['not_linked', 'WhatsApp is not linked.'],
       ['refused', 'WhatsApp refused the message.'],
     ] as const) {
@@ -327,7 +327,7 @@ describe('ChatPane', () => {
     await bubbles(view)[1]!.get('button.meta').trigger('click')
     await flushPromises()
     expect((await store.chat(DIRECT_ID))!.outgoing[0]).toMatchObject({ status: 'waiting', error: null })
-    expect(view.get('.composer .visually-hidden[role="status"]').text()).toBe('Waiting for the bridge.')
+    expect(view.get('.composer .visually-hidden[role="status"]').text()).toBe('Waiting for WhatsApp.')
     wrapper = view
   })
 
@@ -347,7 +347,7 @@ describe('ChatPane', () => {
 
     relay.bridge = STOPPED
     view = await open(DIRECT_ID, store)
-    expect(view.get('.notice .text').text()).toBe('The bridge is not running. New messages are not picked up until it runs.')
+    expect(view.get('.notice .text').text()).toBe('WhatsApp is not running on this Mac. New messages are not picked up until it runs.')
     expect(view.get('.notice button').text()).toBe('Start again')
     await view.get('.notice button').trigger('click')
     expect(start).toHaveBeenCalled()

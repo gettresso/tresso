@@ -2,39 +2,37 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import AppIcon from '@/components/AppIcon.vue'
+import ProviderMark from '@/components/ProviderMark.vue'
 import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
-  BRIDGE_NOTE,
-  BUILD_COMMAND,
-  COPY_BODY,
-  COPY_TITLE,
-  LEFT_OUT_KEPT,
+  ASK_COPY_BODY,
+  ASK_COPY_TITLE,
+  CONNECT_LEAD,
+  FAILURES,
+  IMPORT_DAYS,
   PLACE_ALL_NOTE,
   PLACE_LOCAL_NOTE,
-  FOLDER_NOTE,
-  IMPORT_NOTE,
-  INSTALL_URL,
-  LINK_NOTE,
+  REMOVE_BODY,
+  REMOVE_TITLE,
   RISK_CONFIRM,
   RISK_TEXT,
-  bridgeIdle,
-  bridgeText,
-  folderText,
-  importText,
-  linkText,
-  shortFolder,
+  linkStage,
+  linkedTitle,
 } from '@/components/chat/whatsappTexts'
 
 /**
- * Connect WhatsApp (the ConnectWhatsApp board, with the plan's corrections): the folder, the bridge, the link to the
- * phone and the first import, each a check that is ticked once done, in order. Nothing links before the user confirmed
- * the risk. Where the chats live: "Only this Mac" first and chosen unless the dialog was opened to take the relay over
- * (`mode` all, "Use this Mac instead"); picking "All my devices" asks first whether the chats may be copied to the
- * Tresso server. After Connect it stays open to show the import; Done or Close leave it (the import goes on, Settings
- * shows it).
+ * Connect WhatsApp (the ConnectWhatsApp board): three steps, one primary button each.
+ * 1. Before you start: the risk, confirmed with the box; nothing starts before it is ticked. Show QR code.
+ * 2. Scan: Tresso starts its own link to WhatsApp and shows the code (Getting a code, the code, The code expired).
+ * 3. Linked: once the phone scanned, WhatsApp is connected at once and the recent chats come in; the dialog shows the
+ *    reading and where the chats live. "Only this Mac" is chosen unless the dialog was opened to take the relay over
+ *    from another Mac (`mode` all with another relay there): then the chats are on the server already and nothing is
+ *    asked. Picking "All my devices" asks first whether the chats may be copied to the server; picking "Only this Mac"
+ *    again asks before they are removed from it. Done waits for the answer.
+ * A failure (it could not start, the phone signed Tresso out) is one pattern: a title, one sentence, one button.
  *
  * A modal <dialog>: the rest of the page is inert while it is open, Escape closes it, and focus goes back to what
- * opened it.
+ * opened it. Close or Done leave it; reading goes on, and Settings shows it.
  */
 const props = defineProps<{
   /** The place chosen when the dialog opens; "Only this Mac" unless the user came to take the relay over. */
@@ -43,137 +41,157 @@ const props = defineProps<{
 const emit = defineEmits<{ close: []; done: [] }>()
 const wa = useWhatsAppRelayStore()
 const dialog = ref<HTMLDialogElement | null>(null)
-/** Where the chats will live. */
+/** Show QR code was pressed in this dialog: the link steps show from here on. */
+const started = ref(false)
+/** Where the chats live, as picked in the dialog. */
 const place = ref<'local' | 'all'>(props.mode ?? 'local')
-/** "All my devices" was picked and waits for the user's yes to copying the chats to the server. */
-const confirmingCopy = ref(false)
-/** The user said yes to copying the chats to the server (Copy). */
-let copyConfirmed = false
+/** The question open behind a pick of "All my devices" (copy) or of "Only this Mac" after copying (remove). */
+const asking = ref<'copy' | 'remove' | null>(null)
+/** Connected from this dialog: the linked step shows the reading and the place. */
+const connectedHere = ref(false)
 /**
  * The dialog was opened to take the relay over from another Mac (`mode` all) and the server's account is there: the
- * chats are on the server already, so nothing is asked. Checked again when Connect is pressed.
+ * chats are on the server already, so nothing is asked. Checked again when the phone has linked.
  */
 const takeOverFromOther = computed(() => props.mode === 'all' && wa.otherRelay !== null)
-const copyCancel = ref<HTMLButtonElement | null>(null)
-const allRadio = ref<HTMLInputElement | null>(null)
-/** Connected from this dialog: it now shows the import and offers Done. */
-const connectedHere = ref(false)
+const askAnswer = ref<HTMLButtonElement | null>(null)
+const PLACES = [
+  { id: 'local', title: 'Only this Mac', note: PLACE_LOCAL_NOTE },
+  { id: 'all', title: 'All my devices', note: PLACE_ALL_NOTE },
+] as const
+/** While a question is open, the place it asks about shows as picked (the board's "All my devices asks first"). */
+const shownPlace = computed(() => (asking.value === 'copy' ? 'all' : asking.value === 'remove' ? 'local' : place.value))
+const placeButtons = ref<HTMLButtonElement[]>([])
 let opener: HTMLElement | null = null
+/** The control the question was opened from, for the focus to go back to. */
+let askedFrom: HTMLElement | null = null
 
-const folderView = computed(() => folderText(wa.inspection))
-const bridgeView = computed(() => bridgeText(wa.bridge, wa.bridgeStarted))
-const linkView = computed(() => linkText(wa.bridge, wa.identity))
-const importView = computed(() =>
-  importText(connectedHere.value ? wa.importState : 'waiting', {
-    messages: wa.progress?.stored ?? 0,
-    chats: wa.progress?.chats ?? 0,
-    stored: wa.chatCount,
-    refused: wa.stuckRefused,
-  }),
+const stage = computed(() => linkStage(wa.bridge))
+/** The step the dialog shows. */
+const view = computed<'start' | 'link' | 'linked' | 'problem'>(() => {
+  if (connectedHere.value || (wa.connected && wa.linked)) {
+    return 'linked'
+  }
+  if (!started.value) {
+    return 'start'
+  }
+  if (stage.value === 'failed' || (stage.value === 'idle' && wa.error !== null && wa.busy === null)) {
+    return 'problem'
+  }
+  return stage.value === 'linked' ? 'linked' : 'link'
+})
+/** The failure the problem step names: the bridge's, or a start the shell refused (its words, from the store). */
+const problem = computed(() =>
+  wa.bridge.error !== null ? FAILURES[wa.bridge.error] : { title: FAILURES.exited.title, text: wa.error ?? FAILURES.exited.text, action: FAILURES.exited.action },
 )
+const reading = computed(() => wa.importState !== 'done')
+const progressText = computed(() => (reading.value ? `Reading chats from the last ${IMPORT_DAYS} days…` : 'Chats read'))
+/** Done waits for an open question and for a change of the place under way. */
+const doneDisabled = computed(() => asking.value !== null || wa.busy === 'mode' || wa.busy === 'connect')
 
-const folderDone = computed(() => folderView.value.ok)
-const bridgeDone = computed(() => wa.bridge.process === 'owned' && wa.bridge.port !== null && wa.bridge.error === null)
-const linkDone = computed(() => wa.linked)
-const importDone = computed(() => connectedHere.value && wa.importState === 'done')
-const canStart = computed(() => folderDone.value && wa.riskAccepted && wa.busy === null)
-const canConnect = computed(() => wa.riskAccepted && folderDone.value && bridgeDone.value && linkDone.value && wa.busy === null && !wa.connected && !confirmingCopy.value)
-/** Start the bridge (first time), or start it again after it stopped or failed. */
-const startLabel = computed(() => (bridgeIdle(wa.bridge) && !wa.bridgeStarted ? 'Start the bridge' : 'Start again'))
-const showStart = computed(() => wa.bridge.process === 'stopped' && !linkView.value.expired)
-
-/** What the live region says: changes of stage only, never a tick of the import or a new code. */
+/** What the live region says: changes of step only, never a new code or a tick of the reading. */
 const announcement = computed(() => {
-  if (connectedHere.value) {
-    return wa.importState === 'done' ? 'Your recent chats are in.' : wa.importState === 'stuck' ? 'Reading your chats is stuck.' : 'Reading your recent chats.'
+  switch (view.value) {
+    case 'link':
+      return stage.value === 'scan' ? 'A code to scan is shown.' : stage.value === 'expired' ? 'The code expired.' : 'Getting a code.'
+    case 'linked':
+      return reading.value ? 'Linked. Reading your recent chats.' : 'Linked. Your recent chats are in.'
+    default:
+      return ''
   }
-  if (bridgeView.value.problem !== null) {
-    return `The bridge is not running: ${bridgeView.value.status}.`
-  }
-  if (linkDone.value) {
-    return `${linkView.value.status}.`
-  }
-  if (linkView.value.qr) {
-    return 'A code to scan is shown.'
-  }
-  if (linkView.value.expired) {
-    return 'The code expired.'
-  }
-  if (wa.bridge.process === 'owned') {
-    return 'Starting the bridge.'
-  }
-  return folderDone.value ? 'Folder found.' : ''
 })
 
-function stateOf(done: boolean): 'done' | 'open' {
-  return done ? 'done' : 'open'
+/** Show QR code, Try again, Link again: starts Tresso's link to WhatsApp, only once the risk was confirmed. */
+async function showCode(): Promise<void> {
+  if (!wa.riskAccepted || wa.busy !== null) {
+    return
+  }
+  started.value = true
+  await wa.start()
 }
 
+/** The phone linked: WhatsApp is connected at once (the reading starts). */
 async function connect(numberConfirmed = false): Promise<void> {
-  if (!canConnect.value || confirmingCopy.value) {
+  if (wa.connected || wa.busy !== null) {
     return
   }
-  if (place.value === 'all' && !copyConfirmed && !takeOverFromOther.value) {
-    // Opened to take over, but no other Mac relays now: the chats would be copied, so that is asked first.
-    await askCopy()
-    return
+  const takeOver = place.value === 'all' && takeOverFromOther.value
+  if (!takeOver) {
+    // Copying to the server is asked first, after connecting on this Mac.
+    place.value = 'local'
   }
-  // The yes to copying only when the user gave it: on the takeover path the store checks that the chats are on the server.
-  if (await wa.connect(place.value, { copy: place.value === 'all' && copyConfirmed, number: numberConfirmed })) {
+  if (await wa.connect(takeOver ? 'all' : 'local', { number: numberConfirmed })) {
     connectedHere.value = true
   }
 }
 
-/** The control the Copy question was opened from (the radio, or Connect), for the focus to go back to. */
-let askedFrom: HTMLElement | null = null
+watch(
+  () => view.value === 'linked' && !wa.connected,
+  (due) => {
+    if (due) {
+      void connect()
+    }
+  },
+)
 
-async function askCopy(): Promise<void> {
+async function ask(kind: 'copy' | 'remove'): Promise<void> {
   askedFrom = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
-  confirmingCopy.value = true
+  asking.value = kind
   await nextTick()
-  copyCancel.value?.focus()
+  askAnswer.value?.focus()
 }
 
-/** "All my devices" picked: asked first (Copy, Cancel); Connect waits for the answer. */
-watch(place, async (next) => {
-  if (next === 'local') {
-    confirmingCopy.value = false
+/** A place picked: "All my devices" asks before copying, "Only this Mac" asks before removing what was copied. */
+function pick(next: 'local' | 'all'): void {
+  if (asking.value !== null || wa.busy !== null || next === place.value) {
     return
   }
-  if (copyConfirmed || takeOverFromOther.value) {
-    return
-  }
-  await askCopy()
-})
+  void ask(next === 'all' ? 'copy' : 'remove')
+}
 
-async function answerCopy(copy: boolean): Promise<void> {
-  copyConfirmed = copy
-  confirmingCopy.value = false
-  if (!copy) {
-    place.value = 'local'
+async function answer(yes: boolean): Promise<void> {
+  const kind = asking.value
+  asking.value = null
+  if (yes && kind !== null) {
+    const to = kind === 'copy' ? 'all' : 'local'
+    if (await wa.switchMode(to, { copy: to === 'all' })) {
+      place.value = to
+    }
   }
   await nextTick()
-  // Back where the question came from; the radio when that went (a radio re-rendered) or was never known.
-  ;(askedFrom?.isConnected ? askedFrom : allRadio.value)?.focus()
+  // Back where the question came from; the picked place when that went.
+  ;(askedFrom?.isConnected ? askedFrom : placeButtons.value[place.value === 'all' ? 1 : 0])?.focus()
   askedFrom = null
 }
 
-/** Enter presses the main button, unless it lands on a control that handles it (a button, a link). */
+/** The number question of "All my devices" was answered yes: the step it stopped is done again with that yes. */
+async function relayAnyway(): Promise<void> {
+  if (wa.askNumber === 'connect') {
+    await connect(true)
+  } else if (wa.askNumber === 'mode' && (await wa.switchMode('all', { copy: true, number: true }))) {
+    place.value = 'all'
+  }
+}
+
+/** Enter presses the step's one button, unless it lands on a control that handles it (a button, a link). */
 function onEnter(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null
-  if (event.isComposing || target?.closest('button, a, select, textarea')) {
+  if (event.isComposing || target?.closest('button, a, select, textarea, input')) {
     return
   }
   event.preventDefault()
-  if (connectedHere.value) {
+  if (view.value === 'start' || view.value === 'problem') {
+    void showCode()
+  } else if (view.value === 'linked' && !doneDisabled.value) {
     emit('done')
-  } else {
-    void connect()
   }
 }
 
 onMounted(() => {
   opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
+  if (wa.connected) {
+    place.value = wa.mode ?? place.value
+  }
   dialog.value?.showModal?.()
 })
 onUnmounted(() => {
@@ -188,147 +206,130 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <dialog ref="dialog" class="wa-dialog" aria-labelledby="wa-title" aria-describedby="wa-intro" @cancel.prevent="emit('close')" @keydown.enter="onEnter">
+  <dialog ref="dialog" class="wa-dialog" aria-labelledby="wa-title" @cancel.prevent="emit('close')" @keydown.enter="onEnter">
     <div class="head">
       <span class="eyebrow">Tresso for Mac</span>
       <button type="button" class="icon-button" aria-label="Close" @click="emit('close')"><AppIcon name="close" :size="18" /></button>
     </div>
 
-    <div class="intro">
-      <span class="mark" aria-hidden="true">WA</span>
-      <div class="heading">
-        <h1 id="wa-title">Connect WhatsApp</h1>
-        <p id="wa-intro" class="lead">Read and answer your WhatsApp chats next to your mail. Tresso talks to whatsapp-mcp running on this Mac; your phone stays the WhatsApp account.</p>
+    <template v-if="view === 'start'">
+      <div class="intro">
+        <span class="logo"><ProviderMark kind="whatsapp" :size="48" /></span>
+        <div class="heading">
+          <h1 id="wa-title">Connect WhatsApp</h1>
+          <p class="lead">{{ CONNECT_LEAD }}</p>
+        </div>
       </div>
-    </div>
-
-    <div class="risk">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 3l9.5 17h-19z" />
-        <path d="M12 10v4M12 17.5v.01" />
-      </svg>
-      <div class="risk-text">
-        <p id="wa-risk">{{ RISK_TEXT }}</p>
+      <div class="notice">
+        <div class="risk">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3l9.5 17h-19z" />
+            <path d="M12 10v4M12 17.5v.01" />
+          </svg>
+          <p id="wa-risk">{{ RISK_TEXT }}</p>
+        </div>
         <label class="confirm">
-          <input v-model="wa.riskAccepted" type="checkbox" aria-describedby="wa-risk" :disabled="wa.bridgeStarted || wa.connected" />
+          <input v-model="wa.riskAccepted" type="checkbox" aria-describedby="wa-risk" />
           <span>{{ RISK_CONFIRM }}</span>
         </label>
       </div>
-    </div>
-
-    <ol class="checks" aria-label="Checks">
-      <li :class="stateOf(folderDone)">
-        <span class="badge" aria-hidden="true"><svg v-if="folderDone" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg><template v-else>1</template></span>
-        <span class="body">
-          <span class="title-line">
-            <span class="title">whatsapp-mcp found</span>
-            <span class="status">{{ folderView.status }}</span>
-            <span class="visually-hidden">{{ folderDone ? '(done)' : '(not done)' }}</span>
-          </span>
-          <span class="note">{{ FOLDER_NOTE }}</span>
-          <span class="field-row">
-            <span class="path" :class="{ empty: wa.folder === null }">{{ wa.folder === null ? 'No folder chosen' : shortFolder(wa.folder) }}</span>
-            <button type="button" class="button small" :disabled="wa.busy !== null || wa.connected" @click="wa.chooseFolder()">Choose folder</button>
-          </span>
-          <span v-if="folderView.detail" class="detail">{{ folderView.detail }}</span>
-          <code v-if="wa.inspection?.found && !wa.inspection.built" class="command">{{ BUILD_COMMAND }}</code>
-        </span>
-      </li>
-
-      <li :class="stateOf(bridgeDone)">
-        <span class="badge" aria-hidden="true"><svg v-if="bridgeDone" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg><template v-else>2</template></span>
-        <span class="body">
-          <span class="title-line">
-            <span class="title">Bridge running</span>
-            <span class="status" :class="{ problem: bridgeView.problem !== null }">{{ bridgeView.status }}</span>
-            <span class="visually-hidden">{{ bridgeDone ? '(done)' : '(not done)' }}</span>
-          </span>
-          <span class="note">{{ BRIDGE_NOTE }}</span>
-          <span v-if="bridgeView.detail" class="detail" :class="{ problem: bridgeView.problem !== null }">{{ bridgeView.detail }}</span>
-          <code v-if="bridgeView.problem === 'not_built' || bridgeView.problem === 'unprotected'" class="command">{{ BUILD_COMMAND }}</code>
-          <span v-if="showStart" class="field-row">
-            <button type="button" class="button small" :disabled="!canStart" :aria-describedby="wa.riskAccepted ? undefined : 'wa-start-hint'" @click="wa.start()">{{ startLabel }}</button>
-            <span v-if="!wa.riskAccepted" id="wa-start-hint" class="hint">Confirm the risk above to start the bridge.</span>
-          </span>
-        </span>
-      </li>
-
-      <li :class="stateOf(linkDone)">
-        <span class="badge" aria-hidden="true"><svg v-if="linkDone" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg><template v-else>3</template></span>
-        <span class="body">
-          <span class="title-line">
-            <span class="title">Linked to your phone</span>
-            <span class="status">{{ linkView.status }}</span>
-            <span class="visually-hidden">{{ linkDone ? '(done)' : '(not done)' }}</span>
-          </span>
-          <WhatsAppLink v-if="!linkDone && (wa.bridge.process === 'owned' || linkView.expired)" />
-          <span v-else class="note">{{ LINK_NOTE }}</span>
-        </span>
-      </li>
-
-      <li :class="stateOf(importDone)">
-        <span class="badge" aria-hidden="true"><svg v-if="importDone" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg><template v-else>4</template></span>
-        <span class="body">
-          <span class="title-line">
-            <span class="title">Recent chats read</span>
-            <span class="status" :class="{ problem: wa.importState === 'stuck' && connectedHere }">{{ importView.status }}</span>
-            <span class="visually-hidden">{{ importDone ? '(done)' : '(not done)' }}</span>
-          </span>
-          <span class="note">{{ IMPORT_NOTE }}</span>
-          <span v-if="importView.detail" class="detail">{{ importView.detail }}</span>
-        </span>
-      </li>
-    </ol>
-
-    <fieldset class="places" :disabled="wa.connected || wa.busy !== null">
-      <legend>Where your WhatsApp messages live</legend>
-      <label class="place" :class="{ on: place === 'local' }">
-        <input v-model="place" type="radio" name="wa-place" value="local" aria-describedby="wa-place-local" />
-        <span class="place-text">
-          <span class="place-title">Only this Mac</span>
-          <span id="wa-place-local" class="place-note">{{ PLACE_LOCAL_NOTE }}</span>
-        </span>
-      </label>
-      <label class="place" :class="{ on: place === 'all' }">
-        <input ref="allRadio" v-model="place" type="radio" name="wa-place" value="all" aria-describedby="wa-place-all" />
-        <span class="place-text">
-          <span class="place-title">All my devices</span>
-          <span id="wa-place-all" class="place-note">{{ PLACE_ALL_NOTE }}</span>
-        </span>
-      </label>
-    </fieldset>
-    <div v-if="confirmingCopy" class="copy-confirm" role="alertdialog" aria-labelledby="wa-copy-title" aria-describedby="wa-copy-body">
-      <p id="wa-copy-title"><strong>{{ COPY_TITLE }}</strong></p>
-      <p id="wa-copy-body">{{ COPY_BODY }} {{ LEFT_OUT_KEPT }}</p>
-      <div class="actions">
-        <button type="button" class="button button-primary" @click="answerCopy(true)">Copy</button>
-        <button ref="copyCancel" type="button" class="button button-quiet" @click="answerCopy(false)">Cancel</button>
+      <p v-if="wa.error" class="error" role="alert">{{ wa.error }}</p>
+      <div class="footer">
+        <button type="button" class="button button-primary big" :disabled="!wa.riskAccepted || wa.busy !== null" @click="showCode">Show QR code</button>
       </div>
-    </div>
+    </template>
+
+    <template v-else-if="view === 'link'">
+      <h1 id="wa-title">Scan this code with your phone</h1>
+      <WhatsAppLink />
+    </template>
+
+    <template v-else-if="view === 'linked'">
+      <div class="intro">
+        <span class="mark ok" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+        </span>
+        <div class="heading">
+          <h1 id="wa-title" dir="auto">{{ linkedTitle(wa.identity) }}</h1>
+          <p v-if="wa.identity?.name" class="lead" dir="auto">{{ wa.identity.name }}</p>
+        </div>
+      </div>
+      <p v-if="wa.connected" class="progress">
+        <svg v-if="reading" class="spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke-opacity="0.16" />
+          <path d="M12 3a9 9 0 019 9" />
+        </svg>
+        <svg v-else class="read" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 12.5l4.5 4.5L19 7.5" />
+        </svg>
+        <span>{{ progressText }}</span>
+      </p>
+      <div role="radiogroup" aria-labelledby="wa-place" class="places">
+        <span id="wa-place" class="strong">Where your WhatsApp messages live</span>
+        <button
+          v-for="option in PLACES"
+          :key="option.id"
+          ref="placeButtons"
+          type="button"
+          role="radio"
+          class="place"
+          :class="{ on: shownPlace === option.id }"
+          :aria-checked="shownPlace === option.id"
+          :disabled="!wa.connected || wa.busy !== null"
+          @click="pick(option.id)"
+        >
+          <span class="ring"><span class="dot" /></span>
+          <span class="place-text">
+            <span class="strong">{{ option.title }}</span>
+            <span class="quiet">{{ option.note }}</span>
+          </span>
+        </button>
+      </div>
+      <div v-if="asking" class="ask" role="alertdialog" aria-labelledby="wa-ask-title" aria-describedby="wa-ask-body">
+        <span id="wa-ask-title" class="strong">{{ asking === 'copy' ? ASK_COPY_TITLE : REMOVE_TITLE }}</span>
+        <span id="wa-ask-body" class="quiet">{{ asking === 'copy' ? ASK_COPY_BODY : REMOVE_BODY }}</span>
+        <div class="actions">
+          <button type="button" class="button button-primary small" @click="answer(true)">{{ asking === 'copy' ? 'Copy' : 'Remove' }}</button>
+          <button ref="askAnswer" type="button" class="button button-quiet small" @click="answer(false)">Cancel</button>
+        </div>
+      </div>
+      <div v-if="wa.askNumber === 'connect' || wa.askNumber === 'mode'" class="ask" role="alertdialog" aria-labelledby="wa-number-title">
+        <span id="wa-number-title" class="strong">{{ wa.error }}</span>
+        <div class="actions">
+          <button type="button" class="button button-danger small" :disabled="wa.busy !== null" @click="relayAnyway">Relay from this Mac</button>
+          <button type="button" class="button button-quiet small" :disabled="wa.busy !== null" @click="wa.error = null; wa.askNumber = null">Cancel</button>
+        </div>
+      </div>
+      <p v-else-if="wa.error" class="error" role="alert">{{ wa.error }}</p>
+      <div class="footer">
+        <button v-if="!wa.connected && wa.error && !wa.askNumber" type="button" class="button button-primary big" :disabled="wa.busy !== null" @click="connect()">Try again</button>
+        <button v-else type="button" class="button button-primary big" :disabled="doneDisabled || !wa.connected" @click="emit('done')">Done</button>
+      </div>
+    </template>
+
+    <template v-else>
+      <div class="intro problem" role="alert">
+        <span class="mark bad" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 16.5v.01" /></svg>
+        </span>
+        <div class="heading">
+          <h1 id="wa-title">{{ problem.title }}</h1>
+          <p class="lead">{{ problem.text }}</p>
+        </div>
+      </div>
+      <div class="footer">
+        <button type="button" class="button button-primary big" :disabled="wa.busy !== null" @click="showCode">{{ problem.action }}</button>
+      </div>
+    </template>
 
     <p class="visually-hidden" role="status">{{ announcement }}</p>
-    <div v-if="wa.askNumber === 'connect'" class="copy-confirm" role="alertdialog" aria-labelledby="wa-number-title">
-      <p id="wa-number-title"><strong>{{ wa.error }}</strong></p>
-      <div class="actions">
-        <button type="button" class="button button-danger" :disabled="wa.busy !== null" @click="connect(true)">Relay from this Mac</button>
-        <button type="button" class="button button-quiet" :disabled="wa.busy !== null" @click="wa.error = null; wa.askNumber = null">Cancel</button>
-      </div>
-    </div>
-    <p v-else-if="wa.error" class="error" role="alert">{{ wa.error }}</p>
-
-    <div class="footer">
-      <a :href="INSTALL_URL" target="_blank" rel="noopener noreferrer" class="install">How to install whatsapp-mcp</a>
-      <button v-if="connectedHere" type="button" class="button button-primary big" @click="emit('done')">Done</button>
-      <button v-else type="button" class="button button-primary big" :disabled="!canConnect" @click="connect(false)">
-        Connect WhatsApp<kbd>Enter</kbd>
-      </button>
-    </div>
   </dialog>
 </template>
 
 <style scoped>
 .wa-dialog {
-  width: min(720px, calc(100vw - 32px));
+  box-sizing: border-box;
+  width: min(500px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   padding: 24px 28px 28px;
   overflow-y: auto;
@@ -342,12 +343,13 @@ onUnmounted(() => {
 .wa-dialog[open] {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
 }
 .head {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-height: 36px;
 }
 .eyebrow {
   flex: 1;
@@ -370,8 +372,21 @@ onUnmounted(() => {
 }
 .intro {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 16px;
+}
+.intro.problem {
+  align-items: flex-start;
+}
+.logo {
+  display: flex;
+  flex-shrink: 0;
+}
+.logo :deep(.tile) {
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 999px !important;
+  background: var(--paper);
 }
 .mark {
   display: flex;
@@ -381,227 +396,167 @@ onUnmounted(() => {
   width: 48px;
   height: 48px;
   border-radius: 999px;
-  background: var(--know);
-  color: var(--paper);
-  font: 700 15px var(--font-display);
+}
+.mark.ok {
+  background: var(--know-soft);
+  color: var(--know);
+}
+.mark.bad {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .heading {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 h1 {
   margin: 0;
-  font: 700 28px/34px var(--font-display);
+  font: 700 26px/32px var(--font-display);
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
 .lead {
   margin: 0;
   color: var(--ink-2);
-  font-size: 14px;
-  line-height: 21px;
+  font-size: 15px;
+  line-height: 22px;
+}
+.notice {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--ground);
 }
 .risk {
   display: flex;
   gap: 12px;
-  padding: 14px 16px;
-  border-radius: var(--radius-card);
-  background: var(--delegate-soft);
-  color: var(--delegate);
 }
 .risk svg {
   flex-shrink: 0;
   margin-top: 2px;
+  color: var(--delegate);
 }
-.risk-text {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  color: var(--ink);
+.risk p {
+  margin: 0;
   font-size: 14px;
   line-height: 21px;
-}
-.risk-text p {
-  margin: 0;
 }
 .confirm {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 12px;
+  font-size: 14px;
   font-weight: 600;
+  line-height: 21px;
   cursor: pointer;
 }
 .confirm input {
   flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  margin: 3px 0 0;
+  width: 20px;
+  height: 20px;
+  margin: 1px 0 0;
+  accent-color: var(--ink);
 }
-.checks {
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0;
-  padding: 0;
-  list-style: none;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
+  font-size: 14px;
+  line-height: 21px;
 }
-.checks li {
-  display: flex;
-  gap: 14px;
-  padding: 16px;
-}
-.checks li + li {
-  border-top: 1px solid var(--line);
-}
-.badge {
-  display: flex;
+.progress svg {
   flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 999px;
-  background: var(--ground);
-  color: var(--ink-2);
-  font: 500 12px var(--font-mono);
 }
-.done .badge {
-  background: var(--know-soft);
+.read {
   color: var(--know);
-}
-.body {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.title-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
-}
-.title {
-  font-size: 15px;
-  font-weight: 600;
-}
-.status {
-  color: var(--ink-2);
-  font-size: 13px;
-  font-weight: 600;
-}
-.done .status {
-  color: var(--know);
-}
-.status.problem,
-.detail.problem {
-  color: var(--delegate);
-}
-.note,
-.detail,
-.hint {
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 19px;
-}
-.field-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-.path {
-  display: flex;
-  flex: 1 1 260px;
-  align-items: center;
-  min-width: 0;
-  height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-control);
-  font: 400 13px var(--font-mono);
-  overflow-wrap: anywhere;
-}
-.path.empty {
-  color: var(--ink-3);
-}
-.button.small {
-  border: 1px solid var(--line-strong);
-  background: var(--paper);
-  color: var(--ink);
-}
-.command {
-  display: block;
-  padding: 8px 12px;
-  border-radius: var(--radius-control);
-  background: var(--ground);
-  font: 400 13px var(--font-mono);
-  overflow-wrap: anywhere;
-  user-select: all;
 }
 .places {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin: 0;
-  padding: 0;
-  border: 0;
 }
-legend {
-  padding: 0 0 10px;
+.strong {
   font-size: 15px;
   font-weight: 600;
+  line-height: 22px;
+}
+.quiet {
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 19px;
 }
 .place {
   display: flex;
+  align-items: flex-start;
   gap: 12px;
   padding: 14px 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-card);
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
 }
 .place.on {
-  border: 1.5px solid var(--ink);
-  background: var(--ground);
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--focus);
 }
-.places:disabled .place {
+.place:disabled {
   cursor: default;
 }
-.copy-confirm {
+.ring {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 999px;
+}
+.place.on .ring {
+  border-color: var(--focus);
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+.place.on .dot {
+  background: var(--focus);
+}
+.place-text {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 14px 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-card);
-  font-size: 14px;
-  line-height: 21px;
+  gap: 2px;
 }
-.copy-confirm p {
-  margin: 0;
+.ask {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
 }
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  padding-top: 6px;
 }
-.place input {
-  flex-shrink: 0;
-  margin: 2px 0 0;
-}
-.place-text {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.place-title {
+.button.small {
+  height: 36px;
+  padding: 0 18px;
   font-size: 14px;
-  font-weight: 600;
-}
-.place-note {
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 19px;
 }
 .error {
   margin: 0;
@@ -611,30 +566,24 @@ legend {
 }
 .footer {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.install {
-  color: var(--focus);
-  font-size: 14px;
-  font-weight: 600;
-  text-decoration: none;
+  justify-content: flex-end;
 }
 .button.big {
-  height: 44px;
-  padding: 0 20px;
+  height: 46px;
+  padding: 0 24px;
   font-size: 15px;
 }
-kbd {
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--paper) 18%, transparent);
-  font: 500 11px var(--font-mono);
+.spin {
+  animation: wa-spin 0.9s linear infinite;
+}
+@keyframes wa-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .wa-dialog {
+  .wa-dialog,
+  .spin {
     animation: none;
   }
 }

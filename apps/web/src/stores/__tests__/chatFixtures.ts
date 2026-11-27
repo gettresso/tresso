@@ -17,7 +17,6 @@ export const at = (minutes: number) => new Date(NOW + minutes * 60_000).toISOStr
 
 export function config(extra: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
   return {
-    folder: '/Users/kim/whatsapp-mcp',
     mode: 'local',
     deviceId: '0193a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b',
     deviceName: "Kim's MacBook Pro",
@@ -26,6 +25,7 @@ export function config(extra: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
     includeGroups: true,
     notify: false,
     leftOut: [],
+    moved: false,
     ...extra,
   }
 }

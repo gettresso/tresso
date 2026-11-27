@@ -137,13 +137,13 @@ function whatsappRow(): Row | null {
   if (chatsFromServer) {
     const account = chats.serverOnly && chats.enabled ? chats.serverAccount : null
     if (account === null) return null
-    const trouble = !account.relayOnline ? 'Mac offline' : account.link === 'unlinked' ? 'Not linked' : account.bridge === 'stopped' ? 'Bridge stopped' : null
+    const trouble = !account.relayOnline ? 'Mac offline' : account.link === 'unlinked' ? 'Not linked' : account.bridge === 'stopped' ? 'Stopped' : null
     const number = account.address === null ? null : phoneLabel(account.address)
     return { ...base, state: trouble === null ? 'ok' : 'attention', detail: trouble ?? number ?? '', to: { name: 'settings-whatsapp' } }
   }
   if (!whatsapp.available) return null
   if (!whatsapp.connected) return { ...base, state: 'off', detail: '', to: { name: 'settings-whatsapp-connect' } }
-  const trouble = whatsapp.bridge.link === 'unlinked' ? 'Not linked' : whatsapp.bridge.error !== null ? 'Bridge stopped' : null
+  const trouble = whatsapp.bridge.link === 'unlinked' ? 'Not linked' : whatsapp.bridge.error !== null ? 'Stopped' : null
   const number = whatsapp.identity?.number
   return { ...base, state: trouble === null ? 'ok' : 'attention', detail: trouble ?? (number ? phoneNumber(number) : ''), to: { name: 'settings-whatsapp' } }
 }

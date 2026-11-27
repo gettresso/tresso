@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import type { BridgeState } from '@/platform/whatsapp'
+import type { BridgeFailure, BridgeState } from '@/platform/whatsapp'
 import {
-  BRIDGE_PROBLEMS,
+  CONNECT_LEAD,
+  FAILURES,
+  LINK_STEPS,
+  MOVED_TEXT,
+  RISK_TEXT,
   carriedText,
   carryCountsText,
   notCarriedText,
@@ -9,68 +13,81 @@ import {
   otherRelayText,
   serverRefusedText,
   switchText,
-  bridgeText,
   errorName,
-  folderText,
+  failureLine,
   importText,
+  linkStage,
   linkedAge,
   linkedName,
-  linkText,
+  linkedTitle,
   relativeTime,
   shellErrorText,
-  shortFolder,
+  statusWord,
 } from '../whatsappTexts'
 
 const NOW = Date.parse('2026-11-12T10:00:00Z')
 const STOPPED: BridgeState = { process: 'stopped', port: null, loopbackOnly: null, link: 'unknown', qr: null, error: null }
 const RUNNING: BridgeState = { process: 'owned', port: 8741, loopbackOnly: true, link: 'unknown', qr: null, error: null }
+const FAILURE_KINDS: BridgeFailure[] = ['missing', 'store', 'offline', 'pair_failed', 'outdated', 'replaced', 'banned', 'logged_out', 'exited']
+/** Words a user should never read about WhatsApp in Tresso for Mac: it carries its own link. */
+const UNSAID = /whatsapp-mcp|bridge|folder|\bport\b|install whatsapp/i
 
 describe('the WhatsApp texts', () => {
-  it('shows a home folder with ~ and a number in its international form', () => {
-    expect(shortFolder('/Users/kim/whatsapp-mcp')).toBe('~/whatsapp-mcp')
-    expect(shortFolder('/Users/kim')).toBe('~')
-    expect(shortFolder('/Volumes/Data/whatsapp-mcp')).toBe('/Volumes/Data/whatsapp-mcp')
+  it('shows a number in its international form', () => {
     expect(linkedName({ number: '31698765432', name: 'Kim Visser' })).toBe('Kim Visser, +31698765432')
     expect(linkedName({ number: '31698765432', name: null })).toBe('+31698765432')
     expect(linkedName({ number: '', name: 'Kim' })).toBe('Kim')
     expect(linkedName(null)).toBeNull()
+    expect(linkedTitle({ number: '31612345678', name: 'Kim Visser' })).toBe('Linked to +31612345678')
+    expect(linkedTitle({ number: '', name: 'Kim' })).toBe('Linked')
+    expect(linkedTitle(null)).toBe('Linked')
   })
 
-  it('says what the folder check found', () => {
-    expect(folderText(null)).toEqual({ status: 'Choose the folder', detail: null, ok: false })
-    expect(folderText({ found: false, built: false, hasStore: false, safe: true }).status).toBe('Not found')
-    expect(folderText({ found: true, built: false, hasStore: false, safe: true })).toMatchObject({ status: 'Found, not built yet', detail: 'Build the bridge once in Terminal, in this folder:' })
-    expect(folderText({ found: true, built: true, hasStore: false, safe: false })).toMatchObject({ status: 'Found, not safe to start', ok: false })
-    expect(folderText({ found: true, built: true, hasStore: true, safe: true })).toEqual({ status: 'Found', detail: null, ok: true })
-  })
-
-  it('names every state of the bridge, each failure with what to do', () => {
-    expect(bridgeText(STOPPED, false)).toMatchObject({ status: 'Not started', ok: false })
-    expect(bridgeText({ ...RUNNING, port: null }, true)).toMatchObject({ status: 'Starting', ok: false })
-    expect(bridgeText(RUNNING, true)).toMatchObject({ status: 'Running on this Mac', ok: true })
-    expect(bridgeText({ ...RUNNING, loopbackOnly: false }, true)).toMatchObject({ status: 'Running, open to your network on port 8741' })
-    expect(bridgeText(STOPPED, true)).toMatchObject({ status: 'Stopped', detail: 'Tresso starts it again in a moment.' })
-    expect(bridgeText({ ...STOPPED, link: 'unlinked' }, true)).toMatchObject({ status: 'Stopped', detail: 'Nobody scanned the code for three minutes, so the bridge stopped.' })
-    for (const failure of ['not_built', 'exited', 'port_busy', 'unprotected', 'unsafe'] as const) {
-      expect(bridgeText({ ...STOPPED, error: failure }, true)).toEqual({ status: BRIDGE_PROBLEMS[failure].status, detail: BRIDGE_PROBLEMS[failure].detail, ok: false, problem: failure })
+  it('says the board copy and nothing about how WhatsApp runs', () => {
+    expect(CONNECT_LEAD).toBe('Read and answer your WhatsApp chats next to your mail.')
+    expect(RISK_TEXT).toBe('WhatsApp does not officially allow other apps to link this way and can limit or ban an account that does. Use an account you can afford to lose access to.')
+    expect(LINK_STEPS).toEqual(['Open WhatsApp on your phone.', 'Go to Settings, then Linked devices.', 'Tap Link a device and scan this code.'])
+    expect(MOVED_TEXT).toBe('WhatsApp now runs inside Tresso. Link your phone again.')
+    for (const text of [CONNECT_LEAD, RISK_TEXT, MOVED_TEXT, ...LINK_STEPS]) {
+      expect(text).not.toMatch(UNSAID)
     }
-    expect(BRIDGE_PROBLEMS.port_busy.status).toBe('Port in use')
-    expect(BRIDGE_PROBLEMS.unsafe.status).toBe('Not safe to start')
-    // An unprotected bridge: what it means and what to do, in plain words, pointing at the fork.
-    expect(BRIDGE_PROBLEMS.unprotected).toMatchObject({ status: 'Not protected', buildCommand: true })
-    expect(BRIDGE_PROBLEMS.unprotected.detail).toContain('any app or web page on this Mac could send WhatsApp messages through it')
-    expect(BRIDGE_PROBLEMS.unprotected.detail).toContain('gettresso/whatsapp-mcp')
   })
 
-  it('names every state of the link', () => {
-    expect(linkText(RUNNING, null)).toMatchObject({ status: 'Waiting for the bridge', qr: false })
-    expect(linkText({ ...RUNNING, link: 'waiting_for_scan' }, null)).toMatchObject({ status: 'Waiting for the code', qr: false })
-    expect(linkText({ ...RUNNING, link: 'waiting_for_scan', qr: ['1'] }, null)).toMatchObject({ status: 'Scan the code', qr: true })
-    expect(linkText({ ...RUNNING, link: 'linked' }, { number: '31698765432', name: 'Kim Visser' })).toMatchObject({ status: 'Linked as Kim Visser, +31698765432', ok: true })
-    expect(linkText({ ...RUNNING, link: 'linked' }, null)).toMatchObject({ status: 'Linked', ok: true })
-    expect(linkText({ ...RUNNING, link: 'unlinked' }, null)).toMatchObject({ status: 'Not linked', detail: 'WhatsApp ended the link. A new code comes in a moment.' })
-    expect(linkText({ ...STOPPED, link: 'unlinked' }, null)).toMatchObject({ status: 'Code expired', expired: true })
-    expect(linkText(STOPPED, null)).toMatchObject({ status: 'Not linked', expired: false })
+  it('has a title, a sentence and one action for every failure', () => {
+    expect(Object.keys(FAILURES).sort()).toEqual([...FAILURE_KINDS].sort())
+    expect(FAILURES.exited).toEqual({ title: 'WhatsApp could not start on this Mac', text: 'Nothing was linked. Try again in a moment.', action: 'Try again' })
+    expect(FAILURES.logged_out).toEqual({ title: 'This phone signed Tresso out', text: 'New messages do not come in until you link again.', action: 'Link again' })
+    for (const kind of FAILURE_KINDS) {
+      const { title, text, action } = FAILURES[kind]
+      expect({ kind, complete: title.length > 0 && text.endsWith('.') && action.length > 0 }).toEqual({ kind, complete: true })
+      expect(`${title} ${text} ${failureLine(kind)}`).not.toMatch(UNSAID)
+    }
+    expect(failureLine('offline')).toBe('WhatsApp could not be reached. Check that this Mac is online, then try again.')
+    // In Settings something was linked before, so "Nothing was linked" is not said there.
+    expect(failureLine('exited')).not.toContain('Nothing was linked')
+  })
+
+  it('tells where linking stands from the state of the bridge', () => {
+    expect(linkStage(STOPPED)).toBe('idle')
+    expect(linkStage({ ...RUNNING, port: null })).toBe('loading')
+    expect(linkStage({ ...RUNNING, port: null, link: 'waiting_for_scan' })).toBe('loading')
+    expect(linkStage({ ...RUNNING, port: null, link: 'waiting_for_scan', qr: ['1'] })).toBe('scan')
+    expect(linkStage({ ...RUNNING, link: 'linked' })).toBe('linked')
+    expect(linkStage({ ...STOPPED, link: 'unlinked' })).toBe('expired')
+    expect(linkStage({ ...STOPPED, link: 'unlinked', error: 'logged_out' })).toBe('failed')
+    expect(linkStage({ ...STOPPED, error: 'offline' })).toBe('failed')
+  })
+
+  it("says Settings' status in plain words", () => {
+    expect(statusWord({ ...RUNNING, link: 'linked' }, false)).toEqual({ text: 'Connected', ok: true })
+    expect(statusWord({ ...RUNNING, link: 'linked' }, true)).toEqual({ text: 'Connected', ok: true })
+    expect(statusWord({ ...RUNNING, port: null }, false)).toEqual({ text: 'Starting', ok: false })
+    expect(statusWord({ ...RUNNING, port: null, link: 'waiting_for_scan', qr: ['1'] }, false)).toEqual({ text: 'Not linked', ok: false })
+    expect(statusWord({ ...RUNNING, port: null, link: 'waiting_for_scan', qr: ['1'] }, true)).toEqual({ text: 'Link again', ok: false })
+    expect(statusWord({ ...STOPPED, link: 'unlinked' }, false)).toEqual({ text: 'Not linked', ok: false })
+    expect(statusWord({ ...STOPPED, link: 'unlinked', error: 'logged_out' }, false)).toEqual({ text: 'Not linked', ok: false })
+    expect(statusWord({ ...STOPPED, error: 'missing' }, false)).toEqual({ text: 'Could not start', ok: false })
+    expect(statusWord(STOPPED, false)).toEqual({ text: 'Stopped', ok: false })
   })
 
   it('says how long ago the phone linked, without a countdown', () => {
@@ -96,8 +113,11 @@ describe('the WhatsApp texts', () => {
 
   it('turns the shell refusals into plain words and logs nothing but names', () => {
     expect(shellErrorText('unsupported')).toBe('WhatsApp works in Tresso for Mac only.')
-    expect(shellErrorText('not_chosen')).toBe('Choose the whatsapp-mcp folder again: Tresso only uses a folder you picked.')
-    expect(shellErrorText('no_folder')).toBe('The whatsapp-mcp folder is not there any more. Choose it again.')
+    expect(shellErrorText('bridge_stopped')).toBe('WhatsApp is not running on this Mac.')
+    expect(shellErrorText('no_store')).toBe('WhatsApp has not stored any messages on this Mac yet.')
+    for (const code of ['busy', 'failed', 'refused', 'bridge_stopped', 'no_store']) {
+      expect(shellErrorText(code)).not.toMatch(UNSAID)
+    }
     expect(shellErrorText('Saving the WhatsApp settings failed: disk full')).toBe('Saving the WhatsApp settings failed: disk full')
     expect(shellErrorText('some_new_code')).toBe('Something went wrong with WhatsApp. Try again.')
     expect(shellErrorText(new Error('The chat is left out.'))).toBe('The chat is left out.')
@@ -120,8 +140,8 @@ describe('the WhatsApp texts', () => {
     expect(switchText('local', false)).toBe('Removing your WhatsApp chats from your Tresso server.')
     expect(switchText('local', true)).toContain('come in again on this Mac')
     expect(serverRefusedText(0)).toBeNull()
-    expect(serverRefusedText(1)).toBe('1 message could not be copied to your Tresso server; it stays in the bridge on this Mac only.')
-    expect(serverRefusedText(3)).toBe('3 messages could not be copied to your Tresso server; they stay in the bridge on this Mac only.')
+    expect(serverRefusedText(1)).toBe('1 message could not be copied to your Tresso server; it stays on this Mac only.')
+    expect(serverRefusedText(3)).toBe('3 messages could not be copied to your Tresso server; they stay on this Mac only.')
     expect(carriedText(0)).toBeNull()
     expect(carriedText(2)).toBe('2 replies written on this Mac before the switch go to your Tresso server once their chats are there.')
     expect(carryCountsText({ lost: 0, cancelled: 0, unsure: 0, notSent: 0 })).toBeNull()

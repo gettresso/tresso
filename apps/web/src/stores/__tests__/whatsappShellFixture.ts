@@ -1,11 +1,10 @@
 import type { BridgeRow } from '@tresso/core'
-import type { BridgeInspection, BridgeRows, BridgeState, SendResult, WhatsAppCommands, WhatsAppConfig } from '@/platform/whatsapp'
+import type { BridgeRows, BridgeState, SendResult, WhatsAppCommands, WhatsAppConfig } from '@/platform/whatsapp'
 
 /** The desktop shell's WhatsApp commands as a fake, shared by the relay store's tests (both modes). */
 
 export const NOW = Date.parse('2026-11-12T10:00:00Z')
 export const DAY = 24 * 60 * 60 * 1000
-export const FOLDER = '/Users/kim/whatsapp-mcp'
 export const DIRECT = '31612345678@s.whatsapp.net'
 export const GROUP = '120363000000000001@g.us'
 export const MESSAGE_TEXT = 'Secret dinner plans'
@@ -14,7 +13,6 @@ export const STOPPED: BridgeState = { process: 'stopped', port: null, loopbackOn
 export const RUNNING: BridgeState = { process: 'owned', port: 8741, loopbackOnly: true, link: 'unknown', qr: null, error: null }
 export const LINKED: BridgeState = { ...RUNNING, link: 'linked' }
 export const WAITING: BridgeState = { ...RUNNING, link: 'waiting_for_scan', qr: ['1'.repeat(29)] }
-export const GOOD_FOLDER: BridgeInspection = { found: true, built: true, hasStore: true, safe: true }
 
 /** The desktop shell: a bridge whose state the test sets, a store of rows, and every command recorded. */
 export class FakeShell {
@@ -40,6 +38,8 @@ export class FakeShell {
   readonly discarded: string[] = []
   /** When each read began. */
   readonly readTimes: number[] = []
+  /** The user each start was for. */
+  readonly startedFor: string[] = []
 
   emit(state: BridgeState): void {
     this.state = state
@@ -87,10 +87,9 @@ export class FakeShell {
             if (user !== userId) this.configs.delete(user)
           }
         }),
-      chooseFolder: () => record('chooseFolder', () => FOLDER),
-      inspect: () => record('inspect', () => GOOD_FOLDER),
-      start: () =>
+      start: (userId) =>
         record('start', async () => {
+          this.startedFor.push(userId)
           await this.startHeld
           this.state = RUNNING
           return this.state
@@ -102,7 +101,7 @@ export class FakeShell {
         }),
       state: () => record('state', () => this.state),
       identity: () => record('identity', () => ({ number: '31698765432', name: 'Kim Visser' })),
-      read: (_folder, afterRowid, limit) =>
+      read: (afterRowid, limit) =>
         record('read', (): BridgeRows => {
           this.readTimes.push(Date.now())
           if (this.readFails !== null) {
@@ -111,13 +110,13 @@ export class FakeShell {
           const rows = this.rows.filter((row) => row.rowid > afterRowid).slice(0, limit)
           return { rows, maxRowid: this.rows.length, storeId: this.storeId }
         }),
-      names: (_folder, ids) => record('names', () => Object.fromEntries(ids.map((id) => [id, { number: id, name: null }]))),
+      names: (ids) => record('names', () => Object.fromEntries(ids.map((id) => [id, { number: id, name: null }]))),
       send: (recipient, text, mediaPath) =>
         record('send', () => {
           this.sent.push(mediaPath === null || mediaPath === undefined ? { recipient, text } : { recipient, text, file: mediaPath })
           return this.sendAnswer()
         }),
-      download: (_folder, messageId) =>
+      download: (messageId) =>
         record('download', () => {
           const refusal = this.downloadRefusals.get(messageId)
           if (refusal !== undefined) {

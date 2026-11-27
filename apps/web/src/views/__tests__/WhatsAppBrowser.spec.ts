@@ -231,7 +231,7 @@ describe('WhatsApp in the browser', () => {
       const rows = view.findAll('.row').map((row) => [row.get('.label').text(), row.get('.value').text()])
       expect(rows).toEqual([
         ['Relaying Mac', "Kim's MacBook Pro, online now"],
-        ['Bridge', 'Running'],
+        ['On your Mac', 'Running'],
         ['Linked to phone', 'Linked 3 days ago. WhatsApp can ask you to link again.'],
       ])
       expect(view.text()).toContain('Chats to bring inChange this on the Mac that relays WhatsApp.Direct chats and groups')
@@ -251,7 +251,7 @@ describe('WhatsApp in the browser', () => {
       expect(view.get('.pill').text()).toBe('Mac offline')
       const rows = view.findAll('.row').map((row) => row.get('.value').text())
       expect(rows).toEqual(["Kim's MacBook Pro, offline, last heard from 2 hours ago", 'Not running', 'Not linked. Nothing comes in or goes out.'])
-      expect(view.text()).toContain('The bridge and the link are as your Mac last reported them.')
+      expect(view.text()).toContain('Both are as your Mac last reported them.')
       expect(view.text()).toContain('Direct chats only')
     })
 

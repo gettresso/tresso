@@ -73,7 +73,7 @@ describe('MailboxSidebar', () => {
 
     const wa = useWhatsAppRelayStore()
     wa.available = true
-    wa.config = { folder: '/Users/kim/whatsapp-mcp', mode: 'local', deviceId: 'd1', deviceName: 'Mac', linkedAt: null, importSince: '2026-10-13T10:00:00.000Z', includeGroups: true, notify: false, leftOut: [] }
+    wa.config = { mode: 'local', deviceId: 'd1', deviceName: 'Mac', linkedAt: null, importSince: '2026-10-13T10:00:00.000Z', includeGroups: true, notify: false, leftOut: [], moved: false }
     wa.identity = { number: '31698765432', name: 'Kim' }
     const chats = useChatsStore()
     const chat = (id: string, unread: number, archived = false) => ({
