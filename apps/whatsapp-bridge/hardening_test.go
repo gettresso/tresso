@@ -38,7 +38,7 @@ func TestRESTServerLimits(t *testing.T) {
 // sendRequest posts body to /api/send with the token, as the desktop app does.
 func sendRequest(t *testing.T, body string) (int, string) {
 	t.Helper()
-	handler := protect(newRESTHandler(nil, nil), testToken, 8741)
+	handler := protect(newRESTHandler(nil, nil, func() {}), testToken, 8741)
 	r := httptest.NewRequest(http.MethodPost, "/api/send", strings.NewReader(body))
 	r.Host = "127.0.0.1:8741"
 	r.Header.Set("Content-Type", "application/json")

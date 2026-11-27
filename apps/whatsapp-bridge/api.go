@@ -17,7 +17,7 @@ import (
 	"go.mau.fi/whatsmeow"
 )
 
-// The REST API: POST /api/send and POST /api/download on 127.0.0.1 only, behind protect.
+// The REST API: POST /api/send, POST /api/download and POST /api/logout on 127.0.0.1 only, behind protect.
 
 // protect lets a request through only when it names this computer as its host, carries the bridge's token and has a
 // JSON body. The API has no other check, and anything on this computer reaches 127.0.0.1: another program, and a web
@@ -65,9 +65,11 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 // newRESTHandler returns the REST API's routes. Every check that needs no WhatsApp connection runs before the client
-// or the store is used.
-func newRESTHandler(client *whatsmeow.Client, messageStore *MessageStore) *http.ServeMux {
+// or the store is used. loggedOut ends the bridge after a log out WhatsApp confirmed.
+func newRESTHandler(client *whatsmeow.Client, messageStore *MessageStore, loggedOut func()) *http.ServeMux {
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("/api/logout", handleLogout(client, loggedOut))
 
 	// Handler for sending messages
 	mux.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {

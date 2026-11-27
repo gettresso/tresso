@@ -187,6 +187,9 @@ func run(lookup func(string) (string, bool), stdin io.Reader, signals <-chan os.
 	}
 	defer messageStore.Close()
 
+	// The end of a log out, from the phone or through POST /api/logout: said once, then the bridge stops.
+	loggedOut := onceLoggedOut(em, stop)
+
 	logger := newTemplateLogger("Client", diag)
 	client := whatsmeow.NewClient(deviceStore, logger)
 	// Disconnect before the databases close (the defers above run after this one).
@@ -208,8 +211,7 @@ func run(lookup func(string) (string, bool), stdin io.Reader, signals <-chan os.
 			em.disconnected()
 		case *events.LoggedOut:
 			// whatsmeow removed the session from the store; a new link needs a new start.
-			em.loggedOut()
-			stop()
+			loggedOut()
 		case *events.ClientOutdated:
 			end.fail(em, diag, fatal("client_outdated", "WhatsApp refuses this version of whatsmeow", nil), stop)
 		case *events.StreamReplaced:
@@ -261,7 +263,7 @@ func run(lookup func(string) (string, bool), stdin io.Reader, signals <-chan os.
 	if err != nil {
 		return failWith(fatal("listen_failed", "the REST API cannot listen on its port", err))
 	}
-	server := newRESTServer(protect(newRESTHandler(client, messageStore), cfg.token, cfg.port))
+	server := newRESTServer(protect(newRESTHandler(client, messageStore, loggedOut), cfg.token, cfg.port))
 	go end.guard(em, diag, stop, func() {
 		if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 			end.fail(em, diag, fatal("server_failed", "the REST API stopped", err), stop)
