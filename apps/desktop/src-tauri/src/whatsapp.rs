@@ -350,6 +350,8 @@ struct Settings {
   unlink_wait: Duration,
   /// How long Disconnect waits for the bridge to confirm the log out (the bridge's own limit is 20 seconds).
   logout_timeout: Duration,
+  /// How often a busy session store is read before Disconnect (or a resumed start) goes on without knowing.
+  session_tries: u32,
 }
 
 impl Default for Settings {
@@ -362,6 +364,7 @@ impl Default for Settings {
       crash_window: Duration::from_secs(60),
       unlink_wait: Duration::from_secs(15),
       logout_timeout: Duration::from_secs(25),
+      session_tries: 3,
     }
   }
 }
@@ -391,6 +394,9 @@ struct Shared {
   staged_files: Mutex<HashSet<PathBuf>>,
   /// Whether WhatsApp is turned on, read once at launch (`setup`); off until then.
   switched_on: std::sync::OnceLock<bool>,
+  /// Held for the whole of a Disconnect, with the outcome of the last one per user: a second Disconnect waits for the
+  /// first and answers what it did.
+  disconnecting: Mutex<HashMap<String, bool>>,
 }
 
 /// A fresh token. Without random bytes from the OS nothing here can be made safe, so that stops the app.
@@ -459,6 +465,7 @@ impl Bridge {
       chosen_files: Mutex::new(HashSet::new()),
       staged_files: Mutex::new(HashSet::new()),
       switched_on: std::sync::OnceLock::new(),
+      disconnecting: Mutex::new(HashMap::new()),
     }))
   }
 
@@ -483,11 +490,12 @@ impl Bridge {
     Some((inner.snapshot.port?, inner.run.as_ref()?.token.clone()))
   }
 
-  /// The store of the user the bridge was last started for; `no_store` when none was.
+  /// The store of the user the bridge was last started for, when it is one Tresso may read; `no_store` when none was,
+  /// after a stop that ended that user's use of it, or when a link stands in its place.
   fn store(&self) -> Result<PathBuf, String> {
     let data_dir = lock(&self.0.data_dir).clone().ok_or_else(|| code("no_store"))?;
     let user = lock(&self.0.user).clone().ok_or_else(|| code("no_store"))?;
-    store_dir(&data_dir, &user)
+    readable_store(&data_dir, &user)
   }
 
   /// The user the bridge was last started for.
@@ -507,6 +515,9 @@ impl Bridge {
     }
     self.stop_now();
     *lock(&self.0.user) = Some(user_id.to_string());
+    if let Ok(mut outcomes) = self.0.disconnecting.try_lock() {
+      outcomes.remove(user_id);
+    }
     let mut inner = lock(&self.0.inner);
     inner.exits.clear();
     inner.backoff = self.0.settings.first_backoff;
@@ -558,13 +569,44 @@ impl Bridge {
     inner.snapshot.clone()
   }
 
-  /// Stops the bridge when it runs (or waits to restart) for `user_id`; true when it did.
+  /// Stops the bridge when it runs (or waits to restart) for `user_id`, and ends that user's use of the store: no read
+  /// command answers from it afterwards. True when it did. All under the control lock, so a start for another user that
+  /// waits for it keeps its own user.
   fn stop_for(&self, user_id: &str) -> bool {
-    if self.user().as_deref() != Some(user_id) {
+    let _control = lock(&self.0.control);
+    if lock(&self.0.user).as_deref() != Some(user_id) {
       return false;
     }
-    self.stop();
+    self.stop_now();
+    *lock(&self.0.user) = None;
     true
+  }
+
+  /// Stops whatever runs and ends the use of its store, under the control lock (sign-out).
+  fn stop_and_forget(&self) {
+    let _control = lock(&self.0.control);
+    self.stop_now();
+    *lock(&self.0.user) = None;
+  }
+
+  /// Starts the bridge for a connection made before (at launch): only when the store holds a session, since without one
+  /// it would only show QR codes nobody asked for. Linking a new device goes through the connect dialog. A store that
+  /// stays unreadable is started: it most likely holds the session.
+  fn start_linked(&self, user_id: &str) -> Snapshot {
+    let linked = lock(&self.0.data_dir).clone().map(|data_dir| match store_dir(&data_dir, user_id) {
+      Ok(store) => has_session_retrying(&store, self.0.settings.session_tries, self.0.settings.poll).unwrap_or(true),
+      Err(_) => false,
+    });
+    if linked == Some(true) {
+      return self.start(user_id);
+    }
+    let _control = lock(&self.0.control);
+    let mut inner = lock(&self.0.inner);
+    if inner.run.is_some() {
+      return inner.snapshot.clone();
+    }
+    inner.snapshot = Snapshot { link: Link::Unlinked, ..Snapshot::stopped(None) };
+    self.0.publish(inner)
   }
 
   /// Disconnect WhatsApp for `user_id`, in this order: when the store holds a session, log the device out on WhatsApp's
@@ -572,15 +614,23 @@ impl Bridge {
   /// and the store. When WhatsApp cannot be reached within `unlink_wait` and `logout_timeout`, the config and the store
   /// go all the same and `unlinked` is false.
   fn disconnect(&self, user_id: &str) -> Result<Disconnected, String> {
+    let mut outcomes = lock(&self.0.disconnecting);
     let data_dir = lock(&self.0.data_dir).clone().ok_or_else(|| code("no_store"))?;
     let store = store_dir(&data_dir, user_id)?;
-    let unlinked = !has_session(&store) || self.log_out(user_id);
-    if self.user().as_deref() == Some(user_id) {
-      self.stop();
-      *lock(&self.0.user) = None;
+    // A Disconnect that waited for another: nothing is left to do, and the answer is the first one's.
+    if let Some(unlinked) = outcomes.get(user_id).copied()
+      && fs::symlink_metadata(&store).is_err()
+      && load_config(&data_dir, user_id).ok().flatten().is_none()
+    {
+      return Ok(Disconnected { unlinked });
     }
+    // Nothing to log out only when the store surely holds no session; one that cannot be read goes through the bridge.
+    let session = if stores_folder_is_real(&data_dir)? { has_session_retrying(&store, self.0.settings.session_tries, self.0.settings.poll) } else { Ok(false) };
+    let unlinked = matches!(session, Ok(false)) || self.log_out(user_id);
+    self.stop_for(user_id);
     clear_config(&data_dir, user_id)?;
     remove_store(&data_dir, user_id)?;
+    outcomes.insert(user_id.to_string(), unlinked);
     Ok(Disconnected { unlinked })
   }
 
@@ -596,6 +646,10 @@ impl Bridge {
         break Some(endpoint);
       }
       let snapshot = self.snapshot();
+      // The phone had removed the device already: the bridge said so as it connected (a stale session).
+      if snapshot.error == Some(Failure::LoggedOut) {
+        return true;
+      }
       // Stopped, or asking for a code (no session after all): there is no bridge to log out through.
       if snapshot.process == Process::Stopped || snapshot.link == Link::WaitingForScan || Instant::now() >= deadline {
         break None;
@@ -617,8 +671,7 @@ impl Bridge {
     if let Some(data_dir) = lock(&self.0.data_dir).clone() {
       let _ = fs::remove_dir_all(data_dir.join(OUTBOX_DIR));
     }
-    self.stop();
-    *lock(&self.0.user) = None;
+    self.stop_and_forget();
   }
 
   #[cfg(test)]
@@ -1154,8 +1207,36 @@ fn prepare_store(data_dir: &Path, user_id: &str) -> Result<PathBuf, String> {
 
 /// Removes a user's store with its linked session and messages. The path is built here from the user id; a link in
 /// its place is removed as a link, never followed. Gone already is fine.
+/// Whether `<data>/whatsapp`, the folder Tresso keeps every store in, is a real folder: Ok(false) when it is not there,
+/// an error when something else (a link, a file) stands in its place. Nothing is read or removed through a link there:
+/// `<link target>/<user id>` is not Tresso's.
+fn stores_folder_is_real(data_dir: &Path) -> Result<bool, String> {
+  match fs::symlink_metadata(data_dir.join(STORES_DIR)) {
+    Ok(metadata) if metadata.is_dir() => Ok(true),
+    Ok(_) => Err(code("The folder of Tresso's WhatsApp data is not a plain folder.")),
+    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+    Err(error) => Err(format!("Reading the WhatsApp data on this Mac failed: {error}")),
+  }
+}
+
+/// The user's store when it is one Tresso may read: `<data>/whatsapp` and `<data>/whatsapp/<user id>` both real
+/// folders, never links. `no_store` otherwise.
+fn readable_store(data_dir: &Path, user_id: &str) -> Result<PathBuf, String> {
+  let store = store_dir(data_dir, user_id)?;
+  if !stores_folder_is_real(data_dir).map_err(|_| code("no_store"))? {
+    return Err(code("no_store"));
+  }
+  match fs::symlink_metadata(&store) {
+    Ok(metadata) if metadata.is_dir() => Ok(store),
+    _ => Err(code("no_store")),
+  }
+}
+
 fn remove_store(data_dir: &Path, user_id: &str) -> Result<(), String> {
   let store = store_dir(data_dir, user_id)?;
+  if !stores_folder_is_real(data_dir)? {
+    return Ok(());
+  }
   let removed = match fs::symlink_metadata(&store) {
     Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&store),
     Ok(_) => fs::remove_file(&store),
@@ -1364,9 +1445,31 @@ fn clear_config(data_dir: &Path, user_id: &str) -> Result<Option<Config>, String
   Ok(old)
 }
 
-/// Whether the user's store holds a linked session (a device in `whatsapp.db`).
-fn has_session(store: &Path) -> bool {
-  matches!(store_file(store, SESSION_DB).map(|db| identity(&db)), Ok(Ok(Some(_))))
+/// Whether the user's store holds a linked session (a device in `whatsapp.db`): Ok(false) only when it surely holds
+/// none (no store, no session database, no device in it); an error when it cannot be read now (busy, damaged).
+fn has_session(store: &Path) -> Result<bool, String> {
+  let db = store.join(SESSION_DB);
+  match fs::symlink_metadata(&db) {
+    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+    Err(error) => return Err(format!("Reading the WhatsApp store failed: {error}")),
+    Ok(metadata) if !metadata.is_file() => return Err(code("The WhatsApp session is not a file.")),
+    Ok(_) => {}
+  }
+  identity(&db).map(|found| found.is_some())
+}
+
+/// `has_session`, tried `tries` times while the store is busy (each try waits up to BUSY_TIMEOUT for a writer); the last
+/// answer when it stays unreadable.
+fn has_session_retrying(store: &Path, tries: u32, poll: Duration) -> Result<bool, String> {
+  let mut last = has_session(store);
+  for _ in 1..tries {
+    if last.is_ok() {
+      break;
+    }
+    thread::sleep(poll);
+    last = has_session(store);
+  }
+  last
 }
 
 /// What Disconnect did on WhatsApp's side.
@@ -1382,6 +1485,8 @@ pub struct Disconnected {
 fn logout(port: u16, token: &str, timeout: Duration) -> bool {
   match post(port, Some(token), "/api/logout", &json!({}), timeout) {
     Answer::Reply { status: 200, body } => serde_json::from_str::<Value>(&body).ok().and_then(|answer| answer["success"].as_bool()) == Some(true),
+    // `Not linked`: the store holds no device any more, so the phone lists none.
+    Answer::Reply { status: 409, .. } => true,
     Answer::Reply { status, .. } => {
       log::warn!("The WhatsApp bridge could not log out ({status})");
       false
@@ -2134,14 +2239,16 @@ pub fn whatsapp_config_keep_only<R: Runtime>(app: AppHandle<R>, bridge: State<'_
   Ok(())
 }
 
-/// Starts the bridge on the user's store (made first); one that runs for this user already is kept.
+/// Starts the bridge on the user's store (made first); one that runs for this user already is kept. With `linkedOnly`
+/// (a connection resumed at launch) it starts only when the store holds a session: a new link is asked for in the
+/// connect dialog, never shown unasked.
 #[tauri::command(async)]
-pub fn whatsapp_start(bridge: State<'_, Bridge>, user_id: String) -> Result<Snapshot, String> {
+pub fn whatsapp_start(bridge: State<'_, Bridge>, user_id: String, linked_only: Option<bool>) -> Result<Snapshot, String> {
   bridge.enabled()?;
   if !valid_user_id(&user_id) {
     return Err(format!("\"{user_id}\" is not a valid user id."));
   }
-  Ok(bridge.start(&user_id))
+  Ok(if linked_only == Some(true) { bridge.start_linked(&user_id) } else { bridge.start(&user_id) })
 }
 
 #[tauri::command(async)]
@@ -2868,6 +2975,7 @@ mod tests {
       crash_window: Duration::from_secs(30),
       unlink_wait: Duration::from_secs(2),
       logout_timeout: Duration::from_secs(2),
+      session_tries: 1,
     }
   }
 
@@ -3118,6 +3226,7 @@ mod tests {
     let data = temp();
     let (bridge, _) = watched(quick(), &data);
     lock(&bridge.0.chosen_files).insert(data.join("photo.jpg"));
+    prepare_store(&data, "u1").unwrap();
     *lock(&bridge.0.user) = Some("u1".into());
     assert!(bridge.store().is_ok());
     bridge.signed_out();
@@ -3185,7 +3294,7 @@ mod tests {
     // Sign-out: the config goes, the store with its link stays.
     assert_eq!(clear_config(&data, "u1").unwrap(), Some(config()));
     assert!(mine.join(SESSION_DB).exists());
-    assert!(has_session(&mine));
+    assert_eq!(has_session(&mine), Ok(true));
 
     remove_store(&data, "u1").unwrap();
     assert!(!mine.exists());
@@ -3336,6 +3445,161 @@ mod tests {
     assert_eq!(bridge.disconnect("u1"), Ok(Disconnected { unlinked: false }));
     assert!(began.elapsed() < Duration::from_secs(5), "{:?}", began.elapsed());
     assert!(!store.exists());
+  }
+
+  /// D1: a session store that cannot be read (busy) is not taken as "no session": the log out goes through the bridge.
+  /// And the bridge's 409 `Not linked` counts as unlinked.
+  #[cfg(unix)]
+  #[test]
+  fn disconnect_logs_out_through_the_bridge_when_the_session_cannot_be_read() {
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    bridge.connect(data.to_path_buf(), Some(logging_bridge(&data)), Arc::new(|_: &Snapshot| {}));
+    let store = prepare_store(&data, "u1").unwrap();
+    let db = session_db(&store, true);
+    let writer = Connection::open(&db).unwrap();
+    writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    assert_eq!(has_session(&store), Err("busy".to_string()));
+    serve_logging_out(&data, "u1", http(409, r#"{"success":false,"message":"Not linked"}"#));
+    let disconnecting = {
+      let shared = Arc::clone(&bridge.0);
+      thread::spawn(move || Bridge(shared).disconnect("u1"))
+    };
+    // The store stays busy while the bridge is asked: the store can only go once the writer let go.
+    while !events(&data).contains(&"logout".to_string()) {
+      thread::sleep(Duration::from_millis(10));
+    }
+    writer.execute_batch("ROLLBACK").unwrap();
+    drop(writer);
+    assert_eq!(disconnecting.join().unwrap(), Ok(Disconnected { unlinked: true }));
+    assert_eq!(events(&data), ["started", "logout", "stdin-closed"]);
+    assert!(!store.exists());
+  }
+
+  /// D2: a bridge started on a session the phone removed already says `logged_out` as it connects: that is unlinked.
+  #[cfg(unix)]
+  #[test]
+  fn disconnect_counts_a_session_the_phone_removed_as_unlinked() {
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    let fake = fake_bridge(&data, &format!("{STARTED}\nsay '{{\"v\":1,\"event\":\"logged_out\"}}'\nexit 0"));
+    bridge.connect(data.to_path_buf(), Some(fake), Arc::new(|_: &Snapshot| {}));
+    let store = prepare_store(&data, "u1").unwrap();
+    session_db(&store, true);
+    assert_eq!(bridge.disconnect("u1"), Ok(Disconnected { unlinked: true }));
+    assert!(!store.exists());
+  }
+
+  /// D3: a stop for a user, and a sign-out, end the use of that user's store at once, and a start for another user
+  /// that waited for them keeps its own user, in either order.
+  #[cfg(unix)]
+  #[test]
+  fn a_stop_ends_the_use_of_the_store_and_a_waiting_start_keeps_its_user() {
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    // Ignores the end of stdin for a moment, so a stop holds the control lock a while.
+    let fake = fake_bridge(&data, &format!("{STARTED}\ntrap 'sleep 0.2; exit 0' TERM\nwhile :; do sleep 0.05; done"));
+    bridge.connect(data.to_path_buf(), Some(fake), Arc::new(|_: &Snapshot| {}));
+    bridge.start("u1");
+    while starts(&data, "u1") == 0 {
+      thread::sleep(Duration::from_millis(10));
+    }
+    assert!(bridge.store().is_ok());
+    assert!(bridge.stop_for("u1"));
+    assert_eq!(bridge.store(), Err("no_store".to_string()));
+
+    // A sign-out first, a start for u2 waiting on it: u2's bridge runs and its store is the one read.
+    bridge.start("u1");
+    while starts(&data, "u1") < 2 {
+      thread::sleep(Duration::from_millis(10));
+    }
+    let signing_out = {
+      let shared = Arc::clone(&bridge.0);
+      thread::spawn(move || Bridge(shared).signed_out())
+    };
+    thread::sleep(Duration::from_millis(50));
+    bridge.start("u2");
+    signing_out.join().unwrap();
+    assert_eq!(bridge.user().as_deref(), Some("u2"));
+    assert_eq!(bridge.snapshot().process, Process::Owned);
+    assert_eq!(bridge.store(), Ok(store_of(&data, "u2")));
+
+    // The other order: a start for u2, then a sign-out: nothing runs and no store is read.
+    bridge.signed_out();
+    assert_eq!(bridge.user(), None);
+    assert_eq!(bridge.snapshot(), Snapshot::stopped(None));
+    assert_eq!(bridge.store(), Err("no_store".to_string()));
+  }
+
+  /// D4: with a link in place of `<data>/whatsapp`, nothing is read through it and Disconnect deletes nothing it points
+  /// to.
+  #[cfg(unix)]
+  #[test]
+  fn reads_and_removes_nothing_through_a_link_in_place_of_the_stores_folder() {
+    let data = temp();
+    let elsewhere = temp();
+    fs::create_dir_all(elsewhere.join("u1")).unwrap();
+    session_db(&elsewhere.join("u1"), true);
+    std::os::unix::fs::symlink(&*elsewhere, data.join(STORES_DIR)).unwrap();
+    assert!(remove_store(&data, "u1").is_err());
+    assert_eq!(readable_store(&data, "u1"), Err("no_store".to_string()));
+    let (bridge, _) = watched(quick(), &data);
+    *lock(&bridge.0.user) = Some("u1".into());
+    assert_eq!(bridge.store(), Err("no_store".to_string()));
+    assert!(bridge.disconnect("u1").is_err());
+    assert!(elsewhere.join("u1").join(SESSION_DB).exists());
+    // A link in place of the user's own folder is not read either.
+    let data = temp();
+    fs::create_dir_all(data.join(STORES_DIR)).unwrap();
+    std::os::unix::fs::symlink(elsewhere.join("u1"), data.join(STORES_DIR).join("u1")).unwrap();
+    assert_eq!(readable_store(&data, "u1"), Err("no_store".to_string()));
+  }
+
+  /// D5: two Disconnects at once: the second waits for the first and answers what it did; the log out is tried once.
+  #[cfg(unix)]
+  #[test]
+  fn two_disconnects_at_once_wait_for_each_other() {
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    bridge.connect(data.to_path_buf(), Some(logging_bridge(&data)), Arc::new(|_: &Snapshot| {}));
+    let store = prepare_store(&data, "u1").unwrap();
+    session_db(&store, true);
+    save_config(&data, "u1", &config()).unwrap();
+    serve_logging_out(&data, "u1", http(504, r#"{"success":false,"message":"WhatsApp did not confirm the log out in time"}"#));
+    let calls: Vec<_> = (0..2)
+      .map(|_| {
+        let shared = Arc::clone(&bridge.0);
+        thread::spawn(move || Bridge(shared).disconnect("u1"))
+      })
+      .collect();
+    for call in calls {
+      assert_eq!(call.join().unwrap(), Ok(Disconnected { unlinked: false }));
+    }
+    assert_eq!(events(&data).iter().filter(|event| *event == "logout").count(), 1);
+    assert!(!store.exists());
+  }
+
+  /// D8: a connection resumed at launch starts the bridge only when its store holds a session; without one nothing
+  /// runs and no QR code is made unasked.
+  #[cfg(unix)]
+  #[test]
+  fn resumes_only_a_linked_connection_at_launch() {
+    let data = temp();
+    let (bridge, seen) = watched(quick(), &data);
+    let fake = fake_bridge(&data, &format!("{STARTED}\nqr 2@code\n{UNTIL_STDIN_ENDS}"));
+    bridge.connect(data.to_path_buf(), Some(fake), recorder(&seen));
+    let store = prepare_store(&data, "u1").unwrap();
+    messages_db(&store);
+    assert_eq!(bridge.start_linked("u1"), Snapshot { link: Link::Unlinked, ..Snapshot::stopped(None) });
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(starts(&data, "u1"), 0);
+    assert!(lock(&seen).iter().all(|snapshot| snapshot.qr.is_none()));
+
+    session_db(&store, true);
+    assert_eq!(bridge.start_linked("u1").process, Process::Owned);
+    bridge.wait_until(|snapshot| snapshot.qr.is_some());
+    assert_eq!(starts(&data, "u1"), 1);
+    bridge.stop();
   }
 
   // ---- config
@@ -3500,7 +3764,7 @@ mod tests {
     assert!(load_config(&data, "u1").unwrap().is_some());
     assert_eq!(load_config(&data, "u2").unwrap(), None);
     // Their store, and with it their link, stays: nothing here can unlink their phone.
-    assert!(has_session(&theirs));
+    assert_eq!(has_session(&theirs), Ok(true));
     // A user without a config of their own removes everyone's.
     assert_eq!(keep_only_config(&data, "u4").unwrap(), vec!["u1".to_string()]);
     assert_eq!(load_config(&data, "u1").unwrap(), None);
