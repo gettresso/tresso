@@ -36,6 +36,9 @@ const paths = {
   people: ['M9 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7z', 'M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6', 'M16 5a3 3 0 010 6', 'M18 14c2 .6 3 2.8 3 6'],
   repeat: ['M17 2l4 4-4 4', 'M3 11V9a3 3 0 013-3h15', 'M7 22l-4-4 4-4', 'M21 13v2a3 3 0 01-3 3H3'],
   bell: ['M6 9a6 6 0 1112 0c0 6 3 7 3 7H3s3-1 3-7', 'M10 20a2 2 0 004 0'],
+  // Smart inboxes (the BuildingBlocks board): Newsletters, and a smart inbox the user made.
+  news: ['M4 5h13v14H6a2 2 0 01-2-2z', 'M17 9h3v8a2 2 0 01-2 2h-1', 'M8 9h5', 'M8 13h5'],
+  filter: ['M4 5h16l-6 8v5l-4 2v-7z'],
   plus: ['M12 5v14', 'M5 12h14'],
   next: ['M9 6l6 6-6 6'],
   triage: ['M4 6h16', 'M4 12h9', 'M4 18h9', 'M15 15l2.5 2.5L21 13'],

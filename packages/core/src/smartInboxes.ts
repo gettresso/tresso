@@ -109,20 +109,27 @@ export function sortSmartInboxes<T extends Pick<SyncedSmartInbox, 'position' | '
   return [...smartInboxes].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id))
 }
 
-/** The letter on a smart inbox's mark in the sidebar. */
-export function smartInboxMark(smartInbox: Pick<SyncedSmartInbox, 'builtin' | 'name'>): string {
+/** The line icon of a smart inbox, named as the web app's AppIcon names it. */
+export type SmartInboxIcon = 'do' | 'know' | 'bell' | 'news' | 'shieldAlert' | 'filter'
+
+/**
+ * The icon of a smart inbox in the sidebar and in Settings. It follows the built-in kind only, never the name: a smart
+ * inbox the user made and called "Spam" still gets the icon of the user's own smart inboxes.
+ */
+export function smartInboxIcon(smartInbox: Pick<SyncedSmartInbox, 'builtin'>): SmartInboxIcon {
   switch (smartInbox.builtin) {
     case 'todo':
-      return 'D'
+      return 'do'
     case 'informational':
-      return 'K'
+      return 'know'
     case 'notification':
+      return 'bell'
     case 'advertise':
-      return 'N'
+      return 'news'
     case 'spam':
-      return 'S'
+      return 'shieldAlert'
     case null:
-      return (smartInbox.name.trim()[0] ?? '?').toUpperCase()
+      return 'filter'
   }
 }
 

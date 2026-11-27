@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classificationReasonText, isSenderPattern, normalizeSenderPattern, smartInboxMark, sortSmartInboxes, spamOverruleNotice, verdictLabel } from './smartInboxes'
+import { classificationReasonText, isSenderPattern, normalizeSenderPattern, smartInboxIcon, sortSmartInboxes, spamOverruleNotice, verdictLabel } from './smartInboxes'
 
 describe('sender patterns', () => {
   it.each([
@@ -30,9 +30,24 @@ describe('smart inboxes', () => {
     expect(sorted.map((s) => s.id)).toEqual(['c', 'a', 'b'])
   })
 
-  it('have a mark', () => {
-    expect(smartInboxMark({ builtin: 'todo', name: 'To do' })).toBe('D')
-    expect(smartInboxMark({ builtin: null, name: ' invoices' })).toBe('I')
+  it.each([
+    ['todo', 'do'],
+    ['informational', 'know'],
+    ['notification', 'bell'],
+    ['advertise', 'news'],
+    ['spam', 'shieldAlert'],
+  ] as const)('show the built-in %s with the %s icon', (builtin, icon) => {
+    expect(smartInboxIcon({ builtin })).toBe(icon)
+  })
+
+  it('show one made by the user with the filter icon, whatever its name', () => {
+    const invoices = { builtin: null, name: 'Invoices' }
+    const namedSpam = { builtin: null, name: 'Spam' }
+    const namedToDo = { builtin: null, name: 'To do' }
+
+    expect(smartInboxIcon(invoices)).toBe('filter')
+    expect(smartInboxIcon(namedSpam)).toBe('filter')
+    expect(smartInboxIcon(namedToDo)).toBe('filter')
   })
 })
 
