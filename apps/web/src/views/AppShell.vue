@@ -12,7 +12,7 @@ import UnsavedDraftsDialog from '@/components/UnsavedDraftsDialog.vue'
 import { useSignOut } from '@/components/signOut'
 import { reducedMotion } from '@/components/calendar/genie'
 import AppIcon from '@/components/AppIcon.vue'
-import { FRAME_STRIP, resizeCursor, useSidebarActive, widthForKey } from '@/components/frame'
+import { FRAME_STRIP, resizeCursor, widthForKey } from '@/components/frame'
 import { framed, frameToken, SIDEBAR_MAX, SIDEBAR_MIN } from '@/platform/frame'
 import { startGlassReporter, type GlassReporter } from '@/platform/glass'
 import { vibrant } from '@/platform/vibrancy'
@@ -110,13 +110,12 @@ function toggled(event: Event): void {
 const frame = useFrameStore()
 const inFrame = computed(() => framed && auth.isAuthenticated)
 provide(FRAME_STRIP, framed)
-const sidebarActive = useSidebarActive(mailboxes)
 /** While the edge is dragged the column follows the pointer at once, without the slide. */
 const resizing = ref<{ pointer: number; from: number } | null>(null)
 
 const shellClasses = computed(() => (framed ? { 'frame-shell': true, collapsed: !frame.shown, resizing: resizing.value !== null } : undefined))
 const shellStyle = computed(() => (framed ? { '--frame-sidebar-width': `${frame.width}px`, '--frame-column': frame.shown ? `${frame.width}px` : '0px' } : undefined))
-const sidebarAttrs = computed(() => (framed ? { id: 'frame-sidebar', class: { active: sidebarActive.value }, inert: frame.shown ? undefined : true } : {}))
+const sidebarAttrs = computed(() => (framed ? { id: 'frame-sidebar', inert: frame.shown ? undefined : true } : {}))
 
 // The page starts at the window's top edge while the frame shows (assets/frame.css); the sign-in screen keeps the
 // window's own title area.
@@ -238,7 +237,6 @@ function resizeKey(event: KeyboardEvent): void {
       v-if="framed"
       type="button"
       class="frame-toggle"
-      data-frame-neutral
       aria-controls="frame-sidebar"
       ref="toggle"
       :aria-expanded="frame.shown ? 'true' : 'false'"
@@ -271,7 +269,6 @@ function resizeKey(event: KeyboardEvent): void {
     <div
       v-if="framed && frame.shown"
       class="frame-resize"
-      data-frame-neutral
       role="separator"
       tabindex="0"
       aria-label="Sidebar width"

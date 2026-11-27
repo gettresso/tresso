@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { defineComponent, h, nextTick, ref } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import FrameCapsule from '../FrameCapsule.vue'
 import FrameTitle from '../FrameTitle.vue'
 import FrameTools from '../FrameTools.vue'
-import { FRAME_STRIP, resizeCursor, useSidebarActive, widthForKey } from '../frame'
+import { FRAME_STRIP, resizeCursor, widthForKey } from '../frame'
 
 describe('the sidebar edge by keyboard', () => {
   it('moves 10 per arrow, and Home and End go to the narrowest and widest', () => {
@@ -23,52 +23,6 @@ describe('the sidebar edge by keyboard', () => {
     expect(resizeCursor(190)).toBe('e-resize')
     expect(resizeCursor(220)).toBe('col-resize')
     expect(resizeCursor(300)).toBe('w-resize')
-  })
-})
-
-describe('the focus of the sidebar', () => {
-  function harness() {
-    let active!: ReturnType<typeof useSidebarActive>
-    const Host = defineComponent({
-      setup() {
-        const sidebar = ref<HTMLElement | null>(null)
-        active = useSidebarActive(sidebar)
-        return () =>
-          h('div', [
-            h('nav', { ref: sidebar }, [h('a', { href: '#', class: 'row' }, 'Inbox')]),
-            h('button', { class: 'toggle', 'data-frame-neutral': '' }, 'Hide sidebar'),
-            h('main', [h('button', { class: 'content' }, 'Archive')]),
-          ])
-      },
-    })
-    const wrapper = mount(Host, { attachTo: document.body })
-    return { wrapper, active: () => active.value }
-  }
-
-  it('is the sidebar\'s after a click or focus in it, the content\'s after one there, and the toggle changes nothing', async () => {
-    const { wrapper, active } = harness()
-    window.dispatchEvent(new Event('focus'))
-    expect(active()).toBe(false)
-
-    wrapper.get('.row').element.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-    expect(active()).toBe(true)
-    wrapper.get('.toggle').element.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-    expect(active()).toBe(true)
-    ;(wrapper.get('.content').element as HTMLElement).focus()
-    expect(active()).toBe(false)
-    ;(wrapper.get('.row').element as HTMLElement).focus()
-    expect(active()).toBe(true)
-  })
-
-  it('turns grey while the window is in the back, also with the keyboard focus in the sidebar', async () => {
-    const { wrapper, active } = harness()
-    window.dispatchEvent(new Event('focus'))
-    ;(wrapper.get('.row').element as HTMLElement).focus()
-    expect(active()).toBe(true)
-    window.dispatchEvent(new Event('blur'))
-    expect(active()).toBe(false)
-    window.dispatchEvent(new Event('focus'))
-    expect(active()).toBe(true)
   })
 })
 
