@@ -47,7 +47,8 @@ About panel says where the file is.
   by Tresso from the `qr` event's string. The port is used only after it refused a request without the token and took
   one with it.
 - **Stopping.** Closing stdin stops the bridge cleanly; SIGTERM follows after 3 seconds, SIGKILL 3 seconds later. It
-  stops when Tresso quits (and, as the pipe closes, when Tresso crashes), at sign-out and at Disconnect.
+  stops when Tresso quits (and, as the pipe closes, when Tresso crashes), at sign-out and at Disconnect (after the log
+  out, below).
 - **When it stops by itself.** A `qr_timeout` waits for the user (`Show a new code`). A `logged_out` (the phone
   removed the Mac) waits for the user too (`Link again`). A fatal code that starting again cannot fix (`bad_store`,
   `store_failed`, `pair_failed`, `client_outdated`, `stream_replaced`, `temporary_ban`) stops with its own failure;
@@ -61,9 +62,18 @@ the shell from a checked user id. Tresso makes it, and the `whatsapp` folder aro
 (0700) before the bridge starts, and gives a folder of its own its rights back when they changed; a link in its place
 is refused. Downloads are copied out of it into Tresso's own download folder, checked against the hash the store holds.
 
-At Disconnect and at sign-out the user's store goes with the config: the linked session and the messages the bridge
-kept, so connecting again shows a new code. The phone keeps listing the Mac under Linked devices until the user removes
-it there. Once the server confirmed who is signed in, other users' configs and stores on the Mac go too.
+**Disconnect WhatsApp unlinks.** In this order: when the store holds a session, the device is logged out on
+WhatsApp's side through the bridge's `POST /api/logout` (the running bridge, or one Tresso starts for this only, which
+gets 15 seconds to come up and 25 for WhatsApp's confirmation), so the phone no longer lists Tresso under Linked
+devices; then the bridge stops; then the config and the store go, so connecting again shows a new code. When WhatsApp
+cannot be reached in time the config and the store go all the same, and only then Tresso tells the user that the phone
+may still list Tresso and how to remove it there (WhatsApp, Settings, Linked devices, Tresso, Log out). A Mac whose
+WhatsApp was removed from the Tresso server on another device does the same when it learns of it.
+
+**Signing out of Tresso does not unlink.** It stops the bridge and removes the config, as it did when the bridge lived
+in the whatsapp-mcp folder: the store, with its link to the phone, stays for the next connect, so no device is left
+orphaned on the phone and nothing is unlinked without the user asking. Once the server confirmed who is signed in,
+other users' configs go; their stores stay for the same reason.
 
 ## From whatsapp-mcp
 

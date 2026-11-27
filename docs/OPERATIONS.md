@@ -324,8 +324,10 @@ Only this Mac:
     is the right one, or Tresso refuses with the mismatch text. Attach a jpg, a pdf and an ogg: they arrive as a
     picture, a document and a voice message.
 48. Leave a chat out and take it back in from Settings: its old messages come back read, a message sent after that
-    arrives unread. Disconnect removes the bridge's data folder of that user, and connecting again shows a new code;
-    reading in Tresso leaves the phone's unread badge as it was.
+    arrives unread. Disconnect unlinks: within a few seconds the phone no longer lists Tresso under Linked devices, the
+    bridge's data folder of that user is gone, and connecting again shows a new code. With the Mac offline, Disconnect
+    still finishes and says how to remove Tresso on the phone. Signing out of Tresso keeps the link: signing in again
+    and connecting links without a code. Reading in Tresso leaves the phone's unread badge as it was.
 49. Dark mode: the chat pane, bubbles, notices, the connect dialog and the QR code read well.
 
 All my devices:

@@ -2159,7 +2159,8 @@ WhatsApp shows on that Mac (the browser shows the chats the server holds, see be
 Settings, Accounts, and every WhatsApp address (`/settings/whatsapp`, `/settings/whatsapp/connect`, and `/whatsapp`,
 `/whatsapp/:chatId` and `/chats/:chatId` for the chat screens) leads back to Accounts or the Unified Inbox; no bridge
 starts, also not for a WhatsApp connected before. Once the server confirmed who is signed in (where other users' mail
-copies are removed), every other user's WhatsApp config and store on the Mac go (`whatsapp_config_keep_only`). The shell keeps the tokens but has no user id it could check them against, so a config
+copies are removed), every other user's WhatsApp config on the Mac goes (`whatsapp_config_keep_only`); their stores
+stay, so nobody's phone is left with an orphaned device. The shell keeps the tokens but has no user id it could check them against, so a config
 is loaded and saved only for the confirmed user by this store, not by the shell. Once on, the store loads the
 signed-in user's config
 (`whatsapp-<userId>.json`, `apps/desktop/src-tauri/src/whatsapp.rs`) and starts the bridge on that user's store (the
@@ -2184,10 +2185,12 @@ the link (how long ago Tresso saw it link, no countdown; Link again after the ph
 connection an earlier version made through whatsapp-mcp) with the code when it needs one, which chats come in (groups
 off removes the copied group chats, refused while the copy is not open; on again reads the store from the start as a
 first import), and Disconnect, which says it is waiting while a reply being sent finishes: the relay stops and is waited for, the bridge stops, `removeLocalChats` removes the copied chats and the
-cursor, and the config goes with the bridge's store on the Mac (its session and messages), so a later connect shows a
-new code; the phone keeps the Mac under Linked devices until the user removes it there. A sign-out stops the relay
-without waiting for it and removes the config and the store (an expired session keeps both); the shell stops the
-bridge. The store keeps the
+cursor, then the shell's `whatsapp_disconnect` logs the device out on WhatsApp's side (`POST /api/logout`, through a
+bridge started for it when none runs), stops the bridge and removes the config and the bridge's store, so the phone no
+longer lists the Mac and a later connect shows a new code; when WhatsApp cannot be reached in time the store goes all
+the same and Settings says how to remove Tresso on the phone. A sign-out stops the relay without waiting for it and
+removes the config (an expired session keeps it); the shell stops the bridge, and the store with its link stays for
+the next connect. The store keeps the
 bridge's state and Notify me on the `wa:account` row (`setLocalChatAccount`), and offers the chat screens `pollNow`,
 `leaveOut`, `takeBackIn` (Settings lists the chats left out: the config first, then with the relay stopped the row is
 marked in again and the cursor reset with the moment of the reset (`resetLocalCursor(store, liveFrom)`, kept as the
