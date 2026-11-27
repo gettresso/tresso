@@ -1691,13 +1691,17 @@ sets none of them, so its layout, markup and classes stay as they were (a snapsh
 sidebar markup).
 
 - **Sidebar.** A column 190 to 300 wide (220 at first): the card 8 from the window's left, top and bottom edge, radius
-  18, a 1 pt lighter edge and a soft shadow, 10 to the content. Rows are 32 high from y 52, the selection fill 10 inside
+  18, a lit inner edge (a 1 pt white top line and a faint white ring), an outer hairline and a soft shadow, 10 to the
+  content. Rows are 32 high from y 52, the selection fill 10 inside
   the card with radius 8, the icon at x 30 and the label at x 54, the count inside the fill; a group label sits in a 24
   strip, an unlabelled group is set off by 13. The profile, the Compose button and the account rows (two lines) keep
   their own heights. Only the rows scroll (`FrameScroll`, rendered in the desktop shell only): the band of the traffic
-  lights and the toggle stays above them and the sync status at the card's foot. The selected row takes the system's selection colour with white text while the sidebar is used
-  (the last click or focus went into it and the window is in front), and a grey fill while the content is or the window
-  is in the back.
+  lights and the toggle stays above them and the sync status at the card's foot. The rows fade out over 12 at both
+  ends of the scroller (a CSS mask as long as `--frame-scroll-inset`), so none ends in a hard line; at rest the first
+  and the last row sit just past the fade. The selected row is the glass pill of `main.css` (`--pill`, a tint of ink,
+  with `--pill-edge`, a lit top edge and a small shadow), the same whether the sidebar, the content or another window
+  has focus; its label stays ink. Hover is a lighter tint without an edge, and keyboard focus is the only blue, the
+  focus ring inside the row.
 - **Width and collapse.** The card's right edge is a drag handle and a focusable separator (arrows by 10, Home and End
   to the limits); the toggle (the `sidebar` icon, after the system's sidebar.left, named "Sidebar" with
   `aria-expanded`) sits on the traffic lights' line 13 from the card's edge and hides the sidebar, taking the focus when
@@ -1713,10 +1717,6 @@ sidebar markup).
   (`data-tauri-drag-region="deep"`, which also zooms on a double click), except over its controls. When the actions do
   not fit, they wrap under the title and the strip grows. The content starts below the strip rather than scrolling
   under it, as the page has no scroll edge effect to keep the title readable over moving content.
-- **Selection colour.** The shell reads AppKit's `selectedContentBackgroundColor` (the accent colour the user picked,
-  made deep enough for white text: #0064e1 for blue) in the light and the dark appearance (`selection_accent`,
-  `accessibility.rs`); the web client sets them as `--frame-accent-light` and `--frame-accent-dark` at launch and when
-  the window comes back, as it does for "Reduce transparency". Windows, Linux and a failed read use #0064e1.
 - **Window.** 1240 x 780 at every launch: the app keeps no window state, so a size the user set lasts until it quits.
   The traffic lights' inset (17.5, 27.5, a token in frame.css next to the others) is the one a test app measured on
   macOS 26.7 for centres at x 25.5, y 25.5; the corner radius is the system's.
