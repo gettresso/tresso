@@ -189,11 +189,13 @@ pub struct Snapshot {
   /// The QR code to scan, a string of `0` (light) and `1` (dark) per row, quiet zone included.
   pub qr: Option<Vec<String>>,
   pub error: Option<Failure>,
+  /// Stopped after an unexpected exit, with a restart planned after the backoff: not a failure (yet).
+  pub restarting: bool,
 }
 
 impl Snapshot {
   fn stopped(error: Option<Failure>) -> Self {
-    Snapshot { process: Process::Stopped, port: None, loopback_only: None, link: Link::Unknown, qr: None, error }
+    Snapshot { process: Process::Stopped, port: None, loopback_only: None, link: Link::Unknown, qr: None, error, restarting: false }
   }
 }
 
@@ -577,16 +579,17 @@ impl Bridge {
     if lock(&self.0.user).as_deref() != Some(user_id) {
       return false;
     }
-    self.stop_now();
+    // Forgotten first: no read answers from the leaving user's store while a bridge that hangs is being stopped.
     *lock(&self.0.user) = None;
+    self.stop_now();
     true
   }
 
   /// Stops whatever runs and ends the use of its store, under the control lock (sign-out).
   fn stop_and_forget(&self) {
     let _control = lock(&self.0.control);
-    self.stop_now();
     *lock(&self.0.user) = None;
+    self.stop_now();
   }
 
   /// Starts the bridge for a connection made before (at launch): only when the store holds a session, since without one
@@ -769,7 +772,7 @@ impl Shared {
       fatal: None,
       unconfirmed: false,
     });
-    inner.snapshot = Snapshot { process: Process::Owned, port: None, loopback_only: None, link: Link::Unknown, qr: None, error: None };
+    inner.snapshot = Snapshot { process: Process::Owned, port: None, loopback_only: None, link: Link::Unknown, qr: None, error: None, restarting: false };
     inner.launch = Some(user_id.to_string());
 
     let (finished, read_to_end) = std::sync::mpsc::channel::<()>();
@@ -931,7 +934,7 @@ impl Shared {
       } else {
         let delay = inner.backoff;
         inner.backoff = (delay * 2).min(shared.settings.max_backoff);
-        inner.snapshot = Snapshot::stopped(None);
+        inner.snapshot = Snapshot { restarting: true, ..Snapshot::stopped(None) };
         let planned = inner.generation;
         let shared = Arc::clone(shared);
         thread::spawn(move || {
@@ -1205,8 +1208,6 @@ fn prepare_store(data_dir: &Path, user_id: &str) -> Result<PathBuf, String> {
   Ok(store)
 }
 
-/// Removes a user's store with its linked session and messages. The path is built here from the user id; a link in
-/// its place is removed as a link, never followed. Gone already is fine.
 /// Whether `<data>/whatsapp`, the folder Tresso keeps every store in, is a real folder: Ok(false) when it is not there,
 /// an error when something else (a link, a file) stands in its place. Nothing is read or removed through a link there:
 /// `<link target>/<user id>` is not Tresso's.
@@ -1232,6 +1233,8 @@ fn readable_store(data_dir: &Path, user_id: &str) -> Result<PathBuf, String> {
   }
 }
 
+/// Removes a user's store with its linked session and messages. The path is built here from the user id; a link in
+/// its place is removed as a link, never followed. Gone already is fine.
 fn remove_store(data_dir: &Path, user_id: &str) -> Result<(), String> {
   let store = store_dir(data_dir, user_id)?;
   if !stores_folder_is_real(data_dir)? {
@@ -2904,7 +2907,7 @@ mod tests {
     assert_eq!(linked.qr, None);
     touch(&data, "u1", "linked-seen");
     let running = bridge.wait_until(|snapshot| snapshot.port.is_some());
-    assert_eq!(running, Snapshot { process: Process::Owned, port: running.port, loopback_only: Some(true), link: Link::Linked, qr: None, error: None });
+    assert_eq!(running, Snapshot { process: Process::Owned, port: running.port, loopback_only: Some(true), link: Link::Linked, qr: None, error: None, restarting: false });
     assert_eq!(running.port, Some(read_port(&data, "u1")));
     bridge.stop();
     assert_eq!(lock(&seen).last(), Some(&Snapshot::stopped(None)));
@@ -3126,9 +3129,12 @@ mod tests {
     let data = temp();
     let (bridge, _) = watched(quick(), &data);
     let fake = fake_bridge(&data, &format!("{STARTED}\necho \"$WHATSAPP_BRIDGE_TOKEN $WHATSAPP_BRIDGE_PORT\" >> runs\nexit 1"));
-    bridge.connect(data.to_path_buf(), Some(fake), Arc::new(|_: &Snapshot| {}));
+    let (_, seen) = watched(quick(), &data);
+    bridge.connect(data.to_path_buf(), Some(fake), recorder(&seen));
     bridge.start("u1");
     assert_eq!(bridge.wait_until(|snapshot| snapshot.error.is_some()), Snapshot::stopped(Some(Failure::Exited)));
+    // Between the exits a restart was planned, and the state said so: not a failure yet.
+    assert!(lock(&seen).iter().any(|snapshot| *snapshot == Snapshot { restarting: true, ..Snapshot::stopped(None) }));
     thread::sleep(Duration::from_millis(400));
     assert_eq!(starts(&data, "u1"), 3);
     // Every process got a token of its own.
@@ -3529,6 +3535,39 @@ mod tests {
     assert_eq!(bridge.user(), None);
     assert_eq!(bridge.snapshot(), Snapshot::stopped(None));
     assert_eq!(bridge.store(), Err("no_store".to_string()));
+  }
+
+  /// A stop that hangs (the bridge ignores its stdin and SIGTERM for a while) has forgotten the user's store already:
+  /// no read answers from it meanwhile.
+  #[cfg(unix)]
+  #[test]
+  fn a_hanging_stop_reads_nothing_from_the_leaving_users_store() {
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    let fake = fake_bridge(&data, &format!("{STARTED}\nexec < /dev/null\ntrap 'sleep 0.3; exit 0' TERM\nwhile :; do sleep 0.05; done"));
+    bridge.connect(data.to_path_buf(), Some(fake), Arc::new(|_: &Snapshot| {}));
+    for stop in [true, false] {
+      bridge.start("u1");
+      while starts(&data, "u1") == usize::from(!stop) {
+        thread::sleep(Duration::from_millis(10));
+      }
+      assert!(bridge.store().is_ok());
+      let stopping = {
+        let shared = Arc::clone(&bridge.0);
+        thread::spawn(move || {
+          let bridge = Bridge(shared);
+          if stop {
+            bridge.stop_for("u1");
+          } else {
+            bridge.signed_out();
+          }
+        })
+      };
+      thread::sleep(Duration::from_millis(100));
+      assert_eq!(bridge.snapshot().process, Process::Owned, "still stopping");
+      assert_eq!(bridge.store(), Err("no_store".to_string()));
+      stopping.join().unwrap();
+    }
   }
 
   /// D4: with a link in place of `<data>/whatsapp`, nothing is read through it and Disconnect deletes nothing it points
