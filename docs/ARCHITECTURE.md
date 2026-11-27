@@ -126,7 +126,7 @@ by its owner's name and is removed together with them.
  └─────────────────────────────────────────────────────────────┘
 ```
 
-WhatsApp is not a sync worker: the desktop app on a Mac reaches the user's own whatsapp-mcp bridge on 127.0.0.1 and,
+WhatsApp is not a sync worker: the desktop app on a Mac starts its own WhatsApp bridge, reaches it on 127.0.0.1 and,
 with "All my devices", relays its chats to the API, which keeps them sealed for the browser and the phone (3.17).
 
 ## 3. Components
@@ -2154,37 +2154,40 @@ desktop app. WhatsApp is off until it is turned on for a Mac, while it waits for
 `defaults write app.tresso.desktop EnableWhatsApp -bool YES` (or `TRESSO_ENABLE_WHATSAPP=1`; `defaults delete
 app.tresso.desktop EnableWhatsApp` turns it off again). The shell reads the switch once at launch, and while it is off
 every WhatsApp command answers `unsupported` (`whatsapp_available` false), so nothing in the window can load a config,
-start a bridge, read or send; a bridge an earlier run left behind is still stopped at launch. Until then nothing of
+start a bridge, read or send. Until then nothing of
 WhatsApp shows on that Mac (the browser shows the chats the server holds, see below): no card in the provider list or on
 Settings, Accounts, and every WhatsApp address (`/settings/whatsapp`, `/settings/whatsapp/connect`, and `/whatsapp`,
 `/whatsapp/:chatId` and `/chats/:chatId` for the chat screens) leads back to Accounts or the Unified Inbox; no bridge
 starts, also not for a WhatsApp connected before. Once the server confirmed who is signed in (where other users' mail
-copies are removed), every other user's WhatsApp config on the Mac goes, with the folders only they named
-(`whatsapp_config_keep_only`). The shell keeps the tokens but has no user id it could check them against, so a config
+copies are removed), every other user's WhatsApp config and store on the Mac go (`whatsapp_config_keep_only`). The shell keeps the tokens but has no user id it could check them against, so a config
 is loaded and saved only for the confirmed user by this store, not by the shell. Once on, the store loads the
 signed-in user's config
-(`whatsapp-<userId>.json`, `apps/desktop/src-tauri/src/whatsapp.rs`) and starts the bridge from its folder; the relay
+(`whatsapp-<userId>.json`, `apps/desktop/src-tauri/src/whatsapp.rs`) and starts the bridge on that user's store (the
+shell builds `<app data>/whatsapp/<userId>/` itself; see [the WhatsApp bridge](whatsapp-bridge.md)); the relay
 runs while the bridge is linked and the copy has caught up (`mail.synced`), one at a time, each new one only after the
 previous one's `stop()` resolved; one that stopped by itself starts again at the next change. A page reloaded during a
 connect stops the bridge it had started, and connecting starts again from the risk. Connecting (`/settings/whatsapp/connect`, a modal dialog over Settings, WhatsApp)
-goes folder, risk, bridge, link: nothing starts the bridge before the user confirmed the risk (WhatsApp's unofficial
-web protocol, a possible limit or ban, messages stored on the Mac in the bridge's folder), the QR code is drawn from
-the shell's rows as an SVG that stays dark on white in both themes, and Connect saves the config with a new device id
-and `importSince` (the connect moment less 30 days), which nothing changes afterwards. The dialog then shows the first
-import in counts (messages and chats so far, chats when done, a stuck import with what could not be stored); Done leads
-to the WhatsApp list. Closing it while the bridge starts waits
-for the start and then stops the bridge. Where the chats live is chosen there too: "Only this Mac" first and chosen,
-"All my devices" only after the user confirmed that the chats are copied to the Tresso server (described below).
+has three steps (the ConnectWhatsApp board): the risk, confirmed with a box before anything starts (WhatsApp does not
+allow other apps to link this way and may limit or ban the account); the code to scan (getting a code, the code, the
+code expired; the QR code is drawn from the shell's rows as an SVG that stays dark on white in both themes); and,
+once the phone linked, the connection itself: the config is saved with a new device id and `importSince` (the connect
+moment less 30 days), which nothing changes afterwards, and the dialog shows the reading (`Reading chats from the last
+30 days`, then `Chats read`); Done leads to the WhatsApp list. A failure (it could not start, with the reason in plain
+words, or the phone signed Tresso out) is one pattern: a title, one sentence, one button. Closing it while the bridge
+starts waits for the start and then stops the bridge. Where the chats live is chosen there too: "Only this Mac" first
+and chosen, "All my devices" only after the user confirmed that the chats are copied to the Tresso server (described
+below).
 Notify me is off by default; WhatsApp gets no classification, no
-search index and no smart inbox. Settings, WhatsApp shows the relaying Mac, the
-folder (Change folder: picked and checked first, the chats stay, a new store is read from the start), the bridge (each
-failure in plain words with what to do: not built, quit three times, port in use, not protected, not safe to start),
-the link (how long ago Tresso saw it link, no countdown) with the code when it needs one, which chats come in (groups
+search index and no smart inbox. Settings, WhatsApp shows the relaying Mac, whether WhatsApp runs on this Mac
+(Connected, Starting, Waiting for your phone, Stopped or Could not start, each failure with a sentence and Try again),
+the link (how long ago Tresso saw it link, no countdown; Link again after the phone signed Tresso out, or for a
+connection an earlier version made through whatsapp-mcp) with the code when it needs one, which chats come in (groups
 off removes the copied group chats, refused while the copy is not open; on again reads the store from the start as a
 first import), and Disconnect, which says it is waiting while a reply being sent finishes: the relay stops and is waited for, the bridge stops, `removeLocalChats` removes the copied chats and the
-cursor, and the config goes; Tresso deletes nothing in the user's whatsapp-mcp folder, so the bridge's own store stays
-and the phone keeps the Mac under Linked devices until the user removes it there. A sign-out stops the relay without
-waiting for it and removes the config (an expired session keeps it); the shell stops the bridge. The store keeps the
+cursor, and the config goes with the bridge's store on the Mac (its session and messages), so a later connect shows a
+new code; the phone keeps the Mac under Linked devices until the user removes it there. A sign-out stops the relay
+without waiting for it and removes the config and the store (an expired session keeps both); the shell stops the
+bridge. The store keeps the
 bridge's state and Notify me on the `wa:account` row (`setLocalChatAccount`), and offers the chat screens `pollNow`,
 `leaveOut`, `takeBackIn` (Settings lists the chats left out: the config first, then with the relay stopped the row is
 marked in again and the cursor reset with the moment of the reset (`resetLocalCursor(store, liveFrom)`, kept as the
@@ -2319,7 +2322,7 @@ off, so it never goes twice). It keeps every point above:
   relay again. After this Mac's own `PUT` the device is not compared until the pull after it ended.
 - **Consent and the number.** The store refuses "All my devices" without the user's yes to copying (`{ copy: true }`),
   unless the server's account is in the copy already (a takeover); the connect dialog treats `?mode=all` as that yes
-  only while another Mac relays, checked again at Connect. Before every `PUT` (connect, switch, takeover, Change folder)
+  only while another Mac relays, checked again at Connect. Before every `PUT` (connect, switch, takeover)
   and before the relay starts, the number the bridge is linked to is compared with the account's: another number is
   refused (`This Mac is linked to another WhatsApp number...`), an unknown one is asked about first (`{ number: true }`).
   The server refuses it too: a `PUT` with another number for an account that holds chats is 409 `other_number`, and a
@@ -3977,7 +3980,7 @@ it and encrypts in place.
 ### 3.17 WhatsApp
 
 WhatsApp is a channel next to mail, experimental and off by default. Tresso never talks to WhatsApp itself: the
-desktop app for macOS starts the Go bridge of whatsapp-mcp, which signs in as a linked device of the user's phone
+desktop app for macOS starts the WhatsApp bridge it carries (`apps/whatsapp-bridge`), which signs in as a linked device of the user's phone
 through WhatsApp's unofficial web protocol (WhatsApp may limit or ban an account that uses it; the connect dialog says
 so before anything starts). This section starts with the whole picture and where each part is described; the rest of
 it is the server.
@@ -3986,11 +3989,11 @@ it is the server.
   app.tresso.desktop EnableWhatsApp -bool YES`, or `TRESSO_ENABLE_WHATSAPP=1`); the desktop shell enforces the
   switch for every command (3.10, "Only this Mac"). Only Tresso for Mac connects WhatsApp; the browser and the phone
   show what the server holds.
-- **The bridge.** Tresso uses only a bridge built from its fork (gettresso/whatsapp-mcp), which listens on 127.0.0.1
-  only and checks the host, a per-process token and the content type; upstream's bridge, open to the network without
-  a password, is stopped and reported as not protected ([the bridge contract](whatsapp-bridge.md)). Tresso reads the
-  bridge's SQLite store read only and sends through its REST API; it deletes nothing in the user's whatsapp-mcp
-  folder.
+- **The bridge.** Tresso's own Go bridge ships inside Tresso for Mac and is started and stopped by it, on one store
+  per Tresso user in the app's data folder; it listens on 127.0.0.1 only and checks the host, a per-process token and
+  the content type, and tells its state as JSON events on stdout ([the WhatsApp bridge](whatsapp-bridge.md); the
+  contract is apps/whatsapp-bridge/README.md). Tresso reads the bridge's SQLite store read only and sends through its
+  REST API. A whatsapp-mcp folder an earlier version used is never touched.
 - **"Only this Mac"** (the default): the desktop reads the bridge's store into its own copy (`wa:` ids) and sends
   replies itself (`ChatRelay` with the local backend, `packages/core/src/chat`; 3.10). Nothing of WhatsApp reaches the
   server, the browser or the phone.

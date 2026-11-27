@@ -140,8 +140,8 @@ summaries in the daily brief.
 
 ## WhatsApp
 
-Experimental, off until switched on per Mac, connected from Tresso for Mac through the user's own build of the
-whatsapp-mcp bridge (Tresso's fork). See "3.17 WhatsApp" in the architecture.
+Experimental, off until switched on per Mac, connected from Tresso for Mac through the WhatsApp bridge the app carries
+and starts itself (`apps/whatsapp-bridge`). See "3.17 WhatsApp" in the architecture.
 
 - [x] W1 Only this Mac: the desktop shell starts and watches the bridge (loopback only, a token per process), reads
   its store read only and sends through it; chats in the local copy, the relay, connect with the risk and the QR code,
