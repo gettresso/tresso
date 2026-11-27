@@ -473,25 +473,44 @@ describe('the WhatsApp relay store', () => {
     expect(LINK_UNDONE).toBe('WhatsApp was not connected, so Tresso unlinked this Mac from your phone again.')
   })
 
-  it('cancels a planned restart when the dialog closes on linking a connection again', async () => {
-    const wa = await signedIn(connectedConfig({ linkedAt: null, moved: true }))
+  it('closing the dialog during a planned restart keeps a linked session connecting, and makes no code without one', async () => {
+    // A linked session restarting after a crash: closing the dialog does not leave it stopped.
+    let wa = await signedIn(connectedConfig())
+    shell.emit({ ...STOPPED_STATE, restarting: true })
+    await pass()
+    let calls = shell.calls.length
+    expect(await wa.cancel()).toBe(true)
+    expect(shell.calls.slice(calls)).toEqual(['stop', 'start'])
+    expect(shell.linkedOnly[shell.linkedOnly.length - 1]).toBe(true)
+    expect(wa.bridge.process).toBe('owned')
+    await wa.dispose()
+
+    // No session (a relink asked for in the dialog): stopped and not linked, no code.
+    setActivePinia(createPinia())
+    shell.hasSession = false
+    wa = await signedIn(connectedConfig({ linkedAt: null, moved: true }))
     wa.riskAccepted = true
     await wa.start({ link: true })
     shell.emit({ ...STOPPED_STATE, restarting: true })
     await pass()
-    const calls = shell.calls.length
+    calls = shell.calls.length
     expect(await wa.cancel()).toBe(true)
-    expect(shell.calls.slice(calls)).toContain('stop')
+    expect(shell.calls.slice(calls)).toEqual(['stop', 'start'])
+    expect(wa.bridge).toEqual({ ...STOPPED_STATE, link: 'unlinked' })
+    expect(wa.bridge.qr).toBeNull()
   })
 
   it('stops the codes when the dialog closes on linking a connection again', async () => {
+    shell.hasSession = false
     const wa = await signedIn(connectedConfig({ linkedAt: null, moved: true }))
     wa.riskAccepted = true
     await wa.start({ link: true })
     shell.emit(WAITING)
     await pass()
     expect(await wa.cancel()).toBe(true)
-    expect(shell.calls[shell.calls.length - 1]).toBe('stop')
+    // Stopped, then started again linked-only: without a session nothing runs and no code shows.
+    expect(shell.calls.slice(-2)).toEqual(['stop', 'start'])
+    expect(wa.bridge).toEqual({ ...STOPPED_STATE, link: 'unlinked' })
     expect(wa.connected).toBe(true)
   })
 

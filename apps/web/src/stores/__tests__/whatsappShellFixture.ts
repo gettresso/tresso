@@ -42,6 +42,8 @@ export class FakeShell {
   readonly readTimes: number[] = []
   /** What the shell's disconnect answers: whether WhatsApp confirmed the log out. */
   unlinks = true
+  /** Whether the user's store holds a linked session (the shell's linked-only start starts only then). */
+  hasSession = true
   /** Whether each start asked for a linked store only (a resumed connection) or may show a code (the dialog). */
   readonly linkedOnly: boolean[] = []
   /** The user each start was for. */
@@ -104,6 +106,11 @@ export class FakeShell {
         record('start', async () => {
           this.startedFor.push(userId)
           this.linkedOnly.push(linkedOnly)
+          if (linkedOnly && !this.hasSession) {
+            // The shell's linked-only start on a store without a session: nothing runs, no code.
+            this.state = { ...STOPPED, link: 'unlinked' }
+            return this.state
+          }
           await this.startHeld
           this.state = RUNNING
           return this.state

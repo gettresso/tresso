@@ -18,7 +18,7 @@ import {
 import { memorySql } from '@tresso/core/testing/sql'
 import type { WhatsAppConfig } from '@/platform/whatsapp'
 import type { SessionEnd } from '@/stores/auth'
-import { CARRIED_REPLIES, CARRY_COUNTS, MODE_SWITCH, SERVER_ACCOUNT, serverHistoryKey } from '@/stores/whatsappServer'
+import { CARRIED_REPLIES, CARRY_COUNTS, MODE_SWITCH, SERVER_ACCOUNT, readServerHistory, serverHistoryKey } from '@/stores/whatsappServer'
 import { ACCOUNT_ID, FakeChatServer, OTHER_DEVICE } from './chatServerFixture'
 import { DAY, DIRECT, FakeShell, GROUP, LINKED, NOW, RUNNING, WAITING } from './whatsappShellFixture'
 
@@ -773,6 +773,101 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(Date.parse(direct.readThrough!)).toBeLessThan(Date.parse(a3.sentAt))
     // The re-read is over.
     expect(await store.chatMeta(serverHistoryKey(ACCOUNT_ID))).toBeNull()
+  })
+
+  /** Relays the old store's history as the first import until it is done, then links anew to `store-new`. */
+  async function relinkedAfterImport(): Promise<ReturnType<typeof useWhatsAppRelayStore>> {
+    shell.storeId = 'store-old'
+    const wa = await relayedHere()
+    shell.add('A1', DIRECT, 60)
+    shell.emit(LINKED)
+    await pass(3_000)
+    await pass(70_000)
+    await mail.syncNow()
+    await pass()
+    expect(wa.importState).toBe('done')
+    shell.emit({ ...RUNNING, link: 'waiting_for_scan', qr: ['1'.repeat(29)] })
+    await pass()
+    shell.rows = []
+    shell.storeId = 'store-new'
+    shell.add('A1', DIRECT, 61)
+    shell.add('O1', '31687654321@s.whatsapp.net', 47)
+    return wa
+  }
+
+  /** The empty live batches: what closes the server's history import. */
+  function closers(): RelayMessagesRequest[] {
+    return batches().filter((batch) => !batch.firstImport && batch.messages.length === 0 && batch.chats.length === 0)
+  }
+
+  it('closes the server history import still open with one empty live batch before the re-read of a new store', async () => {
+    await relinkedAfterImport()
+    // Only first-import batches went since connecting: the server still imports history.
+    expect(batches().every((batch) => batch.firstImport)).toBe(true)
+    const before = batches().length
+    shell.emit(LINKED)
+    await pass(3_000)
+    const after = batches().slice(before)
+    expect(after[0]).toMatchObject({ firstImport: false, chats: [], messages: [] })
+    expect(after.length).toBeGreaterThan(1)
+    // Exactly once, also across further rounds and pulls.
+    await pass(20_000)
+    await mail.syncNow()
+    await pass()
+    expect(closers()).toHaveLength(1)
+  })
+
+  it('sends no closing batch while the Mac\'s own first import still runs', async () => {
+    shell.storeId = 'store-old'
+    const wa = await relayedHere()
+    shell.add('A1', DIRECT, 60)
+    shell.emit(LINKED)
+    await pass(3_000)
+    // Still importing (not quiet for a minute yet).
+    expect(wa.importState).toBe('reading')
+    shell.emit({ ...RUNNING, link: 'waiting_for_scan', qr: ['1'.repeat(29)] })
+    await pass()
+    shell.rows = []
+    shell.storeId = 'store-new'
+    shell.add('A1', DIRECT, 61)
+    shell.emit(LINKED)
+    await pass(3_000)
+    expect(closers()).toEqual([])
+  })
+
+  it('does not start the re-read when closing the server history import fails, and tries again', async () => {
+    await relinkedAfterImport()
+    server.fail('relayMessages', new TypeError('Failed to fetch'))
+    const before = batches().length
+    shell.emit(LINKED)
+    await pass(1_000)
+    // Not started as if it had worked: nothing re-read, no mark written, the cursor still on the old store.
+    expect(batches().slice(before).filter((batch) => batch.messages.length > 0)).toEqual([])
+    expect(await store.chatMeta(serverHistoryKey(ACCOUNT_ID))).toBeNull()
+    expect(readRelayCursor((await store.chatMeta(serverCursorKey(ACCOUNT_ID)))!)).toMatchObject({ storeId: 'store-old', firstImport: null })
+    // The next try closes it and re-reads: the failed closing batch and the one that went through.
+    await pass(5_000)
+    expect(closers()).toHaveLength(2)
+    expect(server.callsOf('relayMessages').length).toBeGreaterThan(before + 2)
+    expect(batches().slice(before).some((batch) => batch.messages.length > 0)).toBe(true)
+  })
+
+  it('keeps the unread list of a re-read taken up already when the relay starts again before its first cursor write', async () => {
+    await relinkedAfterImport()
+    const at = Date.now()
+    // Taken up already, as a restart halfway finds it: the scope with the unread list made back then, the cursor still
+    // on the old store with a first import under way.
+    const taken = { scopes: [{ all: true, at, unread: ['31600000009@s.whatsapp.net'], storeId: 'store-new' }], throughRowid: 0 }
+    await store.setChatMeta(serverHistoryKey(ACCOUNT_ID), JSON.stringify(taken))
+    await store.setChatMeta(serverCursorKey(ACCOUNT_ID), JSON.stringify({ storeId: 'store-old', rowid: 0, firstImport: { through: 0, ranFor: 0, quietFor: 0 } }))
+    // Made again now, the list would differ: no chat has unread messages at this point.
+    expect((await store.chats()).filter(({ unread }) => unread > 0)).toEqual([])
+    const before = batches().length
+    shell.emit(LINKED)
+    await pass(3_000)
+    expect(readServerHistory(await store.chatMeta(serverHistoryKey(ACCOUNT_ID)))?.scopes).toEqual(taken.scopes)
+    // Taken up already: no second closing batch either.
+    expect(batches().slice(before).filter((batch) => !batch.firstImport && batch.messages.length === 0)).toEqual([])
   })
 
   it('takes a chat back in with live batches, its history marked read by the chat state', async () => {
