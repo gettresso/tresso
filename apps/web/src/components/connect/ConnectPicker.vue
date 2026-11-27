@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { oauthProviderFor, type MailServiceProvider, type OAuthProviderId } from '@tresso/core'
 import ProviderMark from './ProviderMark.vue'
+import WhatsAppMark from '@/components/ProviderMark.vue'
 import { PICKER_ORDER, PROVIDERS, WHATSAPP_CARD, type ProviderChoice } from './providers'
 
 /**
@@ -46,7 +47,7 @@ const someUnavailable = computed(() => PICKER_ORDER.some((choice) => !available(
       </span>
     </button>
     <button v-if="whatsapp" type="button" class="tile wide whatsapp" @click="emit('whatsapp')">
-      <span class="wa-mark" aria-hidden="true">{{ WHATSAPP_CARD.mark }}</span>
+      <WhatsAppMark kind="whatsapp" :size="40" />
       <span class="tile-text">
         <span class="tile-name">{{ WHATSAPP_CARD.name }}</span>
         <span class="tile-note">{{ WHATSAPP_CARD.note }}</span>
@@ -99,19 +100,6 @@ const someUnavailable = computed(() => PICKER_ORDER.some((choice) => !available(
 }
 .tile.whatsapp {
   border-style: solid;
-}
-.wa-mark {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 999px;
-  background: var(--know);
-  color: var(--paper);
-  font: 700 15px var(--font-display);
-  line-height: 1;
 }
 .tile-text {
   display: flex;

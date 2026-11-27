@@ -165,8 +165,9 @@ export function chatNoticeKind(bridge: BridgeState): ChatNoticeKind | null {
   if (bridge.process === 'owned') {
     return bridge.link === 'unlinked' || bridge.link === 'waiting_for_scan' ? 'unlinked' : null
   }
-  // A code nobody scanned for three minutes stopped the bridge: what is missing is the link.
-  return bridge.link === 'unlinked' && bridge.error === null ? 'unlinked' : 'stopped'
+  // A code nobody scanned for three minutes stopped the bridge, or the phone signed Tresso out: what is missing is the
+  // link, which Settings offers to make again.
+  return bridge.error === 'logged_out' || (bridge.link === 'unlinked' && bridge.error === null) ? 'unlinked' : 'stopped'
 }
 
 /** A notice without an action: what the relaying Mac's state means for the chats here (relayNotice). */

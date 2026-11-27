@@ -86,6 +86,8 @@ describe('chat texts', () => {
     expect(chatNoticeKind({ ...OWNED, process: 'stopped', port: null, link: 'unknown' })).toBe('stopped')
     expect(chatNoticeKind({ ...OWNED, process: 'stopped', port: null, link: 'unlinked' })).toBe('unlinked')
     expect(chatNoticeKind({ ...OWNED, process: 'stopped', port: null, link: 'unlinked', error: 'exited' })).toBe('stopped')
+    // The phone signed Tresso out: the link is what is missing, not a start.
+    expect(chatNoticeKind({ ...OWNED, process: 'stopped', port: null, link: 'unlinked', error: 'logged_out' })).toBe('unlinked')
   })
 
   it('says on the relaying Mac that a reply waits for the bridge, and on another Mac that it waits for your Mac', () => {

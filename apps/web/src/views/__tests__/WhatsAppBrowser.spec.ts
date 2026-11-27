@@ -226,7 +226,9 @@ describe('WhatsApp in the browser', () => {
       await vi.waitFor(() => expect(view.find('h2').exists()).toBe(true))
       expect(view.get('h2').text()).toBe('WhatsApp')
       expect(view.get('.line').text()).toBe("+31698765432, via Kim's MacBook Pro")
-      expect(view.get('.pill').text()).toBe('Connected')
+      expect(view.find('.pill').exists()).toBe(false)
+      // The real WhatsApp mark, not letters.
+      expect(view.get('.header .provider-mark').classes()).toContain('whatsapp')
       expect(view.text()).toContain("WhatsApp is connected through the Tresso app on Kim's MacBook Pro.")
       const rows = view.findAll('.row').map((row) => [row.get('.label').text(), row.get('.value').text()])
       expect(rows).toEqual([
@@ -282,7 +284,7 @@ describe('WhatsApp in the browser', () => {
       const view = await show('/settings/whatsapp', SettingsWhatsAppBrowserView)
       await vi.waitFor(() => expect(view.find('.left-out').exists()).toBe(true))
       expect(view.findAll('.left-row').map((row) => row.text())).toEqual(['Bram Visser'])
-      expect(view.get('.left-out').text()).toContain('Take chats back in on the Mac that relays WhatsApp: only it can read its bridge again.')
+      expect(view.get('.left-out').text()).toContain('Take chats back in on the Mac that relays WhatsApp: only it reads its WhatsApp messages again.')
       expect(view.get('.left-out').findAll('button')).toEqual([])
     })
 

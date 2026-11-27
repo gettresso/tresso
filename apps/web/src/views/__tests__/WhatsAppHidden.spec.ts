@@ -37,7 +37,9 @@ describe('WhatsApp while it is not turned on', () => {
 
     const on = mount(ConnectPicker, { props: { address: null, signInProviders: ['google', 'microsoft'], whatsapp: true } })
     const card = on.findAll('button').find((button) => button.text().includes('WhatsApp'))!
-    expect(card.text()).toBe('WAWhatsAppChats next to your mail, in Tresso for Mac. Desktop app only.')
+    expect(card.text()).toBe('WhatsAppChats next to your mail, in Tresso for Mac. Desktop app only.')
+    // The real WhatsApp mark, not letters.
+    expect(card.get('.provider-mark').classes()).toContain('whatsapp')
     await card.trigger('click')
     expect(on.emitted('whatsapp')).toHaveLength(1)
   })

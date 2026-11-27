@@ -43,7 +43,10 @@ describe('ConnectWhatsApp', () => {
   })
 
   function open(mode?: 'local' | 'all') {
-    return mount(ConnectWhatsApp, { attachTo: document.body, props: mode === undefined ? {} : { mode } })
+    const wrapper = mount(ConnectWhatsApp, { attachTo: document.body, props: mode === undefined ? {} : { mode } })
+    // jsdom has no modal dialogs: open it as showModal would, so what is inside can take focus.
+    wrapper.get('dialog').element.setAttribute('open', '')
+    return wrapper
   }
 
   /** The store's start, as the shell answers it: a code on its way. */
@@ -303,6 +306,138 @@ describe('ConnectWhatsApp', () => {
     expect(wrapper.get('h1').text()).toBe('WhatsApp could not start on this Mac')
     expect(wrapper.get('.lead').text()).toBe('WhatsApp works in Tresso for Mac only.')
     expect(primary(wrapper).text()).toBe('Try again')
+  })
+
+  it('puts focus on the step heading at every step change', async () => {
+    starts()
+    connects()
+    const wrapper = open()
+    await toTheCode(wrapper)
+    await flushPromises()
+    expect(document.activeElement?.tagName).toBe('H1')
+    expect(document.activeElement?.textContent).toBe('Scan this code with your phone')
+    wa.bridge = LINKED
+    await flushPromises()
+    expect(document.activeElement?.textContent).toBe('Linked')
+    wrapper.unmount()
+  })
+
+  it('offers Try again in the linked step whenever WhatsApp is not connected and nothing runs, and says closing unlinks', async () => {
+    starts()
+    let answers = 0
+    const connect = vi.spyOn(wa, 'connect').mockImplementation(async () => {
+      answers++
+      if (answers === 1) {
+        wa.askNumber = 'connect'
+        wa.error = 'Tresso cannot tell whether this Mac is linked to the same WhatsApp number as your Tresso server.'
+        return false
+      }
+      wa.config = config()
+      return true
+    })
+    const wrapper = open()
+    await toTheCode(wrapper)
+    wa.bridge = LINKED
+    await flushPromises()
+    // Cancel on the number question: no dead end, Try again connects again.
+    const ask = wrapper.findAll('[role="alertdialog"]').find((dialog) => dialog.text().includes('Relay from this Mac'))!
+    await ask.findAll('button')[1]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Closing now unlinks this Mac from your phone again.')
+    expect(primary(wrapper).text()).toBe('Try again')
+    expect(primary(wrapper).attributes('disabled')).toBeUndefined()
+    await primary(wrapper).trigger('click')
+    await flushPromises()
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(primary(wrapper).text()).toBe('Done')
+    expect(wrapper.text()).not.toContain('Closing now unlinks')
+    wrapper.unmount()
+  })
+
+  it('connects by itself once the start that was still running finished', async () => {
+    let release!: () => void
+    vi.spyOn(wa, 'start').mockImplementation(async () => {
+      wa.busy = 'start'
+      wa.bridge = LINKED
+      await new Promise<void>((resolve) => (release = resolve))
+      wa.busy = null
+      return true
+    })
+    const connect = connects()
+    const wrapper = open()
+    await wrapper.get('.confirm input').setValue(true)
+    void primary(wrapper).trigger('click')
+    await flushPromises()
+    expect(connect).not.toHaveBeenCalled()
+    release()
+    await flushPromises()
+    expect(connect).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('never spins forever: a stop from outside, or a code that never comes, ends in Try again', async () => {
+    const start = starts()
+    const wrapper = open()
+    await toTheCode(wrapper)
+    expect(wrapper.get('h1').text()).toBe('Scan this code with your phone')
+    // Stopped from outside, with no error (a removal finishing elsewhere).
+    wa.bridge = STOPPED
+    await flushPromises()
+    expect(wrapper.get('h1').text()).toBe('WhatsApp could not start on this Mac')
+    expect(primary(wrapper).text()).toBe('Try again')
+    await primary(wrapper).trigger('click')
+    expect(start).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+
+    vi.useFakeTimers()
+    try {
+      const late = open()
+      await late.get('.confirm input').setValue(true)
+      await primary(late).trigger('click')
+      await flushPromises()
+      expect(late.get('.tile.empty').text()).toBe('Getting a code\u2026')
+      await vi.advanceTimersByTimeAsync(61_000)
+      expect(late.get('h1').text()).toBe('WhatsApp could not start on this Mac')
+      expect(primary(late).text()).toBe('Try again')
+      late.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('offers no Try again for a missing part: its one button closes', async () => {
+    starts()
+    const wrapper = open()
+    await toTheCode(wrapper)
+    wa.bridge = { ...STOPPED, error: 'missing' }
+    await flushPromises()
+    expect(primary(wrapper).text()).toBe('Close')
+    await primary(wrapper).trigger('click')
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('shows Remove as the danger button, with Cancel the focused answer', async () => {
+    starts()
+    connects()
+    vi.spyOn(wa, 'switchMode').mockImplementation(async (to) => {
+      wa.config = config(to)
+      return true
+    })
+    const wrapper = open()
+    await toTheCode(wrapper)
+    wa.bridge = LINKED
+    await flushPromises()
+    await wrapper.findAll('[role="radio"]')[1]!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('[role="radio"]')[0]!.trigger('click')
+    await flushPromises()
+    const [remove, cancel] = wrapper.get('[role="alertdialog"]').findAll('button')
+    expect(remove!.text()).toBe('Remove')
+    expect(remove!.classes()).toContain('button-danger')
+    expect(document.activeElement).toBe(cancel!.element)
+    wrapper.unmount()
   })
 
   it('closes with Close or Escape', async () => {

@@ -6,6 +6,7 @@ import { useChatsStore } from '@/stores/chats'
 import { chatName } from '@/components/chat/chatTexts'
 import { deviceLabel, LEFT_OUT_KEPT, linkedAge, otherRelayText } from '@/components/chat/whatsappTexts'
 import AppIcon from '@/components/AppIcon.vue'
+import ProviderMark from '@/components/ProviderMark.vue'
 
 /**
  * Settings, WhatsApp in the browser (the WhatsApp plan's WP11): what the server's chat account says, read only. The
@@ -128,12 +129,13 @@ onBeforeUnmount(() => {
     <template v-else>
       <header class="header">
         <RouterLink :to="{ name: 'settings-accounts' }" class="back" aria-label="Back to accounts"><AppIcon name="back" :size="18" /></RouterLink>
-        <span class="mark" aria-hidden="true">WA</span>
+        <ProviderMark kind="whatsapp" :size="40" />
         <div class="who">
           <h2>WhatsApp</h2>
           <span class="line" dir="auto">{{ accountSubtitle(account, '') }}</span>
         </div>
-        <span class="pill" :class="{ ok: pill.ok }">{{ pill.text }}</span>
+        <!-- No pill for the normal state: the rows say it. -->
+        <span v-if="!pill.ok" class="pill">{{ pill.text }}</span>
       </header>
 
       <div class="panel">
@@ -181,7 +183,7 @@ onBeforeUnmount(() => {
       <section v-if="leftOutRows.length > 0" class="panel left-out" aria-labelledby="wa-left-out">
         <h3 id="wa-left-out">Chats left out</h3>
         <p class="option-note">
-          Tresso does not read these chats; WhatsApp keeps them. {{ LEFT_OUT_KEPT }} Take chats back in on the Mac that relays WhatsApp: only it can read its bridge again.
+          Tresso does not read these chats; WhatsApp keeps them. {{ LEFT_OUT_KEPT }} Take chats back in on the Mac that relays WhatsApp: only it reads its WhatsApp messages again.
         </p>
         <ul class="left-list">
           <li v-for="row in leftOutRows" :key="row.id" class="left-row" dir="auto">{{ row.name }}</li>
@@ -213,7 +215,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 760px;
 }
 .state {
   margin: 0;
@@ -233,19 +234,6 @@ onBeforeUnmount(() => {
   height: 36px;
   border-radius: var(--radius-control);
   color: var(--ink-2);
-}
-.mark {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 999px;
-  background: var(--know);
-  color: var(--paper);
-  font-size: 13px;
-  font-weight: 700;
 }
 .who {
   display: flex;
@@ -275,17 +263,15 @@ h2 {
   font-size: 12px;
   font-weight: 600;
 }
-.pill.ok {
-  background: var(--know-soft);
-  color: var(--know);
-}
+/* On the settings surface (--stage) a panel is paper with a hairline edge, as the Accounts page's card. */
 .panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px;
-  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 .panel p {
   margin: 0;

@@ -187,7 +187,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     const wa = await signedIn()
     shell.add('A1', DIRECT, 60)
     wa.riskAccepted = true
-    await wa.start()
+    await wa.start({ link: true })
     shell.emit(WAITING)
     shell.emit(LINKED)
     await pass()
@@ -214,7 +214,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
   it('undoes a connect the server did not take, so the dialog can be tried again', async () => {
     const wa = await signedIn()
     wa.riskAccepted = true
-    await wa.start()
+    await wa.start({ link: true })
     shell.emit(LINKED)
     await pass()
     server.fail('connect', new TypeError('Failed to fetch'))
@@ -678,6 +678,10 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(shell.configs.has('u1')).toBe(false)
     expect(wa.notice).toBe(REMOVED_ELSEWHERE)
     expect(shell.calls).toContain('disconnect')
+    // Said plainly: the Mac unlinked itself from the phone and removed what it kept.
+    expect(REMOVED_ELSEWHERE).toBe(
+      'WhatsApp was disconnected from your Tresso server on another device, so Tresso disconnected it on this Mac too: it unlinked this Mac from your phone and removed the WhatsApp data it kept here.',
+    )
     expect(wa.relayRunning).toBe(false)
     expect(await store.chatMeta(SERVER_ACCOUNT)).toBeNull()
   })
@@ -689,6 +693,53 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     await pass()
     expect(server.callsOf('accounts')).toHaveLength(1)
     expect(wa.connected).toBe(true)
+  })
+
+  it('takes up a new store in "All my devices": what the server holds comes back known, the history marked read', async () => {
+    shell.storeId = 'store-old'
+    const wa = await relayedHere()
+    shell.add('A1', DIRECT, 60)
+    shell.add('A2', DIRECT, 50)
+    shell.emit(LINKED)
+    await pass(3_000)
+    await pass(70_000)
+    await mail.syncNow()
+    await pass()
+    expect(wa.importState).toBe('done')
+    expect(readRelayCursor((await store.chatMeta(serverCursorKey(ACCOUNT_ID)))!)).toMatchObject({ storeId: 'store-old', firstImport: null })
+    const stored = server.messages.size
+
+    // The phone links anew: a new store, the history synced again, a chat the server never had, then a message after.
+    shell.emit({ ...RUNNING, link: 'waiting_for_scan', qr: ['1'.repeat(29)] })
+    await pass()
+    shell.rows = []
+    shell.storeId = 'store-new'
+    shell.add('A1', DIRECT, 61)
+    shell.add('A2', DIRECT, 51)
+    shell.add('G1', GROUP, 45)
+    const before = batches().length
+    shell.emit(LINKED)
+    await pass(3_000)
+    vi.setSystemTime(Date.now() + 60_000)
+    shell.add('A3', DIRECT, 0)
+    await pass(3_000)
+    await mail.syncNow()
+    await pass()
+    await mail.syncNow()
+    await pass()
+
+    const reread = batches().slice(before)
+    // Live batches only (a first import may not follow live ones on the server); the known rows store nothing twice.
+    expect(reread.every((batch) => !batch.firstImport)).toBe(true)
+    expect(server.messages.size).toBe(stored + 2)
+    expect(readRelayCursor((await store.chatMeta(serverCursorKey(ACCOUNT_ID)))!)).toMatchObject({ storeId: 'store-new' })
+    // The history is marked read through the link: the new chat has nothing unread, the old one only A3.
+    const group = server.chats.get(GROUP)!
+    expect(group.readThrough).not.toBeNull()
+    expect(Date.parse(group.readThrough!)).toBeGreaterThanOrEqual(Date.parse(group.lastMessageAt))
+    const direct = server.chats.get(DIRECT)!
+    const a3 = [...server.messages.values()].find((message) => message.waId === 'A3')!
+    expect(Date.parse(direct.readThrough!)).toBeLessThan(Date.parse(a3.sentAt))
   })
 
   it('takes a chat back in with live batches, its history marked read by the chat state', async () => {
@@ -1211,7 +1262,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
       mail.store = await SqliteMailStore.open(await memorySql())
       const again = await restart(null)
       again.riskAccepted = true
-      await again.start()
+      await again.start({ link: true })
       shell.emit(LINKED)
       await pass()
       expect(await again.connect('all')).toBe(true)

@@ -89,7 +89,7 @@ export function relayBanner(account: Pick<SyncedChatAccount, 'relayOnline' | 'br
     return 'WhatsApp is not linked on your Mac. Nothing comes in or goes out until it is linked again.'
   }
   if (account.bridge === 'stopped') {
-    return 'The bridge on your Mac is not running. Replies go out once it runs again.'
+    return 'WhatsApp is not running on your Mac. Replies go out once it runs again.'
   }
   return null
 }

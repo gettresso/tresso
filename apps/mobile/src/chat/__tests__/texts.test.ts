@@ -54,7 +54,7 @@ describe('chat texts', () => {
   it('says when the Mac that relays is offline or cannot send, and nothing while it works', () => {
     expect(relayBanner(account({ relayOnline: false, relayOfflineSince: '2026-11-13T08:40:00Z' }))).toBe('Your Mac is offline. Replies go out once it is back.')
     expect(relayBanner(account({ link: 'unlinked' }))).toBe('WhatsApp is not linked on your Mac. Nothing comes in or goes out until it is linked again.')
-    expect(relayBanner(account({ bridge: 'stopped' }))).toBe('The bridge on your Mac is not running. Replies go out once it runs again.')
+    expect(relayBanner(account({ bridge: 'stopped' }))).toBe('WhatsApp is not running on your Mac. Replies go out once it runs again.')
     expect(relayBanner(account())).toBeNull()
     expect(relayBanner(null)).toBeNull()
   })

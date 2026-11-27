@@ -53,7 +53,7 @@ export const PROVIDERS: Record<ProviderChoice, ProviderDescription> = {
  * WhatsApp in the provider list (the AddAccount board): not a mail provider, so not in PROVIDERS. Only the desktop app
  * on macOS shows it, and only once WhatsApp was turned on there (stores/whatsappRelay.ts).
  */
-export const WHATSAPP_CARD = { name: 'WhatsApp', mark: 'WA', note: 'Chats next to your mail, in Tresso for Mac. Desktop app only.' } as const
+export const WHATSAPP_CARD = { name: 'WhatsApp', note: 'Chats next to your mail, in Tresso for Mac. Desktop app only.' } as const
 
 export const PICKER_ORDER: ProviderChoice[] = ['google', 'outlook', 'm365', 'icloud', 'yahoo', 'exchange', 'manual']
 

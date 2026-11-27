@@ -38,7 +38,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
 const mail = shallowReactive({ synced: false, store: null as SqliteMailStore | null, currentStore: () => mail.store })
 vi.mock('@/stores/mail', () => ({ useMailStore: () => mail }))
 
-const { useWhatsAppRelayStore } = await import('../whatsappRelay')
+const { useWhatsAppRelayStore, LINK_UNDONE } = await import('../whatsappRelay')
 
 function connectedConfig(extra: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
   return {
@@ -126,8 +126,10 @@ describe('the WhatsApp relay store', () => {
   it('resumes a connection: starts the bridge, and the relay only once it is linked and the copy caught up', async () => {
     const wa = await signedIn(connectedConfig())
     expect(shell.calls).toContain('start')
-    // On the signed-in user's own store: the shell builds its path from the user id.
+    // On the signed-in user's own store: the shell builds its path from the user id. A resumed connection starts only
+    // a linked store, so no code appears unasked.
     expect(shell.startedFor).toEqual(['u1'])
+    expect(shell.linkedOnly).toEqual([true])
     expect(wa.connected).toBe(true)
     shell.add('A1', DIRECT, 60)
 
@@ -195,13 +197,15 @@ describe('the WhatsApp relay store', () => {
     expect(wa.connected).toBe(false)
 
     // Nothing links before the risk was confirmed.
-    expect(await wa.start()).toBe(false)
+    expect(await wa.start({ link: true })).toBe(false)
     expect(shell.calls).not.toContain('start')
     expect(wa.error).toBe('Confirm the risk first.')
 
     wa.riskAccepted = true
-    expect(await wa.start()).toBe(true)
+    expect(await wa.start({ link: true })).toBe(true)
     expect(shell.startedFor).toEqual(['u1'])
+    // The dialog's start may show a code.
+    expect(shell.linkedOnly).toEqual([false])
     // Not linked yet: no config can be saved.
     expect(await wa.connect()).toBe(false)
 
@@ -247,7 +251,7 @@ describe('the WhatsApp relay store', () => {
   it('stops the bridge it started when the dialog closes without connecting', async () => {
     const wa = await signedIn()
     wa.riskAccepted = true
-    await wa.start()
+    await wa.start({ link: true })
     await wa.cancel()
     expect(shell.calls[shell.calls.length - 1]).toBe('stop')
     expect(wa.riskAccepted).toBe(false)
@@ -289,11 +293,11 @@ describe('the WhatsApp relay store', () => {
     const wa = await signedIn()
     shell.failures.start = 'unsupported'
     wa.riskAccepted = true
-    expect(await wa.start()).toBe(false)
+    expect(await wa.start({ link: true })).toBe(false)
     expect(wa.error).toBe('WhatsApp works in Tresso for Mac only.')
 
     shell.failures = { start: 'The WhatsApp data of /Users/kim cannot be used' }
-    expect(await wa.start()).toBe(false)
+    expect(await wa.start({ link: true })).toBe(false)
     expect(wa.error).toBe('The WhatsApp data of /Users/kim cannot be used')
     expect(JSON.stringify(errors)).not.toContain('/Users/kim')
   })
@@ -342,6 +346,112 @@ describe('the WhatsApp relay store', () => {
     const reads = shell.calls.filter((call) => call === 'read').length
     await pass(30_000)
     expect(shell.calls.filter((call) => call === 'read').length).toBe(reads)
+  })
+
+  /** Runs the first import on the store the shell has now until it is done (the store quiet for a minute). */
+  async function importDone(wa: ReturnType<typeof useWhatsAppRelayStore>): Promise<void> {
+    await pass(70_000)
+    expect(wa.importState).toBe('done')
+  }
+
+  async function unread(jid: string): Promise<number | undefined> {
+    return (await store.chats()).find(({ chat }) => chat.jid === jid)?.unread
+  }
+
+  it('takes up a new store after the phone linked anew: its history arrives read, only what came after the link is unread', async () => {
+    shell.storeId = 'store-old'
+    shell.add('A1', DIRECT, 60)
+    shell.add('A2', DIRECT, 50)
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.emit(LINKED)
+    await pass()
+    await importDone(wa)
+    expect(await unread(DIRECT)).toBe(0)
+    expect(JSON.parse((await store.chatMeta(LOCAL_CURSOR))!)).toMatchObject({ storeId: 'store-old', firstImport: null })
+
+    // The phone links anew: a new store, its history synced again (A1, A2), a chat Tresso never saw, all from before the
+    // link, then one message after it.
+    shell.emit({ ...RUNNING, link: 'waiting_for_scan', qr: ['1'.repeat(29)] })
+    await pass()
+    shell.rows = []
+    shell.storeId = 'store-new'
+    shell.add('A1', DIRECT, 61)
+    shell.add('A2', DIRECT, 51)
+    shell.add('G1', GROUP, 45)
+    shell.emit(LINKED)
+    await pass()
+    vi.setSystemTime(Date.now() + 60_000)
+    shell.add('A3', DIRECT, 0)
+    await importDone(wa)
+
+    const messages = (await store.chat(localChatId(DIRECT)))!.messages.map((message) => message.waId)
+    expect(messages).toEqual(['A1', 'A2', 'A3'])
+    // No unread jump for what came before the link: the chat never seen arrives read, the old one shows only A3.
+    expect(await unread(GROUP)).toBe(0)
+    expect(await unread(DIRECT)).toBe(1)
+    expect(JSON.parse((await store.chatMeta(LOCAL_CURSOR))!)).toMatchObject({ storeId: 'store-new', firstImport: null })
+    expect(await store.chatMeta(LOCAL_HISTORY_THROUGH)).toBeNull()
+  })
+
+  it('keeps a chat left out out across a store change', async () => {
+    shell.storeId = 'store-old'
+    shell.add('G1', GROUP, 60)
+    shell.add('A1', DIRECT, 60)
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.emit(LINKED)
+    await pass()
+    await importDone(wa)
+    expect(await wa.leaveOut(GROUP)).toBe(true)
+    expect((await store.chatByJid(LOCAL_CHAT_ACCOUNT, GROUP))?.leftOut).toBe(true)
+
+    shell.emit({ ...RUNNING, link: 'waiting_for_scan', qr: ['1'.repeat(29)] })
+    await pass()
+    shell.rows = []
+    shell.storeId = 'store-new'
+    shell.add('G1', GROUP, 61)
+    shell.add('G2', GROUP, 30)
+    shell.add('A1', DIRECT, 61)
+    shell.emit(LINKED)
+    await pass()
+    await importDone(wa)
+    expect((await store.chatByJid(LOCAL_CHAT_ACCOUNT, GROUP))?.leftOut).toBe(true)
+    expect((await store.chat(localChatId(GROUP)))?.messages ?? []).toEqual([])
+    expect(wa.config?.leftOut).toEqual([GROUP])
+  })
+
+  it('undoes a link the dialog closed on before WhatsApp was connected, and says so', async () => {
+    const wa = await signedIn()
+    mail.synced = true
+    wa.riskAccepted = true
+    await wa.start({ link: true })
+    shell.emit(WAITING)
+    shell.emit(LINKED)
+    await pass()
+    expect(wa.connected).toBe(false)
+    expect(await wa.cancel()).toBe(true)
+    expect(shell.calls).toContain('disconnect')
+    expect(wa.notice).toBe(LINK_UNDONE)
+    expect(LINK_UNDONE).toBe('WhatsApp was not connected, so Tresso unlinked this Mac from your phone again.')
+  })
+
+  it('stops the codes when the dialog closes on linking a connection again', async () => {
+    const wa = await signedIn(connectedConfig({ linkedAt: null, moved: true }))
+    wa.riskAccepted = true
+    await wa.start({ link: true })
+    shell.emit(WAITING)
+    await pass()
+    expect(await wa.cancel()).toBe(true)
+    expect(shell.calls[shell.calls.length - 1]).toBe('stop')
+    expect(wa.connected).toBe(true)
+  })
+
+  it('starts nothing that shows a code outside the dialog: Settings and the chat start a linked store only', async () => {
+    const wa = await signedIn(connectedConfig())
+    shell.linkedOnly.length = 0
+    expect(await wa.start()).toBe(true)
+    expect(shell.linkedOnly).toEqual([true])
   })
 
   it('says how to remove Tresso on the phone only when Disconnect could not reach WhatsApp', async () => {
@@ -455,7 +565,7 @@ describe('the WhatsApp relay store', () => {
     wa.riskAccepted = true
     let release!: () => void
     shell.startHeld = new Promise((resolve) => (release = resolve))
-    const starting = wa.start()
+    const starting = wa.start({ link: true })
     await pass()
     expect(wa.busy).toBe('start')
 

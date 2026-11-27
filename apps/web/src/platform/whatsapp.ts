@@ -141,8 +141,12 @@ export function whatsAppShell(shell: WhatsAppShell = tauriShell) {
     disconnect: (userId: string) => shell.invoke<{ unlinked: boolean }>('whatsapp_disconnect', { userId }),
     /** Once the server confirmed the user: every other user's config goes (their stores stay). */
     keepOnlyConfig: (userId: string) => shell.invoke<void>('whatsapp_config_keep_only', { userId }),
-    /** Starts the bridge on this user's store (made first); one that runs for this user already is kept. */
-    start: (userId: string) => shell.invoke<BridgeState>('whatsapp_start', { userId }),
+    /**
+     * Starts the bridge on this user's store (made first); one that runs for this user already is kept. `linkedOnly`:
+     * only when the store holds a session (else the state comes back stopped and unlinked), so no QR code appears that
+     * the user did not ask for in the connect dialog.
+     */
+    start: (userId: string, linkedOnly = false) => shell.invoke<BridgeState>('whatsapp_start', { userId, linkedOnly }),
     stop: () => shell.invoke<BridgeState>('whatsapp_stop'),
     state: () => shell.invoke<BridgeState>('whatsapp_state'),
     /** The account the store of the last started user is linked to; null while nothing is linked. */

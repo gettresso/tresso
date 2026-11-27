@@ -39,20 +39,35 @@ export interface FailureText {
 
 /** Why WhatsApp does not run on this Mac (BridgeFailure), as the connect dialog says it. */
 export const FAILURES: Record<BridgeFailure, FailureText> = {
-  missing: { title: 'WhatsApp could not start on this Mac', text: 'A part of Tresso that WhatsApp needs is missing. Install Tresso again.', action: 'Try again' },
+  // Starting again cannot help: the one button closes the dialog.
+  missing: { title: 'WhatsApp could not start on this Mac', text: 'A part of Tresso that WhatsApp needs is missing. Install Tresso again.', action: 'Close' },
   store: { title: 'WhatsApp could not start on this Mac', text: 'Tresso could not open its WhatsApp data on this Mac. Try again in a moment.', action: 'Try again' },
   offline: { title: 'WhatsApp could not be reached', text: 'Check that this Mac is online, then try again.', action: 'Try again' },
   pair_failed: { title: 'WhatsApp did not accept the link', text: 'Nothing was linked. Try again with a new code.', action: 'Try again' },
   outdated: { title: 'Tresso needs an update for WhatsApp', text: 'WhatsApp no longer accepts this version of Tresso. Update Tresso, then try again.', action: 'Try again' },
-  replaced: { title: 'WhatsApp is open elsewhere with this link', text: 'Another copy of Tresso on this Mac uses the same link. Quit it, then try again.', action: 'Try again' },
+  replaced: { title: 'WhatsApp is open elsewhere with this link', text: 'This link is in use by another running Tresso. Quit that one, then try again.', action: 'Try again' },
   banned: { title: 'WhatsApp blocked this account for now', text: 'WhatsApp limits accounts that link this way. Try again later.', action: 'Try again' },
   logged_out: { title: 'This phone signed Tresso out', text: 'New messages do not come in until you link again.', action: 'Link again' },
   exited: { title: 'WhatsApp could not start on this Mac', text: 'Nothing was linked. Try again in a moment.', action: 'Try again' },
 }
 
-/** The same failure in Settings, where something was linked before: one sentence. */
-export function failureLine(failure: BridgeFailure): string {
-  return failure === 'exited' ? 'WhatsApp stopped several times on this Mac. Try again in a moment.' : `${FAILURES[failure].title}. ${FAILURES[failure].text}`
+/** The same failure in Settings, where something was linked before: the row's value and its sentence. */
+export function failureRow(failure: BridgeFailure): { title: string; text: string; retry: boolean } {
+  const text = failure === 'exited' ? 'WhatsApp stopped several times on this Mac. Try again in a moment.' : FAILURES[failure].text
+  return { title: FAILURES[failure].title, text, retry: failure !== 'missing' && failure !== 'logged_out' }
+}
+
+/** Settings' short word for a failure, next to the title. */
+const FAILURE_WORDS: Record<BridgeFailure, string> = {
+  missing: 'Needs a new install',
+  store: 'Could not start',
+  offline: 'Offline',
+  pair_failed: 'Not linked',
+  outdated: 'Needs an update',
+  replaced: 'In use elsewhere',
+  banned: 'Blocked for now',
+  logged_out: 'Not linked',
+  exited: 'Could not start',
 }
 
 /** A WhatsApp number as stored (digits only) in the international form, without a library for spacing (6.7). */
@@ -109,7 +124,7 @@ export function statusWord(bridge: BridgeState, moved: boolean): { text: string;
   }
   switch (stage) {
     case 'failed':
-      return bridge.error === 'logged_out' ? { text: 'Not linked', ok: false } : { text: 'Could not start', ok: false }
+      return { text: FAILURE_WORDS[bridge.error ?? 'exited'], ok: false }
     case 'loading':
       return { text: bridge.link === 'unknown' ? 'Starting' : 'Not linked', ok: false }
     case 'scan':
