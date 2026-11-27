@@ -208,14 +208,14 @@ describe('WhatsApp in the browser', () => {
 
     it('shows no WhatsApp card on Accounts without an account, and one that opens its settings with one', async () => {
       let view = await show('/settings/accounts', SettingsAccountsView)
-      expect(view.find('section[aria-label="WhatsApp"]').exists()).toBe(false)
+      expect(view.find('[role="listitem"][aria-label="WhatsApp"]').exists()).toBe(false)
       expect(view.text()).not.toContain('WhatsApp')
       view.unmount()
 
       await relayed()
       view = await show('/settings/accounts', SettingsAccountsView)
-      const card = view.get('section[aria-label="WhatsApp"]')
-      expect(card.text()).toBe("WAWhatsApp+31698765432, via Kim's MacBook ProSettings")
+      const card = view.get('[role="listitem"][aria-label="WhatsApp"]')
+      expect(card.text()).toBe("WhatsApp+31698765432, via Kim's MacBook ProSettings")
       expect(card.get('a').attributes('href')).toBe('/settings/whatsapp')
       expect(card.text()).not.toContain('Connect')
     })

@@ -11,7 +11,9 @@ import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import { phoneNumber } from '@/components/chat/whatsappTexts'
 import AccountCard from '@/components/AccountCard.vue'
 import ApprovalLink from '@/components/ApprovalLink.vue'
+import ListRow from '@/components/ListRow.vue'
 import LogoLoader from '@/components/LogoLoader.vue'
+import ProviderMark from '@/components/ProviderMark.vue'
 
 /**
  * finishesSignIn: whether this page finishes a provider sign-in that came back to it (signing an account in again, or
@@ -34,7 +36,9 @@ const whatsapp = useWhatsAppRelayStore()
 const chats = useChatsStore()
 /** In the browser: the server's WhatsApp account, while the copy holds one (a Mac relays it); null otherwise. */
 const serverWhatsApp = computed(() => (chats.serverOnly && chats.enabled ? chats.serverAccount : null))
-/** The WhatsApp card's second line: the linked number when known, and where the chats live. */
+/** The WhatsApp row: in the browser while a Mac relays the chats, and on a Mac where WhatsApp is turned on. */
+const showWhatsApp = computed(() => serverWhatsApp.value !== null || whatsapp.available)
+/** The WhatsApp row's line: the linked number when known, and where the chats live. */
 const whatsappLine = computed(() => {
   const number = whatsapp.identity?.number
   return number ? `${phoneNumber(number)}, via this Mac` : 'Via this Mac'
@@ -125,11 +129,11 @@ watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.
 <template>
   <section class="accounts">
     <header class="header">
-      <div>
+      <div class="heading">
         <h2>Accounts</h2>
-        <p>{{ accounts.accounts.length === 1 ? '1 mail account.' : `${accounts.accounts.length} mail accounts.` }} Your mail stays with your provider; passwords and sign-ins are stored encrypted.</p>
+        <p>Mail stays with your provider. Sign-ins are stored encrypted.</p>
       </div>
-      <RouterLink :to="severalTarget" class="button several">Add several accounts</RouterLink>
+      <RouterLink :to="severalTarget" class="button button-quiet several">Add several</RouterLink>
       <RouterLink :to="{ name: 'settings-accounts-new' }" class="button button-primary">Add account</RouterLink>
     </header>
 
@@ -144,26 +148,25 @@ watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.
     <p v-else-if="!accounts.loaded" class="state" role="status"><LogoLoader /> Loading accounts…</p>
     <p v-else-if="accounts.accounts.length === 0" class="state">No mail accounts yet. Add one to see your mail in Tresso.</p>
 
-    <AccountCard v-for="account in accounts.accounts" :key="account.id" :account="account" />
-
-    <!-- WhatsApp: the desktop app on macOS once it is turned on there, and the browser while a Mac relays the chats. -->
-    <section v-if="serverWhatsApp" class="whatsapp" aria-label="WhatsApp">
-      <span class="wa-mark" aria-hidden="true">WA</span>
-      <span class="wa-who">
-        <span class="wa-name">WhatsApp</span>
-        <span class="wa-line" dir="auto">{{ accountSubtitle(serverWhatsApp, '') }}</span>
-      </span>
-      <RouterLink :to="{ name: 'settings-whatsapp' }" class="button button-quiet wa-open">Settings</RouterLink>
-    </section>
-    <section v-else-if="whatsapp.available" class="whatsapp" aria-label="WhatsApp">
-      <span class="wa-mark" aria-hidden="true">WA</span>
-      <span class="wa-who">
-        <span class="wa-name">WhatsApp</span>
-        <span class="wa-line">{{ whatsapp.connected ? whatsappLine : 'Chats next to your mail, through whatsapp-mcp on this Mac.' }}</span>
-      </span>
-      <RouterLink v-if="whatsapp.connected" :to="{ name: 'settings-whatsapp' }" class="button button-quiet wa-open">Settings</RouterLink>
-      <RouterLink v-else-if="whatsapp.configLoaded" :to="{ name: 'settings-whatsapp-connect' }" class="button button-quiet wa-open">Connect WhatsApp</RouterLink>
-    </section>
+    <!--
+      One card holds the account rows, and WhatsApp as its last row under a hairline: the desktop app on macOS once
+      WhatsApp is turned on there, and the browser while a Mac relays the chats.
+    -->
+    <div v-if="accounts.accounts.length > 0 || showWhatsApp" role="list" aria-label="Accounts" class="card">
+      <AccountCard v-for="account in accounts.accounts" :key="account.id" :account="account" />
+      <ListRow v-if="showWhatsApp" aria-label="WhatsApp" :class="{ 'after-accounts': accounts.accounts.length > 0 }">
+        <template #mark><ProviderMark kind="whatsapp" /></template>
+        <template #title>WhatsApp</template>
+        <template #line>
+          <span v-if="serverWhatsApp" dir="auto">{{ accountSubtitle(serverWhatsApp, '') }}</span>
+          <template v-else>{{ whatsapp.connected ? whatsappLine : 'Chats next to your mail, on this Mac.' }}</template>
+        </template>
+        <template v-if="serverWhatsApp || whatsapp.connected || whatsapp.configLoaded" #action>
+          <RouterLink v-if="serverWhatsApp || whatsapp.connected" :to="{ name: 'settings-whatsapp' }" class="button row-button">Settings</RouterLink>
+          <RouterLink v-else :to="{ name: 'settings-whatsapp-connect' }" class="button row-button">Connect WhatsApp</RouterLink>
+        </template>
+      </ListRow>
+    </div>
   </section>
 </template>
 
@@ -172,83 +175,70 @@ watch(() => mail.accounts.map((a) => `${a.id}:${a.status}:${a.statusDetail}:${a.
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 760px;
+  max-width: var(--measure);
 }
 .header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.heading {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 h2 {
-  margin: 0 0 4px;
-  font-size: 20px;
-  line-height: 28px;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 700;
 }
-.header p,
+.heading p,
 .state,
 .approval {
   margin: 0;
+  font-size: 13px;
+  line-height: 19px;
   color: var(--ink-2);
 }
 .header .button {
-  text-decoration: none;
   flex-shrink: 0;
 }
-.header > div {
-  flex: 1;
-}
+/* The quiet second action of the head, in the ink as the board draws it. */
 .several {
-  border: 1px solid var(--line-strong);
-  background: var(--paper);
+  padding: 0 12px;
   color: var(--ink);
-}
-.several:hover {
-  background: var(--ground);
 }
 .done {
   margin: 0;
   color: var(--know);
   font-weight: 500;
 }
-.whatsapp {
+/* The card that holds rows of one kind (the List row board): paper, a hairline edge drawn inside, radius 14. */
+.card {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-}
-.wa-mark {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 999px;
-  background: var(--know);
-  color: var(--paper);
-  font-size: 12px;
-  font-weight: 700;
-}
-.wa-who {
-  display: flex;
-  flex: 1;
   flex-direction: column;
-  min-width: 0;
+  border-radius: var(--radius-panel);
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
-.wa-name {
-  font-weight: 600;
+/* WhatsApp under the account rows, whatever those rows draw themselves (the hairline the board draws there). */
+.after-accounts {
+  border-top: 1px solid var(--line);
 }
-.wa-line {
-  color: var(--ink-2);
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-.wa-open {
-  flex-shrink: 0;
+/* The one control of a row: a plain button with a hairline edge, below the head's 36. */
+.row-button {
+  height: 32px;
+  padding: 0 12px;
   border: 1px solid var(--line-strong);
+  background: var(--paper);
   color: var(--ink);
+}
+.row-button:hover {
+  background: var(--ground);
 }
 </style>

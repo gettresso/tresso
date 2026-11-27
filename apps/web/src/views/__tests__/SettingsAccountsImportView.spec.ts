@@ -1121,10 +1121,10 @@ describe('Add several accounts', () => {
     })
   })
 
-  it('puts "Add several accounts" before "Add account" in Settings, Accounts, leading to the list still open', async () => {
+  it('puts "Add several" before "Add account" in Settings, Accounts, leading to the list still open', async () => {
     const wrapper = await mountAt('/settings/accounts')
     const links = wrapper.findAll('.header a')
-    expect(links.map((link) => link.text())).toEqual(['Add several accounts', 'Add account'])
+    expect(links.map((link) => link.text())).toEqual(['Add several', 'Add account'])
     expect(links[0]!.attributes('href')).toBe('/settings/accounts/import')
 
     api.setList([{ id: 'g1', address: 'kim@gmail.example', state: 'skipped' }])
