@@ -8,8 +8,11 @@ import AppIcon from '@/components/AppIcon.vue'
  *
  * Both tones are a polite `status`, the red one too (unlike the board): the row is drawn when the page loads, and an
  * `alert` would make a screen reader interrupt with every expired account on each visit to the page.
+ *
+ * `actionLabel`: the button's accessible name when several rows share the same button text ("Allow calendar access
+ * for kim@company.example"). It starts with the visible text, so speech input finds the button by what it shows.
  */
-const props = defineProps<{ tone: 'warning' | 'danger'; text: string; action?: string }>()
+const props = defineProps<{ tone: 'warning' | 'danger'; text: string; action?: string; actionLabel?: string }>()
 const emit = defineEmits<{ act: [] }>()
 </script>
 
@@ -17,7 +20,7 @@ const emit = defineEmits<{ act: [] }>()
   <div class="attention" :class="[props.tone, { bare: !props.action }]" role="status">
     <AppIcon class="icon" :name="props.tone === 'danger' ? 'error' : 'alert'" :size="16" />
     <span class="text">{{ props.text }}</span>
-    <button v-if="props.action" type="button" class="button act" @click="emit('act')">{{ props.action }}</button>
+    <button v-if="props.action" type="button" class="button act" :aria-label="props.actionLabel" @click="emit('act')">{{ props.action }}</button>
   </div>
 </template>
 

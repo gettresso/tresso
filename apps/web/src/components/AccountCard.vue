@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useId } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { accountAttention, accountSyncMeta, NO_UNSUBSCRIBE_ON_IMAP, oneClickUnsubscribeAvailable, providerName, readerTimeZone, signInProvider, type MailAccount, type ProviderFeature } from '@tresso/core'
 import { ApiError, errorMessage } from '@/api/errors'
 import { displayNameSchema } from '@/forms/accounts'
@@ -34,10 +34,24 @@ const servers = computed(() => {
 })
 
 const attention = computed(() => accountAttention(props.account))
-/** Read when the account changes (the page reloads it on every status change), not on a timer. */
-const meta = computed(() => accountSyncMeta(props.account, Date.now(), readerTimeZone()))
-/** The mail does not arrive: what the server said goes with the server settings. */
-const problem = computed(() => props.account.status === 'auth_failed' || props.account.status === 'error')
+/**
+ * The clock the meta is read against ("Synced 14:20" today, "Fri 14:20" later). The page loads its accounts on
+ * mount and after a sign-in, so the clock is read again when the account changes and whenever the page becomes
+ * visible: a page left open overnight says the day once the user looks at it again.
+ */
+const now = ref(Date.now())
+const meta = computed(() => accountSyncMeta(props.account, now.value, readerTimeZone()))
+watch(
+  () => props.account,
+  () => {
+    now.value = Date.now()
+  },
+)
+function readClock(): void {
+  if (document.visibilityState === 'visible') now.value = Date.now()
+}
+onMounted(() => document.addEventListener('visibilitychange', readClock))
+onBeforeUnmount(() => document.removeEventListener('visibilitychange', readClock))
 
 const saving = ref(false)
 /** Said to a screen reader once an action from the menu is done; the row itself shows the new state. */
@@ -49,7 +63,8 @@ const serverSettingsOpen = ref(false)
 const renaming = ref(false)
 const draft = ref('')
 const nameError = ref<string | null>(null)
-const nameChanged = computed(() => draft.value !== props.account.displayName)
+/** Save shows once the name, without the spaces around it, is another one; Cancel shows all along. */
+const nameChanged = computed(() => draft.value.trim() !== props.account.displayName)
 
 const moreLabel = computed(() => `More for ${props.account.emailAddress}`)
 const menuItems = computed<MenuItem[]>(() => {
@@ -70,6 +85,12 @@ const attentionAction = computed(() => {
   if (action.kind === 'server-settings') return servers.value !== null ? action.label : undefined
   return provider.value !== null ? action.label : undefined
 })
+/** The same button stands under several accounts: a screen reader hears which one, after the visible words. */
+const attentionActionLabel = computed(() => {
+  const action = attention.value?.action
+  if (action === undefined) return undefined
+  return `${action.kind === 'allow-calendar' ? 'Allow calendar access' : action.label} for ${props.account.emailAddress}`
+})
 
 function rowElement(): HTMLElement | null {
   return (row.value?.$el as HTMLElement | undefined) ?? null
@@ -81,6 +102,8 @@ async function focusMore(): Promise<void> {
 }
 
 function choose(item: string): void {
+  // The old buttons were disabled while a request ran: nothing starts until it is done.
+  if (saving.value) return
   message.value = null
   error.value = null
   switch (item) {
@@ -151,6 +174,8 @@ async function saveName(): Promise<void> {
     void focusMore()
   } catch (e) {
     nameError.value = e instanceof ApiError && e.violations.displayName ? e.violations.displayName : errorMessage(e)
+    // The name typed stays; the focus goes back to it (from Save) to correct it.
+    void nextTick(() => nameInput.value?.focus())
   } finally {
     saving.value = false
   }
@@ -245,14 +270,17 @@ function remove(): Promise<void> {
     <template v-if="!renaming" #action>
       <MenuButton variant="more" :label="moreLabel" :menu-label="moreLabel" :items="menuItems" @choose="choose" />
     </template>
-    <template v-else-if="nameChanged" #action>
+    <template v-else #action>
       <span class="rename-actions">
-        <button type="submit" :form="`${id}-rename`" class="button row-button" :disabled="saving">Save</button>
+        <button v-if="nameChanged" type="submit" :form="`${id}-rename`" class="button row-button" :disabled="saving">Save</button>
         <button type="button" class="button button-quiet row-button" :disabled="saving" @click="cancelRename">Cancel</button>
       </span>
     </template>
 
-    <AttentionRow v-if="attention" :tone="attention.tone" :text="attention.text" :action="attentionAction" @act="act" />
+    <template v-if="attention">
+      <AttentionRow :tone="attention.tone" :text="attention.text" :action="attentionAction" :action-label="attentionAction ? attentionActionLabel : undefined" @act="act" />
+      <p v-if="attention.detail" class="detail" dir="auto">{{ attention.detail }}</p>
+    </template>
 
     <ProviderAccountForm v-if="provider !== null" ref="signIn" :account="account" :provider="provider" />
 
@@ -261,7 +289,6 @@ function remove(): Promise<void> {
         <h3 :id="`${id}-server`">Server settings</h3>
         <button type="button" class="button button-quiet row-button" @click="closeServerSettings">Close</button>
       </div>
-      <p v-if="problem && account.statusDetail" class="note">The server said: {{ account.statusDetail }}</p>
       <p v-if="!oneClickUnsubscribeAvailable(account)" class="note">{{ NO_UNSUBSCRIBE_ON_IMAP }}</p>
       <ServerAccountForm :account="account" :servers="servers" />
     </section>
@@ -372,6 +399,15 @@ function remove(): Promise<void> {
   font-size: 14px;
   line-height: 20px;
   font-weight: 600;
+}
+/* Why, under the attention line it explains: closer than the row's 12 gap, in line with the line's own padding. */
+.detail {
+  margin: -6px 0 0;
+  padding: 0 12px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
 }
 .note {
   margin: 0;

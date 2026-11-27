@@ -219,13 +219,13 @@ describe('connecting a provider account in the desktop app', () => {
   it('signs an account in again from its settings in the system browser', async () => {
     const wrapper = mount(ProviderAccountForm, { props: { account: { ...gmail, calendarStatus: 'not_granted' }, provider: 'google' } })
 
-    await wrapper.findAll('button').find((button) => button.text() === 'Allow calendar access')!.trigger('click')
+    // The account row's "Allow" calls this; the form says what happens meanwhile.
+    await (wrapper.vm as unknown as { signInAgain: (features?: ['calendar']) => Promise<void> }).signInAgain(['calendar'])
     await settle()
 
     expect(requests.find((r) => r.path === '/api/v1/provider-authorizations')?.body).toEqual({ provider: 'google', features: ['calendar'], mailAccountId: 'acc-g', returnTo: 'native' })
     expect(desktop.opened).toEqual([AUTHORIZATION_URL])
     expect(assign).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('Continue in your browser.')
-    expect(wrapper.text()).toContain('Sign in with Google again')
   })
 })

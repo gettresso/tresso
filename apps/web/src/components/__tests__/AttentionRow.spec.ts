@@ -43,6 +43,15 @@ describe('AttentionRow', () => {
     expect(view.emitted('act')).toEqual([[]])
   })
 
+  it('names its button for a screen reader when the caller gives a fuller name, and by its text otherwise', () => {
+    const named = mount(AttentionRow, { props: { tone: 'warning', text: 'Calendar access is off', action: 'Allow', actionLabel: 'Allow calendar access for kim@company.example' } })
+    const plain = mount(AttentionRow, { props: { tone: 'warning', text: 'Calendar access is off', action: 'Allow' } })
+
+    expect(named.get('button').attributes('aria-label')).toBe('Allow calendar access for kim@company.example')
+    expect(named.get('button').text()).toBe('Allow')
+    expect(plain.get('button').attributes('aria-label')).toBeUndefined()
+  })
+
   it('has no button without an action', () => {
     const view = mount(AttentionRow, { props: { tone: 'danger', text: 'Sign-in expired. New mail is not arriving.' } })
 
