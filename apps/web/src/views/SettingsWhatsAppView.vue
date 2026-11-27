@@ -6,6 +6,7 @@ import { useChatsStore } from '@/stores/chats'
 import { chatName } from '@/components/chat/chatTexts'
 import { shortDue } from '@/mail/format'
 import AppIcon from '@/components/AppIcon.vue'
+import ProviderMark from '@/components/ProviderMark.vue'
 import ConnectWhatsApp from '@/components/connect/ConnectWhatsApp.vue'
 import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
@@ -315,7 +316,7 @@ onBeforeUnmount(() => {
     <template v-else-if="!wa.connected">
       <header class="header">
         <RouterLink :to="{ name: 'settings-accounts' }" class="back" aria-label="Back to accounts"><AppIcon name="back" :size="18" /></RouterLink>
-        <span class="mark" aria-hidden="true">WA</span>
+        <ProviderMark kind="whatsapp" :size="40" />
         <div class="who">
           <h2>WhatsApp</h2>
           <span class="line">Not connected</span>
@@ -342,7 +343,7 @@ onBeforeUnmount(() => {
     <template v-else>
       <header class="header">
         <RouterLink :to="{ name: 'settings-accounts' }" class="back" aria-label="Back to accounts"><AppIcon name="back" :size="18" /></RouterLink>
-        <span class="mark" aria-hidden="true">WA</span>
+        <ProviderMark kind="whatsapp" :size="40" />
         <div class="who">
           <h2>WhatsApp</h2>
           <span class="line">{{ subtitle }}</span>
@@ -497,20 +498,19 @@ onBeforeUnmount(() => {
         <p>
           {{
             allDevices
-              ? 'Disconnecting removes your WhatsApp chats from your Tresso server and from every device, and everything Tresso keeps of WhatsApp on this Mac. WhatsApp on your phone keeps everything.'
-              : 'Disconnecting removes the WhatsApp chats Tresso copied and everything Tresso keeps of WhatsApp on this Mac. WhatsApp on your phone keeps everything.'
+              ? 'Disconnecting removes your WhatsApp chats from your Tresso server and from every device, unlinks this Mac from your phone and removes everything Tresso keeps of WhatsApp on this Mac. WhatsApp on your phone keeps everything.'
+              : 'Disconnecting removes the WhatsApp chats Tresso copied, unlinks this Mac from your phone and removes everything Tresso keeps of WhatsApp on this Mac. WhatsApp on your phone keeps everything.'
           }}
         </p>
         <button ref="disconnectButton" type="button" class="button button-danger" :disabled="wa.busy !== null" @click="confirmingDisconnect = true">Disconnect WhatsApp</button>
         <div v-if="confirmingDisconnect" class="confirm" role="alertdialog" aria-labelledby="wa-disconnect-title" aria-describedby="wa-disconnect-body">
           <p id="wa-disconnect-title"><strong>Disconnect WhatsApp?</strong></p>
           <p v-if="allDevices" id="wa-disconnect-body">
-            Tresso deletes your WhatsApp chats from your Tresso server, so web, mobile and your other Macs stop showing them, with the replies still waiting there, and removes WhatsApp from this
-            Mac with its link to your phone. Your phone keeps this Mac under Linked devices until you remove it there.
+            Tresso deletes your WhatsApp chats from your Tresso server, so web, mobile and your other Macs stop showing them, with the replies still waiting there, unlinks this Mac from your
+            phone, so it leaves Linked devices there, and removes WhatsApp from this Mac.
           </p>
           <p v-else id="wa-disconnect-body">
-            Tresso removes WhatsApp from this Mac: the chats it copied, the messages it kept and its link to your phone. Your phone keeps this Mac under Linked devices until you remove it
-            there.
+            Tresso unlinks this Mac from your phone, so it leaves Linked devices there, and removes WhatsApp from this Mac: the chats it copied and the messages it kept.
           </p>
           <div class="actions">
             <button type="button" class="button button-danger" :disabled="wa.busy !== null" @click="disconnect">{{ disconnecting ? 'Disconnecting…' : 'Disconnect' }}</button>
@@ -539,7 +539,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 760px;
 }
 .state {
   margin: 0;
@@ -559,19 +558,6 @@ onBeforeUnmount(() => {
   height: 36px;
   border-radius: var(--radius-control);
   color: var(--ink-2);
-}
-.mark {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 999px;
-  background: var(--know);
-  color: var(--paper);
-  font-size: 13px;
-  font-weight: 700;
 }
 .who {
   display: flex;
@@ -605,13 +591,15 @@ h2 {
   background: var(--know-soft);
   color: var(--know);
 }
+/* On the settings surface (--stage) a panel is paper with a hairline edge, as the Accounts page's card. */
 .panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px;
-  border: 1px solid var(--line);
   border-radius: var(--radius-panel);
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 .panel p {
   margin: 0;

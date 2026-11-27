@@ -5,6 +5,7 @@ import { ChatRelayImportStuck, LOCAL_CHAT_ACCOUNT, LOCAL_CURSOR, LOCAL_HISTORY_T
 import { memorySql } from '@tresso/core/testing/sql'
 import type { WhatsAppConfig } from '@/platform/whatsapp'
 import type { SessionEnd } from '@/stores/auth'
+import { STILL_LISTED } from '@/components/chat/whatsappTexts'
 import { NOW, DAY, DIRECT, GROUP, MESSAGE_TEXT, RUNNING, LINKED, WAITING, FakeShell } from './whatsappShellFixture'
 
 const fake = vi.hoisted(() => ({ shell: null as unknown, desktop: true }))
@@ -316,7 +317,7 @@ describe('the WhatsApp relay store', () => {
     expect(wa.config?.moved).toBe(false)
   })
 
-  it('disconnects: stops the relay and the bridge, removes the copied chats and the config, and keeps nothing', async () => {
+  it('disconnects: stops the relay, removes the copied chats, then has the shell unlink the Mac and remove what it keeps', async () => {
     const wa = await signedIn(connectedConfig())
     mail.synced = true
     shell.add('A1', DIRECT, 5)
@@ -327,8 +328,12 @@ describe('the WhatsApp relay store', () => {
     expect(await wa.disconnect()).toBe(true)
     await pass(10_000)
 
-    expect(shell.calls).toEqual(expect.arrayContaining(['stop', 'clearConfig']))
+    expect(shell.calls).toContain('disconnect')
+    expect(shell.calls).not.toContain('clearConfig')
     expect(shell.configs.has('u1')).toBe(false)
+    expect(wa.bridge.process).toBe('stopped')
+    // WhatsApp confirmed the log out: nothing to say about the phone.
+    expect(wa.notice).toBeNull()
     expect(wa.connected).toBe(false)
     expect(wa.relayRunning).toBe(false)
     expect(await store.chatAccounts()).toEqual([])
@@ -339,7 +344,19 @@ describe('the WhatsApp relay store', () => {
     expect(shell.calls.filter((call) => call === 'read').length).toBe(reads)
   })
 
-  it('at sign-out stops the relay without waiting for it and removes the config', async () => {
+  it('says how to remove Tresso on the phone only when Disconnect could not reach WhatsApp', async () => {
+    const wa = await signedIn(connectedConfig())
+    mail.synced = true
+    shell.emit(LINKED)
+    await pass()
+    shell.unlinks = false
+    expect(await wa.disconnect()).toBe(true)
+    expect(wa.connected).toBe(false)
+    expect(wa.notice).toBe(STILL_LISTED)
+    expect(STILL_LISTED).toContain('open WhatsApp on your phone, go to Settings, then Linked devices, tap Tresso and choose Log out.')
+  })
+
+  it('at sign-out stops the relay without waiting for it and removes the config, not the link', async () => {
     const wa = await signedIn(connectedConfig())
     mail.synced = true
     shell.emit(LINKED)
@@ -360,6 +377,8 @@ describe('the WhatsApp relay store', () => {
     await pass()
     expect(wa.relayRunning).toBe(false)
     expect(shell.calls).toContain('clearConfig')
+    // A sign-out keeps the store and its link, as it kept the whatsapp-mcp folder before: no unlink.
+    expect(shell.calls).not.toContain('disconnect')
     expect(wa.connected).toBe(false)
     release()
     await pass()

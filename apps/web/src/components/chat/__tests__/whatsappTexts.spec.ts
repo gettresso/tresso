@@ -6,6 +6,7 @@ import {
   LINK_STEPS,
   MOVED_TEXT,
   RISK_TEXT,
+  STILL_LISTED,
   carriedText,
   carryCountsText,
   notCarriedText,
@@ -48,7 +49,7 @@ describe('the WhatsApp texts', () => {
     expect(RISK_TEXT).toBe('WhatsApp does not officially allow other apps to link this way and can limit or ban an account that does. Use an account you can afford to lose access to.')
     expect(LINK_STEPS).toEqual(['Open WhatsApp on your phone.', 'Go to Settings, then Linked devices.', 'Tap Link a device and scan this code.'])
     expect(MOVED_TEXT).toBe('WhatsApp now runs inside Tresso. Link your phone again.')
-    for (const text of [CONNECT_LEAD, RISK_TEXT, MOVED_TEXT, ...LINK_STEPS]) {
+    for (const text of [CONNECT_LEAD, RISK_TEXT, MOVED_TEXT, STILL_LISTED, ...LINK_STEPS]) {
       expect(text).not.toMatch(UNSAID)
     }
   })

@@ -45,7 +45,7 @@ import {
 import { useChatApi } from '@/api/chats'
 import { isDesktop } from '@/platform/desktop'
 import { whatsAppShell, type BridgeState, type WhatsAppConfig, type WhatsAppIdentity } from '@/platform/whatsapp'
-import { errorName, IMPORT_DAYS, shellErrorText, type ImportState } from '@/components/chat/whatsappTexts'
+import { errorName, IMPORT_DAYS, shellErrorText, STILL_LISTED, type ImportState } from '@/components/chat/whatsappTexts'
 import { useAuthStore, type SessionEnd } from '@/stores/auth'
 import { ChatActionError, chatActionError, serverChatActions } from '@/stores/chatActions'
 import { useMailStore } from '@/stores/mail'
@@ -133,8 +133,7 @@ export const UNKNOWN_NUMBER =
 export const SERVER_ADOPTED = 'server-adopted'
 
 /** Said when the server's WhatsApp account went while this Mac relayed it or showed it (removed on another device). */
-export const REMOVED_ELSEWHERE =
-  'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too. Your phone lists this Mac under Linked devices until you remove it there.'
+export const REMOVED_ELSEWHERE = 'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too.'
 
 /** A name as the server takes it (no control or format characters, at most 255 characters); null when nothing is left. */
 function plainName(value: string | null | undefined): string | null {
@@ -1789,18 +1788,14 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       stopHeartbeat()
       await removeServerState(store, accountId)
       await writeCarried(store, [])
-      try {
-        onBridge(await commands.stop())
-      } catch (cause) {
-        console.error('Stopping the WhatsApp bridge failed', errorName(cause))
-      }
-      await commands.clearConfig(id)
+      // Disconnected on another device: unlinked here as Disconnect does (the shell logs the device out first).
+      const { unlinked } = await commands.disconnect(id)
       if (userId.value === id) {
         config.value = null
       }
       resetFlow()
       resetImport()
-      notice.value = REMOVED_ELSEWHERE
+      notice.value = unlinked ? REMOVED_ELSEWHERE : `${REMOVED_ELSEWHERE} ${STILL_LISTED}`
       revision.value++
     })
   }
@@ -2348,9 +2343,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /**
-   * Stops the relay (and waits for it), stops the bridge, removes the chats Tresso copied, then the config and the
-   * bridge's store on this Mac (the shell's clearConfig), so connecting again shows a new code. The phone keeps this Mac
-   * under Linked devices until the user removes it there. In "All my
+   * Stops the relay (and waits for it), removes the chats Tresso copied, then the shell's disconnect: the device is
+   * logged out on WhatsApp's side (the phone stops listing this Mac), the bridge stops, and the config and the bridge's
+   * store go, so connecting again shows a new code. When WhatsApp cannot be reached the store goes all the same and
+   * `notice` says how to remove Tresso on the phone. In "All my
    * devices" the server's account goes first, with its chats on every device (a claim this Mac kept is reported before);
    * when the server cannot be asked nothing changes here and the error says why.
    */
@@ -2374,14 +2370,16 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
           await removeConfirmed(id, accountId)
           await removeServerState(store, accountId)
         }
-        onBridge(await commands.stop())
         await removeLocalChats(store)
         await writeCarried(store, [])
         await writeSwitch(store, null)
-        await commands.clearConfig(id)
+        const { unlinked } = await commands.disconnect(id)
         config.value = null
         resetFlow()
         resetImport()
+        if (!unlinked) {
+          notice.value = STILL_LISTED
+        }
       })
     })
   }

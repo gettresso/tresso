@@ -677,6 +677,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(wa.connected).toBe(false)
     expect(shell.configs.has('u1')).toBe(false)
     expect(wa.notice).toBe(REMOVED_ELSEWHERE)
+    expect(shell.calls).toContain('disconnect')
     expect(wa.relayRunning).toBe(false)
     expect(await store.chatMeta(SERVER_ACCOUNT)).toBeNull()
   })
@@ -761,7 +762,9 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(server.account).toBeNull()
     expect(wa.connected).toBe(false)
     expect(shell.configs.has('u1')).toBe(false)
-    expect(shell.calls).toContain('stop')
+    // The account goes from the server first, then the shell unlinks the Mac and removes its store.
+    expect(shell.calls).toContain('disconnect')
+    expect(server.callsOf('removeAccount').length).toBeGreaterThan(0)
     expect(await store.chatMeta(SERVER_ACCOUNT)).toBeNull()
   })
 
