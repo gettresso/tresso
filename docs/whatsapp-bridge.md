@@ -19,16 +19,22 @@ time, so on a Mac run that script once before `cargo check`, `clippy` or `test` 
 `universal-apple-darwin`, and skips a build when nothing changed.
 
 In the bundle it is `Tresso.app/Contents/MacOS/whatsapp-bridge`. The release signs it with the app, inside out, with
-the same identity, the hardened runtime and the app's entitlements (Tauri's bundler signs every sidecar before the app),
-and checks afterwards that it is there for both architectures and signed with the hardened runtime. The bridge needs
-no entitlement of its own (no JIT, no library loading, no sandbox exception), and the app is not sandboxed, so it may
-start it. Notarization follows the app's: today the release is signed ad hoc and not notarized, so both go through
+the same identity and the hardened runtime (Tauri's bundler signs every sidecar before the app), and checks afterwards
+that it is there for both architectures and signed with the hardened runtime. The bridge needs no entitlement of its
+own (no JIT, no library loading, no sandbox exception), and the app is not sandboxed, so it may start it.
+
+It carries the app's entitlements all the same, `com.apple.security.cs.disable-library-validation` included, which a
+static Go binary does not need: Tauri 2 has one `bundle > macOS > entitlements` file for the bundle, and its bundler
+(`tauri-bundler`, `bundle/macos/sign.rs`) passes that file for every target it signs, sidecars included; there is no
+option to sign a sidecar with other entitlements or to leave it to the release. Giving the bridge none would mean
+signing it again after `tauri bundle` and then signing the app again over it, outside Tauri's flow. The release does not
+do that today; the entitlement only relaxes which libraries the process may load, and the bridge loads none. Notarization follows the app's: today the release is signed ad hoc and not notarized, so both go through
 Apple's notary service together once the app is.
 
 Its third-party notices ship next to it: `Tresso.app/Contents/Resources/licenses/whatsapp-bridge-third-party-notices.txt`
 (from `apps/whatsapp-bridge/THIRD-PARTY-NOTICES.txt`), with every module the binary links and its license texts:
-go.mau.fi/libsignal under GPL-3.0, whatsmeow and go.mau.fi/util under MPL-2.0, and the rest under BSD, MIT, ISC and
-Apache-2.0. The source of the bridge and of every module is this repository at the release's tag, with `go.mod` and
+go.mau.fi/libsignal under GPL-3.0, whatsmeow and go.mau.fi/util under MPL-2.0, the rest under BSD, MIT, ISC and
+Apache-2.0, and the Go runtime and standard library (BSD-3-Clause, named by the Go release that built it). The source of the bridge and of every module is this repository at the release's tag, with `go.mod` and
 `go.sum` pinning each version. `apps/desktop/scripts/whatsapp-bridge-notices.mjs --write <binary>` writes the file again
 from `go version -m` and the Go module cache; the build script fails when it no longer lists the binary's modules. The
 About panel says where the file is.
@@ -49,6 +55,10 @@ About panel says where the file is.
 - **Stopping.** Closing stdin stops the bridge cleanly; SIGTERM follows after 3 seconds, SIGKILL 3 seconds later. It
   stops when Tresso quits (and, as the pipe closes, when Tresso crashes), at sign-out and at Disconnect (after the log
   out, below).
+- **When it starts.** In the connect dialog, after the risk was confirmed (`Show QR code`, and its `Try again`, `Link
+  again` and `Show a new code`). At launch, and from Settings' or a chat's `Try again`, only when the user's store holds
+  a linked session: a connection whose store has none (an earlier version's, or one the phone ended) waits for the user
+  to choose `Link again`, which opens the dialog. Nothing shows a QR code the user did not ask for.
 - **When it stops by itself.** A `qr_timeout` waits for the user (`Show a new code`). A `logged_out` (the phone
   removed the Mac) waits for the user too (`Link again`). A fatal code that starting again cannot fix (`bad_store`,
   `store_failed`, `pair_failed`, `client_outdated`, `stream_replaced`, `temporary_ban`) stops with its own failure;
@@ -69,6 +79,16 @@ devices; then the bridge stops; then the config and the store go, so connecting 
 cannot be reached in time the config and the store go all the same, and only then Tresso tells the user that the phone
 may still list Tresso and how to remove it there (WhatsApp, Settings, Linked devices, Tresso, Log out). A Mac whose
 WhatsApp was removed from the Tresso server on another device does the same when it learns of it.
+
+Closing the connect dialog after the phone linked but before WhatsApp was connected undoes that link the same way, and
+says so.
+
+**After a new link.** The new store has another store id than the one the relay read, and its history sync brings the
+last weeks again, plus chats Tresso never saw. The relay takes it up as a re-read with the moment the phone linked as
+the line: rows sent before it are history (read, no notification, as in the first import after connecting), rows after
+it are live. "Only this Mac" reads the new store from its start as a first import with that line; "All my devices"
+reads it with live batches, which the server answers `known` for what it holds, and marks each chat's history read
+through that moment. Chats left out stay left out.
 
 **Signing out of Tresso does not unlink.** It stops the bridge and removes the config, as it did when the bridge lived
 in the whatsapp-mcp folder: the store, with its link to the phone, stays for the next connect, so no device is left

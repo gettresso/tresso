@@ -2180,9 +2180,11 @@ and chosen, "All my devices" only after the user confirmed that the chats are co
 below).
 Notify me is off by default; WhatsApp gets no classification, no
 search index and no smart inbox. Settings, WhatsApp shows the relaying Mac, whether WhatsApp runs on this Mac
-(Connected, Starting, Waiting for your phone, Stopped or Could not start, each failure with a sentence and Try again),
-the link (how long ago Tresso saw it link, no countdown; Link again after the phone signed Tresso out, or for a
-connection an earlier version made through whatsapp-mcp) with the code when it needs one, which chats come in (groups
+(in the row's plain words, with a pill only when something needs the user; each failure by its own title and
+sentence, with Try again where starting again can help), the link (how long ago Tresso saw it link, no countdown; Link
+again, which opens the connect dialog with its risk step, after the phone signed Tresso out or for a connection an
+earlier version made through whatsapp-mcp: at launch the bridge starts only for a store that holds a session, so no QR
+code appears unasked), which chats come in (groups
 off removes the copied group chats, refused while the copy is not open; on again reads the store from the start as a
 first import), and Disconnect, which says it is waiting while a reply being sent finishes: the relay stops and is waited for, the bridge stops, `removeLocalChats` removes the copied chats and the
 cursor, then the shell's `whatsapp_disconnect` logs the device out on WhatsApp's side (`POST /api/logout`, through a
@@ -2190,7 +2192,9 @@ bridge started for it when none runs), stops the bridge and removes the config a
 longer lists the Mac and a later connect shows a new code; when WhatsApp cannot be reached in time the store goes all
 the same and Settings says how to remove Tresso on the phone. A sign-out stops the relay without waiting for it and
 removes the config (an expired session keeps it); the shell stops the bridge, and the store with its link stays for
-the next connect. The store keeps the
+the next connect. A new link brings a store with another store id: the relay takes it up as a re-read whose line is
+the moment the phone linked (`takeUpNewStore`; rows before it are history, rows after it live; in "All my devices" with
+live batches and the history marked read). The store keeps the
 bridge's state and Notify me on the `wa:account` row (`setLocalChatAccount`), and offers the chat screens `pollNow`,
 `leaveOut`, `takeBackIn` (Settings lists the chats left out: the config first, then with the relay stopped the row is
 marked in again and the cursor reset with the moment of the reset (`resetLocalCursor(store, liveFrom)`, kept as the
