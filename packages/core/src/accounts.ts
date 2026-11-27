@@ -369,37 +369,42 @@ export function foundCalendarUrl(account: Pick<MailAccount, 'calendarFoundUrl' |
  * The one line under an account in Settings, when the user has to act on it (the Needs attention and Sign-in expired
  * states of the SettingsAccounts board), and what its button does: sign in with the provider again (`sign-in`), allow
  * the calendars at the provider (`allow-calendar`), or open the server settings of a mail-server account
- * (`server-settings`). Mail that does not arrive wins over calendars. Null when nothing needs the user, also for
- * calendars the provider or server does not offer.
+ * (`server-settings`). Mail that does not arrive wins over calendars. `detail` is why, as the sync said it, for the
+ * problem that won: the mail sync's words as "The server said: ...", the calendar sync's as they are; null when it gave
+ * none. Null when nothing needs the user, also for calendars the provider or server does not offer.
  */
 export interface AccountAttention {
   tone: 'danger' | 'warning'
   text: string
   action: { kind: 'sign-in' | 'allow-calendar' | 'server-settings'; label: string }
+  detail: string | null
 }
 
-export function accountAttention(account: Pick<MailAccount, 'provider' | 'status' | 'calendarStatus'>): AccountAttention | null {
+export function accountAttention(account: Pick<MailAccount, 'provider' | 'status' | 'statusDetail' | 'calendarStatus' | 'calendarStatusDetail'>): AccountAttention | null {
   const server = signInProvider(account) === null
   const fix: AccountAttention['action'] = server ? { kind: 'server-settings', label: 'Server settings' } : { kind: 'sign-in', label: 'Sign in again' }
+  const mailDetail = account.statusDetail ? `The server said: ${account.statusDetail}` : null
   if (account.status === 'auth_failed') {
     // A provider stops accepting an earlier sign-in; a mail server refuses the password it has.
-    return { tone: 'danger', text: server ? 'The server refused the password. New mail is not arriving.' : 'Sign-in expired. New mail is not arriving.', action: fix }
+    const text = server ? 'The server refused the password. New mail is not arriving.' : 'Sign-in expired. New mail is not arriving.'
+    return { tone: 'danger', text, action: fix, detail: mailDetail }
   }
   if (account.status === 'error') {
-    return { tone: 'danger', text: 'Syncing failed. New mail is not arriving.', action: fix }
+    return { tone: 'danger', text: 'Syncing failed. New mail is not arriving.', action: fix, detail: mailDetail }
   }
   // A new calendar sign-in at the provider settles a refusal and retries at once; a server account fixes its
   // calendars in its server settings (the address to confirm, the password).
   const allow: AccountAttention['action'] = server ? fix : { kind: 'allow-calendar', label: 'Allow' }
+  const calendar = (text: string, action: AccountAttention['action']): AccountAttention => ({ tone: 'warning', text, action, detail: account.calendarStatusDetail || null })
   switch (account.calendarStatus) {
     case 'not_granted':
-      return { tone: 'warning', text: 'Calendar access is off', action: allow }
+      return calendar('Calendar access is off', allow)
     case 'auth_failed':
-      return { tone: 'warning', text: server ? 'The calendar server refused the password' : 'Calendar sign-in expired', action: fix }
+      return calendar(server ? 'The calendar server refused the password' : 'Calendar sign-in expired', fix)
     case 'error':
-      return { tone: 'warning', text: 'Calendars are not syncing', action: allow }
+      return calendar('Calendars are not syncing', allow)
     case 'unconfirmed':
-      return server ? { tone: 'warning', text: 'Calendar address to confirm', action: fix } : { tone: 'warning', text: 'Calendars are not syncing', action: allow }
+      return server ? calendar('Calendar address to confirm', fix) : calendar('Calendars are not syncing', allow)
     case 'unsupported':
     case 'unknown':
     case 'active':

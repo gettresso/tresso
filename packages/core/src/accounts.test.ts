@@ -190,8 +190,8 @@ describe('providerSignInOutcome and signedInAgainNotice', () => {
 })
 
 describe('accountAttention', () => {
-  const provider = { provider: 'microsoft', status: 'active', calendarStatus: 'active' } as const
-  const server = { provider: 'imap', status: 'active', calendarStatus: 'active' } as const
+  const provider = { provider: 'microsoft', status: 'active', statusDetail: null, calendarStatus: 'active', calendarStatusDetail: null } as const
+  const server = { provider: 'imap', status: 'active', statusDetail: null, calendarStatus: 'active', calendarStatusDetail: null } as const
 
   it('says nothing when nothing needs the user', () => {
     expect(accountAttention(provider)).toBeNull()
@@ -202,8 +202,8 @@ describe('accountAttention', () => {
   })
 
   it('asks a provider account to sign in again when its mail stops', () => {
-    expect(accountAttention({ ...provider, status: 'auth_failed' })).toEqual({ tone: 'danger', text: 'Sign-in expired. New mail is not arriving.', action: { kind: 'sign-in', label: 'Sign in again' } })
-    expect(accountAttention({ ...provider, status: 'error' })).toEqual({ tone: 'danger', text: 'Syncing failed. New mail is not arriving.', action: { kind: 'sign-in', label: 'Sign in again' } })
+    expect(accountAttention({ ...provider, status: 'auth_failed' })).toEqual({ tone: 'danger', text: 'Sign-in expired. New mail is not arriving.', action: { kind: 'sign-in', label: 'Sign in again' }, detail: null })
+    expect(accountAttention({ ...provider, status: 'error' })).toEqual({ tone: 'danger', text: 'Syncing failed. New mail is not arriving.', action: { kind: 'sign-in', label: 'Sign in again' }, detail: null })
   })
 
   it('sends a mail-server account to its server settings when its mail stops', () => {
@@ -211,6 +211,7 @@ describe('accountAttention', () => {
       tone: 'danger',
       text: 'The server refused the password. New mail is not arriving.',
       action: { kind: 'server-settings', label: 'Server settings' },
+      detail: null,
     })
     expect(accountAttention({ ...server, status: 'error' })?.action.kind).toBe('server-settings')
   })
@@ -221,14 +222,22 @@ describe('accountAttention', () => {
   })
 
   it('asks a provider account to allow its calendars, or to sign in again when the provider refuses them', () => {
-    expect(accountAttention({ ...provider, calendarStatus: 'not_granted' })).toEqual({ tone: 'warning', text: 'Calendar access is off', action: { kind: 'allow-calendar', label: 'Allow' } })
-    expect(accountAttention({ ...provider, calendarStatus: 'error' })).toEqual({ tone: 'warning', text: 'Calendars are not syncing', action: { kind: 'allow-calendar', label: 'Allow' } })
+    expect(accountAttention({ ...provider, calendarStatus: 'not_granted' })).toEqual({ tone: 'warning', text: 'Calendar access is off', action: { kind: 'allow-calendar', label: 'Allow' }, detail: null })
+    expect(accountAttention({ ...provider, calendarStatus: 'error' })).toEqual({ tone: 'warning', text: 'Calendars are not syncing', action: { kind: 'allow-calendar', label: 'Allow' }, detail: null })
     expect(accountAttention({ ...provider, calendarStatus: 'unconfirmed' })?.action.kind).toBe('allow-calendar')
-    expect(accountAttention({ ...provider, calendarStatus: 'auth_failed' })).toEqual({ tone: 'warning', text: 'Calendar sign-in expired', action: { kind: 'sign-in', label: 'Sign in again' } })
+    expect(accountAttention({ ...provider, calendarStatus: 'auth_failed' })).toEqual({ tone: 'warning', text: 'Calendar sign-in expired', action: { kind: 'sign-in', label: 'Sign in again' }, detail: null })
+  })
+
+  it('gives why, as the sync said it, for the problem that won', () => {
+    const detailed = { ...provider, statusDetail: 'invalid_grant', calendarStatusDetail: 'Google refused the calendars of this account (forbidden).' }
+    expect(accountAttention({ ...detailed, status: 'auth_failed', calendarStatus: 'error' })?.detail).toBe('The server said: invalid_grant')
+    expect(accountAttention({ ...detailed, calendarStatus: 'error' })?.detail).toBe('Google refused the calendars of this account (forbidden).')
+    expect(accountAttention({ ...provider, status: 'error', statusDetail: '' })?.detail).toBeNull()
+    expect(accountAttention({ ...provider, calendarStatus: 'error' })?.detail).toBeNull()
   })
 
   it("fixes a mail-server account's calendars in its server settings", () => {
-    expect(accountAttention({ ...server, calendarStatus: 'unconfirmed' })).toEqual({ tone: 'warning', text: 'Calendar address to confirm', action: { kind: 'server-settings', label: 'Server settings' } })
+    expect(accountAttention({ ...server, calendarStatus: 'unconfirmed' })).toEqual({ tone: 'warning', text: 'Calendar address to confirm', action: { kind: 'server-settings', label: 'Server settings' }, detail: null })
     expect(accountAttention({ ...server, calendarStatus: 'auth_failed' })?.text).toBe('The calendar server refused the password')
     expect(accountAttention({ ...server, calendarStatus: 'error' })?.action.kind).toBe('server-settings')
   })

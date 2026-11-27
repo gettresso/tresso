@@ -33,6 +33,9 @@ describe('AccountCard', () => {
   const requests: { method: string; path: string; body: unknown }[] = []
   const assign = vi.fn<(url: string) => void>()
   let patchStatus = 200
+  let deleteStatus = 204
+  /** Set to hold the next PATCH until it is let go, to press things while it runs. */
+  let hold: Promise<void> | null = null
   let wrapper: VueWrapper | null = null
 
   beforeEach(() => {
@@ -40,6 +43,8 @@ describe('AccountCard', () => {
     setActivePinia(createPinia())
     requests.length = 0
     patchStatus = 200
+    deleteStatus = 204
+    hold = null
     assign.mockReset()
     vi.stubGlobal('location', { ...window.location, assign })
     vi.stubGlobal(
@@ -53,14 +58,16 @@ describe('AccountCard', () => {
           return Response.json({ authorizationUrl: 'https://login.microsoft.example/authorize?state=s', provider: 'microsoft', expiresAt: '2026-10-19T08:15:00+00:00' }, { status: 201 })
         }
         if (method === 'PATCH') {
-          return patchStatus === 200 ? Response.json({ ...account('microsoft'), ...body }) : Response.json({ detail: 'The name was refused.' }, { status: patchStatus })
+          if (hold) await hold
+          return patchStatus === 200 ? Response.json({ ...account('microsoft'), ...body }) : Response.json({ detail: 'The server refused the change.' }, { status: patchStatus })
         }
-        return new Response(null, { status: 204 })
+        return deleteStatus === 204 ? new Response(null, { status: 204 }) : Response.json({ detail: 'The account could not be removed.' }, { status: deleteStatus })
       }),
     )
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     wrapper?.unmount()
     wrapper = null
     vi.unstubAllGlobals()
@@ -134,7 +141,7 @@ describe('AccountCard', () => {
       expect(assign).toHaveBeenCalledWith('https://login.microsoft.example/authorize?state=s')
     })
 
-    it('editing: Rename puts the name in a field, focused, and Save and Cancel appear only once it differs', async () => {
+    it('editing: Rename puts the name in a field, focused, with Cancel at once and Save once the name differs', async () => {
       const w = row(account('microsoft'))
       await choose(w, 'Rename')
 
@@ -145,7 +152,7 @@ describe('AccountCard', () => {
       // The More button and the meta make room for the field.
       expect(w.find('button[aria-haspopup="menu"]').exists()).toBe(false)
       expect(w.find('.meta').exists()).toBe(false)
-      expect(w.findAll('button').map((b) => b.text())).not.toContain('Save')
+      expect(w.findAll('button').map((b) => b.text())).toEqual(['Cancel'])
 
       await field.setValue('Kim Visser, Company')
 
@@ -153,7 +160,10 @@ describe('AccountCard', () => {
       expect(w.findAll('button').map((b) => b.text())).toEqual(['Save', 'Cancel'])
 
       await field.setValue('Kim Visser')
-      expect(w.findAll('button').map((b) => b.text())).not.toContain('Save')
+      expect(w.findAll('button').map((b) => b.text())).toEqual(['Cancel'])
+      // Spaces around the same name are no change either.
+      await field.setValue('  Kim Visser ')
+      expect(w.findAll('button').map((b) => b.text())).toEqual(['Cancel'])
     })
 
     it('menu open: Rename, Sign in again, Pause syncing, then Remove account in red under a rule', async () => {
@@ -217,8 +227,33 @@ describe('AccountCard', () => {
       await flushPromises()
 
       expect(w.find('.server').exists()).toBe(true)
-      expect(w.get('.server').text()).toContain('The server said: Login refused')
+      expect(w.get('.detail').text()).toBe('The server said: Login refused')
+      expect(w.get('.server').text()).not.toContain('The server said')
       expect(document.activeElement?.closest('.server')).not.toBeNull()
+    })
+
+    it('says why under the line, as text, for a provider account too', () => {
+      const detail = 'Google refused the calendars of this account (forbidden). Your organization may not allow Tresso to use calendars.'
+      const w = row(account('gmail', { calendarStatus: 'error', calendarStatusDetail: detail }))
+
+      expect(w.get('.attention .text').text()).toBe('Calendars are not syncing')
+      expect(w.get('.detail').text()).toBe(detail)
+      expect(w.get('.detail').attributes('dir')).toBe('auto')
+
+      const markup = row(account('gmail', { status: 'error', statusDetail: '<b>refused</b>' }))
+      expect(markup.get('.detail').text()).toBe('The server said: <b>refused</b>')
+      expect(markup.find('.detail b').exists()).toBe(false)
+    })
+
+    it('says no why without a detail, and none without an attention line', () => {
+      expect(row(account('gmail', { status: 'auth_failed' })).find('.detail').exists()).toBe(false)
+      expect(row(account('gmail', { statusDetail: 'an old message', calendarStatusDetail: 'another' })).find('.detail').exists()).toBe(false)
+    })
+
+    it('names its button with the account for a screen reader, after the visible words', () => {
+      expect(row(account('gmail', { calendarStatus: 'not_granted' })).get('.attention button').attributes('aria-label')).toBe('Allow calendar access for kim@company.example')
+      expect(row(account('gmail', { status: 'auth_failed' })).get('.attention button').attributes('aria-label')).toBe('Sign in again for kim@company.example')
+      expect(row(account('imap', { status: 'error' })).get('.attention button').attributes('aria-label')).toBe('Server settings for kim@company.example')
     })
 
     it('says syncing failed for an account whose sync breaks', () => {
@@ -347,8 +382,111 @@ describe('AccountCard', () => {
       await field.trigger('keydown', { key: 'Enter' })
       await flushPromises()
 
-      expect(w.text()).toContain('The name was refused.')
+      expect(w.text()).toContain('The server refused the change.')
       expect(w.find('input[aria-label="Display name"]').exists()).toBe(true)
+    })
+
+    it('gives the focus back to the field, with the name kept, when saving from Save fails', async () => {
+      patchStatus = 500
+      const { w, field } = await renaming()
+      await field.setValue('Kim at work')
+      const save = w.findAll('button').find((b) => b.text() === 'Save')!
+      ;(save.element as HTMLButtonElement).focus()
+      await save.trigger('click')
+      await flushPromises()
+
+      expect(w.text()).toContain('The server refused the change.')
+      expect(document.activeElement).toBe(field.element)
+      expect((field.element as HTMLInputElement).value).toBe('Kim at work')
+    })
+
+    it('saves nothing for the same name with spaces around it, and returns to the row', async () => {
+      const { w, field } = await renaming()
+      await field.setValue('  Kim Visser  ')
+      await field.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+
+      expect(requests).toEqual([])
+      expect(w.find('input[aria-label="Display name"]').exists()).toBe(false)
+      expect(document.activeElement).toBe(moreButton(w).element)
+    })
+
+    it('leaves without typing through Cancel, for a pointer', async () => {
+      const { w } = await renaming()
+      await w.findAll('button').find((b) => b.text() === 'Cancel')!.trigger('click')
+      await flushPromises()
+
+      expect(requests).toEqual([])
+      expect(w.get('.title').text()).toBe('Kim Visser')
+      expect(document.activeElement).toBe(moreButton(w).element)
+    })
+  })
+
+  describe('while a request runs', () => {
+    it('starts nothing else from the menu: no second pause, no rename', async () => {
+      let release!: () => void
+      hold = new Promise((resolve) => (release = resolve))
+      const w = row(account('gmail'))
+      await choose(w, 'Pause syncing')
+      await choose(w, 'Pause syncing')
+      await choose(w, 'Rename')
+
+      expect(requests.filter((r) => r.method === 'PATCH')).toHaveLength(1)
+      expect(w.find('input[aria-label="Display name"]').exists()).toBe(false)
+
+      release()
+      await flushPromises()
+      expect(w.get('.visually-hidden[role="status"]').text()).toBe('Syncing paused.')
+      await choose(w, 'Rename')
+      expect(w.find('input[aria-label="Display name"]').exists()).toBe(true)
+    })
+  })
+
+  describe('failures', () => {
+    it('says why pausing failed', async () => {
+      patchStatus = 500
+      const w = row(account('gmail'))
+      await choose(w, 'Pause syncing')
+
+      expect(w.get('p.form-error[role="alert"]').text()).toBe('The server refused the change.')
+      expect(w.get('.visually-hidden[role="status"]').text()).toBe('')
+    })
+
+    it('says why removing failed, and keeps the question open', async () => {
+      deleteStatus = 500
+      const w = row(account('gmail'))
+      await choose(w, 'Remove account')
+      await w.get('[role="alertdialog"]').findAll('button').find((b) => b.text() === 'Remove account')!.trigger('click')
+      await flushPromises()
+
+      expect(w.get('p.form-error[role="alert"]').text()).toBe('The account could not be removed.')
+      expect(w.find('[role="alertdialog"]').exists()).toBe(true)
+    })
+  })
+
+  describe('the synced time', () => {
+    it('reads the clock again when the page becomes visible, so last night reads as yesterday', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date(2026, 10, 27, 15, 0))
+      const w = row(account('gmail', { lastSyncedAt: new Date(2026, 10, 27, 13, 1).toISOString() }))
+      expect(w.get('.meta').text()).toBe('Synced 13:01')
+
+      vi.setSystemTime(new Date(2026, 10, 28, 9, 0))
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      await w.vm.$nextTick()
+
+      expect(w.get('.meta').text()).toBe('Synced Fri 13:01')
+    })
+
+    it('stops listening once the row is gone', () => {
+      const removed = vi.spyOn(document, 'removeEventListener')
+      const w = row(account('gmail'))
+      w.unmount()
+      wrapper = null
+
+      expect(removed.mock.calls.some(([type]) => type === 'visibilitychange')).toBe(true)
+      removed.mockRestore()
     })
   })
 
