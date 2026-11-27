@@ -85,6 +85,17 @@ const attentionAction = computed(() => {
   if (action.kind === 'server-settings') return servers.value !== null ? action.label : undefined
   return provider.value !== null ? action.label : undefined
 })
+/**
+ * The why under the attention line. ServerAccountForm says a server account's calendar problem itself, so the line
+ * steps back while its server settings are open; what the mail server said stays, the form does not show it.
+ */
+const attentionDetail = computed(() => {
+  const value = attention.value
+  if (!value?.detail) return null
+  const mailProblem = props.account.status === 'auth_failed' || props.account.status === 'error'
+  const calendarInForm = serverSettingsOpen.value && provider.value === null && !mailProblem
+  return calendarInForm ? null : value.detail
+})
 /** The same button stands under several accounts: a screen reader hears which one, after the visible words. */
 const attentionActionLabel = computed(() => {
   const action = attention.value?.action
@@ -102,8 +113,12 @@ async function focusMore(): Promise<void> {
 }
 
 function choose(item: string): void {
-  // The old buttons were disabled while a request ran: nothing starts until it is done.
-  if (saving.value) return
+  // The old buttons were disabled while a request ran: nothing starts until it is done. The menu closed without
+  // handing the focus back, so it goes to the More button.
+  if (saving.value) {
+    void focusMore()
+    return
+  }
   message.value = null
   error.value = null
   switch (item) {
@@ -279,7 +294,7 @@ function remove(): Promise<void> {
 
     <template v-if="attention">
       <AttentionRow :tone="attention.tone" :text="attention.text" :action="attentionAction" :action-label="attentionAction ? attentionActionLabel : undefined" @act="act" />
-      <p v-if="attention.detail" class="detail" dir="auto">{{ attention.detail }}</p>
+      <p v-if="attentionDetail" class="detail" dir="auto">{{ attentionDetail }}</p>
     </template>
 
     <ProviderAccountForm v-if="provider !== null" ref="signIn" :account="account" :provider="provider" />

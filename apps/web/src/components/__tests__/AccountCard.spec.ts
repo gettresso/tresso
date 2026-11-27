@@ -245,6 +245,23 @@ describe('AccountCard', () => {
       expect(markup.find('.detail b').exists()).toBe(false)
     })
 
+    it("leaves a server account's calendar reason to its open server settings, and keeps what the mail server said", async () => {
+      const detail = 'The calendar server refused the username or password.'
+      const calendar = row(account('imap', { calendarStatus: 'auth_failed', calendarStatusDetail: detail }))
+      expect(calendar.get('.detail').text()).toBe(detail)
+      await calendar.get('.attention button').trigger('click')
+      await flushPromises()
+
+      expect(calendar.find('.detail').exists()).toBe(false)
+      expect(calendar.get('.server').text().split(detail)).toHaveLength(2)
+      calendar.unmount()
+
+      const mail = row(account('imap', { status: 'auth_failed', statusDetail: 'Login refused', calendarStatus: 'auth_failed', calendarStatusDetail: detail }))
+      await mail.get('.attention button').trigger('click')
+      await flushPromises()
+      expect(mail.get('.detail').text()).toBe('The server said: Login refused')
+    })
+
     it('says no why without a detail, and none without an attention line', () => {
       expect(row(account('gmail', { status: 'auth_failed' })).find('.detail').exists()).toBe(false)
       expect(row(account('gmail', { statusDetail: 'an old message', calendarStatusDetail: 'another' })).find('.detail').exists()).toBe(false)
@@ -433,6 +450,8 @@ describe('AccountCard', () => {
 
       expect(requests.filter((r) => r.method === 'PATCH')).toHaveLength(1)
       expect(w.find('input[aria-label="Display name"]').exists()).toBe(false)
+      // The swallowed choice hands the focus back to More, not to the page.
+      expect(document.activeElement).toBe(moreButton(w).element)
 
       release()
       await flushPromises()
