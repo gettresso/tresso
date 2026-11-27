@@ -139,7 +139,7 @@ call it. Then the web client, then the desktop and phone apps. The browser's COR
   is then never linked; with the default the apps open it only after the user accepted a warning.
 
 What is not the operator's to decide: WhatsApp is switched on per Mac by its user (`defaults write
-app.tresso.desktop EnableWhatsApp -bool YES`), the bridge is the user's own build of the fork
+app.tresso.desktop EnableWhatsApp -bool YES`), the bridge ships inside Tresso for Mac and runs there only
 ([the bridge](whatsapp-bridge.md)), and a server holds chats only for users who chose "All my devices" on a Mac.
 
 ## Meeting links
@@ -294,15 +294,19 @@ Connecting on a Mac:
 
 39. With `EnableWhatsApp` deleted (`defaults delete app.tresso.desktop EnableWhatsApp`) nothing of WhatsApp shows on
     the Mac and no bridge starts; with it set, the Accounts card appears.
-40. A fresh clone of the fork, built with the command the dialog shows, links today. A bridge built from upstream, or
-    one already running in a Terminal window, is refused as not protected, in plain words; Settings says `Port in use`
-    or `open to your network on port ...` for it. From a second computer, the Mac's address on the fork's port 8741
-    answers nothing.
-41. The QR code scans from the phone, renews about every 20 seconds, and `Show a new code` works after 3 minutes.
-    `Linked as <name>` shows the right name and number, and the first import's count roughly matches 30 days on the
-    phone; that history arrives read.
-42. Unlink the Mac on the phone: within a minute Tresso says WhatsApp is not linked, a reply fails with that reason,
-    `Show how` gives a new code, and after scanning messages flow again.
+40. The release's Tresso.app starts its own bridge (`Contents/MacOS/whatsapp-bridge`; Activity Monitor shows it as a
+    child of Tresso) only after the risk box was ticked and Show QR code pressed, and its data lands in
+    `~/Library/Application Support/app.tresso.desktop/whatsapp/<user id>/`, a folder only the user may open. From a
+    second computer, the Mac's address on the bridge's port (`lsof -nP -iTCP -sTCP:LISTEN -a -c whatsapp`) answers
+    nothing. Quitting Tresso, signing out and Disconnect each leave no bridge running.
+41. The QR code scans from the phone, renews about every 20 seconds, and `Show a new code` works after 3 minutes. The
+    phone lists the Mac as Tresso under Linked devices. `Linked to <number>` with the name shows the right ones, and the
+    first import's count roughly matches 30 days on the phone; that history arrives read. A Mac that was connected
+    through a whatsapp-mcp folder by an earlier version: after the update Settings says `Link again` and `WhatsApp now
+    runs inside Tresso. Link your phone again.`, the whatsapp-mcp folder is exactly as it was, and after scanning the
+    chats already in Tresso are not doubled and only new messages arrive unread.
+42. Unlink the Mac on the phone: within a minute Tresso says `This phone signed Tresso out`, a reply fails with that
+    reason, `Link again` gives a new code, and after scanning messages flow again.
 
 Only this Mac:
 
@@ -310,8 +314,9 @@ Only this Mac:
     the bridge stores as well (now, after a restart, after linking again) shows once.
 44. A busy group: names above the bubbles are right, members without a saved contact show their WhatsApp name, members
     known only by a hidden number show something sensible, and a name that becomes known later appears on its own.
-45. Stop the bridge for ten minutes while messages arrive, then start it: see whether they arrive after all, and that
-    the bridge check in Settings says what happened.
+45. Take the Mac offline for ten minutes while messages arrive, then online again: see whether they arrive after all,
+    and that Settings, WhatsApp says what happened (`Could not start` with `WhatsApp could not be reached` after three
+    tries, and Try again).
 46. Close the window (the app stays in the Dock) for an hour while messages arrive: they are there at once when it
     opens, and notifications came meanwhile with Notify me on, none with it off, and none for the chat open in a
     focused window.
@@ -319,7 +324,7 @@ Only this Mac:
     is the right one, or Tresso refuses with the mismatch text. Attach a jpg, a pdf and an ogg: they arrive as a
     picture, a document and a voice message.
 48. Leave a chat out and take it back in from Settings: its old messages come back read, a message sent after that
-    arrives unread. Change folder keeps the chats. Disconnect leaves the bridge's store in the whatsapp-mcp folder, and
+    arrives unread. Disconnect removes the bridge's data folder of that user, and connecting again shows a new code;
     reading in Tresso leaves the phone's unread badge as it was.
 49. Dark mode: the chat pane, bubbles, notices, the connect dialog and the QR code read well.
 

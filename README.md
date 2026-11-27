@@ -100,14 +100,13 @@ The app is not signed with an Apple Developer ID yet. The install script lifts t
 
 ## 💬 WhatsApp (experimental)
 
-Tresso can show your WhatsApp chats next to your mail and send your replies. It does not talk to WhatsApp itself: Tresso
-for Mac starts the WhatsApp bridge of [whatsapp-mcp](https://github.com/gettresso/whatsapp-mcp), which you build once on
-your Mac, and that bridge signs in as a linked device of your phone.
+Tresso can show your WhatsApp chats next to your mail and send your replies. Tresso for Mac carries a small WhatsApp
+bridge ([apps/whatsapp-bridge](apps/whatsapp-bridge)) and starts it by itself; the bridge signs in as a linked device of
+your phone (you scan a QR code once) and keeps its data in Tresso's own folder on your Mac. There is nothing to install.
 
 **The risk.** The bridge uses WhatsApp Web's protocol, which WhatsApp does not officially support for other apps.
-WhatsApp can limit or ban accounts that use it. Use it with an account you can afford to lose access to. Tresso only
-starts a bridge built from its fork, which listens on your Mac alone and answers only Tresso; the upstream bridge
-listens on your whole network without a password, and Tresso refuses it. How to build it and close an open port:
+WhatsApp can limit or ban accounts that use it. Use it with an account you can afford to lose access to. The bridge
+listens on your Mac alone and answers only Tresso. How it is started and where its data lives:
 [docs/whatsapp-bridge.md](docs/whatsapp-bridge.md).
 
 **Turning it on.** It needs a Tresso for Mac release newer than 0.8.1, or a build from `main`: 0.8.1 and earlier have
@@ -116,8 +115,8 @@ none of these screens. It is off until you switch it on for a Mac: `defaults wri
 it off. Tresso reads the switch once, when it starts, so both take effect the next time you start Tresso. Tresso for
 Mac only; Windows and Linux have no WhatsApp yet.
 
-**Only this Mac** (the default). Your chats stay on that Mac: Tresso reads the bridge's store in the folder you chose
-and keeps a copy in the app. Nothing goes to your Tresso server, the browser or your phone.
+**Only this Mac** (the default). Your chats stay on that Mac: Tresso reads what the bridge stored and keeps a copy in the
+app. Nothing goes to your Tresso server, the browser or your phone.
 
 **All my devices.** One Mac copies your chats to your Tresso server, so the browser, your other Macs and the Tresso phone
 app show them too, and you can answer from any of them. What is copied: the chats of the last 30 days and everything
@@ -335,7 +334,7 @@ apps/
   sync/       Go sync workers
   web/        Vue 3 web client
   desktop/    Tauri 2 shell around apps/web
-  whatsapp-bridge/  Go WhatsApp bridge for the desktop app (not started by it yet)
+  whatsapp-bridge/  Go WhatsApp bridge Tresso for Mac carries and starts
   mobile/     Expo app
   website/    Marketing site at gettresso.com (Astro)
 packages/
@@ -459,7 +458,7 @@ Then run the checks for the part you changed:
 | WhatsApp bridge | `docker run --rm -v "$PWD/apps/whatsapp-bridge":/src -w /src golang:1.27 go test -race ./...` |
 | Shared core | `npm test --workspace @tresso/core` |
 | Web | `npm run test:unit --workspace @tresso/web` and `npm run type-check --workspace @tresso/web` |
-| Desktop | `cargo check` in `apps/desktop/src-tauri` (on macOS first `node apps/desktop/scripts/fetch-sparkle.mjs`, which the Tauri commands also run) |
+| Desktop | `cargo check` in `apps/desktop/src-tauri` (on macOS first `node apps/desktop/scripts/fetch-sparkle.mjs` and `node apps/desktop/scripts/build-whatsapp-bridge.mjs`, which needs Go; the Tauri commands run both) |
 | Mobile | `npx vitest run`, `npx tsc --noEmit` and `npx expo lint` in `apps/mobile` |
 
 Every push and pull request runs all of these in [CI](.github/workflows/ci.yml).
