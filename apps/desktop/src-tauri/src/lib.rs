@@ -32,7 +32,6 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       accessibility::reduce_transparency,
-      accessibility::selection_accent,
       glass::set_glass,
       updates::update_channel,
       updates::check_for_updates_natively,
