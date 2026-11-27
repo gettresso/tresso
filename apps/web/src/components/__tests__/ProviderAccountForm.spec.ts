@@ -4,6 +4,15 @@ import { createPinia, setActivePinia } from 'pinia'
 import type { MailAccount } from '@tresso/core'
 import ProviderAccountForm from '../ProviderAccountForm.vue'
 
+const fakes = vi.hoisted(() => ({ desktop: false, browser: [] as string[] }))
+vi.mock('@/platform/desktop', async (original) => ({
+  ...(await original<typeof import('@/platform/desktop')>()),
+  get isDesktop() {
+    return fakes.desktop
+  },
+  openInBrowser: async (url: string) => void fakes.browser.push(url),
+}))
+
 const gmail: MailAccount = {
   id: 'acc-g',
   emailAddress: 'kim@gmail.example',
@@ -16,7 +25,7 @@ const gmail: MailAccount = {
   smtp: null,
   calendarUrl: null,
   calendarStatus: 'not_granted',
-  calendarStatusDetail: 'Tresso is not allowed to use the calendars of this account yet. Allow it by signing in with Google again.',
+  calendarStatusDetail: null,
   lastSyncedAt: '2026-10-19T08:00:00+00:00',
   createdAt: '2026-10-19T08:00:00+00:00',
   defaultSignatureId: null,
@@ -25,11 +34,15 @@ const gmail: MailAccount = {
 describe('ProviderAccountForm', () => {
   const requests: { path: string; body: unknown }[] = []
   const assign = vi.fn<(url: string) => void>()
+  let failing = false
 
   beforeEach(() => {
     sessionStorage.setItem('auth.tokens', JSON.stringify({ accessToken: 'token', refreshToken: null, expiresAt: Date.now() + 3_600_000 }))
     setActivePinia(createPinia())
     requests.length = 0
+    failing = false
+    fakes.desktop = false
+    fakes.browser.length = 0
     assign.mockReset()
     vi.stubGlobal('location', { ...window.location, assign })
     vi.stubGlobal(
@@ -37,6 +50,7 @@ describe('ProviderAccountForm', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(String(input))
         requests.push({ path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+        if (failing) return Response.json({ detail: 'Google sign-in is not set up on this server.' }, { status: 409 })
         return new Response(JSON.stringify({ authorizationUrl: 'https://accounts.google.example/o/oauth2/v2/auth?state=s', provider: 'google', expiresAt: '2026-10-19T08:15:00+00:00' }), {
           status: 201,
           headers: { 'Content-Type': 'application/json' },
@@ -50,57 +64,63 @@ describe('ProviderAccountForm', () => {
     sessionStorage.clear()
   })
 
-  it('asks the provider for just the calendars when they are not allowed yet', async () => {
+  function mounted() {
     const wrapper = mount(ProviderAccountForm, { props: { account: gmail, provider: 'google' } })
-    expect(wrapper.text()).toContain('Tresso may not use the calendars of this account yet.')
+    return { wrapper, signInAgain: (wrapper.vm as unknown as { signInAgain: (features?: ['calendar']) => Promise<void> }).signInAgain }
+  }
 
-    const allow = wrapper.findAll('button').find((button) => button.text() === 'Allow calendar access')
-    expect(allow).toBeDefined()
-    await allow!.trigger('click')
-    await flushPromises()
-
-    expect(requests).toEqual([{ path: '/api/v1/provider-authorizations', body: { provider: 'google', features: ['calendar'], mailAccountId: 'acc-g' } }])
-    expect(assign).toHaveBeenCalledWith('https://accounts.google.example/o/oauth2/v2/auth?state=s')
+  it('shows nothing while nothing happens', () => {
+    expect(mounted().wrapper.text()).toBe('')
   })
 
   it('signs in again for mail without asking for calendars', async () => {
-    const wrapper = mount(ProviderAccountForm, { props: { account: { ...gmail, calendarStatus: 'unknown', calendarStatusDetail: null }, provider: 'google' } })
-
-    await wrapper.findAll('button').find((button) => button.text() === 'Sign in with Google again')!.trigger('click')
+    const { signInAgain } = mounted()
+    await signInAgain()
     await flushPromises()
 
     expect(requests).toEqual([{ path: '/api/v1/provider-authorizations', body: { provider: 'google', features: ['mail'], mailAccountId: 'acc-g' } }])
+    expect(assign).toHaveBeenCalledWith('https://accounts.google.example/o/oauth2/v2/auth?state=s')
   })
 
-  it('shows why the calendars failed and lets the user allow calendar access again', async () => {
-    const detail = 'Google refused the calendars of this account (forbidden). Your organization may not allow Tresso to use calendars.'
-    const wrapper = mount(ProviderAccountForm, { props: { account: { ...gmail, calendarStatus: 'error', calendarStatusDetail: detail }, provider: 'google' } })
-
-    const line = wrapper.get('.calendars')
-    expect(line.text()).toContain(detail)
-    await line.get('button').trigger('click')
+  it('asks the provider for just the calendars when they are to be allowed', async () => {
+    const { signInAgain } = mounted()
+    await signInAgain(['calendar'])
     await flushPromises()
 
-    expect(line.get('button').text()).toBe('Allow calendar access again')
     expect(requests).toEqual([{ path: '/api/v1/provider-authorizations', body: { provider: 'google', features: ['calendar'], mailAccountId: 'acc-g' } }])
   })
 
-  it('shows why the calendar sign-in failed and offers signing in again next to it', async () => {
-    const detail = "Google no longer accepts Tresso's access to this account. Sign in with Google again."
-    const wrapper = mount(ProviderAccountForm, { props: { account: { ...gmail, calendarStatus: 'auth_failed', calendarStatusDetail: detail }, provider: 'google' } })
+  it('says the provider opens while it does, and opens it once', async () => {
+    const { wrapper, signInAgain } = mounted()
+    const first = signInAgain()
+    const second = signInAgain()
+    await wrapper.vm.$nextTick()
 
-    const line = wrapper.get('.calendars')
-    expect(line.text()).toContain(detail)
-    expect(line.get('button').text()).toBe('Sign in with Google again')
-    await line.get('button').trigger('click')
+    expect(wrapper.get('[role="status"]').text()).toBe('Opening Google…')
+    await Promise.all([first, second])
     await flushPromises()
-
-    // Signing in again asks for what the account allows already, calendars included (the API adds them).
-    expect(requests).toEqual([{ path: '/api/v1/provider-authorizations', body: { provider: 'google', features: ['mail'], mailAccountId: 'acc-g' } }])
+    expect(requests).toHaveLength(1)
   })
 
-  it('shows nothing about calendars once they sync', () => {
-    const wrapper = mount(ProviderAccountForm, { props: { account: { ...gmail, calendarStatus: 'active', calendarStatusDetail: null }, provider: 'google' } })
-    expect(wrapper.text()).not.toContain('Allow calendar access')
+  it('in the desktop app, opens the provider in the browser and says to continue there', async () => {
+    // Signed in to Tresso in the browser first: the desktop app would read its tokens from the keychain.
+    const { wrapper, signInAgain } = mounted()
+    fakes.desktop = true
+    await signInAgain()
+    await flushPromises()
+
+    expect(fakes.browser).toEqual(['https://accounts.google.example/o/oauth2/v2/auth?state=s'])
+    expect(assign).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="status"]').text()).toBe('Continue in your browser. Tresso shows the result here once you have signed in.')
+  })
+
+  it('says why the provider did not open', async () => {
+    failing = true
+    const { wrapper, signInAgain } = mounted()
+    await signInAgain()
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toBe('Google sign-in is not set up on this server.')
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
   })
 })

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  accountAttention,
   accountServiceProvider,
-  calendarNeedsAttention,
-  calendarStatusLabel,
+  accountSyncMeta,
   foundCalendarUrl,
   connectErrorMessage,
   connectRoute,
@@ -11,11 +11,11 @@ import {
   normalizeAppPassword,
   oauthProviderFor,
   providerCompany,
-  providerCalendarProblem,
   providerLabel,
   providerSignInOutcome,
   signedInAgainNotice,
   signInProvider,
+  syncedTime,
   type ProviderConnection,
 } from './accounts'
 
@@ -139,15 +139,6 @@ describe('calendar statuses', () => {
       'https://dav.studio-noord.example/caldav/?user=kim',
     )
   })
-
-  it('names the statuses that need the user', () => {
-    expect(calendarNeedsAttention('not_granted')).toBe(true)
-    expect(calendarNeedsAttention('unconfirmed')).toBe(true)
-    expect(calendarNeedsAttention('active')).toBe(false)
-    expect(calendarNeedsAttention('unsupported')).toBe(false)
-    expect(calendarStatusLabel('not_granted')).toBe('Calendars not allowed')
-    expect(calendarStatusLabel('unknown')).toBeNull()
-  })
 })
 
 describe('providerSignInOutcome and signedInAgainNotice', () => {
@@ -198,24 +189,76 @@ describe('providerSignInOutcome and signedInAgainNotice', () => {
   })
 })
 
-describe('providerCalendarProblem', () => {
-  it('gives every calendar status a provider account can have a reason and, where one helps, an action', () => {
-    expect(providerCalendarProblem({ calendarStatus: 'not_granted', calendarStatusDetail: null }, 'microsoft')).toEqual({
-      text: 'Tresso may not use the calendars of this account yet.',
-      action: { kind: 'allow', label: 'Allow calendar access' },
+describe('accountAttention', () => {
+  const provider = { provider: 'microsoft', status: 'active', calendarStatus: 'active' } as const
+  const server = { provider: 'imap', status: 'active', calendarStatus: 'active' } as const
+
+  it('says nothing when nothing needs the user', () => {
+    expect(accountAttention(provider)).toBeNull()
+    expect(accountAttention({ ...provider, status: 'paused' })).toBeNull()
+    expect(accountAttention({ ...provider, calendarStatus: 'unknown' })).toBeNull()
+    expect(accountAttention({ ...provider, calendarStatus: 'unsupported' })).toBeNull()
+    expect(accountAttention({ ...server, calendarStatus: 'unsupported' })).toBeNull()
+  })
+
+  it('asks a provider account to sign in again when its mail stops', () => {
+    expect(accountAttention({ ...provider, status: 'auth_failed' })).toEqual({ tone: 'danger', text: 'Sign-in expired. New mail is not arriving.', action: { kind: 'sign-in', label: 'Sign in again' } })
+    expect(accountAttention({ ...provider, status: 'error' })).toEqual({ tone: 'danger', text: 'Syncing failed. New mail is not arriving.', action: { kind: 'sign-in', label: 'Sign in again' } })
+  })
+
+  it('sends a mail-server account to its server settings when its mail stops', () => {
+    expect(accountAttention({ ...server, status: 'auth_failed' })).toEqual({
+      tone: 'danger',
+      text: 'The server refused the password. New mail is not arriving.',
+      action: { kind: 'server-settings', label: 'Server settings' },
     })
-    expect(providerCalendarProblem({ calendarStatus: 'auth_failed', calendarStatusDetail: 'Microsoft no longer accepts it.' }, 'microsoft')).toEqual({
-      text: 'Microsoft no longer accepts it.',
-      action: { kind: 'sign-in', label: 'Sign in with Microsoft again' },
-    })
-    expect(providerCalendarProblem({ calendarStatus: 'error', calendarStatusDetail: 'Microsoft refused the calendars of this account (ErrorAccessDenied).' }, 'microsoft')).toEqual({
-      text: 'Microsoft refused the calendars of this account (ErrorAccessDenied).',
-      action: { kind: 'allow', label: 'Allow calendar access again' },
-    })
-    expect(providerCalendarProblem({ calendarStatus: 'error', calendarStatusDetail: null }, 'google')?.text).toBe('Syncing the calendars failed. Tresso keeps retrying.')
-    expect(providerCalendarProblem({ calendarStatus: 'unconfirmed', calendarStatusDetail: null }, 'google')?.action?.kind).toBe('allow')
-    expect(providerCalendarProblem({ calendarStatus: 'unsupported', calendarStatusDetail: null }, 'google')).toEqual({ text: 'Google offers no calendars for this account.', action: null })
-    expect(providerCalendarProblem({ calendarStatus: 'active', calendarStatusDetail: null }, 'google')).toBeNull()
-    expect(providerCalendarProblem({ calendarStatus: 'unknown', calendarStatusDetail: null }, 'google')).toBeNull()
+    expect(accountAttention({ ...server, status: 'error' })?.action.kind).toBe('server-settings')
+  })
+
+  it('puts the mail before the calendars', () => {
+    expect(accountAttention({ ...provider, status: 'auth_failed', calendarStatus: 'not_granted' })?.text).toBe('Sign-in expired. New mail is not arriving.')
+    expect(accountAttention({ ...server, status: 'error', calendarStatus: 'unconfirmed' })?.text).toBe('Syncing failed. New mail is not arriving.')
+  })
+
+  it('asks a provider account to allow its calendars, or to sign in again when the provider refuses them', () => {
+    expect(accountAttention({ ...provider, calendarStatus: 'not_granted' })).toEqual({ tone: 'warning', text: 'Calendar access is off', action: { kind: 'allow-calendar', label: 'Allow' } })
+    expect(accountAttention({ ...provider, calendarStatus: 'error' })).toEqual({ tone: 'warning', text: 'Calendars are not syncing', action: { kind: 'allow-calendar', label: 'Allow' } })
+    expect(accountAttention({ ...provider, calendarStatus: 'unconfirmed' })?.action.kind).toBe('allow-calendar')
+    expect(accountAttention({ ...provider, calendarStatus: 'auth_failed' })).toEqual({ tone: 'warning', text: 'Calendar sign-in expired', action: { kind: 'sign-in', label: 'Sign in again' } })
+  })
+
+  it("fixes a mail-server account's calendars in its server settings", () => {
+    expect(accountAttention({ ...server, calendarStatus: 'unconfirmed' })).toEqual({ tone: 'warning', text: 'Calendar address to confirm', action: { kind: 'server-settings', label: 'Server settings' } })
+    expect(accountAttention({ ...server, calendarStatus: 'auth_failed' })?.text).toBe('The calendar server refused the password')
+    expect(accountAttention({ ...server, calendarStatus: 'error' })?.action.kind).toBe('server-settings')
+  })
+})
+
+describe('syncedTime and accountSyncMeta', () => {
+  // Friday 24 October 2025, 15:00 in Amsterdam (UTC+2).
+  const now = Date.parse('2025-10-24T13:00:00Z')
+  const zone = 'Europe/Amsterdam'
+
+  it('says the time today, the weekday in the week before, and the date before that', () => {
+    expect(syncedTime(Date.parse('2025-10-24T11:01:00Z'), now, zone)).toBe('13:01')
+    expect(syncedTime(Date.parse('2025-10-23T22:30:00Z'), now, zone)).toBe('00:30')
+    expect(syncedTime(Date.parse('2025-10-18T12:20:00Z'), now, zone)).toBe('Sat 14:20')
+    // A week ago is another Friday: the date says which.
+    expect(syncedTime(Date.parse('2025-10-17T12:20:00Z'), now, zone)).toBe('Fri 17 Oct 14:20')
+    expect(syncedTime(Date.parse('2025-10-16T12:20:00Z'), now, zone)).toBe('Thu 16 Oct 14:20')
+    expect(syncedTime(Date.parse('2024-12-30T09:00:00Z'), now, zone)).toBe('Mon 30 Dec 2024 10:00')
+  })
+
+  it('says Synced while it syncs, Last synced when mail stopped, and nothing while paused', () => {
+    const lastSyncedAt = '2025-10-24T11:01:00Z'
+    expect(accountSyncMeta({ status: 'active', lastSyncedAt }, now, zone)).toBe('Synced 13:01')
+    expect(accountSyncMeta({ status: 'auth_failed', lastSyncedAt: '2025-10-21T12:20:00Z' }, now, zone)).toBe('Last synced Tue 14:20')
+    expect(accountSyncMeta({ status: 'error', lastSyncedAt }, now, zone)).toBe('Last synced 13:01')
+    expect(accountSyncMeta({ status: 'paused', lastSyncedAt }, now, zone)).toBeNull()
+  })
+
+  it('says Getting mail before the first sync, and nothing when that sync cannot start', () => {
+    expect(accountSyncMeta({ status: 'active', lastSyncedAt: null }, now, zone)).toBe('Getting mail')
+    expect(accountSyncMeta({ status: 'auth_failed', lastSyncedAt: null }, now, zone)).toBeNull()
   })
 })
