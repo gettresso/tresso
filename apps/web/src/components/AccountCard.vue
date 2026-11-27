@@ -1,24 +1,30 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { calendarNeedsAttention, calendarStatusLabel, NO_UNSUBSCRIBE_ON_IMAP, oneClickUnsubscribeAvailable, providerName, signInProvider, type MailAccount } from '@tresso/core'
-import { errorMessage } from '@/api/errors'
-import { fullTime } from '@/mail/format'
+import { computed, nextTick, ref, useId } from 'vue'
+import { accountAttention, accountSyncMeta, NO_UNSUBSCRIBE_ON_IMAP, oneClickUnsubscribeAvailable, providerName, readerTimeZone, signInProvider, type MailAccount, type ProviderFeature } from '@tresso/core'
+import { ApiError, errorMessage } from '@/api/errors'
+import { displayNameSchema } from '@/forms/accounts'
 import { useAccountsStore } from '@/stores/accounts'
+import AttentionRow from '@/components/AttentionRow.vue'
+import ListRow from '@/components/ListRow.vue'
+import MenuButton, { type MenuItem } from '@/components/MenuButton.vue'
 import ProviderAccountForm from '@/components/ProviderAccountForm.vue'
-import SenderAvatar from '@/components/SenderAvatar.vue'
+import ProviderMark from '@/components/ProviderMark.vue'
+import { markForAccount } from '@/components/providerMarks'
 import ServerAccountForm from '@/components/ServerAccountForm.vue'
 
+/**
+ * One mail account in Settings, Accounts, as one calm row (the SettingsAccounts board): its mark, name and address,
+ * when it last synced (or a Paused pill), and a More menu with the rare actions. Under it at most one attention line,
+ * only when the user has to act (see accountAttention). Rename edits the name in place; Server settings opens the
+ * server form of a mail-server account under the row; Remove account asks first.
+ */
 const props = defineProps<{ account: MailAccount }>()
 
 const accounts = useAccountsStore()
-// Opens by itself when something needs the user: the mail, or the calendars (not allowed, or a server to confirm).
-const open = ref(props.account.status === 'auth_failed' || props.account.status === 'error' || calendarNeedsAttention(props.account.calendarStatus))
-/** Said in the collapsed card too, so an account without calendar access shows without opening it. */
-const calendarBadge = computed(() => calendarStatusLabel(props.account.calendarStatus))
-const saving = ref(false)
-const message = ref<string | null>(null)
-const error = ref<string | null>(null)
-const confirmingRemoval = ref(false)
+const id = useId()
+const row = ref<InstanceType<typeof ListRow> | null>(null)
+const nameInput = ref<HTMLInputElement | null>(null)
+const signIn = ref<InstanceType<typeof ProviderAccountForm> | null>(null)
 
 /** Gmail and Microsoft 365 accounts sign in with their provider; the others have a password and servers. */
 const provider = computed(() => signInProvider(props.account))
@@ -27,23 +33,154 @@ const servers = computed(() => {
   return username !== null && imap !== null && smtp !== null ? { username, imap, smtp } : null
 })
 
+const attention = computed(() => accountAttention(props.account))
+/** Read when the account changes (the page reloads it on every status change), not on a timer. */
+const meta = computed(() => accountSyncMeta(props.account, Date.now(), readerTimeZone()))
+/** The mail does not arrive: what the server said goes with the server settings. */
 const problem = computed(() => props.account.status === 'auth_failed' || props.account.status === 'error')
-const statusLabel = computed(
-  () =>
-    ({
-      // The server's sync of this account with its provider: its first one, or on. The words of the sidebar's status
-      // (getting your mail) are kept, and nothing says it connects for longer than a connection takes.
-      active: props.account.lastSyncedAt === null ? 'Getting mail' : 'Active',
-      paused: 'Paused',
-      auth_failed: 'Sign-in failed',
-      error: 'Sync problem',
-    })[props.account.status],
-)
-const fixHint = computed(() =>
-  provider.value === null
-    ? 'New mail is not arriving until this is fixed. Check the password (or app password) and the server settings below.'
-    : `New mail is not arriving until this is fixed. Sign in with ${providerName(provider.value)} again below.`,
-)
+
+const saving = ref(false)
+/** Said to a screen reader once an action from the menu is done; the row itself shows the new state. */
+const message = ref<string | null>(null)
+const error = ref<string | null>(null)
+const confirmingRemoval = ref(false)
+const serverSettingsOpen = ref(false)
+
+const renaming = ref(false)
+const draft = ref('')
+const nameError = ref<string | null>(null)
+const nameChanged = computed(() => draft.value !== props.account.displayName)
+
+const moreLabel = computed(() => `More for ${props.account.emailAddress}`)
+const menuItems = computed<MenuItem[]>(() => {
+  const items: MenuItem[] = [{ id: 'rename', label: 'Rename' }]
+  if (provider.value !== null) items.push({ id: 'sign-in', label: 'Sign in again' })
+  else if (servers.value !== null) items.push({ id: 'server-settings', label: 'Server settings' })
+  // A paused account resumes; one whose mail does not arrive is fixed first, as before.
+  if (props.account.status === 'active' || props.account.status === 'paused') {
+    items.push({ id: 'pause', label: props.account.status === 'paused' ? 'Resume syncing' : 'Pause syncing' })
+  }
+  items.push({ id: 'remove', label: 'Remove account', danger: true })
+  return items
+})
+/** The attention line's button, when this account can do what it asks. */
+const attentionAction = computed(() => {
+  const action = attention.value?.action
+  if (action === undefined) return undefined
+  if (action.kind === 'server-settings') return servers.value !== null ? action.label : undefined
+  return provider.value !== null ? action.label : undefined
+})
+
+function rowElement(): HTMLElement | null {
+  return (row.value?.$el as HTMLElement | undefined) ?? null
+}
+
+async function focusMore(): Promise<void> {
+  await nextTick()
+  rowElement()?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.focus()
+}
+
+function choose(item: string): void {
+  message.value = null
+  error.value = null
+  switch (item) {
+    case 'rename':
+      void startRename()
+      break
+    case 'sign-in':
+      void signInAgain()
+      void focusMore()
+      break
+    case 'server-settings':
+      void openServerSettings()
+      break
+    case 'pause':
+      void togglePause().then(focusMore)
+      break
+    case 'remove':
+      void askRemoval()
+      break
+  }
+}
+
+function act(): void {
+  const action = attention.value?.action
+  if (action === undefined) return
+  if (action.kind === 'server-settings') void openServerSettings()
+  else void signInAgain(action.kind === 'allow-calendar' ? ['calendar'] : undefined)
+}
+
+function signInAgain(features?: ProviderFeature[]): Promise<void> {
+  return signIn.value?.signInAgain(features) ?? Promise.resolve()
+}
+
+async function startRename(): Promise<void> {
+  serverSettingsOpen.value = false
+  confirmingRemoval.value = false
+  draft.value = props.account.displayName
+  nameError.value = null
+  renaming.value = true
+  await nextTick()
+  nameInput.value?.focus()
+}
+
+function cancelRename(): void {
+  if (saving.value) return
+  renaming.value = false
+  nameError.value = null
+  void focusMore()
+}
+
+async function saveName(): Promise<void> {
+  if (saving.value) return
+  const parsed = displayNameSchema.safeParse(draft.value)
+  if (!parsed.success) {
+    nameError.value = parsed.error.issues[0]?.message ?? null
+    return
+  }
+  if (parsed.data === props.account.displayName) {
+    cancelRename()
+    return
+  }
+  saving.value = true
+  nameError.value = null
+  try {
+    await accounts.update(props.account.id, { displayName: parsed.data })
+    renaming.value = false
+    message.value = 'Name saved.'
+    void focusMore()
+  } catch (e) {
+    nameError.value = e instanceof ApiError && e.violations.displayName ? e.violations.displayName : errorMessage(e)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function openServerSettings(): Promise<void> {
+  renaming.value = false
+  confirmingRemoval.value = false
+  serverSettingsOpen.value = true
+  await nextTick()
+  rowElement()?.querySelector<HTMLInputElement>('.server input')?.focus()
+}
+
+function closeServerSettings(): void {
+  serverSettingsOpen.value = false
+  void focusMore()
+}
+
+async function askRemoval(): Promise<void> {
+  renaming.value = false
+  serverSettingsOpen.value = false
+  confirmingRemoval.value = true
+  await nextTick()
+  rowElement()?.querySelector<HTMLButtonElement>('.confirm .keep')?.focus()
+}
+
+function keepAccount(): void {
+  confirmingRemoval.value = false
+  void focusMore()
+}
 
 async function run(action: () => Promise<unknown>, done: string): Promise<void> {
   saving.value = true
@@ -70,156 +207,186 @@ function remove(): Promise<void> {
 </script>
 
 <template>
-  <section :id="`account-${account.id}`" class="card" :class="{ problem }" :aria-label="account.displayName" tabindex="-1">
-    <button type="button" class="head" :aria-expanded="open" @click="open = !open">
-      <SenderAvatar :sender="{ name: account.displayName, address: account.emailAddress }" :size="36" />
-      <span class="who">
-        <span class="name">{{ account.displayName }}</span>
-        <span class="address">{{ account.emailAddress }}</span>
-      </span>
-      <span class="badges">
-        <span v-if="calendarBadge" class="status calendar">{{ calendarBadge }}</span>
-        <span class="status" :class="account.status">{{ statusLabel }}</span>
-      </span>
-    </button>
+  <ListRow ref="row" :id="`account-${account.id}`" class="account" :aria-label="account.displayName" tabindex="-1">
+    <template #mark>
+      <ProviderMark :kind="markForAccount(account)" />
+    </template>
 
-    <div v-if="open" class="body">
-      <div v-if="problem" class="alert" role="alert">
-        <strong>{{ account.status === 'auth_failed' ? 'Tresso could not sign in to this account.' : 'Syncing this account failed.' }}</strong>
-        <span v-if="account.statusDetail">The server said: {{ account.statusDetail }}</span>
-        <span>{{ fixHint }}</span>
+    <template v-if="renaming" #text>
+      <form :id="`${id}-rename`" class="rename" novalidate @submit.prevent="saveName" @keydown.esc.prevent="cancelRename">
+        <input
+          ref="nameInput"
+          v-model="draft"
+          class="name-field"
+          aria-label="Display name"
+          maxlength="120"
+          dir="auto"
+          :readonly="saving"
+          @keydown.enter.prevent="saveName"
+          :aria-invalid="nameError ? 'true' : undefined"
+          :aria-describedby="nameError ? `${id}-recipients ${id}-name-error` : `${id}-recipients`"
+        />
+        <span :id="`${id}-recipients`" class="recipients">Recipients see: {{ draft }} &lt;{{ account.emailAddress }}&gt;</span>
+        <span v-if="nameError" :id="`${id}-name-error`" class="name-error" role="alert">{{ nameError }}</span>
+      </form>
+    </template>
+    <template v-else #title>
+      <span dir="auto">{{ account.displayName }}</span>
+    </template>
+    <template v-if="!renaming" #line>
+      <span dir="auto">{{ account.emailAddress }}</span>
+    </template>
+
+    <template v-if="!renaming && (account.status === 'paused' || meta)" #meta>
+      <span v-if="account.status === 'paused'" class="paused">Paused</span>
+      <template v-else>{{ meta }}</template>
+    </template>
+
+    <template v-if="!renaming" #action>
+      <MenuButton variant="more" :label="moreLabel" :menu-label="moreLabel" :items="menuItems" @choose="choose" />
+    </template>
+    <template v-else-if="nameChanged" #action>
+      <span class="rename-actions">
+        <button type="submit" :form="`${id}-rename`" class="button row-button" :disabled="saving">Save</button>
+        <button type="button" class="button button-quiet row-button" :disabled="saving" @click="cancelRename">Cancel</button>
+      </span>
+    </template>
+
+    <AttentionRow v-if="attention" :tone="attention.tone" :text="attention.text" :action="attentionAction" @act="act" />
+
+    <ProviderAccountForm v-if="provider !== null" ref="signIn" :account="account" :provider="provider" />
+
+    <section v-if="serverSettingsOpen && servers !== null" class="server" :aria-labelledby="`${id}-server`">
+      <div class="server-head">
+        <h3 :id="`${id}-server`">Server settings</h3>
+        <button type="button" class="button button-quiet row-button" @click="closeServerSettings">Close</button>
       </div>
-      <p v-else class="sync">
-        {{ account.lastSyncedAt ? `Last synced ${fullTime(account.lastSyncedAt)}.` : 'Not synced yet.' }}
-      </p>
-
+      <p v-if="problem && account.statusDetail" class="note">The server said: {{ account.statusDetail }}</p>
       <p v-if="!oneClickUnsubscribeAvailable(account)" class="note">{{ NO_UNSUBSCRIBE_ON_IMAP }}</p>
+      <ServerAccountForm :account="account" :servers="servers" />
+    </section>
 
-      <ProviderAccountForm v-if="provider !== null" :account="account" :provider="provider" />
-      <ServerAccountForm v-else-if="servers !== null" :account="account" :servers="servers" />
+    <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+    <p class="visually-hidden" role="status">{{ message }}</p>
 
-      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-      <p v-if="message" class="done" role="status">{{ message }}</p>
-
+    <div v-if="confirmingRemoval" class="confirm" role="alertdialog" :aria-labelledby="`${id}-remove`">
+      <p :id="`${id}-remove`"><strong>Remove {{ account.emailAddress }}?</strong></p>
+      <p>
+        Its mail disappears from Tresso on every device. Nothing is deleted at your provider, and you can add the account again later.
+        <template v-if="provider !== null">Tresso also deletes its access to your {{ providerName(provider) }} account.</template>
+      </p>
       <div class="actions">
-        <span class="spacer" />
-        <button v-if="account.status === 'active' || account.status === 'paused'" type="button" class="button button-quiet" :disabled="saving" @click="togglePause">
-          {{ account.status === 'paused' ? 'Resume syncing' : 'Pause syncing' }}
-        </button>
-        <button type="button" class="button button-danger" :disabled="saving" @click="confirmingRemoval = true">Remove account</button>
-      </div>
-
-      <div v-if="confirmingRemoval" class="confirm" role="alertdialog" aria-labelledby="remove-title">
-        <p id="remove-title"><strong>Remove {{ account.emailAddress }}?</strong></p>
-        <p>
-          Its mail disappears from Tresso on every device. Nothing is deleted at your provider, and you can add the account again later.
-          <template v-if="provider !== null">Tresso also deletes its access to your {{ providerName(provider) }} account.</template>
-        </p>
-        <div class="actions">
-          <button type="button" class="button button-danger" :disabled="saving" @click="remove">Remove account</button>
-          <button type="button" class="button button-quiet" @click="confirmingRemoval = false">Keep it</button>
-        </div>
+        <button type="button" class="button button-danger" :disabled="saving" @click="remove">Remove account</button>
+        <button type="button" class="button button-quiet keep" @click="keepAccount">Keep it</button>
       </div>
     </div>
-  </section>
+  </ListRow>
 </template>
 
 <style scoped>
+/* The focus a link to this account (#account-<id>) moves here shows on the whole row. */
+.account:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-row);
+}
+/* Grey, as the board's Paused state: no state of an account is a coloured pill. */
+.paused {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--tile);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.rename {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.name-field {
+  width: 100%;
+  max-width: 320px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--paper);
+  color: var(--ink);
+  font: 600 14px var(--font-ui);
+}
+.name-field:focus {
+  border-color: var(--focus);
+}
+.name-field[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+.recipients {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.name-error {
+  font-size: 13px;
+  line-height: 19px;
+  font-weight: 500;
+  color: var(--danger);
+}
+.rename-actions {
+  display: flex;
+  gap: 4px;
+}
+/* The outlined row button (Save) and the quiet one beside it: 32 high, as on the board. */
+.row-button {
+  height: 32px;
+  padding: 0 12px;
+}
+.rename-actions .button:not(.button-quiet) {
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+}
+.rename-actions .button-quiet {
+  padding: 0 10px;
+}
+.server {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 4px;
+}
+.server-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.server-head h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
 .note {
   margin: 0;
   color: var(--ink-2);
   font-size: 13px;
 }
-.card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-}
-.card.problem {
-  border-color: var(--danger);
-}
-.head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 14px 16px;
-  border: 0;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.who {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-}
-.name {
-  font-weight: 600;
-}
-.address {
-  font-size: 13px;
-  color: var(--ink-2);
-}
-.badges {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-}
-.status.calendar {
-  background: var(--delegate-soft);
-  color: var(--delegate);
-}
-.status {
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--ground);
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 600;
-}
-.status.active {
-  background: var(--know-soft);
-  color: var(--know);
-}
-.status.auth_failed,
-.status.error {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-.body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 0 16px 16px;
-}
-.alert {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
-  border-radius: var(--radius-card);
-  background: var(--danger-soft);
-  color: var(--ink);
-}
-.sync {
+.form-error {
   margin: 0;
-  color: var(--ink-2);
+  font-size: 13px;
 }
 .actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-}
-.spacer {
-  flex: 1;
-}
-.done {
-  margin: 0;
-  color: var(--know);
-  font-weight: 500;
 }
 .confirm {
   padding: 14px;

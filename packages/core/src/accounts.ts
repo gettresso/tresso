@@ -3,6 +3,8 @@
  * sign-in endpoints, and the rules of connecting a mail account.
  */
 
+import { clock, shortDate, WEEKDAYS_SHORT } from './calendar/format'
+import { DAY, startOfWallDay, toWall, wallParts, weekdayOf } from './calendar/zones'
 import type { CalendarSyncStatus, MailAccountStatus } from './sync/types'
 
 export type ConnectionSecurity = 'tls' | 'starttls' | 'none'
@@ -363,51 +365,71 @@ export function foundCalendarUrl(account: Pick<MailAccount, 'calendarFoundUrl' |
   return match ? match[0].replace(/[.,;:]+$/, '') : null
 }
 
-/** Calendar statuses that need the user: shown on the account and in the calendar. */
-export function calendarNeedsAttention(status: CalendarSyncStatus): boolean {
-  return status === 'not_granted' || status === 'auth_failed' || status === 'error' || status === 'unconfirmed'
-}
-
-/** A short label for a calendar status that needs the user, for a badge next to the account. */
-export function calendarStatusLabel(status: CalendarSyncStatus): string | null {
-  const labels: Partial<Record<CalendarSyncStatus, string>> = {
-    not_granted: 'Calendars not allowed',
-    auth_failed: 'Calendar sign-in failed',
-    error: 'Calendar problem',
-    unconfirmed: 'Calendar address to confirm',
-  }
-  return labels[status] ?? null
-}
-
 /**
- * What the settings of a Google or Microsoft account say about calendars that do not sync, and what the user can do
- * about it: allow calendar access (again), which starts a calendar sign-in at the provider and wakes the sync at once,
- * or sign in again, when the provider no longer accepts Tresso's access. The reason is the sync's own (the API's
- * `calendarStatusDetail`) when it gave one. Null when nothing needs the user.
+ * The one line under an account in Settings, when the user has to act on it (the Needs attention and Sign-in expired
+ * states of the SettingsAccounts board), and what its button does: sign in with the provider again (`sign-in`), allow
+ * the calendars at the provider (`allow-calendar`), or open the server settings of a mail-server account
+ * (`server-settings`). Mail that does not arrive wins over calendars. Null when nothing needs the user, also for
+ * calendars the provider or server does not offer.
  */
-export function providerCalendarProblem(
-  account: Pick<MailAccount, 'calendarStatus' | 'calendarStatusDetail'>,
-  provider: OAuthProviderId,
-): { text: string; action: { kind: 'allow' | 'sign-in'; label: string } | null } | null {
-  const name = providerName(provider)
-  const detail = account.calendarStatusDetail
+export interface AccountAttention {
+  tone: 'danger' | 'warning'
+  text: string
+  action: { kind: 'sign-in' | 'allow-calendar' | 'server-settings'; label: string }
+}
+
+export function accountAttention(account: Pick<MailAccount, 'provider' | 'status' | 'calendarStatus'>): AccountAttention | null {
+  const server = signInProvider(account) === null
+  const fix: AccountAttention['action'] = server ? { kind: 'server-settings', label: 'Server settings' } : { kind: 'sign-in', label: 'Sign in again' }
+  if (account.status === 'auth_failed') {
+    // A provider stops accepting an earlier sign-in; a mail server refuses the password it has.
+    return { tone: 'danger', text: server ? 'The server refused the password. New mail is not arriving.' : 'Sign-in expired. New mail is not arriving.', action: fix }
+  }
+  if (account.status === 'error') {
+    return { tone: 'danger', text: 'Syncing failed. New mail is not arriving.', action: fix }
+  }
+  // A new calendar sign-in at the provider settles a refusal and retries at once; a server account fixes its
+  // calendars in its server settings (the address to confirm, the password).
+  const allow: AccountAttention['action'] = server ? fix : { kind: 'allow-calendar', label: 'Allow' }
   switch (account.calendarStatus) {
     case 'not_granted':
-      return { text: 'Tresso may not use the calendars of this account yet.', action: { kind: 'allow', label: 'Allow calendar access' } }
+      return { tone: 'warning', text: 'Calendar access is off', action: allow }
     case 'auth_failed':
-      return { text: detail ?? `${name} no longer accepts Tresso's access to the calendars of this account.`, action: { kind: 'sign-in', label: `Sign in with ${name} again` } }
+      return { tone: 'warning', text: server ? 'The calendar server refused the password' : 'Calendar sign-in expired', action: fix }
     case 'error':
-      // Tresso keeps retrying by itself; allowing calendar access again retries now, and settles a refusal that a new
-      // consent (an organization's, say) can lift.
-      return { text: detail ?? 'Syncing the calendars failed. Tresso keeps retrying.', action: { kind: 'allow', label: 'Allow calendar access again' } }
+      return { tone: 'warning', text: 'Calendars are not syncing', action: allow }
     case 'unconfirmed':
-      // Only calendar servers found for password accounts are confirmed; a provider account syncs through its
-      // provider, which a new calendar sign-in starts again.
-      return { text: detail ?? 'The calendars of this account could not be synced.', action: { kind: 'allow', label: 'Allow calendar access again' } }
+      return server ? { tone: 'warning', text: 'Calendar address to confirm', action: fix } : { tone: 'warning', text: 'Calendars are not syncing', action: allow }
     case 'unsupported':
-      return { text: detail ?? `${name} offers no calendars for this account.`, action: null }
     case 'unknown':
     case 'active':
       return null
   }
+}
+
+/**
+ * When an account last synced, in the meta place of its row: "13:01" today, "Fri 14:20" in the six days before,
+ * "Thu 23 Oct 14:20" earlier (with the year when it is another one). Times on the 24 hour clock, in `zone`.
+ */
+export function syncedTime(instant: number, now: number, zone: string): string {
+  const wall = toWall(instant, zone)
+  const day = startOfWallDay(wall)
+  const today = startOfWallDay(toWall(now, zone))
+  if (day === today) return clock(wall)
+  if (day < today && today - day < 7 * DAY) return `${WEEKDAYS_SHORT[weekdayOf(wall)]} ${clock(wall)}`
+  const year = wallParts(wall).year
+  return `${shortDate(wall)}${year === wallParts(today).year ? '' : ` ${year}`} ${clock(wall)}`
+}
+
+/**
+ * The quiet meta of an account row: "Synced 13:01" while it syncs, "Last synced Fri 14:20" when mail stopped arriving,
+ * "Getting mail" before its first sync. Null while syncing is paused (the row shows a Paused pill instead), and for an
+ * account that never synced and does not sync now.
+ */
+export function accountSyncMeta(account: Pick<MailAccount, 'status' | 'lastSyncedAt'>, now: number, zone: string): string | null {
+  if (account.status === 'paused') return null
+  const at = account.lastSyncedAt === null ? Number.NaN : Date.parse(account.lastSyncedAt)
+  if (Number.isNaN(at)) return account.status === 'active' ? 'Getting mail' : null
+  const when = syncedTime(at, now, zone)
+  return account.status === 'active' ? `Synced ${when}` : `Last synced ${when}`
 }
