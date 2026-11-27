@@ -2444,12 +2444,16 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       await runningTask
     }
     if (config.value !== null) {
-      // Linking again was asked for and not finished: the codes stop with the dialog, also a restart still planned.
-      if ((bridge.value.process === 'owned' && bridge.value.link !== 'linked') || bridge.value.restarting === true) {
+      // Linking again was asked for and not finished, or a restart is planned: whatever runs or would run next may show
+      // codes, which belong to the dialog. It is stopped, and started again as a resumed connection is (linked-only):
+      // a store that holds a session connects again, one without stays stopped and not linked, with no code.
+      const id = userId.value
+      if (id !== null && ((bridge.value.process === 'owned' && bridge.value.link !== 'linked') || bridge.value.restarting === true)) {
         try {
           onBridge(await commands.stop())
+          onBridge(await commands.start(id, true))
         } catch (cause) {
-          console.error('Stopping the WhatsApp bridge failed', errorName(cause))
+          console.error('Starting the WhatsApp bridge again failed', errorName(cause))
         }
       }
       resetFlowKeepingConnection()
