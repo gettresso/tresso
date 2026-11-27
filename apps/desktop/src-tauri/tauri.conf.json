@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "node scripts/fetch-sparkle.mjs && npm run dev --workspace @tresso/web",
-    "beforeBuildCommand": "node scripts/fetch-sparkle.mjs && npm run build --workspace @tresso/web"
+    "beforeDevCommand": "node scripts/fetch-sparkle.mjs && node scripts/build-whatsapp-bridge.mjs && npm run dev --workspace @tresso/web",
+    "beforeBuildCommand": "node scripts/fetch-sparkle.mjs && node scripts/build-whatsapp-bridge.mjs && npm run build --workspace @tresso/web"
   },
   "app": {
     "macOSPrivateApi": true,

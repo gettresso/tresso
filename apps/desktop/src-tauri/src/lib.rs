@@ -59,8 +59,6 @@ pub fn run() {
       whatsapp::whatsapp_config_save,
       whatsapp::whatsapp_config_clear,
       whatsapp::whatsapp_config_keep_only,
-      whatsapp::whatsapp_choose_folder,
-      whatsapp::whatsapp_inspect,
       whatsapp::whatsapp_start,
       whatsapp::whatsapp_stop,
       whatsapp::whatsapp_state,
@@ -77,7 +75,8 @@ pub fn run() {
     ])
     .setup(|app| {
       main_window(app)?;
-      // The WhatsApp bridge's events go to the window; a bridge a crashed run left behind is stopped (whatsapp.rs).
+      // The WhatsApp bridge's events go to the window, and the bundled bridge is found next to this executable
+      // (whatsapp.rs).
       whatsapp::setup(app.handle());
       // macOS updates through Sparkle, which its item in the menu bar asks; Windows and Linux through Tauri's updater,
       // driven by the web client. Only macOS has a menu bar (menu.rs).

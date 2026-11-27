@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "whatsapp",
-  "description": "macOS, the main window: starting, watching and stopping the user's whatsapp-mcp bridge, reading its store, sending and downloading through it, and the folder and file pickers it needs (src/whatsapp.rs)",
+  "description": "macOS, the main window: starting, watching and stopping the WhatsApp bridge the app carries, reading its store, sending and downloading through it, and the file picker it needs (src/whatsapp.rs)",
   "windows": [
     "main"
   ],
@@ -14,8 +14,6 @@
     "allow-whatsapp-config-save",
     "allow-whatsapp-config-clear",
     "allow-whatsapp-config-keep-only",
-    "allow-whatsapp-choose-folder",
-    "allow-whatsapp-inspect",
     "allow-whatsapp-start",
     "allow-whatsapp-stop",
     "allow-whatsapp-state",
