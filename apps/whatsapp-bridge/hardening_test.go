@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -226,6 +227,15 @@ func TestAnalyzeOggOpus(t *testing.T) {
 	}
 }
 
+// A page with granule position -1 ends no packet: the last real position counts, not -1 (which would give 300 s).
+func TestAnalyzeOggOpusSkipsGranuleMinusOne(t *testing.T) {
+	file := append(oggPage(0, 0, opusHead(0, 48000)), oggPage(3*48000, 1, make([]byte, 10))...)
+	file = append(file, oggPage(math.MaxUint64, 2, make([]byte, 10))...)
+	if seconds, _, err := analyzeOggOpus(file); err != nil || seconds != 3 {
+		t.Errorf("got %d seconds, %v; want 3", seconds, err)
+	}
+}
+
 func TestAnalyzeOggOpusMalformed(t *testing.T) {
 	shortHead := oggPage(0, 0, []byte("OpusHead\x01\x01\x38")) // the head ends inside the pre-skip
 	pageTooLong := oggPage(0, 0, opusHead(0, 48000))
@@ -332,15 +342,41 @@ const panicSecret = "a message text 31612345678"
 
 func TestPanicInTheMainGoroutine(t *testing.T) {
 	var out, diag bytes.Buffer
-	status := runProtected(newEmitter(&out), &diagnostics{w: &diag}, func() int { panic(panicSecret) })
+	status := runProtected(&outcome{}, newEmitter(&out), &diagnostics{w: &diag}, func() int { panic(panicSecret) })
 	if status != 1 || out.String() != `{"v":1,"event":"fatal","code":"panic"}`+"\n" {
 		t.Errorf("status %d, stdout %q", status, out.String())
 	}
 	if strings.Contains(diag.String(), "31612345678") || !strings.Contains(diag.String(), panicReason) {
 		t.Errorf("stderr %q", diag.String())
 	}
-	if status := runProtected(newEmitter(&out), &diagnostics{w: &diag}, func() int { return 0 }); status != 0 {
+	if status := runProtected(&outcome{}, newEmitter(&out), &diagnostics{w: &diag}, func() int { return 0 }); status != 0 {
 		t.Errorf("no panic: status %d", status)
+	}
+}
+
+// A panic after another fatal event already went out adds no second fatal line.
+func TestOneFatalEventPerRun(t *testing.T) {
+	var out, diag bytes.Buffer
+	var end outcome
+	em, d := newEmitter(&out), &diagnostics{w: &diag}
+	status := runProtected(&end, em, d, func() int {
+		end.fail(em, d, fatal("listen_failed", "the REST API cannot listen on its port", nil), func() {})
+		panic(panicSecret)
+	})
+	if status != 1 || out.String() != `{"v":1,"event":"fatal","code":"listen_failed"}`+"\n" {
+		t.Errorf("status %d, stdout %q", status, out.String())
+	}
+	if strings.Count(diag.String(), "\n") != 1 {
+		t.Errorf("stderr %q", diag.String())
+	}
+
+	// And the other way round: after a panic in a goroutine, a panic of the main goroutine adds nothing.
+	out.Reset()
+	var second outcome
+	second.guard(em, d, func() {}, func() { panic(panicSecret) })
+	status = runProtected(&second, em, d, func() int { panic(panicSecret) })
+	if status != 1 || out.String() != `{"v":1,"event":"fatal","code":"panic"}`+"\n" {
+		t.Errorf("status %d, stdout %q", status, out.String())
 	}
 }
 

@@ -45,7 +45,12 @@ nobody reads any more does not stop it (SIGPIPE is ignored); the end of stdin do
 
 Exit status: 0 after a stop that was asked for, or after a log out; 1 after a `fatal` event or a `qr_timeout`. A
 panic in the bridge's own code (its main goroutine, the stdin and signal watchers, the HTTP server loop) becomes the
-`fatal` event `panic`; the panic value, which can hold message data, is never printed.
+`fatal` event `panic`; the panic value, which can hold message data, is never printed. A run sends at most one
+`fatal` event.
+
+For the program that starts the bridge: never log or store the bridge's stderr, because a crash inside whatsmeow's own
+goroutines makes the Go runtime print a panic value there. And an existing store folder must be mode 0700 or stricter:
+a folder made with default rights is refused with `bad_store`.
 
 ## Output
 

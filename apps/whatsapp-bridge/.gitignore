@@ -1,2 +1,4 @@
-# The binary `go build` writes here.
+# What `go build`, the README commands and the CI job write here.
 /whatsapp-bridge
+/whatsapp-bridge-*
+/dist/
