@@ -89,6 +89,8 @@ export const HEARTBEAT_MS = 60_000
 /** The first wait before a chat whose history mark failed is tried again; doubles up to the maximum. */
 const MARK_RETRY_MS = 30_000
 const MARK_RETRY_MAX_MS = 10 * 60_000
+/** Failures of a history mark that may pass (no network, a 5xx, a wait the server asked for); any other is a refusal. */
+const PASSING_MARK_FAILURES: ReadonlySet<string> = new Set(['offline', 'failed', 'wait', 'too_many'])
 /** At most this many history marks (requests) per round; the rest follow after MARK_ROUND_MS. */
 const MARKS_PER_ROUND = 20
 const MARK_ROUND_MS = 1_000
@@ -392,8 +394,24 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   let importDoneAtPull: number | null = null
   /** The pull count once the live re-read reached where it began; its mark goes after a later pull. */
   let historyDoneAtPull: number | null = null
-  /** Chats whose history mark failed (markHistory): not tried again before `until`, epoch ms. */
-  const markBackoff = new Map<string, { tries: number; until: number }>()
+  /**
+   * Chats whose history mark failed for a passing reason (markHistory): not tried again before `until` (epoch ms), and
+   * marked through `at` even after the re-read ended, until it works or the chat is gone.
+   */
+  const markBackoff = new Map<string, { tries: number; until: number; at: number }>()
+  /** Chats whose history mark the server refused for good during this re-read: not asked again. */
+  const droppedMarks = new Set<string>()
+  /** No marks before this moment (epoch ms): set by a round that reached MARKS_PER_ROUND. */
+  let markHeldUntil = 0
+
+  /** Ends every planned and kept mark: the user left, disconnected, or the session ended. */
+  function stopMarks(): void {
+    markRound?.cancel()
+    markRound = null
+    markBackoff.clear()
+    droppedMarks.clear()
+    markHeldUntil = 0
+  }
   /** The next round of marking that was planned (a backoff, or the rest of a bounded round). */
   let markRound: { at: number; cancel: () => void } | null = null
 
@@ -578,9 +596,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
 
   /** Forgets the user who left; their relay stops in the background (the shell stops the bridge). */
   function leaveUser(): void {
-    markRound?.cancel()
-    markRound = null
-    markBackoff.clear()
+    stopMarks()
     takeUpRetry?.()
     takeUpRetry = null
     takeUpTries = 0
@@ -595,6 +611,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
 
   /** The session ended: the relay stops without being waited for, and a sign-out removes the user's config. */
   function sessionEnded(reason: SessionEnd): void {
+    stopMarks()
     const id = userId.value ?? previousUser ?? knownUser
     void stopRelay()
     stopHeartbeat()
@@ -2070,24 +2087,36 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
    */
   async function markHistory(store: MailStore): Promise<void> {
     const account = serverAccount.value
-    const history = serverHistory.value
-    if (account === null || history === null) {
+    if (account === null) {
       return
     }
+    const history = serverHistory.value
+    const now = Date.now()
     let marked = 0
     let requests = 0
     let more = false
-    const now = Date.now()
-    for (const { chat } of await store.chats()) {
-      if (chat.chatAccountId !== account.id || chat.leftOut) {
-        // A chat left out is never marked: its history does not come, and its row only keeps it out.
+    // Held after a round that reached the cap: the rest follows MARK_ROUND_MS later, not with the pull its own requests
+    // started.
+    const held = now < markHeldUntil
+    const present = new Set<string>()
+    for (const { chat } of held ? [] : await store.chats()) {
+      if (chat.chatAccountId !== account.id) {
         continue
       }
-      const at = historyAt(history, chat)
-      if (at === null || (chat.readThrough !== null && Date.parse(chat.readThrough) >= at)) {
+      present.add(chat.id)
+      if (chat.leftOut || droppedMarks.has(chat.id)) {
+        // A chat left out is never marked (its history does not come); one the server refused for good is not asked
+        // again.
         continue
       }
+      // The re-read's own mark, and one a passing failure kept alive past its end.
       const waiting = markBackoff.get(chat.id)
+      const atNow = history === null ? null : historyAt(history, chat)
+      const at = atNow === null ? (waiting?.at ?? null) : Math.max(atNow, waiting?.at ?? atNow)
+      if (at === null || (chat.readThrough !== null && Date.parse(chat.readThrough) >= at)) {
+        markBackoff.delete(chat.id)
+        continue
+      }
       if (waiting !== undefined && waiting.until > now) {
         continue
       }
@@ -2101,21 +2130,42 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         markBackoff.delete(chat.id)
         marked++
       } catch (cause) {
-        // Not again at once (each try is a request and a pull, and the pull would start the next round): this chat
-        // waits a backoff that doubles up to a cap; the others go on.
+        const code = cause instanceof ChatActionError ? cause.code : null
+        if (code !== null && PASSING_MARK_FAILURES.has(code) === false) {
+          // A refusal that will not change (the chat is not on the server, no access, refused): dropped for this chat.
+          markBackoff.delete(chat.id)
+          droppedMarks.add(chat.id)
+          console.error('Marking the history of a chat read was refused; not asking again', errorName(cause))
+          continue
+        }
+        // A passing failure (no network, 5xx, wait): not again at once (each try is a request and a pull, and the pull
+        // would start the next round); this chat waits a backoff that doubles up to a cap, also past the end of the
+        // re-read, until it works or the chat is gone. The others go on.
         const tries = (waiting?.tries ?? 0) + 1
         const wait = Math.min(MARK_RETRY_MS * 2 ** (tries - 1), MARK_RETRY_MAX_MS)
-        markBackoff.set(chat.id, { tries, until: now + wait })
+        markBackoff.set(chat.id, { tries, until: now + wait, at })
         console.error('Marking the history of a chat read failed; trying again later', errorName(cause))
         scheduleMarkRound(wait)
+      }
+    }
+    if (!held && !more) {
+      // A chat that is gone takes its kept mark with it.
+      for (const chatId of markBackoff.keys()) {
+        if (!present.has(chatId)) {
+          markBackoff.delete(chatId)
+        }
       }
     }
     if (marked > 0) {
       revision.value++
     }
     if (more) {
-      // Bounded work per round: the rest in the next one, shortly.
+      // Bounded work per round: the rest in the next one, MARK_ROUND_MS later.
+      markHeldUntil = now + MARK_ROUND_MS
       scheduleMarkRound(MARK_ROUND_MS)
+      return
+    }
+    if (held || history === null) {
       return
     }
     const value = await store.chatMeta(serverCursorKey(account.id))
@@ -2135,7 +2185,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       await store.setChatMeta(serverHistoryKey(account.id), null)
       serverHistory.value = null
       historyDoneAtPull = null
-      markBackoff.clear()
+      // Marks a passing failure kept stay in markBackoff and go on after the re-read; the refused ones are forgotten.
+      droppedMarks.clear()
       if (relayAccountId !== null) {
         liveFrom.value = null
       }
@@ -2553,6 +2604,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       if (store === null) {
         throw new WhatsAppProblem('Your mail on this Mac is still opening. Try again in a moment.')
       }
+      // No mark of the account that goes is tried again later.
+      stopMarks()
       await holding(async () => {
         await stopRelay()
         const accountId = current.mode === 'all' ? (serverAccount.value?.id ?? (await store.chatMeta(SERVER_ACCOUNT))) : null
@@ -2787,8 +2840,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   /** Stops listening and the relay (tests, and a page that goes away). */
   async function dispose(): Promise<void> {
     scope.stop()
-    markRound?.cancel()
-    markRound = null
+    stopMarks()
     takeUpRetry?.()
     takeUpRetry = null
     stopHeartbeat()
