@@ -95,7 +95,7 @@ describe('SettingsWhatsAppView', () => {
     expect(wrapper.get('#wa-place-note').text()).toBe('All my devices: this Mac copies chats to your Tresso server so web and mobile show them. Only this Mac: chats never leave this computer.')
     expect(wrapper.text()).not.toContain('later version')
     expect(wrapper.get<HTMLSelectElement>('#wa-groups').element.value).toBe('all')
-    expect(wrapper.text()).toContain('Disconnecting removes the WhatsApp chats Tresso copied and everything Tresso keeps of WhatsApp on this Mac. WhatsApp on your phone keeps everything.')
+    expect(wrapper.text()).toContain('Disconnecting removes the WhatsApp chats Tresso copied, unlinks this Mac from your phone and removes everything Tresso keeps of WhatsApp on this Mac. WhatsApp on your phone keeps everything.')
     expect(wrapper.text()).not.toMatch(UNSAID)
   })
 
@@ -220,8 +220,7 @@ describe('SettingsWhatsAppView', () => {
     await wrapper.get('.disconnect > button').trigger('click')
     const confirm = wrapper.get('[role="alertdialog"]')
     expect(confirm.get('#wa-disconnect-title').text()).toBe('Disconnect WhatsApp?')
-    expect(confirm.text()).toContain('Tresso removes WhatsApp from this Mac: the chats it copied, the messages it kept and its link to your phone.')
-    expect(confirm.text()).toContain('Your phone keeps this Mac under Linked devices until you remove it there.')
+    expect(confirm.text()).toContain('Tresso unlinks this Mac from your phone, so it leaves Linked devices there, and removes WhatsApp from this Mac: the chats it copied and the messages it kept.')
     expect(confirm.text()).not.toMatch(UNSAID)
     await flushPromises()
     expect(document.activeElement?.textContent).toBe('Cancel')
@@ -380,7 +379,7 @@ describe('SettingsWhatsAppView', () => {
       wa.serverAccount = ACCOUNT
       const wrapper = open()
       expect(row(wrapper, 'Relaying Mac')).toMatchObject({ value: "Kim's MacBook Pro, this Mac", ok: true })
-      expect(wrapper.text()).toContain('Disconnecting removes your WhatsApp chats from your Tresso server and from every device, and everything Tresso keeps of WhatsApp on this Mac.')
+      expect(wrapper.text()).toContain('Disconnecting removes your WhatsApp chats from your Tresso server and from every device, unlinks this Mac from your phone')
 
       await wrapper.get<HTMLSelectElement>('#wa-place').setValue('local')
       const confirm = wrapper.get('[role="alertdialog"]')
@@ -518,7 +517,7 @@ describe('SettingsWhatsAppView', () => {
 
     it('says when WhatsApp was disconnected on another device', () => {
       wa.config = null
-      wa.notice = 'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too. Your phone lists this Mac under Linked devices until you remove it there.'
+      wa.notice = 'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too.'
       const wrapper = open()
       expect(wrapper.get('.notice').text()).toBe(wa.notice)
     })

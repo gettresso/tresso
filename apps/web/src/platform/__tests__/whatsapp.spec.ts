@@ -40,6 +40,7 @@ describe('the WhatsApp shell commands', () => {
       [() => whatsapp.saveConfig('u1', config), 'whatsapp_config_save', { userId: 'u1', config }],
       [() => whatsapp.clearConfig('u1'), 'whatsapp_config_clear', { userId: 'u1' }],
       [() => whatsapp.keepOnlyConfig('u1'), 'whatsapp_config_keep_only', { userId: 'u1' }],
+      [() => whatsapp.disconnect('u1'), 'whatsapp_disconnect', { userId: 'u1' }],
       [() => whatsapp.start('u1'), 'whatsapp_start', { userId: 'u1' }],
       [() => whatsapp.stop(), 'whatsapp_stop', undefined],
       [() => whatsapp.state(), 'whatsapp_state', undefined],

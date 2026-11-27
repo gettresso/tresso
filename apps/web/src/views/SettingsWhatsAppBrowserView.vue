@@ -195,7 +195,7 @@ onBeforeUnmount(() => {
           <p id="wa-remove-title"><strong>Remove WhatsApp from your Tresso server?</strong></p>
           <p id="wa-remove-body">
             Your chats, messages and waiting replies are removed from your Tresso server and from every device; waiting replies are not sent. Your Mac disconnects WhatsApp in Tresso when it
-            is next online. WhatsApp itself and the bridge's own store on your Mac are not touched.
+            is next online, and unlinks itself from your phone. WhatsApp on your phone keeps everything.
           </p>
           <div class="actions">
             <button type="button" class="button button-danger" :disabled="removing" @click="remove">{{ removing ? 'Removing…' : 'Remove' }}</button>

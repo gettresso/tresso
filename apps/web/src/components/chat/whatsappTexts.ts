@@ -23,6 +23,10 @@ export const GETTING_CODE = 'Getting a code\u2026'
 export const CODE_EXPIRED = 'The code expired'
 export const CODE_EXPIRED_NOTE = 'Nobody scanned it for three minutes.'
 
+/** Said only when Disconnect could not reach WhatsApp to unlink this Mac: how to remove it on the phone. */
+export const STILL_LISTED =
+  'Tresso could not reach WhatsApp to unlink this Mac, so your phone may still list Tresso under Linked devices. To remove it, open WhatsApp on your phone, go to Settings, then Linked devices, tap Tresso and choose Log out.'
+
 /** A config an earlier version connected through whatsapp-mcp: the phone links again to Tresso's own link. */
 export const MOVED_TEXT = 'WhatsApp now runs inside Tresso. Link your phone again.'
 

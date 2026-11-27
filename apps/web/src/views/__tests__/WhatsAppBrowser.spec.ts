@@ -298,7 +298,7 @@ describe('WhatsApp in the browser', () => {
       expect(dialog.attributes('aria-labelledby')).toBe('wa-remove-title')
       expect(dialog.get('#wa-remove-title').text()).toBe('Remove WhatsApp from your Tresso server?')
       expect(dialog.get('#wa-remove-body').text()).toBe(
-        "Your chats, messages and waiting replies are removed from your Tresso server and from every device; waiting replies are not sent. Your Mac disconnects WhatsApp in Tresso when it is next online. WhatsApp itself and the bridge's own store on your Mac are not touched.",
+        "Your chats, messages and waiting replies are removed from your Tresso server and from every device; waiting replies are not sent. Your Mac disconnects WhatsApp in Tresso when it is next online, and unlinks itself from your phone. WhatsApp on your phone keeps everything.",
       )
       expect(dialog.findAll('button').map((item) => item.text())).toEqual(['Remove', 'Cancel'])
       expect(document.activeElement?.textContent).toBe('Cancel')

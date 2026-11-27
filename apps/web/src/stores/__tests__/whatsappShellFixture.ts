@@ -38,6 +38,8 @@ export class FakeShell {
   readonly discarded: string[] = []
   /** When each read began. */
   readonly readTimes: number[] = []
+  /** What the shell's disconnect answers: whether WhatsApp confirmed the log out. */
+  unlinks = true
   /** The user each start was for. */
   readonly startedFor: string[] = []
 
@@ -80,6 +82,13 @@ export class FakeShell {
       clearConfig: (userId) =>
         record('clearConfig', () => {
           this.configs.delete(userId)
+        }),
+      disconnect: (userId) =>
+        record('disconnect', () => {
+          this.configs.delete(userId)
+          this.state = STOPPED
+          this.listener?.(STOPPED)
+          return { unlinked: this.unlinks }
         }),
       keepOnlyConfig: (userId) =>
         record('keepOnlyConfig', () => {

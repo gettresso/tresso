@@ -131,9 +131,15 @@ export function whatsAppShell(shell: WhatsAppShell = tauriShell) {
     device: () => shell.invoke<{ name: string }>('whatsapp_device'),
     loadConfig: (userId: string) => shell.invoke<WhatsAppConfig | null>('whatsapp_config_load', { userId }),
     saveConfig: (userId: string, config: WhatsAppConfig) => shell.invoke<void>('whatsapp_config_save', { userId, config }),
-    /** On disconnect and sign-out: stops the bridge running for this user, and removes their config and their store. */
+    /** At sign-out (and for a connect the server did not take): stops the bridge running for this user and removes their config. The store, with its link to the phone, stays. */
     clearConfig: (userId: string) => shell.invoke<void>('whatsapp_config_clear', { userId }),
-    /** Once the server confirmed the user: every other user's config and store go. */
+    /**
+     * Disconnect WhatsApp: logs the device out on WhatsApp's side first (starting the bridge for it when a session
+     * exists), then stops the bridge and removes the config and the store. `unlinked` is false when WhatsApp could not
+     * be reached in time: the phone may still list this Mac.
+     */
+    disconnect: (userId: string) => shell.invoke<{ unlinked: boolean }>('whatsapp_disconnect', { userId }),
+    /** Once the server confirmed the user: every other user's config goes (their stores stay). */
     keepOnlyConfig: (userId: string) => shell.invoke<void>('whatsapp_config_keep_only', { userId }),
     /** Starts the bridge on this user's store (made first); one that runs for this user already is kept. */
     start: (userId: string) => shell.invoke<BridgeState>('whatsapp_start', { userId }),
