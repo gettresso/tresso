@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core'
 import frameTokens from '@/assets/frame.css?raw'
 import { isDesktop } from '@/platform/desktop'
 
@@ -84,49 +83,5 @@ function safeLocalStorage(): Storage | null {
     return localStorage
   } catch {
     return null
-  }
-}
-
-/** The system's selection colours as the shell reads them (accessibility.rs): null where it has none. */
-export interface SelectionColors {
-  light: string
-  dark: string
-}
-
-const HEX = /^#[0-9a-f]{6}$/i
-
-/**
- * Sets the selected row's colour from the user's accent colour: `--frame-accent-light` and `--frame-accent-dark` on the
- * page, which frame.css uses (falling back to macOS's blue where they are not set). Read at launch and whenever the
- * window comes back, as the setting may change while Tresso runs (the same as the transparency setting): a changed
- * accent only shows in the focused window anyway. Windows and Linux have no such colour in the shell and keep the
- * fallback.
- */
-export function followSelectionAccent(shell: { invoke(command: 'selection_accent'): Promise<SelectionColors | null> } = { invoke }, root: HTMLElement = document.documentElement, target: Pick<Window, 'addEventListener'> = window): () => Promise<void> {
-  const check = async () => {
-    try {
-      const colors = await shell.invoke('selection_accent')
-      applySelectionAccent(colors, root)
-    } catch (error) {
-      // The row keeps the colour it has (the system's from before, or the fallback).
-      console.error('Reading the accent colour failed', error)
-    }
-  }
-  void check()
-  target.addEventListener('focus', () => void check())
-  return check
-}
-
-/** Sets or clears the two variables; a value that is not a plain hex colour is not set. */
-export function applySelectionAccent(colors: SelectionColors | null, root: HTMLElement): void {
-  for (const [name, value] of [
-    ['--frame-accent-light', colors?.light],
-    ['--frame-accent-dark', colors?.dark],
-  ] as const) {
-    if (value !== undefined && HEX.test(value)) {
-      root.style.setProperty(name, value)
-    } else {
-      root.style.removeProperty(name)
-    }
   }
 }

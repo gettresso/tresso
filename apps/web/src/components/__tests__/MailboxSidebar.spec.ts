@@ -5,7 +5,10 @@ import { describeSync, type SyncFacts } from '@tresso/core'
 import { useMailStore } from '@/stores/mail'
 import { useChatsStore } from '@/stores/chats'
 import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
+import AppIcon from '../AppIcon.vue'
 import MailboxSidebar from '../MailboxSidebar.vue'
+import ProviderMark from '../ProviderMark.vue'
+import SenderAvatar from '../SenderAvatar.vue'
 
 // The desktop app's chats: these tests turn WhatsApp on for a Mac (the browser's are in the *Browser specs).
 vi.mock('@/platform/whatsapp', async (original) => ({ ...(await original<typeof import('@/platform/whatsapp')>()), chatsFromServer: false }))
@@ -86,7 +89,11 @@ describe('MailboxSidebar', () => {
 
     expect(wrapper.get('.profile-detail').text()).toBe('3 mail accounts, WhatsApp')
     const row = wrapper.get('.item.whatsapp')
-    expect(row.get('.wa-mark').text()).toBe('WA')
+    // The WhatsApp mark in the second ink at 16, instead of the letters "WA".
+    const mark = row.getComponent(ProviderMark)
+    expect([mark.props('kind'), mark.props('tone'), mark.props('size')]).toEqual(['whatsapp', 'ink', 16])
+    expect(row.find('.avatar').exists()).toBe(false)
+    expect(row.get('.account-text').text()).toBe('WhatsApp+31698765432, via this Mac')
     expect(row.get('.account-name').text()).toBe('WhatsApp')
     expect(row.get('.account-address').text()).toBe('+31698765432, via this Mac')
     expect(row.get('.count').text()).toBe('6 unread')
@@ -98,5 +105,59 @@ describe('MailboxSidebar', () => {
     await wrapper.setProps({ whatsapp: true })
     expect(wrapper.get('.item.whatsapp').attributes('aria-current')).toBe('page')
     expect(wrapper.findAll('.item')[0]!.attributes('aria-current')).toBeUndefined()
+  })
+
+  it('marks each account by the provider the server reports, never by its name, and no longer with letters', async () => {
+    const account = { statusDetail: null, lastSyncedAt: null, defaultSignatureId: null, calendarStatus: 'unknown' as const, calendarStatusDetail: null, status: 'active' as const }
+    const accounts = [
+      { ...account, id: 'work', displayName: 'Work', emailAddress: 'kim@work.example', provider: 'microsoft' },
+      { ...account, id: 'support', displayName: 'Support', emailAddress: 'support@company.example', provider: 'gmail' },
+      // A mail server account named after a brand, at that brand's domain, still gets the mail icon.
+      { ...account, id: 'home', displayName: 'Google', emailAddress: 'kim@gmail.com', provider: 'imap' },
+    ]
+    const wrapper = sidebar({ accounts, mailbox: 'support' })
+    const rows = wrapper.findAll('.item.account')
+    expect(rows.map((row) => row.get('.account-name').text())).toEqual(['Work', 'Support', 'Google'])
+    expect(rows.map((row) => row.getComponent(ProviderMark).props('kind'))).toEqual(['microsoft', 'google', 'mail'])
+    for (const row of rows) {
+      const mark = row.getComponent(ProviderMark)
+      expect([mark.props('tone'), mark.props('size')]).toEqual(['ink', 16])
+      // No letter mark: no avatar, and nothing but the name and the address is written in the row.
+      expect(row.findComponent(SenderAvatar).exists()).toBe(false)
+      expect(row.find('.avatar').exists()).toBe(false)
+      expect(mark.text()).toBe('')
+    }
+    expect(rows[2]!.find('path[fill="currentColor"]').exists()).toBe(false)
+    expect(rows[2]!.getComponent(AppIcon).props('name')).toBe('mail')
+    expect(rows.map((row) => row.get('.account-text').text())).toEqual(['Workkim@work.example', 'Supportsupport@company.example', 'Googlekim@gmail.com'])
+
+    // The account on screen is still the current page, and only it.
+    expect(rows.map((row) => row.attributes('aria-current'))).toEqual([undefined, 'page', undefined])
+    await wrapper.setProps({ mailbox: 'home' })
+    expect(wrapper.findAll('.item.account').map((row) => row.attributes('aria-current'))).toEqual([undefined, undefined, 'page'])
+    await wrapper.setProps({ page: 'settings' })
+    expect(wrapper.findAll('.item[aria-current="page"]').map((row) => row.text())).toEqual(['Settings'])
+
+    // The signed-in user keeps the initials of their own avatar.
+    const profile = wrapper.get('.profile').getComponent(SenderAvatar)
+    expect(profile.props('sender')).toEqual({ name: 'Kim', address: 'kim@example.test' })
+    expect(profile.text()).toBe('KI')
+  })
+
+  it('starts "New smart inbox" and "Add account" with the plus icon instead of a typed plus', () => {
+    const smartInboxes = [{ id: 'todo', name: 'To do', builtin: 'todo' }]
+    const wrapper = sidebar({ smartInboxes })
+    const adds = wrapper.findAll('.add')
+    expect(adds.map((add) => add.text())).toEqual(['New smart inbox', 'Add account'])
+    for (const add of adds) {
+      const icon = add.getComponent(AppIcon)
+      expect([icon.props('name'), icon.props('size')]).toEqual(['plus', 16])
+      expect(icon.attributes('aria-hidden')).toBe('true')
+      expect(add.element.firstElementChild).toBe(icon.element)
+      expect(add.text()).not.toContain('+')
+    }
+    const links = wrapper.findAllComponents(RouterLinkStub)
+    expect(links.find((link) => link.text() === 'New smart inbox')!.props('to')).toEqual({ name: 'settings-smart-inbox', params: { smartInboxId: 'new' } })
+    expect(links.find((link) => link.text() === 'Add account')!.props('to')).toEqual({ name: 'settings-accounts-new' })
   })
 })

@@ -18,7 +18,7 @@ import { followPageVisibility, startMenuBridge } from './platform/menu'
 import { followEditing, recheckEditingOnNavigation } from './platform/editing'
 import { openConversation } from './mail/openConversation'
 import { followReducedTransparency, vibrant } from './platform/vibrancy'
-import { followSelectionAccent, framed } from './platform/frame'
+import { framed } from './platform/frame'
 import { useFrameStore } from './stores/frame'
 import { startNotificationClicks } from './platform/notifier'
 import { onPushClick } from './platform/webPush'
@@ -32,10 +32,9 @@ if (vibrant) {
   document.documentElement.classList.add('vibrant')
   followReducedTransparency()
 }
-// The desktop window frame (assets/frame.css): the sidebar card and the title strip, with the system's selection colour.
+// The desktop window frame (assets/frame.css): the sidebar card and the title strip.
 if (framed) {
   document.documentElement.classList.add('frame')
-  followSelectionAccent()
 }
 
 const app = createApp(App)
