@@ -12,9 +12,10 @@ import { ACCOUNT_ID, FakeChatServer } from '@/stores/__tests__/chatServerFixture
 import AppShell from '@/views/AppShell.vue'
 
 /**
- * The browser build (app.gettresso.com) keeps its sidebar and shell exactly as they were before the desktop window
- * frame: the snapshot was recorded from the shell before the frame existed, so any change to the browser's markup or
- * classes shows up here. The desktop frame lives in its own classes and elements, which the browser never renders.
+ * The browser build (app.gettresso.com) keeps its own sidebar and shell: the snapshot was first recorded from the shell
+ * before the desktop window frame existed, so any change to the browser's markup or classes shows up here and is a
+ * choice (since then: the line icons of the smart inboxes, the provider marks and the plus icons of the glass sidebar).
+ * The desktop frame lives in its own classes and elements, which the browser never renders.
  */
 const screen = (name: string) => ({ template: `<section class="screen">${name}</section>` })
 

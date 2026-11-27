@@ -25,10 +25,12 @@
   --frame-first-row-y: 52px;
   --frame-row-height: 32px;
   /*
-   * Chosen: the scrolling rows start this far above the first row, room for a focus ring; the window's drag strip
-   * above the sidebar ends where they start, so no part of a row drags the window.
+   * The scrolling rows start this far above the first row, and the rows fade out over this length at both ends of the
+   * scroller (FrameScroll.vue), so a row never ends in a hard line under the top band or above the sync status. At rest
+   * the first and the last row sit just past the fade. The window's drag strip above the sidebar ends where the rows
+   * start, so no part of a row drags the window.
    */
-  --frame-scroll-inset: 4px;
+  --frame-scroll-inset: 12px;
   /* The selection fill starts and ends this far inside the card's edges. */
   --frame-row-inset: 10px;
   --frame-row-radius: 8px;
@@ -41,8 +43,8 @@
   /* A group label sits in a strip of about 24; a group without one is set off by about 13. */
   --frame-group-label-height: 24px;
   --frame-group-gap: 13px;
-  /* Chosen: "small, semibold". */
-  --frame-group-label-size: 11px;
+  /* Section labels: 12, semibold, in the second ink (the glass sidebar board). */
+  --frame-group-label-size: 12px;
 
   /*
    * The traffic lights' inset in tauri.macos.conf.json (trafficLightPosition), kept here so the two are one number: the
@@ -86,19 +88,18 @@
 
   /* Light mode colours from the spec. */
   --frame-window-fill: #f3f3f3;
-  --frame-card-fill: #fcfcfc;
-  /* Chosen: the 1 pt lighter edge and the soft shadow (their strength is not measured). */
-  --frame-card-edge: inset 0 0 0 1px rgb(255 255 255 / 90%);
-  --frame-card-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 6px 16px rgb(0 0 0 / 6%);
-  --frame-selection-fill: #dcdcdc;
-  --frame-selection-edge: 0 0 #0000;
+  /* The card where there is no glass (Windows, Linux, "Reduce transparency"): solid, with the same edge. */
+  --frame-card-solid-fill: #fcfcfc;
+  --frame-card-fill: var(--frame-card-solid-fill);
+  /* The card's lit inner edge, and its outer hairline with a soft shadow (the glass sidebar board). */
+  --frame-card-edge: inset 0 1px 0 rgb(255 255 255 / 90%), inset 0 0 0 1px rgb(255 255 255 / 55%);
+  --frame-card-shadow: 0 0 0 1px rgb(22 24 29 / 6%), 0 1px 2px rgb(22 24 29 / 5%), 0 8px 24px rgb(22 24 29 / 8%);
   /*
-   * The selected row while the sidebar has focus: the system's selection colour, which follows the user's accent
-   * colour (the shell reads it, platform/frame.ts); #0064e1 where it cannot be read, macOS's own value for the blue
-   * accent. White text reads on it at 5.4:1.
+   * The selected row: the glass pill of main.css, a tint of ink with a lit top edge and a small shadow, the same with
+   * or without focus in the sidebar. Its label stays ink. Keyboard focus is the only blue: the focus ring.
    */
-  --frame-selection-accent: var(--frame-accent-light, #0064e1);
-  --frame-selection-text: #ffffff;
+  --frame-selection-fill: var(--pill);
+  --frame-selection-edge: var(--pill-edge);
   /* Chosen: the near-white fill and soft shadow of a toolbar capsule. */
   --frame-capsule-fill: #fdfdfd;
   --frame-capsule-shadow: 0 0 0 0.5px rgb(0 0 0 / 8%), 0 1px 3px rgb(0 0 0 / 10%);
@@ -110,35 +111,33 @@ html.vibrant {
   --frame-card-fill: rgb(255 255 255 / 72%);
 }
 
-/* Dark mode: Tresso's own colours, the ones the sidebar and its selected row have in the browser. */
+/*
+ * Dark mode: Tresso's own colours. The card is solid (--paper) where there is no glass and a dark tint over the glass;
+ * the selected row keeps the pill, whose dark values main.css sets.
+ */
 @media (prefers-color-scheme: dark) {
   :root,
   html.vibrant {
     --frame-window-fill: transparent;
-    --frame-card-fill: color-mix(in srgb, var(--surface) 60%, transparent);
+    --frame-card-solid-fill: var(--paper);
     --frame-card-edge: var(--glass-edge);
-    --frame-card-shadow: 0 0 #0000;
-    --frame-selection-fill: var(--surface);
-    --frame-selection-edge: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%);
-    --frame-selection-accent: var(--frame-accent-dark, #0064e1);
+    --frame-card-shadow: 0 0 0 1px rgb(0 0 0 / 45%), 0 8px 24px rgb(0 0 0 / 35%);
     --frame-capsule-fill: var(--surface);
     --frame-capsule-shadow: var(--glass-edge);
   }
+  html.vibrant {
+    --frame-card-fill: rgb(32 36 45 / 60%);
+  }
 }
 
-/* Less transparency: the card is solid (macOS turns its own material solid by itself). */
+/* Less transparency: the card is solid (macOS turns its own material solid by itself), in either appearance. */
 @media (prefers-reduced-transparency: reduce) {
   html.vibrant {
-    --frame-card-fill: #fcfcfc;
+    --frame-card-fill: var(--frame-card-solid-fill);
   }
 }
 html.vibrant.reduce-transparency {
-  --frame-card-fill: #fcfcfc;
-}
-@media (prefers-color-scheme: dark) {
-  html.vibrant.reduce-transparency {
-    --frame-card-fill: var(--paper);
-  }
+  --frame-card-fill: var(--frame-card-solid-fill);
 }
 
 /*

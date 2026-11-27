@@ -1,21 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import frameCss from '@/assets/frame.css?raw'
 import mainCss from '@/assets/main.css?raw'
+import frameScroll from '@/components/FrameScroll.vue?raw'
 import sidebar from '@/components/MailboxSidebar.vue?raw'
 import appShell from '@/views/AppShell.vue?raw'
-import {
-  SIDEBAR_DEFAULT,
-  SIDEBAR_KEY,
-  SIDEBAR_MAX,
-  SIDEBAR_MIN,
-  applySelectionAccent,
-  clampSidebarWidth,
-  followSelectionAccent,
-  frameToken,
-  readSidebarLayout,
-  writeSidebarLayout,
-  type SelectionColors,
-} from '../frame'
+import { SIDEBAR_DEFAULT, SIDEBAR_KEY, SIDEBAR_MAX, SIDEBAR_MIN, clampSidebarWidth, frameToken, readSidebarLayout, writeSidebarLayout } from '../frame'
 
 /** WCAG 2 contrast of two #rrggbb colours. */
 function contrast(a: string, b: string): number {
@@ -29,6 +18,28 @@ function contrast(a: string, b: string): number {
   const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x)
   return (light! + 0.05) / (dark! + 0.05)
 }
+
+/** `rgb(r g b / a%)` laid over the solid #rrggbb under it, as #rrggbb. */
+function over(rgba: string, under: string): string {
+  const [, r, g, b, alpha] = /^rgb\((\d+) (\d+) (\d+) \/ (\d+(?:\.\d+)?)%\)$/.exec(rgba)!.map(Number)
+  const a = alpha! / 100
+  return `#${[r!, g!, b!]
+    .map((channel, index) => {
+      const base = Number.parseInt(under.slice(1 + index * 2, 3 + index * 2), 16)
+      return Math.round(a * channel + (1 - a) * base)
+        .toString(16)
+        .padStart(2, '0')
+    })
+    .join('')}`
+}
+
+/** The first block of frame.css's dark appearance. */
+function darkBlock(): string {
+  const dark = frameCss.slice(frameCss.indexOf('@media (prefers-color-scheme: dark)'))
+  return dark.slice(0, dark.indexOf('\n}\n'))
+}
+
+const block = (source: string, selector: string) => source.slice(source.indexOf(`${selector} {`), source.indexOf('}', source.indexOf(`${selector} {`)))
 
 /** A colour token of main.css's light theme. */
 function lightToken(name: string): string {
@@ -82,11 +93,15 @@ describe('the frame tokens (assets/frame.css)', () => {
   })
 
   it('end the window\'s drag strip where the scrolling rows start, so no row drags the window', () => {
-    const block = (source: string, selector: string) => source.slice(source.indexOf(`${selector} {`), source.indexOf('}', source.indexOf(`${selector} {`)))
+    const t = (name: string) => frameToken(name, Number.NaN)
     expect(block(appShell, '.frame-sidebar-drag')).toContain('height: calc(var(--frame-first-row-y) - var(--frame-scroll-inset));')
-    // The card's top padding plus the card's inset: the scroller starts at the same y.
+    // The card's top padding plus the card's inset: the scroller starts at the same y, under the card's 32 high band.
     expect(block(sidebar, '.frame-shell .sidebar')).toContain('padding: calc(var(--frame-first-row-y) - var(--frame-inset) - var(--frame-scroll-inset))')
-    expect(frameToken('frame-first-row-y', Number.NaN) - frameToken('frame-scroll-inset', Number.NaN)).toBe(48)
+    expect(t('frame-first-row-y') - t('frame-scroll-inset')).toBe(40)
+    expect(t('frame-first-row-y') - t('frame-inset') - t('frame-scroll-inset')).toBe(32)
+    // The scroller's own padding brings the first row back to y 52.
+    expect(block(sidebar, '.frame-shell .frame-scroll')).toContain('padding: var(--frame-scroll-inset) var(--frame-row-inset);')
+    expect(t('frame-first-row-y') - t('frame-scroll-inset') + t('frame-scroll-inset')).toBe(52)
     // Compose keeps its 40 when the rows overflow.
     expect(block(sidebar, '.frame-shell .compose')).toContain('flex: none;')
   })
@@ -97,24 +112,61 @@ describe('the frame tokens (assets/frame.css)', () => {
     const names = [...block.matchAll(/(--frame-[a-z-]+):/g)].map((match) => match[1])
     expect(names.length).toBeGreaterThan(0)
     for (const name of names) {
-      expect(name).toMatch(/fill|edge|shadow|accent/)
+      expect(name).toMatch(/fill|edge|shadow/)
     }
   })
 
-  it('keep the selected row readable: white on the fallback accent, Tresso text on the grey', () => {
-    const accent = /--frame-selection-accent: var\(--frame-accent-light, (#[0-9a-f]{6})\)/.exec(frameCss)![1]!
-    const grey = /--frame-selection-fill: (#[0-9a-f]{6});/.exec(frameCss)![1]!
-    expect(accent).toBe('#0064e1')
-    expect(grey).toBe('#dcdcdc')
-    expect(contrast('#ffffff', accent)).toBeGreaterThanOrEqual(4.5)
-    expect(contrast(lightToken('ink'), grey)).toBeGreaterThanOrEqual(4.5)
-    // The "New" badge on the selected row with the accent: the accent on white (MailboxSidebar.vue), the same pair.
-    expect(sidebar).toMatch(/\.sidebar\.active \.item\[aria-current='page'\] \.new \{\s*background: var\(--frame-selection-text\);\s*color: var\(--frame-selection-accent\);/)
-    expect(contrast(accent, '#ffffff')).toBeGreaterThanOrEqual(4.5)
-    // Tresso's own badge colour on the accent would not read.
-    expect(contrast(lightToken('know'), accent)).toBeLessThan(2)
-    // The counts and the account's address on the selected grey row.
-    expect(contrast(lightToken('ink-2'), grey)).toBeGreaterThanOrEqual(4.5)
+  it('hold the values of the glass sidebar board', () => {
+    const t = (name: string) => frameToken(name, Number.NaN)
+    expect(t('frame-scroll-inset')).toBe(12)
+    expect(t('frame-group-label-size')).toBe(12)
+    for (const token of [
+      '--frame-card-solid-fill: #fcfcfc;',
+      '--frame-card-fill: var(--frame-card-solid-fill);',
+      '--frame-card-edge: inset 0 1px 0 rgb(255 255 255 / 90%), inset 0 0 0 1px rgb(255 255 255 / 55%);',
+      '--frame-card-shadow: 0 0 0 1px rgb(22 24 29 / 6%), 0 1px 2px rgb(22 24 29 / 5%), 0 8px 24px rgb(22 24 29 / 8%);',
+      '--frame-selection-fill: var(--pill);',
+      '--frame-selection-edge: var(--pill-edge);',
+    ]) {
+      expect(frameCss).toContain(token)
+    }
+    // Over the glass the light card keeps its 72%; the dark one is a tint of its own, and solid --paper without glass.
+    expect(frameCss).toMatch(/html\.vibrant \{\s*--frame-window-fill: transparent;\s*--frame-card-fill: rgb\(255 255 255 \/ 72%\);\s*\}/)
+    const dark = darkBlock()
+    for (const token of ['--frame-card-solid-fill: var(--paper);', '--frame-card-edge: var(--glass-edge);', '--frame-card-shadow: 0 0 0 1px rgb(0 0 0 / 45%), 0 8px 24px rgb(0 0 0 / 35%);']) {
+      expect(dark).toContain(token)
+    }
+    expect(dark).toMatch(/html\.vibrant \{\s*--frame-card-fill: rgb\(32 36 45 \/ 60%\);\s*\}/)
+    // The selected row keeps the pill in the dark too: main.css gives --pill and --pill-edge their dark values.
+    expect(dark).not.toContain('--frame-selection-')
+    // "Reduce transparency" turns the card solid in either appearance.
+    expect(frameCss).toMatch(/@media \(prefers-reduced-transparency: reduce\) \{\s*html\.vibrant \{\s*--frame-card-fill: var\(--frame-card-solid-fill\);/)
+    expect(frameCss).toMatch(/html\.vibrant\.reduce-transparency \{\s*--frame-card-fill: var\(--frame-card-solid-fill\);\s*\}/)
+  })
+
+  it('draw the selected row as the glass pill, never an accent fill, and keep its text readable on it', () => {
+    // No accent colour and no white text for the selected row, with or without focus in the sidebar.
+    for (const source of [frameCss, sidebar]) {
+      expect(source).not.toMatch(/frame-selection-(accent|text)|frame-accent-(light|dark)|\.sidebar\.active/)
+    }
+    expect(block(sidebar, ".frame-shell .item[aria-current='page']")).toContain('background: var(--frame-selection-fill);')
+    expect(block(sidebar, ".frame-shell .item[aria-current='page']")).toContain('box-shadow: var(--frame-selection-edge);')
+    // The pill over the solid card: the label (ink) and the count and address (the second ink) on it.
+    const pill = /--pill: (rgb\([^)]+\));/.exec(mainCss)![1]!
+    const card = /--frame-card-solid-fill: (#[0-9a-f]{6});/.exec(frameCss)![1]!
+    const selected = over(pill, card)
+    expect(selected).toBe('#eaeaea')
+    expect(contrast(lightToken('ink'), selected)).toBeGreaterThanOrEqual(14.7)
+    expect(contrast(lightToken('ink-2'), selected)).toBeGreaterThanOrEqual(6.7)
+  })
+
+  it('fade the rows out at both ends of the scroller over the scroll inset, with a mask and no script', () => {
+    const fade = 'linear-gradient(to bottom, transparent 0, #000 var(--frame-scroll-inset), #000 calc(100% - var(--frame-scroll-inset)), transparent 100%);'
+    expect(block(frameScroll, '.frame-scroll')).toContain(`-webkit-mask-image: ${fade}`)
+    expect(block(frameScroll, '.frame-scroll')).toContain(`\n  mask-image: ${fade}`)
+    expect(frameScroll).not.toMatch(/addEventListener|@scroll|onScroll/)
+    // A row the keyboard brings into view stops past the fade, so its focus ring is never faded.
+    expect(block(sidebar, '.frame-shell .frame-scroll')).toContain('scroll-padding-block: var(--frame-scroll-inset);')
   })
 })
 
@@ -149,45 +201,5 @@ describe('the sidebar layout on this device', () => {
 
   it('clamps a width to 190 to 300 in whole pixels', () => {
     expect([clampSidebarWidth(100), clampSidebarWidth(250.6), clampSidebarWidth(400), clampSidebarWidth(Number.NaN)]).toEqual([190, 251, 300, 220])
-  })
-})
-
-describe('the selection colour from the system', () => {
-  it('sets both appearances at launch and reads them again when the window comes back', async () => {
-    const root = document.createElement('div')
-    const target = new EventTarget()
-    let colors: SelectionColors | null = { light: '#0064e1', dark: '#0058d0' }
-    const shell = { invoke: vi.fn<(command: 'selection_accent') => Promise<SelectionColors | null>>(async () => colors) }
-    followSelectionAccent(shell, root, target as unknown as Window)
-    await vi.waitFor(() => expect(root.style.getPropertyValue('--frame-accent-light')).toBe('#0064e1'))
-    expect(root.style.getPropertyValue('--frame-accent-dark')).toBe('#0058d0')
-
-    // The user picked purple in System Settings, then came back.
-    colors = { light: '#7d2ae8', dark: '#a550e7' }
-    target.dispatchEvent(new Event('focus'))
-    await vi.waitFor(() => expect(root.style.getPropertyValue('--frame-accent-light')).toBe('#7d2ae8'))
-    expect(shell.invoke).toHaveBeenCalledTimes(2)
-    expect(shell.invoke).toHaveBeenCalledWith('selection_accent')
-  })
-
-  it('leaves the fallback where the system has no colour, and never sets anything but a hex colour', () => {
-    const root = document.createElement('div')
-    applySelectionAccent({ light: '#0064e1', dark: '#0058d0' }, root)
-    applySelectionAccent(null, root)
-    expect(root.style.getPropertyValue('--frame-accent-light')).toBe('')
-    applySelectionAccent({ light: 'red; background: url(x)', dark: '#0058d0' }, root)
-    expect(root.style.getPropertyValue('--frame-accent-light')).toBe('')
-    expect(root.style.getPropertyValue('--frame-accent-dark')).toBe('#0058d0')
-  })
-
-  it('keeps the colour it has when the shell cannot answer', async () => {
-    const root = document.createElement('div')
-    root.style.setProperty('--frame-accent-light', '#0064e1')
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const check = followSelectionAccent({ invoke: async () => Promise.reject(new Error('gone')) }, root, new EventTarget() as unknown as Window)
-    await check()
-    expect(root.style.getPropertyValue('--frame-accent-light')).toBe('#0064e1')
-    expect(error).toHaveBeenCalled()
-    error.mockRestore()
   })
 })

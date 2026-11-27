@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { accountSubtitle, handOverStatus, type SyncedMailAccount, type SyncedSmartInbox } from '@tresso/core'
 import AppIcon from '@/components/AppIcon.vue'
+import ProviderMark from '@/components/ProviderMark.vue'
+import { markForAccount } from '@/components/providerMarks'
 import SenderAvatar from '@/components/SenderAvatar.vue'
 import SmartInboxMark from '@/components/SmartInboxMark.vue'
 import { briefProgress } from '@tresso/core'
@@ -182,11 +184,11 @@ function failed(account: SyncedMailAccount): boolean {
           <span v-if="(smartInboxCounts.get(item.id) ?? 0) > 0" class="count"><TickCount :value="smartInboxCounts.get(item.id) ?? 0" /><span class="visually-hidden"> unread</span></span>
         </RouterLink>
         <RouterLink :to="{ name: 'batches' }" class="item smart" :aria-current="batches ? 'page' : undefined">
-          <AppIcon name="clock" :size="20" class="batches-icon" />
+          <AppIcon name="clock" :size="16" />
           <span class="label">Batches</span>
           <span v-if="nextBatch" class="count"><span class="visually-hidden">Next batch at </span>{{ nextBatch }}</span>
         </RouterLink>
-        <RouterLink :to="{ name: 'settings-smart-inbox', params: { smartInboxId: 'new' } }" class="add">+ New smart inbox</RouterLink>
+        <RouterLink :to="{ name: 'settings-smart-inbox', params: { smartInboxId: 'new' } }" class="add"><AppIcon name="plus" :size="16" />New smart inbox</RouterLink>
       </div>
 
       <div class="group">
@@ -197,7 +199,8 @@ function failed(account: SyncedMailAccount): boolean {
             class="item account"
             :aria-current="inList && mailbox === account.id && smartInbox === null && !batches ? 'page' : undefined"
           >
-            <SenderAvatar :sender="{ name: account.displayName, address: account.emailAddress }" :size="24" />
+            <!-- The mark of the provider the server reports for the account, never one read from its name or address. -->
+            <ProviderMark :kind="markForAccount(account)" tone="ink" :size="16" />
             <span class="account-text">
               <span class="account-name">{{ account.displayName }}</span>
               <span class="account-address" :class="{ problem: failed(account) }">{{ statusText[account.status] ?? account.emailAddress }}</span>
@@ -209,14 +212,14 @@ function failed(account: SyncedMailAccount): boolean {
         </div>
         <!-- A list of one or none: an empty list leaves no node at all, so the browser's markup stays as it was. -->
         <RouterLink v-for="whatsappRow in whatsappRows" :key="whatsappRow.subtitle" :to="{ name: 'whatsapp' }" class="item account whatsapp" :aria-current="inList && whatsapp ? 'page' : undefined">
-          <span class="wa-mark" aria-hidden="true">WA</span>
+          <ProviderMark kind="whatsapp" tone="ink" :size="16" />
           <span class="account-text">
             <span class="account-name">WhatsApp</span>
             <span class="account-address">{{ whatsappRow.subtitle }}</span>
           </span>
           <span v-if="whatsappRow.unread > 0" class="count"><TickCount :value="whatsappRow.unread" /><span class="visually-hidden"> unread</span></span>
         </RouterLink>
-        <RouterLink :to="{ name: 'settings-accounts-new' }" class="add">+ Add account</RouterLink>
+        <RouterLink :to="{ name: 'settings-accounts-new' }" class="add"><AppIcon name="plus" :size="16" />Add account</RouterLink>
       </div>
 
       <RouterLink :to="{ name: 'settings-accounts' }" class="item settings" :aria-current="page === 'settings' ? 'page' : undefined">
@@ -279,12 +282,12 @@ function failed(account: SyncedMailAccount): boolean {
   border-radius: 999px;
   background: var(--know-soft);
   color: var(--know);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
 }
 .count.failed {
   color: var(--danger);
-  font-weight: 700;
+  font-weight: 600;
 }
 .group {
   display: flex;
@@ -298,13 +301,18 @@ function failed(account: SyncedMailAccount): boolean {
   font-weight: 600;
   color: var(--ink-2);
 }
+/*
+ * A row (the glass sidebar board): its label ink at medium weight in every state, its icon in the second ink. Hover is
+ * a light tint without an edge, so it never looks selected; the selected row is the glass pill, a tint of ink with a lit
+ * top edge and a small shadow, and its icon turns ink. No accent fill: keyboard focus is the only blue, the ring.
+ */
 .item {
   display: flex;
   align-items: center;
   gap: 10px;
   min-height: 36px;
   padding: 0 10px;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-row);
   color: var(--ink);
   font-weight: 500;
   text-decoration: none;
@@ -312,13 +320,25 @@ function failed(account: SyncedMailAccount): boolean {
     background-color var(--motion-fast) ease,
     box-shadow var(--motion-fast) ease;
 }
+.item > svg {
+  flex: none;
+  color: var(--ink-2);
+}
 .item:hover {
-  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  background: var(--ground);
 }
 .item[aria-current='page'] {
-  background: var(--surface);
-  box-shadow: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%);
-  font-weight: 600;
+  background: var(--pill);
+  box-shadow: var(--pill-edge);
+}
+.item[aria-current='page'] > svg {
+  color: var(--ink);
+}
+/* The focus ring inside the row, so the scrolling list never clips it. */
+.item:focus-visible,
+.add:focus-visible,
+.fix:focus-visible {
+  outline-offset: -2px;
 }
 .account {
   min-height: 44px;
@@ -358,19 +378,6 @@ function failed(account: SyncedMailAccount): boolean {
     padding: 0 12px;
   }
 }
-.wa-mark {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  background: var(--whatsapp);
-  color: var(--whatsapp-text);
-  font-size: 10px;
-  font-weight: 700;
-}
 .account-text {
   display: flex;
   flex-direction: column;
@@ -387,25 +394,27 @@ function failed(account: SyncedMailAccount): boolean {
 .smart {
   min-height: 32px;
 }
+/* Counts and section labels: one quiet style, 12 in the second ink. */
 .count {
   font-size: 12px;
-  color: var(--ink-2);
-}
-.batches-icon {
-  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
   color: var(--ink-2);
 }
 .add {
   display: flex;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-row);
   transition: color var(--motion-fast) ease;
   align-items: center;
+  gap: 8px;
   height: 32px;
   padding: 0 10px;
   color: var(--ink-2);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   text-decoration: none;
+}
+.add > svg {
+  flex: none;
 }
 .add:hover {
   color: var(--ink);
@@ -423,8 +432,9 @@ function failed(account: SyncedMailAccount): boolean {
  */
 /*
  * The card itself does not scroll: its top band (the traffic lights and the toggle) stays put, the sync status stays at
- * its foot, and only the rows between scroll (FrameScroll). The scroller's 4 px of padding keep a focus ring inside it,
- * and a row brought into view by the keyboard stops that far from its edges.
+ * its foot, and only the rows between scroll (FrameScroll). The scroller's padding (--frame-scroll-inset, 12) is also
+ * the length of the fade at its ends (FrameScroll.vue): the card's top padding takes it back off, so the first row
+ * stays at y 52, and a row brought into view by the keyboard stops that far from the edges, past the fade.
  */
 .frame-shell .sidebar {
   gap: 0;
@@ -472,15 +482,9 @@ function failed(account: SyncedMailAccount): boolean {
   min-height: 44px;
   padding-block: 4px;
 }
-.frame-shell .item > svg,
-.frame-shell .item > .mark {
-  flex: none;
+.frame-shell .item > svg {
   width: var(--frame-row-icon);
   height: var(--frame-row-icon);
-}
-.frame-shell .item > .mark {
-  border-radius: 4px;
-  font-size: 10px;
 }
 .frame-shell .add {
   height: var(--frame-row-height);
@@ -495,22 +499,9 @@ function failed(account: SyncedMailAccount): boolean {
   margin-top: 4px;
   padding: 0 calc(var(--frame-row-inset) + var(--frame-row-icon-x));
 }
-/* The selected row: grey while the content has focus (or the window is in the back), the accent while the sidebar has. */
+/* The selected row: the glass pill (frame.css), the same whether the sidebar, the content or another window has focus. */
 .frame-shell .item[aria-current='page'] {
   background: var(--frame-selection-fill);
   box-shadow: var(--frame-selection-edge);
-}
-.frame-shell .sidebar.active .item[aria-current='page'] {
-  background: var(--frame-selection-accent);
-  box-shadow: none;
-  color: var(--frame-selection-text);
-}
-.frame-shell .sidebar.active .item[aria-current='page'] :is(.count, .count.failed, .account-address, .account-address.problem, .batches-icon) {
-  color: var(--frame-selection-text);
-}
-/* The "New" badge turns around on the accent: white with the accent's colour (5.4:1 for #0064e1, as white on it). */
-.frame-shell .sidebar.active .item[aria-current='page'] .new {
-  background: var(--frame-selection-text);
-  color: var(--frame-selection-accent);
 }
 </style>
