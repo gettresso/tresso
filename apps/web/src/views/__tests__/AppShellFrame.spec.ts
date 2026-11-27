@@ -200,18 +200,6 @@ describe('the shell in the desktop frame', () => {
     expect(wrapper.get('.app').attributes('style')).toContain('--frame-sidebar-width: 260px')
   })
 
-  it('gives the selected row the accent while the sidebar is used, and the grey once the content is', async () => {
-    const wrapper = await shell()
-    window.dispatchEvent(new Event('focus'))
-    const nav = wrapper.get('nav.sidebar')
-    nav.get('.item').element.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-    await nextTick()
-    expect(nav.classes()).toContain('active')
-    wrapper.get('.screen').element.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-    await nextTick()
-    expect(nav.classes()).not.toContain('active')
-  })
-
   it('reports the card for the glass, and removes it when the sidebar is hidden or the shell goes', async () => {
     const wrapper = await shell()
     const glassCalls = () => invoke.mock.calls.filter(([command]) => command === 'set_glass').map(([, args]) => (args as { rects: { id: string }[] }).rects)

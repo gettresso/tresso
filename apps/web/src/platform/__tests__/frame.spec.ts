@@ -41,11 +41,12 @@ function darkBlock(): string {
 
 const block = (source: string, selector: string) => source.slice(source.indexOf(`${selector} {`), source.indexOf('}', source.indexOf(`${selector} {`)))
 
-/** A colour token of main.css's light theme. */
-function lightToken(name: string): string {
-  const match = new RegExp(`--${name}:\\s*(#[0-9a-f]{6});`).exec(mainCss)
+/** A token of main.css: its light value (the first), or the one its dark block gives it. */
+function mainToken(name: string, theme: 'light' | 'dark' = 'light'): string {
+  const source = theme === 'light' ? mainCss : mainCss.slice(mainCss.indexOf('@media (prefers-color-scheme: dark)'))
+  const match = new RegExp(`--${name}:\\s*([^;]+);`).exec(source)
   if (match === null) {
-    throw new Error(`main.css has no ${name}`)
+    throw new Error(`main.css has no ${theme} ${name}`)
   }
   return match[1]!
 }
@@ -151,13 +152,15 @@ describe('the frame tokens (assets/frame.css)', () => {
     }
     expect(block(sidebar, ".frame-shell .item[aria-current='page']")).toContain('background: var(--frame-selection-fill);')
     expect(block(sidebar, ".frame-shell .item[aria-current='page']")).toContain('box-shadow: var(--frame-selection-edge);')
-    // The pill over the solid card: the label (ink) and the count and address (the second ink) on it.
-    const pill = /--pill: (rgb\([^)]+\));/.exec(mainCss)![1]!
-    const card = /--frame-card-solid-fill: (#[0-9a-f]{6});/.exec(frameCss)![1]!
-    const selected = over(pill, card)
-    expect(selected).toBe('#eaeaea')
-    expect(contrast(lightToken('ink'), selected)).toBeGreaterThanOrEqual(14.7)
-    expect(contrast(lightToken('ink-2'), selected)).toBeGreaterThanOrEqual(6.7)
+    // The pill over the solid card: the label (ink) and the count and address (the second ink) on it, in both themes.
+    const light = over(mainToken('pill'), /--frame-card-solid-fill: (#[0-9a-f]{6});/.exec(frameCss)![1]!)
+    expect(contrast(mainToken('ink'), light)).toBeGreaterThanOrEqual(14.7)
+    expect(contrast(mainToken('ink-2'), light)).toBeGreaterThanOrEqual(6.7)
+    // In the dark the solid card is --paper (the dark block above checks it), and the pill a tint of white over it.
+    expect(darkBlock()).toContain('--frame-card-solid-fill: var(--paper);')
+    const dark = over(mainToken('pill', 'dark'), mainToken('paper', 'dark'))
+    expect(contrast(mainToken('ink', 'dark'), dark)).toBeGreaterThanOrEqual(11.2)
+    expect(contrast(mainToken('ink-2', 'dark'), dark)).toBeGreaterThanOrEqual(6.7)
   })
 
   it('fade the rows out at both ends of the scroller over the scroll inset, with a mask and no script', () => {
