@@ -504,9 +504,23 @@ mod tests {
     assert!(decided_once(&cell, || panic!("asked again")));
   }
 
+  /// sRGB components (0 to 1) as `#rrggbb`. Components of an extended-range colour are clamped to the sRGB range.
+  fn hex(red: f64, green: f64, blue: f64) -> String {
+    let byte = |component: f64| (component.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", byte(red), byte(green), byte(blue))
+  }
+
+  #[test]
+  fn components_become_a_css_hex_colour() {
+    assert_eq!(hex(0.0, 0.392, 0.882), "#0064e1");
+    assert_eq!(hex(1.0, 1.0, 1.0), "#ffffff");
+    assert_eq!(hex(0.0, 0.0, 0.0), "#000000");
+    assert_eq!(hex(-0.2, 1.3, 0.5), "#00ff80");
+  }
+
   #[test]
   fn the_light_window_is_the_specs_grey() {
-    assert_eq!(crate::accessibility::hex(LIGHT_WINDOW, LIGHT_WINDOW, LIGHT_WINDOW), "#f3f3f3");
+    assert_eq!(hex(LIGHT_WINDOW, LIGHT_WINDOW, LIGHT_WINDOW), "#f3f3f3");
   }
 
   #[test]
