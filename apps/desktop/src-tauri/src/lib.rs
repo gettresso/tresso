@@ -59,6 +59,7 @@ pub fn run() {
       whatsapp::whatsapp_config_save,
       whatsapp::whatsapp_config_clear,
       whatsapp::whatsapp_config_keep_only,
+      whatsapp::whatsapp_disconnect,
       whatsapp::whatsapp_start,
       whatsapp::whatsapp_stop,
       whatsapp::whatsapp_state,

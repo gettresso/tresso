@@ -31,6 +31,7 @@ fn main() {
     "whatsapp_config_save",
     "whatsapp_config_clear",
     "whatsapp_config_keep_only",
+    "whatsapp_disconnect",
     "whatsapp_start",
     "whatsapp_stop",
     "whatsapp_state",
