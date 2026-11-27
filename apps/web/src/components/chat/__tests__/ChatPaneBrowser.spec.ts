@@ -170,7 +170,7 @@ describe('ChatPane in the browser', () => {
     view.unmount()
 
     view = await open(SERVER_CHAT, { bridge: 'stopped' })
-    expect(notice(view).text()).toBe('The bridge on your Mac is not running. New messages are not picked up, and replies wait until it runs again.')
+    expect(notice(view).text()).toBe('WhatsApp is not running on your Mac. New messages are not picked up, and replies wait until it runs again.')
   })
 
   it('reads the time again every minute, so a notice from before midnight shows the date after it', async () => {

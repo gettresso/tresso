@@ -63,7 +63,7 @@ const pill = computed<{ text: string; ok: boolean }>(() => {
   if (current === null) return { text: 'Not connected', ok: false }
   if (!current.relayOnline) return { text: 'Mac offline', ok: false }
   if (current.link === 'unlinked') return { text: 'Not linked', ok: false }
-  if (current.bridge === 'stopped') return { text: 'Bridge stopped', ok: false }
+  if (current.bridge === 'stopped') return { text: 'Stopped', ok: false }
   return { text: 'Connected', ok: true }
 })
 
@@ -138,7 +138,7 @@ onBeforeUnmount(() => {
 
       <div class="panel">
         <p dir="auto">{{ connectedLine }}</p>
-        <p class="option-note">The connection, the bridge, the link to your phone and where your chats live are changed in Tresso on that Mac.</p>
+        <p class="option-note">The connection, the link to your phone and where your chats live are changed in Tresso on that Mac.</p>
       </div>
 
       <section class="panel rows" aria-label="Connection">
@@ -147,14 +147,14 @@ onBeforeUnmount(() => {
           <span class="value" dir="auto"><span class="dot" :class="{ ok: relayRow.ok }" aria-hidden="true" />{{ relayRow.value }}</span>
         </div>
         <div class="row">
-          <span class="label">Bridge</span>
+          <span class="label">On your Mac</span>
           <span class="value"><span class="dot" :class="{ ok: bridgeRow.ok }" aria-hidden="true" />{{ bridgeRow.value }}</span>
         </div>
         <div class="row">
           <span class="label">Linked to phone</span>
           <span class="value"><span class="dot" :class="{ ok: linkRow.ok }" aria-hidden="true" />{{ linkRow.value }}</span>
         </div>
-        <p v-if="!account.relayOnline" class="detail">The bridge and the link are as your Mac last reported them.</p>
+        <p v-if="!account.relayOnline" class="detail">Both are as your Mac last reported them.</p>
       </section>
 
       <section class="panel options" aria-labelledby="wa-messages">

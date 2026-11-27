@@ -925,14 +925,13 @@ export const useChatsStore = defineStore('chats', () => {
    * the store has no hash for is kept from opening, as one that did not match is.
    */
   async function download(chat: SyncedChat, message: SyncedChatMessage): Promise<void> {
-    const folder = wa.config?.folder ?? null
     const state = mediaOf(message.id).state
-    if (folder === null || message.mediaKind === null || state === 'downloading' || state === 'done') {
+    if (wa.config === null || message.mediaKind === null || state === 'downloading' || state === 'done') {
       return
     }
     setMedia(message.id, { state: 'downloading' })
     try {
-      const file = await commands.download(folder, message.waId, chat.jid)
+      const file = await commands.download(message.waId, chat.jid)
       setMedia(message.id, file.verified ? { state: 'done', path: file.path } : { state: 'failed', reason: 'unverified' })
     } catch (cause) {
       console.error('Downloading a WhatsApp file failed', errorName(cause))

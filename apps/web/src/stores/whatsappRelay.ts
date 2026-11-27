@@ -44,8 +44,8 @@ import {
 } from '@tresso/core'
 import { useChatApi } from '@/api/chats'
 import { isDesktop } from '@/platform/desktop'
-import { whatsAppShell, type BridgeInspection, type BridgeState, type WhatsAppConfig, type WhatsAppIdentity } from '@/platform/whatsapp'
-import { errorName, folderText, IMPORT_DAYS, shellErrorText, type ImportState } from '@/components/chat/whatsappTexts'
+import { whatsAppShell, type BridgeState, type WhatsAppConfig, type WhatsAppIdentity } from '@/platform/whatsapp'
+import { errorName, IMPORT_DAYS, shellErrorText, type ImportState } from '@/components/chat/whatsappTexts'
 import { useAuthStore, type SessionEnd } from '@/stores/auth'
 import { ChatActionError, chatActionError, serverChatActions } from '@/stores/chatActions'
 import { useMailStore } from '@/stores/mail'
@@ -95,7 +95,7 @@ const FORMAT_CHARACTERS = /\p{Cf}/gu
 export const STOPPED_BRIDGE: BridgeState = { process: 'stopped', port: null, loopbackOnly: null, link: 'unknown', qr: null, error: null }
 
 /** What runs now, so a second click waits for it instead of starting the same thing twice. */
-export type WhatsAppTask = 'folder' | 'start' | 'connect' | 'disconnect' | 'groups' | 'notify' | 'cancel' | 'leave' | 'take-back' | 'mode' | 'take-over'
+export type WhatsAppTask = 'start' | 'connect' | 'disconnect' | 'groups' | 'notify' | 'cancel' | 'leave' | 'take-back' | 'mode' | 'take-over'
 
 /**
  * The user's yes for a step of "All my devices": to copying the chats to the server (the Copy question), and to relaying
@@ -120,10 +120,10 @@ export const COPY_FIRST = 'Confirm that your WhatsApp chats may be copied to you
 export const ACCOUNT_GONE =
   'WhatsApp was removed from your Tresso server meanwhile, so nothing was copied. Choose All my devices again to copy your chats there.'
 
-/** Said when a step that reads the bridge's store again is asked of a Mac that does not relay. */
-export const RELAY_ONLY = 'Do this on the Mac that relays WhatsApp: only it reads its bridge again.'
+/** Said when a step that reads this Mac's WhatsApp messages again is asked of a Mac that does not relay. */
+export const RELAY_ONLY = 'Do this on the Mac that relays WhatsApp: only it reads its WhatsApp messages again.'
 
-/** Said when this Mac's bridge is linked to another WhatsApp number than the server's account holds. */
+/** Said when this Mac is linked to another WhatsApp number than the server's account holds. */
 export const OTHER_NUMBER =
   'This Mac is linked to another WhatsApp number than your Tresso server holds. Disconnect WhatsApp on the server first, or link this Mac to the same number.'
 /** Asked when this Mac or the server's account does not know its WhatsApp number, before this Mac relays the account. */
@@ -133,7 +133,8 @@ export const UNKNOWN_NUMBER =
 export const SERVER_ADOPTED = 'server-adopted'
 
 /** Said when the server's WhatsApp account went while this Mac relayed it or showed it (removed on another device). */
-export const REMOVED_ELSEWHERE = 'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too. WhatsApp itself, the bridge and its own message store on this Mac stay as they are.'
+export const REMOVED_ELSEWHERE =
+  'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too. Your phone lists this Mac under Linked devices until you remove it there.'
 
 /** A name as the server takes it (no control or format characters, at most 255 characters); null when nothing is left. */
 function plainName(value: string | null | undefined): string | null {
@@ -169,7 +170,7 @@ function schedule(run: () => void, ms: number): () => void {
 }
 
 /**
- * WhatsApp on this Mac: the desktop shell's bridge (platform/whatsapp.ts) and the relay that brings its messages in
+ * WhatsApp on this Mac: the bridge the desktop shell starts (platform/whatsapp.ts) and the relay that brings its messages in
  * (ChatRelay, packages/core/src/chat), in one of two modes the config keeps:
  * - "Only this Mac" (`local`, the WhatsApp plan's WP5): LocalChatBackend writes the chats into the mail copy only.
  * - "All my devices" (`all`, WP10): ServerChatBackend passes them to the user's Tresso server, whose chat account names
@@ -245,9 +246,6 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   const bridge = ref<BridgeState>(STOPPED_BRIDGE)
   /** A start was asked for in this session, so a stopped bridge is reported as stopped rather than not started. */
   const bridgeStarted = ref(false)
-  /** The folder of the connect flow, or the connected one. */
-  const folder = ref<string | null>(null)
-  const inspection = ref<BridgeInspection | null>(null)
   const identity = ref<WhatsAppIdentity | null>(null)
   /** The user confirmed the risk in the connect dialog; nothing links before. */
   const riskAccepted = ref(false)
@@ -325,7 +323,6 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   const serverHistory = shallowRef<ServerHistory | null>(null)
 
   const connected = computed(() => config.value !== null)
-  const folderReady = computed(() => folderText(inspection.value).ok)
   const linked = computed(() => bridge.value.process === 'owned' && bridge.value.link === 'linked')
   const mode = computed<WhatsAppMode | null>(() => config.value?.mode ?? null)
   /** This Mac relays the server's account: "All my devices", and the account in the copy names this device. */
@@ -387,8 +384,6 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   /** While a change of the chats runs (groups, connect), no relay may start in between. */
   let held = 0
   let chatsReadAt = 0
-  /** A folder Change folder picked and then stopped to ask about an unknown number for. */
-  let pickedFolder: string | null = null
   /** The task `run` is doing now, so closing the dialog can wait for it. */
   let runningTask: Promise<void> | null = null
   /** The config changes, in order (updateConfig). */
@@ -506,8 +501,12 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
     await finishPendingRemoval(id)
     if (config.value !== null) {
-      folder.value = config.value.folder
-      await startBridge(config.value.folder)
+      try {
+        await startBridge(id)
+      } catch (cause) {
+        error.value = shellErrorText(cause)
+        console.error('Starting the WhatsApp bridge failed', errorName(cause))
+      }
     } else if (bridge.value.process === 'owned') {
       // A connect flow the page left (a reload while the code showed): the bridge it started stops, and connecting
       // starts again from the risk.
@@ -559,8 +558,6 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   function resetFlow(): void {
-    folder.value = null
-    inspection.value = null
     identity.value = null
     riskAccepted.value = false
     linkedHere.value = null
@@ -604,36 +601,31 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
   }
 
-  /** The code was scanned: remembered for Settings ("Linked 3 days ago"), and saved once WhatsApp is connected. */
+  /**
+   * The code was scanned: remembered for Settings ("Linked 3 days ago"), and saved once WhatsApp is connected. A
+   * connection an earlier version made through whatsapp-mcp is linked again now (`moved` goes).
+   */
   async function linkedNow(): Promise<void> {
     const at = new Date().toISOString()
     linkedHere.value = at
     const id = userId.value
     if (id !== null && config.value !== null) {
-      await updateConfig(id, (current) => ({ ...current, linkedAt: at })).catch((cause: unknown) => console.error('Saving the WhatsApp link time failed', errorName(cause)))
+      await updateConfig(id, (current) => ({ ...current, linkedAt: at, moved: false })).catch((cause: unknown) => console.error('Saving the WhatsApp link time failed', errorName(cause)))
     }
   }
 
   async function loadIdentity(): Promise<void> {
-    const from = config.value?.folder ?? folder.value
-    if (from === null) {
-      return
-    }
     try {
-      identity.value = await commands.identity(from)
+      identity.value = await commands.identity()
     } catch (cause) {
       console.error('Reading the linked WhatsApp account failed', errorName(cause))
     }
   }
 
-  async function startBridge(from: string): Promise<void> {
+  /** Starts the bridge on this user's store (the shell makes it); one that runs for them already is kept. */
+  async function startBridge(id: string): Promise<void> {
     bridgeStarted.value = true
-    try {
-      onBridge(await commands.start(from))
-    } catch (cause) {
-      error.value = shellErrorText(cause)
-      console.error('Starting the WhatsApp bridge failed', errorName(cause))
-    }
+    onBridge(await commands.start(id))
   }
 
   /** The account row the chat screens read keeps the bridge's state and Notify me (setLocalChatAccount). */
@@ -789,7 +781,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
     let who: WhatsAppIdentity | null = null
     try {
-      who = await commands.identity(current.folder)
+      who = await commands.identity()
     } catch (cause) {
       console.error('Reading the linked WhatsApp account failed', errorName(cause))
     }
@@ -853,7 +845,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
     backend = local
     relay = new ChatRelay({
-      bridge: chatBridge(current.folder),
+      bridge: chatBridge(),
       backend: reporting(made, mine),
       now: Date.now,
       schedule,
@@ -961,9 +953,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
    * per session each; what is found lands in `senderNames`.
    */
   async function lookUpNames(ids: readonly string[]): Promise<void> {
-    const from = config.value?.folder ?? null
     const due = [...new Set(ids)].filter((id) => !askedNames.has(id) && !senderNames.value.has(id))
-    if (from === null || due.length === 0) {
+    if (config.value === null || due.length === 0) {
       return
     }
     for (const id of due) {
@@ -971,7 +962,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
     try {
       for (let start = 0; start < due.length; start += NAMES_PER_CALL) {
-        learnNames(await commands.names(from, due.slice(start, start + NAMES_PER_CALL)))
+        learnNames(await commands.names(due.slice(start, start + NAMES_PER_CALL)))
       }
     } catch (cause) {
       // Asked again in a later session; the relay's own lookups may find it meanwhile.
@@ -980,12 +971,12 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /** The shell's bridge commands as the relay needs them (docs/ARCHITECTURE.md, the relay's wiring rules). */
-  function chatBridge(from: string): ChatBridge {
+  function chatBridge(): ChatBridge {
     return {
       async read(afterRowid, limit) {
         const started = Date.now()
         try {
-          const page = await commands.read(from, afterRowid, limit)
+          const page = await commands.read(afterRowid, limit)
           readStartedAt = started
           return page
         } catch (cause) {
@@ -997,7 +988,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         }
       },
       async names(ids) {
-        const found = await commands.names(from, ids)
+        const found = await commands.names(ids)
         learnNames(found)
         return found
       },
@@ -1009,7 +1000,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       // A file the user asked for on another device: the shell's refusals become the reason the server records.
       async download(chatJid, waId) {
         try {
-          const file = await commands.download(from, waId, chatJid)
+          const file = await commands.download(waId, chatJid)
           return { ok: true, file: { path: file.path, sha256: file.sha256, size: file.size, verified: file.verified } }
         } catch (cause) {
           const error = mediaRefusal(cause)
@@ -1474,7 +1465,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       return
     }
     // Who the bridge is linked to, against the account the copy holds (if any), before anything changes.
-    const who = await linkedIdentity(current.folder)
+    const who = await linkedIdentity()
     checkNumber(serverAccount.value, who, numberConfirmed)
     // Without the yes to copying, only the account the copy holds now may be relayed (see putAccount).
     const expected = serverAccount.value?.id ?? null
@@ -1560,10 +1551,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     return account
   }
 
-  /** Who the bridge in `folder` is linked to; null when it cannot tell. */
-  async function linkedIdentity(folder: string): Promise<WhatsAppIdentity | null> {
+  /** Who this Mac is linked to; null when it cannot tell. */
+  async function linkedIdentity(): Promise<WhatsAppIdentity | null> {
     try {
-      const who = await commands.identity(folder)
+      const who = await commands.identity()
       identity.value = who ?? identity.value
       return who
     } catch (cause) {
@@ -2133,33 +2124,20 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
   }
 
-  /** The connect dialog's folder (the native folder dialog), checked at once. A bridge started for another one stops. */
-  function chooseFolder(): Promise<boolean> {
-    return run('folder', async () => {
-      const picked = await commands.chooseFolder()
-      if (picked === null) {
-        return
-      }
-      if (config.value === null && bridge.value.process === 'owned') {
-        onBridge(await commands.stop())
-      }
-      folder.value = picked
-      inspection.value = null
-      inspection.value = await commands.inspect(picked)
-    })
-  }
-
-  /** The connect dialog's "Start the bridge" (also "Start again" and "Show a new code"); only after the risk was confirmed. */
+  /**
+   * The connect dialog's "Show QR code" (also "Try again", "Link again" and "Show a new code"), and Settings' own: starts
+   * the bridge on this user's store. Before a connection only once the user confirmed the risk.
+   */
   function start(): Promise<boolean> {
     return run('start', async () => {
-      const from = config.value?.folder ?? folder.value
-      if (from === null) {
-        throw new WhatsAppProblem('Choose the whatsapp-mcp folder first.')
+      const id = userId.value
+      if (id === null) {
+        throw new WhatsAppProblem('Sign in to Tresso first.')
       }
-      if (config.value === null && (!riskAccepted.value || !folderReady.value)) {
-        throw new WhatsAppProblem('Confirm the risk and choose a folder with a built bridge first.')
+      if (config.value === null && !riskAccepted.value) {
+        throw new WhatsAppProblem('Confirm the risk first.')
       }
-      await startBridge(from)
+      await startBridge(id)
     })
   }
 
@@ -2172,11 +2150,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   function connect(where: WhatsAppMode = 'local', consent: RelayConsent = {}): Promise<boolean> {
     return run('connect', async () => {
       const id = userId.value
-      const from = folder.value
       if (!riskAccepted.value) {
         throw new WhatsAppProblem('Confirm the risk first.')
       }
-      if (id === null || from === null || !linked.value || config.value !== null) {
+      if (id === null || !linked.value || config.value !== null) {
         throw new WhatsAppProblem('Link WhatsApp to your phone first.')
       }
       const store = mail.currentStore()
@@ -2186,7 +2163,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       if (where === 'all') {
         requireCopyConsent(consent)
         // Asked before anything is saved, so a refusal leaves nothing to undo.
-        checkNumber(serverAccount.value, await linkedIdentity(from), consent.number === true)
+        checkNumber(serverAccount.value, await linkedIdentity(), consent.number === true)
       }
       await holding(async () => {
         await stopping
@@ -2198,7 +2175,6 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         }
         const now = Date.now()
         const next: WhatsAppConfig = {
-          folder: from,
           mode: where,
           deviceId: crypto.randomUUID(),
           deviceName: deviceName.value ?? FALLBACK_DEVICE,
@@ -2207,6 +2183,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
           includeGroups: true,
           notify: false,
           leftOut: [],
+          moved: false,
         }
         resetImport()
         await saveConfig(id, next)
@@ -2308,10 +2285,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         throw new WhatsAppProblem('Your mail on this Mac is still opening. Try again in a moment.')
       }
       if (!linked.value) {
-        throw new WhatsAppProblem('Link WhatsApp on this Mac to your phone first: only a linked bridge can relay.')
+        throw new WhatsAppProblem('Link WhatsApp on this Mac to your phone first: only a linked Mac can relay.')
       }
       requireCopyConsent(consent)
-      const who = await linkedIdentity(current.folder)
+      const who = await linkedIdentity()
       checkNumber(serverAccount.value, who, consent.number === true)
       const expected = serverAccount.value?.id ?? null
       if (consent.keepGroups === true && !current.includeGroups) {
@@ -2349,7 +2326,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
 
   /** The connect dialog closed without connecting: a bridge started for it stops. */
   async function cancel(): Promise<boolean> {
-    // A start (or a folder check) still running finishes first, so the bridge it starts is stopped below too.
+    // A start still running finishes first, so the bridge it starts is stopped below too.
     while (busy.value !== null && runningTask !== null) {
       await runningTask
     }
@@ -2371,8 +2348,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /**
-   * Stops the relay (and waits for it), stops the bridge, removes the chats Tresso copied and the config. WhatsApp,
-   * the bridge and its own store in the user's folder stay as they are: Tresso deletes nothing there. In "All my
+   * Stops the relay (and waits for it), stops the bridge, removes the chats Tresso copied, then the config and the
+   * bridge's store on this Mac (the shell's clearConfig), so connecting again shows a new code. The phone keeps this Mac
+   * under Linked devices until the user removes it there. In "All my
    * devices" the server's account goes first, with its chats on every device (a claim this Mac kept is reported before);
    * when the server cannot be asked nothing changes here and the error says why.
    */
@@ -2405,44 +2383,6 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         resetFlow()
         resetImport()
       })
-    })
-  }
-
-  /** Settings' "Change folder": picks and checks first (a cancel changes nothing), then stops, saves and starts. */
-  function changeFolder(consent: RelayConsent = {}): Promise<boolean> {
-    return run('folder', async () => {
-      const id = userId.value
-      const current = config.value
-      if (id === null || current === null) {
-        return
-      }
-      // After the question about an unknown number, the folder picked then is used, not asked for again.
-      const picked = consent.number === true && pickedFolder !== null ? pickedFolder : await commands.chooseFolder()
-      pickedFolder = null
-      if (picked === null) {
-        return
-      }
-      const found = await commands.inspect(picked)
-      const text = folderText(found)
-      if (!text.ok) {
-        throw new WhatsAppProblem(`${text.status}. ${text.detail ?? ''}`.trim())
-      }
-      if (current.mode === 'all' && serverAccount.value !== null) {
-        // Another folder may be another linked number: the same check as before this Mac relays.
-        pickedFolder = picked
-        checkNumber(serverAccount.value, await linkedIdentity(picked), consent.number === true)
-        pickedFolder = null
-      }
-      await holding(async () => {
-        await stopRelay()
-        onBridge(await commands.stop())
-        // Another folder is another store: the relay reads it from the start, the chats stay.
-        await updateConfig(id, (latest) => ({ ...latest, folder: picked, linkedAt: null }))
-        folder.value = picked
-        inspection.value = found
-        identity.value = null
-      })
-      await startBridge(picked)
     })
   }
 
@@ -2631,8 +2571,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /**
-   * The server confirmed who is signed in: every other user's WhatsApp config on this Mac goes, with the folders only
-   * they named (called where the mail store removes other users' copies). The shell keeps the tokens but has no user
+   * The server confirmed who is signed in: every other user's WhatsApp config and store on this Mac go (called where the mail store removes other users' copies). The shell keeps the tokens but has no user
    * id it could check them against, so config load and save stay bound to the confirmed user here, in the web client.
    */
   async function keepOnly(id: string): Promise<void> {
@@ -2675,8 +2614,6 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     configLoaded,
     bridge,
     bridgeStarted,
-    folder,
-    inspection,
     identity,
     riskAccepted,
     linkedHere,
@@ -2706,16 +2643,13 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     relaysHere,
     otherRelay,
     connected,
-    folderReady,
     linked,
     init,
     ready,
-    chooseFolder,
     start,
     connect,
     cancel,
     disconnect,
-    changeFolder,
     setIncludeGroups,
     setNotify,
     leaveOut,

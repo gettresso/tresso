@@ -55,25 +55,25 @@ describe('chat texts', () => {
     const chatId = 'wa:c'
     expect(attachText({ state: 'sending', chatId, name: 'plan.pdf' })).toBe('Sending plan.pdf…')
     expect(attachText({ state: 'sent', chatId, name: 'plan.pdf' })).toBe('plan.pdf was sent.')
-    expect(attachText({ state: 'failed', chatId, name: 'plan.pdf', error: 'bridge_stopped' })).toBe('plan.pdf was not sent. The bridge is not running.')
+    expect(attachText({ state: 'failed', chatId, name: 'plan.pdf', error: 'bridge_stopped' })).toBe('plan.pdf was not sent. WhatsApp is not running on your Mac.')
     expect(attachText({ state: 'failed', chatId, name: 'plan.pdf', error: 'unconfirmed' })).toBe('plan.pdf: Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.')
     expect(attachText({ state: 'failed', chatId, name: 'film.mov', error: 'too_large' })).toBe('film.mov was not sent. It is larger than 100 MB, the most Tresso sends for now.')
   })
 
   it('announces a reply\'s change of state', () => {
     expect(replyAnnouncement('sending', null, true)).toBe('Sending.')
-    expect(replyAnnouncement('waiting', null, false)).toBe('Waiting for the bridge.')
+    expect(replyAnnouncement('waiting', null, false)).toBe('Waiting for WhatsApp.')
     expect(replyAnnouncement('sent', null, true)).toBe('Sent.')
     expect(replyAnnouncement('failed', 'not_linked', true)).toBe('Not sent. WhatsApp is not linked.')
     expect(replyAnnouncement('failed', 'unconfirmed', true)).toBe('Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.')
   })
 
   it('says on this Mac that a reply waits for the bridge, and is retried with a click', () => {
-    expect(localReplyLabel('Waiting for your Mac')).toBe('Waiting for the bridge')
+    expect(localReplyLabel('Waiting for your Mac')).toBe('Waiting for WhatsApp')
     expect(localReplyLabel('Not sent, tap to retry')).toBe('Not sent, click to retry')
     expect(localReplyLabel('Sent')).toBe('Sent')
     expect(localReplyLabel(null)).toBeNull()
-    expect(localBubbleMeta('10:02', 'Waiting for the bridge')).toBe('10:02, waiting for the bridge')
+    expect(localBubbleMeta('10:02', 'Waiting for WhatsApp')).toBe('10:02, waiting for WhatsApp')
     expect(localBubbleMeta('10:02', 'Not sent, click to retry')).toBe('Not sent, click to retry')
     expect(localBubbleMeta('10:02', null)).toBe('10:02')
   })
@@ -89,13 +89,13 @@ describe('chat texts', () => {
   })
 
   it('says on the relaying Mac that a reply waits for the bridge, and on another Mac that it waits for your Mac', () => {
-    expect(desktopReplyLabel('Waiting for your Mac', true)).toBe('Waiting for the bridge')
+    expect(desktopReplyLabel('Waiting for your Mac', true)).toBe('Waiting for WhatsApp')
     expect(desktopReplyLabel('Waiting for your Mac', false)).toBe('Waiting for your Mac')
     expect(desktopReplyLabel('Not sent, tap to retry', false)).toBe('Not sent, click to retry')
     expect(desktopReplyLabel('Sent', false)).toBe('Sent')
     expect(desktopReplyLabel(null, false)).toBeNull()
     expect(localBubbleMeta('10:02', desktopReplyLabel('Waiting for your Mac', false))).toBe('10:02, waiting for your Mac')
-    expect(localBubbleMeta('10:02', desktopReplyLabel('Waiting for your Mac', true))).toBe('10:02, waiting for the bridge')
+    expect(localBubbleMeta('10:02', desktopReplyLabel('Waiting for your Mac', true))).toBe('10:02, waiting for WhatsApp')
     expect(replyAnnouncement('waiting', null, false, false)).toBe('Waiting for your Mac.')
     expect(replyAnnouncement('waiting', null, true, false)).toBe('Sending.')
   })

@@ -20,7 +20,7 @@ export { chatName, clockTime, COUNTER_FROM, mediaKindLabel, mediaTitle, senderLa
  * A reply's label on this Mac, which relays itself ("Only this Mac"): a reply waits for the bridge, not for a Mac that is
  * offline, and is retried with a click. Core's replyLabel keeps the board's words for the other devices (server mode).
  */
-export type LocalReplyLabel = 'Sending' | 'Sent' | 'Waiting for the bridge' | 'Not sent, click to retry'
+export type LocalReplyLabel = 'Sending' | 'Sent' | 'Waiting for WhatsApp' | 'Not sent, click to retry'
 
 /**
  * A reply's label on the desktop: on the Mac that sends it (localReplyLabel), or on another Mac in "All my devices",
@@ -38,7 +38,7 @@ export function desktopReplyLabel(label: ReplyLabel | null, relaysHere: boolean)
 export function localReplyLabel(label: ReplyLabel | null): LocalReplyLabel | null {
   switch (label) {
     case 'Waiting for your Mac':
-      return 'Waiting for the bridge'
+      return 'Waiting for WhatsApp'
     case 'Not sent, tap to retry':
       return 'Not sent, click to retry'
     default:
@@ -46,7 +46,7 @@ export function localReplyLabel(label: ReplyLabel | null): LocalReplyLabel | nul
   }
 }
 
-/** `10:02`, `10:02, sent`, `10:02, waiting for the bridge`; the failed label stands alone (as core's bubbleMeta). */
+/** `10:02`, `10:02, sent`, `10:02, waiting for WhatsApp`; the failed label stands alone (as core's bubbleMeta). */
 export function localBubbleMeta(time: string, label: DesktopReplyLabel | null): string {
   if (label === null) {
     return time
@@ -83,7 +83,7 @@ export const LEAVE_OUT_BODY_SERVER = "Tresso removes this chat's messages from y
 export const LEAVE_OUT_TWO_CHATS = 'A contact can appear as two chats in WhatsApp (by number and by hidden number). Leave both out to keep the contact out.'
 const FAILURES: Record<MediaFailure, string> = {
   failed: 'Could not download. The phone that sent it may be offline.',
-  stopped: 'Could not download. The bridge is not running.',
+  stopped: 'Could not download. WhatsApp is not running on this Mac.',
   mismatch: "WhatsApp gave another file than this message's. It was not opened.",
   unverified: "Tresso could not check that this is the message's file. It was not opened.",
   refused: 'WhatsApp named this file in a way Tresso does not trust. It was not downloaded.',
@@ -151,7 +151,7 @@ export function replyAnnouncement(status: 'waiting' | 'sending' | 'sent' | 'fail
     case 'sent':
       return 'Sent.'
     case 'waiting':
-      return relayOnline ? 'Sending.' : relaysHere ? 'Waiting for the bridge.' : 'Waiting for your Mac.'
+      return relayOnline ? 'Sending.' : relaysHere ? 'Waiting for WhatsApp.' : 'Waiting for your Mac.'
     default:
       return error === 'unconfirmed' ? replyErrorText('unconfirmed') : `Not sent. ${error === null ? '' : replyErrorText(error)}`.trim()
   }
@@ -196,7 +196,7 @@ export function relayNotice(account: Pick<SyncedChatAccount, 'relayOnline' | 're
     return { title: 'WhatsApp is not linked on your Mac.', body: 'Nothing comes in or goes out until it is linked again there.' }
   }
   if (account.bridge === 'stopped') {
-    return { title: 'The bridge on your Mac is not running.', body: 'New messages are not picked up, and replies wait until it runs again.' }
+    return { title: 'WhatsApp is not running on your Mac.', body: 'New messages are not picked up, and replies wait until it runs again.' }
   }
   return null
 }
@@ -222,5 +222,5 @@ export const LEAVE_OUT_RELAY_ONLY = 'Only the Mac that relays WhatsApp can take 
 
 export const NOTICES: Record<ChatNoticeKind, { title: string; body: string; action: string }> = {
   unlinked: { title: 'WhatsApp is not linked.', body: 'Until it is linked again nothing comes in or goes out.', action: 'Show how' },
-  stopped: { title: 'The bridge is not running.', body: 'New messages are not picked up until it runs.', action: 'Start again' },
+  stopped: { title: 'WhatsApp is not running on this Mac.', body: 'New messages are not picked up until it runs.', action: 'Start again' },
 }

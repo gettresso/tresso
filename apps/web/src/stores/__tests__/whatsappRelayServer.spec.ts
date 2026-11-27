@@ -20,7 +20,7 @@ import type { WhatsAppConfig } from '@/platform/whatsapp'
 import type { SessionEnd } from '@/stores/auth'
 import { CARRIED_REPLIES, CARRY_COUNTS, MODE_SWITCH, SERVER_ACCOUNT, serverHistoryKey } from '@/stores/whatsappServer'
 import { ACCOUNT_ID, FakeChatServer, OTHER_DEVICE } from './chatServerFixture'
-import { DAY, DIRECT, FOLDER, FakeShell, GROUP, LINKED, NOW, RUNNING, WAITING } from './whatsappShellFixture'
+import { DAY, DIRECT, FakeShell, GROUP, LINKED, NOW, RUNNING, WAITING } from './whatsappShellFixture'
 
 const DEVICE = '0193a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b'
 /** The number the fake shell's bridge is linked to. */
@@ -93,7 +93,6 @@ function memoryStorage(): Storage {
 
 function connectedConfig(extra: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
   return {
-    folder: FOLDER,
     mode: 'all',
     deviceId: DEVICE,
     deviceName: "Kim's MacBook Pro",
@@ -102,6 +101,7 @@ function connectedConfig(extra: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
     includeGroups: true,
     notify: false,
     leftOut: [],
+    moved: false,
     ...extra,
   }
 }
@@ -186,7 +186,6 @@ describe('the WhatsApp relay store in "All my devices"', () => {
   it('connects in "All my devices": the server account first, then the relay, once the copy caught up with it', async () => {
     const wa = await signedIn()
     shell.add('A1', DIRECT, 60)
-    await wa.chooseFolder()
     wa.riskAccepted = true
     await wa.start()
     shell.emit(WAITING)
@@ -214,7 +213,6 @@ describe('the WhatsApp relay store in "All my devices"', () => {
 
   it('undoes a connect the server did not take, so the dialog can be tried again', async () => {
     const wa = await signedIn()
-    await wa.chooseFolder()
     wa.riskAccepted = true
     await wa.start()
     shell.emit(LINKED)
@@ -994,16 +992,6 @@ describe('the WhatsApp relay store in "All my devices"', () => {
         expect(wa.error).toBe(OTHER_NUMBER)
       })
 
-      it('checks the number of another folder in "All my devices"', async () => {
-        const wa = await relayedHere()
-        server.account = { ...server.account!, address: '31600000000' }
-        await mail.syncNow()
-        await pass()
-        expect(await wa.changeFolder()).toBe(false)
-        expect(wa.error).toBe(OTHER_NUMBER)
-        expect(shell.saved[shell.saved.length - 1]?.folder ?? FOLDER).toBe(FOLDER)
-      })
-
       it('needs a linked bridge to take the relay over', async () => {
         await server.connect({ deviceId: OTHER_DEVICE, deviceName: 'Office iMac', address: NUMBER, displayName: null, includeGroups: true, notify: false })
         await server.deliver(store)
@@ -1011,7 +999,7 @@ describe('the WhatsApp relay store in "All my devices"', () => {
         const wa = await signedIn(connectedConfig())
         await mail.syncNow()
         expect(await wa.useThisMac()).toBe(false)
-        expect(wa.error).toBe('Link WhatsApp on this Mac to your phone first: only a linked bridge can relay.')
+        expect(wa.error).toBe('Link WhatsApp on this Mac to your phone first: only a linked Mac can relay.')
         expect(server.callsOf('connect')).toEqual([])
       })
     })
@@ -1219,7 +1207,6 @@ describe('the WhatsApp relay store in "All my devices"', () => {
       }
       mail.store = await SqliteMailStore.open(await memorySql())
       const again = await restart(null)
-      await again.chooseFolder()
       again.riskAccepted = true
       await again.start()
       shell.emit(LINKED)

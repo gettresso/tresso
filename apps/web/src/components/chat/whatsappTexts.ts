@@ -1,46 +1,54 @@
 import { nameText, phoneLabel } from '@tresso/core'
-import type { BridgeFailure, BridgeInspection, BridgeState, WhatsAppIdentity } from '@/platform/whatsapp'
+import type { BridgeFailure, BridgeState, WhatsAppIdentity } from '@/platform/whatsapp'
 
 /**
- * What the WhatsApp connect dialog and Settings: WhatsApp say about the bridge, in plain words (the ConnectWhatsApp and
- * SettingsWhatsApp boards, with the corrections of the WhatsApp plan, section 6). Pure, so every state is tested
- * without a shell.
+ * What the WhatsApp connect dialog and Settings: WhatsApp say, in plain words (the ConnectWhatsApp and
+ * SettingsWhatsApp boards). Pure, so every state is tested without a shell. Tresso for Mac carries its own link to
+ * WhatsApp and starts it by itself, so nothing here names a bridge, a folder, a port or anything to install.
  */
 
-/** The fork of whatsapp-mcp Tresso works with: its bridge checks the token Tresso gives it (docs/whatsapp-bridge.md). */
-export const INSTALL_URL = 'https://github.com/gettresso/whatsapp-mcp'
-/** What the bridge needs to listen on loopback only and to check Tresso's token. */
-export const BRIDGE_DOCS_URL = 'https://github.com/gettresso/tresso/blob/main/docs/whatsapp-bridge.md'
-/** How to find and quit a bridge that listens on the network or holds the port (docs/whatsapp-bridge.md). */
-export const CLOSE_PORT_URL = `${BRIDGE_DOCS_URL}#closing-the-bridges-port`
-/** Building the bridge once, in the whatsapp-mcp folder. Tresso never runs `go` itself. */
-export const BUILD_COMMAND = 'cd whatsapp-bridge && go build -o whatsapp-bridge .'
 /** How far back the first import reaches. */
 export const IMPORT_DAYS = 30
 
+/** The connect dialog's first line. */
+export const CONNECT_LEAD = 'Read and answer your WhatsApp chats next to your mail.'
 /** The risk, said before anything links (the owner's decision: plain words, confirmed once). */
-export const RISK_TEXT =
-  "Tresso connects through the bridge of whatsapp-mcp on this Mac, which signs in to WhatsApp as a linked device over WhatsApp Web. WhatsApp does not officially allow this for other apps and can limit or ban an account that uses it. Use it with an account you can afford to lose access to. Your messages are stored on this Mac, in the bridge's own folder."
+export const RISK_TEXT = 'WhatsApp does not officially allow other apps to link this way and can limit or ban an account that does. Use an account you can afford to lose access to.'
 export const RISK_CONFIRM = 'I understand the risk and want to connect my WhatsApp account'
 
-export const FOLDER_NOTE = 'The folder with whatsapp-bridge. Tresso starts the bridge from here and reads the messages it stores.'
-export const BRIDGE_NOTE = 'The Go bridge receives messages while it runs. Messages that arrive while it is stopped are not picked up.'
-export const LINK_NOTE = 'Scan this code with WhatsApp > Linked devices on your phone. WhatsApp can ask you to link again, often after about 20 days.'
-export const IMPORT_NOTE = `Tresso reads chats from the last ${IMPORT_DAYS} days now and every new message after that.`
+/** What to do with the code on the phone. */
+export const LINK_STEPS = ['Open WhatsApp on your phone.', 'Go to Settings, then Linked devices.', 'Tap Link a device and scan this code.'] as const
+export const CODE_RENEWS = 'The code renews by itself.'
+export const GETTING_CODE = 'Getting a code\u2026'
+export const CODE_EXPIRED = 'The code expired'
+export const CODE_EXPIRED_NOTE = 'Nobody scanned it for three minutes.'
 
-/** A check of the connect dialog, or a row of Settings: what it says now. */
-export interface StatusText {
-  /** Short, next to the title. */
-  status: string
-  /** A sentence that says what happened and what to do; null when the status says it all. */
-  detail: string | null
-  /** The check is done (ticked), or the row is fine (green dot). */
-  ok: boolean
+/** A config an earlier version connected through whatsapp-mcp: the phone links again to Tresso's own link. */
+export const MOVED_TEXT = 'WhatsApp now runs inside Tresso. Link your phone again.'
+
+/** A failure in the connect dialog's one pattern: what happened, one sentence, one button. */
+export interface FailureText {
+  title: string
+  text: string
+  action: string
 }
 
-/** A home folder shown as `~`, as the boards do: `/Users/kim/whatsapp-mcp` is `~/whatsapp-mcp`. */
-export function shortFolder(folder: string): string {
-  return folder.replace(/^\/Users\/[^/]+(?=\/|$)/, '~')
+/** Why WhatsApp does not run on this Mac (BridgeFailure), as the connect dialog says it. */
+export const FAILURES: Record<BridgeFailure, FailureText> = {
+  missing: { title: 'WhatsApp could not start on this Mac', text: 'A part of Tresso that WhatsApp needs is missing. Install Tresso again.', action: 'Try again' },
+  store: { title: 'WhatsApp could not start on this Mac', text: 'Tresso could not open its WhatsApp data on this Mac. Try again in a moment.', action: 'Try again' },
+  offline: { title: 'WhatsApp could not be reached', text: 'Check that this Mac is online, then try again.', action: 'Try again' },
+  pair_failed: { title: 'WhatsApp did not accept the link', text: 'Nothing was linked. Try again with a new code.', action: 'Try again' },
+  outdated: { title: 'Tresso needs an update for WhatsApp', text: 'WhatsApp no longer accepts this version of Tresso. Update Tresso, then try again.', action: 'Try again' },
+  replaced: { title: 'WhatsApp is open elsewhere with this link', text: 'Another copy of Tresso on this Mac uses the same link. Quit it, then try again.', action: 'Try again' },
+  banned: { title: 'WhatsApp blocked this account for now', text: 'WhatsApp limits accounts that link this way. Try again later.', action: 'Try again' },
+  logged_out: { title: 'This phone signed Tresso out', text: 'New messages do not come in until you link again.', action: 'Link again' },
+  exited: { title: 'WhatsApp could not start on this Mac', text: 'Nothing was linked. Try again in a moment.', action: 'Try again' },
+}
+
+/** The same failure in Settings, where something was linked before: one sentence. */
+export function failureLine(failure: BridgeFailure): string {
+  return failure === 'exited' ? 'WhatsApp stopped several times on this Mac. Try again in a moment.' : `${FAILURES[failure].title}. ${FAILURES[failure].text}`
 }
 
 /** A WhatsApp number as stored (digits only) in the international form, without a library for spacing (6.7). */
@@ -57,97 +65,55 @@ export function linkedName(identity: WhatsAppIdentity | null): string | null {
   return parts.length === 0 ? null : parts.join(', ')
 }
 
-const UNSAFE = 'Another user on this Mac can change the bridge or its folder, so Tresso does not start it. Make the folder yours and writable by you only (in Terminal: chmod -R go-w followed by the folder), then start the bridge again.'
-
-/** Check 1: the folder the user picked. */
-export function folderText(inspection: BridgeInspection | null): StatusText {
-  if (inspection === null) {
-    return { status: 'Choose the folder', detail: null, ok: false }
-  }
-  if (!inspection.found) {
-    return { status: 'Not found', detail: 'There is no whatsapp-bridge folder in it. Choose the whatsapp-mcp folder you downloaded.', ok: false }
-  }
-  if (!inspection.built) {
-    return { status: 'Found, not built yet', detail: 'Build the bridge once in Terminal, in this folder:', ok: false }
-  }
-  if (!inspection.safe) {
-    return { status: 'Found, not safe to start', detail: UNSAFE, ok: false }
-  }
-  return { status: 'Found', detail: null, ok: true }
+/** The linked view's heading: `Linked to +31612345678`, or `Linked` while the number is not known. */
+export function linkedTitle(identity: WhatsAppIdentity | null): string {
+  return identity !== null && identity.number !== '' ? `Linked to ${phoneNumber(identity.number)}` : 'Linked'
 }
 
-/** Why the bridge is not running, and what to do; `buildCommand` says to show the build command under it. */
-export const BRIDGE_PROBLEMS: Record<BridgeFailure, { status: string; detail: string; buildCommand: boolean }> = {
-  not_built: { status: 'Not built yet', detail: 'There is no built bridge in this folder. Build it once in Terminal, in the whatsapp-mcp folder:', buildCommand: true },
-  exited: {
-    status: 'Stopped',
-    detail: 'The bridge quit three times within a minute, so Tresso stopped starting it. Start it again; if it keeps quitting, run it once in Terminal to see why.',
-    buildCommand: false,
-  },
-  port_busy: {
-    status: 'Port in use',
-    detail: "Another program already uses the bridge's port on this Mac, often a whatsapp-bridge started in Terminal. Quit that one, then start the bridge again.",
-    buildCommand: false,
-  },
-  unprotected: {
-    status: 'Not protected',
-    detail:
-      'This bridge does not check the key Tresso gives it, so any app or web page on this Mac could send WhatsApp messages through it. Tresso does not use it. This happens with the original whatsapp-mcp or with a bridge started in Terminal. Download whatsapp-mcp from gettresso/whatsapp-mcp, build its bridge again and choose that folder; quit a bridge that runs in Terminal.',
-    buildCommand: true,
-  },
-  unsafe: { status: 'Not safe to start', detail: UNSAFE, buildCommand: false },
-}
+/**
+ * Where linking stands on this Mac, for the code panels of the dialog and Settings:
+ * - `loading`: starting, a code is on its way.
+ * - `scan`: a code to scan.
+ * - `expired`: nobody scanned for three minutes; a new code waits for the user.
+ * - `linked`: the phone is linked.
+ * - `failed`: it does not run, for the reason `failure` names (a log out included).
+ * - `idle`: not started.
+ */
+export type LinkStage = 'idle' | 'loading' | 'scan' | 'expired' | 'linked' | 'failed'
 
-/** The bridge never started in this session (no state from the shell beyond the stopped one). */
-export function bridgeIdle(bridge: BridgeState): boolean {
-  return bridge.process === 'stopped' && bridge.error === null && bridge.link === 'unknown'
-}
-
-/** Check 2 and the Settings `Bridge` row (without the last message, which Settings adds). */
-export function bridgeText(bridge: BridgeState, started: boolean): StatusText & { problem: BridgeFailure | null } {
+export function linkStage(bridge: BridgeState): LinkStage {
   if (bridge.error !== null) {
-    const problem = BRIDGE_PROBLEMS[bridge.error]
-    return { status: problem.status, detail: problem.detail, ok: false, problem: bridge.error }
+    return 'failed'
   }
   if (bridge.process === 'owned') {
-    if (bridge.port === null) {
-      return { status: 'Starting', detail: null, ok: false, problem: null }
+    if (bridge.link === 'linked') {
+      return 'linked'
     }
-    if (bridge.loopbackOnly === false) {
-      return { status: `Running, open to your network on port ${bridge.port}`, detail: 'Other computers on your network can reach this bridge.', ok: true, problem: null }
-    }
-    return { status: 'Running on this Mac', detail: null, ok: true, problem: null }
+    return bridge.link === 'waiting_for_scan' && bridge.qr !== null ? 'scan' : 'loading'
   }
-  if (!started) {
-    return { status: 'Not started', detail: null, ok: false, problem: null }
-  }
-  if (bridge.link === 'unlinked') {
-    return { status: 'Stopped', detail: 'Nobody scanned the code for three minutes, so the bridge stopped.', ok: false, problem: null }
-  }
-  return { status: 'Stopped', detail: 'Tresso starts it again in a moment.', ok: false, problem: null }
+  return bridge.link === 'unlinked' ? 'expired' : 'idle'
 }
 
-/** Check 3 and the Settings `Linked to phone` row; `linkedAt` and `now` give Settings its age line. */
-export function linkText(bridge: BridgeState, identity: WhatsAppIdentity | null): StatusText & { qr: boolean; expired: boolean } {
-  const none = { qr: false, expired: false }
-  if (bridge.process === 'owned') {
-    switch (bridge.link) {
-      case 'linked': {
-        const name = linkedName(identity)
-        return { status: name === null ? 'Linked' : `Linked as ${name}`, detail: null, ok: true, ...none }
-      }
-      case 'waiting_for_scan':
-        return bridge.qr === null ? { status: 'Waiting for the code', detail: null, ok: false, ...none } : { status: 'Scan the code', detail: null, ok: false, qr: true, expired: false }
-      case 'unlinked':
-        return { status: 'Not linked', detail: 'WhatsApp ended the link. A new code comes in a moment.', ok: false, ...none }
-      default:
-        return { status: 'Waiting for the bridge', detail: null, ok: false, ...none }
-    }
+/** Settings' status word for WhatsApp on this Mac (the pill): plain words, nothing about how it runs. */
+export function statusWord(bridge: BridgeState, moved: boolean): { text: string; ok: boolean } {
+  const stage = linkStage(bridge)
+  if (stage === 'linked') {
+    return { text: 'Connected', ok: true }
   }
-  if (bridge.link === 'unlinked' && bridge.error === null) {
-    return { status: 'Code expired', detail: 'Nobody scanned the code for three minutes. Show a new code to try again.', ok: false, qr: false, expired: true }
+  if (moved) {
+    return { text: 'Link again', ok: false }
   }
-  return { status: 'Not linked', detail: null, ok: false, ...none }
+  switch (stage) {
+    case 'failed':
+      return bridge.error === 'logged_out' ? { text: 'Not linked', ok: false } : { text: 'Could not start', ok: false }
+    case 'loading':
+      return { text: bridge.link === 'unknown' ? 'Starting' : 'Not linked', ok: false }
+    case 'scan':
+    case 'expired':
+      return { text: 'Not linked', ok: false }
+    default:
+      return { text: 'Stopped', ok: false }
+  }
 }
 
 const DAY = 24 * 60 * 60 * 1000
@@ -181,6 +147,16 @@ export function relativeTime(at: string, now: number): string {
   return days === 1 ? '1 day ago' : `${days} days ago`
 }
 
+/** A row of Settings, or the import line: what it says now. */
+export interface StatusText {
+  /** Short, next to the title. */
+  status: string
+  /** A sentence that says what happened and what to do; null when the status says it all. */
+  detail: string | null
+  /** The row is fine (green dot). */
+  ok: boolean
+}
+
 /** Where the first import is: before it began, while it runs, done, or stuck (ChatRelayImportStuck). */
 export type ImportState = 'waiting' | 'reading' | 'done' | 'stuck'
 
@@ -199,7 +175,7 @@ function plural(count: number, one: string, many: string): string {
   return `${count.toLocaleString('en')} ${count === 1 ? one : many}`
 }
 
-/** Check 4, and the import line in Settings. Counts only. */
+/** The import line in Settings. Counts only. */
 export function importText(state: ImportState, counts: ImportCounts): StatusText {
   switch (state) {
     case 'reading':
@@ -209,7 +185,7 @@ export function importText(state: ImportState, counts: ImportCounts): StatusText
     case 'stuck':
       return {
         status: 'Stuck',
-        detail: `${plural(counts.refused, 'message', 'messages')} could not be stored, so reading stopped there. Tresso keeps trying; the bridge keeps every message meanwhile.`,
+        detail: `${plural(counts.refused, 'message', 'messages')} could not be stored, so reading stopped there. Tresso keeps trying; WhatsApp on this Mac keeps every message meanwhile.`,
         ok: false,
       }
     default:
@@ -220,13 +196,11 @@ export function importText(state: ImportState, counts: ImportCounts): StatusText
 /** The shell's rejection codes (platform/whatsapp.ts) in plain words; a sentence the shell wrote is kept as it is. */
 const SHELL_ERRORS: Record<string, string> = {
   unsupported: 'WhatsApp works in Tresso for Mac only.',
-  not_chosen: 'Choose the whatsapp-mcp folder again: Tresso only uses a folder you picked.',
-  no_folder: 'The whatsapp-mcp folder is not there any more. Choose it again.',
-  no_store: 'The bridge has not stored any messages yet.',
-  bridge_stopped: 'The bridge is not running.',
-  busy: 'The bridge is busy. Try again in a moment.',
-  failed: 'The bridge did not answer. Try again in a moment.',
-  refused: 'The bridge refused the request.',
+  no_store: 'WhatsApp has not stored any messages on this Mac yet.',
+  bridge_stopped: 'WhatsApp is not running on this Mac.',
+  busy: 'WhatsApp is busy on this Mac. Try again in a moment.',
+  failed: 'WhatsApp did not answer. Try again in a moment.',
+  refused: 'WhatsApp refused the request.',
 }
 
 /** What to tell the user about a failed shell command. */
@@ -252,18 +226,21 @@ export function errorName(error: unknown): string {
 
 /** The two places, as the connect dialog offers them; "Only this Mac" first and preselected (owner decision D3). */
 export const PLACE_LOCAL_NOTE = 'Chats never leave this computer. Web and mobile do not show WhatsApp.'
-export const PLACE_ALL_NOTE = 'This Mac passes your chats to your Tresso server, so web and mobile show them too. Replies from other devices are sent once this Mac is online.'
+export const PLACE_ALL_NOTE = 'This Mac passes your chats to your Tresso server, so web and mobile show them too.'
 /** Settings' note under "Where messages live" (the SettingsWhatsApp board). */
 export const MODE_NOTE = 'All my devices: this Mac copies chats to your Tresso server so web and mobile show them. Only this Mac: chats never leave this computer.'
 
-/** The confirmation of the switch to "All my devices" (buttons Copy, Cancel). */
+/** The connect dialog's question when "All my devices" is picked (buttons Copy, Cancel). */
+export const ASK_COPY_TITLE = 'Copy your WhatsApp chats to your Tresso server?'
+export const ASK_COPY_BODY = 'Web and mobile will show them. Choosing Only this Mac again removes them from the server.'
+/** The confirmation of the switch to "All my devices" in Settings (buttons Copy, Cancel). */
 export const COPY_TITLE = 'Copy your WhatsApp chats to your Tresso server? Web and mobile will show them.'
 export const COPY_BODY =
   'This Mac copies the WhatsApp chats Tresso brings in to your Tresso server, where they are stored sealed with your account, and sends the replies you write on any device. Choosing Only this Mac again, or disconnecting WhatsApp, removes them from the server and from your other devices.'
 /** The confirmation of the switch to "Only this Mac" (buttons Remove, Cancel). */
 export const REMOVE_TITLE = 'Remove your WhatsApp chats from your Tresso server? Web and mobile will stop showing them.'
 export const REMOVE_BODY =
-  'Tresso deletes your WhatsApp chats from your Tresso server and from your other devices, with the replies still waiting there, and brings the chats in again on this Mac from the bridge. WhatsApp and the bridge keep everything.'
+  'Tresso deletes your WhatsApp chats from your Tresso server and from your other devices, with the replies still waiting there, and brings the chats in again on this Mac. WhatsApp on this Mac keeps everything.'
 
 /** In the Copy confirmation and the left-out list in "All my devices": what the server keeps of a chat left out. */
 export const LEFT_OUT_KEPT = 'Chats you left out stay out on every device: Tresso keeps only their WhatsApp address on your server, sealed, to recognise them.'
@@ -294,7 +271,7 @@ export function otherRelayText(relay: { name: string; online: boolean; offlineSi
 
 /** Messages the server would not take and the relay passed over ("All my devices"); null when none. */
 export function serverRefusedText(count: number): string | null {
-  return count === 0 ? null : `${count.toLocaleString('en')} ${count === 1 ? 'message' : 'messages'} could not be copied to your Tresso server; ${count === 1 ? 'it stays' : 'they stay'} in the bridge on this Mac only.`
+  return count === 0 ? null : `${count.toLocaleString('en')} ${count === 1 ? 'message' : 'messages'} could not be copied to your Tresso server; ${count === 1 ? 'it stays' : 'they stay'} on this Mac only.`
 }
 
 /** Replies that waited here at the switch: still to go to the server's queue. Null when none waits. */
