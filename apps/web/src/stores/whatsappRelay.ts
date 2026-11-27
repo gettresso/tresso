@@ -879,6 +879,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       }, Math.min(TAKE_UP_RETRY_MS * 2 ** (takeUpTries - 1), TAKE_UP_RETRY_MAX_MS))
       return
     }
+    if (takeUpTries >= 3 && relayFailing.value === 'read') {
+      // The failure said while the store could not be checked is over.
+      relayFailing.value = null
+    }
     takeUpTries = 0
     await readImportState(store)
     if (mine !== relayRun) {
@@ -934,8 +938,19 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         await resetLocalCursor(store, at)
         return true
       }
-      const unread = (await store.chats()).filter(({ chat, unread }) => chat.chatAccountId === accountId && unread > 0).map(({ chat }) => chat.jid)
       const before = readServerHistory(await store.chatMeta(serverHistoryKey(accountId)))
+      if (storeChange(before)?.storeId === page.storeId) {
+        // Taken up already (a restart before the new store's first cursor write): the unread list stays the one made
+        // before any of its history landed.
+        return true
+      }
+      if (cursor.firstImport === null) {
+        // The relay's own first import ended, but the server's may still be open when no live batch went since
+        // connecting: an empty live batch closes it, so messages that come during the re-read are live there too
+        // (pushed when fresh and unread), as on this Mac.
+        await api.relayMessages(accountId, { deviceId: current.deviceId, firstImport: false, chats: [], messages: [] })
+      }
+      const unread = (await store.chats()).filter(({ chat, unread }) => chat.chatAccountId === accountId && unread > 0).map(({ chat }) => chat.jid)
       const scopes = [...(before?.scopes ?? []).filter((scope) => !('all' in scope)), { all: true as const, at, unread, storeId: page.storeId }]
       await store.setChatMeta(serverHistoryKey(accountId), JSON.stringify({ scopes, throughRowid: before?.throughRowid ?? 0 } satisfies ServerHistory))
       await store.setChatMeta(serverCursorKey(accountId), JSON.stringify({ ...cursor, rowid: 0, firstImport: { through: 0, ranFor: 0, quietFor: 0 } }))
@@ -2429,8 +2444,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       await runningTask
     }
     if (config.value !== null) {
-      // Linking again was asked for and not finished: the codes stop with the dialog.
-      if (bridge.value.process === 'owned' && bridge.value.link !== 'linked') {
+      // Linking again was asked for and not finished: the codes stop with the dialog, also a restart still planned.
+      if ((bridge.value.process === 'owned' && bridge.value.link !== 'linked') || bridge.value.restarting === true) {
         try {
           onBridge(await commands.stop())
         } catch (cause) {

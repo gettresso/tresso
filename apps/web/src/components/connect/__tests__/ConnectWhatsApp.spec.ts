@@ -296,6 +296,19 @@ describe('ConnectWhatsApp', () => {
     expect(primary(wrapper).text()).toBe('Try again')
   })
 
+  it('says a refused start at once also for a relink that starts from stopped and unlinked', async () => {
+    vi.spyOn(wa, 'start').mockImplementation(async () => {
+      wa.error = 'WhatsApp works in Tresso for Mac only.'
+      return false
+    })
+    wa.bridge = { ...STOPPED, link: 'unlinked' }
+    const wrapper = open()
+    await toTheCode(wrapper)
+    expect(wrapper.get('h1').text()).toBe('WhatsApp could not start on this Mac')
+    expect(wrapper.get('.lead').text()).toBe('WhatsApp works in Tresso for Mac only.')
+    wrapper.unmount()
+  })
+
   it('says a start the shell refused in the same pattern', async () => {
     vi.spyOn(wa, 'start').mockImplementation(async () => {
       wa.error = 'WhatsApp works in Tresso for Mac only.'

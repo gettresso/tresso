@@ -90,7 +90,10 @@ the change is read through that moment, while a chat with real unread messages k
 are live. The re-read ends as that first import does: once the relay caught up with the new store and it stayed quiet
 for a minute, so history that keeps arriving after the link still counts as history. "Only this Mac" reads the new store
 from its start as a first import with that line; "All my devices" reads it from its start too, the server answers
-`known` for what it holds, and the history is marked read by chat state changes. Chats left out stay left out. Until
+`known` for what it holds, and the history is marked read by chat state changes. Before that the Mac closes the
+server's own history import with an empty live batch when it is still open (no live batch went since connecting), so
+messages that arrive during the re-read are live there too; and the list of chats that had unread messages is kept with
+the re-read from its start, so a restart halfway does not make it again after history landed. Chats left out stay left out. Until
 the store's id could be read (the history sync can keep it busy), the relay does not start, and tries again with a
 growing wait. Messages that arrived between the update and the new link count as history too: in a chat that had
 nothing unread they arrive read.
