@@ -1,21 +1,38 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { useAnchoredMenu } from '@/components/anchoredMenu'
 
 export interface MenuItem {
   id: string
   label: string
+  /** Removes or ends something: red, and last in the menu under a rule (the Actions board). */
+  danger?: boolean
 }
 
-/** A button that opens a menu of choices: browsing them with the keyboard does nothing; choosing one does. */
-const props = defineProps<{ label: string; menuLabel: string; items: MenuItem[]; icon?: InstanceType<typeof AppIcon>['$props']['name']; disabled?: boolean }>()
+/**
+ * A button that opens a menu of choices: browsing them with the keyboard does nothing; choosing one does. The `more`
+ * variant is the three-dot More button of a row: it shows no text, so `label` is its accessible name ("More for
+ * kim@company.example"), and its menu lines up with the button's end edge.
+ */
+const props = defineProps<{
+  label: string
+  menuLabel: string
+  items: MenuItem[]
+  icon?: InstanceType<typeof AppIcon>['$props']['name']
+  disabled?: boolean
+  variant?: 'text' | 'more'
+}>()
 const emit = defineEmits<{ choose: [id: string] }>()
 
 const open = ref(false)
 const menu = ref<HTMLElement | null>(null)
 const button = ref<HTMLButtonElement | null>(null)
-const { style: menuStyle, above: menuAbove } = useAnchoredMenu(button, menu, open)
+// The variant is how the button is drawn where it is used; it does not change while the button is on screen.
+const more = props.variant === 'more'
+const { style: menuStyle, above: menuAbove } = useAnchoredMenu(button, menu, open, more ? 'end' : 'start')
+const regular = computed(() => props.items.filter((item) => item.danger !== true))
+const dangerous = computed(() => props.items.filter((item) => item.danger === true))
 
 defineExpose({ open, show })
 
@@ -90,14 +107,31 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
 
 <template>
   <div class="move" @keydown.esc="escape">
-    <button ref="button" type="button" class="tool" :disabled="props.disabled || items.length === 0" aria-haspopup="menu" :aria-expanded="open" @click="open ? close() : show()">
+    <button
+      v-if="more"
+      ref="button"
+      type="button"
+      class="tool more"
+      :aria-label="label"
+      :disabled="props.disabled || items.length === 0"
+      aria-haspopup="menu"
+      :aria-expanded="open"
+      @click="open ? close() : show()"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true">
+        <path d="M5 12h.01 M12 12h.01 M19 12h.01" />
+      </svg>
+    </button>
+    <button v-else ref="button" type="button" class="tool" :disabled="props.disabled || items.length === 0" aria-haspopup="menu" :aria-expanded="open" @click="open ? close() : show()">
       <AppIcon v-if="icon" :name="icon" /> {{ label }}
     </button>
     <!-- On the body: a glass panel around the button would otherwise become the frame of this fixed menu and cut it off. -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove }" :style="menuStyle" role="menu" :aria-label="menuLabel" @keydown="keydown">
-          <button v-for="item in items" :key="item.id" type="button" role="menuitem" tabindex="-1" class="item" @click="choose(item.id)">{{ item.label }}</button>
+        <div v-if="open" ref="menu" class="menu" :class="{ above: menuAbove, end: more }" :style="menuStyle" role="menu" :aria-label="menuLabel" @keydown="keydown">
+          <button v-for="item in regular" :key="item.id" type="button" role="menuitem" tabindex="-1" class="item" @click="choose(item.id)">{{ item.label }}</button>
+          <div v-if="regular.length > 0 && dangerous.length > 0" role="separator" class="rule" />
+          <button v-for="item in dangerous" :key="item.id" type="button" role="menuitem" tabindex="-1" class="item danger" @click="choose(item.id)">{{ item.label }}</button>
         </div>
       </Transition>
     </Teleport>
@@ -135,6 +169,17 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
   opacity: 0.5;
   cursor: default;
 }
+/* The three-dot More button of a row: 32 square, the open one on the tile (the Actions board). */
+.tool.more {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.tool.more[aria-expanded='true'] {
+  background: var(--tile);
+  color: var(--ink-2);
+}
 .menu {
   transform-origin: top left;
   animation: pop-in var(--motion-fast) var(--ease-out);
@@ -155,18 +200,39 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', outside, true))
 .menu.above {
   transform-origin: bottom left;
 }
+.menu.end {
+  transform-origin: top right;
+}
+.menu.end.above {
+  transform-origin: bottom right;
+}
+/* 32 high, 13/20 at 500 (the Actions board). */
 .item {
-  padding: 8px 12px;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 6px 10px;
   border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--ink);
   font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
 }
 .item:hover,
 .item:focus {
-  background: var(--selected);
+  background: var(--ground);
+}
+.item.danger {
+  color: var(--danger);
+}
+.rule {
+  flex-shrink: 0;
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
 }
 </style>
