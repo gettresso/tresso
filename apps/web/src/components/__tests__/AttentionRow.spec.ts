@@ -17,11 +17,12 @@ describe('AttentionRow', () => {
     expect(row.get('svg').attributes('aria-hidden')).toBe('true')
   })
 
-  it('says a thing that stopped at once, in the danger tone', () => {
+  it('says a thing that stopped politely too, in the danger tone: it is there on every page load', () => {
     const view = mount(AttentionRow, { props: { tone: 'danger', text: 'Sign-in expired. New mail is not arriving.', action: 'Sign in again' } })
 
     const row = view.get('.attention')
-    expect(row.attributes('role')).toBe('alert')
+    expect(row.attributes('role')).toBe('status')
+    expect(view.find('[role="alert"]').exists()).toBe(false)
     expect(row.classes()).toContain('danger')
     expect(row.classes()).not.toContain('warning')
     expect(row.get('button').text()).toBe('Sign in again')

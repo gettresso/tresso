@@ -44,6 +44,40 @@ describe('ListRow', () => {
     expect(main.find('.below').exists()).toBe(false)
   })
 
+  it('lets an inline edit form replace the title and line column, uncut, with the end parts at its top', () => {
+    const view = mount(ListRow, {
+      slots: {
+        mark: '<i class="logo" />',
+        text: '<input aria-label="Display name" /><span class="preview">Recipients see: Kim Visser &lt;kim@company.example&gt;</span>',
+        title: 'Kim Visser',
+        line: 'kim@company.example',
+        action: '<button type="button">Save</button>',
+      },
+    })
+
+    const main = view.get('.main')
+    expect(main.classes()).toContain('open')
+    expect([...main.element.children].map((child) => child.className)).toEqual(['mark', 'text', 'action'])
+    const column = main.get('.text')
+    expect(column.find('input[aria-label="Display name"]').exists()).toBe(true)
+    expect(column.get('.preview').text()).toBe('Recipients see: Kim Visser <kim@company.example>')
+    // The column replaces title and line, so nothing in it is cut to one line.
+    expect(column.find('.title').exists()).toBe(false)
+    expect(column.find('.line').exists()).toBe(false)
+    expect(rule('.text')).not.toMatch(/overflow|white-space|text-overflow/)
+    expect(rule('.text')).toMatch(/min-width:\s*0/)
+    expect(rule('.main.open .action')).toMatch(/align-self:\s*flex-start/)
+    expect(rule('.main.open .meta')).toMatch(/align-self:\s*flex-start/)
+    expect(rule('.mark')).toMatch(/align-self:\s*flex-start/)
+  })
+
+  it('keeps the end parts centred on a plain row', () => {
+    const view = mount(ListRow, { slots: { title: 'Kim Visser', action: '<button type="button">More</button>' } })
+
+    expect(view.get('.main').classes()).not.toContain('open')
+    expect(rule('.main')).toMatch(/align-items:\s*center/)
+  })
+
   it('leaves out the parts that were not given', () => {
     const view = mount(ListRow, { slots: { title: 'WhatsApp' } })
 
