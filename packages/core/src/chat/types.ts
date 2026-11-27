@@ -1,5 +1,5 @@
 /**
- * Chats from a messaging channel (WhatsApp through whatsapp-mcp) as Tresso keeps them. They are their own entities,
+ * Chats from a messaging channel (WhatsApp, through the bridge Tresso for Mac carries) as Tresso keeps them. They are their own entities,
  * not mail: no MIME, no folders, no pipeline. Read and archive state is Tresso's own and never reaches WhatsApp.
  */
 

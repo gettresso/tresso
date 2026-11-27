@@ -1,7 +1,8 @@
 /**
- * The bridge prints its QR code with qrterminal v1.0.1 `GenerateHalfBlock` (whatsapp-bridge main.go:1009): each
- * character is two modules, one above the other. The characters are named by what the code holds (dark or light
- * module), not by how a terminal draws them.
+ * QR codes drawn with qrterminal v1.0.1 `GenerateHalfBlock`, as the bridge of earlier Tresso versions printed them:
+ * each character is two modules, one above the other. The characters are named by what the code holds (dark or light
+ * module), not by how a terminal draws them. Tresso's own bridge sends the pairing string instead and the desktop
+ * shell draws it (whatsapp.rs); these readers stay as the source of real QR codes for tests (`@tresso/core/testing/qr`).
  */
 const HALF_BLOCKS: Readonly<Record<string, readonly [boolean, boolean]>> = {
   ' ': [true, true],

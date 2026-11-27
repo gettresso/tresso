@@ -222,7 +222,7 @@ export function bubbleMeta(time: string, label: ReplyLabel | null): string {
 }
 
 const ERROR_TEXTS: Record<ChatOutgoingError, string> = {
-  bridge_stopped: 'The bridge is not running.',
+  bridge_stopped: 'WhatsApp is not running on your Mac.',
   not_linked: 'WhatsApp is not linked.',
   refused: 'WhatsApp refused the message.',
   unconfirmed: 'Tresso could not confirm this was sent. Check WhatsApp on your phone before trying again.',

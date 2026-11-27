@@ -394,6 +394,40 @@ describe('ChatRelay with the local backend', () => {
     expect((await store.chats())[0]!.unread).toBe(1)
   })
 
+  // Tresso's own bridge replaced the whatsapp-mcp one: a new, empty store (another file, so another store id) that the
+  // phone fills again with part of the history once it is linked anew, numbered from 1.
+  it('takes up a new store from 0 after the bridge moved into Tresso, storing no chat or message twice', async () => {
+    for (let i = 1; i <= 5; i++) {
+      bridge.add(`A${i}`, DIRECT)
+    }
+    await relay.pollNow()
+    for (let round = 0; round < FIRST_IMPORT_QUIET / RELAY_INTERVAL; round++) {
+      clock += RELAY_INTERVAL
+      await relay.pollNow()
+    }
+    expect(await storedCursor()).toEqual({ storeId: 'file-1:1:1', rowid: 5, firstImport: null })
+    const unreadBefore = (await store.chats())[0]!.unread
+
+    // The new store: the history sync brings A3 to A5 again, then two new messages arrive, one in a chat not seen yet.
+    bridge.rows = bridge.rows.filter((row) => ['A3', 'A4', 'A5'].includes(row.id))
+    bridge.renumber('file-9:1:1')
+    bridge.add('A6', DIRECT, { sentAt: at(2) })
+    bridge.add('B1', OTHER, { sentAt: at(3) })
+    bridge.reads.length = 0
+
+    await relay.pollNow()
+    await relay.pollNow()
+
+    expect(bridge.reads).toEqual([5, 0, 5])
+    expect(await messageIds()).toEqual([...[1, 2, 3, 4, 5, 6].map((i) => `wa:${DIRECT}:A${i}`), `wa:${OTHER}:B1`])
+    const chats = await store.chats()
+    expect(chats.map(({ chat }) => chat.jid).sort()).toEqual([DIRECT, OTHER].sort())
+    // Only what is new counts as unread: the history read again changes nothing.
+    expect(chats.find(({ chat }) => chat.jid === DIRECT)!.unread).toBe(unreadBefore + 1)
+    expect(chats.find(({ chat }) => chat.jid === OTHER)!.unread).toBe(1)
+    expect(await storedCursor()).toEqual({ storeId: 'file-9:1:1', rowid: 5, firstImport: null })
+  })
+
   it('reads from 0 when the highest rowid falls below the cursor, even under the same store id', async () => {
     bridge.add('A1', DIRECT)
     bridge.add('A2', DIRECT)

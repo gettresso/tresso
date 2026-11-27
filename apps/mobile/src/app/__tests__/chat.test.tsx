@@ -186,7 +186,7 @@ describe('the chat screen', () => {
     const { api } = await open({ outgoing: [reply('r1', 'c1', { status: 'failed', error: 'bridge_stopped', createdAt: minutes(20) })] })
 
     expect(await screen.findByText('Not sent, tap to retry')).toBeTruthy()
-    expect(screen.getByText('The bridge is not running.')).toBeTruthy()
+    expect(screen.getByText('WhatsApp is not running on your Mac.')).toBeTruthy()
     fireEvent.click(screen.getByLabelText(`You, ${time(minutes(20))}, not sent, Reply r1`))
 
     await waitFor(() => expect(api.retryReply).toHaveBeenCalledWith('r1'))

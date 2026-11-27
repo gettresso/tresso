@@ -27,7 +27,7 @@ describe('chat texts', () => {
   })
 
   it('says a reply was not sent with the reason, and offers a tap to retry', () => {
-    expect(replyView({ status: 'failed', error: 'bridge_stopped' }, '10:31', true)).toEqual({ meta: 'Not sent, tap to retry', state: 'failed', reason: 'The bridge is not running.', spoken: 'not sent' })
+    expect(replyView({ status: 'failed', error: 'bridge_stopped' }, '10:31', true)).toEqual({ meta: 'Not sent, tap to retry', state: 'failed', reason: 'WhatsApp is not running on your Mac.', spoken: 'not sent' })
     expect(replyView({ status: 'failed', error: 'refused' }, '10:31', true)?.reason).toBe('WhatsApp refused the message.')
   })
 
