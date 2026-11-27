@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -82,6 +83,13 @@ func newRESTHandler(client *whatsmeow.Client, messageStore *MessageStore) *http.
 			return
 		}
 
+		// A media path that is not absolute is refused before anything else: the bridge never reads a path relative to
+		// wherever it happens to run.
+		if req.MediaPath != "" && !filepath.IsAbs(req.MediaPath) {
+			http.Error(w, "Media path must be absolute", http.StatusBadRequest)
+			return
+		}
+
 		// Validate request
 		if req.Recipient == "" {
 			http.Error(w, "Recipient is required", http.StatusBadRequest)
@@ -91,6 +99,18 @@ func newRESTHandler(client *whatsmeow.Client, messageStore *MessageStore) *http.
 		if req.Message == "" && req.MediaPath == "" {
 			http.Error(w, "Message or media path is required", http.StatusBadRequest)
 			return
+		}
+
+		if _, err := recipientJID(req.Recipient); err != nil {
+			http.Error(w, "Recipient is not valid", http.StatusBadRequest)
+			return
+		}
+
+		if req.MediaPath != "" {
+			if err := checkMedia(req.MediaPath); err != nil {
+				http.Error(w, mediaRefusal(err), http.StatusBadRequest)
+				return
+			}
 		}
 
 		// Send the message
@@ -163,18 +183,47 @@ func newRESTHandler(client *whatsmeow.Client, messageStore *MessageStore) *http.
 	return mux
 }
 
+// mediaRefusal is the answer for a media path checkMedia refused.
+func mediaRefusal(err error) string {
+	switch {
+	case errors.Is(err, errMediaNotFile):
+		return "Media path is not a regular file"
+	case errors.Is(err, errMediaTooLarge):
+		return "Media file is larger than 100 MB"
+	case errors.Is(err, errMediaNotAbsolute):
+		return "Media path must be absolute"
+	default:
+		return "Media file cannot be read"
+	}
+}
+
 // listenREST binds the REST API to 127.0.0.1:port. It only binds: serve starts answering. The bridge says it listens
 // only after the bind worked.
 func listenREST(port int) (net.Listener, error) {
 	return net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
 }
 
-// newRESTServer is the HTTP server of the API. net/http's own error log (bad requests, broken connections) is
-// dropped: it names remote addresses and request details, and stderr carries only the bridge's own short lines.
+// The REST server's limits. A client may not hold a connection open without sending its request (headers within 10
+// seconds, the whole request within 30: the body is JSON of at most maxRequestBody, 1 MiB, and files go by path, so
+// that is ample even for the largest request on 127.0.0.1), nor keep an idle connection for more than a minute.
+// There is no write timeout: a download may wait up to mediaRetryTimeout (60 seconds) for the phone.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	idleTimeout       = 60 * time.Second
+	maxHeaderBytes    = 16 << 10
+)
+
+// newRESTServer is the HTTP server of the API. net/http's own error log (bad requests, broken connections, a
+// recovered handler panic with its value) is dropped: it names remote addresses and request details, and stderr
+// carries only the bridge's own short lines.
 func newRESTServer(handler http.Handler) *http.Server {
 	return &http.Server{
 		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	signallog "go.mau.fi/libsignal/logger"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -35,23 +37,78 @@ const shutdownTimeout = 5 * time.Second
 var connect = (*whatsmeow.Client).Connect
 
 func main() {
-	stdout := os.Stdout
-	// Only the emitter writes to stdout. Anything else that prints there (a library, a forgotten print) goes nowhere.
-	if devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
-		os.Stdout = devNull
-	}
+	stdout := isolateStdout(func() (*os.File, error) { return os.OpenFile(os.DevNull, os.O_WRONLY, 0) })
+	// Go's standard logger writes to stderr; nothing of the bridge uses it, and nothing else may.
+	log.SetOutput(io.Discard)
+	silenceSignalLog()
 	// A write to a stdout nobody reads any more would end the program on the spot (Go exits at SIGPIPE on fd 1 and 2),
 	// before the databases close. Ignored, the write fails instead, and the end of stdin stops the bridge cleanly.
 	signal.Ignore(syscall.SIGPIPE)
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	os.Exit(run(os.LookupEnv, os.Stdin, signals, newEmitter(stdout), &diagnostics{w: os.Stderr}))
+	em := newEmitter(stdout)
+	diag := &diagnostics{w: os.Stderr}
+	os.Exit(runProtected(em, diag, func() int { return run(os.LookupEnv, os.Stdin, signals, em, diag) }))
+}
+
+// isolateStdout returns the real stdout, for the emitter only, and points os.Stdout (what fmt.Print and every library
+// write to) at /dev/null. When /dev/null cannot be opened, os.Stdout becomes a nil *os.File: every write to it fails
+// with os.ErrInvalid, without a panic, so a stray print can neither reach the parent nor crash the bridge.
+func isolateStdout(openNull func() (*os.File, error)) *os.File {
+	real := os.Stdout
+	null, err := openNull()
+	if err != nil {
+		null = nil
+	}
+	os.Stdout = null
+	return real
+}
+
+// silentSignalLogger replaces libsignal's default logger, which prints to stdout with fmt.Println. The bridge does
+// not depend on the stdout redirection alone.
+type silentSignalLogger struct{}
+
+func (silentSignalLogger) Debug(string, string)   {}
+func (silentSignalLogger) Info(string, string)    {}
+func (silentSignalLogger) Warning(string, string) {}
+func (silentSignalLogger) Error(string, string)   {}
+func (silentSignalLogger) Configure(string)       {}
+
+func silenceSignalLog() {
+	var silent signallog.Loggable = silentSignalLogger{}
+	signallog.Setup(&silent)
+}
+
+// panicReason is the only thing said about a panic: its value can hold message data and is never printed.
+const panicReason = "the bridge stopped on an internal error"
+
+// runProtected runs the bridge and turns a panic of its main goroutine into a fatal event and status 1. The deferred
+// calls of run (disconnect, closing the databases) have run by the time the panic reaches here.
+func runProtected(em *emitter, diag *diagnostics, f func() int) (status int) {
+	defer func() {
+		if recover() != nil {
+			em.fatal("panic")
+			diag.say(panicReason)
+			status = 1
+		}
+	}()
+	return f()
 }
 
 // outcome is how the bridge ends: the exit status, and whether a fatal event went out already. The first fatal wins.
 type outcome struct {
 	mu     sync.Mutex
 	failed bool
+}
+
+// guard runs f, a goroutine of the bridge, and turns a panic in it into a fatal event that stops the bridge cleanly.
+func (o *outcome) guard(em *emitter, diag *diagnostics, stop func(), f func()) {
+	defer func() {
+		if recover() != nil {
+			o.fail(em, diag, fatal("panic", panicReason, nil), stop)
+		}
+	}()
+	f()
 }
 
 // fail reports err (a *fatalError) once and asks the bridge to stop.
@@ -98,8 +155,8 @@ func run(lookup func(string) (string, bool), stdin io.Reader, signals <-chan os.
 	// Nothing the bridge starts needs the token: it stays in this process only.
 	_ = os.Unsetenv(envToken)
 
-	go watchStdin(stdin, stop)
-	go watchSignals(ctx, signals, stop)
+	go end.guard(em, diag, stop, func() { watchStdin(stdin, stop) })
+	go end.guard(em, diag, stop, func() { watchSignals(ctx, signals, stop) })
 
 	setDeviceName()
 
@@ -205,11 +262,11 @@ func run(lookup func(string) (string, bool), stdin io.Reader, signals <-chan os.
 		return failWith(fatal("listen_failed", "the REST API cannot listen on its port", err))
 	}
 	server := newRESTServer(protect(newRESTHandler(client, messageStore), cfg.token, cfg.port))
-	go func() {
+	go end.guard(em, diag, stop, func() {
 		if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 			end.fail(em, diag, fatal("server_failed", "the REST API stopped", err), stop)
 		}
-	}()
+	})
 	em.listening(cfg.port)
 
 	<-ctx.Done()
@@ -222,7 +279,7 @@ func run(lookup func(string) (string, bool), stdin io.Reader, signals <-chan os.
 // storeReason is the fixed text for why the store was refused. The error itself can hold paths, and paths in the store
 // hold chat ids.
 func storeReason(err error) string {
-	for _, known := range []error{errStoreNotFolder, errStoreLink, errStoreOwner, errStoreWritable, errDatabaseNotAFile} {
+	for _, known := range []error{errStoreNotFolder, errStoreLink, errStoreOwner, errStoreNotPrivate, errStoreTooWide, errDatabaseNotAFile} {
 		if errors.Is(err, known) {
 			return known.Error()
 		}

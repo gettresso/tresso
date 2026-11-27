@@ -80,7 +80,7 @@ func (e *emitter) fatal(code string) { e.emit(event{Event: "fatal", Code: code})
 // fatalCodes are every code a fatal event carries.
 var fatalCodes = []string{
 	"bad_port", "bad_token", "bad_store", "store_failed", "connect_failed", "not_connected", "pair_failed",
-	"client_outdated", "stream_replaced", "temporary_ban", "listen_failed", "server_failed",
+	"client_outdated", "stream_replaced", "temporary_ban", "listen_failed", "server_failed", "panic",
 }
 
 // diagnostics writes short lines to stderr. Every line is a fixed text from this program, or a log format string of
@@ -130,7 +130,7 @@ func (l *templateLogger) Sub(module string) waLog.Logger {
 // Unicode line and paragraph separators become a space.
 func clean(value string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || r == ' ' || r == ' ' || r == '\u0085' {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || r == '\u0085' {
 			return ' '
 		}
 		return r
