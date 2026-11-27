@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import { compileStyle, parse } from 'vue/compiler-sfc'
 import MenuButton from '@/components/MenuButton.vue'
+import source from '@/components/MenuButton.vue?raw'
 import { shortcutAllowed } from '@/mail/useMessageActions'
 
 const ITEMS = [
@@ -185,5 +187,44 @@ describe('MenuButton as the More button of a row', () => {
     menuItems().find((item) => item.textContent === 'Remove account')!.click()
     await nextTick()
     expect(view.emitted('choose')).toEqual([['remove']])
+  })
+})
+
+/** The declarations of every rule for one selector in the menu's own style block, as the build compiles it. */
+function rule(selector: string): string {
+  const { descriptor } = parse(source)
+  const css = descriptor.styles
+    .map((style) => compileStyle({ source: style.content, filename: 'MenuButton.vue', id: 'data-v-test', scoped: style.scoped }).code)
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+  // Vue scopes the last part of a selector, before any pseudo-class.
+  const scoped = selector.replace(/(:[a-z-]+)?$/, '[data-v-test]$1')
+  const bodies = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((found) => found[1]!.split(',').some((head) => head.trim() === scoped)).map((found) => found[2]!)
+  if (bodies.length === 0) {
+    throw new Error(`no rule for ${selector}`)
+  }
+  return bodies.join('\n')
+}
+
+describe('MenuButton styles from the Actions board', () => {
+  it('highlights an item on hover and keyboard focus in the ground tint', () => {
+    expect(rule('.item:hover')).toMatch(/background:\s*var\(--ground\)/)
+    expect(rule('.item:focus')).toMatch(/background:\s*var\(--ground\)/)
+  })
+
+  it('draws items 32 high in 13 px at 500, and the danger one in red', () => {
+    const item = rule('.item')
+    expect(item).toMatch(/min-height:\s*32px/)
+    expect(item).toMatch(/font-size:\s*13px/)
+    expect(item).toMatch(/font-weight:\s*500/)
+    expect(rule('.item.danger')).toMatch(/color:\s*var\(--danger\)/)
+    expect(rule('.rule')).toMatch(/background:\s*var\(--line\)/)
+  })
+
+  it('puts the open More button on the tile, 32 square', () => {
+    expect(rule(".tool.more[aria-expanded='true']")).toMatch(/background:\s*var\(--tile\)/)
+    const more = rule('.tool.more')
+    expect(more).toMatch(/width:\s*32px/)
+    expect(more).toMatch(/height:\s*32px/)
   })
 })

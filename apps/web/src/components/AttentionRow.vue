@@ -5,13 +5,16 @@ import AppIcon from '@/components/AppIcon.vue'
  * What the user has to fix about the row it sits in (the Attention row board): one line that says what is wrong and one
  * button that fixes it. Orange (`warning`) when a part does not work, red (`danger`) when the thing itself stopped. The
  * text stays ink; only the icon and the tint carry the colour.
+ *
+ * Both tones are a polite `status`, the red one too (unlike the board): the row is drawn when the page loads, and an
+ * `alert` would make a screen reader interrupt with every expired account on each visit to the page.
  */
 const props = defineProps<{ tone: 'warning' | 'danger'; text: string; action?: string }>()
 const emit = defineEmits<{ act: [] }>()
 </script>
 
 <template>
-  <div class="attention" :class="[props.tone, { bare: !props.action }]" :role="props.tone === 'danger' ? 'alert' : 'status'">
+  <div class="attention" :class="[props.tone, { bare: !props.action }]" role="status">
     <AppIcon class="icon" :name="props.tone === 'danger' ? 'error' : 'alert'" :size="16" />
     <span class="text">{{ props.text }}</span>
     <button v-if="props.action" type="button" class="button act" @click="emit('act')">{{ props.action }}</button>
