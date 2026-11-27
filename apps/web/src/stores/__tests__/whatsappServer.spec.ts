@@ -5,6 +5,7 @@ import { carriesChats } from '@/stores/mail'
 import {
   SERVER_ACCOUNT,
   historyAt,
+  storeChange,
   readCarriedReplies,
   readModeSwitch,
   readServerHistory,
@@ -54,6 +55,15 @@ describe('what the desktop keeps for "All my devices"', () => {
     expect(historyAt(history, { jid: 'a@s.whatsapp.net', kind: 'direct' })).toBe(1_000)
     expect(historyAt(history, { jid: 'g@g.us', kind: 'group' })).toBe(2_000)
     expect(historyAt(history, { jid: 'b@s.whatsapp.net', kind: 'direct' })).toBeNull()
+
+    // A store change marks every chat but those that had unread messages then, direct chats included.
+    const change = readServerHistory(JSON.stringify({ scopes: [{ all: true, at: 3_000, unread: ['g@g.us'], storeId: 'new' }], throughRowid: 0 }))
+    expect(storeChange(change)).toEqual({ all: true, at: 3_000, unread: ['g@g.us'], storeId: 'new' })
+    expect(historyAt(change, { jid: 'b@s.whatsapp.net', kind: 'direct' })).toBe(3_000)
+    expect(historyAt(change, { jid: 'h@g.us', kind: 'group' })).toBe(3_000)
+    expect(historyAt(change, { jid: 'g@g.us', kind: 'group' })).toBeNull()
+    expect(storeChange(history)).toBeNull()
+    expect(readServerHistory(JSON.stringify({ scopes: [{ all: true, at: 3_000, unread: [1], storeId: 'new' }], throughRowid: 0 }))).toBeNull()
 
     await store.setChatMeta(SERVER_ACCOUNT, ACCOUNT)
     await removeServerState(store, ACCOUNT)

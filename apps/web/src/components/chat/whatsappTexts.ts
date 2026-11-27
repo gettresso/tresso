@@ -91,7 +91,7 @@ export function linkedTitle(identity: WhatsAppIdentity | null): string {
 
 /**
  * Where linking stands on this Mac, for the code panels of the dialog and Settings:
- * - `loading`: starting, a code is on its way.
+ * - `loading`: starting, a code is on its way, or a restart after an unexpected exit is planned.
  * - `scan`: a code to scan.
  * - `expired`: nobody scanned for three minutes; a new code waits for the user.
  * - `linked`: the phone is linked.
@@ -109,6 +109,10 @@ export function linkStage(bridge: BridgeState): LinkStage {
       return 'linked'
     }
     return bridge.link === 'waiting_for_scan' && bridge.qr !== null ? 'scan' : 'loading'
+  }
+  if (bridge.restarting === true) {
+    // The shell starts it again after its backoff: on its way, not stopped.
+    return 'loading'
   }
   return bridge.link === 'unlinked' ? 'expired' : 'idle'
 }

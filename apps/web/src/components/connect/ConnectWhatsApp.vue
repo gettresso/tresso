@@ -74,6 +74,10 @@ const codeLate = ref(false)
 let codeTimer: ReturnType<typeof setTimeout> | null = null
 /** The connect after the phone linked was made by itself once; after that it waits for Try again. */
 let connectTried = false
+/** A code was shown in this dialog: only then is a stopped, unlinked bridge "The code expired" (not a relink starting). */
+const codeShown = ref(false)
+/** The expired tile: a code shown here timed out, and no start runs. */
+const expiredShown = computed(() => codeShown.value && wa.busy === null)
 /** The step the dialog shows. */
 const view = computed<'start' | 'link' | 'linked' | 'problem'>(() => {
   if (connectedHere.value || (wa.connected && wa.linked)) {
@@ -82,7 +86,8 @@ const view = computed<'start' | 'link' | 'linked' | 'problem'>(() => {
   if (!started.value) {
     return 'start'
   }
-  // Failed, or stopped from outside with nothing to say (no error, no code on its way), or a code that never came: all
+  // Failed, or stopped from outside with nothing to say (no error, no code on its way, no restart planned: the shell's
+  // snapshot says `restarting` during its backoff, which linkStage counts as loading), or a code that never came: all
   // end in the could-not-start pattern with Try again, never on a spinner.
   if (stage.value === 'failed' || (stage.value === 'idle' && wa.busy === null) || codeLate.value) {
     return 'problem'
@@ -97,6 +102,8 @@ const problem = computed(() =>
 )
 /** Linked, not connected, no question open and nothing running: the connect waits for Try again. */
 const connectStuck = computed(() => view.value === 'linked' && !wa.connected && wa.askNumber === null && wa.busy === null)
+/** Linked and not connected, whatever runs: closing now undoes the link (the store's cancel), so the dialog says so. */
+const unlinksOnClose = computed(() => view.value === 'linked' && !wa.connected)
 const reading = computed(() => wa.importState !== 'done')
 const progressText = computed(() => (reading.value ? `Reading chats from the last ${IMPORT_DAYS} days…` : 'Chats read'))
 /** Done waits for an open question and for a change of the place under way. */
@@ -106,7 +113,7 @@ const doneDisabled = computed(() => asking.value !== null || wa.busy === 'mode' 
 const announcement = computed(() => {
   switch (view.value) {
     case 'link':
-      return stage.value === 'scan' ? 'A code to scan is shown.' : stage.value === 'expired' ? 'The code expired.' : 'Getting a code.'
+      return stage.value === 'scan' ? 'A code to scan is shown.' : stage.value === 'expired' && expiredShown.value ? 'The code expired.' : 'Getting a code.'
     case 'linked':
       return reading.value ? 'Linked. Reading your recent chats.' : 'Linked. Your recent chats are in.'
     default:
@@ -129,9 +136,10 @@ async function showCode(): Promise<void> {
   await wa.start({ link: true })
 }
 
-// The backstop: while a code is on its way, a timer; a code, a link or any other step ends it.
+// The backstop: while a code is on its way (also while a start still waits for other work, or a relink starts from a
+// stopped, unlinked state), a timer; a code, a link or any other step ends it.
 watch(
-  () => view.value === 'link' && stage.value === 'loading',
+  () => view.value === 'link' && stage.value !== 'scan' && !(stage.value === 'expired' && expiredShown.value),
   (waiting) => {
     if (codeTimer !== null) {
       clearTimeout(codeTimer)
@@ -142,6 +150,16 @@ watch(
     }
   },
 )
+
+// A code or the link that arrives late takes back the backstop's word; a code shown makes a later stop "expired".
+watch(stage, (now) => {
+  if (now === 'scan') {
+    codeShown.value = true
+  }
+  if (now === 'scan' || now === 'linked') {
+    codeLate.value = false
+  }
+})
 
 /** The phone linked: WhatsApp is connected at once (the reading starts). */
 async function connect(numberConfirmed = false): Promise<void> {
@@ -224,8 +242,14 @@ function onEnter(event: KeyboardEvent): void {
   event.preventDefault()
   if (view.value === 'start' || view.value === 'problem') {
     void showCode()
-  } else if (view.value === 'linked' && !doneDisabled.value) {
-    emit('done')
+  } else if (view.value === 'linked') {
+    // What the step's visible primary button does: Try again while the connect waits for it, Done once connected,
+    // nothing while a question is open or something runs.
+    if (connectStuck.value) {
+      void connect()
+    } else if (wa.connected && !doneDisabled.value && wa.askNumber === null) {
+      emit('done')
+    }
   }
 }
 
@@ -286,7 +310,7 @@ onUnmounted(() => {
 
     <template v-else-if="view === 'link'">
       <h1 id="wa-title" tabindex="-1">Scan this code with your phone</h1>
-      <WhatsAppLink />
+      <WhatsAppLink :expired-shown="expiredShown" />
     </template>
 
     <template v-else-if="view === 'linked'">
@@ -346,7 +370,7 @@ onUnmounted(() => {
         </div>
       </div>
       <p v-else-if="wa.error" class="error" role="alert">{{ wa.error }}</p>
-      <p v-if="connectStuck" class="quiet">Closing now unlinks this Mac from your phone again.</p>
+      <p v-if="unlinksOnClose" class="quiet">Closing now unlinks this Mac from your phone again.</p>
       <div class="footer">
         <button v-if="connectStuck" type="button" class="button button-primary big" @click="connect()">Try again</button>
         <button v-else type="button" class="button button-primary big" :disabled="doneDisabled || !wa.connected" @click="emit('done')">Done</button>

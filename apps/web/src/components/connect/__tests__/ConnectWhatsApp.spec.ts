@@ -440,6 +440,135 @@ describe('ConnectWhatsApp', () => {
     wrapper.unmount()
   })
 
+  it('makes Enter do what the linked step shows: Try again, nothing during a question, Done only when connected', async () => {
+    starts()
+    let answers = 0
+    const connect = vi.spyOn(wa, 'connect').mockImplementation(async () => {
+      answers++
+      if (answers === 1) {
+        wa.askNumber = 'connect'
+        wa.error = 'Tresso cannot tell whether this Mac is linked to the same WhatsApp number as your Tresso server.'
+        return false
+      }
+      if (answers === 2) {
+        wa.error = 'Your Tresso server could not be reached.'
+        return false
+      }
+      wa.config = config()
+      return true
+    })
+    const wrapper = open()
+    await toTheCode(wrapper)
+    wa.bridge = LINKED
+    await flushPromises()
+    const enter = async () => {
+      const focused = document.activeElement as HTMLElement
+      expect(focused.tagName).toBe('H1')
+      focused.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await flushPromises()
+    }
+    // The number question is open: Enter does nothing (no Done, no unlink).
+    expect(wa.askNumber).toBe('connect')
+    await enter()
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('done')).toBeUndefined()
+    // Cancel the question: Try again shows, and Enter is Try again.
+    wa.askNumber = null
+    wa.error = null
+    await flushPromises()
+    ;(wrapper.get('h1').element as HTMLElement).focus()
+    await enter()
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('done')).toBeUndefined()
+    // It failed again: still Try again, never Done.
+    await enter()
+    expect(connect).toHaveBeenCalledTimes(3)
+    expect(wa.connected).toBe(true)
+    await enter()
+    expect(wrapper.emitted('done')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('says closing unlinks whenever the phone linked and WhatsApp is not connected, also during a question or a connect', async () => {
+    starts()
+    let finish!: () => void
+    vi.spyOn(wa, 'connect').mockImplementation(async () => {
+      wa.busy = 'connect'
+      await new Promise<void>((resolve) => (finish = resolve))
+      wa.busy = null
+      wa.askNumber = 'connect'
+      wa.error = 'Tresso cannot tell whether this Mac is linked to the same WhatsApp number as your Tresso server.'
+      return false
+    })
+    const wrapper = open()
+    await toTheCode(wrapper)
+    wa.bridge = LINKED
+    await flushPromises()
+    // A connect runs.
+    expect(wrapper.text()).toContain('Closing now unlinks this Mac from your phone again.')
+    finish()
+    await flushPromises()
+    // The number question is open.
+    expect(wa.askNumber).toBe('connect')
+    expect(wrapper.text()).toContain('Closing now unlinks this Mac from your phone again.')
+    wrapper.unmount()
+  })
+
+  it('waits through a planned restart without calling it a failure', async () => {
+    starts()
+    const wrapper = open()
+    await toTheCode(wrapper)
+    wa.bridge = { ...STOPPED, restarting: true }
+    await flushPromises()
+    expect(wrapper.get('h1').text()).toBe('Scan this code with your phone')
+    expect(wrapper.get('.tile.empty').text()).toBe('Getting a code\u2026')
+    expect(document.activeElement?.textContent).toBe('Scan this code with your phone')
+    wa.bridge = STARTING
+    await flushPromises()
+    expect(wrapper.get('h1').text()).toBe('Scan this code with your phone')
+    wrapper.unmount()
+  })
+
+  it('takes back the backstop when a code comes late, covers a start that waits, and shows no expired code before one was shown', async () => {
+    vi.useFakeTimers()
+    try {
+      let release!: () => void
+      vi.spyOn(wa, 'start').mockImplementation(async () => {
+        wa.busy = 'start'
+        await new Promise<void>((resolve) => (release = resolve))
+        wa.busy = null
+        wa.bridge = STARTING
+        return true
+      })
+      // A relink starts from stopped and unlinked: while the start runs, a loader, not "The code expired".
+      wa.bridge = { ...STOPPED, link: 'unlinked' }
+      const wrapper = open()
+      await wrapper.get('.confirm input').setValue(true)
+      void primary(wrapper).trigger('click')
+      await flushPromises()
+      expect(wrapper.get('.tile.empty').text()).toBe('Getting a code\u2026')
+      expect(wrapper.text()).not.toContain('The code expired')
+      // The start waits on other work for a minute: the backstop covers it too.
+      await vi.advanceTimersByTimeAsync(61_000)
+      expect(wrapper.get('h1').text()).toBe('WhatsApp could not start on this Mac')
+      // The code comes after all: shown, the backstop's word taken back.
+      release()
+      await flushPromises()
+      expect(wrapper.get('h1').text()).toBe('WhatsApp could not start on this Mac')
+      wa.bridge = { ...STARTING, link: 'waiting_for_scan', qr: rows(QR_SIZE_25) }
+      await flushPromises()
+      expect(wrapper.get('h1').text()).toBe('Scan this code with your phone')
+      expect(wrapper.find('.tile.code svg').exists()).toBe(true)
+      // Now a code was shown: its time-out is "The code expired".
+      wa.bridge = { ...STOPPED, link: 'unlinked' }
+      await flushPromises()
+      expect(wrapper.text()).toContain('The code expired')
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('closes with Close or Escape', async () => {
     const wrapper = open()
     await wrapper.get('button[aria-label="Close"]').trigger('click')

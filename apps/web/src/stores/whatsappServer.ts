@@ -40,11 +40,13 @@ export interface CarriedReply {
   id: string | null
 }
 
-/** What a re-read marks read: one chat by JID, or every group chat (`jid` null), through `at` (epoch ms). */
-export interface HistoryScope {
-  jid: string | null
-  at: number
-}
+/**
+ * What a re-read marks read through `at` (epoch ms): one chat by JID, every group chat (`jid` null, groups turned on
+ * again), or, after the bridge's store changed (a new link), every chat (`all`) but those that had unread messages
+ * then (`unread`, by JID): the same chats "Only this Mac" marks in its first import. `storeId` is the new store's: that
+ * re-read ends once the relay's first import of it ended (the quiet rule).
+ */
+export type HistoryScope = { jid: string | null; at: number } | { all: true; at: number; unread: string[]; storeId: string }
 
 /**
  * A re-read of the bridge's store with live batches (a chat taken back in, groups turned on again): against the server a
@@ -61,11 +63,17 @@ export interface ServerHistory {
 export function historyAt(history: ServerHistory | null, chat: { jid: string; kind: string }): number | null {
   let at: number | null = null
   for (const scope of history?.scopes ?? []) {
-    if (scope.jid === chat.jid || (scope.jid === null && chat.kind === 'group')) {
+    const about = 'all' in scope ? !scope.unread.includes(chat.jid) : scope.jid === chat.jid || (scope.jid === null && chat.kind === 'group')
+    if (about) {
       at = Math.max(at ?? scope.at, scope.at)
     }
   }
   return at
+}
+
+/** The scope of a store change under way, when the history holds one: its end follows the new store's first import. */
+export function storeChange(history: ServerHistory | null): Extract<HistoryScope, { all: true }> | null {
+  return history?.scopes.find((scope): scope is Extract<HistoryScope, { all: true }> => 'all' in scope) ?? null
 }
 
 function parse(value: string | null): unknown {
@@ -117,9 +125,18 @@ export function readServerHistory(value: string | null): ServerHistory | null {
   if (raw === null || typeof raw !== 'object' || typeof raw.throughRowid !== 'number' || !Number.isSafeInteger(raw.throughRowid) || !Array.isArray(raw.scopes)) {
     return null
   }
-  const scopes = raw.scopes.flatMap((entry: unknown) => {
-    const scope = entry as { jid?: unknown; at?: unknown } | null
-    if (scope === null || typeof scope !== 'object' || typeof scope.at !== 'number' || !Number.isSafeInteger(scope.at) || (scope.jid !== null && typeof scope.jid !== 'string')) {
+  const scopes = raw.scopes.flatMap((entry: unknown): HistoryScope[] => {
+    const scope = entry as { jid?: unknown; at?: unknown; all?: unknown; unread?: unknown; storeId?: unknown } | null
+    if (scope === null || typeof scope !== 'object' || typeof scope.at !== 'number' || !Number.isSafeInteger(scope.at)) {
+      return []
+    }
+    if (scope.all === true) {
+      if (!Array.isArray(scope.unread) || !scope.unread.every((jid) => typeof jid === 'string') || typeof scope.storeId !== 'string') {
+        return []
+      }
+      return [{ all: true, at: scope.at, unread: scope.unread as string[], storeId: scope.storeId }]
+    }
+    if (scope.jid !== null && typeof scope.jid !== 'string') {
       return []
     }
     return [{ jid: scope.jid as string | null, at: scope.at }]

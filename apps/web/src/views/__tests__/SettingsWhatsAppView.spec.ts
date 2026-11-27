@@ -112,6 +112,12 @@ describe('SettingsWhatsAppView', () => {
     expect(row(wrapper, 'On this Mac').value).toBe('Starting')
     expect(wrapper.get('.pill').text()).toBe('Starting')
 
+    // A restart planned after an unexpected exit: on its way, not a failure.
+    wa.bridge = { ...STOPPED, restarting: true }
+    await flushPromises()
+    expect(row(wrapper, 'On this Mac').value).toBe('Starting again')
+    expect(row(wrapper, 'On this Mac').element.find('button').exists()).toBe(false)
+
     wa.bridge = STOPPED
     await flushPromises()
     expect(row(wrapper, 'On this Mac')).toMatchObject({ value: 'Stopped', ok: false })
