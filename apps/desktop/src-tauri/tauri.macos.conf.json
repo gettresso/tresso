@@ -35,6 +35,12 @@
       ],
       "hardenedRuntime": true,
       "entitlements": "Entitlements.plist"
+    },
+    "externalBin": [
+      "binaries/whatsapp-bridge"
+    ],
+    "resources": {
+      "../../whatsapp-bridge/THIRD-PARTY-NOTICES.txt": "licenses/whatsapp-bridge-third-party-notices.txt"
     }
   }
 }

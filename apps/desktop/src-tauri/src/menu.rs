@@ -581,7 +581,16 @@ fn predefined(handle: &tauri::AppHandle, native: Native) -> tauri::Result<Option
   Ok(Some(match native {
     Native::About => {
       let package = handle.package_info();
-      let about = AboutMetadata { name: Some(package.name.clone()), version: Some(package.version.to_string()), ..Default::default() };
+      // The app carries the WhatsApp bridge, a binary with code under other licenses (GPL-3.0, MPL-2.0 and more): its
+      // notices ship in the bundle (tauri.macos.conf.json, bundle > resources), and the About panel says where.
+      let about = AboutMetadata {
+        name: Some(package.name.clone()),
+        version: Some(package.version.to_string()),
+        credits: Some(
+          "Tresso is free software under the GNU AGPL 3.0. Its WhatsApp bridge includes third-party software; the notices are in Tresso.app/Contents/Resources/licenses/whatsapp-bridge-third-party-notices.txt.".to_string(),
+        ),
+        ..Default::default()
+      };
       PredefinedMenuItem::about(handle, Some("About Tresso"), Some(about))?
     }
     Native::Services => PredefinedMenuItem::services(handle, None)?,
