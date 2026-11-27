@@ -883,39 +883,113 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     return server.callsOf('updateChat').filter((args) => args[0] === chatId)
   }
 
-  it('marks the history of a chat the server does not know at most once per backoff step, and the others go on', async () => {
+  it('asks once for a chat the server refuses for good (404), never again, and the others go on', async () => {
     await relinkedAfterImport()
-    const at = Date.now()
-    const chat = await unknownChat(at)
+    const chat = await unknownChat(Date.now())
     shell.emit(LINKED)
     await pass(3_000)
     await mail.syncNow()
     await pass()
-    // Tried once (404); the round did not start again at once, though the request was followed by a pull.
     expect(marksOf(chat.id)).toHaveLength(1)
     // The chats the server knows were marked all the same.
     const other = server.chats.get('31687654321@s.whatsapp.net')!
     expect(Date.parse(other.readThrough!)).toBeGreaterThanOrEqual(Date.parse(other.lastMessageAt))
-    // Nothing changes: one more request per backoff step (30 s, then 60 s, then 120 s after the one before), never
-    // more. The first try came within the first 3 seconds; the checks sit at least 5 seconds from each step.
+    for (let i = 0; i < 10; i++) {
+      await mail.syncNow()
+      await pass(60_000)
+    }
+    expect(marksOf(chat.id)).toHaveLength(1)
+  })
+
+  it('keeps a mark that failed for a passing reason past the end of the re-read, one request per backoff step', async () => {
+    await relinkedAfterImport()
+    const direct = `chat-${DIRECT}`
+    server.fail('updateChat', new ChatApiError(503, 'Unavailable'), true)
+    shell.emit(LINKED)
+    await pass(3_000)
+    await mail.syncNow()
+    await pass()
+    expect(marksOf(direct)).toHaveLength(1)
+    // One more per backoff step (30 s, then 60 s, then 120 s after the one before), never more, also once the re-read
+    // ended (quiet for a minute after about 2 minutes here). The first try came within the first 3 seconds.
     for (const [step, expected] of [
       [25_000, 1],
       [10_000, 2],
       [45_000, 2],
       [10_000, 3],
+      [110_000, 3],
+      [10_000, 4],
     ] as const) {
       await pass(step)
-      expect(marksOf(chat.id)).toHaveLength(expected)
+      expect(marksOf(direct)).toHaveLength(expected)
     }
-    // Once the re-read ended (the new store quiet), its marks go with it: nothing more is asked of the server.
-    for (let i = 0; i < 3; i++) {
-      await mail.syncNow()
-      await pass(60_000)
-    }
+    await mail.syncNow()
+    await pass()
     expect(await store.chatMeta(serverHistoryKey(ACCOUNT_ID))).toBeNull()
-    const settled = marksOf(chat.id).length
+    // The server works again: the next step marks it, and nothing more is asked.
+    server.failures.delete('updateChat')
+    await pass(240_000)
+    expect(marksOf(direct)).toHaveLength(5)
+    const chat = server.chats.get(DIRECT)!
+    expect(chat.readThrough).not.toBeNull()
     await pass(20 * 60_000)
-    expect(marksOf(chat.id)).toHaveLength(settled)
+    expect(marksOf(direct)).toHaveLength(5)
+  })
+
+  it('stops marking at Disconnect', async () => {
+    const wa = await relinkedAfterImport()
+    const direct = `chat-${DIRECT}`
+    server.fail('updateChat', new ChatApiError(503, 'Unavailable'), true)
+    shell.emit(LINKED)
+    await pass(3_000)
+    const asked = marksOf(direct).length
+    expect(asked).toBeGreaterThan(0)
+    server.failures.delete('updateChat')
+    expect(await wa.disconnect()).toBe(true)
+    server.fail('updateChat', new ChatApiError(503, 'Unavailable'), true)
+    await pass(30 * 60_000)
+    expect(marksOf(direct)).toHaveLength(asked)
+  })
+
+  it('stops marking when the session ends', async () => {
+    await relinkedAfterImport()
+    const direct = `chat-${DIRECT}`
+    server.fail('updateChat', new ChatApiError(503, 'Unavailable'), true)
+    shell.emit(LINKED)
+    await pass(3_000)
+    const asked = marksOf(direct).length
+    expect(asked).toBeGreaterThan(0)
+    for (const handler of auth.handlers) {
+      handler('expired')
+    }
+    await pass(30 * 60_000)
+    expect(marksOf(direct)).toHaveLength(asked)
+  })
+
+  it('sends at most 20 marks per round, the rest a second later', async () => {
+    await relinkedAfterImport()
+    const old = new Date(Date.now() - 2 * 60 * 60_000).toISOString()
+    const many = Array.from({ length: 25 }, (_, i) => `316222220${String(i).padStart(2, '0')}@s.whatsapp.net`)
+    for (const jid of many) {
+      const row: SyncedChat = { id: `chat-${jid}`, chatAccountId: ACCOUNT_ID, jid, kind: 'direct', name: null, lastMessageAt: old, readThrough: null, archivedThrough: null, leftOut: false }
+      server.chats.set(jid, { ...row })
+      await store.putChats([row])
+    }
+    const ids = new Set(many.map((jid) => `chat-${jid}`))
+    const markedMany = () => server.callsOf('updateChat').filter((args) => ids.has(args[0] as string)).length
+    shell.emit(LINKED)
+    await vi.advanceTimersByTimeAsync(0)
+    for (let i = 0; i < 40 && markedMany() === 0; i++) {
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    // Every pull its own requests start comes within the same second: still no more than 20 marks in all.
+    for (let i = 0; i < 40; i++) {
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    expect(server.callsOf('updateChat')).toHaveLength(20)
+    expect(markedMany()).toBeLessThan(25)
+    await pass(1_000)
+    expect(markedMany()).toBe(25)
   })
 
   it('never marks a chat left out', async () => {
