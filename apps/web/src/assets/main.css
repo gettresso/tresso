@@ -9,6 +9,8 @@
   --paper: #ffffff;
   --ground: rgb(22 24 29 / 4.5%);
   --surface: rgb(255 255 255 / 58%);
+  /* The one Settings surface: a quiet solid ground that a settings page sits on. */
+  --stage: #f3f4f6;
   --line: rgb(22 24 29 / 9%);
   --line-strong: rgb(22 24 29 / 16%);
   --ink: #16181d;
@@ -20,9 +22,19 @@
   --do: #2341d6;
   --do-soft: rgb(35 65 214 / 11%);
   --selected: rgb(35 65 214 / 9%);
+  /* The selected sidebar row: a glass pill with a lit top edge. */
+  --pill: rgb(22 24 29 / 8%);
+  --pill-edge: inset 0 1px 0 rgb(255 255 255 / 70%), inset 0 0 0 1px rgb(22 24 29 / 4%), 0 1px 2px rgb(22 24 29 / 7%);
+  /* The selected menu row: a quiet pill without an edge. */
+  --pill-quiet: rgb(22 24 29 / 7%);
+  /* The tile behind a logo, and the fill of a grey pill. */
+  --tile: #f3f4f6;
   --match: #fff1c2;
   --delegate: #a44a06;
   --delegate-soft: rgb(224 112 27 / 13%);
+  /* Something the user must act on (an attention row): its text and its soft fill. */
+  --warning: #a44a06;
+  --warning-soft: rgb(224 112 27 / 12%);
   --know: #256b5d;
   --know-soft: rgb(47 156 134 / 13%);
   --unread: #2341d6;
@@ -91,6 +103,11 @@
   --radius-control: 6px;
   --radius-card: 10px;
   --radius-panel: 14px;
+  /* A row in a list or menu. */
+  --radius-row: 8px;
+
+  /* The reading width of a settings page. */
+  --measure: 720px;
 
   /* Motion: short and decelerating, so a change lands at once and settles. Only opacity and transform move. */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
@@ -109,6 +126,7 @@
     --paper: #171a20;
     --ground: rgb(255 255 255 / 5%);
     --surface: rgb(32 36 45 / 52%);
+    --stage: #0f1115;
     --line: rgb(255 255 255 / 8%);
     --line-strong: rgb(255 255 255 / 14%);
     --ink: #eceef2;
@@ -120,9 +138,15 @@
     --do: #8fa2ff;
     --do-soft: rgb(143 162 255 / 15%);
     --selected: rgb(143 162 255 / 13%);
+    --pill: rgb(255 255 255 / 10%);
+    --pill-edge: inset 0 1px 0 rgb(255 255 255 / 14%), inset 0 0 0 1px rgb(255 255 255 / 5%), 0 1px 2px rgb(0 0 0 / 30%);
+    --pill-quiet: rgb(255 255 255 / 8%);
+    --tile: rgb(255 255 255 / 6%);
     --match: #5a4a12;
     --delegate: #f29a55;
     --delegate-soft: rgb(242 154 85 / 15%);
+    --warning: #f29a55;
+    --warning-soft: rgb(242 154 85 / 14%);
     --know: #6cc7b2;
     --know-soft: rgb(108 199 178 / 15%);
     --unread: #8fa2ff;
