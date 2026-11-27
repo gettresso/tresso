@@ -13,6 +13,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - apps/desktop/**
+      - apps/whatsapp-bridge/**
       - scripts/**
       - docker/**
       - .dockerignore
@@ -101,6 +102,13 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+
+      # The macOS app carries the WhatsApp bridge (Go, built by beforeBuildCommand: scripts/build-whatsapp-bridge.mjs).
+      - uses: actions/setup-go@v5
+        if: runner.os == 'macOS'
+        with:
+          go-version: '1.27'
+          cache-dependency-path: apps/whatsapp-bridge/go.sum
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -224,6 +232,24 @@ jobs:
               entitlements="$(codesign --display --entitlements - --xml "${app}" 2>/dev/null)"
               if ! printf '%s' "${entitlements}" | grep -q 'com.apple.security.cs.disable-library-validation'; then
                 echo "Tresso.app lacks the entitlement that lets it load Sparkle.framework" >&2
+                exit 1
+              fi
+              # The WhatsApp bridge is a sidecar next to Tresso's executable: both architectures, signed by the bundler
+              # like the app (hardened runtime), and its third-party notices in the bundle.
+              bridge="${app}/Contents/MacOS/whatsapp-bridge"
+              if [ ! -x "${bridge}" ]; then
+                echo "Tresso.app has no WhatsApp bridge" >&2
+                exit 1
+              fi
+              lipo "${bridge}" -verify_arch arm64 x86_64
+              codesign --verify --strict "${bridge}"
+              flags="$(codesign --display --verbose "${bridge}" 2>&1 | sed -n 's/^CodeDirectory.*flags=\(0x[0-9a-f]*\)(\([^)]*\)).*/\2/p')"
+              case ",${flags}," in
+                *,runtime,*) ;;
+                *) echo "The WhatsApp bridge is not signed with the hardened runtime (flags: ${flags})" >&2; exit 1 ;;
+              esac
+              if [ ! -s "${app}/Contents/Resources/licenses/whatsapp-bridge-third-party-notices.txt" ]; then
+                echo "Tresso.app lacks the WhatsApp bridge's third-party notices" >&2
                 exit 1
               fi
               export COPYFILE_DISABLE=1
