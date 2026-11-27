@@ -84,11 +84,16 @@ Closing the connect dialog after the phone linked but before WhatsApp was connec
 says so.
 
 **After a new link.** The new store has another store id than the one the relay read, and its history sync brings the
-last weeks again, plus chats Tresso never saw. The relay takes it up as a re-read with the moment the phone linked as
-the line: rows sent before it are history (read, no notification, as in the first import after connecting), rows after
-it are live. "Only this Mac" reads the new store from its start as a first import with that line; "All my devices"
-reads it with live batches, which the server answers `known` for what it holds, and marks each chat's history read
-through that moment. Chats left out stay left out.
+last weeks again, plus chats Tresso never saw. The relay takes it up with the rule of the first import after
+connecting: rows sent before the moment the phone linked are history, and a chat that is new or had nothing unread at
+the change is read through that moment, while a chat with real unread messages keeps them; rows sent after the moment
+are live. The re-read ends as that first import does: once the relay caught up with the new store and it stayed quiet
+for a minute, so history that keeps arriving after the link still counts as history. "Only this Mac" reads the new store
+from its start as a first import with that line; "All my devices" reads it from its start too, the server answers
+`known` for what it holds, and the history is marked read by chat state changes. Chats left out stay left out. Until
+the store's id could be read (the history sync can keep it busy), the relay does not start, and tries again with a
+growing wait. Messages that arrived between the update and the new link count as history too: in a chat that had
+nothing unread they arrive read.
 
 **Signing out of Tresso does not unlink.** It stops the bridge and removes the config, as it did when the bridge lived
 in the whatsapp-mcp folder: the store, with its link to the phone, stays for the next connect, so no device is left

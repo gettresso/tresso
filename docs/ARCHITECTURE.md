@@ -2193,8 +2193,9 @@ longer lists the Mac and a later connect shows a new code; when WhatsApp cannot 
 the same and Settings says how to remove Tresso on the phone. A sign-out stops the relay without waiting for it and
 removes the config (an expired session keeps it); the shell stops the bridge, and the store with its link stays for
 the next connect. A new link brings a store with another store id: the relay takes it up as a re-read whose line is
-the moment the phone linked (`takeUpNewStore`; rows before it are history, rows after it live; in "All my devices" with
-live batches and the history marked read). The store keeps the
+the moment the phone linked (`takeUpNewStore`; rows before it are history in chats that are new or had nothing unread,
+rows after it live; it ends on the first import's quiet rule; in "All my devices" the history is marked read by chat
+state changes; the relay waits until the store id could be read). The store keeps the
 bridge's state and Notify me on the `wa:account` row (`setLocalChatAccount`), and offers the chat screens `pollNow`,
 `leaveOut`, `takeBackIn` (Settings lists the chats left out: the config first, then with the relay stopped the row is
 marked in again and the cursor reset with the moment of the reset (`resetLocalCursor(store, liveFrom)`, kept as the
