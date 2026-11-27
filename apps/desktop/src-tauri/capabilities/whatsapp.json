@@ -14,6 +14,7 @@
     "allow-whatsapp-config-save",
     "allow-whatsapp-config-clear",
     "allow-whatsapp-config-keep-only",
+    "allow-whatsapp-disconnect",
     "allow-whatsapp-start",
     "allow-whatsapp-stop",
     "allow-whatsapp-state",

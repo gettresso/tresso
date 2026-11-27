@@ -22,9 +22,13 @@
 //!   each start, and it is used only after it answered as this bridge (refused without the token, taken with it).
 //! - HTTP goes to 127.0.0.1 only, never through a proxy and never following a redirect.
 //! - One store per Tresso user: `<app data>/whatsapp/<user id>/`, made by Tresso only this user may open (0700) before
-//!   the bridge starts. The path is built here from a checked user id; the web view never names a path to a store. It
-//!   is removed with its linked session at Disconnect and at sign-out (so a later connect shows a new code), and other
-//!   users' stores go once the server confirmed who is signed in.
+//!   the bridge starts. The path is built here from a checked user id; the web view never names a path to a store.
+//! - Disconnect unlinks: when the store holds a session, the bridge (started for this only, when it does not run) logs
+//!   the device out on WhatsApp's side (`POST /api/logout`) before it stops and the store is removed, so the phone no
+//!   longer lists Tresso and a later connect shows a new code. When WhatsApp cannot be reached in time the store goes
+//!   anyway and the web client tells the user how to remove Tresso on the phone. A sign-out, and another user signing
+//!   in, remove only the config, as before this bridge: the store, and with it the link, stays for the next connect,
+//!   so no device is left orphaned on a phone.
 //! - The store is opened read only with `query_only` on: no write, no journal, no WAL file reaches it from Tresso.
 //! - A download is asked for only when the stored file name is one plain name. It is copied into the app's own folder
 //!   (0700) under a name Tresso makes, marked as downloaded from the internet (quarantine), and kept only when its
@@ -342,6 +346,10 @@ struct Settings {
   max_backoff: Duration,
   /// Three unexpected exits within this time stop the restarts.
   crash_window: Duration,
+  /// How long Disconnect waits for a bridge it started only to log out to answer on its port.
+  unlink_wait: Duration,
+  /// How long Disconnect waits for the bridge to confirm the log out (the bridge's own limit is 20 seconds).
+  logout_timeout: Duration,
 }
 
 impl Default for Settings {
@@ -352,6 +360,8 @@ impl Default for Settings {
       first_backoff: Duration::from_secs(5),
       max_backoff: Duration::from_secs(300),
       crash_window: Duration::from_secs(60),
+      unlink_wait: Duration::from_secs(15),
+      logout_timeout: Duration::from_secs(25),
     }
   }
 }
@@ -555,6 +565,48 @@ impl Bridge {
     }
     self.stop();
     true
+  }
+
+  /// Disconnect WhatsApp for `user_id`, in this order: when the store holds a session, log the device out on WhatsApp's
+  /// side (through the running bridge, or one started for this only); then stop the bridge; then remove the config
+  /// and the store. When WhatsApp cannot be reached within `unlink_wait` and `logout_timeout`, the config and the store
+  /// go all the same and `unlinked` is false.
+  fn disconnect(&self, user_id: &str) -> Result<Disconnected, String> {
+    let data_dir = lock(&self.0.data_dir).clone().ok_or_else(|| code("no_store"))?;
+    let store = store_dir(&data_dir, user_id)?;
+    let unlinked = !has_session(&store) || self.log_out(user_id);
+    if self.user().as_deref() == Some(user_id) {
+      self.stop();
+      *lock(&self.0.user) = None;
+    }
+    clear_config(&data_dir, user_id)?;
+    remove_store(&data_dir, user_id)?;
+    Ok(Disconnected { unlinked })
+  }
+
+  /// Logs the linked device out through the bridge: the running one for this user, else one started for it. True once
+  /// the bridge said WhatsApp confirmed.
+  fn log_out(&self, user_id: &str) -> bool {
+    if self.user().as_deref() != Some(user_id) || self.endpoint().is_none() {
+      self.start(user_id);
+    }
+    let deadline = Instant::now() + self.0.settings.unlink_wait;
+    let endpoint = loop {
+      if let Some(endpoint) = self.endpoint() {
+        break Some(endpoint);
+      }
+      let snapshot = self.snapshot();
+      // Stopped, or asking for a code (no session after all): there is no bridge to log out through.
+      if snapshot.process == Process::Stopped || snapshot.link == Link::WaitingForScan || Instant::now() >= deadline {
+        break None;
+      }
+      thread::sleep(self.0.settings.poll);
+    };
+    let Some((port, token)) = endpoint else {
+      log::warn!("The WhatsApp bridge did not come up to log out; removing its store without it");
+      return false;
+    };
+    logout(port, &token, self.0.settings.logout_timeout)
   }
 
   /// The sign-in ended: the bridge stops, its store is no longer the one read, and the files picked for the user who
@@ -1113,14 +1165,6 @@ fn remove_store(data_dir: &Path, user_id: &str) -> Result<(), String> {
   removed.map_err(|error| format!("Removing the WhatsApp data on this Mac failed: {error}"))
 }
 
-/// The user ids that have a store here, from the folder names.
-fn store_users(data_dir: &Path) -> Vec<String> {
-  let Ok(entries) = fs::read_dir(data_dir.join(STORES_DIR)) else {
-    return Vec::new();
-  };
-  entries.flatten().filter_map(|entry| entry.file_name().to_str().map(str::to_string)).filter(|user| valid_user_id(user)).collect()
-}
-
 /// A file of the user's store, when it is there.
 fn store_file(store: &Path, name: &str) -> Result<PathBuf, String> {
   let canonical = store.canonicalize().map_err(|_| code("no_store"))?;
@@ -1290,26 +1334,25 @@ fn config_users(data_dir: &Path) -> Vec<String> {
     .collect()
 }
 
-/// Removes every other user's config and store but `user_id`'s (the user the server confirmed); returns the users whose
-/// WhatsApp went. Another user's WhatsApp leaves nothing behind on this Mac once someone else signed in here.
+/// Removes every other user's config but `user_id`'s (the user the server confirmed); returns the users whose config
+/// went. Their stores stay, as their whatsapp-mcp folders did before: removing one would leave the device listed on a
+/// phone nobody here can unlink, and logging another user's WhatsApp out because someone else signed in is not this
+/// Mac's call. Their config is what connects them, and it is gone.
 fn keep_only_config(data_dir: &Path, user_id: &str) -> Result<Vec<String>, String> {
   config_file(data_dir, user_id)?;
-  let mut others: Vec<String> = config_users(data_dir).into_iter().chain(store_users(data_dir)).filter(|user| user != user_id).collect();
+  let mut others: Vec<String> = config_users(data_dir).into_iter().filter(|user| user != user_id).collect();
   others.sort();
-  others.dedup();
   for user in &others {
     match fs::remove_file(data_dir.join(format!("whatsapp-{user}.json"))) {
       Ok(()) => {}
       Err(error) if error.kind() == io::ErrorKind::NotFound => {}
       Err(error) => return Err(format!("Removing another user's WhatsApp settings failed: {error}")),
     }
-    remove_store(data_dir, user)?;
   }
   Ok(others)
 }
 
-/// Removes a user's config and their store (the linked session and the messages the bridge kept): Disconnect and
-/// sign-out. Returns the config that was there.
+/// Removes a user's config and returns it (sign-out, a connect the server did not take). The store stays.
 fn clear_config(data_dir: &Path, user_id: &str) -> Result<Option<Config>, String> {
   let file = config_file(data_dir, user_id)?;
   let old = load_config(data_dir, user_id).unwrap_or(None);
@@ -1318,8 +1361,33 @@ fn clear_config(data_dir: &Path, user_id: &str) -> Result<Option<Config>, String
     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
     Err(error) => return Err(format!("Removing the WhatsApp settings failed: {error}")),
   }
-  remove_store(data_dir, user_id)?;
   Ok(old)
+}
+
+/// Whether the user's store holds a linked session (a device in `whatsapp.db`).
+fn has_session(store: &Path) -> bool {
+  matches!(store_file(store, SESSION_DB).map(|db| identity(&db)), Ok(Ok(Some(_))))
+}
+
+/// What Disconnect did on WhatsApp's side.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Disconnected {
+  /// The phone no longer lists this Mac: WhatsApp confirmed the log out, or nothing was linked. False when WhatsApp
+  /// could not be reached in time; the store is removed all the same.
+  unlinked: bool,
+}
+
+/// POST /api/logout with this run's token; true once the bridge answered that WhatsApp confirmed.
+fn logout(port: u16, token: &str, timeout: Duration) -> bool {
+  match post(port, Some(token), "/api/logout", &json!({}), timeout) {
+    Answer::Reply { status: 200, body } => serde_json::from_str::<Value>(&body).ok().and_then(|answer| answer["success"].as_bool()) == Some(true),
+    Answer::Reply { status, .. } => {
+      log::warn!("The WhatsApp bridge could not log out ({status})");
+      false
+    }
+    Answer::NotConnected | Answer::Lost => false,
+  }
 }
 
 /// The files earlier versions kept in the app's data folder for the whatsapp-mcp folder: removed, so no path of it is
@@ -2029,8 +2097,8 @@ pub fn whatsapp_config_save<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bri
   save_config(&data_dir(&app)?, &user_id, &config)
 }
 
-/// Disconnecting and signing out: the bridge running for this user stops, then their config and their store go (the
-/// linked session with it, so connecting again shows a new code).
+/// Signing out, or a connect the server did not take: the bridge running for this user stops and their config goes.
+/// The store, with its link to the phone, stays for the next connect.
 #[tauri::command(async)]
 pub fn whatsapp_config_clear<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, user_id: String) -> Result<(), String> {
   bridge.enabled()?;
@@ -2041,8 +2109,16 @@ pub fn whatsapp_config_clear<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Br
   Ok(())
 }
 
+/// Disconnect WhatsApp: the device is logged out on WhatsApp's side first, then the bridge stops and the config and the
+/// store go (`Bridge::disconnect`).
+#[tauri::command(async)]
+pub fn whatsapp_disconnect(bridge: State<'_, Bridge>, user_id: String) -> Result<Disconnected, String> {
+  bridge.enabled()?;
+  bridge.disconnect(&user_id)
+}
+
 /// The server confirmed who is signed in (where the mail copies of other users are removed): every other user's config
-/// and store go, and a bridge Tresso started for another user stops first. The shell holds the tokens but not who they
+/// goes, and a bridge Tresso started for another user stops first. Their stores stay (`keep_only_config`). The shell holds the tokens but not who they
 /// belong to, so the user id comes from the web client, which asked the server.
 #[tauri::command(async)]
 pub fn whatsapp_config_keep_only<R: Runtime>(app: AppHandle<R>, bridge: State<'_, Bridge>, user_id: String) -> Result<(), String> {
@@ -2790,6 +2866,8 @@ mod tests {
       first_backoff: Duration::from_millis(50),
       max_backoff: Duration::from_millis(200),
       crash_window: Duration::from_secs(30),
+      unlink_wait: Duration::from_secs(2),
+      logout_timeout: Duration::from_secs(2),
     }
   }
 
@@ -3085,8 +3163,8 @@ mod tests {
     assert_eq!(mode(&elsewhere), 0o755);
   }
 
-  /// Disconnect removes the user's own store and nothing else: not another user's, not a folder a link points to, not
-  /// the data folder around it.
+  /// Removing a store takes the user's own and nothing else: not another user's, not a folder a link points to, not the
+  /// data folder around it. Clearing the config (sign-out) leaves the store.
   #[cfg(unix)]
   #[test]
   fn removes_only_tressos_own_store_of_that_user() {
@@ -3104,7 +3182,12 @@ mod tests {
     std::os::unix::fs::symlink(&*outside, data.join(STORES_DIR).join("u3")).unwrap();
     save_config(&data, "u1", &config()).unwrap();
 
+    // Sign-out: the config goes, the store with its link stays.
     assert_eq!(clear_config(&data, "u1").unwrap(), Some(config()));
+    assert!(mine.join(SESSION_DB).exists());
+    assert!(has_session(&mine));
+
+    remove_store(&data, "u1").unwrap();
     assert!(!mine.exists());
     assert!(theirs.join(SESSION_DB).exists());
     assert!(outside.join("keep.txt").exists());
@@ -3114,9 +3197,145 @@ mod tests {
     assert!(fs::symlink_metadata(data.join(STORES_DIR).join("u3")).is_err());
     assert!(outside.join("keep.txt").exists());
     // Gone already is fine.
+    remove_store(&data, "u1").unwrap();
     assert_eq!(clear_config(&data, "u1").unwrap(), None);
     assert!(clear_config(&data, "../u2").is_err());
     assert!(theirs.exists());
+  }
+
+  /// Appends a line to `events` in the data folder: the test's and the fake bridge's steps, in order.
+  fn note(data: &Path, line: &str) {
+    let mut file = OpenOptions::new().create(true).append(true).open(data.join("events")).unwrap();
+    writeln!(file, "{line}").unwrap();
+  }
+
+  fn events(data: &Path) -> Vec<String> {
+    fs::read_to_string(data.join("events")).unwrap_or_default().lines().map(str::to_string).collect()
+  }
+
+  /// A fake bridge that notes its start and the end of its stdin in `events`, serves as the bridge once the test listens
+  /// (`serve_logging_out`), and stops when stdin ends.
+  fn logging_bridge(data: &Path) -> PathBuf {
+    let events = data.join("events");
+    let events = events.to_str().unwrap();
+    fake_bridge(
+      data,
+      &format!("{STARTED}\necho started >> '{events}'\nsay '{{\"v\":1,\"event\":\"connected\"}}'\n{SERVE}\ncat > /dev/null\necho stdin-closed >> '{events}'\nexit 0"),
+    )
+  }
+
+  /// Serves as the bridge on the fake's port, as `serve_as_bridge` does, and answers POST /api/logout with `answer`,
+  /// noting it in `events`.
+  fn serve_logging_out(data: &Path, user: &str, answer: Option<String>) {
+    let store = store_of(data, user);
+    let data = data.to_path_buf();
+    thread::spawn(move || {
+      while !store.join("token").exists() || !store.join("port").exists() {
+        thread::sleep(Duration::from_millis(5));
+      }
+      let port: u16 = fs::read_to_string(store.join("port")).unwrap().parse().unwrap();
+      let token = fs::read_to_string(store.join("token")).unwrap();
+      let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+      fs::write(store.join("serving"), b"").unwrap();
+      serve(listener, Arc::new(Mutex::new(Vec::new())), move |request| {
+        if request.token.as_deref() != Some(token.as_str()) || !request.json {
+          return http(401, "Unauthorized\n");
+        }
+        if request.path == "/api/logout" {
+          note(&data, "logout");
+          return answer.clone();
+        }
+        unprotected_answer(request)
+      });
+    });
+  }
+
+  /// Disconnect logs the device out through the running bridge first, then stops it, then removes the config and the
+  /// store.
+  #[cfg(unix)]
+  #[test]
+  fn disconnect_logs_out_then_stops_then_removes() {
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    bridge.connect(data.to_path_buf(), Some(logging_bridge(&data)), Arc::new(|_: &Snapshot| {}));
+    let store = prepare_store(&data, "u1").unwrap();
+    session_db(&store, true);
+    save_config(&data, "u1", &config()).unwrap();
+    serve_logging_out(&data, "u1", http(200, r#"{"success":true,"message":"Logged out"}"#));
+    bridge.start("u1");
+    bridge.wait_until(|snapshot| snapshot.port.is_some());
+
+    assert_eq!(bridge.disconnect("u1"), Ok(Disconnected { unlinked: true }));
+    assert_eq!(events(&data), ["started", "logout", "stdin-closed"]);
+    assert!(!store.exists());
+    assert_eq!(load_config(&data, "u1").unwrap(), None);
+    assert_eq!(bridge.snapshot(), Snapshot::stopped(None));
+    assert_eq!(bridge.store(), Err("no_store".to_string()));
+  }
+
+  /// A bridge that does not run is started for the log out only when the store holds a session; without one nothing
+  /// starts and the store simply goes.
+  #[cfg(unix)]
+  #[test]
+  fn disconnect_starts_the_bridge_only_to_log_out_a_session() {
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    bridge.connect(data.to_path_buf(), Some(logging_bridge(&data)), Arc::new(|_: &Snapshot| {}));
+    let store = prepare_store(&data, "u1").unwrap();
+    messages_db(&store);
+    assert_eq!(bridge.disconnect("u1"), Ok(Disconnected { unlinked: true }));
+    assert!(events(&data).is_empty(), "{:?}", events(&data));
+    assert!(!store.exists());
+
+    let store = prepare_store(&data, "u1").unwrap();
+    session_db(&store, true);
+    serve_logging_out(&data, "u1", http(200, r#"{"success":true,"message":"Logged out"}"#));
+    assert_eq!(bridge.disconnect("u1"), Ok(Disconnected { unlinked: true }));
+    assert_eq!(events(&data), ["started", "logout", "stdin-closed"]);
+    assert!(!store.exists());
+  }
+
+  /// WhatsApp cannot be reached: the bridge does not come up, or the log out is refused. The store goes all the same,
+  /// within the waits, and Disconnect says the phone may still list this Mac.
+  #[cfg(unix)]
+  #[test]
+  fn disconnect_removes_the_store_when_whatsapp_cannot_be_reached() {
+    // The bridge stops before it listens (connect_failed).
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    let fake = fake_bridge(&data, &format!("{STARTED}\nsay '{{\"v\":1,\"event\":\"fatal\",\"code\":\"connect_failed\"}}'\nexit 1"));
+    bridge.connect(data.to_path_buf(), Some(fake), Arc::new(|_: &Snapshot| {}));
+    let store = prepare_store(&data, "u1").unwrap();
+    session_db(&store, true);
+    save_config(&data, "u1", &config()).unwrap();
+    let began = Instant::now();
+    assert_eq!(bridge.disconnect("u1"), Ok(Disconnected { unlinked: false }));
+    assert!(began.elapsed() < Duration::from_secs(5), "{:?}", began.elapsed());
+    assert!(!store.exists());
+    assert_eq!(load_config(&data, "u1").unwrap(), None);
+
+    // The bridge runs, but WhatsApp does not confirm.
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    bridge.connect(data.to_path_buf(), Some(logging_bridge(&data)), Arc::new(|_: &Snapshot| {}));
+    let store = prepare_store(&data, "u1").unwrap();
+    session_db(&store, true);
+    serve_logging_out(&data, "u1", http(504, r#"{"success":false,"message":"WhatsApp did not confirm the log out in time"}"#));
+    assert_eq!(bridge.disconnect("u1"), Ok(Disconnected { unlinked: false }));
+    assert_eq!(events(&data), ["started", "logout", "stdin-closed"]);
+    assert!(!store.exists());
+
+    // The bridge never answers within the wait.
+    let data = temp();
+    let (bridge, _) = watched(quick(), &data);
+    let fake = fake_bridge(&data, &format!("{STARTED}\n{UNTIL_STDIN_ENDS}"));
+    bridge.connect(data.to_path_buf(), Some(fake), Arc::new(|_: &Snapshot| {}));
+    let store = prepare_store(&data, "u1").unwrap();
+    session_db(&store, true);
+    let began = Instant::now();
+    assert_eq!(bridge.disconnect("u1"), Ok(Disconnected { unlinked: false }));
+    assert!(began.elapsed() < Duration::from_secs(5), "{:?}", began.elapsed());
+    assert!(!store.exists());
   }
 
   // ---- config
@@ -3269,25 +3488,25 @@ mod tests {
   }
 
   #[test]
-  fn keeps_only_the_confirmed_users_config_and_store() {
+  fn keeps_only_the_confirmed_users_config() {
     let data = temp();
     save_config(&data, "u1", &config()).unwrap();
     save_config(&data, "u2", &config()).unwrap();
     prepare_store(&data, "u1").unwrap();
-    prepare_store(&data, "u2").unwrap();
-    // A store without a config (a connect that never finished) goes too.
-    prepare_store(&data, "u3").unwrap();
+    let theirs = prepare_store(&data, "u2").unwrap();
+    session_db(&theirs, true);
 
-    assert_eq!(keep_only_config(&data, "u1").unwrap(), vec!["u2".to_string(), "u3".to_string()]);
+    assert_eq!(keep_only_config(&data, "u1").unwrap(), vec!["u2".to_string()]);
     assert!(load_config(&data, "u1").unwrap().is_some());
-    assert!(store_dir(&data, "u1").unwrap().exists());
     assert_eq!(load_config(&data, "u2").unwrap(), None);
-    assert!(!store_dir(&data, "u2").unwrap().exists() && !store_dir(&data, "u3").unwrap().exists());
+    // Their store, and with it their link, stays: nothing here can unlink their phone.
+    assert!(has_session(&theirs));
     // A user without a config of their own removes everyone's.
     assert_eq!(keep_only_config(&data, "u4").unwrap(), vec!["u1".to_string()]);
     assert_eq!(load_config(&data, "u1").unwrap(), None);
     assert!(keep_only_config(&data, "../u1").is_err());
   }
+
 
   // ---- HTTP
 
@@ -3918,13 +4137,14 @@ mod tests {
   #[test]
   fn every_command_refuses_while_whatsapp_is_off() {
     use tauri::test::{INVOKE_KEY, mock_builder};
-    const COMMANDS: [&str; 19] = [
+    const COMMANDS: [&str; 20] = [
       "whatsapp_available",
       "whatsapp_device",
       "whatsapp_config_load",
       "whatsapp_config_save",
       "whatsapp_config_clear",
       "whatsapp_config_keep_only",
+      "whatsapp_disconnect",
       "whatsapp_start",
       "whatsapp_stop",
       "whatsapp_state",
@@ -3954,6 +4174,7 @@ mod tests {
         whatsapp_config_save,
         whatsapp_config_clear,
         whatsapp_config_keep_only,
+        whatsapp_disconnect,
         whatsapp_start,
         whatsapp_stop,
         whatsapp_state,
