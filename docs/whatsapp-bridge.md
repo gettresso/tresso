@@ -93,7 +93,9 @@ from its start as a first import with that line; "All my devices" reads it from 
 `known` for what it holds, and the history is marked read by chat state changes. Before that the Mac closes the
 server's own history import with an empty live batch when it is still open (no live batch went since connecting), so
 messages that arrive during the re-read are live there too; and the list of chats that had unread messages is kept with
-the re-read from its start, so a restart halfway does not make it again after history landed. Chats left out stay left out. Until
+the re-read from its start, so a restart halfway does not make it again after history landed. Chats left out stay left out and are never marked. A mark the server refuses (a chat it no longer has, its removal
+not in the copy yet) is tried again for that chat only after a backoff of 30 seconds that doubles up to 10 minutes, and
+not at all once the re-read ended; at most 20 marks go per round. Until
 the store's id could be read (the history sync can keep it busy), the relay does not start, and tries again with a
 growing wait. Messages that arrived between the update and the new link count as history too: in a chat that had
 nothing unread they arrive read.

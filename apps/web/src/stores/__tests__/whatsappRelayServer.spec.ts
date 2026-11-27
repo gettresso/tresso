@@ -14,6 +14,7 @@ import {
   serverCursorKey,
   type RelayMessagesRequest,
   type RelayStatusRequest,
+  type SyncedChat,
 } from '@tresso/core'
 import { memorySql } from '@tresso/core/testing/sql'
 import type { WhatsAppConfig } from '@/platform/whatsapp'
@@ -868,6 +869,63 @@ describe('the WhatsApp relay store in "All my devices"', () => {
     expect(readServerHistory(await store.chatMeta(serverHistoryKey(ACCOUNT_ID)))?.scopes).toEqual(taken.scopes)
     // Taken up already: no second closing batch either.
     expect(batches().slice(before).filter((batch) => !batch.firstImport && batch.messages.length === 0)).toEqual([])
+  })
+
+  /** A chat in the copy that the server does not know (removed there, its removal not in the copy yet). */
+  const UNKNOWN = '31600000077@s.whatsapp.net'
+  async function unknownChat(at: number, extra: Partial<SyncedChat> = {}): Promise<SyncedChat> {
+    const chat: SyncedChat = { id: `chat-${UNKNOWN}`, chatAccountId: ACCOUNT_ID, jid: UNKNOWN, kind: 'direct', name: null, lastMessageAt: new Date(at - 60_000).toISOString(), readThrough: null, archivedThrough: null, leftOut: false, ...extra }
+    await store.putChats([chat])
+    return chat
+  }
+
+  function marksOf(chatId: string): unknown[][] {
+    return server.callsOf('updateChat').filter((args) => args[0] === chatId)
+  }
+
+  it('marks the history of a chat the server does not know at most once per backoff step, and the others go on', async () => {
+    await relinkedAfterImport()
+    const at = Date.now()
+    const chat = await unknownChat(at)
+    shell.emit(LINKED)
+    await pass(3_000)
+    await mail.syncNow()
+    await pass()
+    // Tried once (404); the round did not start again at once, though the request was followed by a pull.
+    expect(marksOf(chat.id)).toHaveLength(1)
+    // The chats the server knows were marked all the same.
+    const other = server.chats.get('31687654321@s.whatsapp.net')!
+    expect(Date.parse(other.readThrough!)).toBeGreaterThanOrEqual(Date.parse(other.lastMessageAt))
+    // Nothing changes: one more request per backoff step (30 s, then 60 s, then 120 s after the one before), never
+    // more. The first try came within the first 3 seconds; the checks sit at least 5 seconds from each step.
+    for (const [step, expected] of [
+      [25_000, 1],
+      [10_000, 2],
+      [45_000, 2],
+      [10_000, 3],
+    ] as const) {
+      await pass(step)
+      expect(marksOf(chat.id)).toHaveLength(expected)
+    }
+    // Once the re-read ended (the new store quiet), its marks go with it: nothing more is asked of the server.
+    for (let i = 0; i < 3; i++) {
+      await mail.syncNow()
+      await pass(60_000)
+    }
+    expect(await store.chatMeta(serverHistoryKey(ACCOUNT_ID))).toBeNull()
+    const settled = marksOf(chat.id).length
+    await pass(20 * 60_000)
+    expect(marksOf(chat.id)).toHaveLength(settled)
+  })
+
+  it('never marks a chat left out', async () => {
+    await relinkedAfterImport()
+    const left = await unknownChat(Date.now(), { leftOut: true })
+    shell.emit(LINKED)
+    await pass(3_000)
+    await mail.syncNow()
+    await pass(60_000)
+    expect(marksOf(left.id)).toEqual([])
   })
 
   it('takes a chat back in with live batches, its history marked read by the chat state', async () => {

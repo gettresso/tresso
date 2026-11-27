@@ -86,6 +86,12 @@ const FALLBACK_DEVICE = 'This Mac'
 const NAMES_PER_CALL = 500
 /** How often the relaying Mac tells the server it is there ("All my devices"), besides at connect and on each change. */
 export const HEARTBEAT_MS = 60_000
+/** The first wait before a chat whose history mark failed is tried again; doubles up to the maximum. */
+const MARK_RETRY_MS = 30_000
+const MARK_RETRY_MAX_MS = 10 * 60_000
+/** At most this many history marks (requests) per round; the rest follow after MARK_ROUND_MS. */
+const MARKS_PER_ROUND = 20
+const MARK_ROUND_MS = 1_000
 /** The first wait before the store id is checked again after it could not be (busy); doubles up to the maximum. */
 const TAKE_UP_RETRY_MS = 2_000
 const TAKE_UP_RETRY_MAX_MS = 60_000
@@ -386,6 +392,27 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   let importDoneAtPull: number | null = null
   /** The pull count once the live re-read reached where it began; its mark goes after a later pull. */
   let historyDoneAtPull: number | null = null
+  /** Chats whose history mark failed (markHistory): not tried again before `until`, epoch ms. */
+  const markBackoff = new Map<string, { tries: number; until: number }>()
+  /** The next round of marking that was planned (a backoff, or the rest of a bounded round). */
+  let markRound: { at: number; cancel: () => void } | null = null
+
+  /** Plans a round of the server state (and its marking) in `ms`, unless one is planned sooner. */
+  function scheduleMarkRound(ms: number): void {
+    const at = Date.now() + ms
+    if (markRound !== null && markRound.at <= at) {
+      return
+    }
+    markRound?.cancel()
+    markRound = {
+      at,
+      cancel: schedule(() => {
+        markRound = null
+        void refreshServerState()
+      }, ms),
+    }
+  }
+
   /** Checks of the bridge's store id that failed in a row (takeUpNewStore), and the planned next try. */
   let takeUpTries = 0
   let takeUpRetry: (() => void) | null = null
@@ -551,6 +578,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
 
   /** Forgets the user who left; their relay stops in the background (the shell stops the bridge). */
   function leaveUser(): void {
+    markRound?.cancel()
+    markRound = null
+    markBackoff.clear()
     takeUpRetry?.()
     takeUpRetry = null
     takeUpTries = 0
@@ -2045,25 +2075,48 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       return
     }
     let marked = 0
+    let requests = 0
+    let more = false
+    const now = Date.now()
     for (const { chat } of await store.chats()) {
-      if (chat.chatAccountId !== account.id) {
+      if (chat.chatAccountId !== account.id || chat.leftOut) {
+        // A chat left out is never marked: its history does not come, and its row only keeps it out.
         continue
       }
       const at = historyAt(history, chat)
       if (at === null || (chat.readThrough !== null && Date.parse(chat.readThrough) >= at)) {
         continue
       }
+      const waiting = markBackoff.get(chat.id)
+      if (waiting !== undefined && waiting.until > now) {
+        continue
+      }
+      if (requests >= MARKS_PER_ROUND) {
+        more = true
+        break
+      }
+      requests++
       try {
         await serverActions.setState(chat.id, { readThrough: new Date(at).toISOString() })
+        markBackoff.delete(chat.id)
         marked++
       } catch (cause) {
-        console.error('Marking the history of a chat read failed; trying again', errorName(cause))
-        retryServerLater()
-        return
+        // Not again at once (each try is a request and a pull, and the pull would start the next round): this chat
+        // waits a backoff that doubles up to a cap; the others go on.
+        const tries = (waiting?.tries ?? 0) + 1
+        const wait = Math.min(MARK_RETRY_MS * 2 ** (tries - 1), MARK_RETRY_MAX_MS)
+        markBackoff.set(chat.id, { tries, until: now + wait })
+        console.error('Marking the history of a chat read failed; trying again later', errorName(cause))
+        scheduleMarkRound(wait)
       }
     }
     if (marked > 0) {
       revision.value++
+    }
+    if (more) {
+      // Bounded work per round: the rest in the next one, shortly.
+      scheduleMarkRound(MARK_ROUND_MS)
+      return
     }
     const value = await store.chatMeta(serverCursorKey(account.id))
     const cursor = value === null ? null : readRelayCursor(value)
@@ -2082,6 +2135,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       await store.setChatMeta(serverHistoryKey(account.id), null)
       serverHistory.value = null
       historyDoneAtPull = null
+      markBackoff.clear()
       if (relayAccountId !== null) {
         liveFrom.value = null
       }
@@ -2733,6 +2787,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   /** Stops listening and the relay (tests, and a page that goes away). */
   async function dispose(): Promise<void> {
     scope.stop()
+    markRound?.cancel()
+    markRound = null
     takeUpRetry?.()
     takeUpRetry = null
     stopHeartbeat()
