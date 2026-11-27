@@ -45,7 +45,9 @@ exports[`the shell in the browser > adds the WhatsApp row for a user whose chats
           </svg><span data-v-a20b8ea9="" class="label">Clean up</span></a>
       </div>
       <div data-v-a20b8ea9="" class="group">
-        <h2 data-v-a20b8ea9="" class="group-title">Smart inboxes</h2><a data-v-a20b8ea9="" href="/smart/news" class="item smart"><span data-v-921c2e1d="" data-v-a20b8ea9="" class="mark plain" aria-hidden="true">N</span><span data-v-a20b8ea9="" class="label">Newsletters</span>
+        <h2 data-v-a20b8ea9="" class="group-title">Smart inboxes</h2><a data-v-a20b8ea9="" href="/smart/news" class="item smart"><svg data-v-921c2e1d="" data-v-a20b8ea9="" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="smart-inbox-icon">
+            <path d="M4 5h16l-6 8v5l-4 2v-7z"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Newsletters</span>
         </a><a data-v-a20b8ea9="" href="/batches" class="item smart"><svg data-v-a20b8ea9="" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="batches-icon">
             <path d="M12 3a9 9 0 100 18 9 9 0 000-18z"></path>
             <path d="M12 7v5l3 2"></path>
@@ -127,7 +129,9 @@ exports[`the shell in the browser > renders the sidebar and the stage with the m
           </svg><span data-v-a20b8ea9="" class="label">Clean up</span></a>
       </div>
       <div data-v-a20b8ea9="" class="group">
-        <h2 data-v-a20b8ea9="" class="group-title">Smart inboxes</h2><a data-v-a20b8ea9="" href="/smart/news" class="item smart"><span data-v-921c2e1d="" data-v-a20b8ea9="" class="mark plain" aria-hidden="true">N</span><span data-v-a20b8ea9="" class="label">Newsletters</span>
+        <h2 data-v-a20b8ea9="" class="group-title">Smart inboxes</h2><a data-v-a20b8ea9="" href="/smart/news" class="item smart"><svg data-v-921c2e1d="" data-v-a20b8ea9="" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="smart-inbox-icon">
+            <path d="M4 5h16l-6 8v5l-4 2v-7z"></path>
+          </svg><span data-v-a20b8ea9="" class="label">Newsletters</span>
         </a><a data-v-a20b8ea9="" href="/batches" class="item smart"><svg data-v-a20b8ea9="" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="batches-icon">
             <path d="M12 3a9 9 0 100 18 9 9 0 000-18z"></path>
             <path d="M12 7v5l3 2"></path>
