@@ -3,93 +3,154 @@ import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { isDesktop } from '@/platform/desktop'
 import { useBillingStore } from '@/stores/billing'
-import FrameTitle from '@/components/FrameTitle.vue'
 
 const billing = useBillingStore()
 const route = useRoute()
-/**
- * WhatsApp's settings (the SettingsWhatsApp board) and Add several accounts belong under Accounts, though their
- * addresses are their own.
- */
-const underAccounts = computed(() => typeof route.name === 'string' && (route.name.startsWith('settings-whatsapp') || route.name === 'settings-accounts-import'))
+
+interface Entry {
+  label: string
+  name: string
+  /** Pages with addresses of their own that still belong under this entry. */
+  under?: (name: string) => boolean
+  shown?: () => boolean
+}
+
 /**
  * Meeting apps and access tokens are pages under Apps (the "Settings: apps" board): their addresses stay and the
- * navigation highlights Apps on them. Connected apps lead to the AI assistants and apps page.
+ * navigation marks Apps on them. Connected apps lead to the AI assistants and apps page.
  */
 const UNDER_APPS = ['settings-meeting-apps', 'settings-access-tokens']
-const underApps = computed(() => typeof route.name === 'string' && (route.name.startsWith('settings-apps') || UNDER_APPS.includes(route.name)))
+
+/**
+ * The settings menu, in its order. WhatsApp's settings (the SettingsWhatsApp board) and Add several accounts belong
+ * under Accounts, though their addresses are their own. Updates shows in the desktop app, Subscription where billing
+ * is on.
+ */
+const ENTRIES: Entry[] = [
+  { label: 'Accounts', name: 'settings-accounts', under: (name) => name.startsWith('settings-whatsapp') || name === 'settings-accounts-import' },
+  { label: 'Signatures', name: 'settings-signatures' },
+  { label: 'Smart inboxes', name: 'settings-smart-inboxes' },
+  { label: 'Notifications', name: 'settings-notifications' },
+  { label: 'Batched delivery', name: 'settings-batches' },
+  { label: 'Daily brief', name: 'settings-brief' },
+  { label: 'Calendar', name: 'settings-calendar' },
+  { label: 'Apps', name: 'settings-apps', under: (name) => name.startsWith('settings-apps') || UNDER_APPS.includes(name) },
+  { label: 'Updates', name: 'settings-updates', shown: () => isDesktop },
+  { label: 'Subscription', name: 'settings-billing', shown: () => Boolean(billing.status?.enabled) },
+]
+
+/** The entries on screen, each with whether it is the page the user is on (one at most). */
+const entries = computed(() => {
+  const name = typeof route.name === 'string' ? route.name : ''
+  return ENTRIES.filter((entry) => entry.shown?.() ?? true).map((entry) => ({
+    ...entry,
+    current: name === entry.name || (entry.under?.(name) ?? false),
+  }))
+})
 </script>
 
 <template>
   <div class="settings">
-    <nav class="nav" aria-label="Settings">
-      <FrameTitle>Settings</FrameTitle>
-      <RouterLink :to="{ name: 'settings-accounts' }" class="item" :class="{ 'router-link-active': underAccounts }">Accounts</RouterLink>
-      <RouterLink :to="{ name: 'settings-signatures' }" class="item">Signatures</RouterLink>
-      <RouterLink :to="{ name: 'settings-smart-inboxes' }" class="item">Smart inboxes</RouterLink>
-      <RouterLink :to="{ name: 'settings-notifications' }" class="item">Notifications</RouterLink>
-      <RouterLink :to="{ name: 'settings-batches' }" class="item">Batched delivery</RouterLink>
-      <RouterLink :to="{ name: 'settings-brief' }" class="item">Daily brief</RouterLink>
-      <RouterLink :to="{ name: 'settings-calendar' }" class="item">Calendar</RouterLink>
-      <RouterLink :to="{ name: 'settings-apps' }" class="item" :class="{ 'router-link-active': underApps }" :aria-current="underApps ? 'page' : undefined">Apps</RouterLink>
-      <RouterLink v-if="isDesktop" :to="{ name: 'settings-updates' }" class="item">Updates</RouterLink>
-      <RouterLink v-if="billing.status?.enabled" :to="{ name: 'settings-billing' }" class="item">Subscription</RouterLink>
-    </nav>
-    <main class="content">
-      <RouterView />
-    </main>
+    <div class="group">
+      <!--
+        No frame title: the label above the menu says Settings, and in the desktop app the title strip above stays
+        empty (and keeps moving the window).
+      -->
+      <nav class="nav" aria-label="Settings">
+        <span class="label" aria-hidden="true">Settings</span>
+        <RouterLink
+          v-for="entry in entries"
+          :key="entry.name"
+          :to="{ name: entry.name }"
+          class="item"
+          :aria-current="entry.current ? 'page' : undefined"
+          >{{ entry.label }}</RouterLink
+        >
+      </nav>
+      <main class="content">
+        <RouterView />
+      </main>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/*
+ * One surface for all of Settings (the "Settings: accounts" board): menu and page sit together on --stage, centred as
+ * one group, the page at the reading width. 52 from the top in the browser; in the desktop app the title strip is
+ * those 52.
+ */
 .settings {
-  display: grid;
-  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  box-sizing: border-box;
   min-height: 100%;
+  padding: 52px 32px 48px;
+  background: var(--stage);
+}
+:global(.frame-shell) .settings {
+  padding-top: 0;
+}
+/* The desktop app's title strip sits above this view in the same column: it takes the same surface, so no band shows. */
+:global(:root .app.frame-shell > .stage:has(> .settings)) {
+  background: var(--stage);
+}
+.group {
+  display: flex;
+  align-items: flex-start;
+  gap: 40px;
+  max-width: calc(184px + 40px + var(--measure));
+  margin: 0 auto;
 }
 .nav {
+  flex: 0 0 184px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 20px 12px;
 }
-h1 {
-  margin: 0 10px 12px;
-  font: 700 28px/34px var(--font-display);
+.label {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
 }
 .item {
   display: flex;
   align-items: center;
-  min-height: 36px;
+  min-height: 32px;
   padding: 0 10px;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-row);
   color: var(--ink);
-  text-decoration: none;
+  font-size: 14px;
   font-weight: 500;
-  transition:
-    background-color var(--motion-fast) ease,
-    box-shadow var(--motion-fast) ease;
+  text-decoration: none;
+  transition: background-color var(--motion-fast) ease;
 }
 .item:hover {
-  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  background: var(--ground);
 }
-.item.router-link-active {
-  background: var(--surface);
-  box-shadow: var(--glass-edge), 0 1px 2px rgb(22 24 29 / 6%);
-  font-weight: 600;
+/* The page the user is on: a quiet pill, no saturated fill. */
+.item[aria-current='page'],
+.item[aria-current='page']:hover {
+  background: var(--pill-quiet);
 }
 .content {
+  flex: 1 1 0;
   min-width: 0;
-  padding: 32px 40px;
-  background: var(--surface);
-  -webkit-backdrop-filter: var(--glass-material);
-  backdrop-filter: var(--glass-material);
-  box-shadow: var(--glass-edge);
-  border-left: 1px solid var(--line);
+  max-width: var(--measure);
+}
+@media (prefers-reduced-motion: reduce) {
+  .item {
+    transition: none;
+  }
 }
 @media (max-width: 760px) {
-  .settings {
-    grid-template-columns: minmax(0, 1fr);
+  .settings,
+  :global(.frame-shell) .settings {
+    padding: 0;
+  }
+  .group {
+    display: block;
   }
   /* One row of links that scrolls sideways, so the page a link opens starts right under it. */
   .nav {
@@ -98,15 +159,8 @@ h1 {
     padding: 8px 12px;
     overflow-x: auto;
   }
-  /* Out of sight but still the page's heading for a screen reader. */
-  .nav h1 {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
+  .label {
+    display: none;
   }
   .item {
     flex: none;
@@ -114,8 +168,8 @@ h1 {
     min-height: 44px;
   }
   .content {
+    max-width: none;
     padding: 24px 16px;
-    border-left: 0;
   }
 }
 </style>
