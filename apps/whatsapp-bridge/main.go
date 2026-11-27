@@ -48,7 +48,8 @@ func main() {
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	em := newEmitter(stdout)
 	diag := &diagnostics{w: os.Stderr}
-	os.Exit(runProtected(em, diag, func() int { return run(os.LookupEnv, os.Stdin, signals, em, diag) }))
+	var end outcome
+	os.Exit(runProtected(&end, em, diag, func() int { return run(os.LookupEnv, os.Stdin, signals, &end, em, diag) }))
 }
 
 // isolateStdout returns the real stdout, for the emitter only, and points os.Stdout (what fmt.Print and every library
@@ -82,13 +83,13 @@ func silenceSignalLog() {
 // panicReason is the only thing said about a panic: its value can hold message data and is never printed.
 const panicReason = "the bridge stopped on an internal error"
 
-// runProtected runs the bridge and turns a panic of its main goroutine into a fatal event and status 1. The deferred
-// calls of run (disconnect, closing the databases) have run by the time the panic reaches here.
-func runProtected(em *emitter, diag *diagnostics, f func() int) (status int) {
+// runProtected runs the bridge and turns a panic of its main goroutine into status 1 and, through end like every other
+// fatal, a fatal event: only when no fatal event went out before, so a run never reports two. The deferred calls of
+// run (disconnect, closing the databases) have run by the time the panic reaches here.
+func runProtected(end *outcome, em *emitter, diag *diagnostics, f func() int) (status int) {
 	defer func() {
 		if recover() != nil {
-			em.fatal("panic")
-			diag.say(panicReason)
+			end.fail(em, diag, fatal("panic", panicReason, nil), func() {})
 			status = 1
 		}
 	}()
@@ -135,10 +136,9 @@ func (o *outcome) status() int {
 
 // run is the whole bridge. It returns the exit status: 0 after a stop that was asked for (stdin closed, SIGTERM or
 // SIGINT) or a log out, 1 after a fatal event or a QR code nobody scanned.
-func run(lookup func(string) (string, bool), stdin io.Reader, signals <-chan os.Signal, em *emitter, diag *diagnostics) int {
+func run(lookup func(string) (string, bool), stdin io.Reader, signals <-chan os.Signal, end *outcome, em *emitter, diag *diagnostics) int {
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	var end outcome
 	failWith := func(err *fatalError) int {
 		end.fail(em, diag, err, stop)
 		return end.status()

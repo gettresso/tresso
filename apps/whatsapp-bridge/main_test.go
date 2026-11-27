@@ -99,7 +99,7 @@ func runBridge(t *testing.T, values map[string]string, stdin io.Reader, signals 
 		signals = make(chan os.Signal, 1)
 	}
 	var out, diag bytes.Buffer
-	status := run(env(values), stdin, signals, newEmitter(&out), &diagnostics{w: &diag})
+	status := run(env(values), stdin, signals, &outcome{}, newEmitter(&out), &diagnostics{w: &diag})
 	return status, out.String(), diag.String()
 }
 

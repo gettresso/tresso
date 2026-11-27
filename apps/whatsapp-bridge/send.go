@@ -354,8 +354,9 @@ func analyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 			}
 		}
 
-		// Keep track of last valid granule position
-		if granulePos != 0 {
+		// Keep track of last valid granule position. -1 (all bits set) means no packet ends on this page (RFC 3533,
+		// RFC 7845): it is no position.
+		if granulePos != 0 && granulePos != math.MaxUint64 {
 			lastGranule = granulePos
 		}
 
