@@ -1,6 +1,6 @@
 /**
- * Real output of qrterminal v1.0.1 `GenerateHalfBlock` (the call the bridge makes at main.go:1009), without the
- * header line the bridge prints before it. A code of size 25 (17 lines) and one of size 57 (33 lines).
+ * Real output of qrterminal v1.0.1 `GenerateHalfBlock`, as the bridge of earlier Tresso versions printed it, without
+ * the header line before it. A code of size 25 (17 lines) and one of size 57 (33 lines).
  */
 export const QR_SIZE_25: readonly string[] = [
   '█████████████████████████████████',

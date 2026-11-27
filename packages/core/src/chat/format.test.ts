@@ -269,7 +269,7 @@ describe('replyText', () => {
 
 describe('replyErrorText', () => {
   it('explains each error', () => {
-    expect(replyErrorText('bridge_stopped')).toBe('The bridge is not running.')
+    expect(replyErrorText('bridge_stopped')).toBe('WhatsApp is not running on your Mac.')
     expect(replyErrorText('not_linked')).toBe('WhatsApp is not linked.')
     expect(replyErrorText('refused')).toBe('WhatsApp refused the message.')
     expect(replyErrorText('unconfirmed')).toBe(
