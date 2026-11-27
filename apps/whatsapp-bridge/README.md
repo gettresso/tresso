@@ -77,7 +77,7 @@ a chat, a chat name, a file name or the token.
 | `connected` | Connected to WhatsApp: after a start, after linking and after every reconnect. |
 | `disconnected` | WhatsApp closed the connection; whatsmeow reconnects by itself. |
 | `listening` | The REST API accepts requests on `127.0.0.1:<port>`. Sent once, after the connection held for 2 seconds. |
-| `logged_out` | The phone removed this device. whatsmeow deletes the session from `whatsapp.db`; the bridge stops (status 0). |
+| `logged_out` | The device is logged out: the phone removed it, or `POST /api/logout` did and WhatsApp confirmed. The session is gone from `whatsapp.db`; the bridge stops (status 0). Sent once per run. |
 | `fatal` | The bridge stops (status 1). `code` says why (below). |
 
 The `fatal` codes:
@@ -153,6 +153,21 @@ letters, digits, `-` and `_`. A file downloaded before is handed back again only
 message names. When WhatsApp no longer serves the file, the bridge asks the phone to upload it again (up to 60
 seconds).
 
+`POST /api/logout` with the body `{}` logs this device out (whatsmeow's `Logout`: WhatsApp removes it from the
+account, so the phone no longer lists it under Linked devices; the session is deleted from `whatsapp.db`). It waits
+at most 20 seconds for WhatsApp. Once WhatsApp confirmed it answers `200` with `{"success": true, "message": "Logged
+out"}`, then sends `logged_out` and stops (status 0), as a log out from the phone does; a confirmed log out whose only
+failure is deleting the local session counts as done. Before a confirmation nothing changes, the bridge keeps running,
+and the answer has `success` false and a fixed text (never whatsmeow's, which can name the device):
+
+| Status | Message | Meaning |
+|---|---|---|
+| `409` | `Not linked` | No device in the store. |
+| `503` | `Not connected to WhatsApp` | The request could not go out. |
+| `504` | `WhatsApp did not confirm the log out in time` | No answer within 20 seconds; WhatsApp may still have removed the device. |
+| `502` | `WhatsApp refused the log out` | WhatsApp answered with an error. |
+| `502` | `The log out could not be sent to WhatsApp` | Any other failure before the confirmation. |
+
 A request body is at most 1 MiB (`413` beyond), and headers at most 16 KiB. A client has 10 seconds to send its
 headers and 30 for the whole request (ample for 1 MiB of JSON on 127.0.0.1: files go by path, never in the body), and
 an idle connection is closed after 60 seconds. There is no write timeout, since a download may wait up to 60 seconds
@@ -187,6 +202,7 @@ What stays as it was with mattn/go-sqlite3:
   the REST API says it listens only after it bound the port.
 - whatsmeow's log goes to stderr as format strings only.
 - The bridge stops when stdin ends, and stops after a log out instead of running on without a session.
+- `POST /api/logout` logs the device out, so the app can unlink it when the user disconnects.
 - The device is named Tresso.
 - Pure Go SQLite (above).
 - Unused code of the fork is gone (`requestHistorySync` and the message store's read methods nothing called).

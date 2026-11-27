@@ -18,7 +18,7 @@ import (
 
 // The real routes behind protect: every case below is answered before the handlers need WhatsApp or the store.
 func protectedAPI(token string) http.Handler {
-	return protect(newRESTHandler(nil, nil), token, 8741)
+	return protect(newRESTHandler(nil, nil, func() {}), token, 8741)
 }
 
 func ptr(s string) *string { return &s }
@@ -108,7 +108,7 @@ func TestProtectWithoutTokenRefusesEverything(t *testing.T) {
 }
 
 func TestRequestBodyLimit(t *testing.T) {
-	handler := newRESTHandler(nil, nil)
+	handler := newRESTHandler(nil, nil, func() {})
 	for _, path := range []string{"/api/send", "/api/download"} {
 		big := `{"recipient":"` + strings.Repeat("a", maxRequestBody) + `"}`
 		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(big))
@@ -145,7 +145,7 @@ func TestServerBindsLoopbackAndAnswersTheProbe(t *testing.T) {
 	if !address.IP.Equal(net.IPv4(127, 0, 0, 1)) || address.Port != port {
 		t.Fatalf("listens on %v, want 127.0.0.1:%d", address, port)
 	}
-	server := newRESTServer(protect(newRESTHandler(nil, nil), testToken, port))
+	server := newRESTServer(protect(newRESTHandler(nil, nil, func() {}), testToken, port))
 	go server.Serve(listener)
 	t.Cleanup(func() { server.Close() })
 
@@ -242,7 +242,7 @@ func TestDownloadNames(t *testing.T) {
 	}
 
 	// The same through the API, as the desktop app asks for it.
-	handler := protect(newRESTHandler(nil, store), testToken, 8741)
+	handler := protect(newRESTHandler(nil, store, func() {}), testToken, 8741)
 	r := httptest.NewRequest(http.MethodPost, "/api/download", strings.NewReader(`{"message_id":"3EB0AAAA","chat_jid":"`+chat+`"}`))
 	r.Host = "127.0.0.1:8741"
 	r.Header.Set("Content-Type", "application/json")
