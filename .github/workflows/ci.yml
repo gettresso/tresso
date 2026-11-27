@@ -163,32 +163,6 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
-  # The desktop app will bundle one binary for both Mac architectures. The bridge is pure Go (no cgo), so both build
-  # here with CGO_ENABLED=0 and lipo joins them; -verify_arch fails the job when either is missing.
-  whatsapp-bridge-macos:
-    name: WhatsApp bridge (universal macOS binary)
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: apps/whatsapp-bridge
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.27'
-          cache-dependency-path: apps/whatsapp-bridge/go.sum
-      - name: Build arm64 and x86_64 and join them
-        env:
-          CGO_ENABLED: '0'
-          GOOS: darwin
-        run: |
-          GOARCH=arm64 go build -trimpath -o dist/whatsapp-bridge-arm64 .
-          GOARCH=amd64 go build -trimpath -o dist/whatsapp-bridge-amd64 .
-          lipo -create -output dist/whatsapp-bridge dist/whatsapp-bridge-arm64 dist/whatsapp-bridge-amd64
-          lipo -info dist/whatsapp-bridge
-          lipo dist/whatsapp-bridge -verify_arch arm64
-          lipo dist/whatsapp-bridge -verify_arch x86_64
-
   images:
     name: Image ${{ matrix.image }}
     runs-on: ubuntu-latest
@@ -281,24 +255,48 @@ jobs:
       # astro check type-checks the pages and that every locale has the same keys as English; then the static build.
       - run: npm run build
 
+  # On macOS the app carries the WhatsApp bridge as a sidecar (tauri.macos.conf.json), which Tauri's build script wants
+  # to find at compile time, with Sparkle.framework: both are made first. Linux reads no macOS config and needs neither.
   desktop:
-    name: Desktop (Tauri)
-    runs-on: ubuntu-latest
+    name: Desktop (Tauri, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     defaults:
       run:
         working-directory: apps/desktop/src-tauri
     steps:
       - uses: actions/checkout@v5
       - name: System libraries for Tauri
+        if: runner.os == 'Linux'
         timeout-minutes: 20
         working-directory: .
         run: scripts/ci/apt-install.sh libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: actions/setup-node@v5
+        if: runner.os == 'macOS'
+        with:
+          node-version: '24'
+      - uses: actions/setup-go@v5
+        if: runner.os == 'macOS'
+        with:
+          go-version: '1.27'
+          cache-dependency-path: apps/whatsapp-bridge/go.sum
+      - name: Sparkle and the WhatsApp bridge (macOS)
+        if: runner.os == 'macOS'
+        working-directory: apps/desktop
+        run: |
+          node scripts/fetch-sparkle.mjs
+          node scripts/build-whatsapp-bridge.mjs
+          lipo src-tauri/binaries/whatsapp-bridge-universal-apple-darwin -verify_arch arm64 x86_64
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
+          key: ${{ matrix.os }}
       - run: cargo check --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --lib
