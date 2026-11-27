@@ -6,7 +6,7 @@ import { memorySql } from '@tresso/core/testing/sql'
 import type { WhatsAppConfig } from '@/platform/whatsapp'
 import type { SessionEnd } from '@/stores/auth'
 import { STILL_LISTED } from '@/components/chat/whatsappTexts'
-import { NOW, DAY, DIRECT, GROUP, MESSAGE_TEXT, RUNNING, LINKED, WAITING, FakeShell } from './whatsappShellFixture'
+import { NOW, DAY, DIRECT, GROUP, MESSAGE_TEXT, RUNNING, LINKED, WAITING, STOPPED as STOPPED_STATE, FakeShell } from './whatsappShellFixture'
 
 const fake = vi.hoisted(() => ({ shell: null as unknown, desktop: true }))
 vi.mock('@/platform/whatsapp', async (original) => ({
@@ -418,9 +418,13 @@ describe('the WhatsApp relay store', () => {
     expect(wa.relayFailing).toBe('read')
     expect(JSON.parse((await store.chatMeta(LOCAL_CURSOR))!)).toMatchObject({ storeId: 'store-old' })
 
-    shell.readFails = null
+    // The check works once, then the store is busy again for the relay's own reads: no message comes, yet the
+    // failure said while the store could not be checked is over.
+    shell.readPlan = ['ok']
     await pass(60_000)
     expect(wa.relayRunning).toBe(true)
+    expect(wa.relayFailing).toBeNull()
+    shell.readFails = null
     await importDone(wa)
     // The rule held after all: the chat never seen arrives read.
     expect(await unread(GROUP)).toBe(0)
@@ -467,6 +471,17 @@ describe('the WhatsApp relay store', () => {
     expect(shell.calls).toContain('disconnect')
     expect(wa.notice).toBe(LINK_UNDONE)
     expect(LINK_UNDONE).toBe('WhatsApp was not connected, so Tresso unlinked this Mac from your phone again.')
+  })
+
+  it('cancels a planned restart when the dialog closes on linking a connection again', async () => {
+    const wa = await signedIn(connectedConfig({ linkedAt: null, moved: true }))
+    wa.riskAccepted = true
+    await wa.start({ link: true })
+    shell.emit({ ...STOPPED_STATE, restarting: true })
+    await pass()
+    const calls = shell.calls.length
+    expect(await wa.cancel()).toBe(true)
+    expect(shell.calls.slice(calls)).toContain('stop')
   })
 
   it('stops the codes when the dialog closes on linking a connection again', async () => {

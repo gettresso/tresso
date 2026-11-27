@@ -21,6 +21,8 @@ export class FakeShell {
   storeId = 'store-1'
   configs = new Map<string, WhatsAppConfig>()
   readFails: unknown = null
+  /** What the next reads do, one entry each (`ok`, or what they reject with), before `readFails` applies again. */
+  readPlan: unknown[] = []
   sendAnswer: () => Promise<SendResult> = async () => ({ ok: true, message: 'sent' })
   available = true
   /** A start answers once this resolves. */
@@ -116,7 +118,11 @@ export class FakeShell {
       read: (afterRowid, limit) =>
         record('read', (): BridgeRows => {
           this.readTimes.push(Date.now())
-          if (this.readFails !== null) {
+          const planned = this.readPlan.shift()
+          if (planned !== undefined && planned !== 'ok') {
+            throw planned
+          }
+          if (planned === undefined && this.readFails !== null) {
             throw this.readFails
           }
           const rows = this.rows.filter((row) => row.rowid > afterRowid).slice(0, limit)

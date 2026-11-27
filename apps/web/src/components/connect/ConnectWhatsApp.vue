@@ -89,7 +89,10 @@ const view = computed<'start' | 'link' | 'linked' | 'problem'>(() => {
   // Failed, or stopped from outside with nothing to say (no error, no code on its way, no restart planned: the shell's
   // snapshot says `restarting` during its backoff, which linkStage counts as loading), or a code that never came: all
   // end in the could-not-start pattern with Try again, never on a spinner.
-  if (stage.value === 'failed' || (stage.value === 'idle' && wa.busy === null) || codeLate.value) {
+  // A relink starts from stopped and unlinked: before a code was shown here that is idle too, so a refused start shows
+  // at once.
+  const stopped = stage.value === 'idle' || (stage.value === 'expired' && !codeShown.value)
+  if (stage.value === 'failed' || (stopped && wa.busy === null) || codeLate.value) {
     return 'problem'
   }
   return stage.value === 'linked' ? 'linked' : 'link'
