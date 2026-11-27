@@ -8,6 +8,7 @@ Use exactly one of these scopes in every Conventional Commit (`type(scope): summ
 | `sync` | `apps/sync`: Go sync workers |
 | `web` | `apps/web`: Vue web client |
 | `desktop` | `apps/desktop`: Tauri desktop shell |
+| `whatsapp-bridge` | `apps/whatsapp-bridge`: Go WhatsApp bridge the desktop app starts |
 | `mobile` | `apps/mobile`: Expo app |
 | `website` | `apps/website`: the marketing site at gettresso.com |
 | `core` | `packages/core`: shared TypeScript |
