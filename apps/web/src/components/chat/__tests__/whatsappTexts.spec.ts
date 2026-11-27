@@ -15,7 +15,7 @@ import {
   serverRefusedText,
   switchText,
   errorName,
-  failureLine,
+  failureRow,
   importText,
   linkStage,
   linkedAge,
@@ -61,11 +61,16 @@ describe('the WhatsApp texts', () => {
     for (const kind of FAILURE_KINDS) {
       const { title, text, action } = FAILURES[kind]
       expect({ kind, complete: title.length > 0 && text.endsWith('.') && action.length > 0 }).toEqual({ kind, complete: true })
-      expect(`${title} ${text} ${failureLine(kind)}`).not.toMatch(UNSAID)
+      const row = failureRow(kind)
+      expect(`${title} ${text} ${row.title} ${row.text}`).not.toMatch(UNSAID)
     }
-    expect(failureLine('offline')).toBe('WhatsApp could not be reached. Check that this Mac is online, then try again.')
+    expect(failureRow('offline')).toEqual({ title: 'WhatsApp could not be reached', text: 'Check that this Mac is online, then try again.', retry: true })
+    // A missing part cannot be fixed by starting again; the dialog's one button closes.
+    expect(failureRow('missing').retry).toBe(false)
+    expect(FAILURES.missing.action).toBe('Close')
+    expect(FAILURES.replaced).toEqual({ title: 'WhatsApp is open elsewhere with this link', text: 'This link is in use by another running Tresso. Quit that one, then try again.', action: 'Try again' })
     // In Settings something was linked before, so "Nothing was linked" is not said there.
-    expect(failureLine('exited')).not.toContain('Nothing was linked')
+    expect(failureRow('exited').text).not.toContain('Nothing was linked')
   })
 
   it('tells where linking stands from the state of the bridge', () => {
@@ -87,7 +92,9 @@ describe('the WhatsApp texts', () => {
     expect(statusWord({ ...RUNNING, port: null, link: 'waiting_for_scan', qr: ['1'] }, true)).toEqual({ text: 'Link again', ok: false })
     expect(statusWord({ ...STOPPED, link: 'unlinked' }, false)).toEqual({ text: 'Not linked', ok: false })
     expect(statusWord({ ...STOPPED, link: 'unlinked', error: 'logged_out' }, false)).toEqual({ text: 'Not linked', ok: false })
-    expect(statusWord({ ...STOPPED, error: 'missing' }, false)).toEqual({ text: 'Could not start', ok: false })
+    expect(statusWord({ ...STOPPED, error: 'missing' }, false)).toEqual({ text: 'Needs a new install', ok: false })
+    expect(statusWord({ ...STOPPED, error: 'offline' }, false)).toEqual({ text: 'Offline', ok: false })
+    expect(statusWord({ ...STOPPED, error: 'exited' }, false)).toEqual({ text: 'Could not start', ok: false })
     expect(statusWord(STOPPED, false)).toEqual({ text: 'Stopped', ok: false })
   })
 

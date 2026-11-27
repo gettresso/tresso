@@ -40,6 +40,8 @@ export class FakeShell {
   readonly readTimes: number[] = []
   /** What the shell's disconnect answers: whether WhatsApp confirmed the log out. */
   unlinks = true
+  /** Whether each start asked for a linked store only (a resumed connection) or may show a code (the dialog). */
+  readonly linkedOnly: boolean[] = []
   /** The user each start was for. */
   readonly startedFor: string[] = []
 
@@ -96,9 +98,10 @@ export class FakeShell {
             if (user !== userId) this.configs.delete(user)
           }
         }),
-      start: (userId) =>
+      start: (userId, linkedOnly = false) =>
         record('start', async () => {
           this.startedFor.push(userId)
+          this.linkedOnly.push(linkedOnly)
           await this.startHeld
           this.state = RUNNING
           return this.state

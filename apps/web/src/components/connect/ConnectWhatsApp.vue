@@ -67,6 +67,13 @@ let opener: HTMLElement | null = null
 let askedFrom: HTMLElement | null = null
 
 const stage = computed(() => linkStage(wa.bridge))
+/** The longest wait for a code before the dialog says it could not start (whatsmeow's first code takes seconds). */
+const CODE_WAIT_MS = 60_000
+/** A code was asked for and none came within CODE_WAIT_MS: a backstop, so the dialog never spins forever. */
+const codeLate = ref(false)
+let codeTimer: ReturnType<typeof setTimeout> | null = null
+/** The connect after the phone linked was made by itself once; after that it waits for Try again. */
+let connectTried = false
 /** The step the dialog shows. */
 const view = computed<'start' | 'link' | 'linked' | 'problem'>(() => {
   if (connectedHere.value || (wa.connected && wa.linked)) {
@@ -75,15 +82,21 @@ const view = computed<'start' | 'link' | 'linked' | 'problem'>(() => {
   if (!started.value) {
     return 'start'
   }
-  if (stage.value === 'failed' || (stage.value === 'idle' && wa.error !== null && wa.busy === null)) {
+  // Failed, or stopped from outside with nothing to say (no error, no code on its way), or a code that never came: all
+  // end in the could-not-start pattern with Try again, never on a spinner.
+  if (stage.value === 'failed' || (stage.value === 'idle' && wa.busy === null) || codeLate.value) {
     return 'problem'
   }
   return stage.value === 'linked' ? 'linked' : 'link'
 })
 /** The failure the problem step names: the bridge's, or a start the shell refused (its words, from the store). */
 const problem = computed(() =>
-  wa.bridge.error !== null ? FAILURES[wa.bridge.error] : { title: FAILURES.exited.title, text: wa.error ?? FAILURES.exited.text, action: FAILURES.exited.action },
+  wa.bridge.error !== null && !codeLate.value
+    ? FAILURES[wa.bridge.error]
+    : { title: FAILURES.exited.title, text: wa.error ?? FAILURES.exited.text, action: FAILURES.exited.action },
 )
+/** Linked, not connected, no question open and nothing running: the connect waits for Try again. */
+const connectStuck = computed(() => view.value === 'linked' && !wa.connected && wa.askNumber === null && wa.busy === null)
 const reading = computed(() => wa.importState !== 'done')
 const progressText = computed(() => (reading.value ? `Reading chats from the last ${IMPORT_DAYS} days…` : 'Chats read'))
 /** Done waits for an open question and for a change of the place under way. */
@@ -106,15 +119,36 @@ async function showCode(): Promise<void> {
   if (!wa.riskAccepted || wa.busy !== null) {
     return
   }
+  if (view.value === 'problem' && wa.bridge.error === 'missing') {
+    // A part of Tresso is missing: starting again cannot help, the one button closes.
+    emit('close')
+    return
+  }
   started.value = true
-  await wa.start()
+  codeLate.value = false
+  await wa.start({ link: true })
 }
+
+// The backstop: while a code is on its way, a timer; a code, a link or any other step ends it.
+watch(
+  () => view.value === 'link' && stage.value === 'loading',
+  (waiting) => {
+    if (codeTimer !== null) {
+      clearTimeout(codeTimer)
+      codeTimer = null
+    }
+    if (waiting) {
+      codeTimer = setTimeout(() => (codeLate.value = true), CODE_WAIT_MS)
+    }
+  },
+)
 
 /** The phone linked: WhatsApp is connected at once (the reading starts). */
 async function connect(numberConfirmed = false): Promise<void> {
   if (wa.connected || wa.busy !== null) {
     return
   }
+  connectTried = true
   const takeOver = place.value === 'all' && takeOverFromOther.value
   if (!takeOver) {
     // Copying to the server is asked first, after connecting on this Mac.
@@ -125,14 +159,22 @@ async function connect(numberConfirmed = false): Promise<void> {
   }
 }
 
+// Once, by itself, as soon as the phone linked and nothing else runs (a start still finishing makes it wait).
 watch(
-  () => view.value === 'linked' && !wa.connected,
+  () => view.value === 'linked' && !wa.connected && wa.busy === null && !connectTried,
   (due) => {
     if (due) {
       void connect()
     }
   },
+  { immediate: true },
 )
+
+// Every step change puts focus on the step's heading: the button that was pressed may be gone.
+watch(view, async () => {
+  await nextTick()
+  dialog.value?.querySelector<HTMLElement>('h1')?.focus()
+})
 
 async function ask(kind: 'copy' | 'remove'): Promise<void> {
   askedFrom = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
@@ -195,6 +237,9 @@ onMounted(() => {
   dialog.value?.showModal?.()
 })
 onUnmounted(() => {
+  if (codeTimer !== null) {
+    clearTimeout(codeTimer)
+  }
   // Out of the page, so nothing is inert any more: the element that opened the dialog takes focus again.
   const target = opener
   void nextTick(() => {
@@ -216,7 +261,7 @@ onUnmounted(() => {
       <div class="intro">
         <span class="logo"><ProviderMark kind="whatsapp" :size="48" /></span>
         <div class="heading">
-          <h1 id="wa-title">Connect WhatsApp</h1>
+          <h1 id="wa-title" tabindex="-1">Connect WhatsApp</h1>
           <p class="lead">{{ CONNECT_LEAD }}</p>
         </div>
       </div>
@@ -240,7 +285,7 @@ onUnmounted(() => {
     </template>
 
     <template v-else-if="view === 'link'">
-      <h1 id="wa-title">Scan this code with your phone</h1>
+      <h1 id="wa-title" tabindex="-1">Scan this code with your phone</h1>
       <WhatsAppLink />
     </template>
 
@@ -250,7 +295,7 @@ onUnmounted(() => {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
         </span>
         <div class="heading">
-          <h1 id="wa-title" dir="auto">{{ linkedTitle(wa.identity) }}</h1>
+          <h1 id="wa-title" tabindex="-1" dir="auto">{{ linkedTitle(wa.identity) }}</h1>
           <p v-if="wa.identity?.name" class="lead" dir="auto">{{ wa.identity.name }}</p>
         </div>
       </div>
@@ -289,7 +334,7 @@ onUnmounted(() => {
         <span id="wa-ask-title" class="strong">{{ asking === 'copy' ? ASK_COPY_TITLE : REMOVE_TITLE }}</span>
         <span id="wa-ask-body" class="quiet">{{ asking === 'copy' ? ASK_COPY_BODY : REMOVE_BODY }}</span>
         <div class="actions">
-          <button type="button" class="button button-primary small" @click="answer(true)">{{ asking === 'copy' ? 'Copy' : 'Remove' }}</button>
+          <button type="button" class="button small" :class="asking === 'copy' ? 'button-primary' : 'button-danger'" @click="answer(true)">{{ asking === 'copy' ? 'Copy' : 'Remove' }}</button>
           <button ref="askAnswer" type="button" class="button button-quiet small" @click="answer(false)">Cancel</button>
         </div>
       </div>
@@ -301,8 +346,9 @@ onUnmounted(() => {
         </div>
       </div>
       <p v-else-if="wa.error" class="error" role="alert">{{ wa.error }}</p>
+      <p v-if="connectStuck" class="quiet">Closing now unlinks this Mac from your phone again.</p>
       <div class="footer">
-        <button v-if="!wa.connected && wa.error && !wa.askNumber" type="button" class="button button-primary big" :disabled="wa.busy !== null" @click="connect()">Try again</button>
+        <button v-if="connectStuck" type="button" class="button button-primary big" @click="connect()">Try again</button>
         <button v-else type="button" class="button button-primary big" :disabled="doneDisabled || !wa.connected" @click="emit('done')">Done</button>
       </div>
     </template>
@@ -313,7 +359,7 @@ onUnmounted(() => {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 16.5v.01" /></svg>
         </span>
         <div class="heading">
-          <h1 id="wa-title">{{ problem.title }}</h1>
+          <h1 id="wa-title" tabindex="-1">{{ problem.title }}</h1>
           <p class="lead">{{ problem.text }}</p>
         </div>
       </div>
@@ -410,6 +456,10 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+}
+/* The heading takes focus at each step change (for the screen reader and the keyboard), not to be clicked: no ring. */
+h1:focus {
+  outline: none;
 }
 h1 {
   margin: 0;

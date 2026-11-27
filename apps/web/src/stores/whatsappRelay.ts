@@ -133,7 +133,13 @@ export const UNKNOWN_NUMBER =
 export const SERVER_ADOPTED = 'server-adopted'
 
 /** Said when the server's WhatsApp account went while this Mac relayed it or showed it (removed on another device). */
-export const REMOVED_ELSEWHERE = 'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too.'
+export const REMOVED_ELSEWHERE =
+  'WhatsApp was disconnected from your Tresso server on another device, so Tresso disconnected it on this Mac too: it unlinked this Mac from your phone and removed the WhatsApp data it kept here.'
+/** The same when WhatsApp could not be reached to unlink this Mac (STILL_LISTED follows it). */
+export const REMOVED_ELSEWHERE_NOT_UNLINKED =
+  'WhatsApp was disconnected from your Tresso server on another device, so Tresso disconnected it on this Mac too and removed the WhatsApp data it kept here.'
+/** Said when the connect dialog closed after the phone linked but before WhatsApp was connected: the link was undone. */
+export const LINK_UNDONE = 'WhatsApp was not connected, so Tresso unlinked this Mac from your phone again.'
 
 /** A name as the server takes it (no control or format characters, at most 255 characters); null when nothing is left. */
 function plainName(value: string | null | undefined): string | null {
@@ -501,7 +507,9 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     await finishPendingRemoval(id)
     if (config.value !== null) {
       try {
-        await startBridge(id)
+        // Only a linked store: a connection that waits for the phone (an earlier version's, or one the phone ended)
+        // links again through the connect dialog.
+        await startBridge(id, true)
       } catch (cause) {
         error.value = shellErrorText(cause)
         console.error('Starting the WhatsApp bridge failed', errorName(cause))
@@ -621,10 +629,13 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     }
   }
 
-  /** Starts the bridge on this user's store (the shell makes it); one that runs for them already is kept. */
-  async function startBridge(id: string): Promise<void> {
+  /**
+   * Starts the bridge on this user's store (the shell makes it); one that runs for them already is kept. `linkedOnly`:
+   * only when the store holds a session, so nothing shows a QR code the user did not ask for in the connect dialog.
+   */
+  async function startBridge(id: string, linkedOnly: boolean): Promise<void> {
     bridgeStarted.value = true
-    onBridge(await commands.start(id))
+    onBridge(await commands.start(id, linkedOnly))
   }
 
   /** The account row the chat screens read keeps the bridge's state and Notify me (setLocalChatAccount). */
@@ -838,6 +849,10 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
         return
       }
     }
+    await takeUpNewStore(store, account?.id ?? null, current)
+    if (mine !== relayRun) {
+      return
+    }
     await readImportState(store)
     if (mine !== relayRun) {
       return
@@ -854,6 +869,50 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     })
     relayRunning.value = true
     relay.start()
+  }
+
+  /**
+   * The bridge's store is another one than the cursor read (the phone linked anew: an earlier version's whatsapp-mcp
+   * store gave way to Tresso's own, or Disconnect and a new link made a new one). Its history sync brings the last weeks
+   * again, plus chats Tresso never saw. The rule: rows sent before the moment the phone linked (the config's `linkedAt`,
+   * else now) are history, as in the first import after connecting (read, no notification); rows sent after it are live.
+   * Done as a re-read is ("Take back in"): "Only this Mac" reads the store from 0 as a first import with that moment as
+   * `history-through` (resetLocalCursor); "All my devices" reads it again with live batches, which the server answers
+   * `known` for what it holds, and marks each chat's history read through that moment (resetServerCursor and
+   * markHistory), since a first-import batch may not follow live ones there. A renumbered store (VACUUM) under the same
+   * file reads the same way, which changes nothing that was read. Nothing happens while the store is busy: the next
+   * start of the relay looks again.
+   */
+  async function takeUpNewStore(store: MailStore, accountId: string | null, current: WhatsAppConfig): Promise<void> {
+    try {
+      const value = await store.chatMeta(accountId === null ? LOCAL_CURSOR : serverCursorKey(accountId))
+      const cursor = value === null ? null : readRelayCursor(value)
+      if (cursor === null || cursor.storeId === '') {
+        return
+      }
+      const page = await commands.read(0, 1)
+      if (page.storeId === cursor.storeId) {
+        return
+      }
+      // The link seen in this session first (its save may still be under way), else the saved one, else now.
+      const seen = linkedHere.value ?? current.linkedAt
+      const linkedAt = seen === null ? Number.NaN : Date.parse(seen)
+      const at = Number.isNaN(linkedAt) ? Date.now() : linkedAt
+      if (accountId === null) {
+        await resetLocalCursor(store, at)
+      } else {
+        // As resetServerCursor, but the re-read ends at the new store's highest row: the old store's numbering means
+        // nothing here.
+        const before = readServerHistory(await store.chatMeta(serverHistoryKey(accountId)))
+        const history: ServerHistory = { scopes: [...(before?.scopes ?? []), { jid: null, at }], throughRowid: page.maxRowid }
+        await store.setChatMeta(serverHistoryKey(accountId), JSON.stringify(history))
+        await store.setChatMeta(serverCursorKey(accountId), JSON.stringify({ ...cursor, rowid: 0 }))
+      }
+    } catch (cause) {
+      if (cause !== 'busy') {
+        logRelayError(cause, 'read')
+      }
+    }
   }
 
   /** A problem the server backend went past: counted for Settings (counts only, nothing of the rows). */
@@ -1795,7 +1854,7 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
       }
       resetFlow()
       resetImport()
-      notice.value = unlinked ? REMOVED_ELSEWHERE : `${REMOVED_ELSEWHERE} ${STILL_LISTED}`
+      notice.value = unlinked ? REMOVED_ELSEWHERE : `${REMOVED_ELSEWHERE_NOT_UNLINKED} ${STILL_LISTED}`
       revision.value++
     })
   }
@@ -2120,19 +2179,23 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /**
-   * The connect dialog's "Show QR code" (also "Try again", "Link again" and "Show a new code"), and Settings' own: starts
-   * the bridge on this user's store. Before a connection only once the user confirmed the risk.
+   * Starts the bridge on this user's store. `link`: the connect dialog's "Show QR code" (also its "Try again", "Link
+   * again" and "Show a new code"), after the user confirmed the risk there; it may show a QR code. Otherwise (Settings'
+   * and the chat's "Try again"): only a store that holds a session starts, so no code appears unasked.
    */
-  function start(): Promise<boolean> {
+  function start(options: { link?: boolean } = {}): Promise<boolean> {
     return run('start', async () => {
       const id = userId.value
       if (id === null) {
         throw new WhatsAppProblem('Sign in to Tresso first.')
       }
-      if (config.value === null && !riskAccepted.value) {
+      if (options.link === true && !riskAccepted.value) {
         throw new WhatsAppProblem('Confirm the risk first.')
       }
-      await startBridge(id)
+      if (options.link !== true && config.value === null) {
+        throw new WhatsAppProblem('Connect WhatsApp first.')
+      }
+      await startBridge(id, options.link !== true)
     })
   }
 
@@ -2319,17 +2382,37 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
     })
   }
 
-  /** The connect dialog closed without connecting: a bridge started for it stops. */
+  /**
+   * The connect dialog closed without connecting: a bridge started for it stops. When the phone linked already (the
+   * connect itself did not go through), that link is undone: the shell logs the device out and removes the store, so no
+   * device nobody uses stays on the phone; `notice` says so.
+   */
   async function cancel(): Promise<boolean> {
     // A start still running finishes first, so the bridge it starts is stopped below too.
     while (busy.value !== null && runningTask !== null) {
       await runningTask
     }
     if (config.value !== null) {
+      // Linking again was asked for and not finished: the codes stop with the dialog.
+      if (bridge.value.process === 'owned' && bridge.value.link !== 'linked') {
+        try {
+          onBridge(await commands.stop())
+        } catch (cause) {
+          console.error('Stopping the WhatsApp bridge failed', errorName(cause))
+        }
+      }
       resetFlowKeepingConnection()
       return true
     }
+    const id = userId.value
+    const linkedHere = bridge.value.link === 'linked'
     return run('cancel', async () => {
+      if (linkedHere && id !== null) {
+        const { unlinked } = await commands.disconnect(id)
+        resetFlow()
+        notice.value = unlinked ? LINK_UNDONE : `WhatsApp was not connected. ${STILL_LISTED}`
+        return
+      }
       if (bridgeStarted.value || bridge.value.process === 'owned') {
         onBridge(await commands.stop())
       }
@@ -2569,7 +2652,8 @@ export const useWhatsAppRelayStore = defineStore('whatsappRelay', () => {
   }
 
   /**
-   * The server confirmed who is signed in: every other user's WhatsApp config and store on this Mac go (called where the mail store removes other users' copies). The shell keeps the tokens but has no user
+   * The server confirmed who is signed in: every other user's WhatsApp config on this Mac goes, their stores stay
+   * (called where the mail store removes other users' copies). The shell keeps the tokens but has no user
    * id it could check them against, so config load and save stay bound to the confirmed user here, in the web client.
    */
   async function keepOnly(id: string): Promise<void> {

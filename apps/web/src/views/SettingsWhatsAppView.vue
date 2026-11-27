@@ -8,7 +8,6 @@ import { shortDue } from '@/mail/format'
 import AppIcon from '@/components/AppIcon.vue'
 import ProviderMark from '@/components/ProviderMark.vue'
 import ConnectWhatsApp from '@/components/connect/ConnectWhatsApp.vue'
-import WhatsAppLink from '@/components/chat/WhatsAppLink.vue'
 import {
   COPY_BODY,
   COPY_TITLE,
@@ -28,7 +27,7 @@ import {
   serverRefusedText,
   switchText,
   importText,
-  failureLine,
+  failureRow,
   linkedAge,
   linkStage,
   phoneNumber,
@@ -107,8 +106,17 @@ const subtitle = computed(() => (number.value === null ? `On ${device.value}` : 
 const moved = computed(() => wa.config?.moved === true)
 const stage = computed(() => linkStage(wa.bridge))
 
-/** The pill next to the title: Connected, Starting, Not linked, Link again, Could not start, Stopped. */
-const pill = computed<{ text: string; ok: boolean }>(() => (wa.busy === 'disconnect' ? { text: 'Disconnecting', ok: false } : statusWord(wa.bridge, moved.value)))
+/**
+ * The pill next to the title, only while something needs the user (Starting, Not linked, Link again, a failure's word,
+ * Stopped, Disconnecting): the normal state is said in the rows' plain text, with no pill.
+ */
+const pill = computed<{ text: string } | null>(() => {
+  if (wa.busy === 'disconnect') {
+    return { text: 'Disconnecting' }
+  }
+  const word = statusWord(wa.bridge, moved.value)
+  return word.ok ? null : { text: word.text }
+})
 
 /** The "On this Mac" row: whether WhatsApp runs here, in plain words, with Try again when it stopped. */
 const statusRow = computed<{ value: string; ok: boolean; detail: string | null; action: boolean }>(() => {
@@ -121,25 +129,34 @@ const statusRow = computed<{ value: string; ok: boolean; detail: string | null; 
     return { value: bridge.link === 'waiting_for_scan' || bridge.link === 'unlinked' ? 'Waiting for your phone' : 'Starting', ok: false, detail: null, action: false }
   }
   if (bridge.error !== null && bridge.error !== 'logged_out') {
-    return { value: 'Could not start', ok: false, detail: failureLine(bridge.error), action: true }
+    // The failure's own title and sentence; Try again only where starting again can help (not a missing part).
+    const failure = failureRow(bridge.error)
+    return { value: failure.title, ok: false, detail: failure.text, action: failure.retry }
   }
-  return { value: 'Stopped', ok: false, detail: bridge.error === null && stage.value === 'idle' ? 'Tresso starts it again in a moment.' : null, action: stage.value === 'idle' }
+  if (stage.value === 'idle' && !moved.value) {
+    return { value: 'Stopped', ok: false, detail: null, action: true }
+  }
+  return { value: 'Not linked', ok: false, detail: null, action: false }
 })
 
 const linkRow = computed<{ value: string; ok: boolean; relink: boolean }>(() => {
   if (wa.linked) {
     return { value: linkedAge(wa.config?.linkedAt ?? null, now.value), ok: true, relink: false }
   }
+  // Linking again goes through the connect dialog, with its risk step: no code shows here unasked.
   if (moved.value) {
-    return { value: MOVED_TEXT, ok: false, relink: wa.bridge.process === 'stopped' && stage.value !== 'expired' }
+    return { value: MOVED_TEXT, ok: false, relink: true }
   }
   if (wa.bridge.error === 'logged_out') {
     return { value: `${FAILURES.logged_out.title}. ${FAILURES.logged_out.text}`, ok: false, relink: true }
   }
+  if (wa.bridge.process === 'stopped' && wa.bridge.link === 'unlinked') {
+    return { value: 'Not linked. Nothing comes in or goes out.', ok: false, relink: true }
+  }
   return { value: 'Not linked. Nothing comes in or goes out.', ok: false, relink: false }
 })
-/** The QR panel: asked for, or needed (a code is on its way or shown, or the code expired). */
-const linkPanel = computed(() => showLink.value || (!wa.linked && (stage.value === 'loading' || stage.value === 'scan' || stage.value === 'expired')))
+/** The note on linking another phone, while linked. */
+const linkPanel = computed(() => showLink.value && wa.linked)
 
 const importView = computed(() =>
   importText(wa.importState, { messages: wa.progress?.stored ?? 0, chats: wa.progress?.chats ?? 0, stored: wa.chatCount, refused: wa.stuckRefused }),
@@ -348,7 +365,7 @@ onBeforeUnmount(() => {
           <h2>WhatsApp</h2>
           <span class="line">{{ subtitle }}</span>
         </div>
-        <span class="pill" :class="{ ok: pill.ok }">{{ pill.text }}</span>
+        <span v-if="pill" class="pill">{{ pill.text }}</span>
       </header>
 
       <p class="visually-hidden" role="status">{{ readsHere ? importAnnouncement : '' }}</p>
@@ -407,11 +424,10 @@ onBeforeUnmount(() => {
         <div class="row">
           <span class="label">Linked to phone</span>
           <span class="value"><span class="dot" :class="{ ok: linkRow.ok }" aria-hidden="true" />{{ linkRow.value }}</span>
-          <button v-if="linkRow.relink" type="button" class="button button-quiet outline" :disabled="wa.busy !== null" @click="wa.start()">Link again</button>
-          <button v-else type="button" class="button button-quiet outline" :aria-expanded="linkPanel" aria-controls="wa-link" @click="showLink = !showLink">Show how to link</button>
+          <RouterLink v-if="linkRow.relink" :to="{ name: 'settings-whatsapp-connect' }" class="button button-quiet outline">Link again</RouterLink>
+          <button v-else-if="wa.linked" type="button" class="button button-quiet outline" :aria-expanded="linkPanel" aria-controls="wa-link" @click="showLink = !showLink">Show how to link</button>
           <div v-if="linkPanel" id="wa-link" class="detail link">
-            <WhatsAppLink v-if="!wa.linked" />
-            <p v-else>Linked. To link another phone, remove this Mac under WhatsApp &gt; Linked devices on the phone that is linked now; a new code then shows here.</p>
+            <p>Linked. To link another phone, disconnect WhatsApp here, then connect it again with the other phone.</p>
           </div>
         </div>
       </section>
@@ -586,10 +602,6 @@ h2 {
   color: var(--delegate);
   font-size: 12px;
   font-weight: 600;
-}
-.pill.ok {
-  background: var(--know-soft);
-  color: var(--know);
 }
 /* On the settings surface (--stage) a panel is paper with a hairline edge, as the Accounts page's card. */
 .panel {

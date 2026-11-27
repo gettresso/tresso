@@ -7,9 +7,9 @@ import { CODE_EXPIRED, CODE_EXPIRED_NOTE, CODE_RENEWS, GETTING_CODE, LINK_STEPS,
 /**
  * Linking this Mac to the phone (the ConnectWhatsApp board's Scan states): a loader where the code will be while it is
  * on its way, the QR code (a new one replaces it about every 20 seconds, without a sign of it), or `Show a new code`
- * once nobody scanned for three minutes; under it the three steps on the phone. Used by the connect dialog and by
- * "Show how to link" in Settings. The code itself is not announced: only the change of state is, by the page's live
- * region.
+ * once nobody scanned for three minutes; under it the three steps on the phone. Used by the connect dialog, whose
+ * live region announces the change of state (the tiles have none of their own, so nothing is said twice; the code
+ * itself is never announced).
  */
 const wa = useWhatsAppRelayStore()
 const stage = computed(() => linkStage(wa.bridge))
@@ -20,14 +20,14 @@ const rows = computed(() => (stage.value === 'scan' ? (wa.bridge.qr ?? []) : [])
   <div class="link">
     <div class="tile-row">
       <span v-if="stage === 'scan'" class="tile code"><QrCode :rows="rows" :size="208" label="QR code to scan with WhatsApp on your phone" /></span>
-      <span v-else-if="stage === 'expired'" class="tile empty" role="status">
+      <span v-else-if="stage === 'expired'" class="tile empty">
         <span class="words">
           <span class="strong">{{ CODE_EXPIRED }}</span>
           <span class="quiet">{{ CODE_EXPIRED_NOTE }}</span>
         </span>
-        <button type="button" class="button button-primary new-code" :disabled="wa.busy !== null" @click="wa.start()">Show a new code</button>
+        <button type="button" class="button button-primary new-code" :disabled="wa.busy !== null" @click="wa.start({ link: true })">Show a new code</button>
       </span>
-      <span v-else class="tile empty" role="status">
+      <span v-else class="tile empty">
         <svg class="spin" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
           <circle cx="12" cy="12" r="9" stroke-opacity="0.16" />
           <path d="M12 3a9 9 0 019 9" />

@@ -3,7 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import type { BridgeState, WhatsAppConfig } from '@/platform/whatsapp'
-import { useWhatsAppRelayStore } from '@/stores/whatsappRelay'
+import { REMOVED_ELSEWHERE, useWhatsAppRelayStore } from '@/stores/whatsappRelay'
 import { FAILURES, MOVED_TEXT, COPY_BODY, COPY_TITLE, GROUPS_WOULD_GO, LEFT_OUT_KEPT, REMOVE_BODY, REMOVE_TITLE } from '@/components/chat/whatsappTexts'
 import type { SyncedChatAccount } from '@tresso/core'
 import SettingsWhatsAppView from '../SettingsWhatsAppView.vue'
@@ -74,7 +74,7 @@ describe('SettingsWhatsAppView', () => {
 
     expect(wrapper.get('h2').text()).toBe('WhatsApp')
     expect(wrapper.get('.line').text()).toBe("+31698765432, on Kim's MacBook Pro")
-    expect(wrapper.get('.pill').text()).toBe('Connected')
+    expect(wrapper.find('.pill').exists()).toBe(false)
     expect(wrapper.get('a[aria-label="Back to accounts"]').attributes('href')).toBe('/settings/accounts')
     expect(row(wrapper, 'Relaying Mac')).toMatchObject({ value: "Kim's MacBook Pro, this Mac", ok: true })
     expect(wrapper.findAll('.row .label').map((label) => label.text())).toEqual(['Relaying Mac', 'On this Mac', 'Linked to phone'])
@@ -103,7 +103,9 @@ describe('SettingsWhatsAppView', () => {
     const start = vi.spyOn(wa, 'start').mockResolvedValue(true)
     const wrapper = open()
 
-    expect(row(wrapper, 'On this Mac').value).toBe('Connected, no messages yet')
+    // The normal state has no pill: the row says it.
+    expect(row(wrapper, 'On this Mac')).toMatchObject({ value: 'Connected, no messages yet', ok: true })
+    expect(wrapper.find('.pill').exists()).toBe(false)
 
     wa.bridge = { ...LINKED, port: null, link: 'unknown' }
     await flushPromises()
@@ -113,26 +115,32 @@ describe('SettingsWhatsAppView', () => {
     wa.bridge = STOPPED
     await flushPromises()
     expect(row(wrapper, 'On this Mac')).toMatchObject({ value: 'Stopped', ok: false })
-    expect(row(wrapper, 'On this Mac').text).toContain('Tresso starts it again in a moment.')
     expect(wrapper.get('.pill').text()).toBe('Stopped')
     await row(wrapper, 'On this Mac').element.get('button').trigger('click')
     expect(start).toHaveBeenCalledTimes(1)
+    // Settings' own start never shows a code: it starts a linked store only.
+    expect(start).toHaveBeenLastCalledWith()
 
+    // Each failure by its own title and sentence; Try again only where starting again can help.
     for (const failure of ['missing', 'store', 'offline', 'pair_failed', 'outdated', 'replaced', 'banned', 'exited'] as const) {
       wa.bridge = { ...STOPPED, error: failure }
       await flushPromises()
-      expect(row(wrapper, 'On this Mac').value).toBe('Could not start')
-      expect(wrapper.get('.pill').text()).toBe('Could not start')
-      expect(row(wrapper, 'On this Mac').element.get('button').text()).toBe('Try again')
+      const shown = row(wrapper, 'On this Mac')
+      expect(shown.value).toBe(FAILURES[failure].title)
+      expect(shown.element.find('button').exists()).toBe(failure !== 'missing')
       expect(wrapper.text()).not.toMatch(UNSAID)
     }
     expect(row(wrapper, 'On this Mac').text).toContain('WhatsApp stopped several times on this Mac. Try again in a moment.')
     wa.bridge = { ...STOPPED, error: 'offline' }
     await flushPromises()
-    expect(row(wrapper, 'On this Mac').text).toContain('WhatsApp could not be reached. Check that this Mac is online, then try again.')
+    expect(row(wrapper, 'On this Mac').text).toContain('Check that this Mac is online, then try again.')
+    expect(wrapper.get('.pill').text()).toBe('Offline')
+    wa.bridge = { ...STOPPED, error: 'missing' }
+    await flushPromises()
+    expect(row(wrapper, 'On this Mac').text).toContain('A part of Tresso that WhatsApp needs is missing. Install Tresso again.')
   })
 
-  it('shows each state of the link, and the code when it needs one', async () => {
+  it('shows each state of the link, and sends linking again through the connect dialog', async () => {
     const start = vi.spyOn(wa, 'start').mockResolvedValue(true)
     const wrapper = open()
 
@@ -141,52 +149,42 @@ describe('SettingsWhatsAppView', () => {
     expect(row(wrapper, 'Linked to phone').value).toBe('Linked.')
     expect(wrapper.find('#wa-link').exists()).toBe(false)
     await row(wrapper, 'Linked to phone').element.get('button').trigger('click')
-    expect(wrapper.get('#wa-link').text()).toContain('Linked. To link another phone')
+    expect(wrapper.get('#wa-link').text()).toContain('To link another phone, disconnect WhatsApp here')
 
-    wa.bridge = { ...LINKED, port: null, link: 'waiting_for_scan', qr: Array.from({ length: 29 }, () => '0'.repeat(29)) }
+    // Not linked: no code here, a way to the dialog.
+    wa.bridge = { ...STOPPED, link: 'unlinked' }
     wa.identity = null
     await flushPromises()
     expect(wrapper.get('.pill').text()).toBe('Not linked')
-    expect(row(wrapper, 'On this Mac').value).toBe('Waiting for your phone')
     expect(row(wrapper, 'Linked to phone')).toMatchObject({ value: 'Not linked. Nothing comes in or goes out.', ok: false })
-    expect(wrapper.get('#wa-link svg').attributes('aria-label')).toBe('QR code to scan with WhatsApp on your phone')
+    expect(wrapper.find('svg[aria-label="QR code to scan with WhatsApp on your phone"]').exists()).toBe(false)
+    expect(row(wrapper, 'Linked to phone').element.get('a').text()).toBe('Link again')
+    expect(row(wrapper, 'Linked to phone').element.get('a').attributes('href')).toBe('/settings/whatsapp/connect')
     expect(wrapper.get('.line').text()).toBe("On Kim's MacBook Pro")
 
-    wa.bridge = { ...STOPPED, link: 'unlinked' }
-    await flushPromises()
-    expect(wrapper.get('.pill').text()).toBe('Not linked')
-    expect(wrapper.get('#wa-link').text()).toContain('Show a new code')
-
-    // The phone removed this Mac: said as the dialog says it, and Link again shows a new code.
+    // The phone removed this Mac: said as the dialog says it.
     wa.bridge = { ...STOPPED, link: 'unlinked', error: 'logged_out' }
     await flushPromises()
     expect(row(wrapper, 'Linked to phone').value).toBe(`${FAILURES.logged_out.title}. ${FAILURES.logged_out.text}`)
-    await row(wrapper, 'Linked to phone').element.get('button').trigger('click')
-    expect(start).toHaveBeenCalledTimes(1)
+    expect(row(wrapper, 'Linked to phone').element.get('a').text()).toBe('Link again')
+    expect(start).not.toHaveBeenCalled()
     expect(wrapper.text()).not.toMatch(UNSAID)
   })
 
-  it('asks a connection of an earlier version to link the phone again', async () => {
+  it('asks a connection of an earlier version to link the phone again, through the dialog', async () => {
     const start = vi.spyOn(wa, 'start').mockResolvedValue(true)
     wa.config = { ...CONFIG, linkedAt: null, moved: true }
     wa.identity = null
-    wa.bridge = { ...LINKED, port: null, link: 'waiting_for_scan', qr: Array.from({ length: 29 }, () => '0'.repeat(29)) }
+    // Resumed at launch without a session: nothing started, no code made.
+    wa.bridge = { ...STOPPED, link: 'unlinked' }
     const wrapper = open()
     expect(wrapper.get('.pill').text()).toBe('Link again')
     expect(row(wrapper, 'Linked to phone').value).toBe(MOVED_TEXT)
     expect(MOVED_TEXT).toBe('WhatsApp now runs inside Tresso. Link your phone again.')
-    // The code shows at once, so the phone can link again.
-    expect(wrapper.get('#wa-link svg').attributes('aria-label')).toBe('QR code to scan with WhatsApp on your phone')
-
-    // Nobody scanned for three minutes: a new code is one click away.
-    wa.bridge = { ...STOPPED, link: 'unlinked' }
-    await flushPromises()
-    expect(wrapper.get('#wa-link').text()).toContain('Show a new code')
-    // The bridge did not start (a launch without it): Link again starts it.
-    wa.bridge = STOPPED
-    await flushPromises()
-    await row(wrapper, 'Linked to phone').element.get('button').trigger('click')
-    expect(start).toHaveBeenCalledTimes(1)
+    expect(row(wrapper, 'On this Mac').value).toBe('Not linked')
+    expect(row(wrapper, 'On this Mac').element.find('button').exists()).toBe(false)
+    expect(row(wrapper, 'Linked to phone').element.get('a').attributes('href')).toBe('/settings/whatsapp/connect')
+    expect(start).not.toHaveBeenCalled()
     expect(wrapper.text()).not.toMatch(UNSAID)
   })
 
@@ -517,7 +515,7 @@ describe('SettingsWhatsAppView', () => {
 
     it('says when WhatsApp was disconnected on another device', () => {
       wa.config = null
-      wa.notice = 'WhatsApp was disconnected from your Tresso server, so Tresso disconnected it on this Mac too.'
+      wa.notice = REMOVED_ELSEWHERE
       const wrapper = open()
       expect(wrapper.get('.notice').text()).toBe(wa.notice)
     })
