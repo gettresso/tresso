@@ -335,6 +335,7 @@ apps/
   sync/       Go sync workers
   web/        Vue 3 web client
   desktop/    Tauri 2 shell around apps/web
+  whatsapp-bridge/  Go WhatsApp bridge for the desktop app (not started by it yet)
   mobile/     Expo app
   website/    Marketing site at gettresso.com (Astro)
 packages/
@@ -455,6 +456,7 @@ Then run the checks for the part you changed:
 | API docs (dev only) | http://localhost:8080/docs |
 | Sync worker | `docker run --rm -v "$PWD/apps/sync":/src -w /src golang:1.27 go test -race ./...` |
 | Sync worker against GreenMail | `docker run --rm --network tresso_default -e GREENMAIL_HOST=greenmail -v "$PWD/apps/sync":/src -w /src golang:1.27 go test -race -tags integration ./...` |
+| WhatsApp bridge | `docker run --rm -v "$PWD/apps/whatsapp-bridge":/src -w /src golang:1.27 go test -race ./...` |
 | Shared core | `npm test --workspace @tresso/core` |
 | Web | `npm run test:unit --workspace @tresso/web` and `npm run type-check --workspace @tresso/web` |
 | Desktop | `cargo check` in `apps/desktop/src-tauri` (on macOS first `node apps/desktop/scripts/fetch-sparkle.mjs`, which the Tauri commands also run) |
